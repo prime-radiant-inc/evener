@@ -147,7 +147,6 @@
       this.subagentRowsByOriginCall = new Map(); // origin tool call id -> subagent row el
       this.subagentRowsByOriginItem = new Map(); // origin item id -> subagent row el
       this.subagentModule = null;        // current "Subagents (N)" module (per fan-out)
-      this.livePlanCard = null;          // the single living task/plan card (Design B)
       this.watchedChildRefs = new Map(); // child transcript ref -> subagent row (live activity push)
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
@@ -1242,7 +1241,13 @@
             const pending = this.pendingTaskCalls && this.pendingTaskCalls.get(data.call_id);
             if (pending !== undefined) {
               this.pendingTaskCalls.delete(data.call_id);
-              this.appendTaskListSystemLine(pending.args, parseToolState(data.tool_state), pending.priorIds);
+              if (!data.error) {
+                this.appendTaskListSystemLine(
+                  pending.args,
+                  parseToolState(data.tool_state),
+                  pending.priorIds,
+                );
+              }
             }
             if (data.tool_name === "ask_user") {
               const questions = this.pendingAskCalls.get(data.call_id) || [];
@@ -4036,8 +4041,8 @@
     },
 
     // appendTaskListSystemLine handles a task_list tool call. action=view is a
-    // read and renders nothing. Any real change refreshes the ONE living plan
-    // card. After rendering, an immediate /tasks fetch refreshes the sidebar.
+    // read and renders nothing. Every successful mutation appends its own card;
+    // after rendering, an immediate /tasks fetch refreshes the sidebar.
     appendTaskListSystemLine(args, stateTasks, priorIds) {
       if (!args || args.action === "view") return;
       if (args.action === "append" && Array.isArray(args.tasks)) {
@@ -4049,190 +4054,16 @@
       if (Array.isArray(stateTasks)) {
         for (const t of stateTasks) rememberTask(t);
       }
-      let tasks = Array.isArray(stateTasks) && stateTasks.length
-        ? stateTasks.slice()
-        : Array.from(taskDetails.values());
-      // Degraded path: an update arrived with no State snapshot and no prior
-      // cache (an old transcript). Fall back to the touched ids alone.
-      if (!tasks.length && args.action === "update" && Array.isArray(args.updates)) {
-        tasks = args.updates.filter(u => u && u.id != null).map(u => ({ id: Number(u.id), status: u.status }));
-      }
-      this.renderLivePlan(tasks);
+      this.appendTaskUpdateCard(args, stateTasks, priorIds);
       this.refreshTaskBadgeSoon();
     },
 
-    // renderLivePlan maintains ONE living plan card for the session (Design B):
-    // instead of a fresh "Tasks" card on every edit, a single card is rebuilt to
-    // the current plan state and floated to the live frontier (the bottom). It
-    // leads with progress + the active task; the done pile recedes to a count;
-    // the rest folds away. The full list lives in the sidebar. This kills the
-    // wall of repeated near-identical cards the per-edit model produced.
-    renderLivePlan(tasks) {
-      tasks = (Array.isArray(tasks) ? tasks : [])
-        .filter(t => t && t.id != null)
-        .sort((a, b) => Number(a.id) - Number(b.id));
-      if (!tasks.length) return;
-
-      const active = tasks.find(t => t.status === "in_progress");
-      const open = tasks.filter(t => t.status === "open");
-      const done = tasks.filter(t => t.status === "done");
-      const cancelled = tasks.filter(t => t.status === "cancelled");
-      const total = tasks.length;
-      const settled = done.length + cancelled.length;
-
-      // Reuse the one card (preserving its expanded state); rebuild its content.
-      let card = this.livePlanCard;
-      const wasOpen = !!card && card.dataset.expanded === "true";
-      if (!card) {
-        card = document.createElement("div");
-        card.className = "task-card";
-        this.livePlanCard = card;
-      }
-      card.textContent = "";
-      card.dataset.expanded = wasOpen ? "true" : "false";
-
-      // Head: title · progress · a thin neutral meter (done recedes, so the fill
-      // is neutral — the live blue is spent only on the active task below).
-      const head = document.createElement("div");
-      head.className = "task-card-head";
-      const title = document.createElement("span");
-      title.className = "task-card-title";
-      title.textContent = "Tasks";
-      const prog = document.createElement("span");
-      prog.className = "task-card-progress";
-      prog.textContent = settled + " / " + total;
-      const meter = document.createElement("div");
-      meter.className = "task-card-meter";
-      const fill = document.createElement("div");
-      fill.className = "task-card-meter-fill";
-      fill.style.width = (total ? Math.round((settled / total) * 100) : 0) + "%";
-      meter.appendChild(fill);
-      head.appendChild(title);
-      head.appendChild(prog);
-      head.appendChild(meter);
-      card.appendChild(head);
-
-      // The frontier — always visible: the active task (it breathes blue via the
-      // shared plan grammar), or a quiet "all done" line when the plan is finished.
-      if (active) {
-        const currentLabel = document.createElement("div");
-        currentLabel.className = "task-card-group task-card-current-label";
-        currentLabel.textContent = "Up next";
-        card.appendChild(currentLabel);
-
-        const row = buildTaskRowLine(active);
-        row.classList.add("task-card-row", "task-card-active");
-        card.appendChild(row);
-        const note = Array.isArray(active.notes)
-          ? String(active.notes.find(n => String(n || "").trim()) || "").trim()
-          : String(active.notes || "").trim();
-        if (note) {
-          const noteEl = document.createElement("div");
-          noteEl.className = "task-card-note";
-          noteEl.textContent = note;
-          card.appendChild(noteEl);
-        }
-      } else if (done.length && !open.length && !cancelled.length) {
-        const complete = document.createElement("div");
-        complete.className = "task-card-complete";
-        complete.textContent = "✓ all " + total + " done";
-        card.appendChild(complete);
-      }
-
-      // Collapsed summary — the recede pile + what's left, one quiet line.
-      const summaryBits = [];
-      if (done.length) summaryBits.push("✓ " + done.length + " done");
-      if (cancelled.length) summaryBits.push("✕ " + cancelled.length + " cancelled");
-      if (open.length && !active) summaryBits.push(open.length + " up next");
-      if (summaryBits.length) {
-        const summary = document.createElement("div");
-        summary.className = "task-card-summary-line";
-        summary.textContent = summaryBits.join(" · ");
-        card.appendChild(summary);
-      }
-
-      // Expanded body: Up next in full, the done/cancelled piles folded behind
-      // their counts so they stay recessive even when the card is open.
-      const hasDetail = open.length || done.length || cancelled.length;
-      if (hasDetail) {
-        const body = document.createElement("div");
-        body.className = "task-card-body";
-        if (open.length) {
-          const g = document.createElement("div");
-          g.className = "task-card-group";
-          g.textContent = "Up next · " + open.length;
-          body.appendChild(g);
-          for (const t of open) {
-            const row = buildTaskRowLine(t);
-            row.classList.add("task-card-row");
-            body.appendChild(row);
-          }
-        }
-        if (done.length) body.appendChild(this.taskFoldGroup("✓ " + done.length + " done", done));
-        if (cancelled.length) body.appendChild(this.taskFoldGroup("✕ " + cancelled.length + " cancelled", cancelled));
-        card.appendChild(body);
-
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "task-card-toggle";
-        const setLabel = () => {
-          toggle.innerHTML = card.dataset.expanded === "true"
-            ? 'collapse <span class="fold-chevron open">›</span>'
-            : 'show all <span class="fold-chevron">›</span>';
-        };
-        setLabel();
-        toggle.addEventListener("click", () => {
-          card.dataset.expanded = card.dataset.expanded === "true" ? "false" : "true";
-          setLabel();
-        });
-        card.appendChild(toggle);
-      }
-
-      // Float the single card to the live frontier (moves the existing node;
-      // there is only ever one task card in the transcript).
-      this.conversation.appendChild(card);
-    },
-
-    // taskFoldGroup builds a count line that reveals its rows on click — used for
-    // the done/cancelled piles so they stay folded (recessive) even when the
-    // whole plan card is expanded.
-    taskFoldGroup(label, items) {
-      const wrap = document.createElement("div");
-      wrap.className = "task-card-fold";
-      const head = document.createElement("button");
-      head.type = "button";
-      head.className = "task-card-fold-head";
-      head.textContent = label + " ";
-      const chev = document.createElement("span");
-      chev.className = "fold-chevron";
-      chev.textContent = "›";
-      head.appendChild(chev);
-      const rows = document.createElement("div");
-      rows.className = "task-card-fold-rows";
-      for (const t of items) {
-        const row = buildTaskRowLine(t);
-        row.classList.add("task-card-row");
-        rows.appendChild(row);
-      }
-      head.addEventListener("click", () => {
-        const open = wrap.classList.toggle("open");
-        chev.classList.toggle("open", open);
-      });
-      wrap.appendChild(head);
-      wrap.appendChild(rows);
-      return wrap;
-    },
-
-    // appendTaskUpdateCard renders one coherent card for a task_list change:
-    // what the agent just edited (the changed rows, flagged, with their notes
-    // and — for completed tasks — when they were checked off), the now-current
-    // task, and a little surrounding context (the tasks immediately before and
-    // after the current one, shown in sequence). The rest of the plan folds
-    // behind "show all". The authoritative task set is the tool's State
-    // snapshot (it carries statuses + minted timestamps); the description cache
-    // is the fallback when no State rode along (e.g. older transcripts).
+    // appendTaskUpdateCard renders one card for the changes established by one
+    // task_list mutation. The authoritative task set is the tool's State
+    // snapshot; the description cache is the fallback when no State rode along.
     appendTaskUpdateCard(args, stateTasks, priorIds) {
-      let tasks = Array.isArray(stateTasks) && stateTasks.length
+      const hasAuthoritativeState = Array.isArray(stateTasks);
+      let tasks = hasAuthoritativeState && stateTasks.length
         ? stateTasks.slice()
         : Array.from(taskDetails.values());
       tasks = tasks.filter(t => t && t.id != null);
@@ -4247,14 +4078,23 @@
       tasks = tasks.sort((a, b) => Number(a.id) - Number(b.id));
       if (!tasks.length) return;
 
-      // Which tasks did THIS call touch, and how? The kind drives the visual
-      // flag (added · done · started · cancelled · changed) so the edit reads
-      // from color and style, not a prose sentence. Updates name their ids and
-      // new status directly; an append's tasks are all newly added.
       const touched = new Map(); // id -> { kind, note }
       if (args.action === "update" && Array.isArray(args.updates)) {
-        for (const u of args.updates) {
-          if (u && u.id != null) touched.set(Number(u.id), { kind: touchKind(u.status), note: String(u.notes || "").trim() });
+        for (const update of args.updates) {
+          if (!update || update.id == null) continue;
+          if (!["done", "cancelled", "in_progress"].includes(update.status)) continue;
+          touched.set(Number(update.id), {
+            kind: touchKind(update.status),
+            note: String(update.notes || "").trim(),
+          });
+        }
+
+        const completed = args.updates.some(update => update && update.status === "done");
+        if (completed && hasAuthoritativeState) {
+          const active = tasks.find(task => task.status === "in_progress");
+          if (active && !touched.has(Number(active.id))) {
+            touched.set(Number(active.id), { kind: "started", note: "" });
+          }
         }
       } else if (args.action === "append") {
         const known = priorIds || new Set();
@@ -4262,19 +4102,6 @@
           if (!known.has(Number(t.id))) touched.set(Number(t.id), { kind: "added", note: "" });
         }
       }
-
-      // The visible window: touched rows + the current task + its immediate
-      // neighbors (unlabeled — just where we came from and where we're going).
-      const current = tasks.find(t => t.status === "in_progress");
-      const visible = new Set(touched.keys());
-      if (current) {
-        const cid = Number(current.id);
-        visible.add(cid);
-        const idx = tasks.findIndex(t => Number(t.id) === cid);
-        if (idx > 0) visible.add(Number(tasks[idx - 1].id));
-        if (idx >= 0 && idx < tasks.length - 1) visible.add(Number(tasks[idx + 1].id));
-      }
-      if (!visible.size) for (const t of tasks) visible.add(Number(t.id));
 
       const doneCount = tasks.filter(t => t.status === "done" || t.status === "cancelled").length;
       const card = document.createElement("div");
@@ -4288,44 +4115,35 @@
       const prog = document.createElement("span");
       prog.className = "task-card-progress";
       prog.textContent = doneCount + " / " + tasks.length;
+      const meter = document.createElement("div");
+      meter.className = "task-card-meter";
+      const fill = document.createElement("div");
+      fill.className = "task-card-meter-fill";
+      fill.style.width = (tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0) + "%";
+      meter.appendChild(fill);
       head.appendChild(title);
       head.appendChild(prog);
+      head.appendChild(meter);
       card.appendChild(head);
 
       const rows = document.createElement("div");
       rows.className = "task-card-rows";
-      let hidden = 0;
       for (const t of tasks) {
         const id = Number(t.id);
-        const shown = visible.has(id);
-        if (!shown) hidden++;
         const flag = touched.get(id);
-        // Shared row widget; the card adds its own flag/fold classes on top.
+        if (!flag) continue;
         const row = buildTaskRowLine(t);
         row.classList.add("task-card-row");
-        if (flag) row.classList.add("touched", flag.kind);
-        if (!shown) row.classList.add("task-card-hidden");
+        row.classList.add("touched", flag.kind);
         rows.appendChild(row);
-        if (flag && flag.note) {
+        if (flag.note) {
           const noteEl = document.createElement("div");
-          noteEl.className = "task-card-note" + (shown ? "" : " task-card-hidden");
+          noteEl.className = "task-card-note";
           noteEl.textContent = flag.note;
           rows.appendChild(noteEl);
         }
       }
       card.appendChild(rows);
-
-      if (hidden) {
-        const showAll = document.createElement("button");
-        showAll.type = "button";
-        showAll.className = "task-card-showall";
-        showAll.textContent = "show all (" + tasks.length + ")";
-        showAll.addEventListener("click", () => {
-          card.querySelectorAll(".task-card-hidden").forEach(el => el.classList.remove("task-card-hidden"));
-          showAll.remove();
-        });
-        card.appendChild(showAll);
-      }
 
       this.conversation.appendChild(card);
     },

@@ -152,16 +152,16 @@ const events = [
   pass(clusters.length === 1, "expected 1 .tool-call-cluster, got " + clusters.length);
 
   // 7. Total .tool-call count: 2 inside the cluster (read, grep) + edit + shell.
-  //    task_list updates are absorbed into the living task card, not tool-call cards.
+  //    task_list updates are absorbed into per-call task cards, not tool-call cards.
   const toolCalls = conv.querySelectorAll(".tool-call");
   pass(toolCalls.length === 4, "expected 4 .tool-call (read+grep+edit+shell), got " + toolCalls.length);
 
-  // 8. Exactly one living task card (task_list operations fold into a single card).
+  // 8. Each successful task_list update appends its own card.
   const taskCards = conv.querySelectorAll(".task-card");
-  pass(taskCards.length === 1, "expected 1 .task-card, got " + taskCards.length);
+  pass(taskCards.length === 4, "expected 4 per-call .task-card elements, got " + taskCards.length);
 
   // 9. Total top-level conversation children.
-  pass(conv.children.length === 9, "expected 9 conversation children, got " + conv.children.length);
+  pass(conv.children.length === 12, "expected 12 conversation children, got " + conv.children.length);
 
   if (failures.length) {
     for (const f of failures) console.error(f);

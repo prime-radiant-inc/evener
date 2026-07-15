@@ -1,10 +1,6 @@
-// The living plan card (Design B). The agent maintains a task list via the
-// task_list tool; instead of a fresh "Tasks" card on every edit (which littered
-// the transcript with repeated near-identical checklists), there is ONE living
-// card per session: it is rebuilt to the current plan state and floated to the
-// live frontier. It leads with progress + the active task (⟳ blue, breathing),
-// the done pile recedes to a count, and the rest folds behind "show all". The
-// full list lives in the sidebar. An empty task_list renders NOTHING.
+// Per-call task update cards: each successful mutation appends one card that
+// contains only the changes established by that call. An empty task_list view
+// or failed mutation renders nothing.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
@@ -83,16 +79,25 @@ async function scenario(name, eventSeq, check) {
   }
 }
 
-function click(el, conv) {
-  el.dispatchEvent(new (conv.ownerDocument.defaultView).MouseEvent("click", { bubbles: true }));
+function taskCall(callId, args, stateTasks, error) {
+  return [
+    ["TOOL_CALL_START", {
+      call_id: callId,
+      tool_name: "task_list",
+      arguments_json: JSON.stringify(args),
+    }],
+    ["TOOL_CALL_END", {
+      call_id: callId,
+      tool_name: "task_list",
+      output: error ? "failed" : "ok",
+      error: error || undefined,
+      tool_state: stateTasks === undefined ? undefined : JSON.stringify(stateTasks),
+    }],
+  ];
 }
 
-// A task_list append carries the State snapshot (full list with statuses).
-function appendTask(callId, tasks) {
-  return [
-    ["TOOL_CALL_START", { call_id: callId, tool_name: "task_list", arguments_json: JSON.stringify({ action: "append", tasks }) }],
-    ["TOOL_CALL_END", { call_id: callId, tool_name: "task_list", output: "ok", tool_state: JSON.stringify(tasks) }],
-  ];
+function cardRows(card) {
+  return Array.from(card.querySelectorAll(".task-card-row"));
 }
 
 const PLAN = [
@@ -105,189 +110,158 @@ const PLAN = [
   { id: 7, description: "Remove the legacy client", status: "open" },
 ];
 
+function sessionStart() {
+  return ["SESSION_START", { session_id: "01TEST" }];
+}
+
+function stateWith(changes) {
+  return PLAN.map(task => Object.assign({}, task, changes[task.id] || {}));
+}
+
 (async () => {
 
-await scenario("living plan card leads with progress + active task, collapsed by default", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", PLAN),
+await scenario("append shows only newly added tasks with progress", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
 ], ({ conv }) => {
   const cards = conv.querySelectorAll(".task-card");
-  if (cards.length !== 1) return { ok: false, detail: "expected exactly one living card, got " + cards.length };
+  if (cards.length !== 1) return { ok: false, detail: "expected one card, got " + cards.length };
   const card = cards[0];
-
   const prog = card.querySelector(".task-card-progress");
-  if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "progress should be 3 / 7, got " + (prog && prog.textContent) };
-  if (!card.querySelector(".task-card-meter-fill")) return { ok: false, detail: "missing progress meter" };
-
-  // The active task is the frontier: visible, current (blue, breathing working icon).
-  const active = card.querySelector(".task-card-active");
-  if (!active) return { ok: false, detail: "missing active task row" };
-  if (!active.classList.contains("current")) return { ok: false, detail: "active row should carry the .current plan state" };
-  if (!active.querySelector(".plan-glyph").innerHTML.includes("<svg")) return { ok: false, detail: "active glyph should be the working svg icon" };
-  if (!active.textContent.includes("Port the charge and refund paths")) return { ok: false, detail: "wrong active task text" };
-
-  const currentLabel = card.querySelector(".task-card-current-label");
-  if (!currentLabel || currentLabel.textContent.trim() !== "Up next") {
-    return { ok: false, detail: "current task should be labeled 'Up next'" };
+  if (!prog || !/3\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "expected 3 / 7 progress" };
+  const fill = card.querySelector(".task-card-meter-fill");
+  if (!fill || fill.style.width !== "43%") return { ok: false, detail: "expected 43% meter fill, got " + (fill && fill.style.width) };
+  if (cardRows(card).length !== 7) return { ok: false, detail: "expected seven rows" };
+  if (card.querySelector(".task-card-summary-line, .task-card-toggle, .task-card-showall")) {
+    return { ok: false, detail: "aggregate or disclosure UI must be absent" };
   }
-  const currentRow = currentLabel.nextElementSibling;
-  if (!currentRow || !currentRow.classList.contains("task-card-active") ||
-      !/Port the charge and refund paths/.test(currentRow.textContent)) {
-    return { ok: false, detail: "'Up next' label should precede the current task row" };
-  }
-
-  // Collapsed: the done pile + what's left fold into one quiet summary line; the
-  // expanded body and the individual rows are not shown yet.
-  if (card.dataset.expanded !== "false") return { ok: false, detail: "card should start collapsed" };
-  const summary = card.querySelector(".task-card-summary-line");
-  if (!summary || !/3 done/.test(summary.textContent) || /\d+ up next/i.test(summary.textContent)) {
-    return { ok: false, detail: "summary should retain done count without an aggregate up-next count, got " + (summary && summary.textContent) };
-  }
-  const toggle = card.querySelector(".task-card-toggle");
-  if (!toggle || !/show all/.test(toggle.textContent)) return { ok: false, detail: "missing 'show all' toggle" };
-
+  if (/show all|more/i.test(card.textContent)) return { ok: false, detail: "card must not mention show all or more" };
   return { ok: true };
 });
 
-await scenario("open-only plan keeps no current label and shows the open count in the collapsed summary", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", [
-    { id: 1, description: "Draft the rollout notes", status: "done" },
-    { id: 2, description: "Prepare the follow-up task", status: "open" },
-    { id: 3, description: "Schedule the handoff", status: "open" },
-  ]),
+await scenario("completion shows completed and automatically activated tasks", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t2", {
+    action: "update",
+    updates: [{ id: 4, status: "done", notes: "shipped it" }],
+  }, stateWith({
+    4: { status: "done" },
+    5: { status: "in_progress" },
+  })),
 ], ({ conv }) => {
-  const card = conv.querySelector(".task-card");
-  if (!card) return { ok: false, detail: "missing card" };
-
-  if (card.querySelector(".task-card-current-label")) {
-    return { ok: false, detail: "open-only plan should not render a current label" };
-  }
-
-  const summary = card.querySelector(".task-card-summary-line");
-  if (!summary || !/2 up next/.test(summary.textContent)) {
-    return { ok: false, detail: "collapsed summary should report 2 up next, got " + (summary && summary.textContent) };
-  }
-  if (/\d+ cancelled/i.test(summary.textContent)) {
-    return { ok: false, detail: "open-only summary should not mention cancelled tasks: " + summary.textContent };
-  }
-
-  return { ok: true };
-});
-
-await scenario("active plus cancelled plan keeps cancelled count and omits aggregate up next", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", [
-    { id: 1, description: "Warm up the environment", status: "done" },
-    { id: 2, description: "Run the active migration", status: "in_progress" },
-    { id: 3, description: "Retire the old path", status: "cancelled" },
-    { id: 4, description: "Archive the remaining cleanup", status: "cancelled" },
-    { id: 5, description: "Queue the follow-on review", status: "open" },
-  ]),
-], ({ conv }) => {
-  const card = conv.querySelector(".task-card");
-  if (!card) return { ok: false, detail: "missing card" };
-
-  const summary = card.querySelector(".task-card-summary-line");
-  if (!summary) return { ok: false, detail: "missing collapsed summary" };
-  if (!/2 cancelled/.test(summary.textContent)) {
-    return { ok: false, detail: "collapsed summary should retain 2 cancelled, got " + summary.textContent };
-  }
-  if (/\d+ up next/i.test(summary.textContent)) {
-    return { ok: false, detail: "collapsed summary should omit aggregate up next count, got " + summary.textContent };
-  }
-
-  return { ok: true };
-});
-
-await scenario("repeated task_list edits keep ONE living card, updated in place", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", PLAN),
-  ["TOOL_CALL_START", { call_id: "t2", tool_name: "task_list", arguments_json: JSON.stringify({
-    action: "update", updates: [{ id: 4, status: "done", notes: "shipped it" }, { id: 5, status: "in_progress" }],
-  }) }],
-  ["TOOL_CALL_END", { call_id: "t2", tool_name: "task_list", output: "ok", tool_state: JSON.stringify([
-    { id: 1, description: "Audit current Stripe client usage", status: "done" },
-    { id: 2, description: "Pin the new SDK version", status: "done" },
-    { id: 3, description: "Map old API surface to new SDK", status: "done" },
-    { id: 4, description: "Port the charge and refund paths", status: "done" },
-    { id: 5, description: "Port the webhook signature verification", status: "in_progress", notes: ["watch the webhook secret"] },
-    { id: 6, description: "Update the integration tests", status: "open" },
-    { id: 7, description: "Remove the legacy client", status: "open" },
-  ]) }],
-], ({ conv }) => {
-  // The disease cured: still exactly ONE card after two edits — no per-edit spam.
   const cards = conv.querySelectorAll(".task-card");
-  if (cards.length !== 1) return { ok: false, detail: "repeated edits must reuse one card, got " + cards.length };
-  const card = cards[0];
+  if (cards.length !== 2) return { ok: false, detail: "expected two cards, got " + cards.length };
+  const card = cards[1];
   const prog = card.querySelector(".task-card-progress");
-  if (!prog || !/4\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "progress should advance to 4 / 7, got " + (prog && prog.textContent) };
-  const active = card.querySelector(".task-card-active");
-  if (!active || !active.textContent.includes("Port the webhook signature verification")) {
-    return { ok: false, detail: "active task should now be the webhook step" };
+  if (!prog || !/4\s*\/\s*7/.test(prog.textContent)) return { ok: false, detail: "expected 4 / 7 progress" };
+  const rows = cardRows(card);
+  if (rows.length !== 2) return { ok: false, detail: "expected exactly two changed rows, got " + rows.length };
+  const row4 = rows.find(row => /Port the charge and refund paths/.test(row.textContent));
+  const row5 = rows.find(row => /Port the webhook signature verification/.test(row.textContent));
+  if (!row4 || !row5) return { ok: false, detail: "completion and activation rows missing" };
+  if (!row4.classList.contains("done")) return { ok: false, detail: "task 4 should be done" };
+  if (!row5.classList.contains("current")) return { ok: false, detail: "task 5 should be current" };
+  if (PLAN.some(task => task.id !== 4 && task.id !== 5 && card.textContent.includes(task.description))) {
+    return { ok: false, detail: "unchanged task title occurred in completion card" };
   }
-  // The active task's note rides under it.
-  const note = card.querySelector(".task-card-note");
-  if (!note || !/watch the webhook secret/.test(note.textContent)) return { ok: false, detail: "active note missing" };
   return { ok: true };
 });
 
-await scenario("expanding reveals Up next; the done pile stays folded behind its count", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", PLAN),
+await scenario("explicit activation shows only the activated task", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t2", {
+    action: "update",
+    updates: [{ id: 5, status: "in_progress" }],
+  }, stateWith({ 5: { status: "in_progress" } })),
 ], ({ conv }) => {
-  const card = conv.querySelector(".task-card");
-  const toggle = card.querySelector(".task-card-toggle");
-  click(toggle, conv);
-  if (card.dataset.expanded !== "true") return { ok: false, detail: "toggle should expand the card" };
-  if (!/collapse/.test(toggle.textContent)) return { ok: false, detail: "toggle should now offer collapse" };
-
-  // Up next lists the open tasks in full.
-  const groups = Array.from(card.querySelectorAll(".task-card-group")).map(g => g.textContent);
-  if (!groups.some(g => /Up next · 3/.test(g))) return { ok: false, detail: "expected 'Up next · 3' group, got " + groups.join(" | ") };
-  const body = card.querySelector(".task-card-body");
-  if (!body || !body.textContent.includes("Remove the legacy client")) return { ok: false, detail: "open tasks should be listed when expanded" };
-
-  // The done pile is a fold: its count shows, its rows are hidden until clicked.
-  const fold = card.querySelector(".task-card-fold");
-  if (!fold) return { ok: false, detail: "done pile should be a fold group" };
-  if (!/3 done/.test(fold.querySelector(".task-card-fold-head").textContent)) return { ok: false, detail: "fold head should count the done pile" };
-  const doneRows = fold.querySelector(".task-card-fold-rows");
-  if (fold.classList.contains("open")) return { ok: false, detail: "done pile should start folded" };
-  click(fold.querySelector(".task-card-fold-head"), conv);
-  if (!fold.classList.contains("open")) return { ok: false, detail: "clicking the count should reveal the done rows" };
-  if (!doneRows.textContent.includes("Audit current Stripe client usage")) return { ok: false, detail: "done rows missing after reveal" };
+  const cards = conv.querySelectorAll(".task-card");
+  const card = cards[1];
+  if (!card) return { ok: false, detail: "missing mutation card" };
+  const rows = cardRows(card);
+  if (rows.length !== 1 || !rows[0].classList.contains("current") ||
+      !rows[0].textContent.includes("Port the webhook signature verification")) {
+    return { ok: false, detail: "expected one current row for task 5" };
+  }
   return { ok: true };
 });
 
-await scenario("a finished plan shows a quiet 'all done' line, no active row", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ...appendTask("t1", [
-    { id: 1, description: "One", status: "done" },
-    { id: 2, description: "Two", status: "done" },
-    { id: 3, description: "Three", status: "done" },
-  ]),
+await scenario("non-status update shows only the progress header", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t2", {
+    action: "update",
+    updates: [{ id: 4, notes: "checkpoint" }],
+  }, PLAN),
 ], ({ conv }) => {
-  const card = conv.querySelector(".task-card");
-  if (!card) return { ok: false, detail: "missing card" };
-  if (card.querySelector(".task-card-active")) return { ok: false, detail: "a finished plan has no active task row" };
-  const complete = card.querySelector(".task-card-complete");
-  if (!complete || !/all 3 done/.test(complete.textContent)) return { ok: false, detail: "should show 'all 3 done', got " + (complete && complete.textContent) };
-  const prog = card.querySelector(".task-card-progress");
-  if (!prog || !/3\s*\/\s*3/.test(prog.textContent)) return { ok: false, detail: "progress should be 3 / 3" };
+  const cards = conv.querySelectorAll(".task-card");
+  const card = cards[1];
+  if (!card) return { ok: false, detail: "missing mutation card" };
+  if (!/3\s*\/\s*7/.test(card.querySelector(".task-card-progress").textContent)) {
+    return { ok: false, detail: "progress should remain 3 / 7" };
+  }
+  if (cardRows(card).length !== 0) return { ok: false, detail: "non-status update should have no rows" };
   return { ok: true };
 });
 
-// Empty task_list (view, or empty append) renders NOTHING.
-await scenario("empty task_list renders no card", [
-  ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "t1", tool_name: "task_list", arguments_json: JSON.stringify({ action: "view" }) }],
-  ["TOOL_CALL_END", { call_id: "t1", tool_name: "task_list", output: "ok" }],
-  ["TOOL_CALL_START", { call_id: "t2", tool_name: "task_list", arguments_json: JSON.stringify({ action: "append", tasks: [] }) }],
-  ["TOOL_CALL_END", { call_id: "t2", tool_name: "task_list", output: "ok", tool_state: JSON.stringify([]) }],
+await scenario("consecutive mutations create cards for their own changes", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t2", {
+    action: "update",
+    updates: [{ id: 5, status: "in_progress" }],
+  }, stateWith({ 5: { status: "in_progress" } })),
+  ...taskCall("t3", {
+    action: "update",
+    updates: [{ id: 6, status: "cancelled" }],
+  }, stateWith({
+    5: { status: "in_progress" },
+    6: { status: "cancelled" },
+  })),
 ], ({ conv }) => {
-  if (conv.querySelector(".task-card")) return { ok: false, detail: "empty task_list must not render a card" };
-  if (/no tasks/i.test(conv.textContent)) return { ok: false, detail: "must not render a 'no tasks' placeholder" };
+  const cards = conv.querySelectorAll(".task-card");
+  if (cards.length !== 3) return { ok: false, detail: "expected three cards, got " + cards.length };
+  const secondRows = cardRows(cards[1]);
+  const thirdRows = cardRows(cards[2]);
+  if (secondRows.length !== 1 || !secondRows[0].textContent.includes("Port the webhook signature verification")) {
+    return { ok: false, detail: "first update card contains the wrong changes" };
+  }
+  if (thirdRows.length !== 1 || !thirdRows[0].textContent.includes("Update the integration tests")) {
+    return { ok: false, detail: "second update card contains the wrong changes" };
+  }
+  if (thirdRows[0].classList.contains("current")) return { ok: false, detail: "second update card inherited task 5" };
+  return { ok: true };
+});
+
+await scenario("degraded replay renders explicit changes without inventing auto-activation", [
+  sessionStart(),
+  ...taskCall("t1", { action: "append", tasks: PLAN }, PLAN),
+  ...taskCall("t2", {
+    action: "update",
+    updates: [{ id: 4, status: "done", notes: "shipped it" }],
+  }),
+], ({ conv }) => {
+  const cards = conv.querySelectorAll(".task-card");
+  if (cards.length !== 2) return { ok: false, detail: "expected two cards, got " + cards.length };
+  const rows = cardRows(cards[1]);
+  if (rows.length !== 1 || !rows[0].classList.contains("done") ||
+      !rows[0].textContent.includes("Port the charge and refund paths")) {
+    return { ok: false, detail: "expected only explicit completion row" };
+  }
+  return { ok: true };
+});
+
+await scenario("view empty append and failed mutation render no card", [
+  sessionStart(),
+  ...taskCall("t1", { action: "view" }),
+  ...taskCall("t2", { action: "append", tasks: [] }, []),
+  ...taskCall("t3", {
+    action: "update",
+    updates: [{ id: 4, status: "done" }],
+  }, undefined, "write failed"),
+], ({ conv }) => {
+  if (conv.querySelector(".task-card")) return { ok: false, detail: "view, empty append, and failed mutation must render no card" };
   return { ok: true };
 });
 
