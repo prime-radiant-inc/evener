@@ -295,6 +295,19 @@ func BuildTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[Arc
 // at the tree ingestion boundary. Failed resolutions are intentionally absent;
 // pathless entries remain in the presentation-only no-project bucket.
 func ResolveProjectMap(metas []schema.SessionMeta, live []LiveEntry) map[string]identifier.Project {
+	projects, _ := resolveProjectMap(metas, live, false)
+	return projects
+}
+
+// ResolveProjectMapStrict resolves the same working-directory identities as
+// ResolveProjectMap, but returns an error if any non-empty path cannot be
+// resolved. Destructive callers use this form so they cannot act on a partial
+// view of canonical project membership.
+func ResolveProjectMapStrict(metas []schema.SessionMeta, live []LiveEntry) (map[string]identifier.Project, error) {
+	return resolveProjectMap(metas, live, true)
+}
+
+func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool) (map[string]identifier.Project, error) {
 	projects := make(map[string]identifier.Project)
 	for _, m := range metas {
 		path := EffectiveWorkingDir(m)
@@ -304,9 +317,14 @@ func ResolveProjectMap(metas []schema.SessionMeta, live []LiveEntry) map[string]
 		if _, ok := projects[path]; ok {
 			continue
 		}
-		if project, err := identifier.ResolveProject(path); err == nil {
-			projects[path] = project
+		project, err := identifier.ResolveProject(path)
+		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("resolve project %q: %w", path, err)
+			}
+			continue
 		}
+		projects[path] = project
 	}
 	for _, le := range live {
 		path := le.WorkingDir
@@ -320,11 +338,16 @@ func ResolveProjectMap(metas []schema.SessionMeta, live []LiveEntry) map[string]
 			projects[path] = le.Project
 			continue
 		}
-		if project, err := identifier.ResolveProject(path); err == nil {
-			projects[path] = project
+		project, err := identifier.ResolveProject(path)
+		if err != nil {
+			if strict {
+				return nil, fmt.Errorf("resolve project %q: %w", path, err)
+			}
+			continue
 		}
+		projects[path] = project
 	}
-	return projects
+	return projects, nil
 }
 
 // BuildTreeAtWithProjects assembles a tree using projects resolved by the

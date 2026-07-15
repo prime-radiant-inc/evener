@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
 )
@@ -80,10 +81,25 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Resolve the session set from All() (carries StateDir), uncapped.
+	// Resolve every distinct candidate path before deleting anything. This uses
+	// the same canonical identity map as tree building, but fails closed rather
+	// than presenting an unresolvable path in the no-project bucket.
+	all := s.cfg.Past.All()
+	metas := make([]schema.SessionMeta, 0, len(all))
+	for _, e := range all {
+		metas = append(metas, e.Meta)
+	}
+	projects, err := hubcore.ResolveProjectMapStrict(metas, nil)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "resolve project membership: "+err.Error())
+		return
+	}
+
+	// Select the session set from All() (carries StateDir), uncapped.
 	var entries []hubcore.PastEntry
-	for _, e := range s.cfg.Past.All() {
-		if hubcore.EffectiveWorkingDir(e.Meta) == project.CanonicalPath {
+	for _, e := range all {
+		workingDir := hubcore.EffectiveWorkingDir(e.Meta)
+		if projects[workingDir].ID == body.Key {
 			entries = append(entries, e)
 		}
 	}

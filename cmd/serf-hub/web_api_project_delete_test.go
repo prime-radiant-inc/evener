@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,13 @@ import (
 )
 
 const webTestSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+
+var projectDeleteCanonicalSessionIDs = []string{
+	"02wMz5Txv1C3Hut0M8GCeB",
+	"02wMz5Txv2enqVTitaig6F",
+	"02wMz5Txv5aIxgf9yVdd0N",
+	"02wMz5Txv733WHFsVy66SR",
+}
 
 func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
 	root := t.TempDir()
@@ -115,6 +123,114 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	d, _ := archive.Decisions()
 	if _, present := d[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; present {
 		t.Fatalf("session archive row should be scrubbed: %v", d)
+	}
+}
+
+func TestProjectDeleteRemovesCanonicalProjectMembers(t *testing.T) {
+	root := t.TempDir()
+	mainDir := filepath.Join(root, "main")
+	initProjectDeleteRepo(t, mainDir)
+	linkedDir := filepath.Join(root, "linked")
+	runProjectDeleteGit(t, mainDir, "worktree", "add", "-q", linkedDir, "-b", "feature")
+	nestedDir := filepath.Join(mainDir, "nested")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	aliasDir := filepath.Join(root, "alias")
+	if err := os.Symlink(linkedDir, aliasDir); err != nil {
+		t.Fatal(err)
+	}
+
+	project, err := identifier.ResolveProject(mainDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{mainDir, linkedDir, nestedDir, aliasDir}
+	projectsRoot := filepath.Join(root, "projects")
+	stateDir := filepath.Join(projectsRoot, project.ID)
+	for i, path := range paths {
+		writeSession(t, stateDir, projectDeleteCanonicalSessionIDs[i], path)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted []string `json:"deleted"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Deleted) != len(paths) {
+		t.Fatalf("deleted=%v, want main, linked worktree, nested, and symlink sessions", resp.Deleted)
+	}
+	for i, id := range projectDeleteCanonicalSessionIDs {
+		metaPath := filepath.Join(stateDir, "sessions", id+".meta.json")
+		if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+			t.Fatalf("session %d (%s) meta survived canonical project deletion: %v", i, paths[i], err)
+		}
+	}
+}
+
+func TestProjectDeleteResolutionFailureDoesNotPartiallyDelete(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectsRoot := filepath.Join(root, "projects")
+	stateDir := filepath.Join(projectsRoot, project.ID)
+	writeSession(t, stateDir, projectDeleteCanonicalSessionIDs[0], projectDir)
+	writeSession(t, stateDir, projectDeleteCanonicalSessionIDs[1], filepath.Join(root, "missing"))
+	past := hubcore.NewPastIndex(filepath.Join(projectsRoot, "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s, want resolution failure", rec.Code, rec.Body.String())
+	}
+	metaPath := filepath.Join(stateDir, "sessions", projectDeleteCanonicalSessionIDs[0]+".meta.json")
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("valid project session was partially deleted: %v", err)
+	}
+}
+
+func initProjectDeleteRepo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runProjectDeleteGit(t, filepath.Dir(dir), "init", "-q", filepath.Base(dir))
+	runProjectDeleteGit(t, dir, "-c", "user.name=serf-test", "-c", "user.email=serf-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+}
+
+func runProjectDeleteGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 }
 

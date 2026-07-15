@@ -336,3 +336,131 @@ No Serf code or tests were changed to work around the toolchain defect, and no r
 - Task 11 fix commits before this evidence update are `24a69ccc6`, `abfea7ff9`, `6014c193e`, `90d301a25`, `78b1ce30c`, `9ffc4dd7b`, and `fca76fd51`.
 
 The pre-existing `.superpowers/sdd/task-1-report.md` worktree modification remains the sole protected unrelated exception. It was not edited, staged, reverted, or committed during Task 11.
+
+## Final review fix wave
+
+### Finding 1: canonical project deletion membership mismatch
+
+**Validation:** Accepted. `handleAPIProjectDelete` selected sessions with raw
+`EffectiveWorkingDir(e.Meta) == project.CanonicalPath`, while tree ingestion
+resolved each distinct effective working directory with `identifier.ResolveProject`
+and grouped by `Project.ID`. Linked worktrees, nested repository directories, and
+symlink aliases therefore appeared in one tree project but were omitted by deletion.
+
+**RED:**
+
+```text
+go test ./cmd/serf-hub -run '^TestProjectDelete(RemovesCanonicalProjectMembers|ResolutionFailureDoesNotPartiallyDelete)$' -count=1 -v
+```
+
+Exit 1. `TestProjectDeleteRemovesCanonicalProjectMembers` returned `deleted=[]`
+instead of deleting the main-checkout, linked-worktree, nested-directory, and
+symlink-alias sessions. `TestProjectDeleteResolutionFailureDoesNotPartiallyDelete`
+returned HTTP 200 with no deletions instead of failing membership resolution.
+
+**Implementation:** Added `hubcore.ResolveProjectMapStrict`, factored over the
+same resolver loop used by presentation's `ResolveProjectMap`. The delete handler
+now collects all uncapped past entries, resolves every distinct effective working
+directory before any deletion or decision-row mutation, fails closed with HTTP 500
+on any resolution error, and selects members by resolved `Project.ID == body.Key`.
+Existing request key/path resolution, current-tree revalidation, live-session
+safety checks, and per-file removal behavior remain intact.
+
+**GREEN:**
+
+- Focused new regressions: PASS (`ok primeradiant.com/serf/cmd/serf-hub 0.733s`).
+- `go test ./cmd/serf-hub -run '^TestProjectDelete' -count=1` — PASS (`0.683s`).
+- `go test ./cmd/serf-hub/internal/hubcore -run '^(TestBuildTreeCanonicalProjectAggregation|TestBuildTree|TestResolveProjectMap)' -count=1` — PASS (`0.419s`).
+- Full `go test ./cmd/serf-hub -count=1` — BLOCKED by the sandbox's pre-existing IPv6 listener restriction: `TestHubRPCAuthStatusUsesUserScopedOpenAIAuth` panicked when `httptest` could not bind `[::1]:0` (`operation not permitted`).
+- Full `go test ./cmd/serf-hub/internal/hubcore -count=1` — BLOCKED by the same restriction in `FuzzHubcoreScenarios/seed#54` at `httptest.NewServer`.
+
+**Files:** `cmd/serf-hub/web_api_project_delete.go`,
+`cmd/serf-hub/web_api_project_delete_test.go`, and
+`cmd/serf-hub/internal/hubcore/tree.go`.
+
+### Finding 2: crash-stale installation-ID lock
+
+**Validation:** Accepted. Production used an `O_CREATE|O_EXCL` sentinel and only
+removed it on the live owner's normal path. A killed owner permanently left the
+sentinel, causing every later invocation to exhaust the bounded retries and return
+an empty ID.
+
+**RED:**
+
+```text
+go test ./agent/internal/installid -run '^TestLoadOrCreateInstallationID_StaleLockPathDoesNotBlockRecovery$' -count=1 -v
+```
+
+Exit 1: `stale lock path suppressed installation ID recovery: got "": invalid UUID payload`.
+
+**Implementation:** Production now opens a persistent lock file without following
+Unix symlinks or Windows reparse points, validates that it is a regular file,
+secures its mode on Unix, and holds a real advisory lock for the complete
+read/generate/temp-write/sync/close/chmod/atomic-replace operation. Unix targets
+use nonblocking `flock`; AIX uses nonblocking `fcntl` record locks; Windows uses
+`LockFileEx`. All release and close errors are joined and surfaced as an empty
+result rather than reporting success. Advisory locks release on process death, so
+stale lock-file contents no longer block recovery. The existing 100-attempt/5ms
+bounded contention policy and winner reread remain. The injectable afero entry
+point retains its deterministic sentinel seam rather than pretending an in-memory
+filesystem provides host advisory locking.
+
+**GREEN:**
+
+- Focused stale, convergence, live-winner, bounded-wait, and held-owner tests — PASS (`0.473s`).
+- `go test ./agent/internal/installid -count=1` — PASS (`0.260s`).
+- `GOTOOLCHAIN=go1.26.5 go test -race ./agent/internal/installid -count=1` — PASS (`1.382s`).
+- Additional compile checks for Linux/amd64, FreeBSD/amd64, and AIX/ppc64 passed; temporary binaries were removed.
+
+**Files:** `agent/internal/installid/installation_id.go`,
+`agent/internal/installid/installation_id_test.go`,
+`agent/internal/installid/lock_unix.go`,
+`agent/internal/installid/lock_aix.go`, and
+`agent/internal/installid/lock_windows.go`.
+
+### Finding 3: Windows atomic replacement guarantee
+
+**Validation:** Accepted. The production and injectable paths both called generic
+`afero.Fs.Rename`; that does not provide the approved spec's documented atomic
+replacement guarantee for an existing invalid singleton on Windows.
+
+**RED:**
+
+```text
+go test ./agent/internal/installid -run '^TestLoadOrCreateInstallationID_InvalidValueUsesAtomicReplacement$' -count=1 -v
+```
+
+Exit 1 at compile time: `undefined: installationIDAtomicReplace` (three references),
+proving the production path had no platform atomic-replacement seam.
+
+**Implementation:** The production OS entry point now routes persistence through
+`atomicReplaceInstallationID`; the injectable afero entry point retains generic
+rename for non-OS deterministic tests. Unix and AIX use same-directory
+`os.Rename`, whose underlying rename operation atomically replaces the destination.
+Windows uses `kernel32!ReplaceFileW` whenever an invalid destination already
+exists; it does not use delete-then-rename or `MoveFileEx`. First creation, for
+which `ReplaceFileW` is inapplicable, remains a same-directory rename while the
+cross-process lock is held. Replace failure is returned and winner-reread semantics
+remain; temp cleanup, mode, write, sync, and close ordering are unchanged.
+
+**GREEN:**
+
+- Focused atomic replacement, legacy/invalid replacement, temp cleanup, and stale-lock tests — PASS (`0.399s`).
+- Full and race installid results are listed under finding 2.
+- `GOOS=windows GOARCH=amd64 go test -c ./agent/internal/installid -o .task11-installid-windows.test.exe` — PASS; binary removed.
+
+**Files:** `agent/internal/installid/installation_id.go`,
+`agent/internal/installid/installation_id_test.go`,
+`agent/internal/installid/replace_unix.go`,
+`agent/internal/installid/replace_aix.go`, and
+`agent/internal/installid/replace_windows.go`.
+
+### Final checks and concerns
+
+- `gofmt` over all changed Go files — PASS.
+- `go vet ./agent/internal/installid ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub` — PASS.
+- `git diff --check` — PASS.
+- The required full hub and hubcore suites cannot complete in this sandbox solely
+  because local IPv6 listener creation is prohibited; focused affected tests pass.
+- The pre-existing `.superpowers/sdd/task-1-report.md` modification was not edited,
+  staged, reverted, or committed. `.superpowers/sdd/progress.md` was not edited.

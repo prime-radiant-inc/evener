@@ -83,6 +83,55 @@ func TestLoadOrCreateInstallationID_AtomicReplacementLeavesNoTemporaryFiles(t *t
 	}
 }
 
+func TestLoadOrCreateInstallationID_StaleLockPathDoesNotBlockRecovery(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "installation_id.lock")
+	if err := os.WriteFile(lockPath, []byte("owner crashed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previousWait := installationIDContentionWait
+	installationIDContentionWait = func(int) {}
+	t.Cleanup(func() { installationIDContentionWait = previousWait })
+
+	got := LoadOrCreateInstallationID(dir)
+	if err := identifier.ValidateInstallationID(got); err != nil {
+		t.Fatalf("stale lock path suppressed installation ID recovery: got %q: %v", got, err)
+	}
+	if stored := readValidInstallationID(afero.NewOsFs(), filepath.Join(dir, "installation_id")); stored != got {
+		t.Fatalf("stored installation ID = %q, want %q", stored, got)
+	}
+}
+
+func TestLoadOrCreateInstallationID_InvalidValueUsesAtomicReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "installation_id")
+	if err := os.WriteFile(path, []byte("invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	previousReplace := installationIDAtomicReplace
+	replaceCalls := 0
+	installationIDAtomicReplace = func(tempPath, destinationPath string, destinationExists bool) error {
+		replaceCalls++
+		if destinationPath != path {
+			t.Fatalf("replacement destination = %q, want %q", destinationPath, path)
+		}
+		if !destinationExists {
+			t.Fatal("invalid singleton replacement was not identified as replacing an existing file")
+		}
+		return previousReplace(tempPath, destinationPath, destinationExists)
+	}
+	t.Cleanup(func() { installationIDAtomicReplace = previousReplace })
+
+	got := LoadOrCreateInstallationID(dir)
+	if err := identifier.ValidateInstallationID(got); err != nil {
+		t.Fatalf("replacement result %q: %v", got, err)
+	}
+	if replaceCalls != 1 {
+		t.Fatalf("atomic replacement calls = %d, want 1", replaceCalls)
+	}
+}
+
 func TestLoadOrCreateInstallationID_EmptyStateDirAndFilesystemFailure(t *testing.T) {
 	if got := LoadOrCreateInstallationIDWithFS(afero.NewMemMapFs(), " \t"); got != "" {
 		t.Fatalf("empty state dir = %q, want empty", got)
@@ -142,6 +191,26 @@ func TestLoadOrCreateInstallationID_ContentionWinnerIsReread(t *testing.T) {
 	}
 	if _, err := fs.Stat("/state/installation_id.lock"); !os.IsNotExist(err) {
 		t.Fatalf("unowned lock remains: %v", err)
+	}
+}
+
+func TestLoadOrCreateInstallationID_ContentionWaitIsBounded(t *testing.T) {
+	fs := installationIDAlwaysContendedFS{Fs: afero.NewMemMapFs()}
+	waits := 0
+	previousWait := installationIDContentionWait
+	installationIDContentionWait = func(attempt int) {
+		if attempt != waits {
+			t.Fatalf("contention attempt = %d, want %d", attempt, waits)
+		}
+		waits++
+	}
+	t.Cleanup(func() { installationIDContentionWait = previousWait })
+
+	if got := LoadOrCreateInstallationIDWithFS(fs, "/state"); got != "" {
+		t.Fatalf("permanently contended load = %q, want empty", got)
+	}
+	if waits != installationIDLockAttempts {
+		t.Fatalf("contention waits = %d, want bounded %d", waits, installationIDLockAttempts)
 	}
 }
 
@@ -296,6 +365,17 @@ func (fs *installationIDOverlapFS) Rename(oldname, newname string) error {
 type installationIDContentionFS struct {
 	afero.Fs
 	winner string
+}
+
+type installationIDAlwaysContendedFS struct {
+	afero.Fs
+}
+
+func (fs installationIDAlwaysContendedFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if filepath.Base(name) == "installation_id.lock" && flag&os.O_EXCL != 0 {
+		return nil, os.ErrExist
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
 }
 
 func (fs installationIDContentionFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {

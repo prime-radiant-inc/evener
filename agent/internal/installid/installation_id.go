@@ -24,13 +24,43 @@ var installationIDContentionWait = func(int) {
 	time.Sleep(installationIDLockWait)
 }
 
+var installationIDAtomicReplace = atomicReplaceInstallationID
+
 func LoadOrCreateInstallationID(stateDir string) string {
-	return LoadOrCreateInstallationIDWithFS(afero.NewOsFs(), stateDir)
+	return loadOrCreateInstallationID(
+		afero.NewOsFs(),
+		stateDir,
+		acquireInstallationIDFileLock,
+		func(fs afero.Fs, tempPath, destinationPath string, destinationExists bool) error {
+			return installationIDAtomicReplace(tempPath, destinationPath, destinationExists)
+		},
+	)
 }
 
 // LoadOrCreateInstallationIDWithFS loads or creates the installation ID using
-// fs. LoadOrCreateInstallationID delegates here with the host filesystem.
+// fs. Its lock-file seam preserves deterministic non-OS filesystem tests;
+// LoadOrCreateInstallationID uses a crash-releasing host advisory lock.
 func LoadOrCreateInstallationIDWithFS(fs afero.Fs, stateDir string) string {
+	return loadOrCreateInstallationID(
+		fs,
+		stateDir,
+		func(path string) (installationIDLock, bool, error) {
+			return acquireInstallationIDSentinelLock(fs, path)
+		},
+		func(fs afero.Fs, tempPath, destinationPath string, _ bool) error {
+			return fs.Rename(tempPath, destinationPath)
+		},
+	)
+}
+
+type installationIDLock interface {
+	Release() error
+}
+
+type installationIDLockAcquirer func(path string) (lock installationIDLock, contended bool, err error)
+type installationIDReplacer func(fs afero.Fs, tempPath, destinationPath string, destinationExists bool) error
+
+func loadOrCreateInstallationID(fs afero.Fs, stateDir string, acquire installationIDLockAcquirer, replace installationIDReplacer) string {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
 		return ""
@@ -44,33 +74,50 @@ func LoadOrCreateInstallationIDWithFS(fs afero.Fs, stateDir string) string {
 	}
 	lockPath := path + ".lock"
 	for attempt := 0; attempt < installationIDLockAttempts; attempt++ {
-		lock, err := fs.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		lock, contended, err := acquire(lockPath)
 		if err != nil {
 			if winner := readValidInstallationID(fs, path); winner != "" {
 				return winner
 			}
-			if os.IsExist(err) {
+			if contended {
 				installationIDContentionWait(attempt)
 				continue
 			}
 			return ""
 		}
-		lockErr := lock.Sync()
-		if closeErr := lock.Close(); lockErr == nil {
-			lockErr = closeErr
-		}
-		if lockErr != nil {
-			_ = fs.Remove(lockPath)
-			if winner := readValidInstallationID(fs, path); winner != "" {
-				return winner
-			}
+		result := createInstallationIDWhileLocked(fs, path, replace)
+		if err := lock.Release(); err != nil {
 			return ""
 		}
-		result := createInstallationIDWhileLocked(fs, path)
-		_ = fs.Remove(lockPath)
 		return result
 	}
 	return readValidInstallationID(fs, path)
+}
+
+type installationIDSentinelLock struct {
+	fs   afero.Fs
+	path string
+}
+
+func acquireInstallationIDSentinelLock(fs afero.Fs, path string) (installationIDLock, bool, error) {
+	lock, err := fs.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return nil, os.IsExist(err), err
+	}
+	if err := lock.Sync(); err != nil {
+		_ = lock.Close()
+		_ = fs.Remove(path)
+		return nil, false, err
+	}
+	if err := lock.Close(); err != nil {
+		_ = fs.Remove(path)
+		return nil, false, err
+	}
+	return installationIDSentinelLock{fs: fs, path: path}, false, nil
+}
+
+func (lock installationIDSentinelLock) Release() error {
+	return lock.fs.Remove(lock.path)
 }
 
 func readValidInstallationID(fs afero.Fs, path string) string {
@@ -85,9 +132,15 @@ func readValidInstallationID(fs afero.Fs, path string) string {
 	return id
 }
 
-func createInstallationIDWhileLocked(fs afero.Fs, path string) string {
+func createInstallationIDWhileLocked(fs afero.Fs, path string, replace installationIDReplacer) string {
 	if winner := readValidInstallationID(fs, path); winner != "" {
 		return winner
+	}
+	destinationExists := false
+	if _, err := fs.Stat(path); err == nil {
+		destinationExists = true
+	} else if !os.IsNotExist(err) {
+		return ""
 	}
 	id, err := identifier.NewInstallationID()
 	if err != nil {
@@ -107,7 +160,7 @@ func createInstallationIDWhileLocked(fs afero.Fs, path string) string {
 			err = fs.Chmod(tmpName, 0o600)
 		}
 		if err == nil {
-			err = fs.Rename(tmpName, path)
+			err = replace(fs, tmpName, path, destinationExists)
 		}
 		if err != nil {
 			return readValidInstallationID(fs, path)
