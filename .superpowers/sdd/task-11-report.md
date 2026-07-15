@@ -127,3 +127,69 @@ and restored a `t.Fatalf` reporting `wd.ObserverRouteIDs` in the observer test.
 
 No changes were made to `.superpowers/sdd/task-1-report.md` or
 `.superpowers/sdd/progress.md`.
+
+## Fourth gate failure: SA5011 fatal-return control flow
+
+### RED evidence
+
+After commit `90d301a25`, `make lint` first reported the six requested SA5011
+findings in `cmd/serf-hub/app_instances_test.go` at lines 85, 107, and 220
+(each nil check followed by a pointer dereference). The checks called
+`t.Fatal/Fatalf`, but this lint configuration does not infer that those calls
+terminate the test function.
+
+### Root cause and change
+
+Added an explicit `return` immediately after each of those three fatal calls.
+The same lint run then exposed four identical SA5011 patterns: three in
+`internal/appprojector/appwire_projection_test.go` (lines 272, 1589, and 1757)
+and one additional instance test in `cmd/serf-hub/app_instances_test.go:295`,
+plus one observer check in `cmd/serf-hub/web_test.go:873`. Added immediate
+returns to all five additional fatal paths as the same minimal test-only
+control-flow clarification. Ran gofmt on the affected files.
+
+### Verification
+
+- `make lint` before changes — RED: 6 SA5011 findings as described above.
+- Focused instance tests
+  `go test ./cmd/serf-hub -run '^TestInstances_(Create_ListIncludesEntry|Edit_ChangesBaseURLAndAPIStyle)$' -count=1` — PASS (`0.498s`).
+- Additional SA5011 regression tests
+  `go test ./internal/appprojector -run '^(TestAppEventProjectorProjectsReasoningDelta|TestProjector_ForwardsProviderCause|TestProjector_AssistantTextResetDiscardsInProgressItem)$' -count=1` — PASS (`0.179s`).
+- `go test ./cmd/serf-hub -count=1` — BLOCKED by the sandbox listener restriction in `TestHubRPCAuthStatusUsesUserScopedOpenAIAuth`: `httptest` could not bind `[::1]:0` (`operation not permitted`).
+- `make vet` — PASS (exit 0).
+- `git diff --check` — PASS (exit 0).
+- `gofmt -w cmd/serf-hub/app_instances_test.go internal/appprojector/appwire_projection_test.go` — PASS.
+
+### Further lint layer / NEEDS_CONTEXT
+
+The post-fix `make lint` no longer reported SA5011, but exposed 20 findings in
+unrelated files. They are recorded exactly here rather than broadening this
+scoped wave without direction:
+
+```text
+agent/execenv/securepath_darwin.go:52:18: Error return value of `unix.Close` is not checked (errcheck)
+agent/doctor/locate_test.go:233:5: stringXbytes: suggestion: !bytes.Equal(after, before) (gocritic)
+agent/internal/installid/installation_id_test.go:77:37: filepathJoin: "/state" contains a path separator (gocritic)
+agent/schema/cov_s5_snapshot_test.go:147:6: stringXbytes: suggestion: !bytes.Equal(got, want) (gocritic)
+agent/transcript_lookup_test.go:352:5: stringXbytes: suggestion: !bytes.Equal(gotBytes, legacyBytes) (gocritic)
+agent/execenv/project_resolver.go:33:67: inline: Constant reflect.Ptr should be inlined (govet)
+agent/execenv/project_resolver_test.go:30:55: inline: Constant reflect.Ptr should be inlined (govet)
+agent/internal/installid/installation_id.go:110:4: ineffectual assignment to err (ineffassign)
+agent/session_worktree_resume.go:61:3: error is not nil (line 59) but it returns nil (nilerr)
+agent/execenv/project_resolver.go:173:10: ST1005: error strings should not be capitalized (staticcheck)
+agent/execenv/project_resolver.go:176:10: ST1005: error strings should not be capitalized (staticcheck)
+agent/execenv/project_resolver.go:179:10: ST1005: error strings should not be capitalized (staticcheck)
+agent/execenv/securepath_darwin.go:23:33: SA1019: unix.SYS_FCNTL is deprecated: Use libSystem wrappers instead of direct syscalls. (staticcheck)
+agent/internal/contextmgr/task8_strategy_fuzz_test.go:294:5: QF1012: Use fmt.Fprint(...) instead of WriteString(fmt.Sprint(...)) (staticcheck)
+agent/internal/installid/installation_id_test.go:252:20: QF1008: could remove embedded field "Fs" from selector (staticcheck)
+agent/internal/installid/installation_id_test.go:266:20: QF1008: could remove embedded field "Fs" from selector (staticcheck)
+agent/internal/installid/installation_id_test.go:284:20: QF1008: could remove embedded field "Fs" from selector (staticcheck)
+agent/workspace_info.go:180:3: QF1012: Use fmt.Fprintf(...) instead of WriteString(fmt.Sprintf(...)) (staticcheck)
+agent/execenv/gitpath.go:189:6: func gitEntryResolvesToCommon is unused (unused)
+agent/internal/installid/installation_id_test.go:220:2: field renameCount is unused (unused)
+```
+
+`make lint` therefore still exits 2 on these 20 unrelated findings. The
+required next lint wave needs parent direction/context before changing those
+files. No changes were made to `.superpowers/sdd/task-1-report.md` or
+`.superpowers/sdd/progress.md`.

@@ -271,6 +271,7 @@ func TestAppEventProjectorProjectsReasoningDelta(t *testing.T) {
 	}
 	if delta == nil {
 		t.Fatalf("no reasoning delta notification: %+v", out)
+		return
 	}
 	if delta.ThreadID != "th_1" || delta.Ref != "local:th_1" || delta.TurnID == "" || delta.ItemID == "" || delta.Delta != "thinking..." {
 		t.Fatalf("reasoning delta params=%+v", *delta)
@@ -1588,6 +1589,7 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 	}
 	if completed == nil {
 		t.Fatalf("no turn/completed notification: %+v", out)
+		return
 	}
 	completedParams, ok := completed.Params.(map[string]any)
 	if !ok {
@@ -1756,6 +1758,7 @@ func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
 	}
 	if resetParams == nil {
 		t.Fatalf("reset did not emit NotifyAgentMessageReset: %+v", resetOut)
+		return
 	}
 	if resetParams.ItemID != startedItem {
 		t.Fatalf("reset itemID=%q, want the discarded item %q", resetParams.ItemID, startedItem)

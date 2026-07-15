@@ -872,6 +872,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 	}
 	if found == nil {
 		t.Fatalf("ended codex thread missing from project tree: %+v", got.Projects)
+		return
 	}
 	if found.Live || found.State != "ended" {
 		t.Fatalf("ended codex thread live metadata = %+v, want live=false state=ended", *found)
