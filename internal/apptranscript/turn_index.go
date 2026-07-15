@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	turnIndexVersion        = 5
+	turnIndexVersion        = 6
 	turnIndexJournalVersion = 2
 	turnIndexAnchorBytes    = 256
 )
@@ -535,11 +535,6 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 		if record.Kind == "entry" && !validToolSeed(record.ToolSeed, record.ToolChanges, toolNames) {
 			return turnIndexDisk{}, -1, validatedBytes
 		}
-		for _, change := range record.ToolChanges {
-			if change.ID == "" {
-				return turnIndexDisk{}, -1, validatedBytes
-			}
-		}
 		if record.Visible {
 			visibleRecords++
 		}
@@ -651,7 +646,7 @@ func toolProjectionState(raw []byte, names map[string]string) (map[string]string
 	case schema.TurnAssistant:
 		var changes []toolNameChange
 		for _, part := range entry.Turn.Message.Content {
-			if part.Kind != llm.ContentToolCall || part.ToolCall == nil || part.ToolCall.ID == "" {
+			if part.Kind != llm.ContentToolCall || part.ToolCall == nil {
 				continue
 			}
 			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
@@ -724,9 +719,6 @@ func validToolSeed(seed map[string]string, changes []toolNameChange, names map[s
 	localNames := cloneToolNames(seed)
 	required := map[string]string{}
 	for _, change := range changes {
-		if change.ID == "" {
-			return false
-		}
 		switch {
 		case change.Lookup:
 			if _, ok := required[change.ID]; !ok {

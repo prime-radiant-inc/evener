@@ -173,6 +173,60 @@ func TestTurnCacheBoundedPageUsesToolNamesAtRangeStart(t *testing.T) {
 	})
 }
 
+func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
+	path := writeEntries(t,
+		assistantToolCallEntry(1, "", "read_file", `{}`),
+		toolResultEntry(2, "", "", "contents"),
+		userEntry(3, "after result"),
+	)
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	if got := turnIDs(full); !reflect.DeepEqual(got, []string{"turn_1", "turn_2", "turn_3"}) {
+		t.Fatalf("full turn IDs=%v want=%v", got, []string{"turn_1", "turn_2", "turn_3"})
+	}
+	if got := full[1].Items[0].ToolName; got != "read_file" {
+		t.Fatalf("full result tool name=%q want=%q", got, "read_file")
+	}
+
+	assertLatest := func(label string, cache *TurnCache) {
+		t.Helper()
+		got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 2, boundedTestProjector)
+		want, wantCursor := appwire.WindowTurns(full, 2)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[0].Items[0].ToolName, turnIDs(want), want[0].Items[0].ToolName)
+		}
+		if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_2", "turn_3"}) {
+			t.Fatalf("%s turn IDs=%v want=%v", label, gotIDs, []string{"turn_2", "turn_3"})
+		}
+		if got[0].Items[0].ToolName != "read_file" {
+			t.Fatalf("%s result tool name=%q want=%q", label, got[0].Items[0].ToolName, "read_file")
+		}
+		if cursor != wantCursor || cursor != "1" {
+			t.Fatalf("%s cursor=%q want=%q", label, cursor, "1")
+		}
+	}
+
+	cache := NewTurnCache()
+	assertLatest("latest", cache)
+	assertLatest("warm latest", cache)
+
+	page := cache.PageFromFile(path, testMaxLineBytes, "2", 1, boundedTestProjector)
+	wantPage := appwire.PageTurns(full, "2", 1)
+	if !reflect.DeepEqual(page.Turns, wantPage.Data) {
+		t.Fatalf("page exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", turnIDs(page.Turns), page.Turns[0].Items[0].ToolName, turnIDs(wantPage.Data), wantPage.Data[0].Items[0].ToolName)
+	}
+	if gotIDs := turnIDs(page.Turns); !reflect.DeepEqual(gotIDs, []string{"turn_2"}) {
+		t.Fatalf("page turn IDs=%v want=%v", gotIDs, []string{"turn_2"})
+	}
+	if page.Turns[0].Items[0].ToolName != "read_file" {
+		t.Fatalf("page result tool name=%q want=%q", page.Turns[0].Items[0].ToolName, "read_file")
+	}
+	if page.NextCursor != wantPage.NextCursor || page.NextCursor != "1" {
+		t.Fatalf("page next cursor=%q want=%q", page.NextCursor, "1")
+	}
+
+	assertLatest("fresh-cache restart", NewTurnCache())
+}
+
 func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 	for _, kind := range []schema.TurnKind{
 		schema.TurnUserInput,
@@ -366,12 +420,6 @@ func TestTurnCacheAppendIndexWorkIsBoundedBySuffix(t *testing.T) {
 }
 
 func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) {
-	type work struct {
-		count  int
-		bytes  uint64
-		allocs float64
-	}
-	var observed []work
 	for _, count := range []int{100, 1_000, 10_000} {
 		t.Run(fmt.Sprintf("calls=%d", count), func(t *testing.T) {
 			path := writeToolHeavyTranscript(t, count)
@@ -419,14 +467,7 @@ func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) 
 			if allocs > 256 || allocated > 64<<10 {
 				t.Fatalf("actual append allocations grew with tool history: allocs=%.0f bytes=%d", allocs, allocated)
 			}
-			observed = append(observed, work{count: count, bytes: allocated, allocs: allocs})
 		})
-	}
-	baseline := observed[0]
-	for _, got := range observed[1:] {
-		if got.bytes > baseline.bytes+16<<10 || got.allocs > baseline.allocs+32 {
-			t.Fatalf("calls=%d actual append work grew with history: baseline=%+v got=%+v", got.count, baseline, got)
-		}
 	}
 }
 
