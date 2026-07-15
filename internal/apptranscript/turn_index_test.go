@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -70,6 +71,105 @@ func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	if got[0].Items[0].ToolName != "read_file" {
 		t.Fatalf("bounded legacy tool-result name=%q want=%q", got[0].Items[0].ToolName, "read_file")
 	}
+}
+
+func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "visibility.transcript.jsonl")
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-1")}},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnCheckpoint}},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-2")}},
+		{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnModelSwitch}},
+		{Kind: "entry", Seq: 5, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-3")}},
+		{Kind: "entry", Seq: 6, Turn: schema.Turn{Kind: schema.TurnAssistant}},
+		{Kind: "entry", Seq: 7, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-4")}},
+		{Kind: "entry", Seq: 8, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-5")}},
+	}
+	var data []byte
+	for _, entry := range entries {
+		data = append(data, marshalEntryLine(t, entry)...)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	cache := NewTurnCache()
+	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(full, 3)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+		t.Fatalf("latest got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
+	}
+	if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_5", "turn_7", "turn_8"}) {
+		t.Fatalf("latest IDs=%v", gotIDs)
+	}
+
+	page := cache.PageFromFile(path, testMaxLineBytes, cursor, 2, boundedTestProjector)
+	wantPage := appwire.PageTurns(full, cursor, 2)
+	if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
+		t.Fatalf("page got=(%v,%q) want=(%v,%q)", turnIDs(page.Turns), page.NextCursor, turnIDs(wantPage.Data), wantPage.NextCursor)
+	}
+	if gotIDs := turnIDs(page.Turns); !reflect.DeepEqual(gotIDs, []string{"turn_1", "turn_3"}) {
+		t.Fatalf("page IDs=%v", gotIDs)
+	}
+}
+
+func TestTurnCacheBoundedPreludeFreezesAtFirstAPICall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prelude.transcript.jsonl")
+	records := []any{
+		transcript.Header{Kind: "header", FormatVersion: 1, SystemPrompt: "first header"},
+		transcript.APICall{Kind: "api_call", Seq: 1},
+		transcript.Header{Kind: "header", FormatVersion: 1, SystemPrompt: "later header"},
+		userEntry(2, "hello"),
+		userEntry(3, "later"),
+	}
+	var data []byte
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = append(data, line...)
+		data = append(data, '\n')
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	assertBoundedLatestMatchesFull(t, path, 3)
+	cache := NewTurnCache()
+	got, _ := cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	if text := turnText(got[0]); text != "first header" {
+		t.Fatalf("prelude text=%q want=%q", text, "first header")
+	}
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	page := cache.PageFromFile(path, testMaxLineBytes, "2", 2, boundedTestProjector)
+	wantPage := appwire.PageTurns(full, "2", 2)
+	if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
+		t.Fatalf("prelude page got=(%v,%q) want=(%v,%q)", turnIDs(page.Turns), page.NextCursor, turnIDs(wantPage.Data), wantPage.NextCursor)
+	}
+}
+
+func TestTurnCacheBoundedPageUsesToolNamesAtRangeStart(t *testing.T) {
+	t.Run("later call ID reuse does not rename earlier result", func(t *testing.T) {
+		path := writeEntries(t,
+			assistantToolCallEntry(1, "shared", "first_tool", `{}`),
+			toolResultEntry(2, "shared", "", "first output"),
+			userEntry(3, "boundary"),
+			assistantToolCallEntry(4, "shared", "later_tool", `{}`),
+		)
+		assertBoundedLatestMatchesFull(t, path, 3)
+	})
+
+	t.Run("communicate result before range deletes call ID", func(t *testing.T) {
+		path := writeEntries(t,
+			assistantToolCallEntry(1, "shared", "communicate", `{"message":"sent"}`),
+			toolResultEntry(2, "shared", "", "delivered"),
+			userEntry(3, "boundary"),
+			toolResultEntry(4, "shared", "", "orphan output"),
+		)
+		assertBoundedLatestMatchesFull(t, path, 2)
+	})
 }
 
 func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
@@ -159,6 +259,72 @@ func TestTurnCacheRebuildsIndexAfterTranscriptReplacement(t *testing.T) {
 	}
 	if texts := []string{turnText(got[0]), turnText(got[1])}; !reflect.DeepEqual(texts, []string{"replacement-one", "replacement-two"}) {
 		t.Fatalf("replacement texts=%v", texts)
+	}
+}
+
+func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacement(t *testing.T) {
+	path := writeNumberedTranscript(t, 120)
+	cache := NewTurnCache()
+	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKind := []byte(`"kind":"USER_INPUT"`)
+	replacementKind := []byte(`"kind":"CHECKPOINT"`)
+	oldText := []byte("entry-60")
+	replacementText := []byte("        ")
+	if len(oldKind) != len(replacementKind) || len(oldText) != len(replacementText) || !bytes.Contains(data, oldText) {
+		t.Fatal("invalid same-size replacement fixture")
+	}
+	entryStart := bytes.Index(data, oldText)
+	kindStart := bytes.LastIndex(data[:entryStart], oldKind)
+	if kindStart < 0 {
+		t.Fatal("entry kind not found")
+	}
+	copy(data[kindStart:kindStart+len(oldKind)], replacementKind)
+	copy(data[entryStart:entryStart+len(oldText)], replacementText)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changedMod := before.ModTime().Add(time.Second)
+	if err := os.Chtimes(path, changedMod, changedMod); err != nil {
+		t.Fatal(err)
+	}
+
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 61, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(full, 61)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+		t.Fatalf("same-size replacement got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
+	}
+}
+
+func TestTurnCacheRebuildsStructurallyValidMutatedSidecar(t *testing.T) {
+	path := writeNumberedTranscript(t, 8)
+	indexPath := path + ".appwire-index.json"
+	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	index, err := readTurnIndex(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index.Records[len(index.Records)-1].Index = 99
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(indexPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	if cursor != "7" || !reflect.DeepEqual(turnIDs(got), []string{"turn_8"}) || turnText(got[0]) != "entry-8" {
+		t.Fatalf("mutated sidecar latest=(%v,%q,%q)", turnIDs(got), cursor, turnText(got[0]))
 	}
 }
 
@@ -367,6 +533,41 @@ func boundedTestProjector(raw json.RawMessage, turnID string, turnIndex int, too
 		return nil
 	}
 	return ProjectTurn(turnID, turnIndex, entry.Turn, toolNames, nil, nil)
+}
+
+func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
+	t.Helper()
+	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, limit, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(full, limit)
+	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
+		t.Fatalf("latest got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
+	}
+}
+
+func writeEntries(t testing.TB, entries ...transcript.Entry) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "entries.transcript.jsonl")
+	var data []byte
+	for _, entry := range entries {
+		data = append(data, marshalEntryLine(t, entry)...)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func userEntry(seq int, text string) transcript.Entry {
+	return transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User(text)}}
+}
+
+func assistantToolCallEntry(seq int, id, name, arguments string) transcript.Entry {
+	return transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: json.RawMessage(arguments)}}}}}}
+}
+
+func toolResultEntry(seq int, id, name, content string) transcript.Entry {
+	return transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: id, Name: name, Content: content}}}}}}
 }
 
 func writeBoundedFixture(t *testing.T) boundedFixture {

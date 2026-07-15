@@ -10,6 +10,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -20,8 +22,7 @@ import (
 )
 
 const (
-	turnIndexVersion    = 1
-	turnIndexSampleSize = 4 << 10
+	turnIndexVersion = 2
 )
 
 // FilePage is one bounded page read directly from a transcript file.
@@ -46,17 +47,33 @@ type turnIndexDisk struct {
 	Header         transcript.Header   `json:"header"`
 	FirstCall      *transcript.APICall `json:"first_call,omitempty"`
 	Records        []indexedTurn       `json:"records"`
+	VisibleRecords int                 `json:"visible_records"`
 	ToolNames      map[string]string   `json:"tool_names,omitempty"`
 	MaxLineBytes   int                 `json:"max_line_bytes"`
 	PrefixStamp    string              `json:"prefix_stamp"`
+	FileIdentity   string              `json:"file_identity"`
+	ModTimeUnixNS  int64               `json:"mod_time_unix_ns"`
+	IntegrityStamp string              `json:"integrity_stamp"`
 }
 
 type indexedTurn struct {
-	Offset int64  `json:"offset"`
-	Length int64  `json:"length"`
-	Index  int    `json:"index"`
-	Kind   string `json:"kind"`
+	Offset          int64             `json:"offset"`
+	Length          int64             `json:"length"`
+	Index           int               `json:"index"`
+	Kind            string            `json:"kind"`
+	Visible         bool              `json:"visible"`
+	VisibleIndex    int               `json:"visible_index,omitempty"`
+	ToolNamesBefore map[string]string `json:"tool_names_before,omitempty"`
+	ToolChanges     []toolNameChange  `json:"tool_changes,omitempty"`
 }
+
+type toolNameChange struct {
+	ID     string `json:"id"`
+	Name   string `json:"name,omitempty"`
+	Delete bool   `json:"delete,omitempty"`
+}
+
+const toolNameCheckpointInterval = 128
 
 // LatestFromFile returns the newest bounded turn window without projecting the
 // historical prefix. A non-positive limit preserves the full-read behavior.
@@ -65,7 +82,7 @@ func (c *TurnCache) LatestFromFile(path string, maxLineBytes int, limit int, pro
 		all := c.TurnsFromFile(path, maxLineBytes, fullProjector(project))
 		return appwire.WindowTurns(all, limit)
 	}
-	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes)
+	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes, project)
 	count := index.logicalTurnCount()
 	lo := 0
 	if count > limit {
@@ -85,7 +102,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 		page := appwire.PageTurns(all, cursor, limit)
 		return FilePage{Turns: page.Data, NextCursor: page.NextCursor}
 	}
-	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes)
+	index, indexedBytes := c.loadTurnIndex(path, maxLineBytes, project)
 	hi := index.logicalTurnCount()
 	if cursor != "" {
 		if parsed, err := strconv.Atoi(cursor); err == nil {
@@ -128,14 +145,14 @@ func observeIndexRead(stats ReadStats) {
 }
 
 func (d turnIndexDisk) logicalTurnCount() int {
-	count := len(d.Records)
+	count := d.VisibleRecords
 	if PreludeTurn(d.Header, d.FirstCall) != nil {
 		count++
 	}
 	return count
 }
 
-func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int) (turnIndexDisk, int64) {
+func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int, project BoundedEntryProjector) (turnIndexDisk, int64) {
 	file, err := os.Open(path)
 	if err != nil {
 		return turnIndexDisk{}, 0
@@ -148,10 +165,12 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int) (turnIndexDisk,
 
 	var candidate *turnIndexDisk
 	fromCache := false
+	cachedIdentityMatches := false
 	c.mu.Lock()
 	if entry, ok := c.entries[path]; ok && entry.turnIndex != nil {
 		candidate = entry.turnIndex
 		fromCache = true
+		cachedIdentityMatches = entry.size == info.Size() && entry.mod.Equal(info.ModTime()) && candidate.FileIdentity == fileIdentity(info)
 	}
 	c.mu.Unlock()
 	if candidate == nil {
@@ -160,7 +179,11 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int) (turnIndexDisk,
 		}
 	}
 
-	index, start := usableTurnIndex(file, info.Size(), maxLineBytes, candidate)
+	identityMatches := cachedIdentityMatches
+	if candidate != nil && !fromCache {
+		identityMatches = candidate.TranscriptSize == info.Size() && candidate.ModTimeUnixNS == info.ModTime().UnixNano() && candidate.FileIdentity == fileIdentity(info)
+	}
+	index, start := usableTurnIndex(file, info.Size(), maxLineBytes, candidate, identityMatches, fromCache && cachedIdentityMatches)
 	if start < 0 {
 		index = turnIndexDisk{
 			Version:      turnIndexVersion,
@@ -175,10 +198,13 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int) (turnIndexDisk,
 		return index, 0
 	}
 	index = cloneTurnIndex(index)
-	indexedBytes := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index)
+	indexedBytes := scanTurnIndex(file, info.Size(), start, maxLineBytes, &index, project)
 	index.TranscriptSize = info.Size()
 	index.MaxLineBytes = maxLineBytes
 	index.PrefixStamp = prefixStamp(file, index.CompleteSize)
+	index.FileIdentity = fileIdentity(info)
+	index.ModTimeUnixNS = info.ModTime().UnixNano()
+	index.IntegrityStamp = turnIndexIntegrityStamp(index)
 
 	stored := cloneTurnIndex(index)
 	c.mu.Lock()
@@ -201,29 +227,42 @@ func (c *TurnCache) loadTurnIndex(path string, maxLineBytes int) (turnIndexDisk,
 	return index, indexedBytes
 }
 
-func usableTurnIndex(file *os.File, size int64, maxLineBytes int, candidate *turnIndexDisk) (turnIndexDisk, int64) {
+func usableTurnIndex(file *os.File, size int64, maxLineBytes int, candidate *turnIndexDisk, identityMatches bool, trustedMemory bool) (turnIndexDisk, int64) {
 	if candidate == nil || candidate.Version != turnIndexVersion || candidate.MaxLineBytes != maxLineBytes {
+		return turnIndexDisk{}, -1
+	}
+	if !trustedMemory && (candidate.IntegrityStamp == "" || candidate.IntegrityStamp != turnIndexIntegrityStamp(*candidate)) {
 		return turnIndexDisk{}, -1
 	}
 	if candidate.TranscriptSize > size || candidate.CompleteSize < 0 || candidate.CompleteSize > candidate.TranscriptSize {
 		return turnIndexDisk{}, -1
 	}
-	if candidate.PrefixStamp == "" || candidate.PrefixStamp != prefixStamp(file, candidate.CompleteSize) {
+	if !identityMatches && (candidate.PrefixStamp == "" || candidate.PrefixStamp != prefixStamp(file, candidate.CompleteSize)) {
 		return turnIndexDisk{}, -1
 	}
 	previousEnd := int64(0)
 	previousIndex := 0
+	visibleRecords := 0
 	for _, record := range candidate.Records {
 		if record.Offset < previousEnd || record.Length <= 0 || record.Offset+record.Length > candidate.CompleteSize || record.Index <= previousIndex {
+			return turnIndexDisk{}, -1
+		}
+		if record.Visible {
+			visibleRecords++
+		}
+		if record.VisibleIndex != visibleRecords {
 			return turnIndexDisk{}, -1
 		}
 		previousEnd = record.Offset + record.Length
 		previousIndex = record.Index
 	}
+	if visibleRecords != candidate.VisibleRecords {
+		return turnIndexDisk{}, -1
+	}
 	return *candidate, candidate.CompleteSize
 }
 
-func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk) int64 {
+func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, project BoundedEntryProjector) int64 {
 	if start >= transcriptSize {
 		return 0
 	}
@@ -235,6 +274,8 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		entryIndex = index.Records[n-1].Index
 	}
 	var readBytes int64
+	projectNames := cloneToolNames(index.ToolNames)
+	visibleRecords := index.VisibleRecords
 	for {
 		line, err := reader.ReadBytes('\n')
 		readBytes += int64(len(line))
@@ -253,7 +294,9 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		if json.Unmarshal(line, &head) == nil {
 			switch head.Kind {
 			case "header":
-				_ = json.Unmarshal(line, &index.Header)
+				if index.FirstCall == nil {
+					_ = json.Unmarshal(line, &index.Header)
+				}
 			case "api_call":
 				var call transcript.APICall
 				if json.Unmarshal(line, &call) == nil {
@@ -263,31 +306,89 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 					}
 					if strings.TrimSpace(call.Error) != "" {
 						entryIndex++
-						index.Records = append(index.Records, indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind})
+						visibleRecords++
+						index.Records = append(index.Records, indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind, Visible: true, VisibleIndex: visibleRecords})
 					}
 				}
 			case "entry":
 				entryIndex++
-				index.Records = append(index.Records, indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind})
-				captureToolNames(line, index.ToolNames)
+				record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind}
+				if len(index.Records)%toolNameCheckpointInterval == 0 {
+					record.ToolNamesBefore = cloneToolNames(projectNames)
+				}
+				record.ToolChanges = toolNameChanges(line, projectNames)
+				visible := false
+				if project != nil {
+					visible = len(project(line, fmt.Sprintf("turn_%d", entryIndex), entryIndex, projectNames)) > 0
+				} else {
+					applyToolNameChanges(projectNames, record.ToolChanges)
+				}
+				record.Visible = visible
+				if visible {
+					visibleRecords++
+				}
+				record.VisibleIndex = visibleRecords
+				index.Records = append(index.Records, record)
+				index.ToolNames = cloneToolNames(projectNames)
 			}
 		}
 		offset += length
 		index.CompleteSize = offset
 	}
+	index.VisibleRecords = visibleRecords
 	return readBytes
 }
 
-func captureToolNames(raw []byte, names map[string]string) {
+func toolNameChanges(raw []byte, names map[string]string) []toolNameChange {
 	var entry transcript.Entry
 	if json.Unmarshal(raw, &entry) != nil {
-		return
+		return nil
 	}
+	var changes []toolNameChange
 	for _, part := range entry.Turn.Message.Content {
-		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
-			names[part.ToolCall.ID] = part.ToolCall.Name
+		switch {
+		case part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "":
+			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
+		case part.Kind == llm.ContentToolResult && part.ToolResult != nil:
+			name := part.ToolResult.Name
+			if name == "" {
+				name = names[part.ToolResult.ToolCallID]
+			}
+			if name == "communicate" {
+				changes = append(changes, toolNameChange{ID: part.ToolResult.ToolCallID, Delete: true})
+			}
 		}
 	}
+	return changes
+}
+
+func applyToolNameChanges(names map[string]string, changes []toolNameChange) {
+	for _, change := range changes {
+		if change.Delete {
+			delete(names, change.ID)
+		} else {
+			names[change.ID] = change.Name
+		}
+	}
+}
+
+func toolNamesBeforeRecord(index turnIndexDisk, target int) map[string]string {
+	if target <= 0 {
+		return map[string]string{}
+	}
+	start := 0
+	names := map[string]string{}
+	for i := target; i >= 0; i-- {
+		if i < len(index.Records) && index.Records[i].ToolNamesBefore != nil {
+			start = i
+			names = cloneToolNames(index.Records[i].ToolNamesBefore)
+			break
+		}
+	}
+	for i := start; i < target; i++ {
+		applyToolNameChanges(names, index.Records[i].ToolChanges)
+	}
+	return names
 }
 
 func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, project BoundedEntryProjector) ([]appwire.Turn, int) {
@@ -299,7 +400,6 @@ func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, proje
 		return nil, 0
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close errors are not actionable
-	toolNames := cloneToolNames(index.ToolNames)
 	var turns []appwire.Turn
 	projected := 0
 	prelude := PreludeTurn(index.Header, index.FirstCall)
@@ -311,15 +411,31 @@ func projectIndexedRange(path string, index turnIndexDisk, lo int, hi int, proje
 		}
 		recordBase = 1
 	}
-	start := lo - recordBase
-	if start < 0 {
-		start = 0
+	recordLogicalLo := lo - recordBase
+	if recordLogicalLo < 0 {
+		recordLogicalLo = 0
 	}
-	end := hi - recordBase
-	if end > len(index.Records) {
-		end = len(index.Records)
+	startRecord := sort.Search(len(index.Records), func(i int) bool {
+		return index.Records[i].VisibleIndex > recordLogicalLo
+	})
+	if startRecord == len(index.Records) {
+		return turns, projected
 	}
-	for _, record := range index.Records[start:end] {
+	toolNames := toolNamesBeforeRecord(index, startRecord)
+	logicalPosition := recordBase + recordLogicalLo
+	for _, record := range index.Records[startRecord:] {
+		if !record.Visible {
+			applyToolNameChanges(toolNames, record.ToolChanges)
+			continue
+		}
+		position := logicalPosition
+		logicalPosition++
+		if position < lo {
+			continue
+		}
+		if position >= hi {
+			break
+		}
 		raw := make([]byte, record.Length)
 		if _, err := file.ReadAt(raw, record.Offset); err != nil {
 			continue
@@ -384,6 +500,7 @@ func readTurnIndex(path string) (turnIndexDisk, error) {
 }
 
 func writeTurnIndex(path string, index turnIndexDisk) error {
+	index.IntegrityStamp = turnIndexIntegrityStamp(index)
 	data, err := json.Marshal(index)
 	if err != nil {
 		return err
@@ -414,19 +531,54 @@ func prefixStamp(file *os.File, completeSize int64) string {
 	}
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d:", completeSize)
-	headSize := completeSize
-	if headSize > turnIndexSampleSize {
-		headSize = turnIndexSampleSize
-	}
-	copyRange(hash, file, 0, headSize)
-	if completeSize > headSize {
-		tailStart := completeSize - turnIndexSampleSize
-		if tailStart < headSize {
-			tailStart = headSize
-		}
-		copyRange(hash, file, tailStart, completeSize-tailStart)
-	}
+	copyRange(hash, file, 0, completeSize)
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func turnIndexIntegrityStamp(index turnIndexDisk) string {
+	index.IntegrityStamp = ""
+	data, err := json.Marshal(index)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func fileIdentity(info os.FileInfo) string {
+	if info == nil || info.Sys() == nil {
+		return ""
+	}
+	value := reflect.Indirect(reflect.ValueOf(info.Sys()))
+	if !value.IsValid() || value.Kind() != reflect.Struct {
+		return ""
+	}
+	field := func(name string) (uint64, bool) {
+		got := value.FieldByName(name)
+		if !got.IsValid() {
+			return 0, false
+		}
+		switch got.Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return uint64(got.Int()), true
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return got.Uint(), true
+		default:
+			return 0, false
+		}
+	}
+	if device, ok := field("Dev"); ok {
+		if inode, ok := field("Ino"); ok {
+			return fmt.Sprintf("dev:%d:ino:%d", device, inode)
+		}
+	}
+	volume, volumeOK := field("VolumeSerialNumber")
+	high, highOK := field("FileIndexHigh")
+	low, lowOK := field("FileIndexLow")
+	if volumeOK && highOK && lowOK {
+		return fmt.Sprintf("volume:%d:index:%d", volume, high<<32|low)
+	}
+	return ""
 }
 
 func copyRange(dst io.Writer, file *os.File, offset int64, length int64) {
