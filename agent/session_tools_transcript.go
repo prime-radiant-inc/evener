@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -368,7 +369,12 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 			return nil, fmt.Errorf("invalid_request: offset_bytes %d exceeds expanded turn length %d", offsetBytes, len(exact))
 		}
 		if offsetBytes > 0 || len(exact) > maxBytes {
-			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, renderOpts{meta: meta})
+			boundedOpt := renderOpts{meta: meta}
+			if assistantSeq, _, ok := resolvePinnedSpan(data.Entries, *expandTurn); ok {
+				boundedOpt.fullResultFor = &assistantSeq
+				boundedOpt.headTailEvidenceFor = &assistantSeq
+			}
+			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, boundedOpt)
 			rmeta.Truncated = true
 			end := offsetBytes + maxBytes
 			if end > len(exact) {
@@ -407,7 +413,7 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		content = spliceWindowLine(content, rmeta)
 	}
 
-	return readMarkdownEnvelope{
+	envelope := readMarkdownEnvelope{
 		TranscriptRef: ref,
 		Format:        formatMarkdown,
 		ContentType:   "text/markdown",
@@ -423,7 +429,76 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		},
 		Expansion:    expansion,
 		Continuation: continuation,
-	}, nil
+	}
+	if expansion != nil {
+		return boundReadMarkdownEnvelope(envelope)
+	}
+	return envelope, nil
+}
+
+func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvelope, error) {
+	encoded, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
+	}
+	if len(encoded) <= hardCapChars || envelope.Expansion == nil {
+		return envelope, nil
+	}
+
+	raw, err := decodeTranscriptExpansion(envelope.Expansion)
+	if err != nil {
+		return readMarkdownEnvelope{}, err
+	}
+	best := 0
+	for low, high := 1, len(raw); low <= high; {
+		mid := low + (high-low)/2
+		candidate := transcriptEnvelopeWithExpansionBytes(envelope, raw[:mid])
+		encoded, err := json.MarshalIndent(candidate, "", "  ")
+		if err != nil {
+			return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
+		}
+		if len(encoded) <= hardCapChars {
+			best = mid
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if best == 0 {
+		return readMarkdownEnvelope{}, fmt.Errorf("transcript expansion metadata exceeds %d-byte output limit", hardCapChars)
+	}
+	return transcriptEnvelopeWithExpansionBytes(envelope, raw[:best]), nil
+}
+
+func decodeTranscriptExpansion(expansion *transcriptTurnExpansion) ([]byte, error) {
+	if expansion.Encoding == "base64" {
+		decoded, err := base64.StdEncoding.DecodeString(expansion.Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode transcript expansion: %w", err)
+		}
+		return decoded, nil
+	}
+	return []byte(expansion.Data), nil
+}
+
+func transcriptEnvelopeWithExpansionBytes(envelope readMarkdownEnvelope, data []byte) readMarkdownEnvelope {
+	expansion := *envelope.Expansion
+	expansion.BytesReturned = len(data)
+	if utf8.Valid(data) {
+		expansion.Encoding = "utf8"
+		expansion.Data = string(data)
+	} else {
+		expansion.Encoding = "base64"
+		expansion.Data = base64.StdEncoding.EncodeToString(data)
+	}
+	envelope.Expansion = &expansion
+	end := expansion.OffsetBytes + len(data)
+	if end < expansion.TotalBytes {
+		envelope.Continuation = &transcriptTurnContinuation{ExpandTurn: expansion.ExpandTurn, OffsetBytes: end}
+	} else {
+		envelope.Continuation = nil
+	}
+	return envelope
 }
 
 const formatOutline = "outline"

@@ -27,6 +27,10 @@ type renderOpts struct {
 	// TOOL_RESULTS turn that owns the result, so all of a round's parallel calls
 	// expand together.
 	fullResultFor *int
+	// headTailEvidenceFor, when non-nil, bounds that assistant turn's complete
+	// rendered evidence as a head/tail preview. Exact bytes remain available via
+	// the read tool's expansion continuation.
+	headTailEvidenceFor *int
 }
 
 // effectiveResultToolName returns the result tool name to use.
@@ -112,6 +116,12 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 
 	for i, e := range entries {
 		seq := startSeq + i
+		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == seq {
+			var evidence strings.Builder
+			writeEntry(&evidence, seq, e, resultTool, &idx, opt)
+			b.WriteString(boundOversizedTurnEvidence(evidence.String()))
+			continue
+		}
 		writeEntry(b, seq, e, resultTool, &idx, opt)
 	}
 
@@ -132,7 +142,35 @@ const (
 	// conversation budget. Content past this is truncated rune-safe with an honest
 	// note. Spec §"Size Budgets" (~200k).
 	hardCapChars = 200000
+	// oversizedTurnEvidenceChars leaves room for an exact expansion page and the
+	// structured envelope while preserving both ends of every oversized turn.
+	oversizedTurnEvidenceChars = 32 << 10
 )
+
+func boundOversizedTurnEvidence(content string) string {
+	runes := []rune(content)
+	if len(runes) <= oversizedTurnEvidenceChars {
+		return content
+	}
+	removed := len(runes) - oversizedTurnEvidenceChars
+	var marker string
+	available := 0
+	for {
+		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; use the expansion continuation for exact bytes …_\n\n", removed)
+		available = oversizedTurnEvidenceChars - len([]rune(marker))
+		exactRemoved := len(runes) - available
+		if exactRemoved == removed {
+			break
+		}
+		removed = exactRemoved
+	}
+	if available < 2 {
+		return marker
+	}
+	head := available / 2
+	tail := available - head
+	return string(runes[:head]) + marker + string(runes[len(runes)-tail:])
+}
 
 // readMeta carries the honest, exact provenance counts for a budgeted render.
 // The invariant TurnsRendered + ElidedTurns == TurnsTotal always holds.

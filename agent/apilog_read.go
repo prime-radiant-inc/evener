@@ -114,17 +114,17 @@ func apiLogPathForTranscript(path string) string {
 }
 
 func readAPILogSummary(path, ref, rangeArg string) (any, error) {
-	records, partialTail, err := decodeAPILogSummaries(path)
+	retained, totalRecords, partialTail, err := decodeAPILogSummaries(path, rangeArg)
 	if err != nil {
 		return nil, err
 	}
-	totalRecords := len(records)
 
 	start, end, normalizedRange, rangeWarning := selectAPILogRange(rangeArg, totalRecords)
-	if end >= start {
-		records = append([]apiLogRecordSummary(nil), records[start:end+1]...)
-	} else {
-		records = nil
+	records := make([]apiLogRecordSummary, 0, min(len(retained), maxAPILogRecords))
+	for _, record := range retained {
+		if record.RecordNumber >= start && record.RecordNumber <= end {
+			records = append(records, record)
+		}
 	}
 	envelope := apiLogReadEnvelope{
 		TranscriptRef:            ref,
@@ -146,7 +146,7 @@ func readAPILogSummary(path, ref, rangeArg string) (any, error) {
 		setAPILogSettlementStates(envelope.Records, pageReachesCleanEOF)
 		envelope.Meta.RecordsReturned = len(envelope.Records)
 		envelope.Meta.Truncated = envelope.Meta.Truncated || len(envelope.Records) < totalRecords
-		encoded, err := json.Marshal(envelope)
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("encode API-log summary: %w", err)
 		}
@@ -274,30 +274,110 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 	}
 }
 
-func decodeAPILogSummaries(path string) ([]apiLogRecordSummary, bool, error) {
+type apiLogSummaryRetentionMode uint8
+
+const (
+	apiLogRetainTail apiLogSummaryRetentionMode = iota
+	apiLogRetainStart
+	apiLogRetainExact
+)
+
+type apiLogSummaryRetention struct {
+	mode     apiLogSummaryRetentionMode
+	start    int
+	end      int
+	records  []apiLogRecordSummary
+	tailNext int
+	last     *apiLogRecordSummary
+}
+
+func newAPILogSummaryRetention(rangeArg string) *apiLogSummaryRetention {
+	retention := &apiLogSummaryRetention{
+		mode:    apiLogRetainTail,
+		records: make([]apiLogRecordSummary, 0, maxAPILogRecords),
+	}
+	switch {
+	case strings.HasPrefix(rangeArg, "start:"):
+		if _, ok := parsePositiveInt(strings.TrimPrefix(rangeArg, "start:")); ok {
+			retention.mode = apiLogRetainStart
+			retention.start = 0
+			retention.end = maxAPILogRecords - 1
+		}
+	case strings.Contains(rangeArg, "-"):
+		lo, hi, ok := parseDashRange(rangeArg)
+		if ok {
+			retention.mode = apiLogRetainExact
+			retention.start = lo
+			retention.end = hi
+			if hi >= lo && hi-lo >= maxAPILogRecords {
+				retention.end = lo + maxAPILogRecords - 1
+			}
+		}
+	}
+	return retention
+}
+
+func (r *apiLogSummaryRetention) add(recordNumber int, record apilog.APILogRecord) error {
+	keep := r.mode == apiLogRetainTail || recordNumber >= r.start && recordNumber <= r.end
+	if !keep && r.mode != apiLogRetainExact {
+		return nil
+	}
+	summary, err := summarizeAPILogRecord(recordNumber, record)
+	if err != nil {
+		return err
+	}
+	if r.mode == apiLogRetainExact {
+		last := summary
+		r.last = &last
+	}
+	if !keep {
+		return nil
+	}
+	if r.mode != apiLogRetainTail || len(r.records) < maxAPILogRecords {
+		r.records = append(r.records, summary)
+		return nil
+	}
+	r.records[r.tailNext] = summary
+	r.tailNext = (r.tailNext + 1) % maxAPILogRecords
+	return nil
+}
+
+func (r *apiLogSummaryRetention) result() []apiLogRecordSummary {
+	if r.mode == apiLogRetainTail && len(r.records) == maxAPILogRecords && r.tailNext > 0 {
+		ordered := make([]apiLogRecordSummary, 0, maxAPILogRecords)
+		ordered = append(ordered, r.records[r.tailNext:]...)
+		ordered = append(ordered, r.records[:r.tailNext]...)
+		return ordered
+	}
+	result := append([]apiLogRecordSummary(nil), r.records...)
+	if r.mode == apiLogRetainExact && r.last != nil && (len(result) == 0 || result[len(result)-1].RecordNumber != r.last.RecordNumber) {
+		result = append(result, *r.last)
+	}
+	return result
+}
+
+func decodeAPILogSummaries(path, rangeArg string) ([]apiLogRecordSummary, int, bool, error) {
 	f, err := openAPILogFile(path)
 	if err != nil {
-		return nil, false, fmt.Errorf("open API log: %w", err)
+		return nil, 0, false, fmt.Errorf("open API log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	decoder := apilog.NewDecoder(f, maxAPILogLineBytes)
-	var summaries []apiLogRecordSummary
+	retention := newAPILogSummaryRetention(rangeArg)
 	for recordNumber := 0; ; recordNumber++ {
 		record, err := decoder.Next()
 		switch {
 		case errors.Is(err, io.EOF):
-			return summaries, false, nil
+			return retention.result(), recordNumber, false, nil
 		case errors.Is(err, apilog.ErrPartialTail):
-			return summaries, true, nil
+			return retention.result(), recordNumber, true, nil
 		case err != nil:
-			return nil, false, fmt.Errorf("read API log: %w", err)
+			return nil, 0, false, fmt.Errorf("read API log: %w", err)
 		}
-		summary, err := summarizeAPILogRecord(recordNumber, record)
-		if err != nil {
-			return nil, false, err
+		if err := retention.add(recordNumber, record); err != nil {
+			return nil, 0, false, err
 		}
-		summaries = append(summaries, summary)
 	}
 }
 
