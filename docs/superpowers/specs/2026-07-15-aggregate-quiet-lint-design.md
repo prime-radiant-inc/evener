@@ -73,6 +73,10 @@ The new runner owns the module aggregation. Other successful checks remain
 silent. If an existing check prints routine success chatter, capture/suppress it
 while preserving complete failure output.
 
+A successful-but-degraded warning, such as the existing warning that `gitleaks`
+is unavailable and the secret scan was skipped, remains visible rather than
+being discarded as routine success chatter.
+
 Do not change linter versions, flags, enabled checks, generation behavior,
 module membership, or secret-scan policy in this project.
 

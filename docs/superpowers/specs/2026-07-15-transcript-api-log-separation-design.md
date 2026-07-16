@@ -55,13 +55,14 @@ not transcript entries.
 
 ## API-Log Contract
 
-Each actual provider attempt appends one record to the session's canonical API
-log. Every record contains:
+Each actual provider attempt synchronously appends one record to the session's
+canonical API log before Serf starts another attempt or returns the provider
+result. Every attempt record contains:
 
 - stable, globally unique `attempt_id`;
 - stable `attempt_group_id` shared by retries and explicit fallbacks for one
   logical model call;
-- one-based attempt index and terminal/final-attempt information;
+- one-based attempt index;
 - timestamp, latency, provider instance, requested model, and history mode;
 - HTTP method and resolved endpoint;
 - all non-secret request headers that reached the transport;
@@ -78,7 +79,10 @@ in their owning stores and may reference the attempt group when causally related
 
 Authentication tokens, API keys, cookies, and equivalent credential values are
 never persisted. The record may identify the selected configured credential or
-provider instance without exposing its value.
+provider instance without exposing its value. Exclusion covers provider-standard
+credentials, arbitrary configured credential headers, URL userinfo and secret
+query parameters, and persisted error text that may echo a credential-bearing
+endpoint.
 
 Bodies must be lossless. Valid UTF-8 bodies may be stored as JSON strings;
 otherwise the record uses an explicit binary encoding such as base64. The log
@@ -98,22 +102,37 @@ Retries, endpoint fallbacks, provider fallbacks, and continuation fallbacks:
   request;
 - receive distinct attempt IDs and monotonically increasing attempt indexes;
 - write a record whether they succeed or fail;
-- identify the final attempt without rewriting earlier append-only records.
+- are appended before the retry/fallback decision can launch another attempt.
 
-If final group information is not known until the last attempt, the terminal
-record carries the final count. Readers derive the group summary from the
-append-only records.
+After the outer logical model call settles, Serf appends one group-settlement
+record containing the final attempt ID, final attempt count, and settled
+outcome. It does not rewrite an attempt record. If Serf crashes after an attempt
+append but before group settlement, the complete attempt remains readable and
+the missing settlement record truthfully marks the group as interrupted rather
+than losing or falsely finalizing the attempt.
+
+Streaming transports must complete and append their attempt before signaling a
+retryable terminal stream condition or allowing group settlement. This
+happens-before relationship applies to success, retry, cancellation, close, and
+endpoint fallback.
 
 ## Storage and Permissions
 
 - The per-session API log is created with mode `0600`.
 - Parent directories used exclusively for session-private forensic data are not
   world-readable.
+- The logger does not tighten permissions on an existing shared session-state
+  directory as a side effect of opening an API log.
 - Existing `0644` creation sites are removed.
 - The ordinary API summary and optional raw-body split are replaced by the one
   canonical per-attempt record. Exact request and raw response logging are not
   opt-in.
 - Write/fsync behavior retains the existing crash-safety contract.
+
+An API-log append or sync failure is a Serf forensic/harness fault. It is made
+observable in that owning lifecycle/error surface and marks the forensic record
+incomplete; it does not change the provider response, provider error class, or
+retry/fallback decision.
 
 ## Transcript Reader
 
@@ -142,6 +161,8 @@ and response bodies, but never preloads them with a transcript.
 
 - `serf-doctor apilog` reads the canonical API-log records.
 - Transcript find/outline/tree operations do not scan API bodies.
+- Hub and browser transcript readers reject unsupported mixed-format transcripts
+  and do not retain API-bearing transcript indexes or cold-load API logs.
 - Browser transcript request/result disclosures remain separate from provider
   API-log disclosures.
 - Documentation must stop describing transcript JSONL as containing API logs.
@@ -157,6 +178,8 @@ Cover:
   fallback encoding;
 - secret headers absent and non-secret headers exact;
 - unique attempt IDs and correct retry/fallback grouping;
+- immediate attempt durability plus append-only group settlement, including a
+  crash after attempt completion and before group settlement;
 - failed attempts recorded;
 - provider/transport attempt failures remain distinguishable from harness,
   session, sandbox, notification, and Hub failures;

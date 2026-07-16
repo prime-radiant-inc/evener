@@ -78,6 +78,9 @@ For every job kind:
 
 A notification may never be the only evidence that a job completed. A crash at
 any point replays from the durable state without rerunning completed work.
+Restart recovery must establish the output/transcript durable boundary before
+it turns a terminal-but-not-yet-armed record into a pending notification; the
+recovery path may not bypass step 3.
 
 ## Notification Coalescing
 
