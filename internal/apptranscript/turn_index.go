@@ -643,15 +643,15 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		}
 	}
 	for {
-		line, err := reader.ReadBytes('\n')
-		readBytes += int64(len(line))
+		line, complete, lineBytes, err := readTurnIndexLine(reader, maxLineBytes)
+		readBytes += lineBytes
 		if err != nil {
+			return readBytes, err
+		}
+		if !complete {
 			// A final line is not durable transcript data until its newline is
 			// appended. CompleteSize intentionally remains before that tail.
 			break
-		}
-		if maxLineBytes > 0 && len(bytes.TrimSuffix(line, []byte{'\n'})) > maxLineBytes {
-			return readBytes, fmt.Errorf("transcript line exceeds %d bytes", maxLineBytes)
 		}
 		length := int64(len(line))
 		trimmed := bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
@@ -718,6 +718,44 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		return readBytes, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return readBytes, nil
+}
+
+// readTurnIndexLine reads one newline-terminated transcript record while
+// retaining at most maxLineBytes plus the delimiter. If the final crash tail is
+// unterminated, it is consumed and discarded even when it is arbitrarily large;
+// complete oversized records still fail the line-size contract.
+func readTurnIndexLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
+	if maxLineBytes <= 0 {
+		maxLineBytes = 128 << 20
+	}
+	retainedLimit := maxLineBytes + 1 // a maximum-sized record plus '\n'
+	oversized := false
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		bytesRead += int64(len(fragment))
+		if !oversized {
+			if len(line)+len(fragment) > retainedLimit {
+				line = nil
+				oversized = true
+			} else {
+				line = append(line, fragment...)
+			}
+		}
+
+		switch {
+		case readErr == nil:
+			if oversized || len(bytes.TrimSuffix(line, []byte{'\n'})) > maxLineBytes {
+				return nil, false, bytesRead, fmt.Errorf("transcript line exceeds %d bytes", maxLineBytes)
+			}
+			return line, true, bytesRead, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF):
+			return nil, false, bytesRead, nil
+		default:
+			return nil, false, bytesRead, fmt.Errorf("read transcript line: %w", readErr)
+		}
+	}
 }
 
 func toolProjectionState(raw []byte, names map[string]string) (map[string]string, []toolNameChange) {

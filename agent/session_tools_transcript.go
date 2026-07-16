@@ -281,7 +281,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 	if err != nil {
 		return nil, err
 	}
-	return readMarkdownEnvelope{
+	envelope := readMarkdownEnvelope{
 		TranscriptRef: ref,
 		Format:        formatMarkdown,
 		ContentType:   "text/markdown",
@@ -292,7 +292,8 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 			TurnsRendered: 1,
 			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
 		},
-	}, nil
+	}
+	return boundReadMarkdownEnvelope(envelope)
 }
 
 func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
@@ -356,24 +357,39 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		effectiveRange = ""
 	}
 
+	var exact string
+	var expansionFirst int
+	if expandTurn != nil {
+		first, _, ok := resolvePinnedSpan(data.Entries, *expandTurn)
+		if !ok {
+			return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", *expandTurn)
+		}
+		expansionFirst = first
+	}
+
 	renderOpt := renderOpts{meta: meta, fullResultFor: expandTurn}
+	if expandTurn != nil {
+		renderOpt.fullResultFor = &expansionFirst
+		exact = renderExactTurnExpansion(data.Entries, *expandTurn, renderOpt)
+	}
 	content, rmeta := renderTranscript(data.Header, data.Entries, effectiveRange, renderOpt)
 	var expansion *transcriptTurnExpansion
 	var continuation *transcriptTurnContinuation
 	if expandTurn != nil {
-		exact := renderExactTurnExpansion(data.Entries, *expandTurn, renderOpt)
 		if maxBytes == 0 {
 			maxBytes = defaultExpansionBytes
 		}
 		if offsetBytes > len(exact) {
 			return nil, fmt.Errorf("invalid_request: offset_bytes %d exceeds expanded turn length %d", offsetBytes, len(exact))
 		}
-		if offsetBytes > 0 || len(exact) > maxBytes {
+		encodedExact, err := json.Marshal(exact)
+		if err != nil {
+			return nil, fmt.Errorf("encode transcript expansion: %w", err)
+		}
+		if offsetBytes > 0 || len(exact) > maxBytes || len(encodedExact) > maxBytes {
 			boundedOpt := renderOpts{meta: meta}
-			if assistantSeq, _, ok := resolvePinnedSpan(data.Entries, *expandTurn); ok {
-				boundedOpt.fullResultFor = &assistantSeq
-				boundedOpt.headTailEvidenceFor = &assistantSeq
-			}
+			boundedOpt.fullResultFor = &expansionFirst
+			boundedOpt.headTailEvidenceFor = &expansionFirst
 			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, boundedOpt)
 			rmeta.Truncated = true
 			end := offsetBytes + maxBytes
@@ -430,10 +446,7 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		Expansion:    expansion,
 		Continuation: continuation,
 	}
-	if expansion != nil {
-		return boundReadMarkdownEnvelope(envelope)
-	}
-	return envelope, nil
+	return boundReadMarkdownEnvelope(envelope)
 }
 
 func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvelope, error) {
@@ -441,33 +454,144 @@ func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvel
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
 	}
-	if len(encoded) <= hardCapChars || envelope.Expansion == nil {
+	if len(encoded) <= hardCapChars {
 		return envelope, nil
+	}
+	if envelope.Expansion == nil {
+		return boundReadMarkdownContent(envelope, hardCapChars)
 	}
 
 	raw, err := decodeTranscriptExpansion(envelope.Expansion)
 	if err != nil {
 		return readMarkdownEnvelope{}, err
 	}
+
+	// Preserve bounded head/tail evidence while reserving serialized room for a
+	// useful exact page. The final prefix calculation uses the actual JSON wire
+	// size, so the registry never has to truncate this envelope.
+	empty := transcriptEnvelopeWithExpansionBytes(envelope, nil)
+	contentTarget := hardCapChars - min(64<<10, hardCapChars/3)
+	empty, err = boundReadMarkdownContent(empty, contentTarget)
+	if err != nil {
+		return readMarkdownEnvelope{}, err
+	}
+	envelope.Content = empty.Content
+	envelope.Meta.Truncated = envelope.Meta.Truncated || empty.Meta.Truncated
+
+	best, err := largestTranscriptExpansionPrefix(envelope, raw, hardCapChars)
+	if err != nil {
+		return readMarkdownEnvelope{}, err
+	}
+	if best == 0 {
+		candidate := transcriptEnvelopeWithExpansionBytes(envelope, nil)
+		encoded, encodeErr := json.MarshalIndent(candidate, "", "  ")
+		if encodeErr != nil {
+			return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", encodeErr)
+		}
+		if len(encoded) > hardCapChars || len(raw) > 0 {
+			return readMarkdownEnvelope{}, fmt.Errorf("transcript expansion metadata exceeds %d-byte output limit", hardCapChars)
+		}
+		return candidate, nil
+	}
+	return transcriptEnvelopeWithExpansionBytes(envelope, raw[:best]), nil
+}
+
+func boundReadMarkdownContent(envelope readMarkdownEnvelope, maxEncodedBytes int) (readMarkdownEnvelope, error) {
+	encoded, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
+	}
+	if len(encoded) <= maxEncodedBytes {
+		return envelope, nil
+	}
+
+	original := envelope.Content
+	keep := len([]rune(original))
+	for len(encoded) > maxEncodedBytes && keep > 0 {
+		next := keep * maxEncodedBytes / len(encoded)
+		if next >= keep {
+			next = keep - 1
+		}
+		keep = next
+		envelope.Content = boundOversizedTurnEvidenceTo(original, keep)
+		envelope.Meta.Truncated = true
+		encoded, err = json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
+		}
+	}
+	if len(encoded) > maxEncodedBytes {
+		return readMarkdownEnvelope{}, fmt.Errorf("transcript metadata exceeds %d-byte output limit", maxEncodedBytes)
+	}
+	return envelope, nil
+}
+
+// largestTranscriptExpansionPrefix searches UTF-8 and base64 candidates
+// separately. Within each encoding the serialized size is monotone; switching
+// encodings at an incomplete rune boundary is not.
+func largestTranscriptExpansionPrefix(envelope readMarkdownEnvelope, raw []byte, maxEncodedBytes int) (int, error) {
+	if len(raw) == 0 {
+		return 0, nil
+	}
+	full := transcriptEnvelopeWithExpansionBytes(envelope, raw)
+	encoded, err := json.MarshalIndent(full, "", "  ")
+	if err != nil {
+		return 0, fmt.Errorf("encode transcript expansion: %w", err)
+	}
+	if len(encoded) <= maxEncodedBytes {
+		return len(raw), nil
+	}
+
+	valid, invalid := transcriptExpansionPrefixClasses(raw)
+	bestValid, err := largestFittingTranscriptPrefix(envelope, raw, valid, maxEncodedBytes)
+	if err != nil {
+		return 0, err
+	}
+	bestInvalid, err := largestFittingTranscriptPrefix(envelope, raw, invalid, maxEncodedBytes)
+	if err != nil {
+		return 0, err
+	}
+	return max(bestValid, bestInvalid), nil
+}
+
+func transcriptExpansionPrefixClasses(raw []byte) (valid, invalid []int) {
+	for offset := 0; offset < len(raw); {
+		_, size := utf8.DecodeRune(raw[offset:])
+		if size == 1 && raw[offset] >= utf8.RuneSelf {
+			for end := offset + 1; end <= len(raw); end++ {
+				invalid = append(invalid, end)
+			}
+			break
+		}
+		for end := offset + 1; end < offset+size && end <= len(raw); end++ {
+			invalid = append(invalid, end)
+		}
+		offset += size
+		if offset <= len(raw) {
+			valid = append(valid, offset)
+		}
+	}
+	return valid, invalid
+}
+
+func largestFittingTranscriptPrefix(envelope readMarkdownEnvelope, raw []byte, candidates []int, maxEncodedBytes int) (int, error) {
 	best := 0
-	for low, high := 1, len(raw); low <= high; {
+	for low, high := 0, len(candidates)-1; low <= high; {
 		mid := low + (high-low)/2
-		candidate := transcriptEnvelopeWithExpansionBytes(envelope, raw[:mid])
+		n := candidates[mid]
+		candidate := transcriptEnvelopeWithExpansionBytes(envelope, raw[:n])
 		encoded, err := json.MarshalIndent(candidate, "", "  ")
 		if err != nil {
-			return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
+			return 0, fmt.Errorf("encode transcript expansion: %w", err)
 		}
-		if len(encoded) <= hardCapChars {
-			best = mid
+		if len(encoded) <= maxEncodedBytes {
+			best = n
 			low = mid + 1
 		} else {
 			high = mid - 1
 		}
 	}
-	if best == 0 {
-		return readMarkdownEnvelope{}, fmt.Errorf("transcript expansion metadata exceeds %d-byte output limit", hardCapChars)
-	}
-	return transcriptEnvelopeWithExpansionBytes(envelope, raw[:best]), nil
+	return best, nil
 }
 
 func decodeTranscriptExpansion(expansion *transcriptTurnExpansion) ([]byte, error) {

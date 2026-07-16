@@ -309,20 +309,20 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 		return nil, fmt.Errorf("read transcript for resume: %w", err)
 	}
 
-	// Truncate any trailing partial line: if the file doesn't end with '\n',
-	// find the last newline and truncate there.
+	// Identify any trailing partial line before validation, but do not mutate the
+	// file yet. An unsupported or corrupt transcript must remain byte-for-byte
+	// unchanged when resume is rejected.
+	validLen := int64(len(data))
+	hasPartialTail := false
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		lastNL := bytes.LastIndexByte(data, '\n')
 		if lastNL < 0 {
 			_ = f.Close() // cleanup on error path; the validation error is what matters
 			return nil, errors.New("transcript has no complete lines")
 		}
-		validLen := int64(lastNL + 1)
+		validLen = int64(lastNL + 1)
 		data = data[:validLen]
-		if err := f.Truncate(validLen); err != nil {
-			_ = f.Close() // cleanup on error path; the truncate error is what matters
-			return nil, fmt.Errorf("truncate partial line: %w", err)
-		}
+		hasPartialTail = true
 	}
 
 	// Validate the v2 header and semantic entries while finding the max seq.
@@ -376,6 +376,13 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	if err := scanner.Err(); err != nil {
 		_ = f.Close() // cleanup on error path; the scan error is what matters
 		return nil, fmt.Errorf("scanning transcript entries: %w", err)
+	}
+
+	if hasPartialTail {
+		if err := f.Truncate(validLen); err != nil {
+			_ = f.Close() // cleanup on error path; the truncate error is what matters
+			return nil, fmt.Errorf("truncate partial line: %w", err)
+		}
 	}
 
 	// Use max(seq)+1 so resumed writes never collide with existing entries,

@@ -21,15 +21,12 @@ import (
 type renderOpts struct {
 	meta           schema.SessionMeta
 	resultToolName string // defaults to "communicate" when empty
-	// fullResultFor, when non-nil, names a turn seq whose tool results are
-	// rendered in full (no head+tail truncation). Per spec §Tool Result
-	// Truncation it matches either the ASSISTANT turn that owns the call or the
-	// TOOL_RESULTS turn that owns the result, so all of a round's parallel calls
-	// expand together.
+	// fullResultFor, when non-nil, names a semantic turn to render exactly. An
+	// ASSISTANT turn and its paired TOOL_RESULTS expand together.
 	fullResultFor *int
-	// headTailEvidenceFor, when non-nil, bounds that assistant turn's complete
+	// headTailEvidenceFor, when non-nil, bounds that semantic turn's complete
 	// rendered evidence as a head/tail preview. Exact bytes remain available via
-	// the read tool's expansion continuation.
+	// expand_turn pagination.
 	headTailEvidenceFor *int
 }
 
@@ -125,7 +122,7 @@ func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq i
 		writeEntry(b, seq, e, resultTool, &idx, opt)
 	}
 
-	writeUnpairedResults(b, &idx)
+	writeUnpairedResults(b, &idx, opt)
 }
 
 // defaultRangeTurns is the smart-default window: the last N turns when no range
@@ -148,16 +145,20 @@ const (
 )
 
 func boundOversizedTurnEvidence(content string) string {
+	return boundOversizedTurnEvidenceTo(content, oversizedTurnEvidenceChars)
+}
+
+func boundOversizedTurnEvidenceTo(content string, maxChars int) string {
 	runes := []rune(content)
-	if len(runes) <= oversizedTurnEvidenceChars {
+	if len(runes) <= maxChars {
 		return content
 	}
-	removed := len(runes) - oversizedTurnEvidenceChars
+	removed := len(runes) - maxChars
 	var marker string
 	available := 0
 	for {
-		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; use the expansion continuation for exact bytes …_\n\n", removed)
-		available = oversizedTurnEvidenceChars - len([]rune(marker))
+		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; use expand_turn and its continuation for exact bytes …_\n\n", removed)
+		available = maxChars - len([]rune(marker))
 		exactRemoved := len(runes) - available
 		if exactRemoved == removed {
 			break
@@ -445,10 +446,10 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 //     range call when any tail turns are dropped.
 //
 // full_result_for also forces an OUT-OF-RANGE pinned turn into the render: when
-// the resolved pin seq falls outside the rendered window, the pinned turn (with
-// its tool results in full) is appended as a supplemental labeled section after
-// the in-range content. That section is exempt from the conversation budget but,
-// like the rest, subject to the hardCapChars cap.
+// the resolved span falls outside the rendered window, the exact semantic turn
+// is appended as a supplemental labeled section after the in-range content.
+// That section is exempt from the conversation budget but, like the rest,
+// subject to the hardCapChars cap.
 //
 // As a final safety net, the combined content over hardCapChars is truncated
 // rune-safe with an honest note.
@@ -497,11 +498,9 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 }
 
 // renderOutOfRangePin returns the supplemental pinned-turn section, or "" when no
-// pin is set or the pin already falls within the rendered window
-// [renderedStart, renderedEnd]. The pin seq may name the owning ASSISTANT turn or
-// its TOOL_RESULTS turn; either way the section renders the ASSISTANT turn with
-// its tool results in full (fullResultFor set to that turn's seq), under a
-// labeled marker that names the real seq so indices stay honest.
+// pin is set or the resolved pin already falls within the rendered window
+// [renderedStart, renderedEnd]. Paired assistant/results resolve to their shared
+// span; other semantic turns resolve to themselves.
 func renderOutOfRangePin(entries []transcript.Entry, renderedStart, renderedEnd int, opt renderOpts) string {
 	if opt.fullResultFor == nil {
 		return ""
@@ -511,52 +510,48 @@ func renderOutOfRangePin(entries []transcript.Entry, renderedStart, renderedEnd 
 		return "" // already in the rendered window; the in-range path expanded it
 	}
 
-	assistantSeq, lastSeq, ok := resolvePinnedSpan(entries, pin)
+	firstSeq, lastSeq, ok := resolvePinnedSpan(entries, pin)
 	if !ok {
 		return "" // pin out of bounds or names no renderable turn
 	}
 
-	// Render the minimal contiguous slice [assistantSeq, lastSeq] (the owning
-	// ASSISTANT turn through the entry holding its last result) at its real seqs,
-	// with the owning seq pinned so its results expand in full.
+	// Render the minimal resolved span at its real seqs with its first entry
+	// pinned for exact output.
 	pinOpt := opt
-	pinOpt.fullResultFor = &assistantSeq
+	pinOpt.fullResultFor = &firstSeq
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "\n_… pinned turn %d (full result, outside range) …_\n", assistantSeq)
-	writeEntriesBody(&b, entries[assistantSeq:lastSeq+1], assistantSeq, pinOpt)
+	fmt.Fprintf(&b, "\n_… pinned turn %d (full result, outside range) …_\n", firstSeq)
+	writeEntriesBody(&b, entries[firstSeq:lastSeq+1], firstSeq, pinOpt)
 	return b.String()
 }
 
-// renderExactTurnExpansion renders the minimal assistant/result span named by a
-// turn expansion. The caller byte-pages this exact evidence when it is too large
-// for the ordinary bounded transcript content.
+// renderExactTurnExpansion renders the minimal semantic span named by a turn
+// expansion. The caller byte-pages this exact evidence when it is too large for
+// the ordinary bounded transcript content.
 func renderExactTurnExpansion(entries []transcript.Entry, pin int, opt renderOpts) string {
-	assistantSeq, lastSeq, ok := resolvePinnedSpan(entries, pin)
+	firstSeq, lastSeq, ok := resolvePinnedSpan(entries, pin)
 	if !ok {
 		return ""
 	}
-	opt.fullResultFor = &assistantSeq
+	opt.fullResultFor = &firstSeq
 	var b strings.Builder
-	writeEntriesBody(&b, entries[assistantSeq:lastSeq+1], assistantSeq, opt)
+	writeEntriesBody(&b, entries[firstSeq:lastSeq+1], firstSeq, opt)
 	return b.String()
 }
 
-// resolvePinnedSpan resolves a full_result_for pin to the contiguous entry span
-// [assistantSeq, lastSeq] that must be rendered to show that turn's tool results
-// in full. The pin may name the ASSISTANT turn that owns the calls or the
-// TOOL_RESULTS turn that carries the results; in both cases assistantSeq is the
-// owning ASSISTANT turn and lastSeq is the furthest entry holding one of its
-// results (so ID-pairing has every result available). It reports false when pin
-// is out of bounds or resolves to no ASSISTANT turn.
-func resolvePinnedSpan(entries []transcript.Entry, pin int) (assistantSeq, lastSeq int, ok bool) {
+// resolvePinnedSpan resolves every semantic turn to the minimal contiguous span
+// needed for exact rendering. Assistant turns and their paired TOOL_RESULTS use
+// the owning assistant/result span. Every other turn, including orphan tool
+// results, resolves to itself. Only an out-of-range selector is invalid.
+func resolvePinnedSpan(entries []transcript.Entry, pin int) (firstSeq, lastSeq int, ok bool) {
 	if pin < 0 || pin >= len(entries) {
 		return 0, 0, false
 	}
 
-	assistantSeq, ok = owningAssistantSeq(entries, pin)
-	if !ok {
-		return 0, 0, false
+	assistantSeq, hasAssistant := owningAssistantSeq(entries, pin)
+	if !hasAssistant {
+		return pin, pin, true
 	}
 
 	// The span must reach the entry carrying the assistant's furthest-away result,
@@ -798,33 +793,43 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 
 	case schema.TurnSteering:
 		fmt.Fprintf(b, "\n## Turn %d — Steering\n", seq)
-		writeCompactNote(b, "Steering", e.Turn)
+		writeCompactNote(b, "Steering", e.Turn, wantFullTurn(opt, seq))
 
 	case schema.TurnSummary:
 		fmt.Fprintf(b, "\n## Turn %d — Summary\n", seq)
-		writeCompactNote(b, "Summary", e.Turn)
+		writeCompactNote(b, "Summary", e.Turn, wantFullTurn(opt, seq))
 
 	case schema.TurnCheckpoint:
 		fmt.Fprintf(b, "\n## Turn %d — Checkpoint\n", seq)
-		writeCompactNote(b, "Checkpoint", e.Turn)
+		writeCompactNote(b, "Checkpoint", e.Turn, wantFullTurn(opt, seq))
 
 	case schema.TurnModelSwitch:
 		fmt.Fprintf(b, "\n## Turn %d — Model switch\n", seq)
-		writeCompactNote(b, "Model switch", e.Turn)
+		writeCompactNote(b, "Model switch", e.Turn, wantFullTurn(opt, seq))
 
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
 		// assistant turn that owns the tool call. Skip silently as a no-op.
 
 	case schema.TurnSystem:
-		b.WriteString("\n> [SYSTEM turn omitted]\n")
+		if wantFullTurn(opt, seq) {
+			fmt.Fprintf(b, "\n## Turn %d — System\n", seq)
+			writeTextContent(b, e.Turn)
+		} else {
+			b.WriteString("\n> [SYSTEM turn omitted]\n")
+		}
 
 	case schema.TurnTool: // deprecated
 		b.WriteString("\n> [TOOL turn omitted]\n")
 
 	default:
-		// Unknown turn kind: compact labeled note, never silently dropped.
-		fmt.Fprintf(b, "\n> [%s turn omitted]\n", e.Turn.Kind)
+		if wantFullTurn(opt, seq) {
+			fmt.Fprintf(b, "\n## Turn %d — %s\n", seq, e.Turn.Kind)
+			writeTextContent(b, e.Turn)
+		} else {
+			// Unknown turn kind: compact labeled note, never silently dropped.
+			fmt.Fprintf(b, "\n> [%s turn omitted]\n", e.Turn.Kind)
+		}
 	}
 }
 
@@ -843,7 +848,12 @@ const compactNoteMaxLen = 120
 // writeCompactNote emits a single-line blockquote note for STEERING/SUMMARY/CHECKPOINT
 // turns per spec §Conversation Grouping: "> [<role>] <first-line, truncated to 120 chars>".
 // If the turn has no text content the note is just "> [<role>]".
-func writeCompactNote(b *strings.Builder, role string, t schema.Turn) {
+func writeCompactNote(b *strings.Builder, role string, t schema.Turn, full bool) {
+	if full {
+		fmt.Fprintf(b, "> [%s — exact]\n", role)
+		writeTextContent(b, t)
+		return
+	}
 	firstLine := ""
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentText && p.Text != "" {
@@ -862,6 +872,10 @@ func writeCompactNote(b *strings.Builder, role string, t schema.Turn) {
 		firstLine = string(runes[:compactNoteMaxLen]) + "…"
 	}
 	fmt.Fprintf(b, "> [%s] %s\n", role, firstLine)
+}
+
+func wantFullTurn(opt renderOpts, seq int) bool {
+	return opt.fullResultFor != nil && *opt.fullResultFor == seq
 }
 
 // writeAssistantContent renders the content parts of an ASSISTANT turn in
@@ -955,7 +969,7 @@ func wantFullResult(opt renderOpts, callOwnerSeq, resultOwnerSeq int) bool {
 // writeUnpairedResults appends any tool results that no rendered call claimed,
 // under a "Tool results without a shown call" subsection, each as a
 // [call not shown] card. Spec §Tool Call Condensation.
-func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
+func writeUnpairedResults(b *strings.Builder, idx *resultIndex, opt renderOpts) {
 	ids := make([]string, 0, len(idx.byCallID))
 	for id := range idx.byCallID {
 		if !idx.consumed[id] {
@@ -978,8 +992,15 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
 	b.WriteString("_The originating tool call is outside the rendered range, or not present in the transcript (e.g. after a repair) — not an error._\n")
 	for _, id := range ids {
 		pr := idx.byCallID[id]
-		fmt.Fprintf(b, "- [call not shown] `%s`\n", pr.result.Name)
-		writeToolResultBody(b, pr.result.Name, pr.result, false)
+		var result strings.Builder
+		fmt.Fprintf(&result, "- [call not shown] `%s`\n", pr.result.Name)
+		full := wantFullTurn(opt, pr.ownerSeq)
+		writeToolResultBody(&result, pr.result.Name, pr.result, full)
+		if opt.headTailEvidenceFor != nil && *opt.headTailEvidenceFor == pr.ownerSeq {
+			b.WriteString(boundOversizedTurnEvidence(result.String()))
+		} else {
+			b.WriteString(result.String())
+		}
 	}
 }
 

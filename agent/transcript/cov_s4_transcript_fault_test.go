@@ -609,6 +609,26 @@ func TestOpenWriterFS_PartialLineTruncated(t *testing.T) {
 	_ = base
 }
 
+func TestOpenWriterFS_ValidatesHeaderBeforeTruncatingPartialTail(t *testing.T) {
+	original := []byte(`{"kind":"header","format_version":1}` + "\npartial-tail")
+	mem := memWithFile(t, original)
+
+	w, err := openWriterFS(mem, faultTranscriptPath)
+	if !errors.Is(err, ErrUnsupportedFormat) {
+		t.Fatalf("openWriterFS error = %v, want ErrUnsupportedFormat", err)
+	}
+	if w != nil {
+		t.Fatalf("writer leaked on error path: %+v", w)
+	}
+	got, readErr := afero.ReadFile(mem, faultTranscriptPath)
+	if readErr != nil {
+		t.Fatalf("read unchanged transcript: %v", readErr)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("invalid transcript was mutated before validation: got %q want %q", got, original)
+	}
+}
+
 func TestOpenWriterFS_NoCompleteLines(t *testing.T) {
 	// A file whose entire content has no newline: recovery cannot find a valid
 	// prefix.

@@ -113,7 +113,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 		"c": {ownerSeq: 1, result: &llm.ToolResultData{Name: "c"}},
 	}, consumed: map[string]bool{}}
 	var b strings.Builder
-	writeUnpairedResults(&b, &idx)
+	writeUnpairedResults(&b, &idx, renderOpts{})
 	_, _ = jobResultBody(`{"job_id":"j","status":"completed"}`)
 	_, _ = jobResultBody(`{"transcript_ref":"local:child","status":"completed"}`)
 

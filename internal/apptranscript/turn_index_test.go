@@ -1,6 +1,7 @@
 package apptranscript
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -1143,6 +1144,26 @@ func TestTurnCacheReadsLineLargerThanScannerDefault(t *testing.T) {
 	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, maxLineBytes, 1, boundedTestProjector)
 	if cursor != "" || len(got) != 1 || turnText(got[0]) != text {
 		t.Fatalf("large-line latest=(%d,%q,text-bytes=%d)", len(got), cursor, len(turnText(got[0])))
+	}
+}
+
+func TestReadTurnIndexLineDiscardsUnterminatedTailWithoutRetainingIt(t *testing.T) {
+	const maxLineBytes = 128
+	tail := strings.Repeat("unterminated-crash-tail", 100_000)
+	reader := bufio.NewReaderSize(strings.NewReader(tail), 32)
+
+	line, complete, bytesRead, err := readTurnIndexLine(reader, maxLineBytes)
+	if err != nil {
+		t.Fatalf("read unterminated tail: %v", err)
+	}
+	if complete {
+		t.Fatal("unterminated crash tail reported as a complete record")
+	}
+	if line != nil {
+		t.Fatalf("unterminated crash tail retained %d bytes, want none", len(line))
+	}
+	if bytesRead != int64(len(tail)) {
+		t.Fatalf("bytes read = %d, want %d", bytesRead, len(tail))
 	}
 }
 

@@ -2791,6 +2791,217 @@ func TestReadSessionTranscriptOversizedEscapeHeavyExpansionBudgetsFinalOutput(t 
 	}
 }
 
+func TestReadSessionTranscriptEscapeHeavyMarkdownStaysValidWithinSerializedBackstop(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		head   = "ordinary-escape-head-sentinel"
+		middle = "ordinary-escape-middle-sentinel"
+		tail   = "ordinary-escape-tail-sentinel"
+	)
+	payload := head + strings.Repeat("\x00", 55_000) + middle + strings.Repeat("\x00", 55_000) + tail
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(payload))); err != nil {
+		_ = w.Close()
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+
+	result := executeReadSessionTranscript(t, &toolDeps{stateDir: dir, sessionID: sessionID}, nil)
+	if result.IsError {
+		t.Fatalf("read_session_transcript error: %s", result.Output)
+	}
+	if got := len([]byte(result.Output)); got > hardCapChars {
+		t.Fatalf("serialized markdown envelope = %d bytes, exceeds %d", got, hardCapChars)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+		t.Fatalf("registry emitted invalid transcript JSON: %v", err)
+	}
+	content, _ := envelope["content"].(string)
+	if !strings.Contains(content, head) || !strings.Contains(content, tail) {
+		t.Fatalf("bounded markdown omitted head/tail evidence")
+	}
+	if strings.Contains(content, middle) {
+		t.Fatalf("bounded markdown retained elided middle evidence")
+	}
+}
+
+func TestReadSessionTranscriptEverySemanticTurnHasExactExpansion(t *testing.T) {
+	makeTextTurn := func(kind schema.TurnKind, payload string) schema.Turn {
+		role := llm.RoleUser
+		if kind == schema.TurnAssistant || kind == schema.TurnSummary {
+			role = llm.RoleAssistant
+		}
+		return schema.NewTurn(kind, llm.Message{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: payload}}})
+	}
+	tests := []struct {
+		name string
+		turn func(string) schema.Turn
+	}{
+		{name: "user", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnUserInput, payload) }},
+		{name: "steering", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnSteering, payload) }},
+		{name: "checkpoint", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnCheckpoint, payload) }},
+		{name: "summary", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnSummary, payload) }},
+		{name: "model switch", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnModelSwitch, payload) }},
+		{name: "assistant", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnAssistant, payload) }},
+		{name: "orphan tool result", turn: func(payload string) schema.Turn {
+			return schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: "orphan-expansion",
+					Name:       "shell",
+					Content:    payload,
+				},
+			}}})
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newBucket(t)
+			sessionID := identifier.MustNewSessionID()
+			path := transcriptPath(dir, sessionID)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			prefix := strings.ReplaceAll(tc.name, " ", "-")
+			head := prefix + "-exact-head"
+			middle := prefix + "-exact-middle"
+			tail := prefix + "-exact-tail"
+			payload := head + strings.Repeat("h", 35_000) + middle + strings.Repeat("t", 35_000) + tail
+			w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := w.Append(tc.turn(payload)); err != nil {
+				_ = w.Close()
+				t.Fatal(err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatal(err)
+			}
+			saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+			deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+			var exact []byte
+			offset := 0
+			for page := 0; page < 4; page++ {
+				result := executeReadSessionTranscript(t, deps, map[string]any{
+					"expand_turn":  float64(0),
+					"offset_bytes": float64(offset),
+					"max_bytes":    float64(maxExpansionBytes),
+				})
+				if result.IsError {
+					t.Fatalf("expand semantic turn: %s", result.Output)
+				}
+				var envelope map[string]any
+				if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+					t.Fatalf("decode expansion envelope: %v", err)
+				}
+				expansion, ok := envelope["expansion"].(map[string]any)
+				if !ok {
+					t.Fatalf("semantic turn omitted exact expansion: %#v", envelope)
+				}
+				data, _ := expansion["data"].(string)
+				if expansion["encoding"] == "base64" {
+					decoded, err := base64.StdEncoding.DecodeString(data)
+					if err != nil {
+						t.Fatalf("decode expansion data: %v", err)
+					}
+					exact = append(exact, decoded...)
+				} else {
+					exact = append(exact, data...)
+				}
+				continuation, ok := envelope["continuation"].(map[string]any)
+				if !ok {
+					break
+				}
+				next := int(continuation["offset_bytes"].(float64))
+				if next <= offset {
+					t.Fatalf("continuation did not advance: %d -> %d", offset, next)
+				}
+				offset = next
+			}
+			for _, sentinel := range []string{head, middle, tail} {
+				if !bytes.Contains(exact, []byte(sentinel)) {
+					t.Errorf("exact expansion omitted %q", sentinel)
+				}
+			}
+		})
+	}
+}
+
+func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("only turn"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+
+	result := executeReadSessionTranscript(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{"expand_turn": float64(9)})
+	if !result.IsError || !strings.Contains(result.Output, "expand_turn 9") {
+		t.Fatalf("unknown expansion result = error:%v output:%q", result.IsError, result.Output)
+	}
+}
+
+func TestLargestTranscriptExpansionPrefixHandlesUTF8EncodingTransitions(t *testing.T) {
+	raw := []byte("€€€")
+	envelope := readMarkdownEnvelope{
+		TranscriptRef: "local:test",
+		Format:        formatMarkdown,
+		ContentType:   "text/markdown",
+		Meta:          readMarkdownMeta{TurnsTotal: 1, TurnsRendered: 1},
+		Expansion: &transcriptTurnExpansion{
+			ExpandTurn: 0,
+			TotalBytes: 100,
+			Encoding:   "utf8",
+			Data:       string(raw),
+		},
+		Continuation: &transcriptTurnContinuation{ExpandTurn: 0, OffsetBytes: len(raw)},
+	}
+	three := transcriptEnvelopeWithExpansionBytes(envelope, raw[:3])
+	encodedThree, err := json.MarshalIndent(three, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	padding := hardCapChars - len(encodedThree)
+	if padding <= 0 {
+		t.Fatalf("test envelope metadata unexpectedly exceeds cap: %d", len(encodedThree))
+	}
+	envelope.Content = strings.Repeat("x", padding)
+
+	best, err := largestTranscriptExpansionPrefix(envelope, raw, hardCapChars)
+	if err != nil {
+		t.Fatalf("size UTF-8 expansion: %v", err)
+	}
+	if best != 3 {
+		t.Fatalf("largest fitting expansion prefix = %d, want 3-byte UTF-8 boundary", best)
+	}
+}
+
 func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
 	dir := newBucket(t)
 	const sessionID = "02wMz5TxvBRJC3228LTWod"
