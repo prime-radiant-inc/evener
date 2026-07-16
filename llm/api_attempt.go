@@ -339,7 +339,7 @@ func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutc
 			Operation:      "append_settlement",
 			SessionID:      apiLogSessionID(ctx),
 			AttemptGroupID: g.ID,
-			Err:            err,
+			Err:            sanitizeAPILogError(err, credentialMaterial),
 		})
 	}
 }

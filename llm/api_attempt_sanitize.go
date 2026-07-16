@@ -88,7 +88,10 @@ func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCred
 			continue
 		}
 		headerNames = append(headerNames, name)
-		values = append(values, requestValues...)
+		for _, value := range requestValues {
+			values = append(values, value)
+			values = append(values, structuredCredentialHeaderValues(name, value)...)
+		}
 	}
 	if req.URL != nil {
 		for _, part := range strings.Split(req.URL.RawQuery, "&") {
@@ -98,7 +101,10 @@ func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCred
 				continue
 			}
 			queryNames = append(queryNames, name)
-			values = append(values, unescapeQueryComponent(rawValue))
+			if rawName != name {
+				queryNames = append(queryNames, rawName)
+			}
+			values = append(values, rawValue, unescapeQueryComponent(rawValue))
 		}
 		if req.URL.User != nil {
 			values = append(values, req.URL.User.Username())
@@ -108,6 +114,40 @@ func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCred
 		}
 	}
 	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
+}
+
+func structuredCredentialHeaderValues(name, value string) []string {
+	switch canonicalCredentialHeaderName(name) {
+	case "Authorization", "Proxy-Authorization":
+		trimmed := strings.TrimSpace(value)
+		if separator := strings.IndexFunc(trimmed, func(r rune) bool { return r == ' ' || r == '\t' }); separator >= 0 {
+			if payload := strings.TrimSpace(trimmed[separator+1:]); payload != "" {
+				return []string{payload}
+			}
+		}
+	case "Cookie":
+		var values []string
+		for _, pair := range strings.Split(value, ";") {
+			_, rawValue, ok := strings.Cut(pair, "=")
+			if !ok {
+				continue
+			}
+			rawValue = strings.TrimSpace(rawValue)
+			if rawValue == "" {
+				continue
+			}
+			values = append(values, rawValue)
+			unquoted := strings.Trim(rawValue, `"`)
+			if unquoted != rawValue {
+				values = append(values, unquoted)
+			}
+			if decoded := unescapeQueryComponent(unquoted); decoded != unquoted {
+				values = append(values, decoded)
+			}
+		}
+		return values
+	}
+	return nil
 }
 
 // SanitizeRequestForAPILog returns a credential-free endpoint and an exact
@@ -141,12 +181,12 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 // raw or URL-escaped credential values before errors become durable API-log
 // text or warnings.
 func SanitizeErrorForAPILog(text string, material APILogCredentialMaterial) string {
-	for _, name := range credentialNameVariants(material) {
-		text = replaceCredentialNameFold(text, name)
-	}
 	variants := credentialValueVariants(material.Values)
 	for _, value := range variants {
 		text = strings.ReplaceAll(text, value, apiLogCredentialReplacement)
+	}
+	for _, name := range credentialNameVariants(material) {
+		text = replaceCredentialNameFold(text, name)
 	}
 	return text
 }

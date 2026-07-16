@@ -60,6 +60,37 @@ func TestSanitizeErrorForAPILogRemovesRawAndEscapedCredentials(t *testing.T) {
 	}
 }
 
+func TestSanitizeErrorForAPILogRemovesCredentialValueBeforeContainedName(t *testing.T) {
+	const secret = "prefix/token/suffix"
+	material := NewAPILogCredentialMaterial(nil, []string{"token"}, secret)
+	got := SanitizeErrorForAPILog("provider echoed "+secret, material)
+	if strings.Contains(got, "prefix/") || strings.Contains(got, "/suffix") {
+		t.Fatalf("credential value was only partially redacted: %q", got)
+	}
+}
+
+func TestAPILogCredentialMaterialForRequestIncludesExactStructuredCredentialVariants(t *testing.T) {
+	const (
+		rawQuerySecret = "query%2fcredential%2fsentinel"
+		authSecret     = "authorization-payload-sentinel"
+		cookieSecret   = "cookie-subvalue-sentinel"
+	)
+	req, err := http.NewRequest(http.MethodGet, "https://provider.test/final?access_token="+rawQuerySecret, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+authSecret)
+	req.Header.Set("Cookie", "session="+cookieSecret+"; visible=ordinary")
+
+	material := APILogCredentialMaterialForRequest(req, APILogCredentialMaterial{})
+	got := SanitizeErrorForAPILog(strings.Join([]string{rawQuerySecret, authSecret, cookieSecret}, " | "), material)
+	for _, secret := range []string{rawQuerySecret, authSecret, cookieSecret} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("structured request credential %q remained in sanitized error: %q", secret, got)
+		}
+	}
+}
+
 func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
 	secret := "credential-sentinel"
 	record := buildAPIAttemptRecord("ag_test", "aa_test", 1, APIAttemptMeta{
@@ -182,6 +213,54 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 	}
 	if !errors.Is(observed[0].Err, syncErr) {
 		t.Fatalf("sanitized sync warning lost storage error identity: %v", observed[0].Err)
+	}
+
+	apiLogFileSync = oldSync
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnce(t *testing.T) {
+	const secret = "settlement-sync-credential-sentinel"
+	syncErr := errors.New("settlement sync failed for " + secret)
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldSync := apiLogFileSync
+	t.Cleanup(func() {
+		apiLogFileSync = oldSync
+		_ = logger.Close()
+	})
+	var observed []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) {
+		observed = append(observed, failure)
+	})
+	group := NewAPIAttemptGroup("ag_settlement_sync_warning_sanitize")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), logger)
+	startedAt := time.Now()
+	BeginAPIAttempt(ctx, APIAttemptMeta{
+		StartedAt:          startedAt,
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
+	}).Complete(APIAttemptResult{
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: startedAt.Add(time.Millisecond),
+	})
+	apiLogFileSync = func(*os.File) error { return syncErr }
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	if len(observed) != 1 {
+		t.Fatalf("settlement sync failure observer calls = %d, want exactly 1: %+v", len(observed), observed)
+	}
+	if observed[0].Operation != "append_settlement" {
+		t.Fatalf("settlement sync failure operation = %q, want append_settlement", observed[0].Operation)
+	}
+	if got := observed[0].Err.Error(); strings.Contains(got, secret) {
+		t.Fatalf("settlement sync failure warning leaked credential: %q", got)
+	}
+	if !errors.Is(observed[0].Err, syncErr) {
+		t.Fatalf("sanitized settlement warning lost storage error identity: %v", observed[0].Err)
 	}
 
 	apiLogFileSync = oldSync
