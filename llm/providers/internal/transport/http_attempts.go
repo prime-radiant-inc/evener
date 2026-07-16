@@ -39,7 +39,7 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 	if err != nil {
 		return response, roundTripper.takeTransportFailure(), err
 	}
-	return response, claimResponseAttempt(response), nil
+	return response, roundTripper.claimResponse(response), nil
 }
 
 type apiAttemptRoundTripper struct {
@@ -49,11 +49,12 @@ type apiAttemptRoundTripper struct {
 
 	mu               sync.Mutex
 	transportFailure *APIAttemptCapture
+	responses        map[*http.Response]*apiAttemptResponseBody
 }
 
 func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	requestBody, requestBodySnapshot := captureRequestBody(request)
-	meta := t.build(request, requestBody)
+	requestBodySnapshot := captureRequestBody(request)
+	meta := t.build(request, nil)
 	attempt := BeginAPIAttempt(t.parentCtx, request.Context(), request, meta)
 	attempt.requestBody = requestBodySnapshot
 
@@ -73,9 +74,17 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		ReadCloser: responseBody,
 		attempt:    attempt,
 		statusCode: response.StatusCode,
+		closeDone:  make(chan struct{}),
 	}
+	body.associationDone = func() { t.releaseResponse(response, body) }
 	attempt.responseBody = body.snapshot
 	response.Body = body
+	t.mu.Lock()
+	if t.responses == nil {
+		t.responses = make(map[*http.Response]*apiAttemptResponseBody)
+	}
+	t.responses[response] = body
+	t.mu.Unlock()
 	return response, nil
 }
 
@@ -87,10 +96,33 @@ func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {
 	return attempt
 }
 
+func (t *apiAttemptRoundTripper) claimResponse(response *http.Response) *APIAttemptCapture {
+	if response == nil {
+		return nil
+	}
+	t.mu.Lock()
+	body := t.responses[response]
+	t.mu.Unlock()
+	if body == nil {
+		return nil
+	}
+	return body.claim()
+}
+
+func (t *apiAttemptRoundTripper) releaseResponse(response *http.Response, body *apiAttemptResponseBody) {
+	t.mu.Lock()
+	if t.responses[response] == body {
+		delete(t.responses, response)
+	}
+	t.mu.Unlock()
+}
+
 type apiAttemptRequestBody struct {
 	io.ReadCloser
-	mu  sync.Mutex
-	buf bytes.Buffer
+	mu        sync.Mutex
+	buf       bytes.Buffer
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func (b *apiAttemptRequestBody) Read(p []byte) (int, error) {
@@ -103,30 +135,26 @@ func (b *apiAttemptRequestBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+func (b *apiAttemptRequestBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.closeOnce.Do(func() { close(b.closed) })
+	return err
+}
+
 func (b *apiAttemptRequestBody) snapshot() []byte {
+	<-b.closed
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
 }
 
-func captureRequestBody(request *http.Request) ([]byte, func() []byte) {
+func captureRequestBody(request *http.Request) func() []byte {
 	if request.Body == nil || request.Body == http.NoBody {
-		return nil, nil
+		return nil
 	}
-	if request.GetBody != nil {
-		clone, err := request.GetBody()
-		if err == nil {
-			body, readErr := io.ReadAll(clone)
-			closeErr := clone.Close()
-			if readErr == nil && closeErr == nil {
-				body = append([]byte(nil), body...)
-				return body, func() []byte { return append([]byte(nil), body...) }
-			}
-		}
-	}
-	recorder := &apiAttemptRequestBody{ReadCloser: request.Body}
+	recorder := &apiAttemptRequestBody{ReadCloser: request.Body, closed: make(chan struct{})}
 	request.Body = recorder
-	return nil, recorder.snapshot
+	return recorder.snapshot
 }
 
 type apiAttemptResponseBody struct {
@@ -136,8 +164,15 @@ type apiAttemptResponseBody struct {
 
 	mu        sync.Mutex
 	buf       bytes.Buffer
+	readErr   error
 	claimed   bool
+	closing   bool
 	completed bool
+	closeDone chan struct{}
+	closeErr  error
+	doneOnce  sync.Once
+
+	associationDone func()
 }
 
 func (b *apiAttemptResponseBody) Read(p []byte) (int, error) {
@@ -147,26 +182,63 @@ func (b *apiAttemptResponseBody) Read(p []byte) (int, error) {
 		_, _ = b.buf.Write(p[:n])
 		b.mu.Unlock()
 	}
-	if err != nil {
-		b.completeUnclaimed(nonEOFError(err))
+	if err != nil && !errors.Is(err, io.EOF) {
+		b.mu.Lock()
+		if b.readErr == nil {
+			b.readErr = err
+		}
+		b.mu.Unlock()
 	}
 	return n, err
 }
 
 func (b *apiAttemptResponseBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.completeUnclaimed(err)
-	return err
+	b.mu.Lock()
+	claimed := b.claimed
+	closing := b.closing
+	completed := b.completed
+	readErr := b.readErr
+	if closing {
+		closeDone := b.closeDone
+		b.mu.Unlock()
+		<-closeDone
+		b.mu.Lock()
+		closeErr := b.closeErr
+		b.mu.Unlock()
+		return closeErr
+	}
+	ownsCompletion := !claimed && !closing && !completed
+	if ownsCompletion {
+		b.closing = true
+	}
+	b.mu.Unlock()
+	if !ownsCompletion {
+		return b.ReadCloser.Close()
+	}
+	if readErr == nil {
+		_, _ = io.Copy(io.Discard, b)
+	}
+	closeErr := b.ReadCloser.Close()
+	b.mu.Lock()
+	readErr = b.readErr
+	b.closeErr = closeErr
+	b.mu.Unlock()
+	b.completeUnclaimed(errors.Join(readErr, closeErr))
+	close(b.closeDone)
+	return closeErr
 }
 
 func (b *apiAttemptResponseBody) claim() *APIAttemptCapture {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.completed {
+	if b.claimed || b.closing || b.completed {
+		b.mu.Unlock()
 		return nil
 	}
 	b.claimed = true
-	return b.attempt
+	attempt := b.attempt
+	b.mu.Unlock()
+	b.finishAssociation()
+	return attempt
 }
 
 func (b *apiAttemptResponseBody) snapshot() []byte {
@@ -189,22 +261,13 @@ func (b *apiAttemptResponseBody) completeUnclaimed(readErr error) {
 		ResponseBody: responseBody,
 		Err:          readErr,
 	}, llm.APITimeoutNone, readErr, nil)
+	b.finishAssociation()
 }
 
-func claimResponseAttempt(response *http.Response) *APIAttemptCapture {
-	if response == nil {
-		return nil
-	}
-	body, ok := response.Body.(*apiAttemptResponseBody)
-	if !ok {
-		return nil
-	}
-	return body.claim()
-}
-
-func nonEOFError(err error) error {
-	if errors.Is(err, io.EOF) {
-		return nil
-	}
-	return err
+func (b *apiAttemptResponseBody) finishAssociation() {
+	b.doneOnce.Do(func() {
+		if b.associationDone != nil {
+			b.associationDone()
+		}
+	})
 }

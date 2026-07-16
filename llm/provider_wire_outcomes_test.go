@@ -35,6 +35,9 @@ func (*outcomeSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSett
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Body != nil {
+		defer request.Body.Close() //nolint:errcheck // Test transport honors the RoundTripper request-body contract.
+	}
 	return f(request)
 }
 

@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -327,6 +328,165 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 	}
 }
 
+func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
+	for _, provider := range redirectProviders() {
+		provider := provider
+		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+			status := status
+			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
+				requests := make(chan redirectRequest, 2)
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					body, err := io.ReadAll(r.Body)
+					if err != nil {
+						t.Errorf("read request body: %v", err)
+						return
+					}
+					requests <- redirectRequest{method: r.Method, url: cloneURL(r.URL), header: r.Header.Clone(), body: body}
+					if r.URL.Path != "/redirect-target" {
+						w.Header().Set("Location", "/redirect-target")
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte("body-preserving-redirect"))
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write(provider.responseBody)
+				}))
+				t.Cleanup(server.Close)
+
+				replacementBody := []byte(`{"redirect":"replacement-body"}`)
+				client := server.Client()
+				var staleGetBodyObserved bool
+				client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+					if request.GetBody == nil {
+						return errors.New("body-preserving redirect unexpectedly lacks inherited GetBody")
+					}
+					stale, err := request.GetBody()
+					if err != nil {
+						return err
+					}
+					staleBytes, err := io.ReadAll(stale)
+					_ = stale.Close()
+					if err != nil {
+						return err
+					}
+					staleGetBodyObserved = !bytes.Equal(staleBytes, replacementBody)
+					request.Body = io.NopCloser(bytes.NewReader(replacementBody))
+					request.ContentLength = int64(len(replacementBody))
+					return nil
+				}
+				sink := &outcomeSink{}
+				groupID := fmt.Sprintf("ag_body_redirect_%s_%d", provider.name, status)
+				ctx := llm.WithAPIAttemptSink(
+					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
+					sink,
+				)
+				response, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
+					Model:    "test-model",
+					Messages: []llm.Message{llm.User("hello")},
+				})
+				if err != nil || response.Text() != "hello" {
+					t.Fatalf("Complete = (%q, %v), want redirected hello", response.Text(), err)
+				}
+				if !staleGetBodyObserved {
+					t.Fatal("test did not establish stale inherited GetBody")
+				}
+				if len(requests) != 2 || len(sink.attempts) != 2 {
+					t.Fatalf("requests/attempts = %d/%d, want 2/2", len(requests), len(sink.attempts))
+				}
+				firstRequest := <-requests
+				secondRequest := <-requests
+				assertRedirectAttempt(t, sink.attempts[0], groupID, 1, firstRequest, []byte("body-preserving-redirect"), status, apilog.AttemptProviderReject)
+				assertRedirectAttempt(t, sink.attempts[1], groupID, 2, secondRequest, provider.responseBody, http.StatusOK, apilog.AttemptSuccess)
+				if secondRequest.method != http.MethodPost {
+					t.Fatalf("redirect method = %q, want POST", secondRequest.method)
+				}
+				if !bytes.Equal(secondRequest.body, replacementBody) {
+					t.Fatalf("server redirect body = %q, want replacement %q", secondRequest.body, replacementBody)
+				}
+			})
+		}
+	}
+}
+
+func TestCoreCompleteWireCaptureDrainsFullLargeRedirectResponseBeforeNextHop(t *testing.T) {
+	largeRedirectBody := bytes.Repeat([]byte("redirect-evidence-"), 512)
+	if len(largeRedirectBody) <= 2<<10 {
+		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
+	}
+	for _, provider := range redirectProviders() {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			requests := make(chan redirectRequest, 2)
+			secondStarted := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+					return
+				}
+				requests <- redirectRequest{method: r.Method, url: cloneURL(r.URL), header: r.Header.Clone(), body: body}
+				if r.URL.Path != "/redirect-target" {
+					w.Header().Set("Location", "/redirect-target")
+					w.Header().Set("Content-Length", strconv.Itoa(len(largeRedirectBody)))
+					w.WriteHeader(http.StatusFound)
+					_, _ = w.Write(largeRedirectBody)
+					return
+				}
+				close(secondStarted)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(provider.responseBody)
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return nil }
+			sink := &blockingRedirectSink{firstEntered: make(chan struct{}), releaseFirst: make(chan struct{})}
+			defer sink.release()
+			groupID := "ag_large_redirect_" + provider.name
+			ctx := llm.WithAPIAttemptSink(
+				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
+				sink,
+			)
+			done := make(chan error, 1)
+			go func() {
+				_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
+					Model:    "test-model",
+					Messages: []llm.Message{llm.User("hello")},
+				})
+				done <- err
+			}()
+
+			select {
+			case <-sink.firstEntered:
+			case <-time.After(time.Second):
+				t.Fatal("large redirect did not reach first canonical append")
+			}
+			select {
+			case <-secondStarted:
+				t.Fatal("second hop started before full redirect attempt append returned")
+			default:
+			}
+			sink.release()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Complete: %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("redirected completion did not finish")
+			}
+
+			firstRequest := <-requests
+			_ = <-requests
+			attempts := sink.snapshot()
+			if len(attempts) != 2 {
+				t.Fatalf("canonical attempts = %d, want 2", len(attempts))
+			}
+			assertRedirectAttempt(t, attempts[0], groupID, 1, firstRequest, largeRedirectBody, http.StatusFound, apilog.AttemptProviderReject)
+		})
+	}
+}
+
 func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 	const responseBody = `{"error":{"message":"redirect response"}}`
 	for _, provider := range redirectProviders() {
@@ -377,6 +537,74 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 				t.Fatalf("canonical attempts = %d, want original hop only", len(sink.attempts))
 			}
 			assertRedirectAttempt(t, sink.attempts[0], groupID, 1, request, []byte(responseBody), http.StatusFound, apilog.AttemptProviderReject)
+		})
+	}
+}
+
+func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *testing.T) {
+	for _, provider := range redirectProviders() {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			requests := make(chan redirectRequest, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read request body: %v", err)
+					return
+				}
+				requests <- redirectRequest{method: r.Method, url: cloneURL(r.URL), header: r.Header.Clone(), body: body}
+				w.Header().Set("Location", "/redirect-target")
+				w.WriteHeader(http.StatusFound)
+				_, _ = w.Write([]byte("redirect-before-transport-failure"))
+			}))
+			t.Cleanup(server.Close)
+
+			transportErr := errors.New("final redirect transport sentinel")
+			client := server.Client()
+			baseTransport := client.Transport
+			client.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path == "/redirect-target" {
+					if request.Body != nil {
+						_, _ = io.ReadAll(request.Body)
+					}
+					return nil, transportErr
+				}
+				return baseTransport.RoundTrip(request)
+			})
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return nil }
+			sink := &outcomeSink{}
+			groupID := "ag_redirect_transport_failure_" + provider.name
+			ctx := llm.WithAPIAttemptSink(
+				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
+				sink,
+			)
+			_, err := provider.new(server.URL, client).Complete(ctx, llm.Request{
+				Model:    "test-model",
+				Messages: []llm.Message{llm.User("hello")},
+			})
+			if !errors.Is(err, transportErr) {
+				t.Fatalf("Complete error = %v, want final transport identity", err)
+			}
+			if len(requests) != 1 || len(sink.attempts) != 2 {
+				t.Fatalf("server requests/attempts = %d/%d, want 1/2", len(requests), len(sink.attempts))
+			}
+			firstRequest := <-requests
+			assertRedirectAttempt(t, sink.attempts[0], groupID, 1, firstRequest, []byte("redirect-before-transport-failure"), http.StatusFound, apilog.AttemptProviderReject)
+			finalAttempt := sink.attempts[1]
+			if finalAttempt.AttemptIndex != 2 || finalAttempt.Request.Method != http.MethodGet || finalAttempt.Outcome != apilog.AttemptTransportFail {
+				t.Fatalf("final transport attempt = %+v, want index 2 GET transport_failure", finalAttempt)
+			}
+			endpoint, err := url.Parse(finalAttempt.Request.Endpoint)
+			if err != nil || endpoint.Path != "/redirect-target" {
+				t.Fatalf("final transport endpoint = %q, %v", finalAttempt.Request.Endpoint, err)
+			}
+			requestBody, err := apilog.DecodeBody(finalAttempt.Request.Body)
+			if err != nil || len(requestBody) != 0 {
+				t.Fatalf("final redirected GET body = %q, %v; want empty", requestBody, err)
+			}
+			if finalAttempt.Response != nil {
+				t.Fatalf("final transport attempt invented response: %+v", finalAttempt.Response)
+			}
 		})
 	}
 }

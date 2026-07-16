@@ -18,6 +18,7 @@ const (
 	APITimeoutAdapter        APITimeoutSource = "adapter_deadline"
 	APITimeoutResponseHeader APITimeoutSource = "response_header_timeout"
 	APITimeoutSSERead        APITimeoutSource = "sse_read_timeout"
+	APITimeoutTransport      APITimeoutSource = "transport_timeout"
 )
 
 // APIAttemptContextOwnership keeps caller cancellation distinct from timeout
@@ -43,6 +44,45 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 		return APITimeoutResponseHeader
 	}
 	return APITimeoutNone
+}
+
+// APITimeoutSourceForAttempt resolves timeout ownership from errors actually
+// observed while sending or consuming one response. It does not infer a
+// timeout merely because a policy or deadline was configured.
+func APITimeoutSourceForAttempt(parent, attempt context.Context, current APITimeoutSource, evidence ...error) APITimeoutSource {
+	if current != APITimeoutNone || (parent != nil && parent.Err() != nil) {
+		return current
+	}
+	hasEvidence := false
+	for _, err := range evidence {
+		if err != nil {
+			hasEvidence = true
+			break
+		}
+	}
+	if !hasEvidence {
+		return APITimeoutNone
+	}
+	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
+		return APITimeoutAdapter
+	}
+	for _, err := range evidence {
+		if errorIsTimeout(err) {
+			return APITimeoutTransport
+		}
+	}
+	return APITimeoutNone
+}
+
+func errorIsTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var timeout net.Error
+	return errors.As(err, &timeout) && timeout.Timeout()
 }
 
 // ClassifyAPIAttemptOutcome records attempt evidence without changing the
@@ -74,6 +114,8 @@ func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportE
 		return transportErr != nil
 	case APITimeoutSSERead:
 		return decodeErr != nil || transportErr != nil
+	case APITimeoutTransport:
+		return true
 	default:
 		return false
 	}

@@ -53,7 +53,14 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 		result.ResponseBody = c.responseBody()
 	}
 	owner := c.owner
-	owner.TimeoutSource = timeoutSource
+	owner.TimeoutSource = llm.APITimeoutSourceForAttempt(
+		owner.Parent,
+		owner.Attempt,
+		timeoutSource,
+		result.Err,
+		decodeErr,
+		transportErr,
+	)
 	result.Outcome = llm.ClassifyAPIAttemptOutcome(owner, result.StatusCode, decodeErr, transportErr)
 	if result.Err != nil {
 		result.ErrorClass = llm.Kind(result.Err).String()
