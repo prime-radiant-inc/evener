@@ -66,6 +66,50 @@ func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...str
 	return material
 }
 
+// APILogCredentialMaterialForRequest incorporates credential values from the
+// final request handed to RoundTrip. Redirect hooks may replace configured
+// credential headers or add credential query parameters after an adapter has
+// built its static credential material.
+func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCredentialMaterial) APILogCredentialMaterial {
+	headerNames := make([]string, 0, len(configured.HeaderNames))
+	for name := range configured.HeaderNames {
+		headerNames = append(headerNames, name)
+	}
+	queryNames := make([]string, 0, len(configured.QueryNames))
+	for name := range configured.QueryNames {
+		queryNames = append(queryNames, name)
+	}
+	values := append([]string(nil), configured.Values...)
+	if req == nil {
+		return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
+	}
+	for name, requestValues := range req.Header {
+		if !credentialHeaderName(name, configured) {
+			continue
+		}
+		headerNames = append(headerNames, name)
+		values = append(values, requestValues...)
+	}
+	if req.URL != nil {
+		for _, part := range strings.Split(req.URL.RawQuery, "&") {
+			rawName, rawValue, _ := strings.Cut(part, "=")
+			name := unescapeQueryComponent(rawName)
+			if !credentialQueryName(name, configured) {
+				continue
+			}
+			queryNames = append(queryNames, name)
+			values = append(values, unescapeQueryComponent(rawValue))
+		}
+		if req.URL.User != nil {
+			values = append(values, req.URL.User.Username())
+			if password, ok := req.URL.User.Password(); ok {
+				values = append(values, password)
+			}
+		}
+	}
+	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
+}
+
 // SanitizeRequestForAPILog returns a credential-free endpoint and an exact
 // copy of every surviving final request header name and value.
 func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMaterial) (string, map[string][]string) {

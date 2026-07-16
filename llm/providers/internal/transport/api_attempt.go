@@ -32,6 +32,7 @@ func (c *APIAttemptCapture) Active() bool {
 // RoundTrip. The caller supplies semantic provenance and exact body
 // bytes in meta; this function owns final method, endpoint, headers, and time.
 func BeginAPIAttempt(parentCtx, attemptCtx context.Context, request *http.Request, meta llm.APIAttemptMeta) *APIAttemptCapture {
+	meta.CredentialMaterial = llm.APILogCredentialMaterialForRequest(request, meta.CredentialMaterial)
 	meta.Method = request.Method
 	meta.Endpoint, meta.Headers = llm.SanitizeRequestForAPILog(request, meta.CredentialMaterial)
 	meta.StartedAt = time.Now()

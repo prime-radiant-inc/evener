@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -35,6 +36,73 @@ func (s *responseAssociationSink) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.attempts)
+}
+
+func TestAPIAttemptRedirectCredentialsSanitizeFinalTransportError(t *testing.T) {
+	const (
+		querySecret  = "redirect-query-credential-sentinel"
+		headerSecret = "redirect-header-credential-sentinel"
+	)
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_redirect_credentials")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportCalls := 0
+	client := &http.Client{
+		Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+			transportCalls++
+			if transportCalls == 1 {
+				return &http.Response{
+					StatusCode: http.StatusFound,
+					Header:     http.Header{"Location": []string{"https://provider.test/final"}},
+					Body:       http.NoBody,
+				}, nil
+			}
+			return nil, errors.New("transport failed for " + request.URL.String() + " with " + request.Header.Get("Authorization"))
+		}),
+		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			query := request.URL.Query()
+			query.Set("access_token", querySecret)
+			request.URL.RawQuery = query.Encode()
+			request.Header.Set("Authorization", "Bearer "+headerSecret)
+			return nil
+		},
+	}
+
+	_, attempt, transportErr := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if transportErr == nil {
+		t.Fatal("redirect final request unexpectedly succeeded")
+	}
+	if attempt == nil {
+		t.Fatal("redirect final transport failure did not retain its canonical attempt")
+	}
+	attempt.Complete(llm.APIAttemptResult{Err: transportErr}, llm.APITimeoutNone, nil, transportErr)
+
+	sink.mu.Lock()
+	attempts := append([]apilog.APIAttemptRecord(nil), sink.attempts...)
+	sink.mu.Unlock()
+	if len(attempts) != 2 {
+		t.Fatalf("canonical attempts = %d, want redirect and final transport failure", len(attempts))
+	}
+	encoded, err := json.Marshal(attempts[1])
+	if err != nil {
+		t.Fatalf("marshal final attempt: %v", err)
+	}
+	for _, secret := range []string{querySecret, headerSecret} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("final redirect attempt contains credential sentinel %q: %s", secret, encoded)
+		}
+	}
+	if attempts[1].Outcome != apilog.AttemptTransportFail {
+		t.Fatalf("final redirect outcome = %q, want transport_failure", attempts[1].Outcome)
+	}
 }
 
 type responseAssociationRoundTripper func(*http.Request) (*http.Response, error)
