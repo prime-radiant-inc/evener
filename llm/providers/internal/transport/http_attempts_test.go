@@ -167,18 +167,26 @@ type redirectAdmittedReadBody struct {
 }
 
 func (b *redirectAdmittedReadBody) Read(p []byte) (int, error) {
-	b.readOnce.Do(func() { close(b.readEntered) })
+	b.releaseReadAdmission()
 	<-b.closeStarted
 	<-b.concurrentEntered
 	return copy(p, b.data), b.readErr
+}
+
+func (b *redirectAdmittedReadBody) releaseReadAdmission() {
+	b.readOnce.Do(func() { close(b.readEntered) })
 }
 
 func (b *redirectAdmittedReadBody) Close() error {
 	b.mu.Lock()
 	b.closeCount++
 	b.mu.Unlock()
-	b.closeOnce.Do(func() { close(b.closeStarted) })
+	b.releaseClose()
 	return b.closeErr
+}
+
+func (b *redirectAdmittedReadBody) releaseClose() {
+	b.closeOnce.Do(func() { close(b.closeStarted) })
 }
 
 func (b *redirectAdmittedReadBody) count() int {
@@ -290,6 +298,10 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 	readErr := errors.New("redirect admitted read sentinel")
 	closeErr := errors.New("redirect underlying close sentinel")
 	concurrentEntered := make(chan struct{})
+	var concurrentOnce sync.Once
+	releaseConcurrent := func() {
+		concurrentOnce.Do(func() { close(concurrentEntered) })
+	}
 	body := &redirectAdmittedReadBody{
 		data:              []byte("redirect bytes consumed by CheckRedirect"),
 		readErr:           readErr,
@@ -341,6 +353,15 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 	}
 	checkRedirectRead := make(chan readResult, 1)
 	concurrentClose := make(chan error, 1)
+	readResponseReady := make(chan *http.Response, 1)
+	closeResponseReady := make(chan *http.Response, 1)
+	var responseReadyOnce sync.Once
+	releaseResponses := func(response *http.Response) {
+		responseReadyOnce.Do(func() {
+			readResponseReady <- response
+			closeResponseReady <- response
+		})
+	}
 	client := &http.Client{
 		Transport: roundTripper,
 		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
@@ -351,20 +372,12 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 			}
 			wrappedBody.mu.Lock()
 			wrappedBody.waitForClose = func(done <-chan struct{}) {
-				close(concurrentEntered)
+				releaseConcurrent()
 				<-done
 			}
 			wrappedBody.mu.Unlock()
-			go func() {
-				buf := make([]byte, len(body.data))
-				n, readResponseErr := firstResponse.Body.Read(buf)
-				checkRedirectRead <- readResult{body: buf[:n], err: readResponseErr}
-			}()
+			releaseResponses(firstResponse)
 			<-body.readEntered
-			go func() {
-				<-body.closeStarted
-				concurrentClose <- firstResponse.Body.Close()
-			}()
 			return nil
 		},
 	}
@@ -374,12 +387,41 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 		err      error
 	}
 	clientDone := make(chan clientResult, 1)
+	var workers sync.WaitGroup
+	workers.Add(3)
+	defer func() {
+		releaseResponses(nil)
+		body.releaseReadAdmission()
+		body.releaseClose()
+		releaseConcurrent()
+		workers.Wait()
+	}()
 	go func() {
+		defer workers.Done()
+		response := <-readResponseReady
+		if response == nil {
+			return
+		}
+		buf := make([]byte, len(body.data))
+		n, readResponseErr := response.Body.Read(buf)
+		checkRedirectRead <- readResult{body: buf[:n], err: readResponseErr}
+	}()
+	go func() {
+		defer workers.Done()
+		response := <-closeResponseReady
+		if response == nil {
+			return
+		}
+		<-body.closeStarted
+		concurrentClose <- response.Body.Close()
+	}()
+	go func() {
+		defer workers.Done()
 		response, clientErr := client.Do(request)
 		clientDone <- clientResult{response: response, err: clientErr}
 	}()
-	deadlockGuard := time.NewTimer(5 * time.Second)
-	defer deadlockGuard.Stop()
+	proofDeadline := time.NewTimer(5 * time.Second)
+	defer proofDeadline.Stop()
 	var response *http.Response
 	select {
 	case result := <-clientDone:
@@ -387,7 +429,7 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 		if result.err != nil {
 			t.Fatalf("client.Do: %v", result.err)
 		}
-	case <-deadlockGuard.C:
+	case <-proofDeadline.C:
 		t.Fatal("client.Do deadlocked closing a redirect response with an admitted CheckRedirect read")
 	}
 	if !secondHopSawAppend {
@@ -396,14 +438,25 @@ func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) 
 	if got := sink.count(); got != 1 {
 		t.Fatalf("attempts appended before client return = %d, want 1 redirect attempt", got)
 	}
-	read := <-checkRedirectRead
+	var read readResult
+	select {
+	case read = <-checkRedirectRead:
+	case <-proofDeadline.C:
+		t.Fatal("admitted CheckRedirect read did not return after client.Do")
+	}
 	if !bytes.Equal(read.body, body.data) {
 		t.Fatalf("CheckRedirect read = %q, want %q", read.body, body.data)
 	}
 	if read.err != readErr {
 		t.Fatalf("CheckRedirect read error = %v, want %v", read.err, readErr)
 	}
-	if got := <-concurrentClose; got != closeErr {
+	var concurrentCloseErr error
+	select {
+	case concurrentCloseErr = <-concurrentClose:
+	case <-proofDeadline.C:
+		t.Fatal("concurrent Close did not receive the owning Close result")
+	}
+	if got := concurrentCloseErr; got != closeErr {
 		t.Fatalf("concurrent Close error = %v, want cached %v", got, closeErr)
 	}
 	if got := body.count(); got != 1 {
