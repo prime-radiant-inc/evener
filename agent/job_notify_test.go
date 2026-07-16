@@ -51,6 +51,128 @@ func TestFormatJobNotification(t *testing.T) {
 	}
 }
 
+func TestJobNotification_ExhaustedNamesBudgetLimitAndResumability(t *testing.T) {
+	t.Parallel()
+	resumable := false
+	block := formatJobNotificationBlock(jobNotification{
+		JobID:            "job_exhausted",
+		JobType:          "delegate",
+		Status:           "exhausted",
+		ExhaustionBudget: "max_turns",
+		ExhaustionLimit:  500,
+		Resumable:        &resumable,
+	}, notificationExcerpt{})
+	for _, want := range []string{
+		`status="exhausted"`,
+		`budget="max_turns"`,
+		`limit="500"`,
+		`resumable="false"`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("notification %q missing %s", block, want)
+		}
+	}
+}
+
+func TestJobNotification_ExhaustedPendingReplayIsDeduplicated(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	client := llm.NewClient()
+	adapter := &fakeAdapter{name: "openai"}
+	client.Register(adapter)
+	original, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
+		StateDir:         stateDir,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("new original session: %v", err)
+	}
+	started := time.Unix(1000, 0).UTC()
+	ended := time.Unix(1001, 0).UTC()
+	resumable := false
+	const terminalGen = "GEN_EXHAUSTED_REPLAY"
+	if err := original.jobManager.appendJobEvents([]jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            "job_exhausted",
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   original.ID(),
+			VisibleToSession: original.ID(),
+			StartedAt:        &started,
+		},
+		{
+			Kind:             jobstore.EventJobFinished,
+			TS:               ended,
+			JobID:            "job_exhausted",
+			Status:           jobstore.StatusExhausted,
+			ExhaustionBudget: "max_turns",
+			ExhaustionLimit:  500,
+			Resumable:        &resumable,
+			EndedAt:          &ended,
+			TerminalGen:      terminalGen,
+		},
+		{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          ended,
+			JobID:       "job_exhausted",
+			TerminalGen: terminalGen,
+		},
+	}); err != nil {
+		t.Fatalf("persist exhausted pending notification: %v", err)
+	}
+	meta := original.Meta()
+	if err := original.jobManager.closeStoreOnly(); err != nil {
+		t.Fatalf("close original job store: %v", err)
+	}
+	if original.transcript != nil {
+		if err := original.transcript.Close(); err != nil {
+			t.Fatalf("close original transcript: %v", err)
+		}
+	}
+	if original.cancelFunc != nil {
+		original.cancelFunc()
+	}
+
+	restored, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(workDir),
+		meta,
+		RestoreSessionConfig{
+			StateDir: stateDir,
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		},
+	)
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	defer restored.Close()
+
+	deliverable, retry, injected := restored.filterDeliverableJobNotifications(restored.drainJobNotifications())
+	if len(retry) != 0 || len(injected) != 0 {
+		t.Fatalf("restored notification partitions = deliverable:%d retry:%d injected:%d", len(deliverable), len(retry), len(injected))
+	}
+	if len(deliverable) != 1 {
+		t.Fatalf("restored exhausted notifications = %d, want 1", len(deliverable))
+	}
+	got := deliverable[0]
+	if got.terminalGen != terminalGen {
+		t.Fatalf("terminal generation = %q, want %q", got.terminalGen, terminalGen)
+	}
+	if got.notification.Status != "exhausted" || got.notification.ExhaustionBudget != "max_turns" || got.notification.ExhaustionLimit != 500 || got.notification.Resumable == nil || *got.notification.Resumable {
+		t.Fatalf("restored exhausted notification = %+v", got.notification)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("restore made %d model requests, want 0", len(requests))
+	}
+	if children := restored.subagents.sessions(); len(children) != 0 {
+		t.Fatalf("restore recreated %d child sessions, want 0", len(children))
+	}
+}
+
 func appendPendingJobNotificationRecord(t *testing.T, jm *jobManager, sessionID string) {
 	t.Helper()
 	started := time.Unix(1000, 0).UTC()

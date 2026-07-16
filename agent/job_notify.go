@@ -39,14 +39,17 @@ func recordNotificationProvenance(rec *jobstore.JobRecord) *provenance.Causal {
 
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
-		JobID:         rec.JobID,
-		JobType:       string(rec.Type),
-		Status:        string(rec.Status),
-		Reason:        rec.Reason,
-		TranscriptRef: rec.TranscriptRef,
-		OutputBytes:   rec.OutputBytes,
-		ExitCode:      rec.ExitCode,
-		Provenance:    provenance.Clone(recordNotificationProvenance(rec)),
+		JobID:            rec.JobID,
+		JobType:          string(rec.Type),
+		Status:           string(rec.Status),
+		Reason:           rec.Reason,
+		ExhaustionBudget: rec.ExhaustionBudget,
+		ExhaustionLimit:  rec.ExhaustionLimit,
+		Resumable:        rec.Resumable,
+		TranscriptRef:    rec.TranscriptRef,
+		OutputBytes:      rec.OutputBytes,
+		ExitCode:         rec.ExitCode,
+		Provenance:       provenance.Clone(recordNotificationProvenance(rec)),
 	}
 }
 
@@ -152,6 +155,13 @@ func formatJobNotificationBlock(n jobNotification, excerpt notificationExcerpt) 
 		fmt.Sprintf("reason=%q", n.Reason),
 	}
 	attrs = append(attrs, fmt.Sprintf("output_bytes=%q", strconv.FormatInt(n.OutputBytes, 10)))
+	if n.Status == string(jobstore.StatusExhausted) {
+		attrs = append(attrs,
+			fmt.Sprintf("budget=%q", n.ExhaustionBudget),
+			fmt.Sprintf("limit=%q", strconv.Itoa(n.ExhaustionLimit)),
+			fmt.Sprintf("resumable=%q", strconv.FormatBool(n.Resumable != nil && *n.Resumable)),
+		)
+	}
 	if n.ExitCode != nil {
 		attrs = append(attrs, fmt.Sprintf("exit_code=%q", strconv.Itoa(*n.ExitCode)))
 	}

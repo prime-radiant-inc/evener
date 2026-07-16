@@ -1193,19 +1193,22 @@ type jobReadOutputResult struct {
 }
 
 type jobStatusResult struct {
-	JobID         string  `json:"job_id"`
-	Kind          string  `json:"kind"`
-	Status        string  `json:"status"`
-	Phase         string  `json:"phase,omitempty"`
-	Reason        *string `json:"reason,omitempty"`
-	RunningForMS  *int64  `json:"running_for_ms,omitempty"`
-	DurationMS    *int64  `json:"duration_ms,omitempty"`
-	QuietForMS    *int64  `json:"quiet_for_ms,omitempty"`
-	StartedAt     string  `json:"started_at"`
-	EndedAt       *string `json:"ended_at,omitempty"`
-	LastEventAt   *string `json:"last_event_at,omitempty"`
-	TranscriptRef string  `json:"transcript_ref"`
-	ExitCode      *int    `json:"exit_code,omitempty"`
+	JobID            string  `json:"job_id"`
+	Kind             string  `json:"kind"`
+	Status           string  `json:"status"`
+	Phase            string  `json:"phase,omitempty"`
+	Reason           *string `json:"reason,omitempty"`
+	ExhaustionBudget string  `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
+	Resumable        *bool   `json:"resumable,omitempty"`
+	RunningForMS     *int64  `json:"running_for_ms,omitempty"`
+	DurationMS       *int64  `json:"duration_ms,omitempty"`
+	QuietForMS       *int64  `json:"quiet_for_ms,omitempty"`
+	StartedAt        string  `json:"started_at"`
+	EndedAt          *string `json:"ended_at,omitempty"`
+	LastEventAt      *string `json:"last_event_at,omitempty"`
+	TranscriptRef    string  `json:"transcript_ref"`
+	ExitCode         *int    `json:"exit_code,omitempty"`
 }
 
 type jobOutputMatch struct {
@@ -1278,6 +1281,8 @@ type jobListEntry struct {
 	// running-shell scan (so they vanish), present where they carry signal (a
 	// delegate's transcript handle, a runtime-lost delegate's resumability).
 	TranscriptRef      *string `json:"transcript_ref,omitempty"`
+	ExhaustionBudget   string  `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit    int     `json:"exhaustion_limit,omitempty"`
 	Resumable          *bool   `json:"resumable,omitempty"`
 	NotResumableReason *string `json:"not_resumable_reason,omitempty"`
 	StartedAt          string  `json:"started_at"`
@@ -1354,6 +1359,9 @@ type delegateSendResult struct {
 	Type                   string           `json:"type,omitempty"`
 	Status                 string           `json:"status,omitempty"`
 	Reason                 *string          `json:"reason,omitempty"`
+	ExhaustionBudget       string           `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit        int              `json:"exhaustion_limit,omitempty"`
+	Resumable              *bool            `json:"resumable,omitempty"`
 	RunningInBackground    bool             `json:"running_in_background"`
 	TimedOut               bool             `json:"timed_out,omitempty"`
 	Action                 string           `json:"action"`
@@ -1426,6 +1434,9 @@ type delegateToolResult struct {
 	Type                   string           `json:"type"`
 	Status                 string           `json:"status"`
 	Reason                 *string          `json:"reason,omitempty"`
+	ExhaustionBudget       string           `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit        int              `json:"exhaustion_limit,omitempty"`
+	Resumable              *bool            `json:"resumable,omitempty"`
 	RunningInBackground    bool             `json:"running_in_background"`
 	TimedOut               bool             `json:"timed_out"`
 	TranscriptRef          string           `json:"transcript_ref"`
@@ -1501,6 +1512,9 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		Type:                res.Type,
 		Status:              string(res.Status),
 		Reason:              stringPtrOrNil(res.Reason),
+		ExhaustionBudget:    res.ExhaustionBudget,
+		ExhaustionLimit:     res.ExhaustionLimit,
+		Resumable:           res.Resumable,
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		Action:              res.Action,
@@ -1750,6 +1764,9 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		Type:                res.Type,
 		Status:              string(res.Status),
 		Reason:              stringPtrOrNil(res.Reason),
+		ExhaustionBudget:    res.ExhaustionBudget,
+		ExhaustionLimit:     res.ExhaustionLimit,
+		Resumable:           res.Resumable,
 		RunningInBackground: res.RunningInBackground,
 		TimedOut:            res.TimedOut,
 		TranscriptRef:       res.TranscriptRef,
@@ -1898,7 +1915,7 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 	for _, value := range values {
 		status := jobstore.Status(fmt.Sprint(value))
 		switch status {
-		case jobstore.StatusRunning, jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusCancelled, jobstore.StatusStopped:
+		case jobstore.StatusRunning, jobstore.StatusCompleted, jobstore.StatusFailed, jobstore.StatusExhausted, jobstore.StatusCancelled, jobstore.StatusStopped:
 			statuses = append(statuses, status)
 		default:
 			return nil, fmt.Errorf("invalid job status %q", status)
@@ -2420,6 +2437,8 @@ func projectJobRecordForViewer(viewer *Session, assessor *Session, rec *jobstore
 		OwnerSessionID:     rec.OwnerSessionID,
 		VisibleToSessionID: rec.VisibleToSession,
 		TranscriptRef:      stringPtrOrNil(statusView.TranscriptRef),
+		ExhaustionBudget:   rec.ExhaustionBudget,
+		ExhaustionLimit:    rec.ExhaustionLimit,
 		Resumable:          resumable,
 		NotResumableReason: notResumableReason,
 		StartedAt:          rec.StartedAt.Format(time.RFC3339Nano),
@@ -2585,16 +2604,19 @@ func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
 	}
 
 	out := jobStatusResult{
-		JobID:         rec.JobID,
-		Kind:          publicJobKind(rec.Type),
-		Status:        string(rec.Status),
-		Phase:         defaultJobPhase(rec),
-		Reason:        stringPtrOrNil(rec.Reason),
-		StartedAt:     rec.StartedAt.Format(time.RFC3339Nano),
-		EndedAt:       timePtrOrNil(rec.EndedAt),
-		LastEventAt:   timePtrOrNil(&last),
-		TranscriptRef: jobTranscriptRef(rec),
-		ExitCode:      rec.ExitCode,
+		JobID:            rec.JobID,
+		Kind:             publicJobKind(rec.Type),
+		Status:           string(rec.Status),
+		Phase:            defaultJobPhase(rec),
+		Reason:           stringPtrOrNil(rec.Reason),
+		ExhaustionBudget: rec.ExhaustionBudget,
+		ExhaustionLimit:  rec.ExhaustionLimit,
+		Resumable:        rec.Resumable,
+		StartedAt:        rec.StartedAt.Format(time.RFC3339Nano),
+		EndedAt:          timePtrOrNil(rec.EndedAt),
+		LastEventAt:      timePtrOrNil(&last),
+		TranscriptRef:    jobTranscriptRef(rec),
+		ExitCode:         rec.ExitCode,
 	}
 	if rec.Status.IsTerminal() {
 		end := now

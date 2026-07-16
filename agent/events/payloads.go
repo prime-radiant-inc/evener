@@ -314,6 +314,9 @@ type JobFinishedData struct {
 	JobType          string `json:"job_type"`
 	Status           string `json:"status"`
 	Reason           string `json:"reason"`
+	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`
+	Resumable        *bool  `json:"resumable,omitempty"`
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	OutputBytes      int64  `json:"output_bytes"`
 	TranscriptRef    string `json:"transcript_ref,omitempty"`

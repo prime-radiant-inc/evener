@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -334,8 +335,11 @@ type jobListToolEntry struct {
 	JobID              string  `json:"job_id"`
 	Kind               string  `json:"kind"`
 	Type               string  `json:"type"`
+	Status             string  `json:"status"`
 	Phase              string  `json:"phase"`
 	ParentJobID        *string `json:"parent_job_id"`
+	ExhaustionBudget   string  `json:"exhaustion_budget"`
+	ExhaustionLimit    int     `json:"exhaustion_limit"`
 	Resumable          *bool   `json:"resumable"`
 	NotResumableReason *string `json:"not_resumable_reason"`
 	StartedAt          string  `json:"started_at"`
@@ -346,6 +350,180 @@ type jobListToolEntry struct {
 	QuietForMS         int64   `json:"quiet_for_ms"`
 	LastEventAt        string  `json:"last_event_at"`
 	TranscriptRef      *string `json:"transcript_ref"`
+}
+
+type exhaustedJobToolProjection struct {
+	Status           string `json:"status"`
+	ExhaustionBudget string `json:"exhaustion_budget"`
+	ExhaustionLimit  int    `json:"exhaustion_limit"`
+	Resumable        *bool  `json:"resumable"`
+}
+
+func assertExhaustedJobToolProjection(t *testing.T, surface string, got exhaustedJobToolProjection) {
+	t.Helper()
+	if got.Status != "exhausted" || got.ExhaustionBudget != "max_turns" || got.ExhaustionLimit != 500 || got.Resumable == nil || *got.Resumable {
+		t.Fatalf("%s projection = %+v, want status=exhausted budget=max_turns limit=500 resumable=false", surface, got)
+	}
+}
+
+func seedExhaustedDelegateJobForTools(t *testing.T, s *Session) *jobstore.JobRecord {
+	t.Helper()
+	const jobID = "job_exhausted"
+	started := time.Unix(1000, 0).UTC()
+	ended := time.Unix(1001, 0).UTC()
+	resumable := false
+	outputPath := filepath.Join(s.jobManager.dir, "jobs", jobID+".log")
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("open exhausted delegate output: %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("close exhausted delegate output: %v", err)
+	}
+	if err := s.jobManager.appendJobEvents([]jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			Description:      "exhausted delegate",
+			OwnerSessionID:   s.ID(),
+			VisibleToSession: s.ID(),
+			DelegateID:       "dlg_exhausted",
+			TranscriptRef:    encodeRef("", "child_exhausted"),
+			StartedAt:        &started,
+			OutputPath:       outputPath,
+		},
+		{
+			Kind:             jobstore.EventJobFinished,
+			TS:               ended,
+			JobID:            jobID,
+			Status:           jobstore.StatusExhausted,
+			ExhaustionBudget: "max_turns",
+			ExhaustionLimit:  500,
+			Resumable:        &resumable,
+			EndedAt:          &ended,
+			TerminalGen:      "GEN_EXHAUSTED",
+		},
+	}); err != nil {
+		t.Fatalf("seed exhausted delegate job: %v", err)
+	}
+	recs, err := s.jobManager.store.Load()
+	if err != nil {
+		t.Fatalf("load exhausted delegate job: %v", err)
+	}
+	return recs[jobID]
+}
+
+func TestJobTools_ExhaustedStateAgreesAcrossStatusListAndDelegate(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	rec := seedExhaustedDelegateJobForTools(t, s)
+
+	t.Run("job_status", func(t *testing.T) {
+		result, err := jobStatusTool(s, map[string]any{"job_id": rec.JobID}, jobToolResultDefaultMaxChar)
+		if err != nil {
+			t.Fatalf("job_status: %v", err)
+		}
+		var got exhaustedJobToolProjection
+		if err := json.Unmarshal(handlerJSON(t, result), &got); err != nil {
+			t.Fatalf("decode job_status: %v", err)
+		}
+		assertExhaustedJobToolProjection(t, "job_status", got)
+	})
+
+	t.Run("job_list", func(t *testing.T) {
+		result, err := jobListTool(s, map[string]any{"status": []any{"exhausted"}}, jobToolResultDefaultMaxChar)
+		if err != nil {
+			t.Fatalf("job_list exhausted filter: %v", err)
+		}
+		var got struct {
+			Jobs []exhaustedJobToolProjection `json:"jobs"`
+		}
+		if err := json.Unmarshal(handlerJSON(t, result), &got); err != nil {
+			t.Fatalf("decode job_list: %v", err)
+		}
+		if len(got.Jobs) != 1 {
+			t.Fatalf("job_list returned %d jobs, want 1", len(got.Jobs))
+		}
+		assertExhaustedJobToolProjection(t, "job_list", got.Jobs[0])
+	})
+
+	t.Run("delegate", func(t *testing.T) {
+		result := delegateTerminalResult(s, s.jobManager, &runningJob{rec: rec})
+		encoded, err := marshalDelegateResult(result, jobToolResultDefaultMaxChar)
+		if err != nil {
+			t.Fatalf("marshal delegate result: %v", err)
+		}
+		var got exhaustedJobToolProjection
+		if err := json.Unmarshal([]byte(encoded), &got); err != nil {
+			t.Fatalf("decode delegate result: %v", err)
+		}
+		assertExhaustedJobToolProjection(t, "delegate", got)
+	})
+
+	t.Run("job_list_schema", func(t *testing.T) {
+		properties := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
+		status := properties["status"].(map[string]any)
+		items := status["items"].(map[string]any)
+		values := items["enum"].([]any)
+		for _, value := range values {
+			if value == "exhausted" {
+				return
+			}
+		}
+		t.Fatalf("job_list status enum = %v, want exhausted", values)
+	})
+}
+
+func TestMarshalDelegateSendResult_ExhaustionMetadataInToolState(t *testing.T) {
+	t.Parallel()
+	resumable := true
+	result, err := marshalDelegateSendResult(sendMessageResult{
+		DelegateID:       "dlg_exhausted",
+		JobID:            "job_exhausted",
+		Type:             string(jobstore.JobDelegate),
+		Status:           jobstore.StatusExhausted,
+		Action:           "started",
+		ExhaustionBudget: "max_tool_rounds_per_input",
+		ExhaustionLimit:  1,
+		Resumable:        &resumable,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("marshalDelegateSendResult: %v", err)
+	}
+	stateResult, ok := result.(tooldefs.StateResult)
+	if !ok {
+		t.Fatalf("marshalDelegateSendResult result = %T, want tool.StateResult", result)
+	}
+	state, ok := stateResult.State.(delegateSendResult)
+	if !ok {
+		t.Fatalf("tool state = %T, want delegateSendResult", stateResult.State)
+	}
+	if state.Status != "exhausted" || state.ExhaustionBudget != "max_tool_rounds_per_input" || state.ExhaustionLimit != 1 || state.Resumable == nil || !*state.Resumable {
+		t.Fatalf("typed tool state = %+v, want exhausted budget metadata and resumable=true", state)
+	}
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal delegate_send tool state: %v", err)
+	}
+	for _, want := range []string{`"status":"exhausted"`, `"exhaustion_budget":"max_tool_rounds_per_input"`, `"exhaustion_limit":1`, `"resumable":true`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("delegate_send tool state %s missing %s", encoded, want)
+		}
+	}
+	rendered := renderToolCardForStateResult("delegate_send", "send", stateResult.Output, encoded)
+	for _, want := range []string{
+		"job_id=job_exhausted",
+		"status=exhausted",
+		"exhaustion_budget=max_tool_rounds_per_input",
+		"exhaustion_limit=1",
+		"resumable=true",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("rendered delegate_send tool state missing %q:\n%s", want, rendered)
+		}
+	}
 }
 
 type jobListToolWatch struct {

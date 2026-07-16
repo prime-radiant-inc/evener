@@ -281,11 +281,11 @@ func DefJobReadOutput() llm.ToolDefinition {
 
 func DefJobList() llm.ToolDefinition {
 	strictFalse := false
-	statusEnum := []any{"running", "completed", "failed", "cancelled", "stopped"}
+	statusEnum := []any{"running", "completed", "failed", "exhausted", "cancelled", "stopped"}
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Rows include kind, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal statuses: completed, failed, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
+		Description: "List this session's durable jobs, newest first; filter by `status` or `type`. Rows include kind, status, phase, running_for_ms, quiet_for_ms, and transcript_ref, so this is usually enough to re-orient without a follow-up status call. Completion is notification-driven; if you have waited a long time with no notification, list jobs to re-orient instead of re-running work. Observer sidecars report findings with `communicate(end_turn=true)`; use transcript evidence after that report when you need audit or diagnosis context. The result also includes your active watches. Terminal statuses: completed, failed, exhausted, cancelled, stopped. A short job can finish before a running-only filter sees it; when recency matters, list unfiltered or read the job by id.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",

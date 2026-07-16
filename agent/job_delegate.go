@@ -209,6 +209,9 @@ type delegateResult struct {
 	Type                     string
 	Status                   jobstore.Status
 	Reason                   string
+	ExhaustionBudget         string
+	ExhaustionLimit          int
+	Resumable                *bool
 	RunningInBackground      bool
 	TimedOut                 bool
 	TranscriptRef            string
@@ -246,6 +249,9 @@ type sendMessageResult struct {
 	Type                      string
 	Status                    jobstore.Status
 	Reason                    string
+	ExhaustionBudget          string
+	ExhaustionLimit           int
+	Resumable                 *bool
 	RunningInBackground       bool
 	TimedOut                  bool
 	Action                    string
@@ -1787,6 +1793,9 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 		Type:                     res.Type,
 		Status:                   res.Status,
 		Reason:                   res.Reason,
+		ExhaustionBudget:         res.ExhaustionBudget,
+		ExhaustionLimit:          res.ExhaustionLimit,
+		Resumable:                res.Resumable,
 		RunningInBackground:      res.RunningInBackground,
 		TimedOut:                 res.TimedOut,
 		Action:                   action,
@@ -2518,6 +2527,9 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 		Type:                     string(rec.Type),
 		Status:                   rec.Status,
 		Reason:                   rec.Reason,
+		ExhaustionBudget:         rec.ExhaustionBudget,
+		ExhaustionLimit:          rec.ExhaustionLimit,
+		Resumable:                rec.Resumable,
 		RunningInBackground:      false,
 		TranscriptRef:            rec.TranscriptRef,
 		Output:                   output,

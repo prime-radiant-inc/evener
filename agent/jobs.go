@@ -391,6 +391,9 @@ type jobRuntimeHandle struct {
 // jobNotification is the in-memory wake record for a durable job notification.
 type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
+	ExhaustionBudget                              string
+	ExhaustionLimit                               int
+	Resumable                                     *bool
 	OutputBytes                                   int64
 	ExitCode                                      *int
 	// Provenance is the causal origin carried with this notification: the
@@ -938,6 +941,9 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		JobType:          jobType,
 		Status:           string(e.Status),
 		Reason:           e.Reason,
+		ExhaustionBudget: e.ExhaustionBudget,
+		ExhaustionLimit:  e.ExhaustionLimit,
+		Resumable:        e.Resumable,
 		ExitCode:         e.ExitCode,
 		OutputBytes:      e.OutputBytes,
 		TranscriptRef:    transcriptRef,
@@ -1144,14 +1150,17 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 		}
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
-				JobID:         finished.JobID,
-				JobType:       string(rec.Type),
-				Status:        string(finished.Status),
-				Reason:        finished.Reason,
-				TranscriptRef: rec.TranscriptRef,
-				OutputBytes:   finished.OutputBytes,
-				ExitCode:      finished.ExitCode,
-				Provenance:    provenance.Clone(rec.Provenance),
+				JobID:            finished.JobID,
+				JobType:          string(rec.Type),
+				Status:           string(finished.Status),
+				Reason:           finished.Reason,
+				ExhaustionBudget: finished.ExhaustionBudget,
+				ExhaustionLimit:  finished.ExhaustionLimit,
+				Resumable:        finished.Resumable,
+				TranscriptRef:    rec.TranscriptRef,
+				OutputBytes:      finished.OutputBytes,
+				ExitCode:         finished.ExitCode,
+				Provenance:       provenance.Clone(rec.Provenance),
 			})
 		}
 	}
@@ -1694,14 +1703,17 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	// an empty queue and the delivery slips a boundary.
 	if jm.enqueue != nil && !suppressOwnerNotification {
 		jm.enqueue(jobNotification{
-			JobID:         run.rec.JobID,
-			JobType:       string(run.rec.Type),
-			Status:        string(terminal.status),
-			Reason:        terminal.reason,
-			TranscriptRef: run.rec.TranscriptRef,
-			OutputBytes:   terminal.outputBytes,
-			ExitCode:      terminal.exitCode,
-			Provenance:    provenance.Clone(run.rec.Provenance),
+			JobID:            run.rec.JobID,
+			JobType:          string(run.rec.Type),
+			Status:           string(terminal.status),
+			Reason:           terminal.reason,
+			ExhaustionBudget: terminal.exhaustionBudget,
+			ExhaustionLimit:  terminal.exhaustionLimit,
+			Resumable:        terminal.resumable,
+			TranscriptRef:    run.rec.TranscriptRef,
+			OutputBytes:      terminal.outputBytes,
+			ExitCode:         terminal.exitCode,
+			Provenance:       provenance.Clone(run.rec.Provenance),
 		})
 	}
 	run.closeDone()
@@ -1802,14 +1814,17 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 		}
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
-				JobID:         rec.JobID,
-				JobType:       string(rec.Type),
-				Status:        string(rec.Status),
-				Reason:        rec.Reason,
-				TranscriptRef: rec.TranscriptRef,
-				OutputBytes:   rec.OutputBytes,
-				ExitCode:      rec.ExitCode,
-				Provenance:    provenance.Clone(rec.Provenance),
+				JobID:            rec.JobID,
+				JobType:          string(rec.Type),
+				Status:           string(rec.Status),
+				Reason:           rec.Reason,
+				ExhaustionBudget: rec.ExhaustionBudget,
+				ExhaustionLimit:  rec.ExhaustionLimit,
+				Resumable:        rec.Resumable,
+				TranscriptRef:    rec.TranscriptRef,
+				OutputBytes:      rec.OutputBytes,
+				ExitCode:         rec.ExitCode,
+				Provenance:       provenance.Clone(rec.Provenance),
 			})
 		}
 	}
