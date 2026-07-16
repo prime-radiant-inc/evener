@@ -188,7 +188,9 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		a.mu.Unlock()
 		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, meta, result)
 		a.group.mu.Lock()
-		a.group.finalOutcome = result.Outcome
+		if a.index == a.group.finalAttemptCount {
+			a.group.finalOutcome = result.Outcome
+		}
 		a.group.mu.Unlock()
 		appendCtx := context.WithoutCancel(a.ctx)
 		if err := a.sink.AppendAttempt(appendCtx, record); err != nil {

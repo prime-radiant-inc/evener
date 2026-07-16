@@ -178,6 +178,32 @@ func TestAPIAttemptGroupAppendsAttemptsThenOneSettlement(t *testing.T) {
 	}
 }
 
+func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompletions(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_out_of_order")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+
+	first := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	second := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt.Add(time.Millisecond)))
+	finalErr := errors.New("final attempt rejected")
+	second.Complete(testAPIAttemptResult(startedAt.Add(2*time.Millisecond), apilog.AttemptProviderReject, finalErr))
+	first.Complete(testAPIAttemptResult(startedAt.Add(3*time.Millisecond), apilog.AttemptSuccess, nil))
+	group.SettleResult(ctx, finalErr)
+
+	attempts, settlements, _ := sink.snapshot()
+	if len(attempts) != 2 || len(settlements) != 1 {
+		t.Fatalf("attempts/settlements = %d/%d, want 2/1", len(attempts), len(settlements))
+	}
+	settlement := settlements[0]
+	if settlement.FinalAttemptID != second.id || settlement.FinalAttemptCount != 2 {
+		t.Fatalf("settlement final attempt = %+v, want second begun attempt", settlement)
+	}
+	if settlement.Outcome != apilog.AttemptProviderReject {
+		t.Fatalf("settlement outcome = %q, want final attempt outcome %q", settlement.Outcome, apilog.AttemptProviderReject)
+	}
+}
+
 func TestAPIAttemptCompleteWaitsForSynchronousAppend(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
