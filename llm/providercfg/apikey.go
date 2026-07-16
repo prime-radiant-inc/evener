@@ -18,11 +18,10 @@ func ResolveAPIKey(raw string) (string, error) {
 }
 
 // ResolveHeaderValue expands the same environment-variable references as
-// ResolveAPIKey in a providers.toml [instances.X.headers] value. Errors name
-// the header key and the missing variable so a misconfigured gateway header is
-// diagnosable. A header value may legitimately hold a secret via $ENV — that is
-// the recommended form, because unlike api_key the raw header value is written
-// back verbatim by Marshal.
+// ResolveAPIKey in a providers.toml header value. Errors name the header key
+// and missing variable so a misconfigured gateway header is diagnosable.
+// Callers use it for both explicitly non-secret headers and separately owned
+// credential_headers; persistence keeps the two maps distinct.
 func ResolveHeaderValue(name, raw string) (string, error) {
 	return resolveEnvValue(raw, fmt.Sprintf("header %q", name))
 }
@@ -57,7 +56,7 @@ func resolveEnvValue(raw, what string) (string, error) {
 		case next == '{':
 			end := strings.IndexByte(raw[i+2:], '}')
 			if end < 0 {
-				// Do not echo raw — api_key/header values may hold literal secrets.
+				// Do not echo raw — api_key/credential-header values may hold literal secrets.
 				return "", fmt.Errorf("%s: unterminated ${ in value", what)
 			}
 			name := raw[i+2 : i+2+end]

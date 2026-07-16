@@ -233,24 +233,7 @@ func Load(data []byte) (Config, error) {
 			}
 			errs = append(errs, fmt.Sprintf("instance %q: %s is only valid for OpenAI-compatible instances (types kimi, glm, openrouter, ollama, or openai with api_style = \"chat-completions\"), not type %q", name, what, inst.Type))
 		}
-		// Header names must be non-empty and unique after HTTP canonicalization
-		// (header names are case-insensitive on the wire; two spellings of one
-		// name would collide with a map-iteration-order winner). Values are
-		// otherwise unrestricted — they carry $ENV refs resolved later. Sort
-		// for deterministic errors.
-		canonSeen := make(map[string]string, len(inst.Headers))
-		for _, hk := range sortedKeys(inst.Headers) {
-			if strings.TrimSpace(hk) == "" {
-				errs = append(errs, fmt.Sprintf("instance %q: header name must not be empty", name))
-				continue
-			}
-			canon := textproto.CanonicalMIMEHeaderKey(hk)
-			if prev, dup := canonSeen[canon]; dup {
-				errs = append(errs, fmt.Sprintf("instance %q: headers %q and %q are the same HTTP header (names are case-insensitive)", name, prev, hk))
-				continue
-			}
-			canonSeen[canon] = hk
-		}
+		errs = validateConfiguredHeaderNames(errs, name, inst.Headers, inst.CredentialHeaders)
 		errs = validateCompat(errs, name, "compat", inst.Compat)
 		var models map[string]ModelConfig
 		errs, models = validateAndNormalizeModels(errs, name, inst.Models)
@@ -291,6 +274,43 @@ func Load(data []byte) (Config, error) {
 		Default:   def,
 		Instances: instances,
 	}, nil
+}
+
+type configuredHeaderSource struct {
+	field string
+	name  string
+}
+
+// validateConfiguredHeaderNames rejects ambiguous request-header ownership.
+// HTTP names are case-insensitive, so either map containing two spellings, or
+// the two maps claiming the same wire name, would otherwise make secrecy and
+// request application depend on map iteration order.
+func validateConfiguredHeaderNames(errs []string, instance string, headers, credentialHeaders map[string]string) []string {
+	seen := make(map[string]configuredHeaderSource, len(headers)+len(credentialHeaders))
+	for _, source := range []struct {
+		field  string
+		values map[string]string
+	}{
+		{field: "headers", values: headers},
+		{field: "credential_headers", values: credentialHeaders},
+	} {
+		for _, name := range sortedKeys(source.values) {
+			if strings.TrimSpace(name) == "" {
+				errs = append(errs, fmt.Sprintf("instance %q: %s header name must not be empty", instance, source.field))
+				continue
+			}
+			canonical := textproto.CanonicalMIMEHeaderKey(name)
+			if previous, duplicate := seen[canonical]; duplicate {
+				errs = append(errs, fmt.Sprintf(
+					"instance %q: %s %q and %s %q are the same HTTP header (names are case-insensitive)",
+					instance, previous.field, previous.name, source.field, name,
+				))
+				continue
+			}
+			seen[canonical] = configuredHeaderSource{field: source.field, name: name}
+		}
+	}
+	return errs
 }
 
 // LoadFile reads path and parses it. If the file is absent, exists=false and

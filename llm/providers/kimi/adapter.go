@@ -47,7 +47,8 @@ type InstanceParams struct {
 	Compat *providercfg.CompatConfig
 	Models map[string]providercfg.ModelConfig
 	// Headers are user-configured request headers ([instances.X.headers]).
-	Headers map[string]string
+	Headers           map[string]string
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs a kimi adapter from explicit parameters.
@@ -65,14 +66,15 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	backing := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:       params.Name,
-		BaseURL:    base,
-		APIKey:     params.APIKey,
-		Quirks:     openaicompat.QuirksPreset("kimi-k2.5"),
-		Compat:     params.Compat,
-		Models:     params.Models,
-		CatalogTag: "kimi",
-		Headers:    params.Headers,
+		Name:              params.Name,
+		BaseURL:           base,
+		APIKey:            params.APIKey,
+		Quirks:            openaicompat.QuirksPreset("kimi-k2.5"),
+		Compat:            params.Compat,
+		Models:            params.Models,
+		CatalogTag:        "kimi",
+		Headers:           params.Headers,
+		CredentialHeaders: params.CredentialHeaders,
 		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
 		// allowlist; announce as Claude Code so the coding-plan base URL is
 		// accepted. A user-configured User-Agent header overrides this, but it
@@ -110,6 +112,9 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		return llm.InputTokenCount{}, err
 	}
 	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	for k, v := range a.CredentialHeaders {
 		httpReq.Header.Set(k, v)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -167,12 +172,13 @@ func init() {
 	})
 	llm.RegisterInstanceAdapterFactory("kimi", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(InstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Compat:  inst.Compat,
-			Models:  inst.Models,
-			Headers: inst.Headers,
+			Name:              inst.Name,
+			BaseURL:           inst.BaseURL,
+			APIKey:            inst.APIKey,
+			Compat:            inst.Compat,
+			Models:            inst.Models,
+			Headers:           inst.Headers,
+			CredentialHeaders: inst.CredentialHeaders,
 		}), nil
 	})
 }

@@ -115,9 +115,10 @@ func (r *persistReader) next() byte {
 }
 
 // config draws a Config: 0..3 instances each with a name/type and optional
-// api_style, base_url, and quirks fields, plus a default. The exact same Config
-// is written through both lanes, so the persisted bytes are lane-independent by
-// construction and any divergence must come from the filesystem machinery.
+// api_style, base_url, quirks, ordinary headers, and runtime credential fields,
+// plus a default. The exact same Config is written through both lanes, so the
+// persisted bytes are lane-independent by construction and any divergence must
+// come from the filesystem machinery.
 func (r *persistReader) config() Config {
 	n := int(r.next()) % 4
 	styles := []APIStyle{"", StyleResponses, StyleChatCompletions, StyleAuto}
@@ -137,6 +138,12 @@ func (r *persistReader) config() Config {
 		}
 		if flags&4 != 0 {
 			inst.APIKey = "sk-secret" // must never reach the persisted bytes
+		}
+		if flags&8 != 0 {
+			inst.Headers = map[string]string{"X-Trace-Label": "visible"}
+		}
+		if flags&16 != 0 {
+			inst.CredentialHeaders = map[string]string{"X-Gateway-Key": "resolved-secret"} // must never reach a new file
 		}
 		insts = append(insts, inst)
 	}

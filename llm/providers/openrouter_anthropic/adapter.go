@@ -49,7 +49,8 @@ type InstanceParams struct {
 	BaseURL string
 	APIKey  string
 	// Headers are user-configured request headers ([instances.X.headers]).
-	Headers map[string]string
+	Headers           map[string]string
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs an openrouter-anthropic adapter from explicit parameters.
@@ -60,10 +61,11 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
-		APIKey:         params.APIKey,
-		BaseURL:        strings.TrimRight(base, "/"),
-		Client:         &http.Client{Timeout: 0},
-		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
+		APIKey:            params.APIKey,
+		BaseURL:           strings.TrimRight(base, "/"),
+		Client:            &http.Client{Timeout: 0},
+		DefaultHeaders:    llm.MergeHeaders(nil, params.Headers),
+		CredentialHeaders: llm.MergeHeaders(nil, params.CredentialHeaders),
 	})
 }
 
@@ -86,7 +88,7 @@ func envAdapterFactory(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 }
 
 func instanceAdapterFactory(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Headers: inst.Headers}), nil
+	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Headers: inst.Headers, CredentialHeaders: inst.CredentialHeaders}), nil
 }
 
 func init() {

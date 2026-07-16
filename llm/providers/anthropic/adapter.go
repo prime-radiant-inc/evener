@@ -18,11 +18,12 @@ import (
 )
 
 type Adapter struct {
-	name           string
-	APIKey         string
-	BaseURL        string
-	Client         *http.Client
-	DefaultHeaders map[string]string
+	name              string
+	APIKey            string
+	BaseURL           string
+	Client            *http.Client
+	DefaultHeaders    map[string]string
+	CredentialHeaders map[string]string
 }
 
 // AnthropicInstanceParams holds the configuration for a single Anthropic adapter instance.
@@ -34,6 +35,9 @@ type AnthropicInstanceParams struct {
 	// merged into DefaultHeaders. They cannot override the provider-set
 	// x-api-key/anthropic-version headers (setAnthropicHeaders sets those last).
 	Headers map[string]string
+	// CredentialHeaders are user-configured secret request headers kept
+	// separate for API-log sanitization.
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -54,9 +58,10 @@ func newAdapter(params AnthropicInstanceParams, base string) *Adapter {
 		name:   params.Name,
 		APIKey: params.APIKey,
 		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		BaseURL:        strings.TrimRight(base, "/"),
-		Client:         &http.Client{Timeout: 0},
-		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
+		BaseURL:           strings.TrimRight(base, "/"),
+		Client:            &http.Client{Timeout: 0},
+		DefaultHeaders:    llm.MergeHeaders(nil, params.Headers),
+		CredentialHeaders: llm.MergeHeaders(nil, params.CredentialHeaders),
 	}
 }
 
@@ -78,10 +83,11 @@ func init() {
 	})
 	llm.RegisterInstanceAdapterFactory("anthropic", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(AnthropicInstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Headers: inst.Headers,
+			Name:              inst.Name,
+			BaseURL:           inst.BaseURL,
+			APIKey:            inst.APIKey,
+			Headers:           inst.Headers,
+			CredentialHeaders: inst.CredentialHeaders,
 		})
 	})
 }
@@ -101,10 +107,17 @@ func (a *Adapter) Name() string {
 	return "anthropic"
 }
 
-func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map[string]any) {
+func (a *Adapter) setConfiguredHeaders(httpReq *http.Request) {
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
+	for k, v := range a.CredentialHeaders {
+		httpReq.Header.Set(k, v)
+	}
+}
+
+func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map[string]any) {
+	a.setConfiguredHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", a.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")

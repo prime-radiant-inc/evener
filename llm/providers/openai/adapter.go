@@ -80,6 +80,7 @@ type Adapter struct {
 	ContinuationHasher  *llm.ContinuationHasher
 	Client              *http.Client
 	DefaultHeaders      map[string]string
+	CredentialHeaders   map[string]string
 	DisableChatFallback bool
 }
 
@@ -102,6 +103,9 @@ type OpenAIInstanceParams struct {
 	// merged into DefaultHeaders. Provider-set headers (Authorization,
 	// OpenAI-Beta, account id) still take precedence — setHeaders sets them last.
 	Headers map[string]string
+	// CredentialHeaders are user-configured secret request headers kept
+	// separate for API-log sanitization.
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -169,6 +173,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			ContinuationHasher: params.ContinuationHasher,
 			Client:             &http.Client{Timeout: 0},
 			DefaultHeaders:     llm.MergeHeaders(nil, params.Headers),
+			CredentialHeaders:  llm.MergeHeaders(nil, params.CredentialHeaders),
 		}, nil
 	}
 
@@ -204,8 +209,9 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			ProjectIDHash:      projectIDHash,
 			ContinuationHasher: params.ContinuationHasher,
 			// Avoid short client-level timeouts; rely on request context deadlines instead.
-			Client:         &http.Client{Timeout: 0},
-			DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
+			Client:            &http.Client{Timeout: 0},
+			DefaultHeaders:    llm.MergeHeaders(nil, params.Headers),
+			CredentialHeaders: llm.MergeHeaders(nil, params.CredentialHeaders),
 		}, nil
 	}
 
@@ -237,6 +243,7 @@ func openAIInstanceAdapterFactory(inst providercfg.InstanceConfig, stateHome str
 		return nil, err
 	}
 	params.Headers = inst.Headers
+	params.CredentialHeaders = inst.CredentialHeaders
 	a, err := NewForInstance(params)
 	if err != nil {
 		return nil, err
@@ -441,6 +448,9 @@ func normalizedResponsesPath(path string) string {
 func (a *Adapter) setHeaders(req *http.Request) {
 	// Apply default headers first so provider-specific headers take precedence.
 	for k, v := range a.DefaultHeaders {
+		req.Header.Set(k, v)
+	}
+	for k, v := range a.CredentialHeaders {
 		req.Header.Set(k, v)
 	}
 	if a.usesCodexBackend() {

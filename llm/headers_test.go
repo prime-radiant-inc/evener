@@ -39,10 +39,15 @@ func TestMergeHeaders_CaseInsensitiveCollision(t *testing.T) {
 	}
 }
 
+type capturedProviderHeaders struct {
+	ordinary   map[string]string
+	credential map[string]string
+}
+
 // captureHeadersFactory swaps the instance factory registry for one that records
-// the headers each instance was constructed with, so header resolution at the
-// newFromProviders choke point is observable.
-func captureHeadersFactory(t *testing.T, captured map[string]map[string]string) {
+// both header classes each instance was constructed with, so runtime resolution
+// and separation at the newFromProviders choke point are observable.
+func captureHeadersFactory(t *testing.T, captured map[string]capturedProviderHeaders) {
 	t.Helper()
 	instanceFactoriesMu.Lock()
 	saved := make(map[instanceFactoryKey]InstanceAdapterFactory, len(instanceFactories))
@@ -50,7 +55,10 @@ func captureHeadersFactory(t *testing.T, captured map[string]map[string]string) 
 		saved[k] = v
 	}
 	factory := func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
-		captured[inst.Name] = inst.Headers
+		captured[inst.Name] = capturedProviderHeaders{
+			ordinary:   inst.Headers,
+			credential: inst.CredentialHeaders,
+		}
 		return &fakeAdapter{name: inst.Name}, nil
 	}
 	instanceFactories = map[instanceFactoryKey]InstanceAdapterFactory{
@@ -67,7 +75,7 @@ func captureHeadersFactory(t *testing.T, captured map[string]map[string]string) 
 
 func TestNewFromProviders_ResolvesHeaderEnvRefs(t *testing.T) {
 	t.Setenv("SERF_TEST_HDR_TOKEN", "resolved-secret")
-	captured := map[string]map[string]string{}
+	captured := map[string]capturedProviderHeaders{}
 	captureHeadersFactory(t, captured)
 
 	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
@@ -79,7 +87,7 @@ func TestNewFromProviders_ResolvesHeaderEnvRefs(t *testing.T) {
 	if _, err := NewFromProviders(cfg); err != nil {
 		t.Fatalf("NewFromProviders: %v", err)
 	}
-	got := captured["ant"]
+	got := captured["ant"].ordinary
 	if got["Authorization"] != "Bearer resolved-secret" {
 		t.Errorf("Authorization = %q, want resolved", got["Authorization"])
 	}
@@ -89,7 +97,7 @@ func TestNewFromProviders_ResolvesHeaderEnvRefs(t *testing.T) {
 }
 
 func TestNewFromProviders_MissingHeaderVar_FailsInstance(t *testing.T) {
-	captured := map[string]map[string]string{}
+	captured := map[string]capturedProviderHeaders{}
 	captureHeadersFactory(t, captured)
 
 	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
@@ -113,5 +121,62 @@ func TestNewFromProviders_MissingHeaderVar_FailsInstance(t *testing.T) {
 	names := c.ProviderNames()
 	if len(names) != 1 || names[0] != "kimi" {
 		t.Errorf("ProviderNames = %v, want [kimi]", names)
+	}
+}
+
+func TestNewFromProviders_ResolvesCredentialHeadersSeparately(t *testing.T) {
+	t.Setenv("SERF_TEST_GATEWAY_KEY", "secret-sentinel")
+	captured := map[string]capturedProviderHeaders{}
+	captureHeadersFactory(t, captured)
+
+	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
+		{
+			Name: "ant",
+			Type: "anthropic",
+			Headers: map[string]string{
+				"X-Trace-Label": "team-a",
+			},
+			CredentialHeaders: map[string]string{
+				"X-Gateway-Key": "Bearer $SERF_TEST_GATEWAY_KEY",
+			},
+		},
+	}}
+	if _, err := NewFromProviders(cfg); err != nil {
+		t.Fatalf("NewFromProviders: %v", err)
+	}
+	got := captured["ant"]
+	if got.ordinary["X-Trace-Label"] != "team-a" {
+		t.Fatalf("ordinary headers = %#v", got.ordinary)
+	}
+	if got.credential["X-Gateway-Key"] != "Bearer secret-sentinel" {
+		t.Fatalf("credential headers = %#v", got.credential)
+	}
+	if _, merged := got.ordinary["X-Gateway-Key"]; merged {
+		t.Fatalf("credential header was merged into ordinary headers: %#v", got.ordinary)
+	}
+	if _, merged := got.credential["X-Trace-Label"]; merged {
+		t.Fatalf("ordinary header was merged into credential headers: %#v", got.credential)
+	}
+}
+
+func TestNewFromProviders_MissingCredentialHeaderVarFailsInstance(t *testing.T) {
+	captured := map[string]capturedProviderHeaders{}
+	captureHeadersFactory(t, captured)
+	cfg := providercfg.Config{Default: "ant", Instances: []providercfg.InstanceConfig{
+		{Name: "ant", Type: "anthropic", CredentialHeaders: map[string]string{"X-Gateway-Key": "$SERF_TEST_CREDENTIAL_HEADER_ABSENT"}},
+		{Name: "kimi", Type: "kimi"},
+	}}
+	if _, err := NewFromProviders(cfg); err == nil {
+		t.Fatal("NewFromProviders accepted an unresolved credential header")
+	}
+	c, initErrs, err := NewFromAvailableProviders(cfg)
+	if err != nil {
+		t.Fatalf("NewFromAvailableProviders: %v", err)
+	}
+	if len(initErrs) != 1 {
+		t.Fatalf("initErrs = %v, want one", initErrs)
+	}
+	if names := c.ProviderNames(); !reflect.DeepEqual(names, []string{"kimi"}) {
+		t.Fatalf("ProviderNames = %v, want [kimi]", names)
 	}
 }

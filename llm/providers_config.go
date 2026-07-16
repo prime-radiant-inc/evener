@@ -112,28 +112,19 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 			}
 		}
 		inst.APIKey = apiKey
-		// Resolve $ENV references in each header at the same choke point as
-		// api_key, so a missing variable fails just this instance with its name
-		// and the header key in the error.
-		if len(inst.Headers) > 0 {
-			resolved := make(map[string]string, len(inst.Headers))
-			var hdrErr error
-			for _, k := range sortedHeaderKeys(inst.Headers) {
-				v, err := providercfg.ResolveHeaderValue(k, inst.Headers[k])
-				if err != nil {
-					hdrErr = fmt.Errorf("provider %q: %w", inst.Name, err)
-					break
-				}
-				resolved[k] = v
+		// Resolve both header classes at the same runtime choke point as api_key.
+		// Keep the maps separate so arbitrary credential names never become
+		// eligible for ordinary API-log header capture.
+		inst.Headers, err = resolveProviderHeaders(inst.Name, inst.Headers)
+		if err == nil {
+			inst.CredentialHeaders, err = resolveProviderHeaders(inst.Name, inst.CredentialHeaders)
+		}
+		if err != nil {
+			if allowPartial {
+				initErrs = append(initErrs, err)
+				continue
 			}
-			if hdrErr != nil {
-				if allowPartial {
-					initErrs = append(initErrs, hdrErr)
-					continue
-				}
-				return nil, nil, hdrErr
-			}
-			inst.Headers = resolved
+			return nil, nil, err
 		}
 		adapter, err := factory(inst, envCfg.StateHome)
 		if err != nil {
@@ -161,4 +152,19 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 	c.SetNameToTag(providercfg.NameToTag(cfg))
 
 	return c, initErrs, nil
+}
+
+func resolveProviderHeaders(instance string, headers map[string]string) (map[string]string, error) {
+	if len(headers) == 0 {
+		return headers, nil
+	}
+	resolved := make(map[string]string, len(headers))
+	for _, name := range sortedHeaderKeys(headers) {
+		value, err := providercfg.ResolveHeaderValue(name, headers[name])
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", instance, err)
+		}
+		resolved[name] = value
+	}
+	return resolved, nil
 }

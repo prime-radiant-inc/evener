@@ -261,7 +261,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 		ErrorClass: result.ErrorClass,
 	}
 	if result.Err != nil {
-		record.ErrorMessage = result.Err.Error()
+		record.ErrorMessage = SanitizeErrorForAPILog(result.Err.Error(), meta.CredentialMaterial)
 	}
 	if result.Response != nil || result.StatusCode != 0 || result.ResponseBody != nil {
 		response := apilog.APIAttemptResponse{

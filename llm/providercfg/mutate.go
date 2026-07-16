@@ -3,6 +3,7 @@ package providercfg
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,21 +14,24 @@ import (
 )
 
 // WriteFile marshals cfg and atomically writes it to path (temp + rename),
-// mode 0644. It creates parent directories as needed. api_key handling:
-// struct-held keys are SCRUBBED (a loaded config may carry credentials-store
-// injections that must never reach the 0644 file) and each instance's key is
-// restored from whatever the on-disk file already carried — so a
-// hand-authored api_key (literal or $ENV reference) survives hub
-// edit/set-default/remove rewrites, and serf itself still never introduces a
-// key the user didn't write.
+// mode 0644. It creates parent directories as needed. Runtime API keys and
+// credential headers are scrubbed, then each instance's authored fields are
+// restored from the existing file. This preserves hand-authored literals or
+// environment expressions across rewrites without persisting resolved values
+// or introducing credentials the user did not write.
 func WriteFile(path string, cfg Config) error {
 	return writeFileFS(afero.NewOsFs(), path, cfg)
 }
 
-// onDiskAPIKeys returns instance-name → api_key from the existing file at
-// path, tolerating an absent or unparseable file (nil map). It decodes the
-// raw shape without validation so a restore can't fail a rewrite.
-func onDiskAPIKeys(fs afero.Fs, path string) map[string]string {
+type persistedCredentialFields struct {
+	APIKey            string
+	CredentialHeaders map[string]string
+}
+
+// onDiskCredentialFields returns the authored credential-bearing fields from
+// the existing file. It tolerates an absent or unparseable file and decodes the
+// raw shape without validation so a restore cannot fail a rewrite.
+func onDiskCredentialFields(fs afero.Fs, path string) map[string]persistedCredentialFields {
 	data, err := afero.ReadFile(fs, path)
 	if err != nil {
 		return nil
@@ -36,13 +40,16 @@ func onDiskAPIKeys(fs afero.Fs, path string) map[string]string {
 	if _, err := toml.Decode(string(data), &raw); err != nil {
 		return nil
 	}
-	keys := make(map[string]string, len(raw.Instances))
+	fields := make(map[string]persistedCredentialFields, len(raw.Instances))
 	for name, inst := range raw.Instances {
-		if inst.APIKey != "" {
-			keys[name] = inst.APIKey
+		if inst.APIKey != "" || len(inst.CredentialHeaders) > 0 {
+			fields[name] = persistedCredentialFields{
+				APIKey:            inst.APIKey,
+				CredentialHeaders: maps.Clone(inst.CredentialHeaders),
+			}
 		}
 	}
-	return keys
+	return fields
 }
 
 // writeFileFS is the filesystem seam beneath WriteFile: it performs the atomic
@@ -57,10 +64,12 @@ func writeFileFS(fs afero.Fs, path string, cfg Config) error {
 // writeFileCodecFS exposes the serialization boundary for deterministic
 // failure-path tests while production always passes Marshal.
 func writeFileCodecFS(fs afero.Fs, path string, cfg Config, marshal func(Config) ([]byte, error)) error {
-	disk := onDiskAPIKeys(fs, path)
+	disk := onDiskCredentialFields(fs, path)
 	scrubbed := Config{Default: cfg.Default, Instances: append([]InstanceConfig(nil), cfg.Instances...)}
 	for i := range scrubbed.Instances {
-		scrubbed.Instances[i].APIKey = disk[scrubbed.Instances[i].Name]
+		authored := disk[scrubbed.Instances[i].Name]
+		scrubbed.Instances[i].APIKey = authored.APIKey
+		scrubbed.Instances[i].CredentialHeaders = maps.Clone(authored.CredentialHeaders)
 	}
 	cfg = scrubbed
 	data, err := marshal(cfg)

@@ -7,7 +7,60 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"sync/atomic"
+
+	apilog "primeradiant.com/serf/llm/apilog"
 )
+
+type APITimeoutSource string
+
+const (
+	APITimeoutNone           APITimeoutSource = ""
+	APITimeoutAdapter        APITimeoutSource = "adapter_deadline"
+	APITimeoutResponseHeader APITimeoutSource = "response_header_timeout"
+	APITimeoutSSERead        APITimeoutSource = "sse_read_timeout"
+)
+
+// APIAttemptContextOwnership keeps caller cancellation distinct from timeout
+// policy owned by an adapter or its transport/stream reader.
+type APIAttemptContextOwnership struct {
+	Parent        context.Context
+	Attempt       context.Context
+	TimeoutSource APITimeoutSource
+}
+
+// ClassifyAPIAttemptOutcome records attempt evidence without changing the
+// provider's existing error or retryability decisions.
+func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int, decodeErr, transportErr error) apilog.AttemptOutcomeClass {
+	if owner.Parent != nil && owner.Parent.Err() != nil {
+		return apilog.AttemptCallerCancel
+	}
+	if attemptOwnedTimeout(owner, decodeErr, transportErr) {
+		return apilog.AttemptProviderTimeout
+	}
+	if transportErr != nil {
+		return apilog.AttemptTransportFail
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return apilog.AttemptProviderReject
+	}
+	if decodeErr != nil {
+		return apilog.AttemptDecodeFail
+	}
+	return apilog.AttemptSuccess
+}
+
+func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportErr error) bool {
+	switch owner.TimeoutSource {
+	case APITimeoutAdapter:
+		return owner.Attempt != nil && errors.Is(owner.Attempt.Err(), context.DeadlineExceeded)
+	case APITimeoutResponseHeader:
+		return transportErr != nil
+	case APITimeoutSSERead:
+		return decodeErr != nil || transportErr != nil
+	default:
+		return false
+	}
+}
 
 // ApplyAdapterTimeout creates a context with the appropriate deadline from AdapterTimeout.
 // For non-streaming requests, it uses the Request timeout for the whole call.

@@ -431,49 +431,56 @@ cross-provider transcript) falls back to `reasoning_content`.
   PRESERVE a hand-authored `api_key` — literal or `$ENV` reference — and
   serf itself never introduces one the user didn't write.
 
-### `[instances.X.headers]` — extra request headers (all types)
+### Instance request headers (all types)
 
 > **Header-only authentication** is honored end-to-end for the
 > openai-compat family only (`providercfg.CompatFamily`): those adapters send
-> no bearer without a key, and a configured `Authorization` header suppresses
-> credential-store injection so nothing clobbers it. Other provider types
+> no bearer without a key, and a configured credential `Authorization` header
+> suppresses credential-store injection so nothing clobbers it. Other provider types
 > (openai responses, the anthropic family, google) cannot authenticate
 > header-only — they require an api_key/OAuth/store credential, and their
 > headers are supplementary (store injection still applies).
 
-Any instance — **not just the compat family** — may carry a `headers` table of
-extra HTTP headers sent on every request to its endpoint. This is how an
-instance sits behind a gateway (Portkey, Helicone, a Cloudflare worker) that
-needs its own auth or routing headers.
+Any instance — **not just the compat family** — may carry two separate maps of
+extra HTTP headers sent on every request. `headers` is explicitly non-secret;
+`credential_headers` owns arbitrary secret header names and values. This lets
+an instance sit behind a gateway (Portkey, Helicone, a Cloudflare worker) while
+keeping routing labels eligible for diagnostics and gateway credentials out of
+persisted API metadata.
 
 ```toml
 [instances.work]
 type    = "anthropic"
-headers = { "X-Portkey-Provider" = "anthropic", "Authorization" = "$PORTKEY_KEY" }
+headers = { "X-Portkey-Provider" = "anthropic" }
+credential_headers = { "Authorization" = "Bearer $PORTKEY_KEY" }
 ```
 
-- **`$ENV` resolution** — header values accept the same `$NAME` / `${NAME}` /
+- **`$ENV` resolution** — both maps accept the same `$NAME` / `${NAME}` /
   `$$` expansion as `api_key`, resolved by `providercfg.ResolveHeaderValue`
   (`llm/providercfg/apikey.go:26`, sharing the core with `ResolveAPIKey`) at the
   same choke point — `newFromProviders` (`llm/providers_config.go:113`) — so a
   missing variable fails just that instance (its name **and** the header key are
   named in the error), leaving unrelated instances usable.
-- **Precedence** — a user header is merged into the adapter's `DefaultHeaders`
+- **Precedence** — an ordinary user header is merged into the adapter's `DefaultHeaders`
   and **overrides a provider-set default of the same name** (e.g. kimi's
   coding-plan `User-Agent`), but that default **survives** when the user sets no
   header of that name (`llm.MergeHeaders`, `llm/headers.go:26`). Hard-wired
   protocol headers the adapter sets last — `Authorization`/`x-api-key`,
   `Content-Type`, `anthropic-version` — still win over any configured header.
-- **Delivery** — wired through every adapter's `DefaultHeaders` seam:
+  Credential headers remain in the adapter's separate `CredentialHeaders` map;
+  validation rejects case-insensitive collisions within or across the maps.
+- **Delivery** — both maps are wired through every adapter:
   openai-compat family (`kimi`/`glm`/`openrouter`/`ollama`/`openai` +
   `chat-completions`) via `OpenAICompatInstanceParams.Headers`, and the
   non-compat adapters (`anthropic`, `openai` responses, `google`, `minimax`,
-  `kimi-anthropic`, `openrouter-anthropic`) via their own `*InstanceParams.Headers`.
-- **Marshal round-trips the raw value** — unlike `api_key`, `providercfg.Marshal`
-  writes header values back **verbatim**, including any `$ENV` reference. That is
-  exactly why `$ENV` form is the recommended way to hold a secret in a header:
-  the reference, not the secret, lands on disk. Header **names** must be
-  non-empty; values are otherwise unrestricted.
+  `kimi-anthropic`, `openrouter-anthropic`) via parallel `Headers` and
+  `CredentialHeaders` instance parameters.
+- **Persistence preserves authored credentials** — `providercfg.Marshal`
+  round-trips both maps verbatim, but file rewrites go through `WriteFile`.
+  `WriteFile` scrubs runtime-resolved credential headers and restores the
+  existing file's authored `credential_headers` expressions, so resolved values
+  never replace those expressions on disk. Header names must be non-empty and
+  unique case-insensitively across both maps.
 
 ### Worked example: lunaroute GLM gateway
 

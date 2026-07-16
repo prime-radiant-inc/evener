@@ -20,11 +20,12 @@ import (
 )
 
 type Adapter struct {
-	name           string
-	APIKey         string
-	BaseURL        string
-	Client         *http.Client
-	DefaultHeaders map[string]string
+	name              string
+	APIKey            string
+	BaseURL           string
+	Client            *http.Client
+	DefaultHeaders    map[string]string
+	CredentialHeaders map[string]string
 }
 
 var (
@@ -40,6 +41,9 @@ type GoogleInstanceParams struct {
 	// Headers are user-configured request headers ([instances.X.headers]),
 	// merged into DefaultHeaders.
 	Headers map[string]string
+	// CredentialHeaders are user-configured secret request headers kept
+	// separate for API-log sanitization.
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
@@ -56,9 +60,10 @@ func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
 		name:   params.Name,
 		APIKey: params.APIKey,
 		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		BaseURL:        strings.TrimRight(base, "/"),
-		Client:         &http.Client{Timeout: 0},
-		DefaultHeaders: llm.MergeHeaders(nil, params.Headers),
+		BaseURL:           strings.TrimRight(base, "/"),
+		Client:            &http.Client{Timeout: 0},
+		DefaultHeaders:    llm.MergeHeaders(nil, params.Headers),
+		CredentialHeaders: llm.MergeHeaders(nil, params.CredentialHeaders),
 	}, nil
 }
 
@@ -77,10 +82,11 @@ func init() {
 		t := typ
 		llm.RegisterInstanceAdapterFactory(t, "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 			return NewForInstance(GoogleInstanceParams{
-				Name:    inst.Name,
-				BaseURL: inst.BaseURL,
-				APIKey:  inst.APIKey,
-				Headers: inst.Headers,
+				Name:              inst.Name,
+				BaseURL:           inst.BaseURL,
+				APIKey:            inst.APIKey,
+				Headers:           inst.Headers,
+				CredentialHeaders: inst.CredentialHeaders,
 			})
 		})
 	}
@@ -106,11 +112,18 @@ func (a *Adapter) Name() string {
 	return "google"
 }
 
-func (a *Adapter) setJSONHeaders(httpReq *http.Request) {
-	// Apply default headers first so provider-specific headers take precedence.
+func (a *Adapter) setConfiguredHeaders(httpReq *http.Request) {
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
 	}
+	for k, v := range a.CredentialHeaders {
+		httpReq.Header.Set(k, v)
+	}
+}
+
+func (a *Adapter) setJSONHeaders(httpReq *http.Request) {
+	// Apply configured headers first so provider-specific headers take precedence.
+	a.setConfiguredHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 }
 

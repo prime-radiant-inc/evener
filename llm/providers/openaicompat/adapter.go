@@ -25,12 +25,13 @@ import (
 )
 
 type Adapter struct {
-	name           string
-	APIKey         string
-	BaseURL        string
-	Client         *http.Client
-	DefaultHeaders map[string]string
-	Quirks         ProviderQuirks
+	name              string
+	APIKey            string
+	BaseURL           string
+	Client            *http.Client
+	DefaultHeaders    map[string]string
+	CredentialHeaders map[string]string
+	Quirks            ProviderQuirks
 	// Models holds fully-resolved per-model wire behavior keyed by wire model
 	// id; models absent here use Quirks. Populated from providers.toml
 	// [instances.X.models] via NewForInstance.
@@ -65,6 +66,9 @@ type OpenAICompatInstanceParams struct {
 	// [instances.X.headers], already $ENV-resolved). They override
 	// ProviderHeaders on key collision.
 	Headers map[string]string
+	// CredentialHeaders are user-configured secret request headers kept
+	// separate for API-log sanitization.
+	CredentialHeaders map[string]string
 	// ProviderHeaders are provider-set default headers (e.g. kimi's coding-plan
 	// User-Agent). User Headers override these but do not erase them: a default
 	// survives when the user configures no header of the same name.
@@ -89,6 +93,7 @@ func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
 		Models:                  resolveModelCompat(quirks, params.Models),
 		Adaptive:                params.Adaptive,
 		DefaultHeaders:          llm.MergeHeaders(params.ProviderHeaders, params.Headers),
+		CredentialHeaders:       llm.MergeHeaders(nil, params.CredentialHeaders),
 		SuppressCatalogDefaults: params.SuppressCatalogDefaults,
 		CatalogTag:              params.CatalogTag,
 	}
@@ -124,14 +129,15 @@ func newOpenAIChatCompletionsInstance(inst providercfg.InstanceConfig, _ string)
 		base = openAIDefaultBaseURL
 	}
 	return NewForInstance(OpenAICompatInstanceParams{
-		Name:       inst.Name,
-		BaseURL:    base,
-		APIKey:     inst.APIKey,
-		Quirks:     QuirksPreset(inst.Quirks),
-		Compat:     inst.Compat,
-		Models:     inst.Models,
-		Headers:    inst.Headers,
-		CatalogTag: "openai-compatible",
+		Name:              inst.Name,
+		BaseURL:           base,
+		APIKey:            inst.APIKey,
+		Quirks:            QuirksPreset(inst.Quirks),
+		Compat:            inst.Compat,
+		Models:            inst.Models,
+		Headers:           inst.Headers,
+		CredentialHeaders: inst.CredentialHeaders,
+		CatalogTag:        "openai-compatible",
 	}), nil
 }
 
@@ -167,6 +173,15 @@ func (a *Adapter) Name() string {
 // conversation's turns to one backend/cache (mirrors Pi's createClient).
 var sessionAffinityHeaders = []string{"session_id", "x-client-request-id", "x-session-affinity"}
 
+func (a *Adapter) setConfiguredHeaders(httpReq *http.Request) {
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	for k, v := range a.CredentialHeaders {
+		httpReq.Header.Set(k, v)
+	}
+}
+
 func (a *Adapter) setChatHeaders(httpReq *http.Request, req llm.Request) {
 	// Session-affinity headers are derived per-request and go first so a user's
 	// DefaultHeaders of the same name override them.
@@ -179,9 +194,7 @@ func (a *Adapter) setChatHeaders(httpReq *http.Request, req llm.Request) {
 	}
 	// Apply default headers next so they win over affinity headers; Content-Type
 	// and Authorization below take precedence over everything.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
+	a.setConfiguredHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 	if a.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
@@ -337,6 +350,7 @@ func (a *Adapter) responsesAdapter() *openairesponses.Adapter {
 		ResponsesPath:       "/responses",
 		Client:              client,
 		DefaultHeaders:      a.DefaultHeaders,
+		CredentialHeaders:   a.CredentialHeaders,
 		DisableChatFallback: true,
 	}
 }

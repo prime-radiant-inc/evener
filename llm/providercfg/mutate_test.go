@@ -81,6 +81,47 @@ func TestWriteFileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteFilePreservesAuthoredCredentialHeaders(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "providers.toml")
+	authored := `
+default = "gw"
+[instances.gw]
+type = "anthropic"
+headers = { "X-Trace-Label" = "team-a" }
+credential_headers = { "X-Gateway-Key" = "$GATEWAY_KEY" }
+`
+	if err := os.WriteFile(path, []byte(authored), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, exists, err := LoadFile(path)
+	if err != nil || !exists {
+		t.Fatalf("LoadFile: exists=%v err=%v", exists, err)
+	}
+	cfg.Instances[0].CredentialHeaders["X-Gateway-Key"] = "secret-sentinel"
+	cfg.Instances[0].Headers["X-Trace-Label"] = "team-b"
+
+	if err := WriteFile(path, cfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `credential_headers = { "X-Gateway-Key" = "$GATEWAY_KEY" }`) {
+		t.Fatalf("authored credential expression was not preserved:\n%s", text)
+	}
+	if strings.Contains(text, "secret-sentinel") {
+		t.Fatalf("resolved credential value reached disk:\n%s", text)
+	}
+	if !strings.Contains(text, `headers = { "X-Trace-Label" = "team-b" }`) {
+		t.Fatalf("ordinary header edit was not persisted:\n%s", text)
+	}
+	if cfg.Instances[0].CredentialHeaders["X-Gateway-Key"] != "secret-sentinel" {
+		t.Fatal("WriteFile mutated the caller's CredentialHeaders map")
+	}
+}
+
 func TestWriteFileCreatesParentDir(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "deep", "providers.toml")

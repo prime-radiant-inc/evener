@@ -196,3 +196,73 @@ headers = { "Authorization" = "a", "authorization" = "b" }
 		t.Errorf("error %q should explain the case-insensitivity collision", err)
 	}
 }
+
+func TestLoad_CredentialHeaders_RoundTripSeparately(t *testing.T) {
+	src := `
+default = "gw"
+[instances.gw]
+type = "anthropic"
+headers = { "X-Trace-Label" = "team-a" }
+credential_headers = { "X-Gateway-Key" = "$GATEWAY_KEY" }
+`
+	cfg, err := Load([]byte(src))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	inst := cfg.Instances[0]
+	if inst.Headers["X-Trace-Label"] != "team-a" {
+		t.Fatalf("Headers = %#v", inst.Headers)
+	}
+	if inst.CredentialHeaders["X-Gateway-Key"] != "$GATEWAY_KEY" {
+		t.Fatalf("CredentialHeaders = %#v", inst.CredentialHeaders)
+	}
+
+	data, err := Marshal(cfg)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	roundTrip, err := Load(data)
+	if err != nil {
+		t.Fatalf("Load(Marshal): %v\n%s", err, data)
+	}
+	got := roundTrip.Instances[0]
+	if got.Headers["X-Trace-Label"] != "team-a" || got.CredentialHeaders["X-Gateway-Key"] != "$GATEWAY_KEY" {
+		t.Fatalf("round-trip merged or lost header maps: Headers=%#v CredentialHeaders=%#v", got.Headers, got.CredentialHeaders)
+	}
+}
+
+func TestLoad_CredentialHeaderCaseCollisionsNameBothSources(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []string
+	}{
+		{
+			name: "within credential_headers",
+			src: `[instances.gw]
+type = "glm"
+credential_headers = { "X-Gateway-Key" = "a", "x-gateway-key" = "b" }`,
+			want: []string{`instance "gw"`, "credential_headers", "case-insensitive"},
+		},
+		{
+			name: "across maps",
+			src: `[instances.gw]
+type = "glm"
+headers = { "X-Gateway-Key" = "visible" }
+credential_headers = { "x-gateway-key" = "secret" }`,
+			want: []string{`instance "gw"`, "headers", "credential_headers", "case-insensitive"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load([]byte(tc.src))
+			if err == nil {
+				t.Fatal("Load accepted case-insensitive duplicate")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}

@@ -27,9 +27,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range a.DefaultHeaders {
-			httpReq.Header.Set(k, v)
-		}
+		a.setConfiguredHeaders(httpReq)
 		httpReq.Header.Set("x-api-key", a.APIKey)
 		httpReq.Header.Set("anthropic-version", "2023-06-01")
 

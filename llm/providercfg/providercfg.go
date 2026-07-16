@@ -20,14 +20,18 @@ type InstanceConfig struct {
 	BaseURL  string   `toml:"base_url"`
 	APIKey   string   `toml:"api_key"`
 	Quirks   string   `toml:"quirks"`
-	// Headers are extra HTTP request headers sent on every call to this
-	// instance's endpoint. Valid for ALL instance types — any provider may sit
-	// behind a gateway (Portkey, Helicone, a CF worker) that needs headers.
+	// Headers are explicitly non-secret HTTP request headers sent on every call
+	// to this instance's endpoint. Valid for ALL instance types — any provider
+	// may sit behind a gateway (Portkey, Helicone, a CF worker) that needs headers.
 	// Values support the same $ENV/${ENV}/$$ expansion as api_key, resolved at
 	// adapter construction (see ResolveHeaderValue). A user-configured header
 	// overrides a provider-set default of the same name (e.g. kimi's coding-plan
 	// User-Agent) but does not erase it when unset.
 	Headers map[string]string `toml:"headers"`
+	// CredentialHeaders are secret HTTP request header names and values. They
+	// use the same runtime environment expansion as Headers but remain separate
+	// so API-log sanitization can exclude arbitrary configured credentials.
+	CredentialHeaders map[string]string `toml:"credential_headers"`
 	// Compat holds OpenAI-compatible protocol overrides applied to every model
 	// served by this instance. Only valid for openai-compat-family instances
 	// (openai+chat-completions, kimi, glm, openrouter, ollama).

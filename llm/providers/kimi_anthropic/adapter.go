@@ -48,7 +48,8 @@ type InstanceParams struct {
 	// Headers are user-configured request headers ([instances.X.headers]). A
 	// user-set User-Agent overrides the coding-plan default, but the default
 	// survives when the user sets none.
-	Headers map[string]string
+	Headers           map[string]string
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs a kimi-anthropic adapter from explicit parameters.
@@ -64,7 +65,8 @@ func NewForInstance(params InstanceParams) *adapter {
 		Client:  &http.Client{Timeout: 0},
 		// Kimi For Coding gates its endpoints behind a coding-agent User-Agent
 		// allowlist; user headers override it but do not erase it.
-		DefaultHeaders: llm.MergeHeaders(map[string]string{"User-Agent": kimicoding.UserAgent}, params.Headers),
+		DefaultHeaders:    llm.MergeHeaders(map[string]string{"User-Agent": kimicoding.UserAgent}, params.Headers),
+		CredentialHeaders: llm.MergeHeaders(nil, params.CredentialHeaders),
 	})
 }
 
@@ -87,7 +89,7 @@ func envAdapterFactory(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 }
 
 func instanceAdapterFactory(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Headers: inst.Headers}), nil
+	return NewForInstance(InstanceParams{Name: inst.Name, BaseURL: inst.BaseURL, APIKey: inst.APIKey, Headers: inst.Headers, CredentialHeaders: inst.CredentialHeaders}), nil
 }
 
 func init() {

@@ -1,0 +1,204 @@
+package llm
+
+import (
+	"net/http"
+	"net/textproto"
+	"net/url"
+	"sort"
+	"strings"
+)
+
+const apiLogCredentialReplacement = "[credential excluded]"
+
+var commonCredentialHeaderNames = map[string]struct{}{
+	"Api-Key":             {},
+	"Authorization":       {},
+	"Cookie":              {},
+	"Proxy-Authorization": {},
+	"X-Api-Key":           {},
+	"X-Auth-Token":        {},
+	"X-Goog-Api-Key":      {},
+}
+
+var commonCredentialQueryNames = map[string]struct{}{
+	"access_token": {},
+	"api_key":      {},
+	"apikey":       {},
+	"key":          {},
+	"token":        {},
+}
+
+// NewAPILogCredentialMaterial records the provider/config-derived names and
+// values that must be removed before request metadata or errors are persisted.
+func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...string) APILogCredentialMaterial {
+	material := APILogCredentialMaterial{}
+	for _, name := range headerNames {
+		canonical := canonicalCredentialHeaderName(name)
+		if canonical == "" {
+			continue
+		}
+		if material.HeaderNames == nil {
+			material.HeaderNames = make(map[string]struct{})
+		}
+		material.HeaderNames[canonical] = struct{}{}
+	}
+	for _, name := range queryNames {
+		canonical := canonicalCredentialQueryName(name)
+		if canonical == "" {
+			continue
+		}
+		if material.QueryNames == nil {
+			material.QueryNames = make(map[string]struct{})
+		}
+		material.QueryNames[canonical] = struct{}{}
+	}
+	seenValues := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, duplicate := seenValues[value]; duplicate {
+			continue
+		}
+		seenValues[value] = struct{}{}
+		material.Values = append(material.Values, value)
+	}
+	return material
+}
+
+// SanitizeRequestForAPILog returns a credential-free endpoint and an exact
+// copy of every surviving final request header name and value.
+func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMaterial) (string, map[string][]string) {
+	if req == nil {
+		return "", nil
+	}
+	endpoint := ""
+	if req.URL != nil {
+		cleanURL := *req.URL
+		cleanURL.User = nil
+		cleanURL.RawQuery = sanitizeRawQuery(cleanURL.RawQuery, material)
+		endpoint = cleanURL.String()
+	}
+
+	var headers map[string][]string
+	for name, values := range req.Header {
+		if credentialHeaderName(name, material) || headerValuesContainCredential(values, material.Values) {
+			continue
+		}
+		if headers == nil {
+			headers = make(map[string][]string)
+		}
+		headers[name] = append([]string(nil), values...)
+	}
+	return endpoint, headers
+}
+
+// SanitizeErrorForAPILog removes raw and URL-escaped credential values from
+// provider errors before they become durable API-log text or warnings.
+func SanitizeErrorForAPILog(text string, material APILogCredentialMaterial) string {
+	variants := credentialValueVariants(material.Values)
+	for _, value := range variants {
+		text = strings.ReplaceAll(text, value, apiLogCredentialReplacement)
+	}
+	return text
+}
+
+func sanitizeRawQuery(rawQuery string, material APILogCredentialMaterial) string {
+	if rawQuery == "" {
+		return ""
+	}
+	parts := strings.Split(rawQuery, "&")
+	kept := parts[:0]
+	for _, part := range parts {
+		rawName, rawValue, _ := strings.Cut(part, "=")
+		name := unescapeQueryComponent(rawName)
+		value := unescapeQueryComponent(rawValue)
+		if credentialQueryName(name, material) || credentialValueEqual(value, rawValue, material.Values) {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "&")
+}
+
+func unescapeQueryComponent(value string) string {
+	unescaped, err := url.QueryUnescape(value)
+	if err != nil {
+		return value
+	}
+	return unescaped
+}
+
+func credentialHeaderName(name string, material APILogCredentialMaterial) bool {
+	canonical := canonicalCredentialHeaderName(name)
+	if _, common := commonCredentialHeaderNames[canonical]; common {
+		return true
+	}
+	_, marked := material.HeaderNames[canonical]
+	return marked
+}
+
+func credentialQueryName(name string, material APILogCredentialMaterial) bool {
+	canonical := canonicalCredentialQueryName(name)
+	if _, common := commonCredentialQueryNames[canonical]; common {
+		return true
+	}
+	_, marked := material.QueryNames[canonical]
+	return marked
+}
+
+func canonicalCredentialHeaderName(name string) string {
+	return textproto.CanonicalMIMEHeaderKey(strings.TrimSpace(name))
+}
+
+func canonicalCredentialQueryName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func headerValuesContainCredential(headerValues, credentials []string) bool {
+	for _, headerValue := range headerValues {
+		for _, credential := range credentials {
+			if credential != "" && strings.Contains(headerValue, credential) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func credentialValueEqual(decoded, raw string, credentials []string) bool {
+	for _, credential := range credentials {
+		if credential == "" {
+			continue
+		}
+		if decoded == credential || raw == credential || raw == url.QueryEscape(credential) || raw == url.PathEscape(credential) {
+			return true
+		}
+	}
+	return false
+}
+
+func credentialValueVariants(values []string) []string {
+	seen := make(map[string]struct{}, len(values)*3)
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		seen[value] = struct{}{}
+		seen[url.QueryEscape(value)] = struct{}{}
+		seen[url.PathEscape(value)] = struct{}{}
+	}
+	variants := make([]string, 0, len(seen))
+	for variant := range seen {
+		if variant != "" {
+			variants = append(variants, variant)
+		}
+	}
+	sort.Slice(variants, func(i, j int) bool {
+		if len(variants[i]) == len(variants[j]) {
+			return variants[i] < variants[j]
+		}
+		return len(variants[i]) > len(variants[j])
+	})
+	return variants
+}

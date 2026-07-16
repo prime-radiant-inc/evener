@@ -20,9 +20,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
+	a.setConfiguredHeaders(httpReq)
 	if a.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
 	}

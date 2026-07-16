@@ -38,7 +38,8 @@ type InstanceParams struct {
 	Compat *providercfg.CompatConfig
 	Models map[string]providercfg.ModelConfig
 	// Headers are user-configured request headers ([instances.X.headers]).
-	Headers map[string]string
+	Headers           map[string]string
+	CredentialHeaders map[string]string
 }
 
 // NewForInstance constructs a glm adapter from explicit parameters.
@@ -49,14 +50,15 @@ func NewForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:       params.Name,
-		BaseURL:    base,
-		APIKey:     params.APIKey,
-		Quirks:     openaicompat.QuirksPreset("glm-5"),
-		Compat:     params.Compat,
-		Models:     params.Models,
-		CatalogTag: "glm",
-		Headers:    params.Headers,
+		Name:              params.Name,
+		BaseURL:           base,
+		APIKey:            params.APIKey,
+		Quirks:            openaicompat.QuirksPreset("glm-5"),
+		Compat:            params.Compat,
+		Models:            params.Models,
+		CatalogTag:        "glm",
+		Headers:           params.Headers,
+		CredentialHeaders: params.CredentialHeaders,
 	}))
 }
 
@@ -75,12 +77,13 @@ func init() {
 	})
 	llm.RegisterInstanceAdapterFactory("glm", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(InstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Compat:  inst.Compat,
-			Models:  inst.Models,
-			Headers: inst.Headers,
+			Name:              inst.Name,
+			BaseURL:           inst.BaseURL,
+			APIKey:            inst.APIKey,
+			Compat:            inst.Compat,
+			Models:            inst.Models,
+			Headers:           inst.Headers,
+			CredentialHeaders: inst.CredentialHeaders,
 		}), nil
 	})
 }

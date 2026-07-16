@@ -7,13 +7,12 @@ import (
 	"strings"
 )
 
-// Marshal emits providers.toml content for cfg, including api_key when set on
-// an instance. Callers that rewrite the ON-DISK file must go through WriteFile,
-// which scrubs struct-held keys and restores only what the existing file
-// already carried — that split is what keeps credentials-store injections
-// (cmdutil.LoadProviderConfig writes resolved keys into InstanceConfig.APIKey
-// in memory) from ever landing on disk while hand-authored keys survive hub
-// edit/set-default/remove rewrites. The output round-trips through Load.
+// Marshal emits providers.toml content for cfg, including credential-bearing
+// fields when set on an instance. Callers that rewrite the ON-DISK file must go
+// through WriteFile, which scrubs runtime API keys and credential headers and
+// restores only what the existing file already carried. That split keeps
+// resolved credentials from landing on disk while authored values and
+// expressions survive rewrites. The output round-trips through Load.
 func Marshal(cfg Config) ([]byte, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "default = %q\n", cfg.Default)
@@ -32,15 +31,21 @@ func Marshal(cfg Config) ([]byte, error) {
 		if inst.Quirks != "" {
 			fmt.Fprintf(&b, "quirks = %q\n", inst.Quirks)
 		}
-		// Unlike api_key, header values round-trip verbatim (including any $ENV
-		// reference). That is why $ENV form is the recommended way to hold a
-		// secret in a header — the reference, not the secret, lands on disk.
+		// Ordinary headers round-trip verbatim. Their values are explicitly
+		// non-secret; arbitrary secret headers belong in CredentialHeaders.
 		if len(inst.Headers) > 0 {
 			pairs := make([]string, 0, len(inst.Headers))
 			for _, k := range sortedKeys(inst.Headers) {
 				pairs = append(pairs, fmt.Sprintf("%q = %q", k, inst.Headers[k]))
 			}
 			fmt.Fprintf(&b, "headers = { %s }\n", strings.Join(pairs, ", "))
+		}
+		if len(inst.CredentialHeaders) > 0 {
+			pairs := make([]string, 0, len(inst.CredentialHeaders))
+			for _, k := range sortedKeys(inst.CredentialHeaders) {
+				pairs = append(pairs, fmt.Sprintf("%q = %q", k, inst.CredentialHeaders[k]))
+			}
+			fmt.Fprintf(&b, "credential_headers = { %s }\n", strings.Join(pairs, ", "))
 		}
 		writeCompat(&b, fmt.Sprintf("instances.%s.compat", inst.Name), inst.Compat)
 		for _, id := range sortedKeys(inst.Models) {

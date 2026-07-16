@@ -32,7 +32,7 @@ instances — a `providers.toml`:
 |-------|------|--------|-------|----------|
 | Credentials store | `<hubStateRoot>/credentials.toml` (chmod 600) | TOML | `internal/credentials` | API keys, keyed by provider type |
 | OpenAI OAuth record | `<stateDir>/auth/<instance>.json` (chmod 600) | JSON | `internal/auth/openai` | OpenAI ChatGPT/Codex OAuth tokens, per instance |
-| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | descriptors-only instance list (type, apiStyle, base URL, quirks, plus optional per-instance/per-model `compat` and `models` tables — `api_key` may hold a literal key or a `$ENV`/`${ENV}` reference; hub rewrites preserve the on-disk value and never introduce one — `WriteFile` scrubs struct-held keys) |
+| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | instance descriptors plus optional `headers`, `credential_headers`, `compat`, and `models`; runtime credential values are scrubbed during rewrites and authored credential expressions are preserved |
 | Process environment | n/a | env vars | the OS | fallback / base URLs / tuning |
 
 The **hub process never runs a model**. To validate or list models it spawns
@@ -42,6 +42,31 @@ The **hub process never runs a model**. To validate or list models it spawns
 `providers.toml`: when the hub has loaded one it passes the path as
 `SERF_PROVIDERS_CONFIG` (`launchconfig.ToEnv:65`) and the child re-reads it; OAuth
 records are likewise re-read from disk by the child (via `SERF_STATE_DIR`).
+
+### Provider header classes
+
+Provider instances keep ordinary and credential-bearing custom headers in
+separate maps:
+
+```toml
+[instances.gateway]
+type = "anthropic"
+headers = { "X-Trace-Label" = "team-a" }
+credential_headers = { "X-Gateway-Key" = "$GATEWAY_KEY" }
+```
+
+`headers` is explicitly non-secret and remains eligible for exact API-log
+capture. `credential_headers` is the source of truth for arbitrary secret
+header names and values; those headers reach the provider request but are
+excluded from persisted API diagnostics. Both maps use `$ENV`, `${ENV}`, and
+`$$` expansion only when constructing the runtime adapter. Header names are
+case-insensitive for validation, and a duplicate within or across the maps is
+rejected rather than silently moved or reclassified.
+
+`WriteFile` never writes resolved credential-header values from a runtime
+config. It restores the existing file's authored `credential_headers` map, so
+environment expressions survive unrelated rewrites without leaking the
+resolved secret.
 
 ---
 

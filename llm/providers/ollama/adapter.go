@@ -143,7 +143,8 @@ type InstanceParams struct {
 	Compat *providercfg.CompatConfig
 	Models map[string]providercfg.ModelConfig
 	// Headers are user-configured request headers ([instances.X.headers]).
-	Headers map[string]string
+	Headers           map[string]string
+	CredentialHeaders map[string]string
 }
 
 // newForInstance constructs an ollama adapter from explicit parameters.
@@ -154,12 +155,13 @@ func newForInstance(params InstanceParams) *adapter {
 		base = defaultBaseURL
 	}
 	return newAdapter(params.Name, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-		Name:    params.Name,
-		BaseURL: base,
-		APIKey:  params.APIKey,
-		Compat:  params.Compat,
-		Models:  params.Models,
-		Headers: params.Headers,
+		Name:              params.Name,
+		BaseURL:           base,
+		APIKey:            params.APIKey,
+		Compat:            params.Compat,
+		Models:            params.Models,
+		Headers:           params.Headers,
+		CredentialHeaders: params.CredentialHeaders,
 		// Local ollama models are unrelated to any upstream catalog entry
 		// that happens to share the bare name (see profile.go's
 		// suppressBareCatalogLookup, which applies the same rule on the
@@ -185,12 +187,13 @@ func init() {
 	})
 	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return newForInstance(InstanceParams{
-			Name:    inst.Name,
-			BaseURL: inst.BaseURL,
-			APIKey:  inst.APIKey,
-			Compat:  inst.Compat,
-			Models:  inst.Models,
-			Headers: inst.Headers,
+			Name:              inst.Name,
+			BaseURL:           inst.BaseURL,
+			APIKey:            inst.APIKey,
+			Compat:            inst.Compat,
+			Models:            inst.Models,
+			Headers:           inst.Headers,
+			CredentialHeaders: inst.CredentialHeaders,
 		}), nil
 	})
 }
