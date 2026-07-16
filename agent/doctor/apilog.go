@@ -209,7 +209,10 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 		}
 		row.Empty = attempt.Outcome == apilog.AttemptSuccess && row.TextLength == 0 && row.ToolCalls == 0
 	}
-	row.UncachedInput = row.InputTokens - row.CacheRead
+	// llm.Usage.InputTokens is already normalized to uncached input by the
+	// provider adapter. CacheRead is reported separately and must not be
+	// subtracted a second time.
+	row.UncachedInput = row.InputTokens
 	return row
 }
 
@@ -239,8 +242,8 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 		fmt.Fprintln(&b, "(no calls match)")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%-26s %-8s %-18s %-18s %-16s %-24s %8s %8s %8s %9s %6s %5s\n",
-		"attempt_id", "index", "provider", "model", "outcome", "settlement", "latency", "in_tok", "out_tok", "uncached", "txt", "tools")
+	fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-16s %-24s %-19s %8s %8s %8s %9s %6s %5s\n",
+		"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "settlement", "final_attempt_count", "latency", "in_tok", "out_tok", "uncached", "txt", "tools")
 	for _, c := range r.Calls {
 		outcome := string(c.Outcome)
 		if c.Error != "" {
@@ -252,9 +255,13 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 		if c.Final {
 			settlement += " final"
 		}
-		fmt.Fprintf(&b, "%-26s %-8d %-18s %-18s %-16s %-24s %7dms %8d %8d %9d %6d %5d\n",
-			truncate(c.AttemptID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
-			truncate(c.Model, 18), truncate(outcome, 16), truncate(settlement, 24), c.LatencyMs,
+		finalAttemptCount := "-"
+		if c.FinalAttemptCount != nil {
+			finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
+		}
+		fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-16s %-24s %-19s %7dms %8d %8d %9d %6d %5d\n",
+			truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
+			truncate(c.Model, 18), truncate(outcome, 16), truncate(settlement, 24), finalAttemptCount, c.LatencyMs,
 			c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls)
 	}
 	return b.String()

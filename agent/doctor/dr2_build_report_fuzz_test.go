@@ -556,8 +556,8 @@ func FuzzDr2APILog(f *testing.F) {
 			if !rowMatchesFilter(row, opts, threshold) {
 				t.Fatalf("displayed row fails the active filter: %+v opts=%+v", row, opts)
 			}
-			if row.UncachedInput != row.InputTokens-row.CacheRead {
-				t.Fatalf("row uncached=%d != in-cache=%d", row.UncachedInput, row.InputTokens-row.CacheRead)
+			if row.UncachedInput != row.InputTokens {
+				t.Fatalf("row uncached=%d != normalized input=%d", row.UncachedInput, row.InputTokens)
 			}
 		}
 	})

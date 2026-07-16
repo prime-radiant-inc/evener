@@ -10,9 +10,9 @@ tree — reading canonical durable state through the `serf-doctor` tools.
 
 **Core principle:** You diagnose by reading serf's own folds and types through
 the `serf-doctor` tools, never by hand-parsing JSONL. The tools import serf's
-canonical code (`jobstore` folds, `provenance`, `transcript`), so the numbers
-they report are the numbers the runtime computed. **A healthy run emits zero
-findings.**
+canonical code (`jobstore` folds, `provenance`, `transcript`, `apilog`), so the
+numbers they report are the numbers the runtime computed. **A healthy run emits
+zero findings.**
 
 ## HARD GATE: consult the data model, inspect through the tools, never hand-parse
 
@@ -52,9 +52,9 @@ Run them via the shell tool. First positional arg is a session selector:
 
 | Command | Answers | Key flags |
 |---|---|---|
-| `serf-doctor locate <sel>` | where are this session's transcript / meta / jobs files? | `--all-buckets` |
+| `serf-doctor locate <sel>` | where are this session's transcript / private API log / meta / jobs files? | `--all-buckets` |
 | `serf-doctor transcript <sel>` | render the turns; **how many real `X` calls?** | `--count <tool>`, `--format outline\|markdown`, `--range last:N` |
-| `serf-doctor apilog <sel>` | per-call tokens/latency, **empty responses, errors, cache spikes**, session token spend | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary` |
+| `serf-doctor apilog <sel>` | summarize canonical `sessions/<sid>.api.jsonl` attempt identity/grouping/finality, tokens/latency, **empty responses, errors, cache spikes** | `--empty`, `--errors`, `--cache-spikes [--threshold N]`, `--summary` |
 | `serf-doctor watches <sel>` | distinct deliveries (collapsing coalescing), provenance, **breaker telemetry (self-influence depth + runaway drops)** | `--watch <id>`, `--self-loops` |
 | `serf-doctor tree <sel>` | parent ↔ delegate/observer tree across buckets | `--depth N`, `--observers` |
 

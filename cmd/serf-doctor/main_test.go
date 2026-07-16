@@ -392,7 +392,7 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--cache-spikes", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		requireAPILogTableRow(t, out.String(), cacheSpikeAPIAttemptID, "59000")
+		requireAPILogTableRow(t, out.String(), cacheSpikeAPIAttemptID, "60000")
 	})
 
 	t.Run("summary", func(t *testing.T) {

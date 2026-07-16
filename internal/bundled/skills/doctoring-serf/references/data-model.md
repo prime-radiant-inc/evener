@@ -57,7 +57,7 @@ it was never read). Under an XDG home the layout is:
 Parent, observer, and delegate sub-sessions are different SIDs and frequently
 live in **different buckets**. Don't assume one bucket.
 
-**Read it via:** `serf-doctor locate <selector>` (resolves all three paths +
+**Read it via:** `serf-doctor locate <selector>` (resolves all four paths +
 bucket hash; never recompute the hash by hand — resolve by glob).
 
 ---

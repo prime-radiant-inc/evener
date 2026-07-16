@@ -126,12 +126,30 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 		t.Fatalf("error filter = %+v, err %v", failures.Calls, err)
 	}
 	spikes, err := APILog(base, sid, APILogOpts{CacheSpikes: true})
-	if err != nil || len(spikes.Calls) != 1 || spikes.Calls[0].UncachedInput != 59000 {
+	if err != nil || len(spikes.Calls) != 1 || spikes.Calls[0].UncachedInput != 60000 {
 		t.Fatalf("spike filter = %+v, err %v", spikes.Calls, err)
 	}
 	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
-	if err != nil || len(low.Calls) != 2 {
+	if err != nil || len(low.Calls) != 3 {
 		t.Fatalf("low spike filter rows = %d, err %v", len(low.Calls), err)
+	}
+}
+
+func TestAPILogCacheSpikesUseNormalizedUncachedInput(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_normalized", 1, apilog.AttemptSuccess, 1, 100, 0, 90, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
+
+	res, err := APILog(base, sidA, APILogOpts{CacheSpikes: true, SpikeThreshold: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Calls) != 1 {
+		t.Fatalf("cache spike rows = %d, want 1: InputTokens is already normalized uncached input", len(res.Calls))
+	}
+	if got := res.Calls[0].UncachedInput; got != 100 {
+		t.Fatalf("uncached_input_tokens = %d, want normalized input_tokens 100", got)
 	}
 }
 
@@ -221,7 +239,7 @@ func TestAPILogInteriorCorruptionIsError(t *testing.T) {
 }
 
 func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
-	base, sid, _ := apilogFixture(t)
+	base, sid, attempts := apilogFixture(t)
 	res, err := APILog(base, sid, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
@@ -234,4 +252,61 @@ func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
 	if !strings.Contains(out, "attempt_id") || !strings.Contains(out, "settled") {
 		t.Fatalf("detailed output missing canonical identity/finality:\n%s", out)
 	}
+	if got := apilogHumanColumn(t, out, attempts[0].AttemptID, "attempt_group_id"); got != "ag_normal" {
+		t.Fatalf("attempt_group_id column = %q, want ag_normal\n%s", got, out)
+	}
+	if got := apilogHumanColumn(t, out, attempts[0].AttemptID, "final_attempt_count"); got != "1" {
+		t.Fatalf("final_attempt_count column = %q, want 1\n%s", got, out)
+	}
+
+	unsettled := RenderAPILog(APILogResult{
+		SessionID: sid,
+		Calls: []APICallRow{{
+			AttemptID:       attempts[0].AttemptID,
+			AttemptGroupID:  "ag_unsettled",
+			AttemptIndex:    1,
+			SettlementState: SettlementUnsettled,
+		}},
+	}, APILogOpts{})
+	if got := apilogHumanColumn(t, unsettled, attempts[0].AttemptID, "final_attempt_count"); got != "-" {
+		t.Fatalf("unsettled final_attempt_count column = %q, want -\n%s", got, unsettled)
+	}
+}
+
+func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	var header, row string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "attempt_id ") {
+			header = line
+		}
+		if strings.HasPrefix(line, attemptID+" ") {
+			row = line
+		}
+	}
+	if header == "" {
+		t.Fatalf("API-log output has no table header:\n%s", output)
+	}
+	if row == "" {
+		t.Fatalf("API-log output has no row for %s:\n%s", attemptID, output)
+	}
+	start := strings.Index(header, column)
+	if start < 0 {
+		t.Fatalf("API-log table has no %s column:\n%s", column, output)
+	}
+	end := len(header)
+	for _, field := range strings.Fields(header) {
+		fieldStart := strings.Index(header, field)
+		if fieldStart > start && fieldStart < end {
+			end = fieldStart
+		}
+	}
+	if start >= len(row) {
+		return ""
+	}
+	if end > len(row) {
+		end = len(row)
+	}
+	return strings.TrimSpace(row[start:end])
 }
