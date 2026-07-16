@@ -621,6 +621,9 @@ func usableTurnIndex(file *os.File, size int64, maxLineBytes int, projectionID s
 
 func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineBytes int, index *turnIndexDisk, projectNames map[string]string, project BoundedEntryProjector) (int64, error) {
 	if start >= transcriptSize {
+		if err := transcript.ValidateHeader(index.Header); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 	section := io.NewSectionReader(file, start, transcriptSize-start)

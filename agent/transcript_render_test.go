@@ -359,11 +359,43 @@ func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 	}
 }
 
+func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
+	header := `{"kind":"header","format_version":2,"session_id":"tail-test"}`
+	complete := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
+	tests := []struct {
+		name string
+		tail string
+	}{
+		{name: "valid json entry", tail: `{"kind":"entry","seq":1,"turn":{"kind":"assistant"}}`},
+		{name: "truncated json", tail: `{"kind":"entry","seq":1,"tur`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tail.transcript.jsonl")
+			if err := os.WriteFile(path, []byte(header+"\n"+complete+"\n"+tc.tail), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			content, lineCount, skipped, truncated, err := rawLinesForRange(path, 0, 10)
+			if err != nil {
+				t.Fatalf("rawLinesForRange: %v", err)
+			}
+			if want := header + "\n" + complete + "\n"; content != want {
+				t.Fatalf("content = %q, want %q", content, want)
+			}
+			if lineCount != 2 || skipped != 1 || truncated {
+				t.Fatalf("lines/skipped/truncated = %d/%d/%v, want 2/1/false", lineCount, skipped, truncated)
+			}
+		})
+	}
+}
+
 func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
+	validEntry := `{"kind":"entry","seq":1,"turn":{"kind":"user_input"}}` + "\n"
 	tests := []string{
 		`{"kind":"header","format_version":1,"session_id":"legacy"}` + "\n",
 		`{"kind":"header","format_version":2,"session_id":"mixed"}` + "\n" + `{"kind":"api_call"}` + "\n",
-		`{"kind":"header","format_version":2,"session_id":"corrupt"}` + "\n" + "{not-json}\n",
+		`{"kind":"header","format_version":2,"session_id":"corrupt"}` + "\n" + "{not-json}\n" + validEntry,
 	}
 	for _, body := range tests {
 		path := filepath.Join(t.TempDir(), "bad.transcript.jsonl")

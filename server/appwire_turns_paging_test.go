@@ -152,26 +152,37 @@ func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
 }
 
 func TestDaemonTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1,"session_id":"th_1"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "version one", body: `{"kind":"header","format_version":1,"session_id":"th_1"}` + "\n"},
+		{name: "empty", body: ""},
 	}
-	srv := NewServer(ServerConfig{})
-	srv.SetAppIdentity("local", "th_1")
-	srv.SetTranscriptPathFunc(func() string { return path })
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			srv := NewServer(ServerConfig{})
+			srv.SetAppIdentity("local", "th_1")
+			srv.SetTranscriptPathFunc(func() string { return path })
 
-	for _, params := range []appwire.ThreadReadParams{
-		{IncludeTurns: true},
-		{IncludeTurns: true, TurnLimit: 1},
-	} {
-		resp, err := srv.handleAppThreadRead(context.Background(), params)
-		if !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
-			t.Fatalf("thread/read = (%+v, %v), want empty ErrUnsupportedFormat", resp, err)
-		}
-	}
-	page, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{Limit: 1})
-	if !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
-		t.Fatalf("thread/turns/list = (%+v, %v), want empty ErrUnsupportedFormat", page, err)
+			for _, params := range []appwire.ThreadReadParams{
+				{IncludeTurns: true},
+				{IncludeTurns: true, TurnLimit: 1},
+			} {
+				resp, err := srv.handleAppThreadRead(context.Background(), params)
+				if !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
+					t.Fatalf("thread/read = (%+v, %v), want empty ErrUnsupportedFormat", resp, err)
+				}
+			}
+			page, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{Limit: 1})
+			if !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
+				t.Fatalf("thread/turns/list = (%+v, %v), want empty ErrUnsupportedFormat", page, err)
+			}
+		})
 	}
 }
 

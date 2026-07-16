@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"sort"
@@ -284,17 +285,18 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 	}
 	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	reader := bufio.NewReaderSize(f, 64*1024)
 
 	// First line must be the header; always include it.
-	if !scanner.Scan() {
-		if scanErr := scanner.Err(); scanErr != nil {
-			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", scanErr)
-		}
+	headerBytes, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
+	if readErr != nil && !errors.Is(readErr, io.EOF) {
+		return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
+	}
+	if errors.Is(readErr, io.EOF) {
 		return "", 0, 0, false, errors.New("transcript file is empty: no header")
 	}
-	headerLine := scanner.Text()
+	headerLine := strings.TrimSuffix(string(headerBytes), "\n")
+	headerLine = strings.TrimSuffix(headerLine, "\r")
 	var header transcript.Header
 	if err := json.Unmarshal([]byte(headerLine), &header); err != nil {
 		return "", 0, 0, false, fmt.Errorf("parse transcript header: %w", err)
@@ -312,8 +314,19 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		Kind string `json:"kind"`
 	}
 
-	for scanner.Scan() {
-		rawLine := scanner.Text()
+	for {
+		line, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", 0, skipped, false, fmt.Errorf("reading transcript: %w", readErr)
+		}
+		if errors.Is(readErr, io.EOF) {
+			if len(line) > 0 {
+				skipped++
+			}
+			break
+		}
+		rawLine := strings.TrimSuffix(string(line), "\n")
+		rawLine = strings.TrimSuffix(rawLine, "\r")
 		if rawLine == "" {
 			continue
 		}
@@ -331,9 +344,6 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		if entryPos >= startSeq && entryPos <= endSeq {
 			included = append(included, rawLine)
 		}
-	}
-	if scanErr := scanner.Err(); scanErr != nil {
-		return "", 0, 0, false, fmt.Errorf("reading transcript: %w", scanErr)
 	}
 
 	// Build output: header first, then included lines, joined with "\n" + trailing newline.

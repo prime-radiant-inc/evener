@@ -187,3 +187,47 @@ func TestTurnCacheRejectsUnsupportedTranscriptWithoutStaleState(t *testing.T) {
 		})
 	}
 }
+
+func TestBoundedReadersRequireACompleteV2Header(t *testing.T) {
+	t.Run("empty transcript", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector)
+		if !errors.Is(err, transcript.ErrUnsupportedFormat) || turns != nil || cursor != "" {
+			t.Fatalf("LatestFromFile = (%v, %q, %v), want nil empty ErrUnsupportedFormat", turns, cursor, err)
+		}
+
+		page, err := NewTurnCache().PageFromFile(path, 1<<20, "", 1, boundedTestProjector)
+		if !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Turns != nil || page.NextCursor != "" {
+			t.Fatalf("PageFromFile = (%+v, %v), want empty ErrUnsupportedFormat", page, err)
+		}
+
+		count, err := NewTurnCache().TurnCountFromFile(path, 1<<20, boundedTestProjector)
+		if !errors.Is(err, transcript.ErrUnsupportedFormat) || count != 0 {
+			t.Fatalf("TurnCountFromFile = (%d, %v), want zero ErrUnsupportedFormat", count, err)
+		}
+	})
+
+	t.Run("header only v2 transcript", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":2}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		cache := NewTurnCache()
+		turns, cursor := requireLatestFromFile(t, cache, path, 1<<20, 1, boundedTestProjector)
+		if turns != nil || cursor != "" {
+			t.Fatalf("LatestFromFile = (%v, %q), want nil empty", turns, cursor)
+		}
+		page := requirePageFromFile(t, cache, path, 1<<20, "", 1, boundedTestProjector)
+		if page.Turns != nil || page.NextCursor != "" {
+			t.Fatalf("PageFromFile = %+v, want empty", page)
+		}
+		if count := requireTurnCountFromFile(t, cache, path, 1<<20, boundedTestProjector); count != 0 {
+			t.Fatalf("TurnCountFromFile = %d, want zero", count)
+		}
+	})
+}
