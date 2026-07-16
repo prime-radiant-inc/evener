@@ -133,6 +133,7 @@ func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 		{"completed", SubagentCompleted, nil, SubagentCompleted, true},
 		{"failed", SubagentFailed, errors.New("boom"), SubagentFailed, false},
 		{"cancelled", SubagentCancelled, context.Canceled, SubagentCancelled, false},
+		{"exhausted", SubagentExhausted, &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 1}, SubagentExhausted, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,6 +143,12 @@ func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 				t.Fatalf("got %+v", snap)
 			}
 		})
+	}
+}
+
+func TestSubagentStatusExhaustedIsTerminal(t *testing.T) {
+	if !terminalStatus(SubagentExhausted) {
+		t.Fatal("exhausted subagent status must be terminal")
 	}
 }
 

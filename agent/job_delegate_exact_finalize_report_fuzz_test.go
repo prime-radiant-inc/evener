@@ -64,7 +64,7 @@ func FuzzJobDelegateExactFinalizeReportSeed100(f *testing.F) {
 				t.Fatalf("nil output append = %d, %v", n, err)
 			}
 		case 8:
-			status, reason := delegateTerminalStatus(nil, nil, SubagentCancelled)
+			status, reason := delegateTerminalStatus(nil, nil, SubagentCancelled, nil)
 			if status != jobstore.StatusCancelled || reason != "stopped_by_parent" {
 				t.Fatalf("cancel terminal = %q/%q", status, reason)
 			}

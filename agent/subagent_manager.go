@@ -314,10 +314,10 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 }
 
 // terminalStatus reports whether a status is a finished run outcome
-// (completed|failed|cancelled) — one with a result to surface.
+// (completed|failed|cancelled|exhausted) — one with a result to surface.
 func terminalStatus(status SubagentStatus) bool {
 	switch status {
-	case SubagentCompleted, SubagentFailed, SubagentCancelled:
+	case SubagentCompleted, SubagentFailed, SubagentCancelled, SubagentExhausted:
 		return true
 	default:
 		return false

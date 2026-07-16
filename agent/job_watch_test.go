@@ -215,6 +215,7 @@ func restoredWatchSendDelegateEvents(sessionID, jobID string, now time.Time, res
 			JobID:       jobID,
 			Status:      jobstore.StatusCompleted,
 			Reason:      "exit_zero",
+			Resumable:   resumable,
 			EndedAt:     &endedAt,
 			TerminalGen: "term_" + jobID,
 		},

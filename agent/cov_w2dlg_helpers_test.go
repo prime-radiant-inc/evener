@@ -12,7 +12,7 @@ import (
 func TestW2Dlg_DelegateTerminalStatus_DefaultAndStopOverride(t *testing.T) {
 	t.Parallel()
 
-	status, reason := delegateTerminalStatus(nil, nil, SubagentStatus("bogus"))
+	status, reason := delegateTerminalStatus(nil, nil, SubagentStatus("bogus"), nil)
 	if status != jobstore.StatusFailed || reason != "unknown_child_status" {
 		t.Fatalf("default = (%q, %q), want (failed, unknown_child_status)", status, reason)
 	}
@@ -23,7 +23,7 @@ func TestW2Dlg_DelegateTerminalStatus_DefaultAndStopOverride(t *testing.T) {
 		stopStatus: jobstore.StatusCancelled,
 		stopReason: "stopped_by_parent",
 	}
-	status, reason = delegateTerminalStatus(jm, run, SubagentCompleted)
+	status, reason = delegateTerminalStatus(jm, run, SubagentCompleted, nil)
 	if status != jobstore.StatusCancelled || reason != "stopped_by_parent" {
 		t.Fatalf("stop override = (%q, %q), want (cancelled, stopped_by_parent)", status, reason)
 	}

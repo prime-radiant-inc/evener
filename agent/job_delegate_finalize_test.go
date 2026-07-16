@@ -307,6 +307,62 @@ func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *
 	}
 }
 
+func TestFinalizeDelegateExhaustedFinishSurvivesPostPersistRetries(t *testing.T) {
+	tests := []struct {
+		name       string
+		injectFail func(*jobManager)
+	}{
+		{
+			name: "forwarding",
+			injectFail: func(jm *jobManager) {
+				jm.parentJobID = "parent-job"
+				failuresRemaining := 1
+				jm.forward = func(event jobstore.Event) error {
+					if event.Kind == jobstore.EventJobFinished && failuresRemaining > 0 {
+						failuresRemaining--
+						return errors.New("injected forwarding failure")
+					}
+					return nil
+				}
+			},
+		},
+		{
+			name: "notification pending append",
+			injectFail: func(jm *jobManager) {
+				failAppendN(jm, jobstore.EventJobNotificationPending, 1)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			parent := newTestSession(t)
+			child := newTestSession(t)
+			exhausted := &budgetExhaustionError{Budget: exhaustedBudgetToolRounds, Limit: 1, Resumable: true}
+			sub, run := attachExhaustedDelegateForTest(t, parent, child, "durable exhausted output", exhausted)
+			var attempted []jobstore.Status
+			origAppend := parent.jobManager.appendEvent
+			parent.jobManager.appendEvent = func(event jobstore.Event) error {
+				if event.Kind == jobstore.EventJobFinished {
+					attempted = append(attempted, event.Status)
+				}
+				return origAppend(event)
+			}
+			test.injectFail(parent.jobManager)
+
+			if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+				t.Fatalf("finalizeDelegate: %v", err)
+			}
+			rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+			if rec.Status != jobstore.StatusExhausted || rec.Reason != "tool_round_budget_exhausted" {
+				t.Fatalf("terminal = %s/%q, want exhausted/tool_round_budget_exhausted", rec.Status, rec.Reason)
+			}
+			if len(attempted) != 1 || attempted[0] != jobstore.StatusExhausted {
+				t.Fatalf("job_finished attempts = %v, want one exhausted generation", attempted)
+			}
+		})
+	}
+}
+
 func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
 	t.Parallel()
 	parent := newTestSession(t)

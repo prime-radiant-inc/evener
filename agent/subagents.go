@@ -32,6 +32,8 @@ const (
 	SubagentFailed SubagentStatus = "failed"
 	// SubagentCancelled indicates the sub-agent's run was cancelled.
 	SubagentCancelled SubagentStatus = "cancelled"
+	// SubagentExhausted indicates the sub-agent stopped at a configured budget.
+	SubagentExhausted SubagentStatus = "exhausted"
 )
 
 // subagentResult is the structured output from a completed sub-agent.
@@ -1117,6 +1119,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		kind = EntryWatchDelivery
 	}
 	res, err := a.sess.processInputKindWithProvenance(ctx, input, nil, kind, inputProvenance)
+	_, budgetExhausted := budgetExhaustionFromError(err)
 
 	// A requested cancel suppresses both the communicate-nudge and the
 	// SubagentStop blocking-continuation: neither should run another turn on the
@@ -1131,6 +1134,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	// and repeated bare-text responses that exhausted the session-level retry
 	// loop before the subagent had a chance to report back.
 	shouldNudge := !cancelRequested &&
+		!budgetExhausted &&
 		!runStartedFromWatch &&
 		a.nudgeEnabled &&
 		!a.sess.Communicated() &&
@@ -1138,7 +1142,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	if shouldNudge {
 		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
 	}
-	if !cancelRequested {
+	if !cancelRequested && !budgetExhausted {
 		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 	}
 
@@ -1158,6 +1162,9 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 	switch {
 	case a.cancelRequested && errors.Is(err, context.Canceled):
 		a.status = SubagentCancelled
+	case budgetExhausted:
+		a.status = SubagentExhausted
+		a.err, _ = budgetExhaustionFromError(err)
 	case err != nil:
 		a.status = SubagentFailed
 	default:

@@ -35,6 +35,18 @@ const (
 	structuredResultReasonProjectionTooLarge     = "projection_too_large"
 )
 
+type terminalRecordPersistError struct {
+	err error
+}
+
+func (e *terminalRecordPersistError) Error() string {
+	return "persist terminal job record: " + e.err.Error()
+}
+
+func (e *terminalRecordPersistError) Unwrap() error {
+	return e.err
+}
+
 type jobManager struct {
 	mu            sync.Mutex
 	watchNotifyMu sync.Mutex
@@ -182,25 +194,27 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 }
 
 type runningJob struct {
-	rec                     *jobstore.JobRecord
-	output                  *jobstore.OutputStore
-	signal                  func()
-	done                    chan struct{}
-	doneOnce                sync.Once
-	durableStarted          bool
-	stopStatus              jobstore.Status
-	stopReason              string
-	structured              any
-	structuredCaptureFailed bool
-	terminal                *terminalJob
-	finalize                *finalizeAttempt
-	delegateOutputAppended  bool
-	delegateOutputWritten   int
-	delegateResumeAssessed  bool
-	afterDurableFinish      func()
-	fromWatch               atomic.Bool
-	callerCallbackDelivered atomic.Bool
-	forwardDisabled         bool
+	rec                             *jobstore.JobRecord
+	output                          *jobstore.OutputStore
+	signal                          func()
+	done                            chan struct{}
+	doneOnce                        sync.Once
+	durableStarted                  bool
+	stopStatus                      jobstore.Status
+	stopReason                      string
+	structured                      any
+	structuredCaptureFailed         bool
+	terminal                        *terminalJob
+	finalize                        *finalizeAttempt
+	delegateOutputAppended          bool
+	delegateOutputWritten           int
+	delegateResumeAssessed          bool
+	exhaustion                      *budgetExhaustionError
+	delegateExhaustionPersistFailed bool
+	afterDurableFinish              func()
+	fromWatch                       atomic.Bool
+	callerCallbackDelivered         atomic.Bool
+	forwardDisabled                 bool
 	// watchdogStop, when non-nil, stops the quiet-job watchdog goroutine for a
 	// running delegate. Closed once at finalize. quietNotified latches the
 	// quiet notification to once-per-quiet-stretch; it is read/written under
@@ -349,6 +363,9 @@ func (jm *jobManager) liveShellHandles() []liveWorkHandle {
 type terminalJob struct {
 	status                       jobstore.Status
 	reason                       string
+	exhaustionBudget             string
+	exhaustionLimit              int
+	resumable                    *bool
 	exitCode                     *int
 	endedAt                      time.Time
 	outputBytes                  int64
@@ -1396,16 +1413,30 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 	resultSchema := delegateResultSchema(run.rec)
 	structured, structuredValid, structuredReason := boundedStructuredResult(run.structured, resultSchema, run.structuredCaptureFailed)
 	afterDurableFinish := run.afterDurableFinish
+	exhaustionBudget := ""
+	exhaustionLimit := 0
+	if run.exhaustion != nil {
+		exhaustionBudget = string(run.exhaustion.Budget)
+		exhaustionLimit = run.exhaustion.Limit
+	}
+	var resumable *bool
+	if run.rec.Resumable != nil {
+		value := *run.rec.Resumable
+		resumable = &value
+	}
 	jm.mu.Unlock()
 
 	endedAt := jm.now()
 	terminal := &terminalJob{
-		status:      status,
-		reason:      reason,
-		exitCode:    exitCode,
-		endedAt:     endedAt,
-		outputBytes: outputBytes,
-		generation:  jobstore.NewTerminalGeneration(),
+		status:           status,
+		reason:           reason,
+		exhaustionBudget: exhaustionBudget,
+		exhaustionLimit:  exhaustionLimit,
+		resumable:        resumable,
+		exitCode:         exitCode,
+		endedAt:          endedAt,
+		outputBytes:      outputBytes,
+		generation:       jobstore.NewTerminalGeneration(),
 	}
 	finished := jobstore.Event{
 		Kind:                   jobstore.EventJobFinished,
@@ -1413,6 +1444,9 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		JobID:                  run.rec.JobID,
 		Status:                 terminal.status,
 		Reason:                 terminal.reason,
+		ExhaustionBudget:       terminal.exhaustionBudget,
+		ExhaustionLimit:        terminal.exhaustionLimit,
+		Resumable:              terminal.resumable,
 		ExitCode:               terminal.exitCode,
 		EndedAt:                &endedAt,
 		OutputBytes:            terminal.outputBytes,
@@ -1424,7 +1458,7 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 	}
 	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
-		return nil, err
+		return nil, &terminalRecordPersistError{err: err}
 	}
 
 	jm.mu.Lock()
@@ -1432,6 +1466,9 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		run.terminal = terminal
 		run.rec.Status = terminal.status
 		run.rec.Reason = terminal.reason
+		run.rec.ExhaustionBudget = terminal.exhaustionBudget
+		run.rec.ExhaustionLimit = terminal.exhaustionLimit
+		run.rec.Resumable = terminal.resumable
 		run.rec.ExitCode = terminal.exitCode
 		run.rec.EndedAt = &terminal.endedAt
 		run.rec.OutputBytes = terminal.outputBytes

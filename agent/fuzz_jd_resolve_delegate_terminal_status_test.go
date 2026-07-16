@@ -36,8 +36,8 @@ func FuzzJdResolveDelegateTerminalStatus(f *testing.F) {
 		stopStatus := stopStatuses[int(stopSel)%len(stopStatuses)]
 		child := children[int(childSel)%len(children)]
 
-		gotStatus, gotReason := resolveDelegateTerminalStatus(stopStatus, stopReason, child)
-		if s2, r2 := resolveDelegateTerminalStatus(stopStatus, stopReason, child); gotStatus != s2 || gotReason != r2 {
+		gotStatus, gotReason := resolveDelegateTerminalStatus(stopStatus, stopReason, child, nil)
+		if s2, r2 := resolveDelegateTerminalStatus(stopStatus, stopReason, child, nil); gotStatus != s2 || gotReason != r2 {
 			t.Fatalf("non-deterministic: (%q,%q) vs (%q,%q)", gotStatus, gotReason, s2, r2)
 		}
 

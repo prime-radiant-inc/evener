@@ -79,6 +79,7 @@ const (
 	notResumableWorktreeDisposed              = "isolation_worktree_disposed"
 	notResumableWorkingDirMissing             = "working_dir_missing"
 	notResumableSandboxUnsatisfiable          = "sandbox_unsatisfiable"
+	notResumableTurnBudgetExhausted           = "turn_budget_exhausted"
 )
 
 type delegateResumability struct {
@@ -653,6 +654,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if !rec.Status.IsTerminal() {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
 	}
+	if rec.Resumable != nil && !*rec.Resumable && rec.NotResumableWhy == notResumableTurnBudgetExhausted {
+		return sendMessageFailed(target, notResumableSendError(notResumableTurnBudgetExhausted))
+	}
 	// A disposed delegate refuses every send, including on the retained path
 	// (spec §P1 "Post-disposal delegate_send"). assessDelegateResumability also
 	// checks Disposed, but that runs only on the restore path; a still-tracked
@@ -794,6 +798,8 @@ func notResumableSendError(reason string) error {
 		return errors.New("target_not_resumable: this delegate's isolation worktree was disposed; start a new delegate")
 	case notResumableWorkingDirMissing:
 		return errors.New("target_not_resumable: this delegate's working directory no longer exists; start a new delegate")
+	case notResumableTurnBudgetExhausted:
+		return errors.New("target_not_resumable: turn_budget_exhausted; start a new delegate")
 	default:
 		return fmt.Errorf("target_not_resumable:%s", reason)
 	}
@@ -1478,6 +1484,8 @@ func subagentStatusFromJobStatus(status jobstore.Status) SubagentStatus {
 		return SubagentCancelled
 	case jobstore.StatusFailed:
 		return SubagentFailed
+	case jobstore.StatusExhausted:
+		return SubagentExhausted
 	default:
 		return SubagentFailed
 	}
@@ -2226,6 +2234,7 @@ func (s *Session) finalizeDelegateWithNotification(jobID, childID string, sub *s
 		if err == nil {
 			return nil
 		}
+		latchDelegateExhaustionPersistFailure(jm, jobID, err)
 		if delegateFinalizeStopsRetry(jm, err) {
 			jm.abandonRunningJob(jobID)
 			return err
@@ -2243,12 +2252,26 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		sub.mu.Lock()
 		status := sub.status
 		prose := sub.result
-		if strings.TrimSpace(prose) == "" && sub.err != nil {
-			prose = sub.err.Error()
+		subErr := sub.err
+		if strings.TrimSpace(prose) == "" && subErr != nil {
+			prose = subErr.Error()
 		}
 		childSess := sub.sess
 		runProvenance := provenance.Clone(sub.runProvenance)
 		sub.mu.Unlock()
+
+		exhaustion, _ := budgetExhaustionFromError(subErr)
+		jm.mu.Lock()
+		persistFailed := run.delegateExhaustionPersistFailed
+		if persistFailed {
+			run.exhaustion = nil
+		} else {
+			run.exhaustion = exhaustion
+		}
+		jm.mu.Unlock()
+		if persistFailed {
+			return jobstore.StatusFailed, "exhausted_persist_failed", nil, nil
+		}
 
 		var structured any
 		structuredCaptureFailed := false
@@ -2314,7 +2337,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			return "", "", nil, err
 		}
 
-		jobStatus, reason := delegateTerminalStatus(jm, run, status)
+		jobStatus, reason := delegateTerminalStatus(jm, run, status, exhaustion)
 		return jobStatus, reason, nil, nil
 	}
 	if armNotification {
@@ -2333,9 +2356,18 @@ func (s *Session) persistDelegateResumability(jm *jobManager, run *runningJob) e
 		return nil
 	}
 	rec := cloneJobRecord(run.rec)
+	exhaustion := run.exhaustion
 	jm.mu.Unlock()
 
-	assessment := s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	assessment := delegateResumability{}
+	if exhaustion != nil && exhaustion.Budget == exhaustedBudgetTurns {
+		assessment = delegateResumability{
+			Resumable: false,
+			Reason:    notResumableTurnBudgetExhausted,
+		}
+	} else {
+		assessment = s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	}
 	resumable := assessment.Resumable
 	event := jobstore.Event{
 		Kind:          jobstore.EventJobSessionAssigned,
@@ -2367,6 +2399,21 @@ func delegateFinalizeStopsRetry(jm *jobManager, err error) bool {
 		delegateJobManagerClosing(jm)
 }
 
+func latchDelegateExhaustionPersistFailure(jm *jobManager, jobID string, err error) {
+	var persistErr *terminalRecordPersistError
+	if !errors.As(err, &persistErr) {
+		return
+	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	run := jm.running[jobID]
+	if run == nil || run.exhaustion == nil {
+		return
+	}
+	run.delegateExhaustionPersistFailed = true
+	run.exhaustion = nil
+}
+
 func delegateJobManagerClosing(jm *jobManager) bool {
 	if jm == nil {
 		return true
@@ -2393,7 +2440,7 @@ func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte, p *provenan
 	return jm.appendJobOutputWithProvenance(run.rec.JobID, run.output, b, p)
 }
 
-func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {
+func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus, exhaustion *budgetExhaustionError) (jobstore.Status, string) {
 	var stopStatus jobstore.Status
 	var stopReason string
 	if jm != nil && run != nil {
@@ -2401,16 +2448,19 @@ func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStat
 		stopStatus, stopReason = run.stopStatus, run.stopReason
 		jm.mu.Unlock()
 	}
-	return resolveDelegateTerminalStatus(stopStatus, stopReason, status)
+	return resolveDelegateTerminalStatus(stopStatus, stopReason, status, exhaustion)
 }
 
 // resolveDelegateTerminalStatus is the pure terminal-status decision lifted out
 // of delegateTerminalStatus: a parent-recorded stop status always overrides the
 // child's own outcome, otherwise the child's SubagentStatus maps to a terminal
 // job Status. The wrapper reads run.stopStatus/run.stopReason under lock.
-func resolveDelegateTerminalStatus(stopStatus jobstore.Status, stopReason string, child SubagentStatus) (jobstore.Status, string) {
+func resolveDelegateTerminalStatus(stopStatus jobstore.Status, stopReason string, child SubagentStatus, exhaustion *budgetExhaustionError) (jobstore.Status, string) {
 	if stopStatus != "" {
 		return stopStatus, stopReason
+	}
+	if exhaustion != nil {
+		return jobstore.StatusExhausted, exhaustion.reason()
 	}
 	switch child {
 	case SubagentCompleted:
@@ -2419,6 +2469,8 @@ func resolveDelegateTerminalStatus(stopStatus jobstore.Status, stopReason string
 		return jobstore.StatusFailed, ""
 	case SubagentCancelled:
 		return jobstore.StatusCancelled, "stopped_by_parent"
+	case SubagentExhausted:
+		return jobstore.StatusExhausted, ""
 	default:
 		return jobstore.StatusFailed, "unknown_child_status"
 	}
