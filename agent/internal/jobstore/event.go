@@ -68,6 +68,8 @@ type Event struct {
 	// job_finished payload
 	Status                 Status     `json:"status,omitempty"`
 	Reason                 string     `json:"reason,omitempty"`
+	ExhaustionBudget       string     `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit        int        `json:"exhaustion_limit,omitempty"`
 	ExitCode               *int       `json:"exit_code,omitempty"`
 	EndedAt                *time.Time `json:"ended_at,omitempty"`
 	OutputBytes            int64      `json:"output_bytes,omitempty"`

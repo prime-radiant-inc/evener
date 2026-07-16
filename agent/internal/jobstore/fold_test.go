@@ -785,6 +785,62 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	}
 }
 
+func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	resumable := false
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusExhausted
+			e.Reason = "delegate_turn_budget_exhausted"
+			e.TerminalGen = "GEN1"
+			e.ExhaustionBudget = "max_turns"
+			e.ExhaustionLimit = 500
+			e.Resumable = &resumable
+		}),
+	}
+
+	r := Fold(events)["job_A"]
+	if r.Status != StatusExhausted || r.Reason != "delegate_turn_budget_exhausted" {
+		t.Fatalf("exhausted terminal state not folded: %+v", r)
+	}
+	if r.TerminalGen != "GEN1" {
+		t.Fatalf("terminal_generation = %q, want GEN1", r.TerminalGen)
+	}
+	if r.ExhaustionBudget != "max_turns" || r.ExhaustionLimit != 500 {
+		t.Fatalf("exhaustion metadata = (%q, %d), want (max_turns, 500)", r.ExhaustionBudget, r.ExhaustionLimit)
+	}
+	if r.Resumable == nil || *r.Resumable {
+		t.Fatalf("resumable = %v, want false", r.Resumable)
+	}
+
+	laterResumable := true
+	events = append(events, ev(EventJobFinished, 3, "job_A", func(e *Event) {
+		e.Status = StatusCompleted
+		e.Reason = "completed_later"
+		e.TerminalGen = "GEN2"
+		e.ExhaustionBudget = "max_continuations"
+		e.ExhaustionLimit = 1
+		e.Resumable = &laterResumable
+	}))
+
+	r = Fold(events)["job_A"]
+	if r.Status != StatusExhausted || r.Reason != "delegate_turn_budget_exhausted" || r.TerminalGen != "GEN1" {
+		t.Fatalf("later terminal event replaced exhausted state: %+v", r)
+	}
+	if r.ExhaustionBudget != "max_turns" || r.ExhaustionLimit != 500 {
+		t.Fatalf("later terminal event replaced exhaustion metadata: %+v", r)
+	}
+	if r.Resumable == nil || *r.Resumable {
+		t.Fatalf("later terminal event replaced resumable: %v", r.Resumable)
+	}
+}
+
 func TestFoldAppliesEventsInSeqOrder(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	events := []Event{

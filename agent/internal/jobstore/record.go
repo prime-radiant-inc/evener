@@ -25,12 +25,13 @@ const (
 	StatusFailed    Status = "failed"
 	StatusCancelled Status = "cancelled"
 	StatusStopped   Status = "stopped"
+	StatusExhausted Status = "exhausted"
 )
 
 // IsTerminal reports whether the status means no further runtime work is expected.
 func (s Status) IsTerminal() bool {
 	switch s {
-	case StatusCompleted, StatusFailed, StatusCancelled, StatusStopped:
+	case StatusCompleted, StatusFailed, StatusCancelled, StatusStopped, StatusExhausted:
 		return true
 	default:
 		return false
@@ -213,13 +214,15 @@ type WatchSendRecord struct {
 
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
-	JobID       string  `json:"job_id"`
-	Type        JobType `json:"type"`
-	Status      Status  `json:"status"`
-	Reason      string  `json:"reason,omitempty"`
-	Description string  `json:"description,omitempty"`
-	Command     string  `json:"command,omitempty"`
-	Background  bool    `json:"background,omitempty"`
+	JobID            string  `json:"job_id"`
+	Type             JobType `json:"type"`
+	Status           Status  `json:"status"`
+	Reason           string  `json:"reason,omitempty"`
+	ExhaustionBudget string  `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int     `json:"exhaustion_limit,omitempty"`
+	Description      string  `json:"description,omitempty"`
+	Command          string  `json:"command,omitempty"`
+	Background       bool    `json:"background,omitempty"`
 	// WorkingDir is the launch-time working directory of a background shell
 	// job (the executing env's WorkingDirectory() when the shell tool call
 	// started it), recorded so manage_worktree remove/prune's live-work guard

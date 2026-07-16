@@ -110,6 +110,12 @@ func TestStatusIsTerminal(t *testing.T) {
 	}
 }
 
+func TestStatusIsTerminal_Exhausted(t *testing.T) {
+	if !StatusExhausted.IsTerminal() {
+		t.Fatal("exhausted status is not terminal")
+	}
+}
+
 func TestNewJobIDFormatAndUniqueness(t *testing.T) {
 	a := NewJobID()
 	b := NewJobID()

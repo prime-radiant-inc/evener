@@ -371,6 +371,9 @@ func applyEvent(r *JobRecord, e Event) {
 		}
 		r.Status = e.Status
 		r.Reason = e.Reason
+		r.ExhaustionBudget = e.ExhaustionBudget
+		r.ExhaustionLimit = e.ExhaustionLimit
+		r.Resumable = e.Resumable
 		r.ExitCode = e.ExitCode
 		r.EndedAt = e.EndedAt
 		r.OutputBytes = e.OutputBytes
