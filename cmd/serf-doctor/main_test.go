@@ -150,6 +150,13 @@ func TestRun_NoSelectorErrors(t *testing.T) {
 
 // fixtureWithAPILogData writes canonical attempts and settlements beside a
 // semantic transcript so cmdAPILog can aggregate and filter them.
+const (
+	normalAPIAttemptID     = "att_02wMz5TxuyedWwYBSOAa00"
+	emptyAPIAttemptID      = "att_02wMz5TxuyedWwYBSOAa42"
+	errorAPIAttemptID      = "att_02wMz5TxuyedWwYBSOAa01"
+	cacheSpikeAPIAttemptID = "att_02wMz5TxuyedWwYBSOAa02"
+)
+
 func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
@@ -167,6 +174,13 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 		commandAPIAttempt(3, apilog.AttemptProviderTimeout, 200, 0, 0, 0, 0, 0),
 		commandAPIAttempt(4, apilog.AttemptSuccess, 300, 60000, 500, 1000, 100, 2),
 	}
+	// Keep the attempt IDs stable so filter assertions can identify table rows.
+	// The empty row intentionally contains the normal row's text-length marker;
+	// unrelated identity fields must not be mistaken for filtered-out row data.
+	attempts[0].AttemptID = normalAPIAttemptID
+	attempts[1].AttemptID = emptyAPIAttemptID
+	attempts[2].AttemptID = errorAPIAttemptID
+	attempts[3].AttemptID = cacheSpikeAPIAttemptID
 	var lines []string
 	for _, attempt := range attempts {
 		attemptLine, err := json.Marshal(attempt)
@@ -235,6 +249,27 @@ func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency in
 		attempt.ErrorMessage = "ERROR:"
 	}
 	return attempt
+}
+
+func requireAPILogTableRow(t *testing.T, output, wantAttemptID, wantMarker string) {
+	t.Helper()
+	var rows []string
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && identifier.ValidateAPIAttemptID(fields[0]) == nil {
+			rows = append(rows, line)
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("rendered API log table has %d rows, want 1:\n%s", len(rows), output)
+	}
+	fields := strings.Fields(rows[0])
+	if fields[0] != wantAttemptID {
+		t.Errorf("rendered API log attempt = %q, want %q; row:\n%s", fields[0], wantAttemptID, rows[0])
+	}
+	if !strings.Contains(rows[0], wantMarker) {
+		t.Errorf("rendered API log row missing %q:\n%s", wantMarker, rows[0])
+	}
 }
 
 // treeGrandchildSID is the delegate two hops below the root in
@@ -336,31 +371,12 @@ func TestRun_APILogJSON(t *testing.T) {
 func TestRun_APILogFlags(t *testing.T) {
 	base, sid := fixtureWithAPILogData(t)
 
-	// Each row in the fixture carries a marker that appears only in that row's
-	// rendered table line (never in the always-unfiltered totals block): the
-	// normal round-1 call shows txt length "42", the empty round-2 call shows
-	// "(empty)", the error round-3 call shows "ERROR:", and the cache-spike
-	// round-4 call shows uncached input "59000". Each filter must render its own
-	// row's marker and exclude every other row's marker; a no-op filter that
-	// rendered all four rows would leak the others.
 	t.Run("empty", func(t *testing.T) {
 		var out, errb bytes.Buffer
 		if code := run([]string{"apilog", "--state-dir", base, "--empty", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		got := out.String()
-		if !strings.Contains(got, "(empty)") {
-			t.Errorf("--empty should surface round 2; got:\n%s", got)
-		}
-		if strings.Contains(got, "42") {
-			t.Errorf("--empty must exclude the normal round-1 call (txt=42); got:\n%s", got)
-		}
-		if strings.Contains(got, "ERROR:") {
-			t.Errorf("--empty must exclude the error round-3 call; got:\n%s", got)
-		}
-		if strings.Contains(got, "59000") {
-			t.Errorf("--empty must exclude the cache-spike round-4 call; got:\n%s", got)
-		}
+		requireAPILogTableRow(t, out.String(), emptyAPIAttemptID, "(empty)")
 	})
 
 	t.Run("errors", func(t *testing.T) {
@@ -368,19 +384,7 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--errors", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		got := out.String()
-		if !strings.Contains(got, "ERROR:") {
-			t.Errorf("--errors should surface rate limit error; got:\n%s", got)
-		}
-		if strings.Contains(got, "42") {
-			t.Errorf("--errors must exclude the normal round-1 call (txt=42); got:\n%s", got)
-		}
-		if strings.Contains(got, "(empty)") {
-			t.Errorf("--errors must exclude the empty round-2 call; got:\n%s", got)
-		}
-		if strings.Contains(got, "59000") {
-			t.Errorf("--errors must exclude the cache-spike round-4 call; got:\n%s", got)
-		}
+		requireAPILogTableRow(t, out.String(), errorAPIAttemptID, "ERROR:")
 	})
 
 	t.Run("cache-spikes", func(t *testing.T) {
@@ -388,19 +392,7 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--cache-spikes", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		got := out.String()
-		if !strings.Contains(got, "59000") {
-			t.Errorf("--cache-spikes should surface round 4; got:\n%s", got)
-		}
-		if strings.Contains(got, "42") {
-			t.Errorf("--cache-spikes must exclude the normal round-1 call (txt=42); got:\n%s", got)
-		}
-		if strings.Contains(got, "(empty)") {
-			t.Errorf("--cache-spikes must exclude the empty round-2 call; got:\n%s", got)
-		}
-		if strings.Contains(got, "ERROR:") {
-			t.Errorf("--cache-spikes must exclude the error round-3 call; got:\n%s", got)
-		}
+		requireAPILogTableRow(t, out.String(), cacheSpikeAPIAttemptID, "59000")
 	})
 
 	t.Run("summary", func(t *testing.T) {
