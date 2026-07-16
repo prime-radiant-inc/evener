@@ -933,6 +933,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
 	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
+	goalControlsCap := goalControlsRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
 
 	for round := 0; roundCap < 0 || round < roundCap; round++ {
@@ -1153,7 +1154,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtBoundary(ctx, SessionIdle)
-	if roundCap != s.cfg.MaxToolRoundsPerInput {
+	if goalControlsCap {
 		return lastText, progressed, nil
 	}
 	return lastText, progressed, &budgetExhaustionError{

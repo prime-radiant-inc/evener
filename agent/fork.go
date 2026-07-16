@@ -183,6 +183,7 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	defer func() { _ = tw.Close() }()
 
 	modelResponses := 0
+	acceptedInputTurns := 0
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
 		if err := tw.Append(entry.Turn); err != nil {
@@ -191,6 +192,9 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		if entry.Turn.Kind == schema.TurnAssistant {
 			modelResponses++
 		}
+		if entry.Turn.Kind == schema.TurnUserInput {
+			acceptedInputTurns++
+		}
 	}
 
 	// Append the edited turn as a new USER_INPUT turn.
@@ -198,6 +202,7 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	if err := tw.Append(editedTurn); err != nil {
 		return "", fmt.Errorf("append edited turn to child transcript: %w", err)
 	}
+	acceptedInputTurns++
 
 	if err := tw.Close(); err != nil {
 		return "", fmt.Errorf("close child transcript: %w", err)
@@ -205,18 +210,19 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 
 	// Build and save the child meta.
 	childMeta := schema.SessionMeta{
-		ID:              childID,
-		ProfileID:       parentMeta.ProfileID,
-		Model:           parentMeta.Model,
-		Config:          parentMeta.Config,
-		EnvInfo:         parentMeta.EnvInfo,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		TurnCount:       modelResponses,
-		OriginalPrompt:  parentMeta.OriginalPrompt,
-		ParentSessionID: parentID,
-		DivergenceTurn:  divergenceTurn,
-		ForkLabel:       "", // child carries no fork label; parent gets it
+		ID:                 childID,
+		ProfileID:          parentMeta.ProfileID,
+		Model:              parentMeta.Model,
+		Config:             parentMeta.Config,
+		EnvInfo:            parentMeta.EnvInfo,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		TurnCount:          modelResponses,
+		AcceptedInputTurns: acceptedInputTurns,
+		OriginalPrompt:     parentMeta.OriginalPrompt,
+		ParentSessionID:    parentID,
+		DivergenceTurn:     divergenceTurn,
+		ForkLabel:          "", // child carries no fork label; parent gets it
 	}
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {

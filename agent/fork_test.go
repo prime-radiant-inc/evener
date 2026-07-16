@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
@@ -212,6 +214,81 @@ func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
 	rewritten := sess.Meta()
 	if rewritten.ForkLabel != "before TDD" {
 		t.Errorf("rewritten ForkLabel: got %q, want %q", rewritten.ForkLabel, "before TDD")
+	}
+}
+
+func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+	parentMeta.Config = (SessionConfig{MaxTurns: 7}).toSnapshot()
+	if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(parent): %v", err)
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 3, "second task, edited", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.AcceptedInputTurns != 2 {
+		t.Fatalf("child accepted input turns = %d, want 2", childMeta.AcceptedInputTurns)
+	}
+
+	adapter := &agenttest.ScriptedAdapter{
+		Provider: "openai",
+		Responder: func(llm.Request) llm.Response {
+			return communicateResponse(true, "done")
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	restored := restoreBudgetSession(t, client, childMeta, stateDir, nil)
+
+	restored.mu.Lock()
+	acceptedAtRestore := restored.turns
+	restored.mu.Unlock()
+	if acceptedAtRestore != 2 {
+		t.Fatalf("restored accepted input turns = %d, want 2", acceptedAtRestore)
+	}
+	if got := countBudgetSteering(budgetHistory(restored), rootTurnBudgetWarning); got != 0 {
+		t.Fatalf("warning count before first restored input = %d, want 0", got)
+	}
+
+	for i := 0; i < 5; i++ {
+		if _, err := restored.ProcessInput(context.Background(), "continued input", nil); err != nil {
+			t.Fatalf("ProcessInput(%d): %v", i+1, err)
+		}
+		if i == 0 {
+			requests := adapter.Requests()
+			if len(requests) != 1 || !requestHasExactUserMessage(requests[0], rootTurnBudgetWarning) {
+				t.Fatalf("first restored request missing five-turn warning: %+v", requests)
+			}
+		}
+	}
+	if got := countBudgetSteering(budgetHistory(restored), rootTurnBudgetWarning); got != 1 {
+		t.Fatalf("warning count after budget use = %d, want 1", got)
+	}
+	restored.mu.Lock()
+	acceptedAtLimit := restored.turns
+	restored.mu.Unlock()
+	if acceptedAtLimit != 7 {
+		t.Fatalf("accepted input turns at limit = %d, want 7", acceptedAtLimit)
+	}
+
+	out, err := restored.ProcessInput(context.Background(), "over budget", nil)
+	if out != "" {
+		t.Fatalf("over-budget output = %q, want empty", out)
+	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 7, false)
+	if got := len(adapter.Requests()); got != 5 {
+		t.Fatalf("model requests after rejected input = %d, want 5", got)
 	}
 }
 

@@ -400,7 +400,7 @@ func TestSession_BudgetExhaustionLeavesActiveGoalUnchanged(t *testing.T) {
 
 func TestSession_GoalRoundCapExitIsNotToolBudgetExhaustion(t *testing.T) {
 	t.Parallel()
-	for _, configured := range []int{-1, 200} {
+	for _, configured := range []int{-1, goal.GoalTurnMaxRounds, 200} {
 		t.Run(fmt.Sprintf("configured_%d", configured), func(t *testing.T) {
 			calls := 0
 			lastPartial := ""

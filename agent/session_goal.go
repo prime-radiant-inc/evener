@@ -127,15 +127,19 @@ func (s *Session) currentGoalContinuation() (string, bool) {
 
 // goalRoundCap selects the per-input tool-round cap. User-input turns use the
 // configured cap verbatim. Continuation turns (the goal engine) clamp an
-// unbounded (cfg<0) or larger-than-GoalTurnMaxRounds config down to
+// unbounded (cfg<0) or at-least-GoalTurnMaxRounds config down to
 // GoalTurnMaxRounds, bounding per-goal-turn spend and reducing the likelihood of
 // intra-turn compaction eroding the re-injected objective (spec §2b/C13). A bare
 // min(cfg, cap) is wrong because cfg<0 means "unbounded", not "smallest".
 func goalRoundCap(cfg int, kind EntryKind) int {
-	if kind == EntryContinuation && (cfg < 0 || cfg > goal.GoalTurnMaxRounds) {
+	if goalControlsRoundCap(cfg, kind) {
 		return goal.GoalTurnMaxRounds
 	}
 	return cfg
+}
+
+func goalControlsRoundCap(cfg int, kind EntryKind) bool {
+	return kind == EntryContinuation && (cfg < 0 || cfg >= goal.GoalTurnMaxRounds)
 }
 
 // callsMadeProgress reports whether any tool call in a round is a real mutating
