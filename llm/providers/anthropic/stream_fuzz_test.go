@@ -62,10 +62,8 @@ func accumulateAnthropicSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Res
 	return acc.Response(), sawError
 }
 
-// normalizeAnthropicResponse copies r with the framing-dependent raw-body fields
-// cleared. Those carry the verbatim SSE bytes when raw-body logging is enabled,
-// which the semantics-preserving transforms legitimately alter; everything else
-// (text, tool calls, reasoning, finish, usage, the parsed Raw object) must match.
+// normalizeAnthropicResponse returns a shallow comparison copy. Every response
+// field must match across equivalent SSE framings.
 func normalizeAnthropicResponse(r *llm.Response) *llm.Response {
 	if r == nil {
 		return nil

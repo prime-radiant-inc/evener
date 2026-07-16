@@ -13,12 +13,12 @@ import (
 )
 
 // applyEditFields are the launch-config fields whose edit handler runs a real
-// value parser or path validator. Indices 0–11 are FS-free parse-heavy fields
-// (parseOptionalInt / parseOptionalBool / parseMCPs / parseEnvMap /
-// parseModelFallbacks); indices 12+ are path-validated fields whose handler
-// calls validateLocalLaunchPath. Path values are anchored inside a t.TempDir
-// sandbox (see anchorValue) so the validator only ever stats sandbox paths.
-// Appending the path fields keeps the existing index-addressed seeds valid.
+// value parser or path validator. Fields before skills_dirs are FS-free,
+// parse-heavy fields (parseOptionalInt / parseOptionalBool / parseMCPs /
+// parseEnvMap / parseModelFallbacks). skills_dirs and the fields after it are
+// path-validated; their handlers call validateLocalLaunchPath. Path values are
+// anchored inside a t.TempDir sandbox (see anchorValue) so the validator only
+// ever stats sandbox paths.
 var applyEditFields = []string{
 	"max_rounds", "max_subagent_depth", "app_replay_size", // 0,1,2
 	"no_project_prompts", "verbose", // 3,4
@@ -27,6 +27,39 @@ var applyEditFields = []string{
 	"skills_dirs", "plugin_dirs", "mcp_configs", // 11,12,13
 	"trace_file", "cpu_profile", "export_atif_path", // 14,15,16
 	"system_prompt_file", "system_prompt_append_file", // 17,18
+}
+
+type applyEditSeed struct {
+	field string
+	value string
+}
+
+var applyEditSeeds = []applyEditSeed{
+	{"max_rounds", "200"}, {"max_rounds", "not-an-int"}, {"max_rounds", "(default)"}, {"max_rounds", "-3"},
+	{"no_project_prompts", "true"}, {"no_project_prompts", "no"}, {"no_project_prompts", "maybe"}, {"no_project_prompts", "(default)"},
+	{"mcps", `[{"name":"a","command":"c","args":["-x"]}]`},
+	{"mcps", `{"name":"a","command":"c"}`},
+	{"mcps", "name=cmd arg1 arg2"},
+	{"mcps", "not json [ broken"},
+	{"env", "FOO=bar, BAZ=qux"}, {"env", "= = ="}, {"env", ""},
+	{"model_fallbacks", "a,b,c"}, {"model_fallbacks", "[]"}, {"model_fallbacks", "(default)"},
+	{"model", "  anthropic/claude-haiku-4-5 "},
+	{"system_prompt_text", "multi\nline\ntext"},
+	// Path fields are anchored into the sandbox by anchorValue.
+	{"skills_dirs", "dir"}, {"skills_dirs", "file"}, {"skills_dirs", "missing"}, {"skills_dirs", "../escape"},
+	{"skills_dirs", "dir,file,missing"}, {"skills_dirs", "(default)"}, {"skills_dirs", ""},
+	{"mcp_configs", "file"}, {"mcp_configs", "dir"},
+	{"trace_file", "out"}, {"trace_file", "dir"}, {"trace_file", "(default)"},
+	{"system_prompt_file", "file"}, {"system_prompt_file", "missing"}, {"system_prompt_file", "../../etc/passwd"},
+}
+
+func applyEditFieldIndex(field string) (int, bool) {
+	for i, candidate := range applyEditFields {
+		if candidate == field {
+			return i, true
+		}
+	}
+	return 0, false
 }
 
 // fuzzApplyEditCoverage is installed by the serffuzz-only coverage union.
@@ -56,6 +89,24 @@ func listPathField(field string) bool {
 	}
 }
 
+func TestApplyEditFuzzSeedFieldsMatchIntent(t *testing.T) {
+	for wantIndex, field := range applyEditFields {
+		gotIndex, ok := applyEditFieldIndex(field)
+		if !ok || gotIndex != wantIndex {
+			t.Fatalf("field %q resolves to index %d, %t; want %d", field, gotIndex, ok, wantIndex)
+		}
+	}
+	for _, seed := range applyEditSeeds {
+		index, ok := applyEditFieldIndex(seed.field)
+		if !ok {
+			t.Fatalf("fuzz seed field %q is absent from applyEditFields", seed.field)
+		}
+		if got := applyEditFields[index]; got != seed.field {
+			t.Fatalf("fuzz seed field %q resolves to %q", seed.field, got)
+		}
+	}
+}
+
 // FuzzApplyEdit drives the panel's real edit-value parser across every editable
 // field, including the path-validated ones (skills_dirs, plugin_dirs,
 // mcp_configs, trace_file, cpu_profile, export_atif_path, system_prompt_file,
@@ -74,29 +125,12 @@ func listPathField(field string) bool {
 //   - wire round-trip: the resulting layer survives the SetLayer marshalling
 //     (LaunchConfigLayer.MarshalJSON) with byte-stable JSON.
 func FuzzApplyEdit(f *testing.F) {
-	seeds := []struct {
-		idx int
-		val string
-	}{
-		{0, "200"}, {0, "not-an-int"}, {0, "(default)"}, {0, "-3"},
-		{3, "true"}, {3, "no"}, {3, "maybe"}, {3, "(default)"},
-		{6, `[{"name":"a","command":"c","args":["-x"]}]`},
-		{6, `{"name":"a","command":"c"}`},
-		{6, "name=cmd arg1 arg2"},
-		{6, "not json [ broken"},
-		{7, "FOO=bar, BAZ=qux"}, {7, "= = ="}, {7, ""},
-		{8, "a,b,c"}, {8, "[]"}, {8, "(default)"},
-		{9, "  anthropic/claude-haiku-4-5 "},
-		{11, "multi\nline\ntext"},
-		// Path fields, anchored into the sandbox by anchorValue.
-		{12, "dir"}, {12, "file"}, {12, "missing"}, {12, "../escape"},
-		{12, "dir,file,missing"}, {12, "(default)"}, {12, ""},
-		{14, "file"}, {14, "dir"},
-		{15, "out"}, {15, "dir"}, {15, "(default)"},
-		{18, "file"}, {18, "missing"}, {18, "../../etc/passwd"},
-	}
-	for _, s := range seeds {
-		f.Add(s.idx, s.val)
+	for _, seed := range applyEditSeeds {
+		index, ok := applyEditFieldIndex(seed.field)
+		if !ok {
+			f.Fatalf("fuzz seed field %q is absent from applyEditFields", seed.field)
+		}
+		f.Add(index, seed.value)
 	}
 
 	f.Fuzz(func(t *testing.T, fieldIdx int, value string) {

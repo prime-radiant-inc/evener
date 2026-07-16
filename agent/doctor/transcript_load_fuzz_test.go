@@ -2,10 +2,42 @@ package doctor
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
+
+	"primeradiant.com/serf/agent/transcript"
 )
+
+func TestLoadTranscriptRejectsUnsupportedFormatsWithoutPartialState(t *testing.T) {
+	entry := `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[]}}}` + "\n"
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"version one", `{"kind":"header","format_version":1,"session_id":"legacy"}` + "\n" + entry},
+		{"missing version", `{"kind":"header","session_id":"missing"}` + "\n" + entry},
+		{"mixed provider record", `{"kind":"header","format_version":2,"session_id":"mixed"}` + "\n" + entry + `{"kind":"api_call"}` + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "transcript.jsonl")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatalf("write input: %v", err)
+			}
+
+			doc, err := loadTranscript(path)
+			if !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("loadTranscript error = %v, want ErrUnsupportedFormat", err)
+			}
+			if !reflect.DeepEqual(doc, transcriptDoc{}) {
+				t.Fatalf("loadTranscript accepted partial state: %+v", doc)
+			}
+		})
+	}
+}
 
 // FuzzDoctorLoadTranscript drives loadTranscript — the doctor package's real
 // transcript-file decode seam (the per-line kind peek + Header/Entry
@@ -19,8 +51,6 @@ func FuzzDoctorLoadTranscript(f *testing.F) {
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}`,
 		`{"kind":"header","format_version":1,"session_id":"legacy"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[]}}}`,
-		`{"kind":"header","format_version":2,"session_id":"mixed"}
-{"kind":"api_call"}`,
 		`{"kind":"header","session_id":"s2"}`,
 		`{"kind":"entry","seq":0,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"x","content":"out"}}]}}}`,
 		``,

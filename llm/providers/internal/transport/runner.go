@@ -25,9 +25,8 @@ type StreamRunner struct {
 	Provider string
 	// Resp is the live HTTP response whose Body carries the SSE stream.
 	Resp *http.Response
-	// Attempt is the explicitly attached canonical attempt, when any. It makes
-	// exact response-byte capture active independently of the legacy raw-body
-	// option.
+	// Attempt is the explicitly attached canonical attempt, when any. It owns
+	// exact response-byte capture for the private per-session API log.
 	Attempt *APIAttemptCapture
 	// StatusCode is the HTTP response status for Attempt.
 	StatusCode int

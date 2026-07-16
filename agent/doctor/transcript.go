@@ -70,9 +70,9 @@ func loadTranscript(path string) (transcriptDoc, error) {
 	return doc, nil
 }
 
-// CountResult is the structural tool-invocation count plus the textual-mention
-// counts, kept separate so a tool NAMED in instructions or api-call payloads is
-// never conflated with a tool actually CALLED.
+// CountResult is the structural tool-invocation count plus the assistant-prose
+// mention count, kept separate so a tool named in text is never conflated with
+// a tool actually called.
 type CountResult struct {
 	SessionID             string `json:"session_id"`
 	Tool                  string `json:"tool"`

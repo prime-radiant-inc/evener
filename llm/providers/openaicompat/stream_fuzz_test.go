@@ -61,9 +61,8 @@ func accumulateChatSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Response
 	return acc.Response(), sawError
 }
 
-// normalizeChatResponse clears the framing-dependent raw-body fields. Those carry
-// the verbatim SSE bytes when raw-body logging is enabled, which the
-// semantics-preserving transforms legitimately alter; everything else must match.
+// normalizeChatResponse returns a shallow comparison copy. Every response field
+// must match across equivalent SSE framings.
 func normalizeChatResponse(r *llm.Response) *llm.Response {
 	if r == nil {
 		return nil
