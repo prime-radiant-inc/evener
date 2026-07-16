@@ -224,8 +224,7 @@ func TestStartTrace(t *testing.T) {
 	}
 }
 
-// AttachAPILogger installs a logger and returns a closer; when the log path
-// cannot be created it degrades to a no-op closer and warns instead of failing.
+// AttachAPILogger installs a logger and returns a closer.
 func TestAttachAPILogger(t *testing.T) {
 	client := llm.NewClient()
 	stateDir := t.TempDir()
@@ -249,10 +248,10 @@ func TestAttachAPILogger(t *testing.T) {
 	}
 }
 
-func TestAttachAPILoggerDegradesWhenPathUnusable(t *testing.T) {
+func TestAttachAPILoggerFailsWhenPathUnusable(t *testing.T) {
 	client := llm.NewClient()
-	// stateDir is a regular file, so filepath.Join(stateDir, "api.jsonl")
-	// cannot be opened; logging must degrade to a warn + no-op closer.
+	// stateDir is a regular file, so the canonical sessions directory cannot be
+	// created. A process must not continue without its mandatory forensic sink.
 	stateFile := filepath.Join(t.TempDir(), "notadir")
 	if err := os.WriteFile(stateFile, []byte("x"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -260,13 +259,16 @@ func TestAttachAPILoggerDegradesWhenPathUnusable(t *testing.T) {
 	var warnings bytes.Buffer
 
 	closeFn, err := AttachAPILogger(client, stateFile, &warnings)
-	if err != nil {
-		t.Fatalf("AttachAPILogger must not hard-fail: %v", err)
+	if err == nil {
+		t.Fatal("AttachAPILogger succeeded without a canonical API-log destination")
 	}
-	if err := closeFn(); err != nil {
-		t.Fatalf("no-op close: %v", err)
+	if closeFn != nil {
+		t.Fatal("AttachAPILogger returned a closer after initialization failed")
 	}
-	if !strings.Contains(warnings.String(), "API logging disabled") {
-		t.Fatalf("warnings=%q, want a disabled-logging warning", warnings.String())
+	if !strings.Contains(err.Error(), "canonical API log") {
+		t.Fatalf("error=%q, want canonical API-log context", err)
+	}
+	if warnings.Len() != 0 {
+		t.Fatalf("warnings=%q, want failure returned to the process", warnings.String())
 	}
 }

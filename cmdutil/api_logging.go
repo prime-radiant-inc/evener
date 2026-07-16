@@ -14,10 +14,7 @@ import (
 func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
 	apiLog, err := llm.NewSessionAPILogger(stateDir)
 	if err != nil {
-		if warnings != nil {
-			fmt.Fprintf(warnings, "warning: API logging disabled: %v\n", err) //nolint:errcheck
-		}
-		return func() error { return nil }, nil
+		return nil, fmt.Errorf("initialize canonical API log: %w", err)
 	}
 
 	apiLog.SyncInterval = 2 * time.Second

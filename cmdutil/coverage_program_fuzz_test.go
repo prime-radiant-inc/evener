@@ -303,7 +303,7 @@ func FuzzCmdutilScenarioReplay(f *testing.F) {
 			{"cpu-profile", TestStartCPUProfile},
 			{"trace", TestStartTrace},
 			{"api-logger", TestAttachAPILogger},
-			{"api-logger-error", TestAttachAPILoggerDegradesWhenPathUnusable},
+			{"api-logger-error", TestAttachAPILoggerFailsWhenPathUnusable},
 		}
 		for _, scenario := range scenarios {
 			t.Run(scenario.name, scenario.fn)
