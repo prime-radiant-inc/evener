@@ -47,7 +47,7 @@ func s2cov_entryLine(t *testing.T, kind schema.TurnKind, text string) string {
 
 func s2cov_headerLine(t *testing.T, id string) string {
 	t.Helper()
-	h := transcript.Header{Kind: "header", SessionID: id, CreatedAt: time.Now().UTC(), ProfileID: "openai", Model: "gpt-5.2", WorkingDir: "/tmp/test"}
+	h := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: id, CreatedAt: time.Now().UTC(), ProfileID: "openai", Model: "gpt-5.2", WorkingDir: "/tmp/test"}
 	b, err := json.Marshal(h)
 	if err != nil {
 		t.Fatalf("marshal header: %v", err)
@@ -69,26 +69,23 @@ func s2cov_saveParentMeta(t *testing.T, stateDir, id string) {
 	}
 }
 
-// TestS2Cov_ForkSession_SkipsNoiseLinesAndForks proves the scanner tolerates
-// blank, corrupt-peek, corrupt-entry, and non-entry (api_call) lines, forking
-// off only the surviving entry lines.
-func TestS2Cov_ForkSession_SkipsNoiseLinesAndForks(t *testing.T) {
+// TestS2Cov_ForkSession_BlankLinesAndValidEntriesFork proves blank lines do not
+// change the semantic entry positions used for divergence.
+func TestS2Cov_ForkSession_BlankLinesAndValidEntriesFork(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	parentID := "01PARENTNOISE000000000001"
 	lines := []string{
 		"", // blank line, skipped
 		s2cov_entryLine(t, schema.TurnUserInput, "first task"),
-		`{not valid json`,                         // corrupt peek, skipped
-		`{"kind":"api_call","seq":2}`,             // non-entry kind, skipped
-		`{"kind":"entry","turn":"not-an-object"}`, // valid peek, corrupt entry body, skipped
+		"",
 		s2cov_entryLine(t, schema.TurnAssistant, "first reply"),
 		s2cov_entryLine(t, schema.TurnUserInput, "second task"),
 	}
 	s2cov_writeRawTranscript(t, stateDir, parentID, s2cov_headerLine(t, parentID), lines)
 	s2cov_saveParentMeta(t, stateDir, parentID)
 
-	// Surviving entries: [U(first), A(first reply), U(second)]. Fork at turn 3.
+	// Entries are [U(first), A(first reply), U(second)]. Fork at turn 3.
 	childID, err := ForkSession(stateDir, parentID, 3, "edited second", "")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)

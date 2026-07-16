@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,6 +67,35 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 	}
 
 	return stateDir, parentID
+}
+
+func appendParentTranscript(t *testing.T, stateDir, parentID, suffix string) {
+	t.Helper()
+	path := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open parent transcript: %v", err)
+	}
+	if _, err := f.WriteString(suffix); err != nil {
+		_ = f.Close()
+		t.Fatalf("append parent transcript: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close parent transcript: %v", err)
+	}
+}
+
+func sessionArtifactNames(t *testing.T, stateDir string) string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(stateDir, sessionsSubdir))
+	if err != nil {
+		t.Fatalf("read session artifacts: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	return strings.Join(names, "\n")
 }
 
 // TestForkSession_CopiesPrefixAndAppliesEdit verifies the core fork semantics:
@@ -159,6 +189,125 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 	if entries[2].Turn.Message.Text() != "second task, table-driven" {
 		t.Errorf("entries[2] text: got %q, want %q", entries[2].Turn.Message.Text(), "second task, table-driven")
+	}
+}
+
+func TestForkSession_RejectsMixedAPICallWithoutCreatingChild(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	appendParentTranscript(t, stateDir, parentID, "{\"kind\":\"api_call\"}\n")
+	before := sessionArtifactNames(t, stateDir)
+
+	childID, err := ForkSession(stateDir, parentID, 3, "edited", "")
+	if !errors.Is(err, transcript.ErrUnsupportedFormat) {
+		t.Fatalf("ForkSession error = %v, want transcript.ErrUnsupportedFormat", err)
+	}
+	if childID != "" {
+		t.Fatalf("ForkSession child id = %q, want empty", childID)
+	}
+	if after := sessionArtifactNames(t, stateDir); after != before {
+		t.Fatalf("session artifacts changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		transform func(string) string
+	}{
+		{
+			name: "version one",
+			transform: func(raw string) string {
+				return strings.Replace(raw, `"format_version":2`, `"format_version":1`, 1)
+			},
+		},
+		{
+			name: "missing version",
+			transform: func(raw string) string {
+				return strings.Replace(raw, `"format_version":2,`, "", 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir, parentID := buildParentSession(t)
+			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			raw, err := os.ReadFile(parentPath)
+			if err != nil {
+				t.Fatalf("read parent transcript: %v", err)
+			}
+			if err := os.WriteFile(parentPath, []byte(tt.transform(string(raw))), 0o644); err != nil {
+				t.Fatalf("write parent transcript: %v", err)
+			}
+
+			if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("ForkSession error = %v, want transcript.ErrUnsupportedFormat", err)
+			}
+		})
+	}
+}
+
+func TestForkSession_UsesFirstNonEmptyRecordAsHeader(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+	raw, err := os.ReadFile(parentPath)
+	if err != nil {
+		t.Fatalf("read parent transcript: %v", err)
+	}
+	if err := os.WriteFile(parentPath, append([]byte("\n"), raw...), 0o644); err != nil {
+		t.Fatalf("write parent transcript: %v", err)
+	}
+
+	childID, err := ForkSession(stateDir, parentID, 3, "edited", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if childID == "" {
+		t.Fatal("ForkSession child id is empty")
+	}
+}
+
+func TestForkSession_RejectsMalformedCompleteInteriorRecordWithoutCreatingChild(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	appendParentTranscript(t, stateDir, parentID, "{not valid json\n")
+	before := sessionArtifactNames(t, stateDir)
+	childID, err := ForkSession(stateDir, parentID, 3, "edited", "")
+	if err == nil {
+		t.Fatal("ForkSession error is nil, want malformed-record failure")
+	}
+	if childID != "" {
+		t.Fatalf("ForkSession child id = %q, want empty", childID)
+	}
+	if after := sessionArtifactNames(t, stateDir); after != before {
+		t.Fatalf("session artifacts changed:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestForkSession_RejectsMalformedCompleteEntry(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	appendParentTranscript(t, stateDir, parentID, "{\"kind\":\"entry\",\"turn\":\"not-an-object\"}\n")
+
+	if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); err == nil || !strings.Contains(err.Error(), "parsing parent transcript entry") {
+		t.Fatalf("ForkSession error = %v, want malformed-entry failure", err)
+	}
+}
+
+func TestForkSession_IgnoresIncompleteFinalRecord(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildParentSession(t)
+	appendParentTranscript(t, stateDir, parentID, "{\"kind\":\"entry\",\"seq\":9,\"tur")
+
+	childID, err := ForkSession(stateDir, parentID, 3, "edited", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	if childID == "" {
+		t.Fatal("ForkSession child id is empty")
 	}
 }
 

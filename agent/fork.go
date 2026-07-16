@@ -2,9 +2,11 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -69,24 +71,36 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	}
 	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
-	scanner := bufio.NewScanner(f)
 	maxScanToken := deps.maxScanToken
 	if maxScanToken <= 0 {
 		maxScanToken = 10 * 1024 * 1024
 	}
-	scanner.Buffer(make([]byte, 0, min(64*1024, maxScanToken)), maxScanToken)
+	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
 
-	// First line is the header.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return "", fmt.Errorf("reading parent transcript header: %w", err)
-		}
-		return "", errors.New("parent transcript is empty")
-	}
-
+	// The first non-empty complete line is the header.
 	var parentHeader transcript.Header
-	if err := json.Unmarshal(scanner.Bytes(), &parentHeader); err != nil {
-		return "", fmt.Errorf("parsing parent transcript header: %w", err)
+	for {
+		line, readErr := readStrictTranscriptLine(reader, maxScanToken)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", fmt.Errorf("reading parent transcript header: %w", readErr)
+		}
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			return "", errors.New("parent transcript is empty")
+		}
+		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+			return "", errors.New("parent transcript is empty")
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		if err := json.Unmarshal(line, &parentHeader); err != nil {
+			return "", fmt.Errorf("parsing parent transcript header: %w", err)
+		}
+		if err := transcript.ValidateHeader(parentHeader); err != nil {
+			return "", err
+		}
+		break
 	}
 
 	// Collect all entry lines from the parent transcript.
@@ -100,34 +114,38 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	//   Child = [U1, A1, edited-U2].
 	var allEntries []transcript.Entry
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		line, readErr := readStrictTranscriptLine(reader, maxScanToken)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", fmt.Errorf("reading parent transcript entries: %w", readErr)
+		}
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+			break
+		}
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 
-		// Peek at "kind" to decide how to handle.
 		var peek struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(line, &peek); err != nil {
-			continue // skip corrupt lines
+			return "", fmt.Errorf("parsing parent transcript line: %w", err)
 		}
-
-		if peek.Kind != "entry" {
-			continue // skip api_call lines and anything else
+		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
+			return "", err
 		}
 
 		var entry transcript.Entry
 		if err := json.Unmarshal(line, &entry); err != nil {
-			continue // skip corrupt entry lines
+			return "", fmt.Errorf("parsing parent transcript entry: %w", err)
 		}
 
 		allEntries = append(allEntries, entry)
-	}
-
-	if err := scanner.Err(); err != nil {
-		return "", fmt.Errorf("reading parent transcript entries: %w", err)
 	}
 
 	// Validate that divergenceTurn points to a valid entry in the parent transcript.

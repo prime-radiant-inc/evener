@@ -291,10 +291,16 @@ func fuzzAuxForkBasic(t *testing.T) {
 func fuzzAuxForkCorrupt(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	_ = fs.MkdirAll("/state/sessions", 0o755)
-	for i, body := range [][]byte{[]byte("not-json\n"), []byte("{}\n\nnope\n{\"kind\":\"api_call\"}\n{\"kind\":\"entry\",\"turn\":5}\n{\"kind\":\"entry\"}\n")} {
+	for i, body := range [][]byte{
+		[]byte("not-json\n"),
+		[]byte("{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"b\"}\n{\"kind\":\"api_call\"}\n"),
+	} {
 		id := string(rune('a' + i))
 		_ = afero.WriteFile(fs, "/state/sessions/"+id+".transcript.jsonl", body, 0o644)
-		_, _ = forkSessionFS(fs, "/state", id, 1, "x", "")
+		_, err := forkSessionFS(fs, "/state", id, 1, "x", "")
+		if i == 1 && !errors.Is(err, transcript.ErrUnsupportedFormat) {
+			t.Fatalf("mixed transcript error = %v, want transcript.ErrUnsupportedFormat", err)
+		}
 	}
 }
 
