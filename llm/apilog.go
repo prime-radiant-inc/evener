@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/envvars"
+	apilog "primeradiant.com/serf/llm/apilog"
 )
 
 // Context keys for API log metadata.
@@ -200,6 +202,16 @@ var apiLogJSONMarshal = json.Marshal
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
 var apiLogFileClose = func(f *os.File) error { return f.Close() }
 
+var errAPILoggerClosed = errors.New("API logger is closed")
+
+type observedAPILogError struct {
+	err error
+}
+
+func (e observedAPILogError) Error() string           { return e.err.Error() }
+func (e observedAPILogError) Unwrap() error           { return e.err }
+func (observedAPILogError) apiLogFailureWasObserved() {}
+
 // APILogger is middleware that logs every LLM API call to a JSONL file.
 //
 // It runs in one of two modes:
@@ -211,6 +223,12 @@ type APILogger struct {
 	file    *os.File
 	rawFile *os.File // nil when raw logging is disabled
 	mu      sync.Mutex
+
+	canonicalAdmissionMu sync.Mutex
+	canonicalClosing     bool
+	canonicalAppends     sync.WaitGroup
+	failureMu            sync.RWMutex
+	failureObserver      func(APILogFailure)
 
 	// sessionsDir, when non-empty, selects per-session mode: entries route to
 	// <sessionsDir>/<session_id>.api.jsonl instead of file/rawFile.
@@ -248,10 +266,10 @@ func (s *apiLogAdapterAttemptState) recorded() bool {
 // NewAPILogger creates an API logger that writes to the given path.
 // Creates the parent directory if it doesn't exist.
 func NewAPILogger(path string) (*APILogger, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensurePrivateAPILogDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := openPrivateAPILogFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +283,7 @@ func NewAPILogger(path string) (*APILogger, error) {
 // project-level api.jsonl is never written.
 func NewSessionAPILogger(stateDir string) (*APILogger, error) {
 	sessionsDir := filepath.Join(stateDir, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+	if err := ensurePrivateAPILogDirectory(sessionsDir); err != nil {
 		return nil, err
 	}
 	return &APILogger{
@@ -307,29 +325,59 @@ func sessionLogBaseName(sessionID string) string {
 // session id. Caller holds l.mu. Returns nil when the open fails; the entry is
 // dropped (diagnostic data is never load-bearing).
 func (l *APILogger) sessionFile(files map[string]*os.File, sessionID, suffix string) *os.File {
+	f, _ := l.sessionFileWithError(files, sessionID, suffix)
+	return f
+}
+
+func (l *APILogger) sessionFileWithError(files map[string]*os.File, sessionID, suffix string) (*os.File, error) {
 	base := sessionLogBaseName(sessionID)
 	if f, ok := files[base]; ok {
-		return f
+		if f == nil {
+			return nil, fmt.Errorf("API log for %q is unavailable", base)
+		}
+		return f, nil
 	}
-	f, err := os.OpenFile(filepath.Join(l.sessionsDir, base+suffix), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := openPrivateAPILogFile(filepath.Join(l.sessionsDir, base+suffix))
 	if err != nil {
-		f = nil
+		files[base] = nil
+		return nil, err
 	}
 	files[base] = f
-	return f
+	return f, nil
 }
 
 // EnableRawLogging opens a separate JSONL file for raw HTTP request/response bodies.
 func (l *APILogger) EnableRawLogging(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensurePrivateAPILogDirectory(filepath.Dir(path)); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := openPrivateAPILogFile(path)
 	if err != nil {
 		return err
 	}
 	l.rawFile = f
 	return nil
+}
+
+func ensurePrivateAPILogDirectory(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return os.MkdirAll(path, 0o700)
+}
+
+func openPrivateAPILogFile(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return f, nil
 }
 
 // WrapComplete wraps a CompleteFunc to log request metadata and full response.
@@ -411,8 +459,108 @@ func (l *APILogger) withAdapterAttemptLogging(ctx context.Context, state *apiLog
 	return context.WithValue(ctx, apiLogKey{}, lc)
 }
 
+func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
+	failure := APILogFailure{
+		Operation:      "append_attempt",
+		SessionID:      apiLogSessionID(ctx),
+		AttemptGroupID: rec.AttemptGroupID,
+		AttemptID:      rec.AttemptID,
+	}
+	if err := l.appendCanonicalRecord(ctx, rec); err != nil {
+		failure.Err = err
+		return l.observeClosedAppend(failure)
+	}
+	return nil
+}
+
+func (l *APILogger) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
+	failure := APILogFailure{
+		Operation:      "append_settlement",
+		SessionID:      apiLogSessionID(ctx),
+		AttemptGroupID: rec.AttemptGroupID,
+	}
+	if err := l.appendCanonicalRecord(ctx, rec); err != nil {
+		failure.Err = err
+		return l.observeClosedAppend(failure)
+	}
+	return nil
+}
+
+func (l *APILogger) SetFailureObserver(observer func(APILogFailure)) {
+	l.failureMu.Lock()
+	l.failureObserver = observer
+	l.failureMu.Unlock()
+}
+
+func (l *APILogger) apiLogFailureObserver() func(APILogFailure) {
+	l.failureMu.RLock()
+	defer l.failureMu.RUnlock()
+	return l.failureObserver
+}
+
+func (l *APILogger) observeAPILogFailure(failure APILogFailure) {
+	if observer := l.apiLogFailureObserver(); observer != nil {
+		observer(failure)
+	}
+}
+
+func (l *APILogger) observeClosedAppend(failure APILogFailure) error {
+	if !errors.Is(failure.Err, errAPILoggerClosed) {
+		return failure.Err
+	}
+	l.observeAPILogFailure(failure)
+	return observedAPILogError{err: failure.Err}
+}
+
+func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any) error {
+	if err := l.admitCanonicalAppend(); err != nil {
+		return err
+	}
+	defer l.canonicalAppends.Done()
+
+	data, err := apiLogJSONMarshal(record)
+	if err != nil {
+		return fmt.Errorf("marshal API-log record: %w", err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	f := l.file
+	if l.sessionsDir != "" {
+		f, err = l.sessionFileWithError(l.sessionFiles, apiLogSessionID(ctx), ".api.jsonl")
+		if err != nil {
+			return fmt.Errorf("open session API log: %w", err)
+		}
+	}
+	if f == nil {
+		return fmt.Errorf("API logger has no destination")
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return fmt.Errorf("append API-log record: %w", err)
+	}
+	l.dirty[f] = struct{}{}
+	if err := l.syncDirtyLocked(); err != nil {
+		return fmt.Errorf("sync API-log record: %w", err)
+	}
+	return nil
+}
+
+func (l *APILogger) admitCanonicalAppend() error {
+	l.canonicalAdmissionMu.Lock()
+	defer l.canonicalAdmissionMu.Unlock()
+	if l.canonicalClosing {
+		return errAPILoggerClosed
+	}
+	l.canonicalAppends.Add(1)
+	return nil
+}
+
 // Close flushes and closes the log file(s).
 func (l *APILogger) Close() error {
+	l.canonicalAdmissionMu.Lock()
+	l.canonicalClosing = true
+	l.canonicalAdmissionMu.Unlock()
+	l.canonicalAppends.Wait()
+
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	var firstErr error
@@ -462,13 +610,25 @@ func (l *APILogger) write(entry APILogEntry) {
 	f.Write(append(data, '\n')) //nolint:errcheck
 
 	l.dirty[f] = struct{}{}
-	if l.SyncInterval == 0 || time.Since(l.lastSync) >= l.SyncInterval {
-		for dirtyFile := range l.dirty {
-			dirtyFile.Sync() //nolint:errcheck
-			delete(l.dirty, dirtyFile)
-		}
-		l.lastSync = time.Now()
+	_ = l.syncDirtyLocked()
+}
+
+func (l *APILogger) syncDirtyLocked() error {
+	if l.SyncInterval > 0 && time.Since(l.lastSync) < l.SyncInterval {
+		return nil
 	}
+	var firstErr error
+	for dirtyFile := range l.dirty {
+		if err := apiLogFileSync(dirtyFile); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		delete(l.dirty, dirtyFile)
+	}
+	l.lastSync = time.Now()
+	return firstErr
 }
 
 func (l *APILogger) writeRaw(entry APIRawLogEntry) {
