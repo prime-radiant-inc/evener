@@ -1,6 +1,9 @@
 package cmdutil
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +13,7 @@ import (
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/kimi"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 // validProvidersToml is a minimal providers.toml with two openai instances
@@ -351,6 +355,69 @@ api_key = "sk-hdr-store-must-not-inject"
 	}
 	if byName["plain"] != "sk-glm-store" {
 		t.Errorf("plain keyless instance APIKey = %q, want store-injected sk-glm-store", byName["plain"])
+	}
+}
+
+func TestLoadProviderConfig_CredentialAuthorizationPreventsStoredKeyClobber(t *testing.T) {
+	gotAuthorization := make(chan []string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthorization <- append([]string(nil), r.Header.Values("Authorization")...)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "c1", "model": "glm-5",
+  "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+  "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	providers := `
+schema = 1
+default = "hdrgw"
+
+[instances.hdrgw]
+type = "glm"
+base_url = "` + srv.URL + `/v1"
+credential_headers = { "Authorization" = "Custom scheme-token" }
+`
+	if err := os.WriteFile(path, []byte(providers), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	creds := `
+schema = 1
+
+[providers.hdrgw]
+api_key = "sk-hdr-store-must-not-inject"
+`
+	if err := os.WriteFile(filepath.Join(dir, "credentials.toml"), []byte(creds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+
+	cfg, _, err := LoadProviderConfig()
+	if err != nil {
+		t.Fatalf("LoadProviderConfig: %v", err)
+	}
+	inst := cfg.Instances[0]
+	a := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:              inst.Name,
+		BaseURL:           inst.BaseURL,
+		APIKey:            inst.APIKey,
+		Headers:           inst.Headers,
+		CredentialHeaders: inst.CredentialHeaders,
+	})
+	a.Client = srv.Client()
+	if _, err := a.Complete(context.Background(), llm.Request{
+		Model:    "glm-5",
+		Messages: []llm.Message{llm.User("hi")},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	got := <-gotAuthorization
+	if len(got) != 1 || got[0] != "Custom scheme-token" {
+		t.Fatalf("Authorization values = %q, want one configured credential value", got)
 	}
 }
 

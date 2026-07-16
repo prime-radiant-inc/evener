@@ -65,7 +65,7 @@ func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error)
 		if inst.APIKey != "" {
 			continue
 		}
-		if hasAuthorizationHeader(inst.Headers) && providercfg.CompatFamily(inst.Type, inst.APIStyle) {
+		if (hasAuthorizationHeader(inst.Headers) || hasAuthorizationHeader(inst.CredentialHeaders)) && providercfg.CompatFamily(inst.Type, inst.APIStyle) {
 			// For the openai-compat family a configured Authorization header
 			// IS the instance's authentication (those adapters send no bearer
 			// without a key): injecting a type-level fallback key would make
