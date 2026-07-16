@@ -216,6 +216,96 @@ func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
 	}
 }
 
+func TestAPILoggerCanonicalSyncFailureOwnedByAffectedSessionGroup(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	logger.SyncInterval = time.Hour
+	var failures []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
+	syncErr := errors.New("session A sync failed")
+	oldSync := apiLogFileSync
+	apiLogFileSync = func(file *os.File) error {
+		if strings.HasSuffix(file.Name(), "sess-a.api.jsonl") {
+			return syncErr
+		}
+		return oldSync(file)
+	}
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+
+	completeCanonicalGroup(t, logger, "sess-a", "ag_session_a_sync", time.Unix(1_700_000_000, 0).UTC())
+	logger.mu.Lock()
+	logger.lastSync = time.Now().Add(-2 * time.Hour)
+	logger.mu.Unlock()
+	completeCanonicalGroup(t, logger, "sess-b", "ag_session_b_sync", time.Unix(1_700_000_001, 0).UTC())
+
+	apiLogFileSync = oldSync
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if len(failures) != 2 {
+		t.Fatalf("sync failure observer calls = %d, want attempt and settlement for session A: %+v", len(failures), failures)
+	}
+	for _, failure := range failures {
+		if failure.SessionID != "sess-a" || failure.AttemptGroupID != "ag_session_a_sync" || !errors.Is(failure.Err, syncErr) {
+			t.Fatalf("sync failure attributed to unaffected group: %+v", failure)
+		}
+	}
+	if failures[0].Operation != "append_attempt" || failures[0].AttemptID == "" {
+		t.Fatalf("attempt sync failure identity = %+v", failures[0])
+	}
+	if failures[1].Operation != "append_settlement" || failures[1].AttemptID != "" {
+		t.Fatalf("settlement sync failure identity = %+v", failures[1])
+	}
+
+	settlementA := readOnlyCanonicalSettlement(t, filepath.Join(stateDir, "sessions", "sess-a.api.jsonl"))
+	if settlementA.ForensicIncomplete {
+		t.Fatalf("session A append-only settlement was rewritten: %+v", settlementA)
+	}
+	settlementB := readOnlyCanonicalSettlement(t, filepath.Join(stateDir, "sessions", "sess-b.api.jsonl"))
+	if settlementB.ForensicIncomplete {
+		t.Fatalf("session B settlement = %+v, want complete forensics", settlementB)
+	}
+}
+
+func TestAPILoggerCloseObservesPendingCanonicalSyncFailureIdentity(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	logger.SyncInterval = time.Hour
+	var failures []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
+	group := NewAPIAttemptGroup("ag_close_sync")
+	ctx := WithAPILogContext(context.Background(), "sess-close-sync", 1)
+	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+
+	syncErr := errors.New("close sync failed")
+	oldSync := apiLogFileSync
+	apiLogFileSync = func(file *os.File) error {
+		if strings.HasSuffix(file.Name(), "sess-close-sync.api.jsonl") {
+			return syncErr
+		}
+		return oldSync(file)
+	}
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+	if err := logger.Close(); !errors.Is(err, syncErr) {
+		t.Fatalf("Close error = %v, want %v", err, syncErr)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("failure observer calls = %d, want 1: %+v", len(failures), failures)
+	}
+	failure := failures[0]
+	if failure.Operation != "append_attempt" || failure.SessionID != "sess-close-sync" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" || !errors.Is(failure.Err, syncErr) {
+		t.Fatalf("close sync failure identity = %+v", failure)
+	}
+}
+
 func TestAPILoggerOrdinaryMiddlewareStillWritesOnlyLegacyFormat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
@@ -248,6 +338,15 @@ func TestAPILoggerOrdinaryMiddlewareStillWritesOnlyLegacyFormat(t *testing.T) {
 	if record, err := apilog.DecodeRecord(line); err == nil {
 		t.Fatalf("ordinary middleware emitted canonical record %T", record)
 	}
+}
+
+func completeCanonicalGroup(t *testing.T, logger *APILogger, sessionID, groupID string, startedAt time.Time) {
+	t.Helper()
+	group := NewAPIAttemptGroup(groupID)
+	ctx := WithAPILogContext(context.Background(), sessionID, 1)
+	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
+	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+	group.Settle(ctx, apilog.AttemptSuccess)
 }
 
 func appendCanonicalTestRecords(t *testing.T, logger *APILogger, sessionID string) {
@@ -347,4 +446,31 @@ func assertOnlyCanonicalAttempt(t *testing.T, path, wantAttemptID string) {
 	if record, err := decoder.Next(); !errors.Is(err, io.EOF) || record != nil {
 		t.Fatalf("canonical tail = (%T, %v), want clean EOF", record, err)
 	}
+}
+
+func readOnlyCanonicalSettlement(t *testing.T, path string) apilog.APIAttemptGroupSettlement {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open canonical API log: %v", err)
+	}
+	defer f.Close()
+	decoder := apilog.NewDecoder(f, 1<<20)
+	var settlements []apilog.APIAttemptGroupSettlement
+	for {
+		record, err := decoder.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode canonical API log: %v", err)
+		}
+		if settlement, ok := record.(apilog.APIAttemptGroupSettlement); ok {
+			settlements = append(settlements, settlement)
+		}
+	}
+	if len(settlements) != 1 {
+		t.Fatalf("settlement count in %s = %d, want 1", path, len(settlements))
+	}
+	return settlements[0]
 }

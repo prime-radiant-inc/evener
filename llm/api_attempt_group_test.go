@@ -26,6 +26,9 @@ type recordingAPIAttemptSink struct {
 	failureObserverFn  func(APILogFailure)
 	attemptContextErrs []error
 	settleContextErrs  []error
+	attemptEntered     chan struct{}
+	attemptRelease     <-chan struct{}
+	attemptEnterOnce   sync.Once
 }
 
 func (s *recordingAPIAttemptSink) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
@@ -33,6 +36,12 @@ func (s *recordingAPIAttemptSink) AppendAttempt(ctx context.Context, rec apilog.
 	defer s.mu.Unlock()
 	s.events = append(s.events, "append_attempt")
 	s.attemptContextErrs = append(s.attemptContextErrs, ctx.Err())
+	if s.attemptEntered != nil {
+		s.attemptEnterOnce.Do(func() { close(s.attemptEntered) })
+	}
+	if s.attemptRelease != nil {
+		<-s.attemptRelease
+	}
 	if s.failAttempt != nil {
 		return s.failAttempt
 	}
@@ -271,6 +280,96 @@ func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, []string{"append_settlement"}) {
 		t.Fatalf("events = %v", events)
+	}
+}
+
+func TestAPIAttemptGroupNoSinkThenLateSinkRemainsInert(t *testing.T) {
+	group := NewAPIAttemptGroup("ag_no_sink")
+	ctx := WithAPIAttemptGroup(context.Background(), group)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+
+	lateSink := &recordingAPIAttemptSink{}
+	lateCtx := WithAPIAttemptSink(ctx, lateSink)
+	group.Settle(lateCtx, apilog.AttemptSuccess)
+
+	attempts, settlements, events := lateSink.snapshot()
+	if len(attempts) != 0 || len(settlements) != 0 || len(events) != 0 {
+		t.Fatalf("late sink received attempts=%d settlements=%d events=%v, want consistently inert group", len(attempts), len(settlements), events)
+	}
+}
+
+func TestAPIAttemptGroupResolvesCurrentObserverFromBoundSink(t *testing.T) {
+	storageErr := errors.New("append failed")
+	sink := &recordingAPIAttemptSink{failAttempt: storageErr}
+	var oldObserverCalls, currentObserverCalls int
+	sink.failureObserverFn = func(APILogFailure) { oldObserverCalls++ }
+	group := NewAPIAttemptGroup("ag_observer_replacement")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	sink.failureObserverFn = func(APILogFailure) { currentObserverCalls++ }
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptTransportFail, errors.New("transport failed")))
+
+	if oldObserverCalls != 0 || currentObserverCalls != 1 {
+		t.Fatalf("observer calls old/current = %d/%d, want 0/1", oldObserverCalls, currentObserverCalls)
+	}
+}
+
+func TestAPIAttemptGroupCompetingSinkCannotReplaceBoundObserverSource(t *testing.T) {
+	storageErr := errors.New("append failed")
+	appendEntered := make(chan struct{})
+	releaseAppend := make(chan struct{})
+	boundSink := &recordingAPIAttemptSink{
+		failAttempt:    storageErr,
+		attemptEntered: appendEntered,
+		attemptRelease: releaseAppend,
+	}
+	competingObserverCalls := make(chan APILogFailure, 2)
+	competingSink := &recordingAPIAttemptSink{
+		failureObserverFn: func(failure APILogFailure) { competingObserverCalls <- failure },
+	}
+	group := NewAPIAttemptGroup("ag_competing_sinks")
+	ctxA := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), boundSink)
+	ctxB := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), competingSink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+
+	first := BeginAPIAttempt(ctxA, testAPIAttemptMeta(startedAt))
+	firstDone := make(chan struct{})
+	go func() {
+		first.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptTransportFail, errors.New("first failed")))
+		close(firstDone)
+	}()
+	<-appendEntered
+
+	secondBegan := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		second := BeginAPIAttempt(ctxB, testAPIAttemptMeta(startedAt.Add(time.Second)))
+		close(secondBegan)
+		second.Complete(testAPIAttemptResult(startedAt.Add(time.Second+time.Millisecond), apilog.AttemptTransportFail, errors.New("second failed")))
+		close(secondDone)
+	}()
+	<-secondBegan
+	close(releaseAppend)
+	<-firstDone
+	<-secondDone
+	group.Settle(ctxB, apilog.AttemptTransportFail)
+
+	_, boundSettlements, boundEvents := boundSink.snapshot()
+	competingAttempts, competingSettlements, competingEvents := competingSink.snapshot()
+	if !reflect.DeepEqual(boundEvents, []string{"append_attempt", "append_attempt", "append_settlement"}) {
+		t.Fatalf("bound sink events = %v", boundEvents)
+	}
+	if len(boundSettlements) != 1 || boundSettlements[0].FinalAttemptCount != 2 || !boundSettlements[0].ForensicIncomplete {
+		t.Fatalf("bound sink settlements = %+v", boundSettlements)
+	}
+	if len(competingAttempts) != 0 || len(competingSettlements) != 0 || len(competingEvents) != 0 {
+		t.Fatalf("competing sink received attempts=%d settlements=%d events=%v", len(competingAttempts), len(competingSettlements), competingEvents)
+	}
+	select {
+	case failure := <-competingObserverCalls:
+		t.Fatalf("competing sink observer received bound-sink failure: %+v", failure)
+	default:
 	}
 }
 

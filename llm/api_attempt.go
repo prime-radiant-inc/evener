@@ -59,8 +59,7 @@ type apiAttemptGroupContextKey struct{}
 type apiAttemptSinkContextKey struct{}
 
 type apiAttemptSinkContext struct {
-	sink            APIAttemptSink
-	failureObserver func(APILogFailure)
+	sink APIAttemptSink
 }
 
 type apiLogFailureObserverSource interface {
@@ -76,11 +75,7 @@ func WithAPIAttemptGroup(ctx context.Context, group *APIAttemptGroup) context.Co
 }
 
 func WithAPIAttemptSink(ctx context.Context, sink APIAttemptSink) context.Context {
-	state := apiAttemptSinkContext{sink: sink}
-	if source, ok := sink.(apiLogFailureObserverSource); ok {
-		state.failureObserver = source.apiLogFailureObserver()
-	}
-	return context.WithValue(ctx, apiAttemptSinkContextKey{}, state)
+	return context.WithValue(ctx, apiAttemptSinkContextKey{}, apiAttemptSinkContext{sink: sink})
 }
 
 type APIAttemptGroup struct {
@@ -92,8 +87,8 @@ type APIAttemptGroup struct {
 	finalAttemptCount  int
 	forensicIncomplete bool
 	settling           bool
+	sinkBound          bool
 	sink               APIAttemptSink
-	failureObserver    func(APILogFailure)
 	pendingAttempts    sync.WaitGroup
 }
 
@@ -124,6 +119,10 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 		return &APIAttempt{}
 	}
 	group.bindSinkLocked(state)
+	if group.sink == nil {
+		group.mu.Unlock()
+		return &APIAttempt{}
+	}
 	group.nextAttemptIndex++
 	attemptID := identifier.MustNewAPIAttemptID()
 	group.finalAttemptID = attemptID
@@ -211,22 +210,26 @@ func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutc
 }
 
 func (g *APIAttemptGroup) bindSinkLocked(state apiAttemptSinkContext) {
-	if g.sink == nil && state.sink != nil {
-		g.sink = state.sink
+	if g.sinkBound {
+		return
 	}
-	if g.failureObserver == nil && state.failureObserver != nil {
-		g.failureObserver = state.failureObserver
-	}
+	g.sinkBound = true
+	g.sink = state.sink
 }
 
 func (g *APIAttemptGroup) recordFailure(failure APILogFailure) {
 	g.mu.Lock()
 	g.forensicIncomplete = true
-	observer := g.failureObserver
+	sink := g.sink
 	g.mu.Unlock()
 	var observed apiLogObservedFailure
-	if failure.Err != nil && !errors.As(failure.Err, &observed) && observer != nil {
-		observer(failure)
+	if failure.Err == nil || errors.As(failure.Err, &observed) {
+		return
+	}
+	if source, ok := sink.(apiLogFailureObserverSource); ok {
+		if observer := source.apiLogFailureObserver(); observer != nil {
+			observer(failure)
+		}
 	}
 }
 
