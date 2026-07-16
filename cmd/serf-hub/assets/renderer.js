@@ -2809,7 +2809,7 @@
     // completion signal (mockup #8 alt A).
     classifyJobStatus(status) {
       const s = String(status || "").trim().toLowerCase();
-      if (s === "failed" || s === "errored" || s === "error") return "failed";
+      if (s === "failed" || s === "errored" || s === "error" || s === "exhausted") return "failed";
       if (s === "completed" || s === "done" || s === "cancelled" || s === "stopped" || s === "succeeded") return "done";
       if (s === "unknown") return "unknown";
       return "running";

@@ -974,6 +974,40 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	}
 }
 
+func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	resumable := true
+	finished := projector.Project(events.SessionEvent{
+		Kind:      events.EventJobFinished,
+		SessionID: "th_1",
+		Data: events.JobFinishedData{
+			JobID:            "job_exhausted",
+			JobType:          "delegate",
+			Status:           "exhausted",
+			Reason:           "tool_round_budget_exhausted",
+			ExhaustionBudget: "max_tool_rounds_per_input",
+			ExhaustionLimit:  1,
+			Resumable:        &resumable,
+		},
+	})
+	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+		t.Fatalf("finished = %+v", finished)
+	}
+	params, ok := finished[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("finished params = %T", finished[0].Params)
+	}
+	job, ok := params["job"].(appwire.SerfJobInfo)
+	if !ok {
+		t.Fatalf("finished job = %T in %+v", params["job"], params)
+	}
+	if job.Status != "exhausted" || job.Reason != "tool_round_budget_exhausted" ||
+		job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 ||
+		job.Resumable == nil || !*job.Resumable {
+		t.Fatalf("finished job = %+v", job)
+	}
+}
+
 func TestSerfJobInfoDelegateFieldsAreOptional(t *testing.T) {
 	payload, err := json.Marshal(appwire.SerfJobInfo{
 		JobID:       "job_shell",

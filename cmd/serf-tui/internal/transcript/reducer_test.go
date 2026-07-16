@@ -474,6 +474,29 @@ func TestTranscriptReducerAppliesSerfJobNotificationsToDelegateTool(t *testing.T
 	}
 }
 
+func TestSubagentTerminalStatus_Exhausted(t *testing.T) {
+	if !subagentTerminalStatus("exhausted") {
+		t.Fatal("exhausted transcript subagent reported as non-terminal")
+	}
+
+	reducer := NewTranscriptReducer(nil, nil, nil)
+	reducer.ApplySerfJob(appwire.SerfJobInfo{
+		JobID:      "job_exhausted",
+		JobType:    "delegate",
+		Status:     "exhausted",
+		Reason:     "tool_round_budget_exhausted",
+		DelegateID: "dlg_exhausted",
+		Task:       "bounded work",
+	})
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 || tools[0].Subagent == nil {
+		t.Fatalf("tools = %+v, want one exhausted subagent", tools)
+	}
+	if !tools[0].Done || tools[0].Subagent.Status != "exhausted" || tools[0].Subagent.Reason != "tool_round_budget_exhausted" {
+		t.Fatalf("exhausted subagent = %+v", tools[0])
+	}
+}
+
 func TestTranscriptReducerResumedDelegateJobWithSameOriginCreatesNewRun(t *testing.T) {
 	reducer := NewTranscriptReducer(nil, nil, nil)
 	first := appwire.SerfJobInfo{

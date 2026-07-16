@@ -557,7 +557,7 @@ func mergeSubagentRun(dst *SubagentRunInfo, src SubagentRunInfo) SubagentRunInfo
 
 func subagentTerminalStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "done", "failed", "cancelled", "stopped", "succeeded":
+	case "completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted":
 		return true
 	default:
 		return false

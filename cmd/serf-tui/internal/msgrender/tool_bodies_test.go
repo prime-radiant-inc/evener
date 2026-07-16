@@ -158,6 +158,30 @@ func TestRenderSubagentRailConsolidates(t *testing.T) {
 	}
 }
 
+func TestSubagentRailClass_Exhausted(t *testing.T) {
+	if got := subagentRailClass("exhausted"); got != "failed" {
+		t.Fatalf("exhausted rail class = %q, want failed", got)
+	}
+	withTestColorProfile(t)
+	run := transcript.SubagentRunInfo{
+		JobID:  "job_exhausted",
+		Task:   "bounded work",
+		Status: "exhausted",
+		Reason: "tool_round_budget_exhausted",
+	}
+	body := SubagentRunBody(run, 80)
+	if !strings.Contains(body, "exhausted") {
+		t.Fatalf("subagent body did not retain exhausted status: %q", body)
+	}
+	rail := RenderSubagentRail([]transcript.SubagentRunInfo{run}, 80)
+	if !strings.Contains(rail, "1 failed") || !strings.Contains(rail, "tool_round_budget_exhausted") {
+		t.Fatalf("exhausted rail did not retain terminal non-success reason: %q", rail)
+	}
+	if strings.Contains(rail, "running") || strings.Contains(rail, "1 done") {
+		t.Fatalf("exhausted rail rendered as running or successful: %q", rail)
+	}
+}
+
 func TestRenderSubagentRailNamesBackgroundShellByCommand(t *testing.T) {
 	withTestColorProfile(t)
 	out := RenderSubagentRail([]transcript.SubagentRunInfo{

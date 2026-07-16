@@ -126,6 +126,19 @@ ${delegateEnvelope}
   await scenario("delegate completion notification parses", delegateNotification, (conv) =>
     expectNotificationCard(conv, "success", ["Job completed", "job_delegate", "delegate", "local:delegate", "DONE", "3fbe7256", "node test passed; go test passed."]));
 
+  const exhaustedNotification = `<job-notification job_id="job_exhausted" event="completed" job_type="delegate" status="exhausted" reason="tool_round_budget_exhausted" output_bytes="42" transcript_ref="local:child-exhausted">
+Job job_exhausted exhausted. Output is available through read_transcript(transcript_ref="local:child-exhausted") if needed.
+</job-notification>`;
+  parserScenario("exhausted notification is terminal non-success", exhaustedNotification, (summary) => {
+    const n = summary && summary.notification;
+    if (!n) return { ok: false, detail: "not notification" };
+    if (n.tone === "success" || n.tone === "neutral") return { ok: false, detail: "exhausted tone = " + n.tone };
+    if (!n.attrs || n.attrs.status !== "exhausted" || n.attrs.reason !== "tool_round_budget_exhausted") {
+      return { ok: false, detail: "raw exhaustion metadata was not retained" };
+    }
+    return { ok: true };
+  });
+
   await scenario("raw notification remains inspectable", delegateNotification, (conv) => {
     const pre = conv.querySelector(".notification-card-raw pre");
     if (!pre) return { ok: false, detail: "missing raw notification pre" };

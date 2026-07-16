@@ -316,7 +316,7 @@
     const communicateStatus = String(communicate && communicate.status || "").toLowerCase();
     const exitCode = String(attrs.exit_code || "").trim();
     const concerns = communicate && communicate.concerns && communicate.concerns.length;
-    if (outerStatus.includes("fail") || outerEvent.includes("fail") || outerStatus === "error" || outerEvent === "error" || (exitCode && exitCode !== "0")) return "error";
+    if (outerStatus.includes("fail") || outerEvent.includes("fail") || outerStatus === "error" || outerEvent === "error" || outerStatus === "exhausted" || (exitCode && exitCode !== "0")) return "error";
     const status = communicateStatus || outerStatus || outerEvent;
     if (concerns || status === "cancelled" || status === "stopped" || attrs.event === "watch_send" || attrs.event === "watch") return "warning";
     if (status === "completed" || status === "done") return "success";

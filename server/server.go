@@ -59,13 +59,16 @@ type PluginStatusInfo struct {
 
 // JobStatusInfo describes an active or recent job.
 type JobStatusInfo struct {
-	JobID         string `json:"job_id"`
-	JobType       string `json:"job_type"`
-	Status        string `json:"status"`
-	Reason        string `json:"reason,omitempty"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	OutputBytes   int64  `json:"output_bytes"`
-	TranscriptRef string `json:"transcript_ref,omitempty"`
+	JobID            string `json:"job_id"`
+	JobType          string `json:"job_type"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`
+	Resumable        *bool  `json:"resumable,omitempty"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
+	OutputBytes      int64  `json:"output_bytes"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
 }
 
 // DetailedStatus captures the full session configuration for /status display.

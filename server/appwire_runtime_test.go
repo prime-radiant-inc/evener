@@ -68,6 +68,28 @@ func TestAppDiagnosticsFromDetailedStatus_MCPStatusError(t *testing.T) {
 	}
 }
 
+func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
+	resumable := true
+	got := appDiagnosticsFromDetailedStatus(DetailedStatus{Jobs: []JobStatusInfo{{
+		JobID:            "job_exhausted",
+		JobType:          "delegate",
+		Status:           "exhausted",
+		Reason:           "tool_round_budget_exhausted",
+		ExhaustionBudget: "max_tool_rounds_per_input",
+		ExhaustionLimit:  1,
+		Resumable:        &resumable,
+	}}})
+	if len(got.Jobs) != 1 {
+		t.Fatalf("jobs = %+v, want one exhausted job", got.Jobs)
+	}
+	job := got.Jobs[0]
+	if job.Status != "exhausted" || job.Reason != "tool_round_budget_exhausted" ||
+		job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 ||
+		job.Resumable == nil || !*job.Resumable {
+		t.Fatalf("job = %+v", job)
+	}
+}
+
 func TestAppTurnsFromNotificationsAccumulatesReasoningDeltas(t *testing.T) {
 	records := []appserver.SequencedNotification{
 		{Notification: appwire.Notification{Method: "turn/started", Params: []byte(`{"turnId":"turn_1"}`)}},

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -296,6 +297,78 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		job.Reason != "exit_nonzero" || job.TranscriptRef != "local:child-status" ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
+	}
+}
+
+func TestSession_DetailedStatus_JobsIncludesExhaustion(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	startedAt := time.Now().UTC()
+	endedAt := startedAt.Add(time.Second)
+	resumable := true
+	const jobID = "job_exhausted"
+	if err := sess.jobManager.store.AppendBatch([]jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               startedAt,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   sess.ID(),
+			VisibleToSession: sess.ID(),
+			StartedAt:        &startedAt,
+		},
+		{
+			Kind:             jobstore.EventJobFinished,
+			TS:               endedAt,
+			JobID:            jobID,
+			Status:           jobstore.StatusExhausted,
+			Reason:           "tool_round_budget_exhausted",
+			ExhaustionBudget: "max_tool_rounds_per_input",
+			ExhaustionLimit:  1,
+			Resumable:        &resumable,
+			EndedAt:          &endedAt,
+		},
+	}); err != nil {
+		t.Fatalf("append job events: %v", err)
+	}
+
+	ds := sess.DetailedStatus()
+	if len(ds.Jobs) != 1 {
+		t.Fatalf("jobs = %+v, want one exhausted job", ds.Jobs)
+	}
+	job := ds.Jobs[0]
+	if job.JobID != jobID || job.Status != string(jobstore.StatusExhausted) || job.Reason != "tool_round_budget_exhausted" {
+		t.Fatalf("job status = %+v", job)
+	}
+	if job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 {
+		t.Fatalf("exhaustion metadata = (%q, %d), want (max_tool_rounds_per_input, 1)", job.ExhaustionBudget, job.ExhaustionLimit)
+	}
+	if job.Resumable == nil || !*job.Resumable {
+		t.Fatalf("resumable = %v, want true", job.Resumable)
+	}
+	raw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal job status: %v", err)
+	}
+	var diagnostic map[string]any
+	if err := json.Unmarshal(raw, &diagnostic); err != nil {
+		t.Fatalf("unmarshal job status: %v", err)
+	}
+	if diagnostic["exhaustion_budget"] != "max_tool_rounds_per_input" || diagnostic["exhaustion_limit"] != float64(1) {
+		t.Fatalf("diagnostic exhaustion fields = %+v", diagnostic)
+	}
+	if _, ok := diagnostic["exhaustionBudget"]; ok {
+		t.Fatalf("agent diagnostic used AppWire camelCase: %+v", diagnostic)
 	}
 }
 

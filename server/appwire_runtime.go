@@ -798,13 +798,16 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 	}
 	for _, job := range ds.Jobs {
 		out.Jobs = append(out.Jobs, appwire.SerfJobInfo{
-			JobID:         job.JobID,
-			JobType:       job.JobType,
-			Status:        job.Status,
-			Reason:        job.Reason,
-			ExitCode:      job.ExitCode,
-			OutputBytes:   job.OutputBytes,
-			TranscriptRef: job.TranscriptRef,
+			JobID:            job.JobID,
+			JobType:          job.JobType,
+			Status:           job.Status,
+			Reason:           job.Reason,
+			ExhaustionBudget: job.ExhaustionBudget,
+			ExhaustionLimit:  job.ExhaustionLimit,
+			Resumable:        job.Resumable,
+			ExitCode:         job.ExitCode,
+			OutputBytes:      job.OutputBytes,
+			TranscriptRef:    job.TranscriptRef,
 		})
 	}
 	out.Agents = append(out.Agents, ds.Agents...)

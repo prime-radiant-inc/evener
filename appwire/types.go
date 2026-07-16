@@ -422,6 +422,9 @@ type SerfJobInfo struct {
 	JobType          string `json:"jobType"`
 	Status           string `json:"status"`
 	Reason           string `json:"reason,omitempty"`
+	ExhaustionBudget string `json:"exhaustionBudget,omitempty"`
+	ExhaustionLimit  int    `json:"exhaustionLimit,omitempty"`
+	Resumable        *bool  `json:"resumable,omitempty"`
 	ExitCode         *int   `json:"exitCode,omitempty"`
 	OutputBytes      int64  `json:"outputBytes"`
 	TranscriptRef    string `json:"transcriptRef,omitempty"`

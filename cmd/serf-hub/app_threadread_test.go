@@ -33,6 +33,40 @@ func TestThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) 
 	}
 }
 
+func TestHistoricalJob_ExhaustedIsTerminal(t *testing.T) {
+	if !isTerminalHistoricalJobStatus("exhausted") {
+		t.Fatal("exhausted historical job reported as non-terminal")
+	}
+	raw := json.RawMessage(`{"job_id":"job_exhausted","delegate_id":"dlg_exhausted","status":"running","task":"bounded work","transcript_ref":"local:child-exhausted"}`)
+	item := appwire.ThreadItem{
+		Type:     "commandExecution",
+		ID:       "item_delegate",
+		CallID:   "call_delegate",
+		ToolName: "delegate",
+		Raw:      raw,
+		Status:   appwire.TurnStatusInProgress,
+	}
+	rec := agent.HistoricalJobRecord{
+		JobID:         "job_exhausted",
+		DelegateID:    "dlg_exhausted",
+		Type:          "delegate",
+		Status:        "exhausted",
+		Reason:        "tool_round_budget_exhausted",
+		Task:          "bounded work",
+		TranscriptRef: "local:child-exhausted",
+	}
+
+	got := reconcileDelegateThreadItemForTest(item, rec)
+	if got.Status != "exhausted" {
+		t.Fatalf("item status = %q, want exhausted", got.Status)
+	}
+	for _, want := range []string{`"status":"exhausted"`, `"reason":"tool_round_budget_exhausted"`} {
+		if !strings.Contains(string(got.Raw), want) {
+			t.Fatalf("raw missing %s: %s", want, got.Raw)
+		}
+	}
+}
+
 func TestThreadReadLeavesDelegateRawUnchangedWithoutJobstoreRecord(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_missing","delegate_id":"dlg_A","status":"running"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ID: "item_delegate", CallID: "call_delegate", ToolName: "delegate", Raw: raw, Status: appwire.TurnStatusInProgress}

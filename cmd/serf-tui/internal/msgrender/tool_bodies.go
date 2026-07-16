@@ -398,7 +398,7 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 
 func subagentRailClass(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "failed", "error":
+	case "failed", "error", "exhausted":
 		return "failed"
 	case "completed", "done", "succeeded", "cancelled", "stopped":
 		return "done"

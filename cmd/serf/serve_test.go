@@ -664,6 +664,39 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 	}
 }
 
+func TestAgentToServerDetailedStatus_Exhaustion(t *testing.T) {
+	resumable := true
+	got := agentToServerDetailedStatus(agent.DetailedStatus{Jobs: []agent.JobStatusInfo{{
+		JobID:            "job_exhausted",
+		JobType:          "delegate",
+		Status:           "exhausted",
+		Reason:           "tool_round_budget_exhausted",
+		ExhaustionBudget: "max_tool_rounds_per_input",
+		ExhaustionLimit:  1,
+		Resumable:        &resumable,
+	}}})
+	if len(got.Jobs) != 1 {
+		t.Fatalf("jobs = %+v, want one exhausted job", got.Jobs)
+	}
+	job := got.Jobs[0]
+	if job.Status != "exhausted" || job.Reason != "tool_round_budget_exhausted" ||
+		job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 ||
+		job.Resumable == nil || !*job.Resumable {
+		t.Fatalf("job = %+v", job)
+	}
+	raw, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("marshal server job status: %v", err)
+	}
+	encoded := string(raw)
+	if !strings.Contains(encoded, `"exhaustion_budget":"max_tool_rounds_per_input"`) || !strings.Contains(encoded, `"exhaustion_limit":1`) {
+		t.Fatalf("server diagnostic JSON = %s", encoded)
+	}
+	if strings.Contains(encoded, "exhaustionBudget") || strings.Contains(encoded, "exhaustionLimit") {
+		t.Fatalf("server diagnostic used AppWire camelCase: %s", encoded)
+	}
+}
+
 // TestSerfUsageFromLLM_ZeroReturnsNil pins the WS2 A7 helper: an llm.Usage
 // with every total at zero (a fresh session, an old daemon that never seeded
 // usage, or a Codex thread) maps to a nil *appwire.SerfUsage, so the status

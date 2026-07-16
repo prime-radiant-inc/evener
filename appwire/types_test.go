@@ -130,6 +130,48 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSerfJobInfo_ExhaustionFields(t *testing.T) {
+	resumable := true
+	in := SerfJobInfo{
+		JobID:            "job_exhausted",
+		JobType:          "delegate",
+		Status:           "exhausted",
+		Reason:           "tool_round_budget_exhausted",
+		ExhaustionBudget: "max_tool_rounds_per_input",
+		ExhaustionLimit:  1,
+		Resumable:        &resumable,
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	encoded := string(raw)
+	for _, want := range []string{
+		`"status":"exhausted"`,
+		`"reason":"tool_round_budget_exhausted"`,
+		`"exhaustionBudget":"max_tool_rounds_per_input"`,
+		`"exhaustionLimit":1`,
+		`"resumable":true`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("marshal=%s missing %s", encoded, want)
+		}
+	}
+	for _, forbidden := range []string{"exhaustion_budget", "exhaustion_limit"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("marshal=%s should not contain %s", encoded, forbidden)
+		}
+	}
+
+	var out SerfJobInfo
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.ExhaustionBudget != "max_tool_rounds_per_input" || out.ExhaustionLimit != 1 || out.Resumable == nil || !*out.Resumable {
+		t.Fatalf("roundtrip exhaustion metadata = %+v", out)
+	}
+}
+
 // TestInstanceListResponseJSONRoundTrip verifies the wire shape of
 // InstanceListResponse and InstanceEntry: camelCase JSON tags and correct
 // field round-trip for a populated entry.

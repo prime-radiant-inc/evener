@@ -29,13 +29,16 @@ type PluginInfo struct {
 
 // JobStatusInfo describes an active or recent job.
 type JobStatusInfo struct {
-	JobID         string `json:"job_id"`
-	JobType       string `json:"job_type"`
-	Status        string `json:"status"`
-	Reason        string `json:"reason,omitempty"`
-	TranscriptRef string `json:"transcript_ref,omitempty"`
-	OutputBytes   int64  `json:"output_bytes"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
+	JobID            string `json:"job_id"`
+	JobType          string `json:"job_type"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason,omitempty"`
+	ExhaustionBudget string `json:"exhaustion_budget,omitempty"`
+	ExhaustionLimit  int    `json:"exhaustion_limit,omitempty"`
+	Resumable        *bool  `json:"resumable,omitempty"`
+	TranscriptRef    string `json:"transcript_ref,omitempty"`
+	OutputBytes      int64  `json:"output_bytes"`
+	ExitCode         *int   `json:"exit_code,omitempty"`
 }
 
 // HookEventStatus describes a single hook event's registration state and
@@ -187,13 +190,16 @@ func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
 	jobs := make([]JobStatusInfo, 0, len(records))
 	for _, rec := range records {
 		jobs = append(jobs, JobStatusInfo{
-			JobID:         rec.JobID,
-			JobType:       string(rec.Type),
-			Status:        string(rec.Status),
-			Reason:        rec.Reason,
-			TranscriptRef: rec.TranscriptRef,
-			OutputBytes:   rec.OutputBytes,
-			ExitCode:      rec.ExitCode,
+			JobID:            rec.JobID,
+			JobType:          string(rec.Type),
+			Status:           string(rec.Status),
+			Reason:           rec.Reason,
+			ExhaustionBudget: rec.ExhaustionBudget,
+			ExhaustionLimit:  rec.ExhaustionLimit,
+			Resumable:        rec.Resumable,
+			TranscriptRef:    rec.TranscriptRef,
+			OutputBytes:      rec.OutputBytes,
+			ExitCode:         rec.ExitCode,
 		})
 	}
 	return jobs

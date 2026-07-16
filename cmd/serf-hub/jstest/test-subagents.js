@@ -108,6 +108,25 @@ await scenario("JOB_FINISHED updates originating delegate row", [
   return { ok: true };
 });
 
+await scenario("exhausted child is terminal non-success without spinner", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  jobStarted("job_exhausted", "dlg_exhausted", "bounded work", "local:child-exhausted", "d1"),
+  ["JOB_FINISHED", {
+    jobId: "job_exhausted", jobType: "delegate", status: "exhausted",
+    reason: "tool_round_budget_exhausted", delegateId: "dlg_exhausted",
+    task: "bounded work", transcriptRef: "local:child-exhausted",
+    originToolCallId: "d1", originItemId: "item_d1", outputBytes: 42,
+  }],
+], ({ conv }) => {
+  const row = conv.querySelector('.sub-r[data-job-id="job_exhausted"]');
+  if (!row) return { ok: false, detail: "missing exhausted row" };
+  const glyph = row.querySelector(".g");
+  if (row.dataset.status !== "exhausted") return { ok: false, detail: "raw status was relabeled" };
+  if (row.dataset.statusKind === "running") return { ok: false, detail: "exhausted row is still running" };
+  if (!glyph || glyph.classList.contains("run") || !glyph.classList.contains("err")) return { ok: false, detail: "exhausted glyph is not terminal non-success" };
+  return { ok: true };
+});
+
 await scenario("delegate_send second job creates second row under same delegate", [
   ["SESSION_START", { session_id: "01TEST" }],
   jobStarted("job_first", "dlg_same", "inspect billing", "local:child", "d1"),

@@ -504,7 +504,7 @@ func childActivityFromItem(item appwire.ThreadItem) string {
 
 func runStillRunning(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "done", "failed", "cancelled", "stopped", "succeeded":
+	case "completed", "done", "failed", "cancelled", "stopped", "succeeded", "exhausted":
 		return false
 	}
 	return true
