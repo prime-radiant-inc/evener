@@ -26,7 +26,7 @@ func accumulateChatCompletionsSSE(a *Adapter, sse []byte, chunkOneByte bool) (*l
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeChatCompletionsStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil)
+	go a.decodeChatCompletionsStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false

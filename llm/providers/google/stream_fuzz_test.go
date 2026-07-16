@@ -46,7 +46,7 @@ func accumulateGeminiSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Respon
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, "http://fuzz.local/endpoint")
+	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, "http://fuzz.local/endpoint", nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false

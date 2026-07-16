@@ -30,6 +30,7 @@ var chatCompletionsRawBody = func(buf *bytes.Buffer) (string, bool) {
 // Chat Completions API (/v1/chat/completions). This handles models that do
 // not support the Responses API endpoint.
 func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
@@ -55,31 +56,53 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	// Chat Completions does not use the Responses-API-specific ChatGPT-Account-ID header.
 	// setHeaders already sets it from a.ChatGPTAccountID; we leave it for compatibility
 	// with non-standard deployments.
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.apiLogProviderInstance(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "openai_chat_completions",
+		RequestBody:        jsonBody,
+		CredentialMaterial: credentialMaterial,
+	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
+		returnedErr := llm.WrapContextError("openai", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
 		cancel()
-		return nil, llm.WrapContextError("openai", err)
+		return nil, returnedErr
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		rawBytes, _ := io.ReadAll(resp.Body)
+		rawBytes, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
 		dec := json.NewDecoder(bytes.NewReader(rawBytes))
 		dec.UseNumber()
-		_ = dec.Decode(&raw)
+		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("chat.completions(stream) failed: %v", raw)
+		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(jsonBody), string(rawBytes))
+		decodeErr := jsonErr
+		if readErr != nil {
+			decodeErr = readErr
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   resp.StatusCode,
+			ResponseBody: rawBytes,
+			Err:          returnedErr,
+		}, llm.APITimeoutNone, decodeErr, nil)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(jsonBody), string(rawBytes))
+		return nil, returnedErr
 	}
 
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeChatCompletionsStream(sctx, cancel, resp, s, req, jsonBody)
+	go a.decodeChatCompletionsStream(sctx, cancel, resp, s, req, jsonBody, attempt)
 
 	return s, nil
 }
@@ -88,7 +111,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 // goroutine: it translates each chunk into llm stream events and emits the final
 // accumulated Response on [DONE]. It owns closing the response body and the
 // ChanStream.
-func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte) {
+func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -106,6 +129,7 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 	var model string
 	var usage *llm.Usage
 	finished := false
+	var finalEvent *llm.StreamEvent
 
 	rawReqBody := string(jsonBody)
 
@@ -114,9 +138,14 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 		Resp:           resp,
 		RawRequestBody: rawReqBody,
 		Stream:         s,
-		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:       &finished,
-		IncompleteMsg:  fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
+		Attempt:        attempt,
+		StatusCode:     resp.StatusCode,
+		FinalEvent: func() *llm.StreamEvent {
+			return finalEvent
+		},
+		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:      &finished,
+		IncompleteMsg: fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
@@ -167,12 +196,17 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 					finalResp.RawRequestBody = rawReqBody
 					finalResp.RawResponseBody = rawResponseBody
 				}
-				s.Send(llm.StreamEvent{
+				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,
 					Usage:        usage,
 					Response:     finalResp,
-				})
+				}
+				if attempt.Active() {
+					finalEvent = &event
+				} else {
+					s.Send(event)
+				}
 				cancel()
 				return nil
 			}

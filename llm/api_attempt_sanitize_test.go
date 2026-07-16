@@ -72,6 +72,49 @@ func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
 	}
 }
 
+type credentialFailureSink struct {
+	err      error
+	observed []APILogFailure
+}
+
+func (s *credentialFailureSink) AppendAttempt(context.Context, apilog.APIAttemptRecord) error {
+	return s.err
+}
+
+func (*credentialFailureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+func (s *credentialFailureSink) apiLogFailureObserver() func(APILogFailure) {
+	return func(failure APILogFailure) {
+		s.observed = append(s.observed, failure)
+	}
+}
+
+func TestAPIAttemptAppendWarningSanitizesOwnedCredentialMaterial(t *testing.T) {
+	const secret = "credential-warning-sentinel"
+	sink := &credentialFailureSink{err: errors.New("sync failed for " + secret)}
+	ctx := WithAPIAttemptSink(
+		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_warning_sanitize")),
+		sink,
+	)
+	attempt := BeginAPIAttempt(ctx, APIAttemptMeta{
+		StartedAt:          time.Now(),
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
+	})
+	attempt.Complete(APIAttemptResult{
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: time.Now(),
+	})
+
+	if len(sink.observed) != 1 {
+		t.Fatalf("failure observations = %d, want 1", len(sink.observed))
+	}
+	if got := sink.observed[0].Err.Error(); strings.Contains(got, secret) {
+		t.Fatalf("failure warning leaked credential: %q", got)
+	}
+}
+
 func TestClassifyAPIAttemptOutcomeTimeoutOwnership(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()

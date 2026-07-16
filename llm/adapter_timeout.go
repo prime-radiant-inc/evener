@@ -28,6 +28,23 @@ type APIAttemptContextOwnership struct {
 	TimeoutSource APITimeoutSource
 }
 
+// APITimeoutSourceForTransport identifies timeout ownership from the actual
+// contexts and transport error. Configuring a timeout alone is not evidence
+// that an unrelated transport failure came from that timeout.
+func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr error) APITimeoutSource {
+	if transportErr == nil || (parent != nil && parent.Err() != nil) {
+		return APITimeoutNone
+	}
+	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
+		return APITimeoutAdapter
+	}
+	var responseHeaderTimeout *responseHeaderTimeoutError
+	if errors.As(transportErr, &responseHeaderTimeout) {
+		return APITimeoutResponseHeader
+	}
+	return APITimeoutNone
+}
+
 // ClassifyAPIAttemptOutcome records attempt evidence without changing the
 // provider's existing error or retryability decisions.
 func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int, decodeErr, transportErr error) apilog.AttemptOutcomeClass {

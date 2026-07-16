@@ -47,7 +47,7 @@ func accumulateChatSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Response
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeStream(ctx, resp, s, llm.Request{Model: "fuzz-model"}, nil, nil)
+	go a.decodeStream(ctx, resp, s, llm.Request{Model: "fuzz-model"}, nil, nil, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false

@@ -212,7 +212,7 @@ func responsesCoverageRemainingBranches(t testing.TB) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	stream := llm.NewChanStream(func() {})
-	go (&Adapter{}).decodeResponsesStream(ctx, func() {}, &http.Response{Body: io.NopCloser(strings.NewReader(""))}, stream, llm.Request{}, nil)
+	go (&Adapter{}).decodeResponsesStream(ctx, func() {}, &http.Response{Body: io.NopCloser(strings.NewReader(""))}, stream, llm.Request{}, nil, nil)
 	for range stream.Events() {
 	}
 }

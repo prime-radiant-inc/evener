@@ -41,6 +41,30 @@ func TestAnthropic_Name(t *testing.T) {
 	}
 }
 
+func TestAnthropicWireCaptureProvenanceDoesNotChangeBackingResponseProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","model":"claude-test","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	backing := &anthropic.Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	forwarder := NewAnthropic("proxy-instance", "proxy-default", backing)
+	response, err := forwarder.Complete(context.Background(), llm.Request{
+		Model:    "claude-test",
+		Messages: []llm.Message{llm.User("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if forwarder.Name() != "proxy-instance" || backing.ProviderInstance != "proxy-instance" {
+		t.Fatalf("forwarder/capture names = %q/%q, want proxy-instance", forwarder.Name(), backing.ProviderInstance)
+	}
+	if backing.Name() != "anthropic" || response.Provider != "anthropic" {
+		t.Fatalf("backing name/response provider = %q/%q, want unchanged anthropic semantics", backing.Name(), response.Provider)
+	}
+}
+
 func TestAnthropic_CountInputTokensFallsBackWhenForwarderDoesNotEnableIt(t *testing.T) {
 	assertLocalEstimate := func(t *testing.T, got llm.InputTokenCount, err error) {
 		t.Helper()

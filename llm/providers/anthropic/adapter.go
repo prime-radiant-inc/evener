@@ -19,6 +19,7 @@ import (
 
 type Adapter struct {
 	name              string
+	ProviderInstance  string
 	APIKey            string
 	BaseURL           string
 	Client            *http.Client
@@ -107,6 +108,13 @@ func (a *Adapter) Name() string {
 	return "anthropic"
 }
 
+func (a *Adapter) apiLogProviderInstance() string {
+	if a.ProviderInstance != "" {
+		return a.ProviderInstance
+	}
+	return a.Name()
+}
+
 func (a *Adapter) setConfiguredHeaders(httpReq *http.Request) {
 	for k, v := range a.DefaultHeaders {
 		httpReq.Header.Set(k, v)
@@ -126,10 +134,11 @@ func (a *Adapter) setAnthropicHeaders(httpReq *http.Request, providerOptions map
 	}
 }
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Response, resultErr error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 
 	body, err := a.buildRequestBody(req)
 	if err != nil {
@@ -149,17 +158,53 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.apiLogProviderInstance(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "anthropic_messages",
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
+	var (
+		statusCode   int
+		responseBody []byte
+		decodeErr    error
+		transportErr error
+	)
+	defer func() {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
+		var response *llm.Response
+		if resultErr == nil {
+			response = &result
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   statusCode,
+			ResponseBody: responseBody,
+			Response:     response,
+			Err:          resultErr,
+		}, timeoutSource, decodeErr, transportErr)
+	}()
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		transportErr = err
 		return llm.Response{}, llm.WrapContextError("anthropic", err)
 	}
+	statusCode = resp.StatusCode
 	defer func() { _ = resp.Body.Close() }()
 
-	rawBytes, _ := io.ReadAll(resp.Body)
+	rawBytes, readErr := io.ReadAll(resp.Body)
+	responseBody = rawBytes
 	var raw map[string]any
-	_ = json.Unmarshal(rawBytes, &raw)
+	jsonErr := json.Unmarshal(rawBytes, &raw)
+	if readErr != nil {
+		decodeErr = readErr
+	} else {
+		decodeErr = jsonErr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
@@ -174,6 +219,22 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
+	headerNames := []string{"x-api-key"}
+	values := []string{a.APIKey}
+	for name, value := range a.CredentialHeaders {
+		headerNames = append(headerNames, name)
+		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
+	}
+	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
 }
 
 func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
@@ -254,6 +315,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
@@ -276,28 +338,50 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.apiLogProviderInstance(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "anthropic_messages",
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
+		returnedErr := llm.WrapContextError("anthropic", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
 		cancel()
-		return nil, llm.WrapContextError("anthropic", err)
+		return nil, returnedErr
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		rawBytes, _ := io.ReadAll(resp.Body)
+		rawBytes, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
-		_ = json.Unmarshal(rawBytes, &raw)
+		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create(stream) failed: " + strings.TrimSpace(string(rawBytes))
+		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		decodeErr := jsonErr
+		if readErr != nil {
+			decodeErr = readErr
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   resp.StatusCode,
+			ResponseBody: rawBytes,
+			Err:          returnedErr,
+		}, llm.APITimeoutNone, decodeErr, nil)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		return nil, returnedErr
 	}
 
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, cancel, resp, s, req, b)
+	go a.decodeStream(sctx, cancel, resp, s, req, b, attempt)
 
 	return s, nil
 }
@@ -305,7 +389,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // decodeStream consumes the messages SSE stream in its own goroutine: it
 // translates each event into llm stream events and emits the final accumulated
 // Response on message_stop. It owns closing the response body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte) {
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -369,6 +453,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	var msgID string
 	var actualModel string
 	var rawMessage map[string]any
+	var finalEvent *llm.StreamEvent
 
 	rawReqBody := string(b) // captured above
 
@@ -377,9 +462,14 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 		Resp:           resp,
 		RawRequestBody: rawReqBody,
 		Stream:         s,
-		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:       &finished,
-		IncompleteMsg:  "anthropic stream ended without completion",
+		Attempt:        attempt,
+		StatusCode:     resp.StatusCode,
+		FinalEvent: func() *llm.StreamEvent {
+			return finalEvent
+		},
+		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:      &finished,
+		IncompleteMsg: "anthropic stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil
@@ -686,7 +776,12 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					rp.RawRequestBody = rawReqBody
 					rp.RawResponseBody = sseBuf.String()
 				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
+				if attempt.Active() {
+					finalEvent = &event
+				} else {
+					s.Send(event)
+				}
 				finished = true
 				cancel()
 			default:

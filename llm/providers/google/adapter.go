@@ -127,10 +127,11 @@ func (a *Adapter) setJSONHeaders(httpReq *http.Request) {
 	httpReq.Header.Set("Content-Type", "application/json")
 }
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Response, resultErr error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 
 	system, contents, err := toGeminiContents(req.Messages)
 	if err != nil {
@@ -164,17 +165,53 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 	a.setJSONHeaders(httpReq)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.Name(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "google_generate_content",
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
+	var (
+		statusCode   int
+		responseBody []byte
+		decodeErr    error
+		transportErr error
+	)
+	defer func() {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
+		var response *llm.Response
+		if resultErr == nil {
+			response = &result
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   statusCode,
+			ResponseBody: responseBody,
+			Response:     response,
+			Err:          resultErr,
+		}, timeoutSource, decodeErr, transportErr)
+	}()
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		transportErr = err
 		return llm.Response{}, llm.WrapContextError("google", err)
 	}
+	statusCode = resp.StatusCode
 	defer func() { _ = resp.Body.Close() }()
 
-	rawBytes, _ := io.ReadAll(resp.Body)
+	rawBytes, readErr := io.ReadAll(resp.Body)
+	responseBody = rawBytes
 	var raw map[string]any
-	_ = json.Unmarshal(rawBytes, &raw)
+	jsonErr := json.Unmarshal(rawBytes, &raw)
+	if readErr != nil {
+		decodeErr = readErr
+	} else {
+		decodeErr = jsonErr
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "generateContent failed: " + strings.TrimSpace(string(rawBytes))
@@ -190,6 +227,22 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
+	headerNames := make([]string, 0, len(a.CredentialHeaders))
+	values := []string{a.APIKey}
+	for name, value := range a.CredentialHeaders {
+		headerNames = append(headerNames, name)
+		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
+	}
+	return llm.NewAPILogCredentialMaterial(headerNames, []string{"key"}, values...)
 }
 
 func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
@@ -279,6 +332,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
@@ -318,29 +372,51 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 	a.setJSONHeaders(httpReq)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.Name(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "google_stream_generate_content",
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
+		returnedErr := llm.WrapContextError("google", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
 		cancel()
-		return nil, llm.WrapContextError("google", err)
+		return nil, returnedErr
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		rawBytes, _ := io.ReadAll(resp.Body)
+		rawBytes, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
-		_ = json.Unmarshal(rawBytes, &raw)
+		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "streamGenerateContent failed: " + strings.TrimSpace(string(rawBytes))
 		httpErr := llm.ErrorFromHTTPStatusWithRawBodies("google", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		returnedErr := classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
+		decodeErr := jsonErr
+		if readErr != nil {
+			decodeErr = readErr
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   resp.StatusCode,
+			ResponseBody: rawBytes,
+			Err:          returnedErr,
+		}, llm.APITimeoutNone, decodeErr, nil)
 		cancel()
-		return nil, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
+		return nil, returnedErr
 	}
 
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, cancel, resp, s, req, b, endpoint)
+	go a.decodeStream(sctx, cancel, resp, s, req, b, endpoint, attempt)
 
 	return s, nil
 }
@@ -349,7 +425,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // it translates each chunk into llm stream events and emits the final accumulated
 // Response when the model signals a finish reason. It owns closing the response
 // body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, endpoint string) {
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, endpoint string, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -362,6 +438,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	var contentParts []llm.ContentPart
 	var usage llm.Usage
 	finish := llm.FinishReason{Reason: "stop"}
+	var finalEvent *llm.StreamEvent
 
 	flushTextPart := func() {
 		if textBuf.Len() == 0 {
@@ -378,9 +455,14 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 		Resp:           resp,
 		RawRequestBody: rawReqBody,
 		Stream:         s,
-		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:       &finished,
-		IncompleteMsg:  "google stream ended without completion",
+		Attempt:        attempt,
+		StatusCode:     resp.StatusCode,
+		FinalEvent: func() *llm.StreamEvent {
+			return finalEvent
+		},
+		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:      &finished,
+		IncompleteMsg: "google stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil
@@ -519,7 +601,12 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 							rp.RawRequestBody = rawReqBody
 							rp.RawResponseBody = sseBuf.String()
 						}
-						s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+						event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
+						if attempt.Active() {
+							finalEvent = &event
+						} else {
+							s.Send(event)
+						}
 						finished = true
 						cancel()
 						return nil

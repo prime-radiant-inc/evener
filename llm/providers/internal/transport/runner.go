@@ -9,6 +9,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 
@@ -30,6 +31,15 @@ type StreamRunner struct {
 	// CaptureRawBody overrides the process-wide raw-body setting when non-nil.
 	// It supports deterministic callers that need an explicit capture policy.
 	CaptureRawBody *bool
+	// Attempt is the explicitly attached canonical attempt, when any. It makes
+	// exact response-byte capture active independently of the legacy raw-body
+	// option.
+	Attempt *APIAttemptCapture
+	// StatusCode is the HTTP response status for Attempt.
+	StatusCode int
+	// FinalEvent returns the terminal success event prepared by OnEvent. The
+	// runner appends Attempt before publishing this event.
+	FinalEvent func() *llm.StreamEvent
 	// Stream receives decoded events, including the terminal error event.
 	Stream *llm.ChanStream
 	// SSEOpts are passed through to ParseSSE (e.g. the stream-read timeout).
@@ -55,7 +65,7 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}
 	var sseBody io.Reader = r.Resp.Body
 	var sseBuf *bytes.Buffer
-	if captureRawBody {
+	if captureRawBody || r.Attempt.Active() {
 		sseBuf = &bytes.Buffer{}
 		sseBody = io.TeeReader(r.Resp.Body, sseBuf)
 	}
@@ -64,9 +74,14 @@ func (r *StreamRunner) Run(ctx context.Context) {
 		return r.OnEvent(ev, sseBuf)
 	}, r.SSEOpts...)
 
+	var terminalEvent *llm.StreamEvent
+	if r.FinalEvent != nil {
+		terminalEvent = r.FinalEvent()
+	}
+	var terminalErr error
 	if !*r.Finished {
 		if err := ctx.Err(); err != nil {
-			r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError(r.Provider, err)})
+			terminalErr = llm.WrapContextError(r.Provider, err)
 		} else {
 			rawReqBody := ""
 			rawRespBody := ""
@@ -76,7 +91,37 @@ func (r *StreamRunner) Run(ctx context.Context) {
 					rawRespBody = sseBuf.String()
 				}
 			}
-			r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamErrorWithRawBodies(r.Provider, r.IncompleteMsg, parseErr, rawReqBody, rawRespBody)})
+			terminalErr = llm.NewStreamErrorWithRawBodies(r.Provider, r.IncompleteMsg, parseErr, rawReqBody, rawRespBody)
 		}
+	}
+	var response *llm.Response
+	if terminalEvent != nil {
+		response = terminalEvent.Response
+	}
+	var responseBody []byte
+	if sseBuf != nil {
+		responseBody = append([]byte(nil), sseBuf.Bytes()...)
+	}
+	attemptDecodeErr := parseErr
+	if attemptDecodeErr == nil {
+		attemptDecodeErr = terminalErr
+	}
+	if *r.Finished {
+		attemptDecodeErr = nil
+	}
+	timeoutSource := llm.APITimeoutNone
+	if errors.Is(parseErr, llm.ErrSSEReadTimeout) {
+		timeoutSource = llm.APITimeoutSSERead
+	}
+	r.Attempt.Complete(llm.APIAttemptResult{
+		StatusCode:   r.StatusCode,
+		ResponseBody: responseBody,
+		Response:     response,
+		Err:          terminalErr,
+	}, timeoutSource, attemptDecodeErr, nil)
+	if terminalEvent != nil {
+		r.Stream.Send(*terminalEvent)
+	} else if terminalErr != nil {
+		r.Stream.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: terminalErr})
 	}
 }

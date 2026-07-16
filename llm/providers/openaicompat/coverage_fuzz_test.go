@@ -142,7 +142,7 @@ func FuzzOpenAICompatCoverageUnion(f *testing.F) {
 			if _, err := coverageAdapter("https://example.invalid", nil).Stream(context.Background(), marshalReq); err == nil {
 				t.Fatal("Stream marshaled function")
 			}
-			if _, _, _, _, _, err := (&Adapter{}).doHTTP(context.Background(), llm.Request{}, map[string]any{"bad": func() {}}); err == nil {
+			if _, err := (&Adapter{}).doHTTP(context.Background(), context.Background(), llm.Request{}, map[string]any{"bad": func() {}}); err == nil {
 				t.Fatal("doHTTP marshaled function")
 			}
 			parts := []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "a"}}, {Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "b"}}}

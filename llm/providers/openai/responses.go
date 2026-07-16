@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
+	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
 var responsesRawBodyEnabled = llm.RawBodyEnabled
@@ -227,6 +229,7 @@ func openAICodexUnsupportedRequestField(key string) bool {
 // streamResponses is the raw Responses API streaming path.
 // It emits errEmptyResponsesStream if the stream closes 200 OK with zero content.
 func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
 	sctx, timeoutCancel := llm.ApplyAdapterTimeout(sctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
@@ -250,33 +253,55 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		return nil, err
 	}
 	a.setRequestHeaders(httpReq, req)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.apiLogProviderInstance(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     string(a.responsesEndpointFamily()),
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
+		returnedErr := llm.WrapContextError("openai", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
 		cancel()
-		return nil, llm.WrapContextError("openai", err)
+		return nil, returnedErr
 	}
 
 	// Handle non-2xx immediately.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
-		rawBytes, _ := io.ReadAll(resp.Body)
+		rawBytes, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
 		dec := json.NewDecoder(bytes.NewReader(rawBytes))
 		dec.UseNumber()
-		_ = dec.Decode(&raw)
+		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("responses.create(stream) failed: %v", raw)
+		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		decodeErr := jsonErr
+		if readErr != nil {
+			decodeErr = readErr
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   resp.StatusCode,
+			ResponseBody: rawBytes,
+			Err:          returnedErr,
+		}, llm.APITimeoutNone, decodeErr, nil)
 		cancel()
-		return nil, llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		return nil, returnedErr
 	}
 
 	s := llm.NewChanStream(cancel)
 	// STREAM_START
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeResponsesStream(sctx, cancel, resp, s, req, b)
+	go a.decodeResponsesStream(sctx, cancel, resp, s, req, b, attempt)
 
 	return s, nil
 }
@@ -286,7 +311,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
 // the stream closes 200 OK with zero content. It owns closing the response body
 // and the ChanStream.
-func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte) {
+func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -296,6 +321,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	textStarted := false
 	reasoningStarted := false
 	finished := false
+	var finalEvent *llm.StreamEvent
 	// sentContent tracks whether any meaningful content event was emitted.
 	// If the stream closes without content, we emit errEmptyResponsesStream.
 	sentContent := false
@@ -311,7 +337,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 
 	var sseBody io.Reader = resp.Body
 	var sseBuf *bytes.Buffer
-	if responsesRawBodyEnabled() {
+	if responsesRawBodyEnabled() || attempt.Active() {
 		sseBuf = &bytes.Buffer{}
 		sseBody = io.TeeReader(resp.Body, sseBuf)
 	}
@@ -563,7 +589,12 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				rp.RawRequestBody = rawReqBody
 				rp.RawResponseBody = sseBuf.String()
 			}
-			s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+			event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
+			if attempt.Active() {
+				finalEvent = &event
+			} else {
+				s.Send(event)
+			}
 			// Stop parsing after finish.
 			finished = true
 			cancel()
@@ -573,19 +604,47 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		return nil
 	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
+	var terminalErr error
 	if !finished {
 		switch {
 		case sctx.Err() != nil:
-			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", sctx.Err())})
+			terminalErr = llm.WrapContextError("openai", sctx.Err())
 		case !sentContent:
 			// Stream closed 200 OK with zero content: model likely does not
 			// support /v1/responses. Signal the caller to try Chat Completions.
-			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: errEmptyResponsesStream})
+			terminalErr = errEmptyResponsesStream
 		default:
 			// Content was streamed, then the stream ended without completion —
 			// a genuine mid-stream read failure; surface its cause.
-			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)})
+			terminalErr = llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)
 		}
+	}
+	var response *llm.Response
+	if finalEvent != nil {
+		response = finalEvent.Response
+	}
+	var responseBody []byte
+	if sseBuf != nil {
+		responseBody = append([]byte(nil), sseBuf.Bytes()...)
+	}
+	decodeErr := terminalErr
+	if finished {
+		decodeErr = nil
+	}
+	timeoutSource := llm.APITimeoutNone
+	if errors.Is(parseErr, llm.ErrSSEReadTimeout) {
+		timeoutSource = llm.APITimeoutSSERead
+	}
+	attempt.Complete(llm.APIAttemptResult{
+		StatusCode:   resp.StatusCode,
+		ResponseBody: responseBody,
+		Response:     response,
+		Err:          terminalErr,
+	}, timeoutSource, decodeErr, nil)
+	if finalEvent != nil {
+		s.Send(*finalEvent)
+	} else if terminalErr != nil {
+		s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: terminalErr})
 	}
 }
 

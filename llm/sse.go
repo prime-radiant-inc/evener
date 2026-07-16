@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// ErrSSEReadTimeout identifies a provider-owned timeout between stream reads.
+var ErrSSEReadTimeout = errors.New("stream read timeout")
+
 // SSEEvent is a single Server-Sent Event parsed from a stream, holding the
 // event name and its raw data bytes.
 type SSEEvent struct {
@@ -161,7 +164,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 			}
 
 		case <-timer.C:
-			return fmt.Errorf("stream read timeout: no data received for %v", timeout)
+			return fmt.Errorf("%w: no data received for %v", ErrSSEReadTimeout, timeout)
 
 		case <-ctx.Done():
 			return ctx.Err()

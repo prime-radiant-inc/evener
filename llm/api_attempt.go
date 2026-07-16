@@ -106,6 +106,12 @@ type APIAttempt struct {
 	index int
 }
 
+// Active reports whether this attempt has an explicitly attached group and
+// sink and therefore needs exact transport evidence retained.
+func (a *APIAttempt) Active() bool {
+	return a != nil && a.group != nil && a.sink != nil
+}
+
 func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
 	if group == nil {
@@ -155,12 +161,20 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, a.meta, result)
 		appendCtx := context.WithoutCancel(a.ctx)
 		if err := a.sink.AppendAttempt(appendCtx, record); err != nil {
+			failureErr := err
+			var observed apiLogObservedFailure
+			if !errors.As(err, &observed) {
+				sanitized := SanitizeErrorForAPILog(err.Error(), a.meta.CredentialMaterial)
+				if sanitized != err.Error() {
+					failureErr = errors.New(sanitized)
+				}
+			}
 			a.group.recordFailure(APILogFailure{
 				Operation:      "append_attempt",
 				SessionID:      apiLogSessionID(a.ctx),
 				AttemptGroupID: a.group.ID,
 				AttemptID:      a.id,
-				Err:            err,
+				Err:            failureErr,
 			})
 		}
 	})

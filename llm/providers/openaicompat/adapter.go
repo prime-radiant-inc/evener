@@ -222,10 +222,11 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	return a.completeViaChatCompletions(ctx, req)
 }
 
-func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Request) (llm.Response, error) {
+func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Request) (result llm.Response, resultErr error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 
 	body, err := buildRequestBody(req, false, a.compatFor(req.Model))
 	if err != nil {
@@ -235,25 +236,41 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
-	raw, rawReqBody, rawRespBody, statusCode, headers, err := a.doHTTP(ctx, req, body)
+	wire, err := a.doHTTP(parentCtx, ctx, req, body)
+	if wire.attempt != nil {
+		defer func() {
+			timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, wire.transportErr)
+			var response *llm.Response
+			if resultErr == nil {
+				response = &result
+			}
+			wire.attempt.Complete(llm.APIAttemptResult{
+				StatusCode:   wire.status,
+				ResponseBody: wire.rawRespBody,
+				Response:     response,
+				Err:          resultErr,
+			}, timeoutSource, wire.decodeErr, wire.transportErr)
+		}()
+	}
 	if err != nil {
 		return llm.Response{}, err
 	}
-	if statusCode != http.StatusOK {
-		msg := extractErrorMessage(raw)
-		retryAfter := llm.ParseRetryAfter(headers.Get("Retry-After"), time.Now())
-		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", statusCode, msg, raw, retryAfter, string(rawReqBody), string(rawRespBody))
+	if wire.status != http.StatusOK {
+		msg := extractErrorMessage(wire.raw)
+		retryAfter := llm.ParseRetryAfter(wire.headers.Get("Retry-After"), time.Now())
+		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", wire.status, msg, wire.raw, retryAfter, string(wire.rawReqBody), string(wire.rawRespBody))
 	}
 
-	resp, err := fromChatCompletionResponse(raw, a.compatFor(req.Model).Quirks)
+	resp, err := fromChatCompletionResponse(wire.raw, a.compatFor(req.Model).Quirks)
 	if err != nil {
+		wire.decodeErr = err
 		return resp, err
 	}
 	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions")
-	resp.RateLimit = llm.ParseRateLimitHeaders(headers)
+	resp.RateLimit = llm.ParseRateLimitHeaders(wire.headers)
 	if llm.RawBodyEnabled() {
-		resp.RawRequestBody = string(rawReqBody)
-		resp.RawResponseBody = string(rawRespBody)
+		resp.RawRequestBody = string(wire.rawReqBody)
+		resp.RawResponseBody = string(wire.rawRespBody)
 	}
 	return resp, nil
 }
@@ -276,6 +293,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
 	}
+	parentCtx := ctx
 	ctx, timeoutCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, true)
 	defer timeoutCancel()
 
@@ -294,21 +312,43 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		return nil, err
 	}
 	a.setChatHeaders(httpReq, req)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.Name(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     "openai_compatible_chat_completions",
+		RequestBody:        jsonBody,
+		CredentialMaterial: credentialMaterial,
+	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, llm.WrapContextError("openai-compatible", err)
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, err)
+		returnedErr := llm.WrapContextError("openai-compatible", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
+		return nil, returnedErr
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close() //nolint:errcheck
-		b, _ := io.ReadAll(resp.Body)
+		b, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
-		_ = json.Unmarshal(b, &raw)
+		jsonErr := json.Unmarshal(b, &raw)
 		msg := extractErrorMessage(raw)
 		retryAfter := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		return nil, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", resp.StatusCode, msg, raw, retryAfter, string(jsonBody), string(b))
+		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", resp.StatusCode, msg, raw, retryAfter, string(jsonBody), string(b))
+		decodeErr := jsonErr
+		if readErr != nil {
+			decodeErr = readErr
+		}
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   resp.StatusCode,
+			ResponseBody: b,
+			Err:          returnedErr,
+		}, llm.APITimeoutNone, decodeErr, nil)
+		return nil, returnedErr
 	}
 
 	sctx, cancel := context.WithCancel(ctx)
@@ -317,7 +357,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, resp, s, req, jsonBody, rl)
+	go a.decodeStream(sctx, resp, s, req, jsonBody, rl, attempt)
 
 	return s, nil
 }
@@ -345,6 +385,7 @@ func (a *Adapter) responsesAdapter() *openairesponses.Adapter {
 		client = &http.Client{Timeout: 0}
 	}
 	return &openairesponses.Adapter{
+		ProviderInstance:    a.Name(),
 		APIKey:              a.APIKey,
 		BaseURL:             a.BaseURL,
 		ResponsesPath:       "/responses",
@@ -394,7 +435,7 @@ func restampResponsesStream(inner llm.Stream) llm.Stream {
 // decodeStream consumes the Chat Completions SSE stream in its own goroutine: it
 // translates each chunk into llm stream events and emits the final accumulated
 // Response on [DONE]. It owns closing the response body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, rl *llm.RateLimitInfo) {
+func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, rl *llm.RateLimitInfo, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		resp.Body.Close() //nolint:errcheck
 		s.CloseSend()
@@ -428,6 +469,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	// earlier top-level ones.
 	var sawTopLevelUsage bool
 	finished := false
+	var finalEvent *llm.StreamEvent
 
 	rawReqBody := string(jsonBody)
 
@@ -436,9 +478,14 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 		Resp:           resp,
 		RawRequestBody: rawReqBody,
 		Stream:         s,
-		SSEOpts:        llm.StreamReadSSEOptions(req.AdapterTimeout),
-		Finished:       &finished,
-		IncompleteMsg:  "openai-compatible stream ended without completion",
+		Attempt:        attempt,
+		StatusCode:     resp.StatusCode,
+		FinalEvent: func() *llm.StreamEvent {
+			return finalEvent
+		},
+		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:      &finished,
+		IncompleteMsg: "openai-compatible stream ended without completion",
 		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
@@ -530,12 +577,17 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 					finalResp.RawRequestBody = rawReqBody
 					finalResp.RawResponseBody = sseBuf.String()
 				}
-				s.Send(llm.StreamEvent{
+				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,
 					Usage:        usage,
 					Response:     finalResp,
-				})
+				}
+				if attempt.Active() {
+					finalEvent = &event
+				} else {
+					s.Send(event)
+				}
 				return nil
 			}
 
@@ -655,38 +707,83 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 
 // --- HTTP helpers ---
 
-func (a *Adapter) doHTTP(ctx context.Context, req llm.Request, body map[string]any) (raw map[string]any, rawReqBody []byte, rawRespBody []byte, status int, hdr http.Header, err error) {
+type chatHTTPResult struct {
+	raw          map[string]any
+	rawReqBody   []byte
+	rawRespBody  []byte
+	status       int
+	headers      http.Header
+	attempt      *transport.APIAttemptCapture
+	decodeErr    error
+	transportErr error
+}
+
+func (a *Adapter) doHTTP(parentCtx, ctx context.Context, req llm.Request, body map[string]any) (chatHTTPResult, error) {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return nil, nil, nil, 0, nil, err
+		return chatHTTPResult{}, err
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, nil, nil, 0, nil, err
+		return chatHTTPResult{}, err
 	}
 	a.setChatHeaders(httpReq, req)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	wire := chatHTTPResult{
+		rawReqBody: jsonBody,
+		attempt: transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "openai_compatible_chat_completions",
+			RequestBody:        jsonBody,
+			CredentialMaterial: credentialMaterial,
+		}),
+	}
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return nil, nil, nil, 0, nil, llm.WrapContextError("openai-compatible", err)
+		wire.transportErr = err
+		return wire, llm.WrapContextError("openai-compatible", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
+	wire.status = resp.StatusCode
+	wire.headers = resp.Header
 
 	b, err := io.ReadAll(resp.Body)
+	wire.rawRespBody = b
 	if err != nil {
-		return nil, jsonBody, b, resp.StatusCode, resp.Header, err
+		wire.decodeErr = err
+		return wire, err
 	}
 
-	var parsed map[string]any
+	var raw map[string]any
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
-	if err := dec.Decode(&parsed); err != nil {
-		return nil, jsonBody, b, resp.StatusCode, resp.Header, nil
+	if err := dec.Decode(&raw); err != nil {
+		wire.decodeErr = err
+		return wire, nil
 	}
+	wire.raw = raw
+	return wire, nil
+}
 
-	return parsed, jsonBody, b, resp.StatusCode, resp.Header, nil
+func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
+	headerNames := []string{"Authorization"}
+	values := []string{a.APIKey}
+	for name, value := range a.CredentialHeaders {
+		headerNames = append(headerNames, name)
+		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
+	}
+	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
 }
 
 func extractErrorMessage(raw map[string]any) string {

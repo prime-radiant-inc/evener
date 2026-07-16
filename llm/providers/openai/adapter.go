@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
 // errEmptyResponsesStream is a sentinel error emitted when the Responses API
@@ -68,6 +69,7 @@ var hashContinuationStorageScope = func(hasher *llm.ContinuationHasher, scope ll
 
 type Adapter struct {
 	name                string
+	ProviderInstance    string
 	APIKey              string
 	BaseURL             string
 	ResponsesPath       string
@@ -353,6 +355,13 @@ func (a *Adapter) Name() string {
 	return "openai"
 }
 
+func (a *Adapter) apiLogProviderInstance() string {
+	if a.ProviderInstance != "" {
+		return a.ProviderInstance
+	}
+	return a.Name()
+}
+
 func (a *Adapter) PlanResponsesContinuation(req llm.Request) (llm.ResponsesContinuationPlan, error) {
 	endpointFamily := llm.ResponsesEndpointFamilyOpenAIPublic
 	if a.usesCodexBackend() {
@@ -546,10 +555,11 @@ var (
 	}
 )
 
-func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Response, resultErr error) {
 	if a.requiresStreamingComplete() {
 		return a.completeViaStream(ctx, req)
 	}
+	parentCtx := ctx
 
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
@@ -573,22 +583,58 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		return llm.Response{}, err
 	}
 	a.setRequestHeaders(httpReq, req)
+	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
+	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
+		ProviderInstance:   a.apiLogProviderInstance(),
+		RequestModel:       req.Model,
+		HistoryMode:        req.HistoryMode,
+		EndpointFamily:     string(a.responsesEndpointFamily()),
+		RequestBody:        b,
+		CredentialMaterial: credentialMaterial,
+	})
+	var (
+		statusCode   int
+		responseBody []byte
+		decodeErr    error
+		transportErr error
+	)
+	completeAttempt := func(response *llm.Response, attemptErr error) {
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
+		attempt.Complete(llm.APIAttemptResult{
+			StatusCode:   statusCode,
+			ResponseBody: responseBody,
+			Response:     response,
+			Err:          attemptErr,
+		}, timeoutSource, decodeErr, transportErr)
+	}
+	defer func() {
+		var response *llm.Response
+		if resultErr == nil {
+			response = &result
+		}
+		completeAttempt(response, resultErr)
+	}()
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		transportErr = err
 		return llm.Response{}, llm.WrapContextError("openai", err)
 	}
+	statusCode = resp.StatusCode
 	defer func() { _ = resp.Body.Close() }()
 
 	rawBytes, err := io.ReadAll(resp.Body)
+	responseBody = rawBytes
 	if err != nil {
+		decodeErr = err
 		return llm.Response{}, err
 	}
 	var raw map[string]any
 	dec := json.NewDecoder(bytes.NewReader(rawBytes))
 	dec.UseNumber()
 	if err := dec.Decode(&raw); err != nil {
+		decodeErr = err
 		return llm.Response{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -596,6 +642,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		msg := fmt.Sprintf("responses.create failed: %v", raw)
 		responsesErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
 		if a.shouldFallbackToChatCompletions(req, responsesErr) {
+			completeAttempt(nil, responsesErr)
 			a.recordResponsesFallbackAttempt(ctx, req, responsesErr)
 			return a.completeViaChatCompletionsFallback(ctx, req, responsesErr)
 		}
@@ -611,6 +658,29 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
+}
+
+func (a *Adapter) responsesEndpointFamily() llm.ResponsesEndpointFamily {
+	if a.usesCodexBackend() {
+		return llm.ResponsesEndpointFamilyOpenAICodex
+	}
+	return llm.ResponsesEndpointFamilyOpenAIPublic
+}
+
+func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
+	headerNames := []string{"Authorization"}
+	values := []string{a.APIKey}
+	for name, value := range a.CredentialHeaders {
+		headerNames = append(headerNames, name)
+		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
+	}
+	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
 }
 
 func (a *Adapter) stampResponseIDHash(resp *llm.Response) {

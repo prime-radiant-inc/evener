@@ -57,6 +57,9 @@ type Anthropic struct {
 // default name. Name() returns instanceName when non-empty, otherwise
 // defaultName.
 func NewAnthropic(instanceName, defaultName string, backing *anthropic.Adapter) *Anthropic {
+	if backing != nil {
+		backing.ProviderInstance = providerName(instanceName, defaultName)
+	}
 	return &Anthropic{Adapter: backing, name: instanceName, defaultName: defaultName}
 }
 
@@ -64,7 +67,17 @@ func NewAnthropic(instanceName, defaultName string, backing *anthropic.Adapter) 
 // Anthropic count-tokens endpoint. Most Anthropic-compatible proxies do not
 // document this endpoint, so the default constructor leaves it disabled.
 func NewAnthropicWithInputTokenCounter(instanceName, defaultName string, backing *anthropic.Adapter) *Anthropic {
+	if backing != nil {
+		backing.ProviderInstance = providerName(instanceName, defaultName)
+	}
 	return &Anthropic{Adapter: backing, name: instanceName, defaultName: defaultName, countInputTokens: true}
+}
+
+func providerName(instanceName, defaultName string) string {
+	if instanceName != "" {
+		return instanceName
+	}
+	return defaultName
 }
 
 // Name returns the instance name when set, otherwise the provider-type default.

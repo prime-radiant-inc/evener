@@ -19,7 +19,7 @@ func TestGeminiStreamSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sse))}
 	s := llm.NewChanStream(cancel)
 	a := &Adapter{}
-	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "test"}, nil, "http://test")
+	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "test"}, nil, "http://test", nil)
 	var got string
 	for ev := range s.Events() {
 		if ev.ToolCall != nil {

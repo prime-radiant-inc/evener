@@ -48,7 +48,7 @@ func accumulateAnthropicSSE(a *Adapter, sse []byte, chunkOneByte bool) (*llm.Res
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil)
+	go a.decodeStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, nil, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false
