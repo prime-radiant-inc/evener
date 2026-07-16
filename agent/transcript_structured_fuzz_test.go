@@ -166,9 +166,6 @@ func (g *transcriptGen) header() map[string]any {
 	if s.Bool("hdr_build") {
 		h["build_version"] = s.String("hdr_build_v")
 	}
-	if s.Bool("hdr_system_prompt") {
-		h["system_prompt"] = s.String("hdr_sysprompt")
-	}
 	if s.Bool("hdr_agent_tasks") {
 		h["agent_tasks"] = g.agentTasks()
 	}
@@ -207,6 +204,9 @@ func (g *transcriptGen) turn(kind schema.TurnKind) map[string]any {
 		"timestamp": g.timestamp("turn_ts"),
 	}
 	if kind == schema.TurnAssistant {
+		if s.Bool("turn_attempt_group") {
+			t["attempt_group_id"] = "ag_fuzz_" + strconv.Itoa(g.seq)
+		}
 		if s.Bool("turn_usage") {
 			t["usage"] = g.usage()
 		}

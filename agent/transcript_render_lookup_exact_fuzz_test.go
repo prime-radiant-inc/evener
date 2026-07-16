@@ -33,6 +33,9 @@ func rleRenderEdges(t *testing.T, payload string) {
 	for scenario := byte(0); scenario < 13; scenario++ {
 		header, entries, rangeSpec, opt := trender_program([]byte{scenario}, payload)
 		_, _ = renderTranscript(header, entries, rangeSpec, opt)
+		if opt.fullResultFor != nil {
+			_ = renderExactTurnExpansion(entries, *opt.fullResultFor, opt)
+		}
 	}
 	for _, tc := range []struct{ name, args string }{
 		{"shell", `{"command":"ls","purpose":"inspect"}`},
@@ -70,19 +73,19 @@ func rleRenderEdges(t *testing.T, payload string) {
 	}
 	largePath := filepath.Join(root, "large")
 	largeLine := strings.Repeat("x", hardCapChars)
-	if err := os.WriteFile(largePath, []byte("{}\n{\"kind\":\"entry\",\"x\":\""+largeLine+"\"}\n"), 0o600); err != nil {
+	if err := os.WriteFile(largePath, []byte("{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"large\"}\n{\"kind\":\"entry\",\"x\":\""+largeLine+"\"}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, _, _, _, _ = rawLinesForRange(largePath, 0, 0)
 	_, _, _, _, _ = rawLinesForRange(filepath.Join(root, "missing"), 0, 0)
-	mixedPath := filepath.Join(root, "mixed")
-	mixed := "{}\n\nnot-json\n{\"kind\":\"entry\"}\n{\"kind\":\"api_call\"}\n{\"kind\":\"entry\"}\n{\"kind\":\"api_call\"}\n{\"kind\":\"future\"}\n"
-	if err := os.WriteFile(mixedPath, []byte(mixed), 0o600); err != nil {
+	unsupportedPath := filepath.Join(root, "unsupported-mixed")
+	unsupported := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"mixed\"}\n{\"kind\":\"entry\"}\n{\"kind\":\"api_call\"}\n"
+	if err := os.WriteFile(unsupportedPath, []byte(unsupported), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, _, _ = rawLinesForRange(mixedPath, 0, 0)
+	_, _, _, _, _ = rawLinesForRange(unsupportedPath, 0, 1)
 	capPath := filepath.Join(root, "cap")
-	capBody := "{}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("x", hardCapChars-100) + "\"}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("y", 200) + "\"}\n"
+	capBody := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"cap\"}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("x", hardCapChars-100) + "\"}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("y", 200) + "\"}\n"
 	if err := os.WriteFile(capPath, []byte(capBody), 0o600); err != nil {
 		t.Fatal(err)
 	}

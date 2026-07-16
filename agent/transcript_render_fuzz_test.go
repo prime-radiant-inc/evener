@@ -22,7 +22,7 @@ import (
 // exercise but no fuzz target reaches:
 //
 //   - rawLinesForRange (transcript_render.go): reads a transcript file and
-//     returns the verbatim JSONL lines for a derived seq range.
+//     returns semantic-only JSONL lines for a derived seq range.
 //   - toolInputSummary (transcript_render.go): one-line bounded summary of a
 //     tool call's JSON arguments.
 //   - renderTranscript (transcript_render.go): renders typed transcript turns,
@@ -50,9 +50,8 @@ func trender_scanLines(content []byte) []string {
 }
 
 // trender_isSubsequence reports whether want is a subsequence of have (same
-// order, gaps allowed). rawLinesForRange returns the header line followed by a
-// subset of the file's lines in file order, so the returned lines must be a
-// subsequence of the file's scanned lines.
+// order, gaps allowed). The semantic header may be rewritten to exclude its
+// system-prompt copy, while selected entry lines remain verbatim and ordered.
 func trender_isSubsequence(want, have []string) bool {
 	i := 0
 	for _, h := range have {
@@ -75,19 +74,18 @@ func FuzzRawLinesForRange(f *testing.F) {
 		content    string
 		start, end int
 	}{
-		{`{"kind":"header","session_id":"s1"}
+		{`{"kind":"header","format_version":2,"session_id":"s1","system_prompt":"private"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}}
-{"kind":"api_call","seq":1}
 {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT"}}`, 0, 1},
-		{`{"kind":"header"}
+		{`{"kind":"header","format_version":2,"session_id":"s2"}
 {"kind":"entry"}
 not json
 {"kind":"weird"}
 {"kind":"entry"}`, 0, 10},
-		{`{"kind":"header"}`, 0, 0},
+		{`{"kind":"header","format_version":2,"session_id":"s3"}`, 0, 0},
 		{"", 0, 0},
 		{"\n\n\n", 0, 5},
-		{`{"kind":"header"}
+		{`{"kind":"header","format_version":2,"session_id":"s4"}
 {"kind":"entry"}`, 5, 2},
 	}
 	for _, s := range seeds {
@@ -95,7 +93,7 @@ not json
 	}
 	// A seed large enough to trip the 200k-rune hard cap (head-only truncation).
 	var big bytes.Buffer
-	big.WriteString(`{"kind":"header"}` + "\n")
+	big.WriteString(`{"kind":"header","format_version":2,"session_id":"big"}` + "\n")
 	for i := 0; i < 4000; i++ {
 		big.WriteString(`{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}}` + "\n")
 	}
@@ -135,9 +133,19 @@ not json
 				haveNonEmpty = append(haveNonEmpty, l)
 			}
 		}
-		if !trender_isSubsequence(nonEmpty, haveNonEmpty) {
-			t.Fatalf("rendered lines are not a subsequence of the transcript\n range=[%d,%d] truncated=%v\n result lines=%#v\n file lines=%#v",
-				startSeq, endSeq, truncated, nonEmpty, haveNonEmpty)
+		if len(nonEmpty) == 0 {
+			t.Fatal("successful semantic JSONL render omitted its header")
+		}
+		var header map[string]any
+		if err := json.Unmarshal([]byte(nonEmpty[0]), &header); err != nil || header["kind"] != "header" {
+			t.Fatalf("semantic header = %q, error %v", nonEmpty[0], err)
+		}
+		if _, leaked := header["system_prompt"]; leaked {
+			t.Fatalf("semantic header retained system_prompt: %q", nonEmpty[0])
+		}
+		if !trender_isSubsequence(nonEmpty[1:], haveNonEmpty) {
+			t.Fatalf("rendered entry lines are not a subsequence of the transcript\n range=[%d,%d] truncated=%v\n result lines=%#v\n file lines=%#v",
+				startSeq, endSeq, truncated, nonEmpty[1:], haveNonEmpty)
 		}
 	})
 
@@ -234,6 +242,12 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 		}
 		if !utf8.ValidString(got) {
 			t.Fatal("rendered markdown is not valid UTF-8")
+		}
+		if opt.fullResultFor != nil {
+			exact := renderExactTurnExpansion(entries, *opt.fullResultFor, opt)
+			if exact != renderExactTurnExpansion(entries, *opt.fullResultFor, opt) || !utf8.ValidString(exact) {
+				t.Fatal("exact turn expansion is not deterministic valid UTF-8")
+			}
 		}
 
 		switch scenario {

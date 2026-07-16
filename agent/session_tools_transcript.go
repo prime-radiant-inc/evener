@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -42,11 +44,27 @@ func transcriptTools(deps *toolDeps) []tool.RegisteredTool {
 // readMarkdownEnvelope is the wire shape returned for a markdown read. Field
 // order follows spec §"Default Response Shape".
 type readMarkdownEnvelope struct {
-	TranscriptRef string           `json:"transcript_ref"`
-	Format        string           `json:"format"`
-	ContentType   string           `json:"content_type"`
-	Content       string           `json:"content"`
-	Meta          readMarkdownMeta `json:"meta"`
+	TranscriptRef string                      `json:"transcript_ref"`
+	Format        string                      `json:"format"`
+	ContentType   string                      `json:"content_type"`
+	Content       string                      `json:"content"`
+	Meta          readMarkdownMeta            `json:"meta"`
+	Expansion     *transcriptTurnExpansion    `json:"expansion,omitempty"`
+	Continuation  *transcriptTurnContinuation `json:"continuation,omitempty"`
+}
+
+type transcriptTurnExpansion struct {
+	ExpandTurn    int    `json:"expand_turn"`
+	OffsetBytes   int    `json:"offset_bytes"`
+	BytesReturned int    `json:"bytes_returned"`
+	TotalBytes    int    `json:"total_bytes"`
+	Encoding      string `json:"encoding"`
+	Data          string `json:"data"`
+}
+
+type transcriptTurnContinuation struct {
+	ExpandTurn  int `json:"expand_turn"`
+	OffsetBytes int `json:"offset_bytes"`
 }
 
 // readMarkdownMeta is the meta block for a markdown read. It deliberately omits
@@ -63,6 +81,24 @@ type readMarkdownMeta struct {
 }
 
 const formatMarkdown = "markdown"
+
+const (
+	transcriptSource  = "transcript"
+	apiLogSource      = "api_log"
+	maxExpansionBytes = 64 << 10
+)
+
+type readSessionTranscriptArgs struct {
+	TranscriptRef string
+	Source        string
+	Format        string
+	Range         string
+	ExpandTurn    *int
+	AttemptID     string
+	Body          string
+	OffsetBytes   int
+	MaxBytes      int
+}
 
 func readTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
@@ -94,31 +130,131 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	return execReadSessionTranscript(deps, args)
 }
 
-// execReadSessionTranscript dispatches to the appropriate format handler.
-// The outline and jsonl arms are not yet implemented (other tasks).
+// execReadSessionTranscript validates the source-specific arguments before it
+// resolves or opens either transcript artifact.
 func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error) {
-	selector := strings.TrimSpace(stringArg(args, "transcript_ref"))
-	rangeArg := strings.TrimSpace(stringArg(args, "range"))
-	format := strings.TrimSpace(stringArg(args, "format"))
-	if format == "" {
-		format = "markdown"
+	parsed, err := parseReadSessionTranscriptArgs(args)
+	if err != nil {
+		return nil, err
 	}
-	expandTurn := optionalPositiveIntArg(args, "expand_turn")
-	path, ref, err := resolveTranscript(selector, deps.stateDir, deps.sessionID)
+	if parsed.Source == apiLogSource {
+		path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if parsed.AttemptID != "" {
+			return readAPILogAttempt(apiLogPathForTranscript(path), ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+		}
+		return readAPILogSummary(apiLogPathForTranscript(path), ref, parsed.Range)
+	}
+
+	path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)
 	if err != nil {
 		return nil, err
 	}
 	meta := resolvedSessionMeta(deps, path, ref)
-	switch format {
+	switch parsed.Format {
 	case "markdown":
-		return readMarkdown(path, ref, meta, rangeArg, expandTurn)
+		return readMarkdownPage(path, ref, meta, parsed.Range, parsed.ExpandTurn, parsed.OffsetBytes, parsed.MaxBytes)
 	case "outline":
-		return readOutline(path, ref, rangeArg)
+		return readOutline(path, ref, parsed.Range)
 	case "jsonl":
-		return readRaw(path, ref, rangeArg)
+		return readRaw(path, ref, parsed.Range)
 	default:
-		return nil, fmt.Errorf("unknown format %q: use markdown, outline, or jsonl", format)
+		panic("validated transcript format")
 	}
+}
+
+func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptArgs, error) {
+	parsed := readSessionTranscriptArgs{
+		TranscriptRef: strings.TrimSpace(stringArg(args, "transcript_ref")),
+		Source:        strings.TrimSpace(stringArg(args, "source")),
+		Format:        strings.TrimSpace(stringArg(args, "format")),
+		Range:         strings.TrimSpace(stringArg(args, "range")),
+		ExpandTurn:    optionalIntArg(args, "expand_turn"),
+		AttemptID:     strings.TrimSpace(stringArg(args, "attempt_id")),
+		Body:          strings.TrimSpace(stringArg(args, "body")),
+	}
+	if value := optionalIntArg(args, "offset_bytes"); value != nil {
+		parsed.OffsetBytes = *value
+	}
+	if value := optionalIntArg(args, "max_bytes"); value != nil {
+		parsed.MaxBytes = *value
+	}
+
+	explicitSource := parsed.Source != ""
+	if parsed.Source == "" {
+		if parsed.AttemptID != "" {
+			parsed.Source = apiLogSource
+		} else {
+			parsed.Source = transcriptSource
+		}
+	}
+	if parsed.Source != transcriptSource && parsed.Source != apiLogSource {
+		return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: source %q is not supported: use transcript or api_log", parsed.Source)
+	}
+	if parsed.ExpandTurn != nil && *parsed.ExpandTurn < 0 {
+		return readSessionTranscriptArgs{}, errors.New("invalid_request: expand_turn must be non-negative")
+	}
+
+	if parsed.Source == apiLogSource {
+		if parsed.Format != "" {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: format applies only to source=transcript")
+		}
+		if parsed.ExpandTurn != nil {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: expand_turn applies only to transcript markdown")
+		}
+		if parsed.AttemptID != "" && parsed.Range != "" {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: range cannot be combined with attempt_id")
+		}
+	} else {
+		if parsed.Format == "" {
+			parsed.Format = formatMarkdown
+		}
+		switch parsed.Format {
+		case formatMarkdown, formatOutline, formatJSONL:
+		default:
+			return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: unknown format %q: use markdown, outline, or jsonl", parsed.Format)
+		}
+		if parsed.AttemptID != "" {
+			if explicitSource {
+				return readSessionTranscriptArgs{}, errors.New("invalid_request: attempt_id cannot be combined with source=transcript")
+			}
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: attempt_id requires source=api_log")
+		}
+		if parsed.Body != "" {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: body requires attempt_id")
+		}
+		if parsed.ExpandTurn != nil && parsed.Format != formatMarkdown {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: expand_turn applies only to transcript markdown")
+		}
+	}
+
+	if parsed.Body != "" {
+		if parsed.AttemptID == "" {
+			return readSessionTranscriptArgs{}, errors.New("invalid_request: body requires attempt_id")
+		}
+		if parsed.Body != "request" && parsed.Body != "response" {
+			return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: body %q is not supported: use request or response", parsed.Body)
+		}
+	}
+	expanding := parsed.ExpandTurn != nil || parsed.Body != ""
+	if _, present := args["offset_bytes"]; present && !expanding {
+		return readSessionTranscriptArgs{}, errors.New("invalid_request: offset_bytes requires expand_turn or an explicit API body")
+	}
+	if parsed.OffsetBytes < 0 {
+		return readSessionTranscriptArgs{}, errors.New("invalid_request: offset_bytes must be non-negative")
+	}
+	if _, present := args["max_bytes"]; present && !expanding {
+		return readSessionTranscriptArgs{}, errors.New("invalid_request: max_bytes requires expand_turn or an explicit API body")
+	}
+	if parsed.MaxBytes < 0 || parsed.MaxBytes > maxExpansionBytes {
+		return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: max_bytes must be between 1 and %d", maxExpansionBytes)
+	}
+	if _, present := args["max_bytes"]; present && parsed.MaxBytes == 0 {
+		return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: max_bytes must be between 1 and %d", maxExpansionBytes)
+	}
+	return parsed, nil
 }
 
 func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error) {
@@ -201,6 +337,10 @@ const rangeAcceptedGrammar = "N-M | last:N | start:N"
 // after the document header so a default read never silently masquerades as the
 // whole session.
 func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int) (any, error) {
+	return readMarkdownPage(path, ref, meta, rangeArg, expandTurn, 0, 0)
+}
+
+func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
 	data, err := readTranscriptFull(path)
 	if err != nil {
 		return nil, err
@@ -215,10 +355,44 @@ func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, ex
 		effectiveRange = ""
 	}
 
-	content, rmeta := renderTranscript(data.Header, data.Entries, effectiveRange, renderOpts{
-		meta:          meta,
-		fullResultFor: expandTurn,
-	})
+	renderOpt := renderOpts{meta: meta, fullResultFor: expandTurn}
+	content, rmeta := renderTranscript(data.Header, data.Entries, effectiveRange, renderOpt)
+	var expansion *transcriptTurnExpansion
+	var continuation *transcriptTurnContinuation
+	if expandTurn != nil {
+		exact := renderExactTurnExpansion(data.Entries, *expandTurn, renderOpt)
+		if maxBytes == 0 {
+			maxBytes = defaultExpansionBytes
+		}
+		if offsetBytes > len(exact) {
+			return nil, fmt.Errorf("invalid_request: offset_bytes %d exceeds expanded turn length %d", offsetBytes, len(exact))
+		}
+		if offsetBytes > 0 || len(exact) > maxBytes {
+			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, renderOpts{meta: meta})
+			rmeta.Truncated = true
+			end := offsetBytes + maxBytes
+			if end > len(exact) {
+				end = len(exact)
+			}
+			chunk := []byte(exact)[offsetBytes:end]
+			expansion = &transcriptTurnExpansion{
+				ExpandTurn:    *expandTurn,
+				OffsetBytes:   offsetBytes,
+				BytesReturned: len(chunk),
+				TotalBytes:    len(exact),
+			}
+			if utf8.Valid(chunk) {
+				expansion.Encoding = "utf8"
+				expansion.Data = string(chunk)
+			} else {
+				expansion.Encoding = "base64"
+				expansion.Data = base64.StdEncoding.EncodeToString(chunk)
+			}
+			if end < len(exact) {
+				continuation = &transcriptTurnContinuation{ExpandTurn: *expandTurn, OffsetBytes: end}
+			}
+		}
+	}
 
 	// Surface a range warning prominently when a malformed range was given.
 	if rangeWarning != "" {
@@ -247,6 +421,8 @@ func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, ex
 			SkippedCorruptLines: data.Skipped,
 			RangeWarning:        rangeWarning,
 		},
+		Expansion:    expansion,
+		Continuation: continuation,
 	}, nil
 }
 
@@ -290,9 +466,7 @@ const formatJSONL = "jsonl"
 
 var readRawLinesForRange = rawLinesForRange
 
-// readRawEnvelope is the wire shape for a jsonl read: the verbatim NDJSON bytes for
-// the range. It is the debug/replay escape hatch — noisy (system prompt + api_call
-// records) and steered against for comprehension.
+// readRawEnvelope is the wire shape for bounded semantic transcript-v2 NDJSON.
 type readRawEnvelope struct {
 	TranscriptRef string      `json:"transcript_ref"`
 	Format        string      `json:"format"`
@@ -309,8 +483,8 @@ type readRawMeta struct {
 	RangeWarning        string `json:"range_warning,omitempty"`
 }
 
-// readRaw returns the verbatim JSONL lines for the range (header + interleaved
-// api_call lines), bounded only by the 200k hard cap (head-only, valid NDJSON). A
+// readRaw returns the semantic JSONL header and entry lines for the range,
+// bounded by the 200k hard cap (head-only, valid NDJSON). A
 // malformed range falls back to the default and records range_warning; expand_turn
 // does not apply to raw output.
 func readRaw(path, ref, rangeArg string) (any, error) {
@@ -341,7 +515,7 @@ func readRaw(path, ref, rangeArg string) (any, error) {
 			LinesReturned:       lines,
 			Truncated:           truncated,
 			SkippedCorruptLines: skipped,
-			Hint:                "raw NDJSON; for comprehension, re-read with format=markdown.",
+			Hint:                "semantic transcript-v2 NDJSON; system-prompt and provider API data are excluded. For provider attempts use source=api_log; for comprehension use format=markdown.",
 			RangeWarning:        rangeWarning,
 		},
 	}, nil

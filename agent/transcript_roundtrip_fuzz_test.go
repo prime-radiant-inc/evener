@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/schema"
@@ -101,6 +102,7 @@ func FuzzTranscriptReplay(f *testing.F) {
 
 		assertTranscriptWriteReadRoundTrip(t, dir, data)
 		assertResumeHistoryIdempotent(t, data.Entries)
+		assertSemanticTranscriptJSONL(t, inPath, len(data.Entries))
 
 		// Also drive the strict child-transcript reader/validator — a separate,
 		// size-bounded, session-pinned decode seam the round-trip path skips. Hit
@@ -112,6 +114,28 @@ func FuzzTranscriptReplay(f *testing.F) {
 		_, _ = readStrictChildTranscript(inPath, sid+"_mismatch", transcriptJSONLMaxLineBytes)
 		_, _ = readStrictChildTranscript(inPath, sid, 4)
 	})
+}
+
+func assertSemanticTranscriptJSONL(t *testing.T, path string, entryCount int) {
+	t.Helper()
+	content, _, _, _, err := rawLinesForRange(path, 0, entryCount-1)
+	if err != nil {
+		t.Fatalf("read semantic transcript JSONL: %v", err)
+	}
+	if strings.Contains(content, `"kind":"api_call"`) || strings.Contains(content, `"system_prompt"`) {
+		t.Fatalf("semantic transcript JSONL exposed private records: %s", content)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		var record struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode semantic transcript JSONL: %v", err)
+		}
+		if record.Kind != "header" && record.Kind != "entry" {
+			t.Fatalf("semantic transcript record kind = %q", record.Kind)
+		}
+	}
 }
 
 func assertTranscriptWriteReadRoundTrip(t *testing.T, dir string, data transcriptData) {

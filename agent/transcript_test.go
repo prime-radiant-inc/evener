@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +20,9 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // readTranscriptLines reads all non-empty lines from a JSONL transcript file.
@@ -1956,5 +1960,518 @@ func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
 	_, _, _, err = readTranscript(path)
 	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
 		t.Fatalf("readTranscript error = %v, want corruption error", err)
+	}
+}
+
+func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTranscript(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	originalOpen := openTranscriptFile
+	openCount := 0
+	openTranscriptFile = func(path string) (io.ReadCloser, error) {
+		openCount++
+		return originalOpen(path)
+	}
+	t.Cleanup(func() { openTranscriptFile = originalOpen })
+
+	tests := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{name: "unknown source", args: map[string]any{"source": "wire"}, want: "invalid_request: source"},
+		{name: "API format", args: map[string]any{"source": "api_log", "format": "markdown"}, want: "invalid_request: format"},
+		{name: "body without attempt", args: map[string]any{"body": "request"}, want: "invalid_request: body requires attempt_id"},
+		{name: "offset without expansion", args: map[string]any{"offset_bytes": float64(1)}, want: "invalid_request: offset_bytes"},
+		{name: "max without expansion", args: map[string]any{"max_bytes": float64(1)}, want: "invalid_request: max_bytes"},
+		{name: "API expand turn", args: map[string]any{"source": "api_log", "expand_turn": float64(1)}, want: "invalid_request: expand_turn"},
+		{name: "transcript attempt", args: map[string]any{"source": "transcript", "attempt_id": "att_explicit"}, want: "invalid_request: attempt_id"},
+		{name: "attempt range", args: map[string]any{"attempt_id": "att_explicit", "range": "0-1"}, want: "invalid_request: range"},
+		{name: "negative expand turn", args: map[string]any{"expand_turn": float64(-1)}, want: "invalid_request: expand_turn"},
+		{name: "negative offset", args: map[string]any{"expand_turn": float64(1), "offset_bytes": float64(-1)}, want: "invalid_request: offset_bytes"},
+		{name: "zero max", args: map[string]any{"expand_turn": float64(1), "max_bytes": float64(0)}, want: "invalid_request: max_bytes"},
+		{name: "oversized max", args: map[string]any{"expand_turn": float64(1), "max_bytes": float64(maxExpansionBytes + 1)}, want: "invalid_request: max_bytes"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			before := openCount
+			_, err := execReadSessionTranscript(deps, tc.args)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+			if openCount != before {
+				t.Fatalf("invalid request opened transcript %d times", openCount-before)
+			}
+		})
+	}
+}
+
+func testAPIAttemptRecord(groupID string, index int, request, response []byte) apilog.APIAttemptRecord {
+	return apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   groupID,
+		AttemptIndex:     index,
+		Timestamp:        time.Date(2026, 7, 16, 12, 0, index, 0, time.UTC),
+		LatencyMS:        int64(index * 10),
+		ProviderInstance: "openai-primary",
+		RequestModel:     "gpt-test",
+		Request: apilog.APIAttemptRequest{
+			Method:      "POST",
+			Endpoint:    "https://provider.test/v1/responses",
+			Body:        apilog.EncodeBody(request),
+			Model:       "gpt-test",
+			HistoryMode: "messages",
+		},
+		Response: &apilog.APIAttemptResponse{
+			StatusCode: 200,
+			Body:       apilog.EncodeBody(response),
+			Model:      "gpt-test-result",
+		},
+		Outcome: apilog.AttemptSuccess,
+	}
+}
+
+func writeTestAPILog(t *testing.T, bucketDir, sessionID string, records ...apilog.APILogRecord) string {
+	t.Helper()
+	path := filepath.Join(bucketDir, "sessions", sessionID+".api.jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open test API log: %v", err)
+	}
+	for _, record := range records {
+		line, err := json.Marshal(record)
+		if err != nil {
+			_ = f.Close()
+			t.Fatalf("marshal test API record: %v", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			_ = f.Close()
+			t.Fatalf("write test API record: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close test API log: %v", err)
+	}
+	return path
+}
+
+func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv2enqVTitaig6F"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	attempt := testAPIAttemptRecord("ag_summary", 1, []byte(`{"secret":"request-sentinel"}`), []byte{0x00, 0xff, 0x80})
+	settlement := apilog.APIAttemptGroupSettlement{
+		Kind:              "attempt_group_settlement",
+		SchemaVersion:     1,
+		AttemptGroupID:    attempt.AttemptGroupID,
+		FinalAttemptID:    attempt.AttemptID,
+		FinalAttemptCount: 1,
+		Outcome:           apilog.AttemptSuccess,
+		SettledAt:         attempt.Timestamp.Add(time.Second),
+	}
+	writeTestAPILog(t, dir, sessionID, attempt, settlement)
+
+	env := decodeReadEnvelope(t, marshalRead(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{
+		"source": "api_log",
+	}))
+	if env["source"] != "api_log" || env["credential_values_excluded"] != true {
+		t.Fatalf("API-log envelope identity = %#v", env)
+	}
+	records, ok := env["records"].([]any)
+	if !ok || len(records) != 2 {
+		t.Fatalf("records = %#v, want two summaries", env["records"])
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"request-sentinel", `"data"`} {
+		if strings.Contains(string(raw), forbidden) {
+			t.Fatalf("summary leaked %q: %s", forbidden, raw)
+		}
+	}
+	attemptSummary := records[0].(map[string]any)
+	for key, want := range map[string]any{
+		"kind":             "api_attempt",
+		"attempt_id":       attempt.AttemptID,
+		"attempt_group_id": attempt.AttemptGroupID,
+		"outcome":          string(apilog.AttemptSuccess),
+		"settlement_state": "settled",
+	} {
+		if got := attemptSummary[key]; got != want {
+			t.Errorf("attempt summary %s = %#v, want %#v", key, got, want)
+		}
+	}
+	requestBody := attemptSummary["request_body"].(map[string]any)
+	if requestBody["encoding"] != "utf8" || requestBody["byte_count"] != float64(attempt.Request.Body.ByteCount) {
+		t.Errorf("request body evidence = %#v", requestBody)
+	}
+	responseBody := attemptSummary["response_body"].(map[string]any)
+	if responseBody["encoding"] != "base64" || responseBody["byte_count"] != float64(attempt.Response.Body.ByteCount) {
+		t.Errorf("response body evidence = %#v", responseBody)
+	}
+}
+
+func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	if _, err := execReadSessionTranscript(deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "open API log") {
+		t.Fatalf("missing API-log error = %v, want open API log", err)
+	}
+
+	attempt := testAPIAttemptRecord("ag_corrupt", 1, []byte(`{"request":true}`), []byte(`{"response":true}`))
+	path := writeTestAPILog(t, dir, sessionID, attempt)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open API log for corruption: %v", err)
+	}
+	if _, err := f.WriteString("{not-json}\n"); err != nil {
+		_ = f.Close()
+		t.Fatalf("append corrupt API-log record: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close corrupt API log: %v", err)
+	}
+
+	if _, err := execReadSessionTranscript(deps, map[string]any{"source": apiLogSource}); err == nil || !strings.Contains(err.Error(), "read API log") {
+		t.Fatalf("corrupt API-log error = %v, want read API log", err)
+	}
+}
+
+func TestReadSessionTranscriptDefaultSourcesNeverOpenAPILog(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv47YP64RR3B9YJ"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	originalOpen := openAPILogFile
+	openCount := 0
+	openAPILogFile = func(string) (io.ReadCloser, error) {
+		openCount++
+		return nil, errors.New("sentinel API log must stay unopened")
+	}
+	t.Cleanup(func() { openAPILogFile = originalOpen })
+
+	for _, format := range []string{"", formatMarkdown, formatOutline, formatJSONL} {
+		args := map[string]any{}
+		if format != "" {
+			args["format"] = format
+		}
+		if _, err := execReadSessionTranscript(deps, args); err != nil {
+			t.Fatalf("default transcript format %q: %v", format, err)
+		}
+	}
+	if openCount != 0 {
+		t.Fatalf("default transcript reads opened API log %d times", openCount)
+	}
+}
+
+func TestReadSessionTranscriptAPILogSourceBoundsRecordsAndSerializedBytes(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	records := make([]apilog.APILogRecord, 0, 105)
+	for i := 0; i < 105; i++ {
+		attempt := testAPIAttemptRecord(fmt.Sprintf("ag_bounds_%03d", i), 1, nil, nil)
+		attempt.ProviderInstance = "p"
+		attempt.RequestModel = "m"
+		attempt.Request.Method = "P"
+		attempt.Request.Endpoint = "e"
+		attempt.Response = nil
+		attempt.Outcome = apilog.AttemptTransportFail
+		records = append(records, attempt)
+	}
+	writeTestAPILog(t, dir, sessionID, records...)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	defaultJSON := marshalRead(t, deps, map[string]any{"source": "api_log"})
+	defaultEnv := decodeReadEnvelope(t, defaultJSON)
+	if got := len(defaultEnv["records"].([]any)); got != defaultAPILogRecords {
+		t.Fatalf("default records = %d, want %d", got, defaultAPILogRecords)
+	}
+	hardLimitJSON := marshalRead(t, deps, map[string]any{"source": "api_log", "range": "start:200"})
+	if len(hardLimitJSON) > maxAPILogOutputBytes {
+		t.Fatalf("100-record summary = %d bytes, exceeds %d", len(hardLimitJSON), maxAPILogOutputBytes)
+	}
+	if got := len(decodeReadEnvelope(t, hardLimitJSON)["records"].([]any)); got != maxAPILogRecords {
+		t.Fatalf("hard-limited records = %d, want %d", got, maxAPILogRecords)
+	}
+
+	for i := range records {
+		attempt := records[i].(apilog.APIAttemptRecord)
+		attempt.ProviderInstance = strings.Repeat("provider", 300) + fmt.Sprintf("-%03d", i)
+		records[i] = attempt
+	}
+	writeTestAPILog(t, dir, sessionID, records...)
+
+	boundedJSON := marshalRead(t, deps, map[string]any{"source": "api_log", "range": "start:200"})
+	if len(boundedJSON) > maxAPILogOutputBytes {
+		t.Fatalf("serialized API summary = %d bytes, exceeds %d", len(boundedJSON), maxAPILogOutputBytes)
+	}
+	boundedEnv := decodeReadEnvelope(t, boundedJSON)
+	if got := len(boundedEnv["records"].([]any)); got == 0 || got > maxAPILogRecords {
+		t.Fatalf("bounded records = %d, want 1..%d", got, maxAPILogRecords)
+	}
+	meta := readMetaMap(t, boundedEnv)
+	if meta["truncated"] != true || meta["records_total"] != float64(105) {
+		t.Fatalf("bounded meta = %#v", meta)
+	}
+}
+
+func readExpandedAPIBody(t *testing.T, deps *toolDeps, attemptID, body string, maxBytes int) ([]byte, []map[string]any) {
+	t.Helper()
+	var joined []byte
+	var pages []map[string]any
+	offset := 0
+	for {
+		env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+			"attempt_id":   attemptID,
+			"body":         body,
+			"offset_bytes": float64(offset),
+			"max_bytes":    float64(maxBytes),
+		}))
+		pages = append(pages, env)
+		if env["source"] != apiLogSource || env["credential_values_excluded"] != true {
+			t.Fatalf("API body envelope identity = %#v", env)
+		}
+		chunk := env["body"].(map[string]any)
+		data := chunk["data"].(string)
+		switch chunk["encoding"] {
+		case "utf8":
+			joined = append(joined, []byte(data)...)
+		case "base64":
+			decoded, err := base64.StdEncoding.DecodeString(data)
+			if err != nil {
+				t.Fatalf("decode body chunk: %v", err)
+			}
+			joined = append(joined, decoded...)
+		default:
+			t.Fatalf("body encoding = %#v", chunk["encoding"])
+		}
+		continuation, ok := env["continuation"].(map[string]any)
+		if !ok {
+			break
+		}
+		if continuation["attempt_id"] != attemptID || continuation["body"] != body {
+			t.Fatalf("continuation = %#v", continuation)
+		}
+		next := int(continuation["offset_bytes"].(float64))
+		if next <= offset {
+			t.Fatalf("continuation offset = %d after %d", next, offset)
+		}
+		offset = next
+	}
+	return joined, pages
+}
+
+func TestReadSessionTranscriptAttemptExpansionPagesExactBodies(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv733WHFsVy66SR"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	requestBody := []byte("line\n\"quote\"-escaped-tail")
+	responseBody := []byte{0x00, 0xff, 0x80, 'A', 'B', 0xfe, '\n'}
+	attempt := testAPIAttemptRecord("ag_expand", 1, requestBody, responseBody)
+	writeTestAPILog(t, dir, sessionID, attempt)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	metadata := marshalRead(t, deps, map[string]any{"attempt_id": attempt.AttemptID})
+	if strings.Contains(string(metadata), `"data"`) {
+		t.Fatalf("attempt metadata leaked body data: %s", metadata)
+	}
+
+	gotRequest, requestPages := readExpandedAPIBody(t, deps, attempt.AttemptID, "request", 7)
+	if !bytes.Equal(gotRequest, requestBody) {
+		t.Fatalf("request expansion = %q, want %q", gotRequest, requestBody)
+	}
+	if len(requestPages) < 2 || requestPages[0]["body"].(map[string]any)["encoding"] != "utf8" {
+		t.Fatalf("request pages = %#v", requestPages)
+	}
+
+	gotResponse, responsePages := readExpandedAPIBody(t, deps, attempt.AttemptID, "response", 2)
+	if !bytes.Equal(gotResponse, responseBody) {
+		t.Fatalf("response expansion = %v, want %v", gotResponse, responseBody)
+	}
+	if len(responsePages) < 2 || responsePages[0]["body"].(map[string]any)["encoding"] != "base64" {
+		t.Fatalf("response pages = %#v", responsePages)
+	}
+}
+
+func TestReadSessionTranscriptUnsettledGroupStateIsRangeHonest(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv8Vo4rqb3QYZuV"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	attempt := testAPIAttemptRecord("ag_later_settlement", 1, []byte("{}"), []byte("{}"))
+	filler := testAPIAttemptRecord("ag_filler", 1, []byte("{}"), []byte("{}"))
+	settlement := apilog.APIAttemptGroupSettlement{
+		Kind:              "attempt_group_settlement",
+		SchemaVersion:     1,
+		AttemptGroupID:    attempt.AttemptGroupID,
+		FinalAttemptID:    attempt.AttemptID,
+		FinalAttemptCount: 1,
+		Outcome:           apilog.AttemptSuccess,
+		SettledAt:         attempt.Timestamp.Add(time.Second),
+	}
+	apiPath := writeTestAPILog(t, dir, sessionID, attempt, filler, settlement)
+
+	beforeSettlement := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"source": "api_log", "range": "0-1"}))
+	beforeRecords := beforeSettlement["records"].([]any)
+	if got := beforeRecords[0].(map[string]any)["settlement_state"]; got != "unknown_outside_range" {
+		t.Fatalf("attempt-only page settlement_state = %v, want unknown_outside_range", got)
+	}
+	settlementPage := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"source": "api_log", "range": "2-2"}))
+	if got := settlementPage["records"].([]any)[0].(map[string]any)["settlement_state"]; got != "settled" {
+		t.Fatalf("settlement page settlement_state = %v, want settled", got)
+	}
+
+	orphan := testAPIAttemptRecord("ag_clean_eof", 1, []byte("{}"), []byte("{}"))
+	writeTestAPILog(t, dir, sessionID, orphan)
+	cleanEOF := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"source": "api_log", "range": "0-0"}))
+	if got := cleanEOF["records"].([]any)[0].(map[string]any)["settlement_state"]; got != "unsettled" {
+		t.Fatalf("clean-EOF attempt settlement_state = %v, want unsettled", got)
+	}
+
+	f, err := os.OpenFile(apiPath, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"kind":"attempt_group_settlement"`); err != nil {
+		_ = f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	partial := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{"source": "api_log", "range": "0-0"}))
+	if got := partial["records"].([]any)[0].(map[string]any)["settlement_state"]; got != "unknown_outside_range" {
+		t.Fatalf("partial-tail attempt settlement_state = %v, want unknown_outside_range", got)
+	}
+	if meta := readMetaMap(t, partial); meta["partial_tail"] != true {
+		t.Fatalf("partial-tail meta = %#v", meta)
+	}
+}
+
+func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
+	path := transcriptPath(dir, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callID := "call-oversized-expansion"
+	assistant := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+		Kind:     llm.ContentToolCall,
+		ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: json.RawMessage(`{"command":"large"}`)},
+	}}}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, assistant)); err != nil {
+		t.Fatal(err)
+	}
+	var largeResult strings.Builder
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&largeResult, "oversized-line-%03d-%s\n", i, strings.Repeat("x", 3000))
+	}
+	toolResult := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
+		Kind:       llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "shell", Content: largeResult.String()},
+	}}}
+	if err := w.Append(schema.NewTurn(schema.TurnToolResults, toolResult)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	first := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"expand_turn": float64(0),
+		"max_bytes":   float64(1024),
+	}))
+	content := first["content"].(string)
+	if !strings.Contains(content, "oversized-line-000") || !strings.Contains(content, "oversized-line-199") {
+		t.Fatalf("bounded content lacks head/tail evidence: %s", content[:min(len(content), 2000)])
+	}
+	if strings.Contains(content, "oversized-line-100") {
+		t.Fatal("bounded content included elided middle evidence")
+	}
+	expansion, ok := first["expansion"].(map[string]any)
+	if !ok || expansion["bytes_returned"] != float64(1024) || expansion["total_bytes"].(float64) <= 1024 {
+		t.Fatalf("first expansion = %#v", first["expansion"])
+	}
+	continuation, ok := first["continuation"].(map[string]any)
+	if !ok || continuation["expand_turn"] != float64(0) || continuation["offset_bytes"] != float64(1024) {
+		t.Fatalf("first continuation = %#v", first["continuation"])
+	}
+
+	second := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		"expand_turn":  float64(0),
+		"offset_bytes": continuation["offset_bytes"],
+		"max_bytes":    float64(1024),
+	}))
+	secondExpansion := second["expansion"].(map[string]any)
+	if secondExpansion["offset_bytes"] != float64(1024) || secondExpansion["bytes_returned"].(float64) > 1024 {
+		t.Fatalf("second expansion = %#v", secondExpansion)
+	}
+	if got := len(marshalRead(t, deps, map[string]any{"expand_turn": float64(0), "max_bytes": float64(maxExpansionBytes)})); got > hardCapChars {
+		t.Fatalf("maximum transcript expansion envelope = %d bytes, exceeds hard cap %d", got, hardCapChars)
+	}
+}
+
+func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5TxvBRJC3228LTWod"
+	path := transcriptPath(dir, sessionID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID:    sessionID,
+		Model:        "test-model",
+		SystemPrompt: "private-system-prompt-sentinel",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("semantic-entry"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+
+	env := decodeReadEnvelope(t, marshalRead(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{"format": "jsonl"}))
+	content := env["content"].(string)
+	for _, forbidden := range []string{"private-system-prompt-sentinel", `"kind":"api_call"`} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("semantic JSONL leaked %q: %s", forbidden, content)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+		var record struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("semantic JSONL line is invalid: %v", err)
+		}
+		if record.Kind != "header" && record.Kind != "entry" {
+			t.Fatalf("semantic JSONL record kind = %q", record.Kind)
+		}
+	}
+	if hint := readMetaMap(t, env)["hint"].(string); !strings.Contains(hint, "semantic") || !strings.Contains(hint, "API") {
+		t.Fatalf("JSONL hint = %q", hint)
 	}
 }

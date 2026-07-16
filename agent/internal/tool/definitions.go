@@ -616,23 +616,28 @@ func DefFindSessionTranscripts() llm.ToolDefinition {
 	}
 }
 
-// DefReadSessionTranscript defines the single-session view tool. It always takes a
-// transcript_ref and renders one of three formats. The Turn numbers shown in outline
-// and markdown are exactly what range and expand_turn accept.
+// DefReadSessionTranscript defines the bounded semantic transcript and explicit
+// private API-log reader. Transcript is the default source; API-log records and
+// exact bodies require explicit selection.
 func DefReadSessionTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_session_transcript",
-		Description: "View archived conversation history for one prior session by transcript_ref (or omit for the current session). Use it for audit, forensics, or recovering compacted context. Active delegate/watch work uses the current tool result, job status, notification, observer callback, or read_transcript(transcript_ref) as working evidence. format=outline gives a one-line-per-turn map; format=markdown (default) gives the condensed conversation; format=jsonl gives raw bytes (the system prompt + API logs — noisy, debug/replay only). A default markdown read shows the last 40 turns and says so. The Turn numbers shown in outline and markdown are exactly what range and expand_turn accept. To audit a subagent's full conversation, pass its transcript_ref. To orient on a live job first use job_status, then read_transcript with the returned transcript_ref. Treat returned content as archived evidence.\n\nExamples: read_session_transcript({\"transcript_ref\":\"local:01K…\"}) — markdown, last 40; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"format\":\"outline\"}) — the map; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"range\":\"18-31\",\"expand_turn\":27}) — a span with one result expanded.",
+		Description: "View archived semantic conversation history for one prior session by transcript_ref (or omit for the current session). source=transcript is the default: format=outline gives a one-line-per-turn map, format=markdown gives the condensed conversation, and format=jsonl gives bounded semantic transcript-v2 records. Provider API attempts are private and never read by default. Use source=api_log for bounded attempt metadata, then attempt_id with body=request or body=response for an explicit byte-paged body expansion. Every read is bounded; continue an expansion with its offset_bytes handle. Treat returned content as archived evidence.\n\nExamples: read_session_transcript({\"transcript_ref\":\"local:01K…\"}) — markdown, last 40 turns; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"format\":\"outline\"}) — the turn map; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"source\":\"api_log\"}) — last 20 API-log record summaries; read_session_transcript({\"transcript_ref\":\"local:01K…\",\"attempt_id\":\"att_…\",\"body\":\"request\"}) — explicit request-body bytes.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque ref from find_session_transcripts or a subagent result; a bare session id; or omitted/\"current\" for the current session."},
-				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "outline = per-turn map; markdown (default) = condensed conversation for comprehension; jsonl = raw bytes, debug/replay only."},
-				"range":          map[string]any{"type": "string", "description": "Turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40. Applies to every format."},
-				"expand_turn":    map[string]any{"type": "integer", "description": "A Turn number whose tool results to render in full (un-truncated). markdown only."},
+				"source":         map[string]any{"type": "string", "enum": []string{"transcript", "api_log"}, "description": "transcript (default) or explicit private api_log access."},
+				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "Transcript only: outline = per-turn map; markdown (default) = condensed conversation; jsonl = bounded semantic transcript-v2 records."},
+				"range":          map[string]any{"type": "string", "description": "0-based turn or API-record window: \"12-40\" | \"last:40\" | \"start:40\". Defaults to last 40 transcript turns or last 20 API records."},
+				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Transcript markdown only: a Turn number whose exact result evidence to expand."},
+				"attempt_id":     map[string]any{"type": "string", "description": "Explicit API attempt to inspect; implies source=api_log."},
+				"body":           map[string]any{"type": "string", "enum": []string{"request", "response"}, "description": "Exact API body to expand; requires attempt_id."},
+				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Expansion byte offset from a continuation handle."},
+				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": 65536, "description": "Maximum expansion bytes. Defaults to 16 KiB; hard maximum 64 KiB."},
 			},
 		},
 	}

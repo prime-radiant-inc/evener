@@ -1,16 +1,15 @@
-# transcript-read-jsonl-debug-hatch: format=jsonl returns raw NDJSON; markdown is the steer for comprehension
+# transcript-read-jsonl-debug-hatch: semantic JSONL and explicit API-log expansion
 
-**What this covers**: the bottom rung of the `read_session_transcript`
-ladder (`docs/tools/transcripts.md` §"format: jsonl — replay it (debug
-hatch)"). `format:"jsonl"` returns the **verbatim** transcript lines for
-the range — the header plus interleaved `api_call` lines, including the
-**system prompt** and raw API records — as valid NDJSON. It is "noisy
-and rarely what you want": the tool description and the agent prompt
-steer the model toward markdown for comprehension and reserve jsonl for
-byte-exact replay / debugging the transcript format. This scenario
-asserts (a) jsonl really is raw NDJSON carrying the system prompt +
-api_call lines, and (b) the agent, asked to *understand* a session,
-reaches for markdown, not jsonl.
+**What this covers**: the explicit forensic lanes of
+`read_session_transcript`. `format:"jsonl"` returns bounded semantic
+transcript-v2 records: a header plus conversation entries, with neither the
+system prompt nor provider API records. Provider attempts require a separate
+`source:"api_log"` summary read, and exact request/response bytes require a
+third call naming `attempt_id` and `body`. Markdown remains the preferred
+comprehension format.
+
+This is an opt-in/manual product scenario. Default Go tests use deterministic
+API-log fixtures and do not require provider credentials or network access.
 
 ## Pre-state
 
@@ -24,54 +23,52 @@ reaches for markdown, not jsonl.
 
 ## Steps
 
-1. Shared project dir (same `--dir` ⇒ same bucket):
+1. Shared project dir (same `--dir` means the same bucket):
    ```bash
    proj=$(mktemp -d -t serf-e2e-jsonl-XXXXX)
    ```
 
-2. **Session A — any small session** so there is a transcript with at
-   least one real API call to dump:
+2. **Session A - create one small semantic transcript and provider attempt:**
    ```bash
    /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
      "Reply with the literal text OK and stop."
    ```
    Wait for exit 0.
 
-3. **Session B — exercise jsonl explicitly, then exercise the steer.**
-   Two questions in one run:
+3. **Session B - exercise each forensic lane explicitly:**
    ```bash
    /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
-     "Part 1 (explicit debug): find the earlier 'OK' session in this project, then call read_session_transcript on it with format set to jsonl. Report: (a) the content_type of the response, (b) whether the content is raw newline-delimited JSON where each non-empty line parses as a JSON object, (c) whether you can see the system prompt and api_call lines in it, and (d) the hint field's text. Part 2 (comprehension): forget Part 1's format — if your actual goal were to UNDERSTAND what that session did, which format would you use and why? State the format you'd pick."
+     "Find the earlier OK session in this project. First call read_session_transcript on it with format=jsonl. Confirm every non-empty line is a JSON object, list the record kinds, and report whether any system_prompt field or api_call record appears. Second call read_session_transcript on the same ref with source=api_log and report credential_values_excluded, record count, attempt IDs, outcomes, and request/response byte counts; do not claim body data is present in the summary. Third pick one returned attempt_id and call read_session_transcript with that attempt_id plus body=request. Report the body encoding, bytes_returned, total_bytes, and continuation handle if present. Finally, if your goal were to understand what the session did, state which transcript format you would use and why."
    ```
 
 ## Expected
 
-- After step 3, session B reports:
-  - **Part 1:** `content_type` is `application/x-ndjson`. The content is
-    valid NDJSON — each non-empty line is a standalone JSON object. The
-    dump includes the transcript **header** line, the **system prompt**,
-    and interleaved **`api_call`** records (raw API request/response
-    logs) — the verbatim bytes, not the condensed conversation. The
-    `meta.hint` reads to the effect of *"raw NDJSON; for comprehension,
-    re-read with format=markdown."*
-  - **Part 2:** B says it would use **markdown** (the default) to
-    understand the session — the condensed conversation with assistant
-    reasoning shown — and explains jsonl is for replay/debugging, not
-    comprehension. (Outline as a first map is also acceptable; the
-    falsifying answer is "jsonl".)
-- Falsification:
-  - jsonl content is NOT raw NDJSON (e.g. it returns the markdown
-    rendering, or a JSON array, or pretty-printed multi-line objects
-    where lines don't individually parse) → the raw-replay format
-    regressed.
-  - The jsonl dump omits the system prompt / api_call lines (i.e. it's
-    been "cleaned up" to just turns) → jsonl stopped being the verbatim
-    debug hatch.
-  - For Part 2 the agent picks **jsonl** to understand a session → the
-    tool/prompt steer toward markdown isn't landing (jsonl is being
-    treated as a comprehension format).
-  - `meta.hint` is missing or doesn't redirect to markdown → the steer
-    string regressed.
+- The JSONL call returns `content_type: application/x-ndjson` and valid
+  newline-delimited objects whose kinds are only `header` and `entry`.
+  `system_prompt` and `api_call` are absent. `meta.hint` identifies the data as
+  semantic, points provider forensics to `source=api_log`, and recommends
+  markdown for comprehension.
+- The explicit API-log summary returns bounded metadata with
+  `source: api_log` and `credential_values_excluded: true`. Attempt summaries
+  include attempt/group IDs, outcomes, and request/response encoding plus byte
+  counts, but no body `data` field.
+- The explicit request-body expansion returns exact data only for the selected
+  attempt and body. It reports encoding and byte counts; when bytes remain, its
+  continuation names `{attempt_id, body, offset_bytes}`.
+- For comprehension, session B chooses markdown (or outline first, then a
+  focused markdown range), not JSONL or API-log bodies.
+
+Falsification:
+
+- A default/JSONL transcript read touches or exposes the API log.
+- JSONL exposes `system_prompt`, `api_call`, or any provider request/response
+  body.
+- An API summary contains a body `data` field, omits the credential-exclusion
+  disclosure, exceeds its bounds, or fabricates settlement/finality from a
+  bounded page.
+- Exact body bytes appear without both an `attempt_id` and explicit `body`.
+- The body expansion has no usable byte-offset continuation when truncated.
+- The agent chooses JSONL/API-log bodies as its comprehension format.
 
 ## Cleanup
 
@@ -81,21 +78,12 @@ rm -rf "$proj"
 
 ## Sharp edges
 
-- jsonl is bounded only by the 200k hard cap (head-only, valid NDJSON) —
-  it does NOT apply the conversation budget or the per-result clamp. For
-  a tiny "OK" session the whole thing fits; don't assert truncation here.
-  On a large session, jsonl is head-truncated and `meta.truncated` is
-  set — that's expected, not a bug.
-- The system prompt is large; seeing it dominate the jsonl output is
-  exactly why the tool steers to markdown. If the agent complains the
-  jsonl is "mostly system prompt and API noise," that's the intended
-  lesson, not a failure.
-- This scenario deliberately *forces* a jsonl read in Part 1 to verify
-  the format, then asks the unforced question in Part 2 to verify the
-  steer. A model that refuses Part 1 ("I'd use markdown instead") is
-  being over-helpful — the instruction is explicit; re-prompt to make it
-  call jsonl so the format itself gets exercised.
-- `format` is `strict:false`/optional and enumerated `outline | markdown
-  | jsonl`. A typo'd format is not part of this scenario; the relevant
-  malformed-input behavior (range fallback) is covered by the
-  outline/range scenario.
+- Transcript JSONL remains bounded and semantic. It is a format-debug lane, not
+  byte-for-byte replay of private provider traffic.
+- API-log summaries default to the last 20 records, never return more than 100,
+  and stay within the serialized-output budget. A settlement outside the page
+  must be reported as `unknown_outside_range`, not `unsettled`.
+- Body expansion defaults to 16 KiB and cannot exceed 64 KiB per call. A chunk
+  that is not valid UTF-8 is base64 encoded.
+- This scenario deliberately forces all three reads. A model that skips the
+  explicit API summary or body expansion has not exercised the contract.

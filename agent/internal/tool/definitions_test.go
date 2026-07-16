@@ -485,7 +485,8 @@ func TestDefJobWatchDescriptionIncludesImplicitDeliveryContract(t *testing.T) {
 
 // TestTranscriptToolDefinitions locks the two-tool surface: correct names, strict
 // opt-out (so the model omits unused args), find takes no session selector, read takes
-// transcript_ref + the format/range/expand_turn knobs.
+// transcript_ref plus explicit transcript/API-log selection and bounded expansion
+// knobs.
 func TestTranscriptToolDefinitions(t *testing.T) {
 	find := DefFindSessionTranscripts()
 	read := DefReadSessionTranscript()
@@ -508,9 +509,24 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 
 	rp := read.Parameters["properties"].(map[string]any)
-	for _, k := range []string{"transcript_ref", "format", "range", "expand_turn"} {
+	for _, k := range []string{
+		"transcript_ref", "source", "format", "range", "expand_turn",
+		"attempt_id", "body", "offset_bytes", "max_bytes",
+	} {
 		if _, ok := rp[k]; !ok {
 			t.Errorf("read missing param %q", k)
+		}
+	}
+	if source, ok := rp["source"].(map[string]any); ok {
+		sourceEnum, _ := source["enum"].([]string)
+		if !reflect.DeepEqual(sourceEnum, []string{"transcript", "api_log"}) {
+			t.Errorf("source enum = %v, want transcript|api_log", sourceEnum)
+		}
+	}
+	if body, ok := rp["body"].(map[string]any); ok {
+		bodyEnum, _ := body["enum"].([]string)
+		if !reflect.DeepEqual(bodyEnum, []string{"request", "response"}) {
+			t.Errorf("body enum = %v, want request|response", bodyEnum)
 		}
 	}
 	// format enum is exactly outline|markdown|jsonl.
