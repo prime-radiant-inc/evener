@@ -175,9 +175,9 @@ func TestCleanupDisposesOwnedTmpAfterChildGrace(t *testing.T) {
 		t.Skip("bash required")
 	}
 	dir := t.TempDir()
-	tmp, err := sandbox.NewSessionTmp("")
+	tmp, err := sandbox.NewSessionScratch("", dir)
 	if err != nil {
-		t.Fatalf("NewSessionTmp: %v", err)
+		t.Fatalf("NewSessionScratch: %v", err)
 	}
 	env := NewLocalExecutionEnvironment(dir)
 	env.ownedSessionTmp = tmp

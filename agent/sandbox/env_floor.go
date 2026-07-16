@@ -36,7 +36,7 @@ var floorPrefixDrops = []string{
 //     floorPrefixDrops),
 //   - drops a worktree-external KUBECONFIG (an absolute path outside every granted
 //     root points at a cluster config the sandboxed session should not reach),
-//   - points TMPDIR at the per-session tmp, and
+//   - points TMPDIR and SERF_SCRATCH_DIR at the per-session scratch, and
 //   - redirects the language cache vars (GOCACHE / npm_config_cache / CARGO_HOME)
 //     into the session tmp when the cache strategy is session-private, so a
 //     sandboxed build can never poison a cache a later build consumes.
@@ -44,7 +44,7 @@ var floorPrefixDrops = []string{
 // It is a pure function of its inputs and returns a fresh slice; it never reads
 // the process environment. Called at EVERY spawn site (shell jobs, rg, stdio MCP
 // servers, hook commands) so no spawned process escapes the floor.
-func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionTmp string) []string {
+func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionScratch string) []string {
 	out := make([]string, 0, len(env)+4)
 	for _, kv := range env {
 		name, val, ok := strings.Cut(kv, "=")
@@ -58,24 +58,41 @@ func ApplyEnvFloor(env []string, policy ResolvedPolicy, sessionTmp string) []str
 		if name == "KUBECONFIG" && kubeconfigIsExternal(val, policy) {
 			continue
 		}
-		if sessionTmp != "" && name == envvars.TmpDir.Name {
-			continue // re-added below, pointing at the session tmp
-		}
 		if policy.CacheStrategy == CacheSessionPrivate && isRedirectedCacheVar(name) {
-			continue // re-added below, pointing into the session tmp
+			continue // re-added below, pointing into the session scratch
 		}
 		out = append(out, kv)
 	}
 
-	if sessionTmp != "" {
-		out = append(out, envvars.TmpDir.Assignment(sessionTmp))
+	out = ApplySessionScratchEnv(out, sessionScratch)
+	if sessionScratch != "" {
 		if policy.CacheStrategy == CacheSessionPrivate {
 			out = append(out,
-				"GOCACHE="+filepath.Join(sessionTmp, "gocache"),
-				"npm_config_cache="+filepath.Join(sessionTmp, "npm"),
-				envvars.CargoHome.Assignment(filepath.Join(sessionTmp, "cargo")),
+				"GOCACHE="+filepath.Join(sessionScratch, "gocache"),
+				"npm_config_cache="+filepath.Join(sessionScratch, "npm"),
+				envvars.CargoHome.Assignment(filepath.Join(sessionScratch, "cargo")),
 			)
 		}
+	}
+	return out
+}
+
+// ApplySessionScratchEnv replaces the two reserved scratch variables together.
+// An empty path removes stale values without installing a replacement.
+func ApplySessionScratchEnv(env []string, scratchDir string) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if ok && (name == envvars.TmpDir.Name || name == envvars.SERFScratchDir.Name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if scratchDir != "" {
+		out = append(out,
+			envvars.TmpDir.Assignment(scratchDir),
+			envvars.SERFScratchDir.Assignment(scratchDir),
+		)
 	}
 	return out
 }

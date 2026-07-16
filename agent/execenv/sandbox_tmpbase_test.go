@@ -24,6 +24,10 @@ func TestEnableSandboxUsesConfiguredTmpBase(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	base := t.TempDir()
+	canonicalBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
 	env := NewLocalExecutionEnvironment(worktree)
 	env.sandboxTmpBase = base
 	if err := env.EnableSandbox(&policy); err != nil {
@@ -33,7 +37,7 @@ func TestEnableSandboxUsesConfiguredTmpBase(t *testing.T) {
 	if env.ownedSessionTmp == nil {
 		t.Fatal("EnableSandbox did not retain its owned scratch directory")
 	}
-	rel, err := filepath.Rel(base, env.ownedSessionTmp.Dir)
+	rel, err := filepath.Rel(canonicalBase, env.ownedSessionTmp.Dir)
 	if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == ".."+string(filepath.Separator) {
 		t.Fatalf("sandbox scratch %q escaped configured base %q (rel=%q err=%v)", env.ownedSessionTmp.Dir, base, rel, err)
 	}

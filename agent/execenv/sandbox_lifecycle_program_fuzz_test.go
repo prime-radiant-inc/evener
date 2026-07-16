@@ -167,14 +167,11 @@ func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTr
 	}
 	reprovision.Cleanup()
 
-	tmpBaseFile := filepath.Join(base, "sandbox-tmp-file")
-	if err := os.WriteFile(tmpBaseFile, []byte("not a directory"), 0o600); err != nil {
-		t.Fatalf("write invalid tmp base: %v", err)
-	}
-	tmpFailure := NewLocalExecutionEnvironment(worktree)
-	tmpFailure.sandboxTmpBase = tmpBaseFile
+	missingWorkspace := filepath.Join(base, "missing-workspace")
+	tmpFailure := NewLocalExecutionEnvironment(missingWorkspace)
+	tmpFailure.sandboxTmpBase = tmpBase
 	if err := tmpFailure.EnableSandbox(sandboxLifecyclePolicy(t, sandbox.ModeRestricted, host, worktree)); err == nil || tmpFailure.Sandbox != nil || tmpFailure.Wrapper != nil || tmpFailure.ownedSessionTmp != nil {
-		t.Fatalf("invalid tmp base state err=%v sandbox=%v wrapper=%v tmp=%v", err, tmpFailure.Sandbox, tmpFailure.Wrapper, tmpFailure.ownedSessionTmp)
+		t.Fatalf("invalid workspace state err=%v sandbox=%v wrapper=%v tmp=%v", err, tmpFailure.Sandbox, tmpFailure.Wrapper, tmpFailure.ownedSessionTmp)
 	}
 
 	// DisposeSandboxScratch owns both its cached fd layer and its fixture-local

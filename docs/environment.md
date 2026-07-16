@@ -24,7 +24,7 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `SERF_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `SERF_PROVIDER`. |
 
-## Hub Internals
+## Serf Internals
 
 These are set or consumed by Serf-managed processes. Users normally should not
 set them by hand.
@@ -35,6 +35,7 @@ set them by hand.
 | `SERF_HUB_SPAWNED_CODEX` | Set by `serf-hub` for spawned Codex app-server processes. |
 | `SERF_HUB_TOKEN` | Per-hub bearer token passed to spawned `serf serve` daemons. |
 | `SERF_RUN_DIR` | Rendezvous directory passed by `serf-hub` to spawned daemons. |
+| `SERF_SCRATCH_DIR` | Serf-provided private scratch directory for one live session. It may be deleted when the session closes or Serf restarts; move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
 

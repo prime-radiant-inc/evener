@@ -43,7 +43,7 @@ func FuzzSandboxPolicyAssembly(f *testing.F) {
 		fuzzPolicyModes(t, fixture, home, raw, program)
 		fuzzEnvironmentFloor(t, fixture, home, raw, program)
 		fuzzDeniedAndProviderHelpers(t, fixture, raw, program)
-		fuzzSessionTmpAndProbeHelpers(t, fixture)
+		fuzzSessionScratchAndProbeHelpers(t, fixture)
 		fuzzGitMetadataHelpers(t, fixture)
 		fuzzReRootAndWrapperBoundaries(t, fixture, home)
 		fuzzContractOracleFailures(t, fixture)
@@ -254,30 +254,30 @@ func fuzzDeniedAndProviderHelpers(t *testing.T, fixture structuralFixture, raw s
 	}
 }
 
-func fuzzSessionTmpAndProbeHelpers(t *testing.T, fixture structuralFixture) {
+func fuzzSessionScratchAndProbeHelpers(t *testing.T, fixture structuralFixture) {
 	t.Helper()
-	tmp, err := NewSessionTmp(fixture.root)
+	tmp, err := NewSessionScratch(fixture.root, fixture.main)
 	if err != nil {
-		t.Fatalf("NewSessionTmp: %v", err)
+		t.Fatalf("NewSessionScratch: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(tmp.Dir, "state"), []byte("x"), 0o600); err != nil {
 		t.Fatalf("write session tmp: %v", err)
 	}
 	if err := tmp.Cleanup(); err != nil {
-		t.Fatalf("SessionTmp.Cleanup: %v", err)
+		t.Fatalf("SessionScratch.Cleanup: %v", err)
 	}
 	if _, err := os.Stat(tmp.Dir); !os.IsNotExist(err) {
-		t.Fatalf("SessionTmp.Cleanup left %q behind: %v", tmp.Dir, err)
+		t.Fatalf("SessionScratch.Cleanup left %q behind: %v", tmp.Dir, err)
 	}
-	var nilTmp *SessionTmp
+	var nilTmp *SessionScratch
 	if err := nilTmp.Cleanup(); err != nil {
-		t.Fatalf("nil SessionTmp cleanup: %v", err)
+		t.Fatalf("nil SessionScratch cleanup: %v", err)
 	}
-	sweepCrashedSessions(filepath.Join(fixture.root, "missing-base"))
+	sweepCrashedSessionScratch(filepath.Join(fixture.root, "missing-base"))
 
 	sweepBase := filepath.Join(fixture.root, "session-sweep")
-	stale := filepath.Join(sweepBase, sessionTmpPrefix+"stale")
-	fresh := filepath.Join(sweepBase, sessionTmpPrefix+"fresh")
+	stale := filepath.Join(sweepBase, sessionScratchPrefix+"stale")
+	fresh := filepath.Join(sweepBase, sessionScratchPrefix+"fresh")
 	ordinary := filepath.Join(sweepBase, "ordinary")
 	for _, dir := range []string{stale, fresh, ordinary} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -287,7 +287,7 @@ func fuzzSessionTmpAndProbeHelpers(t *testing.T, fixture structuralFixture) {
 	if err := os.Chtimes(stale, time.Unix(1, 0), time.Unix(1, 0)); err != nil {
 		t.Fatalf("age stale session fixture: %v", err)
 	}
-	sweepCrashedSessions(sweepBase)
+	sweepCrashedSessionScratch(sweepBase)
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale session dir survived sweep: %v", err)
 	}
@@ -300,9 +300,12 @@ func fuzzSessionTmpAndProbeHelpers(t *testing.T, fixture structuralFixture) {
 	if err := os.WriteFile(fileBase, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write non-directory session base: %v", err)
 	}
-	if _, err := NewSessionTmp(fileBase); err == nil {
-		t.Fatal("NewSessionTmp accepted a file as its base directory")
+	oldCache := sessionScratchUserCacheDir
+	sessionScratchUserCacheDir = func() (string, error) { return fileBase, nil }
+	if _, err := NewSessionScratch(fileBase, fixture.main); err == nil {
+		t.Fatal("NewSessionScratch accepted a file as its only base directory")
 	}
+	sessionScratchUserCacheDir = oldCache
 
 	facts := HostFacts{OS: "linux", Home: fixture.root, BwrapPath: "/fixture/bwrap", BwrapCapable: true}
 	if got := (FakeProber{Facts: facts}).Probe(); got != facts {

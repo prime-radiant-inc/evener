@@ -354,21 +354,26 @@ func fuzzSandboxResidualBranches(t *testing.T) {
 	_ = (RealProber{system: nil}).Probe()
 	_ = bwrapSupportsOverlay(scriptedProbeSystem{bwrapHelpErr: errors.New("help")}, "/fixture/bwrap")
 
-	oldTemp, oldRead := sessionTempDir, sessionReadDir
-	sessionTempDir = func() string { return root }
-	tmp, err := NewSessionTmp("")
+	oldTemp, oldCache, oldRead := sessionScratchTempDir, sessionScratchUserCacheDir, sessionScratchReadDir
+	sessionScratchTempDir = func() string { return root }
+	sessionScratchUserCacheDir = func() (string, error) { return root, nil }
+	workspace := filepath.Join(root, "different-workspace")
+	if err := os.Mkdir(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmp, err := NewSessionScratch("", workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = tmp.Cleanup()
-	sessionReadDir = func(string) ([]os.DirEntry, error) { return []os.DirEntry{faultDirEntry{}}, nil }
-	sweepCrashedSessions(root)
-	sessionTempDir, sessionReadDir = oldTemp, oldRead
+	sessionScratchReadDir = func(string) ([]os.DirEntry, error) { return []os.DirEntry{faultDirEntry{}}, nil }
+	sweepCrashedSessionScratch(root)
+	sessionScratchTempDir, sessionScratchUserCacheDir, sessionScratchReadDir = oldTemp, oldCache, oldRead
 }
 
 type faultDirEntry struct{}
 
-func (faultDirEntry) Name() string               { return sessionTmpPrefix + "fault" }
+func (faultDirEntry) Name() string               { return sessionScratchPrefix + "fault" }
 func (faultDirEntry) IsDir() bool                { return true }
 func (faultDirEntry) Type() fs.FileMode          { return fs.ModeDir }
 func (faultDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("info") }

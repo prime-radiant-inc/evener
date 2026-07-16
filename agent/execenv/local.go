@@ -112,7 +112,7 @@ type LocalExecutionEnvironment struct {
 	// construction (EnableSandbox) and deliberately NOT copied by WithWorkingDirectory
 	// — a re-rooted clone shares the wrapper's tmp path but must never dispose the
 	// owner's dir out from under it. nil for off and for re-rooted clones.
-	ownedSessionTmp *sandbox.SessionTmp
+	ownedSessionTmp *sandbox.SessionScratch
 
 	// sandboxGrant, when non-empty, is a single per-invocation granted path (M7
 	// escalation approve), threaded onto a short-lived clone by
@@ -250,7 +250,7 @@ func (e *LocalExecutionEnvironment) findExecutable(name string) (string, error) 
 }
 
 // EnableSandbox provisions this env for a sandboxed session from an already-
-// resolved policy: it creates a fresh per-session tmp (NewSessionTmp) that the env
+// resolved policy: it creates a fresh per-session scratch directory that the env
 // OWNS and disposes at Cleanup, attaches the policy, and — on the bwrap backend —
 // builds the kernel wrapper from the policy, the probed bwrap binary, and that
 // tmp. It is the single "provision at env construction, clean at session end"
@@ -284,7 +284,11 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 		e.Wrapper = nil
 		return nil
 	}
-	tmp, err := sandbox.NewSessionTmp(e.sandboxTmpBase)
+	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
+	if workspaceRoot == "" {
+		workspaceRoot = e.RootDir
+	}
+	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
 	if err != nil {
 		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
 		// prior policy/wrapper (torn down above) must not silently persist.

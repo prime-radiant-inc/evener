@@ -78,6 +78,7 @@ var (
 	SERFFuzzRecord                  = Var{Name: "SERF_FUZZ_RECORD", Summary: "Master switch: enables the AppWire and HTTP fuzz-corpus recorders by default when set to 1/true/yes/on. A per-recorder var (SERF_RECORD_APPWIRE/SERF_RECORD_HTTP) overrides it. Intended for local dev; unset everywhere else.", Visibility: Tooling}
 	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so serf-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
 	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
+	SERFScratchDir                  = Var{Name: "SERF_SCRATCH_DIR", Summary: "Session-scoped private scratch directory provided to agent subprocesses.", Visibility: Internal}
 	SERFSessionOrigin               = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
 	SERFStateDir                    = Var{Name: "SERF_STATE_DIR", Summary: "Overrides the Serf state root.", Visibility: Public}
 	SERFTUILogFile                  = Var{Name: "SERF_TUI_LOG_FILE", Summary: "Writes serf-tui startup diagnostics to this file.", Visibility: Public}
@@ -182,6 +183,7 @@ var allVars = []Var{
 	SERFFuzzRecord,
 	SERFFuzzCaptureEnv,
 	SERFRunDir,
+	SERFScratchDir,
 	SERFSessionOrigin,
 	SERFStateDir,
 	SERFTUILogFile,

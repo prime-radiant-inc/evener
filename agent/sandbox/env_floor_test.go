@@ -113,3 +113,71 @@ func TestEnvFloorReturnsFreshSlice(t *testing.T) {
 		t.Errorf("ApplyEnvFloor must not mutate its input: %v", in)
 	}
 }
+
+func TestApplySessionScratchEnvReplacesBothVariablesOnly(t *testing.T) {
+	in := []string{
+		"TMPDIR=/ambient/tmp",
+		"SERF_SCRATCH_DIR=/ambient/serf",
+		"HOME=/home/jesse",
+		"GOCACHE=/cache/go",
+		"npm_config_cache=/cache/npm",
+		"CARGO_HOME=/cache/cargo",
+	}
+	out := ApplySessionScratchEnv(in, "/tmp/serf-sandbox-owned")
+	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+		if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
+			t.Fatalf("%s = %q, want session scratch", name, got)
+		}
+	}
+	for name, want := range map[string]string{
+		"HOME": "/home/jesse", "GOCACHE": "/cache/go",
+		"npm_config_cache": "/cache/npm", "CARGO_HOME": "/cache/cargo",
+	} {
+		if got, _ := envValue(out, name); got != want {
+			t.Fatalf("%s = %q, want unchanged %q", name, got, want)
+		}
+	}
+}
+
+func TestEnvFloorScratchPreservesSecurityFilters(t *testing.T) {
+	in := []string{
+		"SSH_AUTH_SOCK=/run/ssh-agent.sock",
+		"AWS_ACCESS_KEY_ID=AKIA",
+		"GOOGLE_APPLICATION_CREDENTIALS=/outside/google.json",
+		"GCLOUD_PROJECT=secret-project",
+		"VAULT_TOKEN=secret",
+		"KUBECONFIG=/outside/kubeconfig",
+		"TMPDIR=/ambient/tmp",
+		"SERF_SCRATCH_DIR=/ambient/serf",
+		"HOME=/home/jesse",
+		"GOCACHE=/cache/go",
+		"npm_config_cache=/cache/npm",
+		"CARGO_HOME=/cache/cargo",
+	}
+	policy := ResolvedPolicy{
+		Mode: ModeWorkspaceWrite, CacheStrategy: CacheNone,
+		Git: GitLayout{WorktreeRoot: "/workspace"},
+	}
+	out := ApplyEnvFloor(in, policy, "/tmp/serf-sandbox-owned")
+	for _, name := range []string{
+		"SSH_AUTH_SOCK", "AWS_ACCESS_KEY_ID", "GOOGLE_APPLICATION_CREDENTIALS",
+		"GCLOUD_PROJECT", "VAULT_TOKEN", "KUBECONFIG",
+	} {
+		if _, ok := envValue(out, name); ok {
+			t.Errorf("security filter retained %s: %v", name, out)
+		}
+	}
+	for _, name := range []string{"TMPDIR", "SERF_SCRATCH_DIR"} {
+		if got, _ := envValue(out, name); got != "/tmp/serf-sandbox-owned" {
+			t.Errorf("%s = %q, want session scratch", name, got)
+		}
+	}
+	for name, want := range map[string]string{
+		"HOME": "/home/jesse", "GOCACHE": "/cache/go",
+		"npm_config_cache": "/cache/npm", "CARGO_HOME": "/cache/cargo",
+	} {
+		if got, _ := envValue(out, name); got != want {
+			t.Errorf("%s = %q, want unchanged %q", name, got, want)
+		}
+	}
+}
