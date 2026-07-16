@@ -36,7 +36,8 @@ const (
 )
 
 type terminalRecordPersistError struct {
-	err error
+	status jobstore.Status
+	err    error
 }
 
 func (e *terminalRecordPersistError) Error() string {
@@ -1458,7 +1459,7 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 	}
 	terminal.finished = finished
 	if err := jm.appendEvent(finished); err != nil {
-		return nil, &terminalRecordPersistError{err: err}
+		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
 
 	jm.mu.Lock()

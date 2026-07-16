@@ -1141,10 +1141,12 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 	if shouldNudge {
 		res, err = a.sess.processInputWithProvenance(ctx, communicateNudge(a.sess.resultToolName()), nil, a.followUpProvenance(inputProvenance))
+		_, budgetExhausted = budgetExhaustionFromError(err)
 	}
 	if !cancelRequested && !budgetExhausted {
 		res, err = a.runSubagentStopHook(ctx, res, err, a.followUpProvenance(inputProvenance))
 	}
+	exhaustion, budgetExhausted := budgetExhaustionFromError(err)
 
 	a.sess.mu.Lock()
 	turns := a.sess.turns
@@ -1164,7 +1166,7 @@ func (a *subagent) run(ctx context.Context, input string, inputProvenance *prove
 		a.status = SubagentCancelled
 	case budgetExhausted:
 		a.status = SubagentExhausted
-		a.err, _ = budgetExhaustionFromError(err)
+		a.err = exhaustion
 	case err != nil:
 		a.status = SubagentFailed
 	default:

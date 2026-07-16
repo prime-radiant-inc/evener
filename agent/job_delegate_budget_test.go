@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -119,6 +121,73 @@ func TestDelegate_LifetimeBudgetExhaustionIsDurableAndNotResumable(t *testing.T)
 	}
 	if jobs := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
 		t.Fatalf("delegate jobs after rejected resume = %d, want 1", len(jobs))
+	}
+}
+
+func TestDelegate_CommunicateNudgeBudgetExhaustionSkipsSubagentStopHook(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "subagent-stop-hook")
+	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response 1")} },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response 2")} },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response 3")} },
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare response 4")} },
+		func(llm.Request) llm.Response {
+			t.Fatal("communicate nudge or SubagentStop continuation reached the model after the turn budget")
+			return llm.Response{}
+		},
+	}}
+	parent := newDelegateBudgetTestSession(t, adapter, SessionConfig{}, "")
+
+	origTrack := delegateTrackPrepared
+	delegateTrackPrepared = func(s *Session, prepared *preparedSubagentRun) error {
+		child := prepared.sub.sess
+		child.mu.Lock()
+		child.cfg.MaxTurns = 1
+		child.mu.Unlock()
+		runner := hooks.NewRunner(nil, "")
+		hookJSON := `{"decision":"block","reason":"continue after the stop hook"}`
+		runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
+			Matcher: "*",
+			Type:    "command",
+			Command: "printf '%s' " + shellQuote(hookJSON) + " | tee " + shellQuote(marker),
+			Timeout: 5,
+		})
+		child.hookRunner = runner
+		return s.trackAndLaunchPreparedSubagent(prepared)
+	}
+	defer func() { delegateTrackPrepared = origTrack }()
+
+	result := parent.createDelegate(context.Background(), delegateArgs{
+		Task:           "stop without communicating at the lifetime turn limit",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	rec := loadShellRecord(t, parent.jobManager, result.JobID)
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript_ref: %v", err)
+	}
+	child := parent.subagents.get(childID)
+	if child == nil {
+		t.Fatalf("retained child %q missing", childID)
+	}
+	child.mu.Lock()
+	childStatus := child.status
+	child.mu.Unlock()
+	if childStatus != SubagentExhausted {
+		t.Fatalf("child status = %q, want %q", childStatus, SubagentExhausted)
+	}
+	if rec.Status != jobstore.StatusExhausted || rec.Reason != "turn_budget_exhausted" {
+		t.Fatalf("durable terminal = %s/%q, want exhausted/turn_budget_exhausted", rec.Status, rec.Reason)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SubagentStop hook ran after communicate nudge exhausted the budget: %v", err)
+	}
+	if got := len(adapter.Requests()); got != maxBareTextRetries+1 {
+		t.Fatalf("model requests = %d, want %d before nudge rejection", got, maxBareTextRetries+1)
 	}
 }
 
@@ -309,6 +378,50 @@ func TestDelegate_ExhaustedFinishPersistFailureStaysFailedAcrossRetries(t *testi
 	}
 	if len(notifications) != 1 || notifications[0].Status != string(jobstore.StatusFailed) || notifications[0].Reason != "exhausted_persist_failed" {
 		t.Fatalf("terminal notifications = %+v, want one failed/exhausted_persist_failed", notifications)
+	}
+}
+
+func TestDelegate_ExplicitParentStopPersistFailureRetriesParentStopOutcome(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	exhausted := &budgetExhaustionError{Budget: exhaustedBudgetTurns, Limit: 2, Resumable: false}
+	sub, run := attachExhaustedDelegateForTest(t, parent, child, "partial result before parent stop", exhausted)
+	parent.jobManager.mu.Lock()
+	run.stopStatus = jobstore.StatusStopped
+	run.stopReason = "stopped_by_parent"
+	parent.jobManager.mu.Unlock()
+
+	origAppend := parent.jobManager.appendEvent
+	failed := false
+	var attempted []jobstore.Status
+	parent.jobManager.appendEvent = func(event jobstore.Event) error {
+		if event.Kind == jobstore.EventJobFinished {
+			attempted = append(attempted, event.Status)
+			if !failed {
+				failed = true
+				return errors.New("injected parent-stop job_finished append failure")
+			}
+		}
+		return origAppend(event)
+	}
+	var notifications []jobNotification
+	parent.jobManager.enqueue = func(notification jobNotification) {
+		notifications = append(notifications, notification)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	wantAttempted := []jobstore.Status{jobstore.StatusStopped, jobstore.StatusStopped}
+	if len(attempted) != len(wantAttempted) || attempted[0] != wantAttempted[0] || attempted[1] != wantAttempted[1] {
+		t.Fatalf("attempted terminal statuses = %v, want %v", attempted, wantAttempted)
+	}
+	rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("durable terminal = %s/%q, want stopped/stopped_by_parent", rec.Status, rec.Reason)
+	}
+	if len(notifications) != 1 || notifications[0].Status != string(jobstore.StatusStopped) || notifications[0].Reason != "stopped_by_parent" {
+		t.Fatalf("terminal notifications = %+v, want one stopped/stopped_by_parent", notifications)
 	}
 }
 

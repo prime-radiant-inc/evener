@@ -2401,7 +2401,7 @@ func delegateFinalizeStopsRetry(jm *jobManager, err error) bool {
 
 func latchDelegateExhaustionPersistFailure(jm *jobManager, jobID string, err error) {
 	var persistErr *terminalRecordPersistError
-	if !errors.As(err, &persistErr) {
+	if !errors.As(err, &persistErr) || persistErr.status != jobstore.StatusExhausted {
 		return
 	}
 	jm.mu.Lock()
