@@ -36,14 +36,17 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	if transportErr == nil || (parent != nil && parent.Err() != nil) {
 		return APITimeoutNone
 	}
-	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
-		return APITimeoutAdapter
-	}
 	var responseHeaderTimeout *responseHeaderTimeoutError
 	if errors.As(transportErr, &responseHeaderTimeout) {
 		return APITimeoutResponseHeader
 	}
-	return APITimeoutNone
+	if !errorIsTimeout(transportErr) {
+		return APITimeoutNone
+	}
+	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
+		return APITimeoutAdapter
+	}
+	return APITimeoutTransport
 }
 
 // APITimeoutSourceForAttempt resolves timeout ownership from errors actually
@@ -53,25 +56,20 @@ func APITimeoutSourceForAttempt(parent, attempt context.Context, current APITime
 	if current != APITimeoutNone || (parent != nil && parent.Err() != nil) {
 		return current
 	}
-	hasEvidence := false
+	hasTimeoutEvidence := false
 	for _, err := range evidence {
-		if err != nil {
-			hasEvidence = true
+		if errorIsTimeout(err) {
+			hasTimeoutEvidence = true
 			break
 		}
 	}
-	if !hasEvidence {
+	if !hasTimeoutEvidence {
 		return APITimeoutNone
 	}
 	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
 		return APITimeoutAdapter
 	}
-	for _, err := range evidence {
-		if errorIsTimeout(err) {
-			return APITimeoutTransport
-		}
-	}
-	return APITimeoutNone
+	return APITimeoutTransport
 }
 
 func errorIsTimeout(err error) bool {
@@ -91,6 +89,10 @@ func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int,
 	if owner.Parent != nil && owner.Parent.Err() != nil {
 		return apilog.AttemptCallerCancel
 	}
+	if owner.Attempt != nil && errors.Is(owner.Attempt.Err(), context.Canceled) &&
+		(errorIsCancellation(decodeErr) || errorIsCancellation(transportErr)) {
+		return apilog.AttemptCallerCancel
+	}
 	if attemptOwnedTimeout(owner, decodeErr, transportErr) {
 		return apilog.AttemptProviderTimeout
 	}
@@ -104,6 +106,10 @@ func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int,
 		return apilog.AttemptDecodeFail
 	}
 	return apilog.AttemptSuccess
+}
+
+func errorIsCancellation(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
 }
 
 func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportErr error) bool {

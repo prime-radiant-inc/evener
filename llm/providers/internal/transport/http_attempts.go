@@ -39,7 +39,11 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 	if err != nil {
 		return response, roundTripper.takeTransportFailure(), err
 	}
-	return response, roundTripper.claimResponse(response), nil
+	attempt := roundTripper.claimResponse(response)
+	if attempt != nil {
+		attempt.bindResponseBody(response.Body)
+	}
+	return response, attempt, nil
 }
 
 type apiAttemptRoundTripper struct {
@@ -119,30 +123,61 @@ func (t *apiAttemptRoundTripper) releaseResponse(response *http.Response, body *
 
 type apiAttemptRequestBody struct {
 	io.ReadCloser
-	mu        sync.Mutex
-	buf       bytes.Buffer
-	closed    chan struct{}
-	closeOnce sync.Once
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	activeReads int
+	closing     bool
+	closed      bool
+	ready       chan struct{}
+	readyOnce   sync.Once
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func (b *apiAttemptRequestBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if n > 0 {
-		b.mu.Lock()
-		_, _ = b.buf.Write(p[:n])
+	b.mu.Lock()
+	if b.closing {
 		b.mu.Unlock()
+		return 0, http.ErrBodyReadAfterClose
 	}
+	b.activeReads++
+	b.mu.Unlock()
+
+	n, err := b.ReadCloser.Read(p)
+	b.mu.Lock()
+	if n > 0 {
+		_, _ = b.buf.Write(p[:n])
+	}
+	b.activeReads--
+	if b.closed && b.activeReads == 0 {
+		b.readyOnce.Do(func() { close(b.ready) })
+	}
+	b.mu.Unlock()
 	return n, err
 }
 
 func (b *apiAttemptRequestBody) Close() error {
-	err := b.ReadCloser.Close()
-	b.closeOnce.Do(func() { close(b.closed) })
-	return err
+	b.closeOnce.Do(func() {
+		b.mu.Lock()
+		b.closing = true
+		b.mu.Unlock()
+
+		closeErr := b.ReadCloser.Close()
+		b.mu.Lock()
+		b.closeErr = closeErr
+		b.closed = true
+		if b.activeReads == 0 {
+			b.readyOnce.Do(func() { close(b.ready) })
+		}
+		b.mu.Unlock()
+	})
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeErr
 }
 
 func (b *apiAttemptRequestBody) snapshot() []byte {
-	<-b.closed
+	<-b.ready
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return append([]byte(nil), b.buf.Bytes()...)
@@ -152,7 +187,7 @@ func captureRequestBody(request *http.Request) func() []byte {
 	if request.Body == nil || request.Body == http.NoBody {
 		return nil
 	}
-	recorder := &apiAttemptRequestBody{ReadCloser: request.Body, closed: make(chan struct{})}
+	recorder := &apiAttemptRequestBody{ReadCloser: request.Body, ready: make(chan struct{})}
 	request.Body = recorder
 	return recorder.snapshot
 }
@@ -173,6 +208,7 @@ type apiAttemptResponseBody struct {
 	doneOnce  sync.Once
 
 	associationDone func()
+	waitForClose    func(<-chan struct{})
 }
 
 func (b *apiAttemptResponseBody) Read(p []byte) (int, error) {
@@ -200,8 +236,13 @@ func (b *apiAttemptResponseBody) Close() error {
 	readErr := b.readErr
 	if closing {
 		closeDone := b.closeDone
+		waitForClose := b.waitForClose
 		b.mu.Unlock()
-		<-closeDone
+		if waitForClose != nil {
+			waitForClose(closeDone)
+		} else {
+			<-closeDone
+		}
 		b.mu.Lock()
 		closeErr := b.closeErr
 		b.mu.Unlock()

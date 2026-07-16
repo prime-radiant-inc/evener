@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/llm/apilog"
 )
 
 func TestApplyAdapterTimeout_Request(t *testing.T) {
@@ -65,6 +67,54 @@ type adapterTimeoutRoundTripper struct {
 type controlledDeadlineContext struct {
 	context.Context
 	done <-chan struct{}
+}
+
+func TestAPITimeoutClassificationRequiresCausalTimeoutEvidence(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		evidence  error
+		want      apilog.AttemptOutcomeClass
+		classify  func(context.Context, error) APITimeoutSource
+		decodeErr error
+		transport error
+	}{
+		{
+			name:      "malformed response completed before later attempt deadline",
+			evidence:  errors.New("malformed JSON"),
+			want:      apilog.AttemptDecodeFail,
+			decodeErr: errors.New("malformed JSON"),
+			classify: func(attempt context.Context, evidence error) APITimeoutSource {
+				return APITimeoutSourceForAttempt(context.Background(), attempt, APITimeoutNone, evidence)
+			},
+		},
+		{
+			name:      "generic transport failure completed before later attempt deadline",
+			evidence:  errors.New("connection reset"),
+			want:      apilog.AttemptTransportFail,
+			transport: errors.New("connection reset"),
+			classify: func(attempt context.Context, evidence error) APITimeoutSource {
+				return APITimeoutSourceForTransport(context.Background(), attempt, evidence)
+			},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			expired := make(chan struct{})
+			attempt := controlledDeadlineContext{Context: context.Background(), done: expired}
+			if attempt.Err() != nil {
+				t.Fatal("attempt context expired before non-timeout evidence was observed")
+			}
+			close(expired)
+			timeoutSource := testCase.classify(attempt, testCase.evidence)
+			owner := APIAttemptContextOwnership{
+				Parent:        context.Background(),
+				Attempt:       attempt,
+				TimeoutSource: timeoutSource,
+			}
+			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, testCase.decodeErr, testCase.transport); got != testCase.want {
+				t.Fatalf("outcome after delayed context expiry = %q (source %q), want %q", got, timeoutSource, testCase.want)
+			}
+		})
+	}
 }
 
 func (c controlledDeadlineContext) Done() <-chan struct{} { return c.done }

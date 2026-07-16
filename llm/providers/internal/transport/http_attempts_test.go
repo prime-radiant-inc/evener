@@ -51,6 +51,42 @@ type concurrentCloseResponseBody struct {
 	closeOnce   sync.Once
 }
 
+type readAfterCloseRequestBody struct {
+	data          []byte
+	readEntered   chan struct{}
+	releaseRead   chan struct{}
+	readCompleted chan struct{}
+	readOnce      sync.Once
+	closeOnce     sync.Once
+}
+
+func (b *readAfterCloseRequestBody) Read(p []byte) (int, error) {
+	b.readOnce.Do(func() { close(b.readEntered) })
+	<-b.releaseRead
+	n := copy(p, b.data)
+	b.closeOnce.Do(func() { close(b.readCompleted) })
+	return n, io.EOF
+}
+
+func (*readAfterCloseRequestBody) Close() error { return nil }
+
+type responseCloseActionBody struct {
+	io.Reader
+	closeAction func()
+	closed      chan struct{}
+	closeOnce   sync.Once
+}
+
+func (b *responseCloseActionBody) Close() error {
+	b.closeOnce.Do(func() {
+		if b.closeAction != nil {
+			b.closeAction()
+		}
+		close(b.closed)
+	})
+	return nil
+}
+
 func (b *concurrentCloseResponseBody) Read(p []byte) (int, error) {
 	b.readOnce.Do(func() { close(b.readEntered) })
 	select {
@@ -225,6 +261,160 @@ func TestAPIAttemptRequestSnapshotWaitsForAsynchronousTransportBodyClose(t *test
 	}
 }
 
+func TestAPIAttemptRequestBodyRejectsReadAfterTerminalClose(t *testing.T) {
+	request, err := http.NewRequest(http.MethodPost, "https://provider.test/request", strings.NewReader("unread-body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := captureRequestBody(request)
+	if snapshot == nil {
+		t.Fatal("captureRequestBody returned no snapshot")
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if _, err := request.Body.Read(make([]byte, 1)); !errors.Is(err, http.ErrBodyReadAfterClose) {
+		t.Fatalf("Read after terminal Close error = %v, want %v", err, http.ErrBodyReadAfterClose)
+	}
+	if got := snapshot(); len(got) != 0 {
+		t.Fatalf("snapshot after unread terminal Close = %q, want empty", got)
+	}
+}
+
+func TestAPIAttemptRequestSnapshotWaitsForReadThatOutlivesClose(t *testing.T) {
+	requestBody := &readAfterCloseRequestBody{
+		data:          []byte("final-bytes-returned-after-close"),
+		readEntered:   make(chan struct{}),
+		releaseRead:   make(chan struct{}),
+		readCompleted: make(chan struct{}),
+	}
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_read_after_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/request", requestBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseBody := &responseCloseActionBody{
+		Reader:      strings.NewReader("response"),
+		closed:      make(chan struct{}),
+		closeAction: func() { close(requestBody.releaseRead) },
+	}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		go func() { _, _ = io.ReadAll(request.Body) }()
+		<-requestBody.readEntered
+		if err := request.Body.Close(); err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responseBody}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt == nil {
+		t.Fatal("final response did not claim canonical attempt")
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+	_ = response.Body.Close()
+	<-requestBody.readCompleted
+
+	if got := sink.count(); got != 1 {
+		t.Fatalf("canonical attempts = %d, want 1", got)
+	}
+	sink.mu.Lock()
+	recorded := sink.attempts[0]
+	sink.mu.Unlock()
+	recordedBody, err := apilog.DecodeBody(recorded.Request.Body)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if got, want := string(recordedBody), string(requestBody.data); got != want {
+		t.Fatalf("recorded request body = %q, want bytes returned by in-flight Read %q", got, want)
+	}
+}
+
+func TestAPIAttemptStreamingTransportClosesVisibleResponseBeforeRequestSnapshot(t *testing.T) {
+	requestBytes := []byte("streaming-request-body")
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_deferred_stream_request_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/stream", bytes.NewReader(requestBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transportRequestBody io.ReadCloser
+	responseBody := &responseCloseActionBody{Reader: strings.NewReader("data: done\n\n"), closed: make(chan struct{})}
+	client := &http.Client{
+		Timeout: time.Hour,
+		Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+			transportRequestBody = request.Body
+			if _, err := io.ReadAll(request.Body); err != nil {
+				return nil, err
+			}
+			responseBody.closeAction = func() { _ = transportRequestBody.Close() }
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responseBody}, nil
+		}),
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt == nil {
+		t.Fatal("final response did not claim canonical attempt")
+	}
+	originalSnapshot := attempt.requestBody
+	snapshotEntered := make(chan struct{})
+	releaseSnapshot := make(chan struct{})
+	attempt.requestBody = func() []byte {
+		close(snapshotEntered)
+		<-releaseSnapshot
+		return originalSnapshot()
+	}
+	completionDone := make(chan struct{})
+	go func() {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+		close(completionDone)
+	}()
+	<-snapshotEntered
+	closedBeforeSnapshot := false
+	select {
+	case <-responseBody.closed:
+		closedBeforeSnapshot = true
+	default:
+	}
+	_ = response.Body.Close()
+	close(releaseSnapshot)
+	<-completionDone
+	if !closedBeforeSnapshot {
+		t.Fatal("visible final response body was not closed before request snapshot")
+	}
+	if got := sink.count(); got != 1 {
+		t.Fatalf("canonical attempts = %d, want 1", got)
+	}
+	sink.mu.Lock()
+	recorded := sink.attempts[0]
+	sink.mu.Unlock()
+	recordedBody, err := apilog.DecodeBody(recorded.Request.Body)
+	if err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if !bytes.Equal(recordedBody, requestBytes) {
+		t.Fatalf("recorded request body = %q, want %q", recordedBody, requestBytes)
+	}
+}
+
 func TestAPIAttemptConcurrentResponseCloseCompletesOnlyAfterOwningDrain(t *testing.T) {
 	body := &concurrentCloseResponseBody{
 		readEntered: make(chan struct{}),
@@ -253,21 +443,27 @@ func TestAPIAttemptConcurrentResponseCloseCompletesOnlyAfterOwningDrain(t *testi
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
+	wrappedBody, ok := response.Body.(*apiAttemptResponseBody)
+	if !ok {
+		t.Fatalf("response body = %T, want canonical attempt body", response.Body)
+	}
+	waiterEntered := make(chan struct{})
+	wrappedBody.mu.Lock()
+	wrappedBody.waitForClose = func(done <-chan struct{}) {
+		close(waiterEntered)
+		<-done
+	}
+	wrappedBody.mu.Unlock()
 	firstCloseDone := make(chan error, 1)
 	go func() { firstCloseDone <- response.Body.Close() }()
 	<-body.readEntered
 	secondCloseDone := make(chan error, 1)
-	secondCloseStarted := make(chan struct{})
-	go func() {
-		close(secondCloseStarted)
-		secondCloseDone <- response.Body.Close()
-	}()
-	<-secondCloseStarted
-	interruptedDrain := false
+	go func() { secondCloseDone <- response.Body.Close() }()
+	<-waiterEntered
 	select {
 	case <-body.closed:
-		interruptedDrain = true
-	case <-time.After(100 * time.Millisecond):
+		t.Fatal("concurrent Close reached the underlying body while the owning drain was active")
+	default:
 	}
 	if got := sink.count(); got != 0 {
 		t.Fatalf("concurrent non-owning Close completed attempt before drain: %d", got)
@@ -278,9 +474,6 @@ func TestAPIAttemptConcurrentResponseCloseCompletesOnlyAfterOwningDrain(t *testi
 	}
 	if err := <-secondCloseDone; err != nil {
 		t.Fatalf("concurrent Close: %v", err)
-	}
-	if interruptedDrain {
-		t.Fatal("concurrent Close interrupted the owning response drain")
 	}
 	if got := sink.count(); got != 1 {
 		t.Fatalf("attempt completions = %d, want exactly 1", got)

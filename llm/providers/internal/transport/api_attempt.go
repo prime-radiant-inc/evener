@@ -2,7 +2,9 @@ package transport
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -12,10 +14,12 @@ import (
 // It is inert unless the supplied context contains an explicitly attached
 // attempt group and sink.
 type APIAttemptCapture struct {
-	attempt      *llm.APIAttempt
-	owner        llm.APIAttemptContextOwnership
-	requestBody  func() []byte
-	responseBody func() []byte
+	attempt       *llm.APIAttempt
+	owner         llm.APIAttemptContextOwnership
+	requestBody   func() []byte
+	responseBody  func() []byte
+	responseClose func() error
+	closeOnce     sync.Once
 }
 
 // Active reports whether exact response bytes need to be retained for this
@@ -46,6 +50,9 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	if c == nil {
 		return
 	}
+	if c.responseClose != nil {
+		c.closeOnce.Do(func() { _ = c.responseClose() })
+	}
 	if c.requestBody != nil {
 		c.attempt.SetRequestBody(c.requestBody())
 	}
@@ -69,4 +76,11 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 		result.FinishedAt = time.Now()
 	}
 	c.attempt.Complete(result)
+}
+
+func (c *APIAttemptCapture) bindResponseBody(body io.Closer) {
+	if c == nil || body == nil {
+		return
+	}
+	c.responseClose = body.Close
 }

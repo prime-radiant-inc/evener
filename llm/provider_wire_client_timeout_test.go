@@ -3,6 +3,7 @@ package llm_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -129,6 +130,50 @@ type lockedAttemptSink struct {
 	attempts []apilog.APIAttemptRecord
 }
 
+type streamCloseAttemptSink struct {
+	mu            sync.Mutex
+	attempts      []apilog.APIAttemptRecord
+	appendEntered chan struct{}
+	releaseAppend chan struct{}
+}
+
+func (s *streamCloseAttemptSink) AppendAttempt(_ context.Context, attempt apilog.APIAttemptRecord) error {
+	s.mu.Lock()
+	s.attempts = append(s.attempts, attempt)
+	s.mu.Unlock()
+	close(s.appendEntered)
+	<-s.releaseAppend
+	return nil
+}
+
+func (*streamCloseAttemptSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+func (s *streamCloseAttemptSink) snapshot() []apilog.APIAttemptRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
+}
+
+type streamCloseResponseBody struct {
+	readEntered chan struct{}
+	closed      chan struct{}
+	readOnce    sync.Once
+	closeOnce   sync.Once
+}
+
+func (b *streamCloseResponseBody) Read([]byte) (int, error) {
+	b.readOnce.Do(func() { close(b.readEntered) })
+	<-b.closed
+	return 0, io.EOF
+}
+
+func (b *streamCloseResponseBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
 func (s *lockedAttemptSink) AppendAttempt(_ context.Context, attempt apilog.APIAttemptRecord) error {
 	s.mu.Lock()
 	s.attempts = append(s.attempts, attempt)
@@ -144,6 +189,68 @@ func (s *lockedAttemptSink) snapshot() []apilog.APIAttemptRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
+}
+
+func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T) {
+	for _, provider := range timeoutProviders() {
+		provider := provider
+		t.Run(provider.name, func(t *testing.T) {
+			body := &streamCloseResponseBody{
+				readEntered: make(chan struct{}),
+				closed:      make(chan struct{}),
+			}
+			client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       body,
+				}, nil
+			})}
+			sink := &streamCloseAttemptSink{
+				appendEntered: make(chan struct{}),
+				releaseAppend: make(chan struct{}),
+			}
+			released := false
+			t.Cleanup(func() {
+				if !released {
+					close(sink.releaseAppend)
+				}
+			})
+			ctx := llm.WithAPIAttemptSink(
+				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_stream_close")),
+				sink,
+			)
+			stream, err := provider.new("https://provider.test", client).Stream(ctx, llm.Request{
+				Model:          "test-model",
+				Messages:       []llm.Message{llm.User("hello")},
+				AdapterTimeout: &llm.AdapterTimeout{StreamRead: time.Hour},
+			})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			<-body.readEntered
+			closeReturned := make(chan error, 1)
+			go func() { closeReturned <- stream.Close() }()
+			<-sink.appendEntered
+			select {
+			case err := <-closeReturned:
+				t.Fatalf("Stream.Close returned before canonical append: %v", err)
+			default:
+			}
+			attempts := sink.snapshot()
+			close(sink.releaseAppend)
+			released = true
+			if err := <-closeReturned; err != nil {
+				t.Fatalf("Stream.Close: %v", err)
+			}
+			if len(attempts) != 1 {
+				t.Fatalf("canonical attempts at append = %d, want exactly 1", len(attempts))
+			}
+			if got := attempts[0].Outcome; got != apilog.AttemptCallerCancel {
+				t.Fatalf("Stream.Close attempt outcome = %q, want %q", got, apilog.AttemptCallerCancel)
+			}
+		})
+	}
 }
 
 func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {

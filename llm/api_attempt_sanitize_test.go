@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -284,6 +285,33 @@ func TestClassifyAPIAttemptOutcomeNonTimeouts(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ClassifyAPIAttemptOutcome(owner, tc.status, tc.decodeErr, tc.transportErr); got != tc.want {
 				t.Fatalf("outcome = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestClassifyAPIAttemptOutcomeDoesNotInferCallerCancellationFromSyntheticEvidence(t *testing.T) {
+	owner := APIAttemptContextOwnership{Parent: context.Background(), Attempt: context.Background()}
+	for _, testCase := range []struct {
+		name         string
+		decodeErr    error
+		transportErr error
+		want         apilog.AttemptOutcomeClass
+	}{
+		{
+			name:      "decode error wraps canceled while attempt is live",
+			decodeErr: fmt.Errorf("provider decode aborted: %w", context.Canceled),
+			want:      apilog.AttemptDecodeFail,
+		},
+		{
+			name:         "transport error wraps canceled while attempt is live",
+			transportErr: fmt.Errorf("provider transport aborted: %w", context.Canceled),
+			want:         apilog.AttemptTransportFail,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, testCase.decodeErr, testCase.transportErr); got != testCase.want {
+				t.Fatalf("live-attempt outcome = %q, want %q", got, testCase.want)
 			}
 		})
 	}

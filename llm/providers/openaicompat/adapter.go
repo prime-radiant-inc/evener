@@ -315,8 +315,10 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
+	sctx, cancel := context.WithCancel(ctx)
+	httpReq, err := http.NewRequestWithContext(sctx, http.MethodPost, a.BaseURL+"/chat/completions", bytes.NewReader(jsonBody))
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	a.setChatHeaders(httpReq, req)
@@ -333,9 +335,10 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		}
 	})
 	if err != nil {
-		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, err)
+		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("openai-compatible", err)
 		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, timeoutSource, nil, err)
+		cancel()
 		return nil, returnedErr
 	}
 
@@ -356,16 +359,16 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 			ResponseBody: b,
 			Err:          returnedErr,
 		}, llm.APITimeoutNone, decodeErr, nil)
+		cancel()
 		return nil, returnedErr
 	}
 
-	sctx, cancel := context.WithCancel(ctx)
 	s := llm.NewChanStream(cancel)
 	rl := llm.ParseRateLimitHeaders(resp.Header)
 
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go a.decodeStream(sctx, resp, s, req, jsonBody, rl, attempt)
+	go a.decodeStream(sctx, cancel, resp, s, req, jsonBody, rl, attempt)
 
 	return s, nil
 }
@@ -443,9 +446,10 @@ func restampResponsesStream(inner llm.Stream) llm.Stream {
 // decodeStream consumes the Chat Completions SSE stream in its own goroutine: it
 // translates each chunk into llm stream events and emits the final accumulated
 // Response on [DONE]. It owns closing the response body and the ChanStream.
-func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, rl *llm.RateLimitInfo, attempt *transport.APIAttemptCapture) {
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte, rl *llm.RateLimitInfo, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		resp.Body.Close() //nolint:errcheck
+		cancel()
 		s.CloseSend()
 	}()
 
