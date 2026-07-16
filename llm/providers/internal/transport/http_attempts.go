@@ -262,6 +262,7 @@ func (b *apiAttemptResponseBody) Close() error {
 	}
 	b.closing = true
 	claimed := b.claimed
+	hasAdmittedRead := b.activeReads > 0
 	if b.activeReads == 0 {
 		b.readsOnce.Do(func() { close(b.readsDone) })
 	}
@@ -272,6 +273,17 @@ func (b *apiAttemptResponseBody) Close() error {
 		b.mu.Lock()
 		b.closeErr = closeErr
 		b.mu.Unlock()
+		close(b.closeDone)
+		return closeErr
+	}
+	if hasAdmittedRead {
+		closeErr := b.ReadCloser.Close()
+		<-b.readsDone
+		b.mu.Lock()
+		readErr := b.readErr
+		b.closeErr = closeErr
+		b.mu.Unlock()
+		b.completeUnclaimed(errors.Join(readErr, closeErr))
 		close(b.closeDone)
 		return closeErr
 	}

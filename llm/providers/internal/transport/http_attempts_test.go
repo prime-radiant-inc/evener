@@ -153,6 +153,40 @@ func (b *countedCloseBody) count() int {
 	return b.closeCount
 }
 
+type redirectAdmittedReadBody struct {
+	data              []byte
+	readErr           error
+	closeErr          error
+	readEntered       chan struct{}
+	closeStarted      chan struct{}
+	concurrentEntered <-chan struct{}
+	readOnce          sync.Once
+	closeOnce         sync.Once
+	mu                sync.Mutex
+	closeCount        int
+}
+
+func (b *redirectAdmittedReadBody) Read(p []byte) (int, error) {
+	b.readOnce.Do(func() { close(b.readEntered) })
+	<-b.closeStarted
+	<-b.concurrentEntered
+	return copy(p, b.data), b.readErr
+}
+
+func (b *redirectAdmittedReadBody) Close() error {
+	b.mu.Lock()
+	b.closeCount++
+	b.mu.Unlock()
+	b.closeOnce.Do(func() { close(b.closeStarted) })
+	return b.closeErr
+}
+
+func (b *redirectAdmittedReadBody) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCount
+}
+
 func (b *responseCloseActionBody) Close() error {
 	b.closeOnce.Do(func() {
 		if b.closeAction != nil {
@@ -249,6 +283,170 @@ func TestAPIAttemptResponseAssociationReleasesOnClaimAndUnclaimedCloseExactlyOnc
 				t.Fatalf("attempt completions = %d, want exactly 1", got)
 			}
 		})
+	}
+}
+
+func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) {
+	readErr := errors.New("redirect admitted read sentinel")
+	closeErr := errors.New("redirect underlying close sentinel")
+	concurrentEntered := make(chan struct{})
+	body := &redirectAdmittedReadBody{
+		data:              []byte("redirect bytes consumed by CheckRedirect"),
+		readErr:           readErr,
+		closeErr:          closeErr,
+		readEntered:       make(chan struct{}),
+		closeStarted:      make(chan struct{}),
+		concurrentEntered: concurrentEntered,
+	}
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_redirect_admitted_read")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var firstResponse *http.Response
+	var secondHopSawAppend bool
+	baseCalls := 0
+	roundTripper := &apiAttemptRoundTripper{
+		base: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+			baseCalls++
+			if baseCalls == 1 {
+				return &http.Response{
+					StatusCode:    http.StatusFound,
+					Header:        http.Header{"Location": []string{"/next"}},
+					Body:          body,
+					ContentLength: 2<<10 + 1,
+				}, nil
+			}
+			secondHopSawAppend = sink.count() == 1
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("final response")),
+			}, nil
+		}),
+		parentCtx: context.Background(),
+		build: func(*http.Request, []byte) llm.APIAttemptMeta {
+			return llm.APIAttemptMeta{ProviderInstance: "test"}
+		},
+	}
+
+	type readResult struct {
+		body []byte
+		err  error
+	}
+	checkRedirectRead := make(chan readResult, 1)
+	concurrentClose := make(chan error, 1)
+	client := &http.Client{
+		Transport: roundTripper,
+		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
+			firstResponse = request.Response
+			wrappedBody, ok := firstResponse.Body.(*apiAttemptResponseBody)
+			if !ok {
+				return errors.New("redirect response did not retain canonical attempt body")
+			}
+			wrappedBody.mu.Lock()
+			wrappedBody.waitForClose = func(done <-chan struct{}) {
+				close(concurrentEntered)
+				<-done
+			}
+			wrappedBody.mu.Unlock()
+			go func() {
+				buf := make([]byte, len(body.data))
+				n, readResponseErr := firstResponse.Body.Read(buf)
+				checkRedirectRead <- readResult{body: buf[:n], err: readResponseErr}
+			}()
+			<-body.readEntered
+			go func() {
+				<-body.closeStarted
+				concurrentClose <- firstResponse.Body.Close()
+			}()
+			return nil
+		},
+	}
+
+	type clientResult struct {
+		response *http.Response
+		err      error
+	}
+	clientDone := make(chan clientResult, 1)
+	go func() {
+		response, clientErr := client.Do(request)
+		clientDone <- clientResult{response: response, err: clientErr}
+	}()
+	deadlockGuard := time.NewTimer(5 * time.Second)
+	defer deadlockGuard.Stop()
+	var response *http.Response
+	select {
+	case result := <-clientDone:
+		response = result.response
+		if result.err != nil {
+			t.Fatalf("client.Do: %v", result.err)
+		}
+	case <-deadlockGuard.C:
+		t.Fatal("client.Do deadlocked closing a redirect response with an admitted CheckRedirect read")
+	}
+	if !secondHopSawAppend {
+		t.Fatal("second redirect hop began before the unclaimed attempt append")
+	}
+	if got := sink.count(); got != 1 {
+		t.Fatalf("attempts appended before client return = %d, want 1 redirect attempt", got)
+	}
+	read := <-checkRedirectRead
+	if !bytes.Equal(read.body, body.data) {
+		t.Fatalf("CheckRedirect read = %q, want %q", read.body, body.data)
+	}
+	if read.err != readErr {
+		t.Fatalf("CheckRedirect read error = %v, want %v", read.err, readErr)
+	}
+	if got := <-concurrentClose; got != closeErr {
+		t.Fatalf("concurrent Close error = %v, want cached %v", got, closeErr)
+	}
+	if got := body.count(); got != 1 {
+		t.Fatalf("underlying Close count = %d, want exactly 1", got)
+	}
+
+	sink.mu.Lock()
+	redirectAttempt := sink.attempts[0]
+	sink.mu.Unlock()
+	recordedBody, err := apilog.DecodeBody(redirectAttempt.Response.Body)
+	if err != nil {
+		t.Fatalf("decode redirect response body: %v", err)
+	}
+	if !bytes.Equal(recordedBody, body.data) {
+		t.Fatalf("recorded redirect body = %q, want admitted bytes %q", recordedBody, body.data)
+	}
+	if redirectAttempt.Outcome != apilog.AttemptProviderReject {
+		t.Fatalf("redirect outcome = %q, want %q", redirectAttempt.Outcome, apilog.AttemptProviderReject)
+	}
+	if want := readErr.Error() + "\n" + closeErr.Error(); redirectAttempt.ErrorMessage != want {
+		t.Fatalf("redirect error = %q, want %q", redirectAttempt.ErrorMessage, want)
+	}
+	roundTripper.mu.Lock()
+	_, firstStillAssociated := roundTripper.responses[firstResponse]
+	roundTripper.mu.Unlock()
+	if firstStillAssociated {
+		t.Fatal("redirect response association was not released")
+	}
+
+	finalAttempt := roundTripper.claimResponse(response)
+	if finalAttempt == nil {
+		t.Fatal("final response did not retain its canonical attempt")
+	}
+	_, _ = io.ReadAll(response.Body)
+	finalAttempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close final response: %v", err)
+	}
+	roundTripper.mu.Lock()
+	remainingAssociations := len(roundTripper.responses)
+	roundTripper.mu.Unlock()
+	if remainingAssociations != 0 {
+		t.Fatalf("response associations after final cleanup = %d, want 0", remainingAssociations)
 	}
 }
 
