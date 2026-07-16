@@ -1,14 +1,10 @@
-# transcript-endpoint-url: api_call entries record the HTTP endpoint URL
+# transcript-endpoint-url: API attempts record the sanitized HTTP endpoint
 
-**What this covers**: kata `v5pm` (commit `fdaf981`) + follow-up kata
-`dyph` (commit `583f593`). Before v5pm, api_call transcript entries
-recorded `provider` and `model` but no HTTP URL — making it impossible
-to confirm from the transcript alone whether an OpenAI call went to
-`https://chatgpt.com/backend-api/codex/responses` (OAuth path) vs
-`https://api.openai.com/v1/responses` (API-key path). v5pm added
-`Raw["endpoint_url"]` stamping in adapters + `EndpointURL` promotion
-in `buildLogResponse`. dyph fixed the parallel inline construction in
-`agent/session.go` that was bypassing the promotion.
+**What this covers**: the canonical API log identifies the resolved endpoint
+used for each provider transport attempt while excluding credential-bearing URL
+components. Semantic transcripts may retain compact assistant provenance, but
+provider forensics come from `sessions/<SID>.api.jsonl` or explicit
+`read_session_transcript(source=api_log)` access.
 
 ## Pre-state
 
@@ -30,26 +26,20 @@ in `buildLogResponse`. dyph fixed the parallel inline construction in
    ```
 2. Capture the `session_id` from the response.
 3. Wait ~10s for the turn to complete.
-4. Find the transcript:
-   `find ~/.local/state/serf/projects -name "<session_id>.transcript.jsonl"`.
-5. For each `api_call` line, inspect `response.endpoint_url` AND
-   `response.raw.endpoint_url`:
+4. Resolve the session with Serf's own state model and inspect its API attempts:
    ```bash
-   python3 -c "
-   import json, sys
-   for line in open('<path>'):
-       d = json.loads(line)
-       if d.get('kind') == 'api_call':
-           resp = d.get('response') or {}
-           print('top:', resp.get('endpoint_url'), 'raw:', (resp.get('raw') or {}).get('endpoint_url'))
-   "
+   APIFILE=$(serf-doctor locate <session_id> --json | jq -r '.api_log_path')
+   jq 'select(.kind == "api_attempt") | {attempt_id, attempt_group_id, attempt_index, endpoint: .request.endpoint, outcome}' "$APIFILE"
    ```
+5. Confirm the underlying `sessions/<session_id>.api.jsonl` contains one
+   `api_attempt` per transport attempt followed by the outer call's
+   `attempt_group_settlement`. Exact bodies are not needed for this scenario;
+   if inspecting one, use an explicit `read_session_transcript` attempt/body
+   expansion rather than treating transcript JSONL as provider data.
 
 ## Expected
 
-- Each api_call has BOTH `response.endpoint_url` (typed top-level
-  field, from `dyph`) AND `response.raw.endpoint_url` (the original
-  v5pm stamping inside the Raw map) populated with the same URL.
+- Each `api_attempt` has a non-empty `endpoint` naming the transport URL used.
 - For anthropic: `https://api.anthropic.com/v1/messages`.
 - For OpenAI via OAuth (ChatGPT path): the URL begins with
   `https://chatgpt.com/backend-api/codex/responses` (or whatever
@@ -60,8 +50,8 @@ in `buildLogResponse`. dyph fixed the parallel inline construction in
 - For google: `https://generativelanguage.googleapis.com/...` —
   WITHOUT the `?key=...` query param (deliberately stripped to avoid
   leaking credentials).
-- Falsification: any api_call has `response.endpoint_url == null` or
-  empty string. Either v5pm or dyph regressed.
+- Falsification: any attempt has an empty endpoint, or the URL persists a
+  credential-bearing query/userinfo value.
 
 ## Cleanup
 
@@ -70,14 +60,11 @@ in `buildLogResponse`. dyph fixed the parallel inline construction in
 
 ## Sharp edges
 
-- The `endpoint_url` is captured AFTER the call succeeds. Failed
-  turns may have it OR may not, depending on which adapter path
-  bailed and whether the synthetic error-response was built with
-  `stampEndpointURL`. Worth verifying with a known-failing model.
+- Endpoint identity belongs to the attempt, including failed attempts that
+  reached a resolved transport boundary.
 - The google adapter logs only host + path, NOT the full URL with
   query params, because Google's API key lives in the query string.
   That's a deliberate redaction — don't add a kata about "incomplete
   URL" without remembering this.
-- If you see only `response.raw.endpoint_url` but not the top-level
-  field, dyph regressed — the session.go inline construction is
-  bypassing the promotion again.
+- Group finality comes from `attempt_group_settlement`; do not infer it merely
+  because an attempt is the last record in a bounded page.

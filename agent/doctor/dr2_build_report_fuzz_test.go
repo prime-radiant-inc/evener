@@ -18,10 +18,11 @@ import (
 )
 
 // This lane fuzzes the doctor READ/BUILD path — the functions that reconstruct a
-// diagnostic view from the raw jobstore event log and the raw transcript file —
+// diagnostic view from the raw jobstore event log, semantic transcript, and
+// canonical API log —
 // as opposed to render_report_fuzz_test.go, which fuzzes the Render* formatters
 // over already-built structs. It exercises buildWatchReport/buildWatchView (over
-// fuzzed jobstore.Event logs) and APILog (over fuzzed transcript JSONL files),
+// fuzzed jobstore.Event logs) and APILog (over fuzzed canonical API-log files),
 // closing their reader-side branches. It reuses the doctor_reader byte consumer
 // and doctor_writer defined in render_report_fuzz_test.go; every new top-level
 // identifier is prefixed dr2_ to stay collision-free with parallel same-package
@@ -515,7 +516,7 @@ func FuzzDr2APILog(f *testing.F) {
 		case 4:
 			selector = "local:absent"
 		case 5:
-			body = "not-json\n" + body // a non-last unparseable line -> loadTranscript error
+			body = "not-json\n" + body // a non-last unparseable line -> API-log decode error
 		}
 		base := dr2_writeSession(t, body)
 
@@ -565,8 +566,8 @@ func FuzzDr2APILog(f *testing.F) {
 // dr2_apiSeeds authors canonical API-log files that reach attempt branches.
 func dr2_apiSeeds() [][]byte {
 	putCall := func(w *doctor_writer, family int, mode int, withErr, withResp, spike bool) {
-		w.doctor_putInt(2)      // dr2_buildTranscript arm: default -> marshaled api_call
-		w.doctor_putInt(5)      // Round
+		w.doctor_putInt(2)      // dr2_buildAPILog arm: canonical attempt
+		w.doctor_putInt(5)      // Attempt index
 		w.doctor_putInt(20)     // LatencyMs
 		w.doctor_putBool(true)  // Model present (dr2_maybeStr: one bool, no string)
 		w.doctor_putBool(true)  // Provider present
@@ -622,13 +623,13 @@ func dr2_apiSeeds() [][]byte {
 		opts(w, false, false, true, false, 10000)
 		seeds = append(seeds, w.b)
 	}
-	// A corrupt api_call line + an entry line + a healthy call — exercises the
-	// diagnostic-continue and the entry skip alongside a real row.
+	// An invalid attempt + unknown record + healthy attempt exercise strict
+	// decode errors alongside a real row.
 	{
 		w := &doctor_writer{}
 		w.doctor_putInt(3)
-		w.doctor_putInt(0) // corrupt api_call
-		w.doctor_putInt(1) // entry line
+		w.doctor_putInt(0) // invalid attempt
+		w.doctor_putInt(1) // unknown record kind
 		putCall(w, 0, 4, false, true, false)
 		opts(w, false, false, false, false, 0)
 		seeds = append(seeds, w.b)
@@ -653,14 +654,14 @@ func dr2_apiSeeds() [][]byte {
 		w.doctor_putInt(4) // mode: bad selector -> Locate error
 		seeds = append(seeds, w.b)
 	}
-	// A healthy call, then a trailing mode byte steering the corrupt-transcript
-	// error return (a non-last unparseable line makes loadTranscript fail).
+	// A healthy call, then a trailing mode byte steering the corrupt-API-log
+	// error return (a non-last unparseable line makes canonical decode fail).
 	{
 		w := &doctor_writer{}
 		w.doctor_putInt(1)
 		putCall(w, 1, 1, false, true, false)
 		opts(w, false, false, false, false, 0)
-		w.doctor_putInt(5) // mode: corrupt transcript -> loadTranscript error
+		w.doctor_putInt(5) // mode: corrupt API log -> decode error
 		seeds = append(seeds, w.b)
 	}
 

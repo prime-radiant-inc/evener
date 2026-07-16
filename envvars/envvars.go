@@ -68,7 +68,6 @@ var (
 	SERFHubSpawnedCodex             = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by serf-hub for spawned Codex app-server processes.", Visibility: Internal}
 	SERFHubToken                    = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned serf serve daemons.", Secret: true, Visibility: Internal}
 	SERFLoginHeadless               = Var{Name: "SERF_LOGIN_HEADLESS", Summary: "Overrides OpenAI login flow detection: 1 for device-code, 0 for browser.", Visibility: Public}
-	SERFLogRawHTTP                  = Var{Name: "SERF_LOG_RAW_HTTP", Summary: "Includes raw provider HTTP bodies in API logs when set to 1/true/yes/on.", Visibility: Public}
 	SERFModel                       = Var{Name: "SERF_MODEL", Summary: "Default model as provider/model when --model is omitted.", Visibility: Public}
 	SERFOpenAIResponsesContinuation = Var{Name: "SERF_OPENAI_RESPONSES_CONTINUATION", Summary: "Default OpenAI Responses continuation mode: off|auto. CLI and launch config override it.", Visibility: Public}
 	SERFProvider                    = Var{Name: "SERF_PROVIDER", Summary: "Fallback provider for llmcall when --provider and LLM_PROVIDER are unset.", Visibility: Public}
@@ -76,7 +75,7 @@ var (
 	SERFReasoningEffort             = Var{Name: "SERF_REASONING_EFFORT", Summary: "Default reasoning effort: minimal|low|medium|high|xhigh|max|none.", Visibility: Public}
 	SERFRecordAppwire               = Var{Name: "SERF_RECORD_APPWIRE", Summary: "Records raw AppWire WebSocket frames to appwire-frames.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
 	SERFRecordHTTP                  = Var{Name: "SERF_RECORD_HTTP", Summary: "Records inbound hub HTTP requests to hub-http.jsonl for fuzz-corpus harvesting when set to 1/true/yes/on; overrides SERF_FUZZ_RECORD for this recorder.", Visibility: Tooling}
-	SERFFuzzRecord                  = Var{Name: "SERF_FUZZ_RECORD", Summary: "Master switch: enables all fuzz-corpus recorders (provider, AppWire, HTTP) by default when set to 1/true/yes/on. A per-recorder var (SERF_LOG_RAW_HTTP/SERF_RECORD_APPWIRE/SERF_RECORD_HTTP) overrides it. Intended for local dev; unset everywhere else.", Visibility: Tooling}
+	SERFFuzzRecord                  = Var{Name: "SERF_FUZZ_RECORD", Summary: "Master switch: enables the AppWire and HTTP fuzz-corpus recorders by default when set to 1/true/yes/on. A per-recorder var (SERF_RECORD_APPWIRE/SERF_RECORD_HTTP) overrides it. Intended for local dev; unset everywhere else.", Visibility: Tooling}
 	SERFFuzzCaptureEnv              = Var{Name: "SERF_FUZZ_CAPTURE_ENV", Summary: "Marks a dedicated capture box so serf-fuzz-harvest --keep-values is permitted (real, unscrubbed values; local-only).", Visibility: Tooling}
 	SERFRunDir                      = Var{Name: "SERF_RUN_DIR", Summary: "Rendezvous directory passed by serf-hub to spawned daemons.", Visibility: Internal}
 	SERFSessionOrigin               = Var{Name: "SERF_SESSION_ORIGIN", Summary: "Marks a session's launch origin (e.g. \"test\" for agentic-testing runs).", Visibility: Public}
@@ -173,7 +172,6 @@ var allVars = []Var{
 	SERFHubSpawnedCodex,
 	SERFHubToken,
 	SERFLoginHeadless,
-	SERFLogRawHTTP,
 	SERFModel,
 	SERFOpenAIResponsesContinuation,
 	SERFProvider,

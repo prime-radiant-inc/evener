@@ -52,34 +52,29 @@ available to turn it off).
    SID2=$(basename "$TFILE2" .transcript.jsonl)
    echo "SID2=$SID2 (via $TFILE2)"
    ```
-3. For **both** sessions, confirm `ask_user` never appeared in any request sent to the
-   provider (the `request.tool_names`/`request.tools[]` fields the transcript's sanitized
-   `api_call` log records — `llm.APILogRequest`), and check the non-interactive prompt
-   section landed instead of the ask-user guidance. Session 1's transcript is looked up by
-   session ID directly (known from the spawn response — no working_dir grep needed):
+3. For **both** sessions, check structural calls, then inspect the exact provider request
+   explicitly. Run an audit session in the same project directory and instruct it to call
+   `read_session_transcript` on the target SID with `source=api_log`, select the target's
+   first `api_attempt`, and make a second call with that `attempt_id` plus `body=request`.
+   It must parse the expanded JSON request structurally: list the names in `tools[]`, report
+   whether `ask_user` is present, and confirm the non-interactive prompt section is present.
    ```bash
-   TFILE1=$(ls ~/.local/state/serf/projects/*/sessions/"$SID1".transcript.jsonl)
    go run ./cmd/serf-doctor transcript "$SID1" --count ask_user
    go run ./cmd/serf-doctor transcript "$SID2" --count ask_user
-   grep -c "Non-interactive mode — CRITICAL" "$TFILE1"
-   grep -c "Non-interactive mode — CRITICAL" "$TFILE2"
+   /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir1" \
+     "Audit session $SID1. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
+   /tmp/serf-ask --model openai/gpt-5.5 --dir "$tmpdir2" \
+     "Audit session $SID2. Use an explicit API-log summary and request-body expansion as described in this scenario; report the structured tools array and non-interactive prompt evidence."
    ```
 
 ## Expected
 
-- Step 3: `serf-doctor ... --count ask_user` prints `ask_user: 0 calls` for **both** sessions,
-  with **no** `(N textual mention(s) in api_call payloads, ...)` suffix — `RenderCount` only
-  appends that suffix when either count is nonzero, so its absence means the substring
-  `ask_user` never appeared anywhere in any `api_call` request payload (which includes every
-  registered tool's name and full JSON-Schema definition) across the whole session. An
-  assistant-text mention count *alone* (the model saying "I don't have that tool") would
-  still print as `0 calls  (0 ... , N in assistant text — not invocations)` and is fine —
-  only a nonzero `calls` or a nonzero *api_call payload* mention count is the regression
-  signal.
-- Both `grep -c "Non-interactive mode — CRITICAL"` calls report at least `1` — the
-  non-interactive system-prompt section (`agent/prompts/sections/non-interactive.md.tmpl`)
-  is present, confirming this is genuinely the non-interactive prompt path and not an
-  accidental interactive spawn that merely happened to skip asking.
+- Step 3: `serf-doctor ... --count ask_user` prints `ask_user: 0 calls` for **both**
+  sessions. An assistant-text mention is reported separately and is not an invocation.
+- Each explicit request-body expansion has no tool definition whose structured name is
+  `ask_user`, and does contain the non-interactive prompt section
+  (`agent/prompts/sections/non-interactive.md.tmpl`). The summary itself contains no body
+  data and states `credential_values_excluded: true`.
 - Falsification: if `ask_user` appears in the tool list of a `--non-interactive` or one-shot
   session, gating is broken.
 
@@ -107,6 +102,6 @@ rm -rf "$tmpdir1" "$tmpdir2" /tmp/serf-ask /tmp/serf-hub-ask
 - **One-shot mode never prints its session ID** on a fresh (non-`--resume`) run — the
   working-dir grep in step 2 is how an agent (or a human) locates the transcript afterward;
   don't assume `stdout` carries an ID to capture.
-- `--count` inspects the whole transcript, including turns; if you reuse a workdir/session
+- `--count` inspects the whole semantic transcript, including turns; if you reuse a workdir/session
   across multiple prompts in one debugging pass, old mentions accumulate — use a fresh
   `mktemp -d` per attempt, as done above.

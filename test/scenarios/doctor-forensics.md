@@ -6,7 +6,7 @@
 serf's own folds and types, and report the numbers a hand-parser got wrong:
 distinct deliveries after coalescing collapse, the watch self-loop verdict from
 the provenance `Chain` (not the always-present `WatchKeys` stamp), and the
-structural tool-call count vs textual mentions. (b) The `doctor` agent type
+structural tool-call count vs assistant-prose mentions. (b) The `doctor` agent type
 loads the `doctoring-serf` skill, runs the tools, and emits structured Findings
 — **healthy ⇒ zero findings**, a real defect ⇒ exactly one. The watch/provenance
 mechanics under test are produced by `job-watch-actually-monty-python-injection.md`
@@ -64,10 +64,9 @@ serf-doctor transcript $SID --count communicate
 serf-doctor transcript $SID --count delegate_send
 ```
 
-Assert `communicate` reports the real structural call count, and `delegate_send`
-reports **`0 calls`** with a non-zero "textual mention(s) in api_call payloads"
-count — the exact disambiguation `grep -c delegate_send` got wrong (it counted a
-tool list + an instruction as calls).
+Assert `communicate` reports the real structural call count and `delegate_send`
+reports **`0 calls`**. If assistant prose mentions `delegate_send`, the doctor
+reports that separately as text rather than treating it as an invocation.
 
 ### 4 — tree links parent ↔ delegate/observer across buckets
 

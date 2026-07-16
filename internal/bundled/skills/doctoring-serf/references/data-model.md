@@ -13,9 +13,10 @@ it — you should rarely open these files by hand.
 ## The big picture
 
 A serf session's durable state lives under a per-project **bucket** directory.
-Three artifacts per session:
+Up to four artifacts per session:
 
-- the **transcript** — the append-only conversation log (turns + api calls).
+- the **transcript** — the append-only semantic conversation/lifecycle log.
+- the **API log** — exact provider attempts and outer-call settlements.
 - the **meta** — session metadata (model, config, lineage, observers).
 - **jobs.jsonl** — an append-only *event log* for jobs, watches, delegates, and
   grants; the records you reason about are *folded* from it.
@@ -35,6 +36,7 @@ it was never read). Under an XDG home the layout is:
 ```
 <stateHome>/serf/projects/<bucket>/sessions/
     <SID>.transcript.jsonl      ← transcript   (flat, SID-prefixed)
+    <SID>.api.jsonl             ← API log      (flat, SID-prefixed, private)
     <SID>.meta.json             ← meta         (flat, SID-prefixed)
     <SID>/jobs.jsonl            ← jobs         (per-session SUBDIR)
 ```
@@ -42,8 +44,9 @@ it was never read). Under an XDG home the layout is:
 - The **bucket** is `hexHash(key)` where `key` is the git origin URL, or the
   working directory when there is no origin (one OR the other, not concatenated);
   `hexHash` = `hex(sha256(key)[:8])` = **16 hex chars** (`RuntimeDir` / `hexHash`).
-- **transcript and meta are flat files** named `<SID>.transcript.jsonl` /
-  `<SID>.meta.json` directly under `sessions/` (`transcriptPath`).
+- **transcript, API log, and meta are flat files** named
+  `<SID>.transcript.jsonl` / `<SID>.api.jsonl` / `<SID>.meta.json` directly
+  under `sessions/` (`transcriptPath`, `APILogPath`).
 - **jobs.jsonl is in a per-session SUBDIR**: `<bucket>/sessions/<SID>/jobs.jsonl`
   (`jobsDir` → `filepath.Join(dir, "jobs.jsonl")`). It is **not** a flat
   `<SID>.jobs.jsonl` beside the transcript — a recurring mistake.
@@ -66,9 +69,9 @@ JSONL, one record per line, discriminated by `"kind"`:
 - `"header"` (`transcript.Header`) — first line: `SessionID`, `ParentSessionID`,
   `ParentToolCallID`, `Model`, `Depth`, etc.
 - `"entry"` (`transcript.Entry{Kind, Seq, Turn}`) — one conversation turn.
-- `"api_call"` (`transcript.APICall`) — one LLM round (the request payload +
-  latency). This is **in the transcript**; it is NOT the separate per-call
-  latency log at `<state-dir>/api.jsonl` (`llm.APILogger`).
+
+No other record kind is accepted. Provider request and response records are not
+part of the transcript.
 
 A turn is `schema.Turn{Kind, Message, Timestamp, Usage}`. `Turn.Kind`
 (`schema.TurnKind`):
@@ -91,8 +94,25 @@ tool — resolve the effective name from meta rather than hard-coding it.
 
 **Read it via:** `serf-doctor transcript <selector>` (turn map / conversation
 render); `serf-doctor transcript <selector> --count <tool>` for the **structural**
-invocation count — distinct from textual mentions in api_call payloads or
-assistant prose (the `delegate_send`: 0 calls / 5 mentions disambiguation).
+invocation count — distinct from textual mentions in assistant prose.
+
+---
+
+## The API log (`apilog.APILogRecord`)
+
+`<SID>.api.jsonl` is the canonical private provider-forensics stream. Each
+completed transport attempt is appended immediately as an
+`apilog.APIAttemptRecord` (`kind: "api_attempt"`) with exact non-credential
+headers, request body, raw response body, endpoint, timing, identity, and
+outcome. Once the outer logical model call settles, an
+`apilog.APIAttemptGroupSettlement` (`kind: "attempt_group_settlement"`) records
+the final attempt and count. A clean EOF after an attempt without its settlement
+is an explicitly unsettled group; a partial tail has unknown finality.
+
+**Read it via:** `serf-doctor apilog <selector>` for attempt metadata and
+aggregates. Exact bodies require an explicit `read_session_transcript`
+`source=api_log` attempt/body expansion; ordinary transcript tools never read
+the API log. Credential values are excluded.
 
 ---
 

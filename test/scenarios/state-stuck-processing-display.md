@@ -1,68 +1,56 @@
-# state-stuck-processing-display: past session with failed turns shows "ended" not "processing"
+# state-stuck-processing-display: failed turns return the owning session to idle
 
-**What this covers**: kata `r6y9`, commit `c10b2fd`. Before the fix, a
-session whose last turn errored with `stream ended without finish event`
-(or any retryable-LLM-error path that bailed before flipping
-SessionIdle) would persist as state=active forever. The hub's
-`MethodThreadRead`/`hubThreadList` would surface it, the workspace UI
-would disable steer/send ("no active turn is available for steer"),
-and the user had no recovery path short of killing the daemon.
+**What this covers**: a recoverable provider/stream failure must finish the
+active turn boundary and return the live `serf serve` session to `idle`. The
+daemon's `/status` response is the owning source of truth. Hub readers must not
+infer failure state from transcript tails or scan the private API log to invent a
+replacement status.
 
-The fix is two-sided: agent-side flips state to SessionIdle on the
-error exit (so /status reports IDLE going forward); reader-side
-`sanitizeStaleProcessingStatus` in `cmd/serf-hub/app_rpc.go` overrides
-processing → error when the transcript tail is an api_call with a
-non-empty `Error` field.
+## Deterministic gate
 
-## Pre-state
+Run the scripted-provider contracts:
 
-- A session exists whose transcript ends with an api_call error and
-  no completed assistant turn (`session.go`'s recoverable-LLM-error
-  exit). On this dev box, session `01KRSCTTEY3176G22YNWQW847Z` under
-  `~/.local/state/serf/projects/a8758bc1dce01e5e/sessions/` fits.
-- The backing daemon for that session is NOT running (kill the PID
-  if needed; the test wants to exercise the reader-side override).
-- Hub rebuilt with `c10b2fd` (or later) and running.
+```bash
+go test ./agent -run 'TestSession_(StreamErrorReturnsSessionToIdle|ProviderAbortKeepsSessionIdle)' -count=1
+```
 
-## Steps
+The first test closes a successful stream open before any finish event and
+asserts the exhausted error path leaves `Session.State()` at `SessionIdle`. The
+second asserts the same boundary for a provider abort. These are deterministic
+Serf plumbing tests and require no provider credential or network access.
 
-1. Hit the hub `/credentials` page in a browser to set the auth
-   cookie if not already.
-2. Navigate to `/s/01KRSCTTEY3176G22YNWQW847Z` (substitute your
-   stuck-session ID).
-3. Read the status ribbon at the top of the workspace.
-4. Read the transcript area for the diagnostics.
-5. (Optional) Hit the JSON endpoint
-   `/api/threads/<id>` (or whatever the appwire-method projection is)
-   to confirm `state` is no longer `processing`.
+## Optional live check
+
+If a real `serf serve` session encounters a provider error naturally:
+
+1. Capture the SID from `GET /status` before sending input.
+2. Send the turn and wait for the request to return its error.
+3. Read `GET /status` from the same daemon again.
+4. Open the Hub workspace only after confirming the daemon response.
 
 ## Expected
 
-- Status ribbon shows `ended` (or `error` depending on hub UI label
-  mapping). Falsification: ribbon shows `processing` or `busy` — the
-  reader-side sanitization didn't fire.
-- The page is not stuck waiting for a turn; the form is interactive
-  and the send button is enabled.
-- Diagnostics from the historical failed turns are visible.
+- Both deterministic tests pass.
+- After a recoverable live failure, the owning daemon reports `state: "idle"`;
+  it does not remain `processing`.
+- Hub projections follow the owning status and keep steer/send available for a
+  subsequent turn.
+- The semantic transcript remains readable. Provider-attempt diagnostics are
+  available separately through `serf-doctor apilog <SID> --errors` or explicit
+  API-log expansion, but neither artifact determines the live state.
+
+Falsification: the daemon still reports `processing` after the failed request
+has returned, or a Hub view changes state by interpreting transcript/API-log
+contents instead of the daemon's owning status.
 
 ## Cleanup
 
-- None — read-only.
+- Shut down any daemon used for the optional live check.
 
 ## Sharp edges
 
-- **Legacy diagnostic classification (kata `96pr`, FIXED in `16e44e0`)**:
-  historical "Stream ended without finish event" diagnostics were
-  classified at emission time with `source: "serf"`. The 96pr fix
-  added a reader-side override in `diagnostics.js::classify()` that
-  re-promotes these to `source: "provider"` when the message matches
-  the now-broader provider-failure patterns. So on this session, you
-  should see TWO `Retry turn` action buttons (one per legacy
-  diagnostic) — falsification means 96pr regressed.
-- The agent-side fix (A) only affects daemons spawned AFTER the
-  commit. Daemons running pre-fix would persist `processing` in
-  /status until killed; the reader-side override (B) is what saves
-  the user-visible display.
-- If you have multiple stuck sessions, this scenario validates the
-  list-page projection too: `/` should show them with the corrected
-  state in their cards.
+- Do not manufacture a stale state by killing the daemon and then classify a
+  historical transcript. That exercises dead-process presentation, not the
+  serve-owned failure boundary this scenario specifies.
+- A provider error is not deterministic enough for the default suite. Keep the
+  scripted-provider tests as the required gate; the live check is opportunistic.

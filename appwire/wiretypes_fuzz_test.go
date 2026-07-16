@@ -65,12 +65,17 @@ var launchConfigLayerSchema = map[string]any{
 			"additionalProperties": map[string]any{"type": "string"},
 		},
 		"verbose":                   map[string]any{"type": []string{"boolean", "null"}},
-		"rawHTTPLogging":            map[string]any{"type": []string{"boolean", "null"}},
 		"traceFile":                 map[string]any{"type": "string"},
 		"cpuProfile":                map[string]any{"type": "string"},
 		"exportATIFPath":            map[string]any{"type": "string"},
 		"exportATIFProviderHandles": map[string]any{"type": "string"},
 	},
+}
+
+func TestLaunchConfigLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {
+	if _, ok := reflect.TypeOf(LaunchConfigLayer{}).FieldByName("RawHTTPLogging"); ok {
+		t.Fatal("LaunchConfigLayer still exposes the obsolete raw HTTP logging control")
+	}
 }
 
 var stringArraySchema = map[string]any{"type": "array", "items": map[string]any{"type": "string"}}

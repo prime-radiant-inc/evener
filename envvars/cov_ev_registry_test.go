@@ -59,4 +59,8 @@ func TestFind(t *testing.T) {
 	if got, ok := Find("DOES_NOT_EXIST"); ok || got != (Var{}) {
 		t.Errorf("Find(missing) = %+v, %v; want zero, false", got, ok)
 	}
+
+	if got, ok := Find("SERF_LOG_RAW_HTTP"); ok || got != (Var{}) {
+		t.Errorf("Find(obsolete raw logging control) = %+v, %v; want zero, false", got, ok)
+	}
 }

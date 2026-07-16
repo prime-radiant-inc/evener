@@ -52,8 +52,8 @@ pull-index; its `runbooks/` are your audit definitions.
   absence is not a completeness guarantee. The Chain check keys on `watch_id`
   while suppression keys on `watch_id`+`watch_generation`, so a re-arm is exactly
   the loop the Chain still catches.
-- A `delegate_send` (or any tool) name appearing in api_call payloads or
-  assistant text is **not** an invocation: `serf-doctor transcript --count
+- A `delegate_send` (or any tool) name appearing in assistant text is **not**
+  an invocation: `serf-doctor transcript --count
   delegate_send` gives the structural call count.
 - Parent, observer, and delegate sub-sessions live in **different** project-hash
   buckets. Use `serf-doctor tree --observers` to link them.

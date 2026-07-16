@@ -1,29 +1,26 @@
 # OpenAI Spend Diagnostics
 
-Serf records OpenAI API usage in two places under the Serf state directory:
-
-- `<state-dir>/sessions/<session-id>.api.jsonl`: the per-session API log written by `serf run`, `serf serve`, and the embedded TUI (side calls without a session id land in `sessions/unattributed.api.jsonl`). Older installs may also have a frozen `<state-dir>/api.jsonl` from before per-session logging; it is kept for history but never written again.
-- `<state-dir>/sessions/*.transcript.jsonl`: per-session transcripts that include `api_call` records.
-
-The analyzer reads either a single file or a directory. When given a directory,
-it recursively finds API-log files (per-session `*.api.jsonl` and any frozen `api.jsonl`) and transcript JSONL files, then
-deduplicates matching API calls that appear in both sources.
+Serf records OpenAI provider attempts in the canonical private per-session API log:
+`<state-dir>/sessions/<session-id>.api.jsonl`. Semantic transcripts do not contain
+provider attempt records or bodies. Use `serf-doctor apilog` so selectors and project
+buckets resolve through Serf's own state model.
 
 ## Quick Audit
 
 Run a per-session summary:
 
 ```sh
-tools/api-log-analyze.py ~/.local/state/serf --summary
+serf-doctor apilog <selector> --summary
 ```
 
 Look for large uncached prompt spikes:
 
 ```sh
-tools/api-log-analyze.py ~/.local/state/serf --cache-spikes --spike-threshold 50000
+serf-doctor apilog <selector> --cache-spikes --threshold 50000
 ```
 
-Use `--session <id>` with either command to narrow the audit to one session.
+`<selector>` may be a session ID or transcript ref. Add `--state-dir <path>` when
+inspecting an override/scratch state root.
 
 ## Metric Interpretation
 

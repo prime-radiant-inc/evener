@@ -89,7 +89,8 @@ func clampDim(n int) int {
 // FuzzEstimateInputTokens drives EstimateInputTokens / EstimateMessagesInputTokens
 // (and estimateMessagesInputTokens / estimateMessageInputParts) over text-only
 // requests assembled from fuzzed strings. These produce the deterministic local
-// token estimate stamped onto every api_call; only unit tests touched them.
+// token estimate used for request budgeting and context selection; only unit
+// tests touched them.
 //
 // Oracles:
 //   - the estimate is non-negative and deterministic.

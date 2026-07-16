@@ -260,7 +260,6 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", "), true},
 		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), mcpEditValue(l.MCPs), false},
 		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), "", false},
-		{"raw_http_logging", "raw_http_logging", ptrBoolStr(l.RawHTTPLogging), ptrBoolStr(l.RawHTTPLogging), false},
 		{"export_atif_provider_handles", "export_atif_provider_handles", l.ExportATIFProviderHandles, l.ExportATIFProviderHandles, false},
 	}
 }
@@ -415,12 +414,6 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.Verbose = v
-	case "raw_http_logging":
-		v, err := parseOptionalBool(value)
-		if err != nil {
-			return layer, err
-		}
-		layer.RawHTTPLogging = v
 	case "system_prompt_mode":
 		layer.SystemPromptMode = strings.TrimSpace(value)
 	case "system_prompt_file":

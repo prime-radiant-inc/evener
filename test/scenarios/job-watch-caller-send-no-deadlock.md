@@ -78,7 +78,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
   install, TOOL_RESULTS entries for all three `wedge_probe_*` shell
   calls plus a final communicate carrying `NO_WEDGE_COMPLETE_71`.
 - Falsification (the incident shape): the session never leaves the
-  active state — no new transcript appends and no new api_call entries
+  active state — no new semantic transcript entries and no new `api_attempt` records
   for >120s after a `wedge_probe` tool call. That is the deadlock back;
   capture a goroutine dump before tearing anything down (see sharp
   edges).

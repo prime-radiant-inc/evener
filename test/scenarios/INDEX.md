@@ -209,9 +209,8 @@ provider/tool behavior, not live provider credentials or network access.
 
 ## Transcript / debug
 
-- `transcript-endpoint-url.md` — api_call entries record
-  `response.endpoint_url` (typed) + `response.raw.endpoint_url`
-  (legacy) across all adapters (katas `v5pm`, `dyph`).
+- `transcript-endpoint-url.md` — canonical `api_attempt` records identify the
+  sanitized HTTP endpoint actually used across provider adapters.
 
 ### Session-transcript tools (`find_session_transcripts` / `read_session_transcript`)
 
@@ -245,10 +244,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   `subagent`, `parent_ref` set, no transcript opened), then an outline +
   range read judges whether the child actually ran the commands it claims
   (the delegation trust-but-verify loop).
-- `transcript-read-jsonl-debug-hatch.md` — `format:"jsonl"` returns raw
-  NDJSON (header + system prompt + api_call lines) with a hint to
-  re-read as markdown; asserts the agent picks markdown, not jsonl, when
-  the goal is comprehension.
+- `transcript-read-jsonl-debug-hatch.md` — `format:"jsonl"` returns bounded
+  semantic NDJSON (one header, then entries); provider attempts require an
+  explicit API-log summary and attempt/body expansion. Asserts the agent picks
+  markdown, not JSONL, when the goal is comprehension.
 - `transcript-find-scope-all-projects.md` — `scope:"all_projects"`
   (with a shared `--state-dir`, distinct `--dir`s) finds a session in a
   different project bucket; default scope misses it, the cross-bucket

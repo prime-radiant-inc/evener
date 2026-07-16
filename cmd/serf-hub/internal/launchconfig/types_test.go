@@ -1,11 +1,18 @@
 package launchconfig
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/BurntSushi/toml"
 )
+
+func TestLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {
+	if _, ok := reflect.TypeOf(Layer{}).FieldByName("RawHTTPLogging"); ok {
+		t.Fatal("launch layer still exposes the obsolete raw HTTP logging control")
+	}
+}
 
 func checkLayerTOMLRoundTrip(t *testing.T) {
 	input := `

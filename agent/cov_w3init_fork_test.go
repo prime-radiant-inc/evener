@@ -14,8 +14,9 @@ import (
 	"primeradiant.com/serf/fuzz/fault"
 )
 
-// w3init_writeOversizeLine writes a transcript file whose bytes exceed the fork
-// scanner's 10 MiB per-token buffer, so scanner.Scan reports bufio.ErrTooLong.
+// w3init_writeOversizeLine writes a transcript line beyond the fork reader's
+// 10 MiB bound, so readStrictTranscriptLine rejects it without allocating an
+// unbounded record.
 // When headerLine is empty the oversize content is the first (header) line;
 // otherwise a small header precedes the oversize entry line.
 func w3init_writeOversizeLine(t *testing.T, stateDir, id, headerLine string) {
@@ -37,8 +38,8 @@ func w3init_writeOversizeLine(t *testing.T, stateDir, id, headerLine string) {
 	}
 }
 
-// TestW3Init_ForkSession_HeaderScanError covers the header-scan error arm: the
-// first transcript line exceeds the scanner's buffer.
+// TestW3Init_ForkSession_HeaderScanError covers the bounded header-read error
+// arm: the first transcript line exceeds the configured record limit.
 func TestW3Init_ForkSession_HeaderScanError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
@@ -50,8 +51,8 @@ func TestW3Init_ForkSession_HeaderScanError(t *testing.T) {
 	}
 }
 
-// TestW3Init_ForkSession_EntryScanError covers the entry-scan error arm: an entry
-// line after a valid header exceeds the scanner's buffer.
+// TestW3Init_ForkSession_EntryScanError covers the bounded entry-read error arm:
+// an entry line after a valid header exceeds the configured record limit.
 func TestW3Init_ForkSession_EntryScanError(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()

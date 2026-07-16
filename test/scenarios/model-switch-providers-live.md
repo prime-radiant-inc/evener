@@ -58,9 +58,9 @@ no hub, no browser — so the switch path under test is exactly
   chmod 600 /tmp/msw-cfg/credentials.toml
   ```
 
-- `export SERF_PROVIDERS_CONFIG=/tmp/msw-cfg/providers.toml` and
-  `export SERF_LOG_RAW_HTTP=1` for the whole run (the raw body log is the
-  thinking-absence backstop in step 5).
+- `export SERF_PROVIDERS_CONFIG=/tmp/msw-cfg/providers.toml`. The session's
+  canonical private API log captures exact attempts whenever API logging is
+  attached; there is no separate raw-body toggle or sidecar.
 
 ## Steps
 
@@ -105,11 +105,12 @@ no hub, no browser — so the switch path under test is exactly
    `none` for the whole run by step 1's `--reasoning-effort none` launch
    flag — this HTTP surface (`POST /input`, `/model`, `/status`) has **no**
    mid-session effort RPC, so there is nothing to toggle per leg and no
-   effort call to make here. Inspect `sessions/<SID>.api-raw.jsonl`'s last
-   `request_body` for this leg — assert it carries **no** `thinking` key
-   (the default `sessions/<SID>.api.jsonl` records metadata only, no
-   bodies — `llm/apilog.go:176-197` — so the raw log is the only file that
-   can prove this on the wire).
+   effort call to make here. In the next idle turn, call
+   `read_session_transcript` on the current session with `source=api_log`,
+   identify this leg's `api_attempt`, then make a separate call with that
+   `attempt_id` and `body=request`. Assert the exact expanded request carries
+   **no** `thinking` key. The summary alone exposes byte counts, not body data;
+   credentials remain excluded.
 
 6. **Same-provider anthropic-family model hop.** `POST /model
    {"model":"anthropic/claude-sonnet-4-5"}` (or any second catalogued model
@@ -136,7 +137,7 @@ no hub, no browser — so the switch path under test is exactly
   switch RPC returns — falsification: the ladder stays pinned to the old
   model until the next turn re-derives it (a G2-class staleness regression;
   see `server/appwire_runtime.go` / `UpdateSessionInfo`).
-- Step 5's raw request body for the anthropic-family kimi leg under
+- Step 5's explicitly expanded request body for the anthropic-family kimi leg under
   effort=none has no `thinking` key — falsification: a `thinking` object is
   present despite effort=none (regression in the effort→thinking wiring);
   Task 6's unit matrix in `agent/session_replay_provenance_test.go` is the
@@ -198,9 +199,9 @@ partner).
   attempt (via `serf serve` and via a one-shot CLI invocation identical in
   shape to `reasoning-effort-providers.md`'s pattern) returned `kimi error
   (status=400): tool_choice 'required' is incompatible with thinking
-  enabled` — but the raw request body captured via `SERF_LOG_RAW_HTTP=1`
-  carries `"tool_choice":{"type":"any"}` and **no** `thinking` key at all
-  (confirmed by inspecting `api-raw.jsonl`). Kimi's coding-plan backend is
+  enabled` — but the then-current optional raw sidecar captured a request body
+  carrying `"tool_choice":{"type":"any"}` and **no** `thinking` key at all.
+  Kimi's coding-plan backend is
   defaulting extended thinking on server-side even when the client sends no
   `thinking` object and effort is `none`; `llm/providers/anthropic/request.go`'s
   downgrade guard (lines 174-183) only fires when serf itself sets

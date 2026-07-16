@@ -113,20 +113,11 @@ Idle/Ended).
   will not *notice* this — step 2's all-rows query is written specifically to catch it. Found
   live in this run; same root cause as the TUI gap above (`AskPending` only set on the
   `needs_you` `TreeNode`s in `cmd/serf-hub/internal/hubcore/tree.go`).
-- **Forcing `errored` live could not be verified in this pass.** The wire `errored` state is
-  produced either by the hub's dead-daemon reader sanitization
-  (`cmd/serf-hub/app_threadlist.go`'s `sanitizeStaleProcessingStatus` +
-  `hubcore.WedgedStatus`) or by the live `AttentionWatcher`'s stale-active probe
-  (`hubcore.StaleActives` / `ApplyWedgeOverride`, gated on `StallThreshold` = 3 minutes of
-  continuous "working" *and* a transcript tail that is an `api_call` with a non-empty `Error`
-  field) — both require a genuine unrecoverable LLM-stream failure recorded on disk, which
-  isn't something this session could reliably trigger against a real provider on demand (a bad
-  model name is rejected at spawn time before a session even exists, per `hub_launch`'s model
-  gate). The word/icon mapping itself is deterministically pinned regardless:
-  `hubapi.TestStateWord` (`hubapi/attention_test.go`) asserts `StateWord("errored", ...) ==
-  "Error"`; `hubcore.TestApplyWedgeOverrideMovesWorkingToErrorConsistently` and
-  `TestWedgedStatusFlipsOnFailedAPICallTail` (`cmd/serf-hub/internal/hubcore/wedge_test.go`)
-  pin the mechanism that produces it; `sidebar.js`'s `STATE_WORDS`/`stateIconKey` and
-  `serf-tui`'s `stateColor`/`attentionRankLabel` switches both include the `errored`/`"Error"`
-  case (confirmed by source read, not live execution). Re-run step 4 live once a reliable
-  error-injection harness exists.
+- **Forcing `errored` live could not be verified in this pass.** A bad model name is rejected
+  at spawn time before a session exists, so it is not a reliable state-transition fixture.
+  Do not substitute transcript-tail or API-log heuristics: the owning runtime state is the
+  source of truth. The word/icon mapping itself remains deterministically pinned by
+  `hubapi.TestStateWord` (`hubapi/attention_test.go`), while
+  `TestSession_StreamErrorReturnsSessionToIdle` proves recoverable provider failures return
+  the live session to `idle`. Re-run step 4 live once a deterministic owning-state error
+  injection exists.

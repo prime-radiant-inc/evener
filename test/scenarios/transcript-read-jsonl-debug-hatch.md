@@ -38,14 +38,14 @@ API-log fixtures and do not require provider credentials or network access.
 3. **Session B - exercise each forensic lane explicitly:**
    ```bash
    /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
-     "Find the earlier OK session in this project. First call read_session_transcript on it with format=jsonl. Confirm every non-empty line is a JSON object, list the record kinds, and report whether any system_prompt field or api_call record appears. Second call read_session_transcript on the same ref with source=api_log and report credential_values_excluded, record count, attempt IDs, outcomes, and request/response byte counts; do not claim body data is present in the summary. Third pick one returned attempt_id and call read_session_transcript with that attempt_id plus body=request. Report the body encoding, bytes_returned, total_bytes, and continuation handle if present. Finally, if your goal were to understand what the session did, state which transcript format you would use and why."
+     "Find the earlier OK session in this project. First call read_session_transcript on it with format=jsonl. Confirm every non-empty line is a JSON object and that the grammar is exactly one header followed only by entries, with no system_prompt field or provider request/response record. Second call read_session_transcript on the same ref with source=api_log and report credential_values_excluded, record count, attempt IDs, outcomes, and request/response byte counts; do not claim body data is present in the summary. Third pick one returned attempt_id and call read_session_transcript with that attempt_id plus body=request. Report the body encoding, bytes_returned, total_bytes, and continuation handle if present. Finally, if your goal were to understand what the session did, state which transcript format you would use and why."
    ```
 
 ## Expected
 
 - The JSONL call returns `content_type: application/x-ndjson` and valid
   newline-delimited objects whose kinds are only `header` and `entry`.
-  `system_prompt` and `api_call` are absent. `meta.hint` identifies the data as
+  `system_prompt` and provider request/response records are absent. `meta.hint` identifies the data as
   semantic, points provider forensics to `source=api_log`, and recommends
   markdown for comprehension.
 - The explicit API-log summary returns bounded metadata with
@@ -61,7 +61,7 @@ API-log fixtures and do not require provider credentials or network access.
 Falsification:
 
 - A default/JSONL transcript read touches or exposes the API log.
-- JSONL exposes `system_prompt`, `api_call`, or any provider request/response
+- JSONL exposes `system_prompt` or any provider request/response
   body.
 - An API summary contains a body `data` field, omits the credential-exclusion
   disclosure, exceeds its bounds, or fabricates settlement/finality from a

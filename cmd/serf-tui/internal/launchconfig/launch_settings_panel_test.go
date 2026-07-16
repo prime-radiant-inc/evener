@@ -248,10 +248,6 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verbose: %v", err)
 	}
-	got, err = applyEdit(got, "raw_http_logging", "true")
-	if err != nil {
-		t.Fatalf("raw_http_logging: %v", err)
-	}
 	got, err = applyEdit(got, "openai_responses_continuation", " auto ")
 	if err != nil {
 		t.Fatalf("openai_responses_continuation: %v", err)
@@ -272,8 +268,15 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export_atif_provider_handles: %v", err)
 	}
-	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.RawHTTPLogging == nil || !*got.RawHTTPLogging || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile != filepath.Join(dir, "cpu.pprof") || got.ExportATIFPath != filepath.Join(dir, "out.atif.json") || got.ExportATIFProviderHandles != "raw-local" {
+	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.OpenAIResponsesContinuation != "auto" || got.TraceFile != trace || got.CPUProfile != filepath.Join(dir, "cpu.pprof") || got.ExportATIFPath != filepath.Join(dir, "out.atif.json") || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("updated layer=%+v", got)
+	}
+}
+
+func TestApplyEditRejectsObsoleteRawHTTPLogging(t *testing.T) {
+	_, err := applyEdit(appwire.LaunchConfigLayer{}, "raw_http_logging", "true")
+	if err == nil {
+		t.Fatal("obsolete raw HTTP logging control was accepted")
 	}
 }
 

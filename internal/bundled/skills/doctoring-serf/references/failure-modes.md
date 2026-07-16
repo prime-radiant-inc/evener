@@ -60,15 +60,13 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 
 ### Textual mention counted as a call
 - **Symptom:** "the agent called `delegate_send` 5 times" — but it never did.
-- **What it is:** the tool **name appears as text** (a tool list in an `api_call`
-  request, or a "do not call delegate_send" instruction in assistant prose) — not
-  a structural invocation.
+- **What it is:** the tool **name appears as text** in assistant prose — not a
+  structural invocation.
 - **Confirm:** `serf-doctor transcript <sel> --count delegate_send` →
-  `delegate_send: 0 calls (5 textual mention(s) in api_call payloads, 1 in
-  assistant text — not invocations)`.
+  `delegate_send: 0 calls (1 textual mention(s) in assistant text — not invocations)`.
 - **Mechanics:** a real call is a content part with `Kind == llm.ContentToolCall`
   and `ToolCall.Name == <tool>` (`writeAssistantContent`'s predicate). Substring
-  hits in `api_call` lines / `llm.ContentText` are mentions, tracked separately.
+  hits in assistant `llm.ContentText` are mentions, tracked separately.
 
 ### Guessed-the-shape zeros
 - **Symptom:** a hand parser reports `0 communicate calls` / `0 steering entries`
@@ -111,7 +109,7 @@ and be honest where `serf-doctor` cannot yet confirm one directly.
 | A coordinator stops reacting ("deaf coordinator"); turns stall | the agent loop is wedged or a watch-outbox drain stalled (`docs/architecture.md` level-by-level coordinator / single-hop forwarding) | `serf-doctor transcript <sel> --format outline` (last turns) + `serf-doctor watches <sel>` (undrained pending); root-cause is partly live-only — say so |
 | A job shows `runtime_lost` / `supervision_lost` | the runtime supervising the job vanished (`docs/job-control.md` status×reason) | the `JobRecord` status/reason via the jobs log (a future `serf-doctor jobs` view; today, `serf-doctor locate` + read the record) |
 | A hook blocked or failed a tool | `hook_blocked` / `hook_failed` (`docs/hooks.md`) | not yet a `serf-doctor` view — read the transcript turn; emit category `hook_blocked`/`hook_failed` |
-| A provider error stalled a call | `provider_error` (`docs/llm-providers.md`) | the `api_call` line's `error`/`source` (`transcript.APICall`); `serf-doctor transcript` surfaces the turn, not yet the api_call error detail — say so |
+| A provider error stalled a call | `provider_error` (`docs/llm-providers.md`) | `serf-doctor apilog <sel> --errors` reads canonical attempt outcomes; correlate its `attempt_group_id` with semantic turn provenance |
 
 Where a shape has no first-class `serf-doctor` confirm path yet, that gap is a
 candidate for the next subcommand or runbook — note it in the Finding rather than

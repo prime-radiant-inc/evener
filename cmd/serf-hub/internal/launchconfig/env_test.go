@@ -2,8 +2,6 @@ package launchconfig
 
 import (
 	"testing"
-
-	"primeradiant.com/serf/envvars"
 )
 
 type stubCreds struct {
@@ -116,41 +114,12 @@ func checkToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
 	}
 }
 
-func checkToEnv_RawHTTPLoggingSetsRawLogEnv(t *testing.T) {
+func checkToEnv_DoesNotIntroduceObsoleteRawHTTPLogging(t *testing.T) {
 	got := envSliceToMap(ToEnv(EnvInputs{
-		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(true)}},
-		ParentEnv: []string{
-			"PATH=/usr/bin",
-			envvars.SERFLogRawHTTP.Assignment("0"),
-		},
+		ParentEnv: []string{"PATH=/usr/bin"},
 	}))
-	if got[envvars.SERFLogRawHTTP.Name] != "1" {
-		t.Fatalf("%s = %q, want 1", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
-	}
-}
-
-func checkToEnv_RawHTTPLoggingFalseOverridesInheritedEnv(t *testing.T) {
-	got := envSliceToMap(ToEnv(EnvInputs{
-		Resolved: Resolved{Effective: Layer{RawHTTPLogging: ptrBool(false)}},
-		ParentEnv: []string{
-			"PATH=/usr/bin",
-			envvars.SERFLogRawHTTP.Assignment("1"),
-		},
-	}))
-	if got[envvars.SERFLogRawHTTP.Name] != "0" {
-		t.Fatalf("%s = %q, want 0", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
-	}
-}
-
-func checkToEnv_RawHTTPLoggingUnsetPreservesInheritedEnv(t *testing.T) {
-	got := envSliceToMap(ToEnv(EnvInputs{
-		ParentEnv: []string{
-			"PATH=/usr/bin",
-			envvars.SERFLogRawHTTP.Assignment("1"),
-		},
-	}))
-	if got[envvars.SERFLogRawHTTP.Name] != "1" {
-		t.Fatalf("%s = %q, want inherited value", envvars.SERFLogRawHTTP.Name, got[envvars.SERFLogRawHTTP.Name])
+	if _, ok := got["SERF_LOG_RAW_HTTP"]; ok {
+		t.Fatal("child environment unexpectedly introduced the obsolete raw HTTP logging control")
 	}
 }
 

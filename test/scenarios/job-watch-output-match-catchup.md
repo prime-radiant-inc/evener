@@ -114,8 +114,8 @@ Phase 5.2.
 
 - Turn 1's attach must complete before the +30s LEVEL_TOKEN_C print or
   the attach scan absorbs C and the two fires blur. A three-tool-call
-  turn fits comfortably in 30s; if the model dawdled (check api_call
-  timestamps), rerun with a longer pre-C sleep rather than weakening
+  turn fits comfortably in 30s; if the model dawdled (check `api_attempt`
+  timestamps in `sessions/<SID>.api.jsonl`), rerun with a longer pre-C sleep rather than weakening
   the cardinality assertion.
 - Fires that happen mid-turn queue and deliver as a notification turn
   right after the input ends — the attach-scan notification appears

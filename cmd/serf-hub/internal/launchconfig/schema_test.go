@@ -21,7 +21,7 @@ func checkLaunchOptionSchema_FieldCoverage(t *testing.T) {
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",
 		"model_fallbacks", "env",
 		"sandbox", "sandbox_net",
-		"verbose", "raw_http_logging", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
+		"verbose", "trace_file", "cpu_profile", "export_atif_path", "export_atif_provider_handles",
 	}
 	wantSet := map[string]bool{}
 	for _, field := range want {
@@ -172,36 +172,9 @@ func checkLaunchOptionSchema_Sandbox(t *testing.T) {
 	}
 }
 
-func checkLaunchOptionSchema_RawHTTPLoggingIsDebugLaunchSetting(t *testing.T) {
-	opts := LaunchOptionSchema()
-	idx := indexOption(opts, "raw_http_logging")
-	if idx < 0 {
-		t.Fatal("schema missing raw_http_logging")
-	}
-	opt := opts[idx]
-	if opt.WireField != "rawHTTPLogging" {
-		t.Fatalf("WireField = %q, want rawHTTPLogging", opt.WireField)
-	}
-	if opt.Group != LaunchGroupDebugLogging {
-		t.Fatalf("Group = %q, want %q", opt.Group, LaunchGroupDebugLogging)
-	}
-	if opt.Kind != LaunchControlBoolean {
-		t.Fatalf("Kind = %q, want %q", opt.Kind, LaunchControlBoolean)
-	}
-	if !opt.PerLaunch || !opt.DebugOnly {
-		t.Fatalf("PerLaunch/DebugOnly = %v/%v, want true/true", opt.PerLaunch, opt.DebugOnly)
-	}
-	wantLayers := []LaunchLayerSupport{LaunchLayerGlobal, LaunchLayerProject, LaunchLayerLaunch}
-	if len(opt.DefaultableLayers) != len(wantLayers) {
-		t.Fatalf("DefaultableLayers = %v, want %v", opt.DefaultableLayers, wantLayers)
-	}
-	for i := range wantLayers {
-		if opt.DefaultableLayers[i] != wantLayers[i] {
-			t.Fatalf("DefaultableLayers = %v, want %v", opt.DefaultableLayers, wantLayers)
-		}
-	}
-	if opt.EnvFallback == nil || opt.EnvFallback.Name != envvars.SERFLogRawHTTP.Name || opt.EnvFallback.Secret {
-		t.Fatalf("EnvFallback = %+v, want public %s", opt.EnvFallback, envvars.SERFLogRawHTTP.Name)
+func checkLaunchOptionSchema_OmitsObsoleteRawHTTPLogging(t *testing.T) {
+	if indexOption(LaunchOptionSchema(), "raw_http_logging") >= 0 {
+		t.Fatal("launch schema still exposes the obsolete raw HTTP logging control")
 	}
 }
 

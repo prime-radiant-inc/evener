@@ -10,7 +10,7 @@
 #
 # Each task runs in its own throwaway working directory (so the agent's file ops
 # can't collide or escape), but all runs share one --state-dir so their
-# recordings (api-raw.jsonl, transcripts, jobs, appwire/http frames) accumulate
+# recordings (canonical per-session API logs, transcripts, jobs, appwire/http frames) accumulate
 # for a single harvest pass.
 #
 # This makes LIVE provider calls — it costs money and can rate-limit. Use the
@@ -96,7 +96,10 @@ fi
 mkdir -p "$state_dir" || die "cannot create state dir $state_dir"
 
 [ -d "$tasks_dir" ] || die "tasks dir not found: $tasks_dir"
-mapfile -t tasks < <(find "$tasks_dir" -maxdepth 1 -type f \( -name '*.txt' -o -name '*.md' \) | sort)
+tasks=()
+while IFS= read -r task_path; do
+	tasks+=("$task_path")
+done < <(find "$tasks_dir" -maxdepth 1 -type f \( -name '*.txt' -o -name '*.md' \) | sort)
 [ "${#tasks[@]}" -gt 0 ] || die "no task files (*.txt/*.md) in $tasks_dir"
 
 # Build serf once if not provided, so every run uses current code.
@@ -172,7 +175,12 @@ note "drive complete: $total run(s), $ok ok, $failed failed"
 [ -n "$skipped_provider" ] && note "skipped (config/auth):$skipped_provider"
 
 # Record-size proxy for cost/volume (exact token accounting is in the run logs).
-for f in api-raw.jsonl appwire-frames.jsonl hub-http.jsonl; do
+api_lines=0
+while IFS= read -r -d '' f; do
+	api_lines=$((api_lines + $(wc -l <"$f")))
+done < <(find "$state_dir" -type f -path '*/sessions/*.api.jsonl' -print0)
+[ "$api_lines" -gt 0 ] && note "recorded $api_lines line(s) in recursive sessions/*.api.jsonl"
+for f in appwire-frames.jsonl hub-http.jsonl; do
 	[ -f "$state_dir/$f" ] && note "recorded $(wc -l <"$state_dir/$f") line(s) in $f"
 done
 
@@ -199,7 +207,10 @@ if ! ( cd "$repo_root" && "${harvest_cmd[@]}" \
 fi
 
 # --- new seeds? --------------------------------------------------------------
-mapfile -t new_seeds < <(cd "$repo_root" && git status --porcelain | grep -E 'testdata/fuzz/' | awk '{print $NF}')
+new_seeds=()
+while IFS= read -r seed_path; do
+	new_seeds+=("$seed_path")
+done < <(cd "$repo_root" && git status --porcelain | grep -E 'testdata/fuzz/' | awk '{print $NF}')
 if [ "${#new_seeds[@]}" -eq 0 ]; then
 	note "harvest added no new seeds (corpus already covers this traffic)"
 	exit 0

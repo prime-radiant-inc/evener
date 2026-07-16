@@ -4475,8 +4475,8 @@ func contentKinds(parts []llm.ContentPart) []string {
 }
 
 // TestAdapter_Complete_StampsEndpointURL_ResponsesPath verifies that the
-// /v1/responses URL the adapter actually dialed is stashed on resp.Raw so the
-// APILogger can promote it to the api_call transcript.
+// /v1/responses URL the adapter actually dialed is stashed on resp.Raw so
+// semantic assistant provenance identifies the endpoint that produced it.
 func TestAdapter_Complete_StampsEndpointURL_ResponsesPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {

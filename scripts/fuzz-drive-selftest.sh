@@ -20,6 +20,7 @@ bad() { checks=$((checks + 1)); fails=$((fails + 1)); printf 'FAIL: %s\n' "$1"; 
 # the stub binaries; echoes its path. Each scenario gets a fresh one.
 new_repo() {
 	local r; r="$(mktemp -d "${TMPDIR:-/tmp}/fuzz-drive-test.XXXXXX")"
+	r="$(cd "$r" && pwd -P)"
 	mkdir -p "$r/scripts" "$r/fuzz/drive-tasks" "$r/bin"
 	cp "$script" "$r/scripts/fuzz-drive.sh"
 	printf 'normal task one\n' >"$r/fuzz/drive-tasks/01-a.txt"
@@ -39,7 +40,21 @@ if printf '%s' "\$task" | grep -q TRANSIENT; then
   n=\$(cat "$r/transient.n" 2>/dev/null || echo 0); echo \$((n+1)) >"$r/transient.n"
   if [ "\$n" -eq 0 ]; then echo "Error: 429 rate limit exceeded" >&2; exit 1; fi
 fi
-printf 'data: {"x":1}\n\n' >>"\${SERF_STATE_DIR}/api-raw.jsonl"
+mkdir -p "\${SERF_STATE_DIR}/sessions"
+api_n=\$(cat "$r/api.n" 2>/dev/null || echo 0)
+echo \$((api_n + 1)) >"$r/api.n"
+case "\$api_n" in
+  0) attempt_id=att_033qf9WcGLGlrSVZglpqB5 ;;
+  1) attempt_id=att_033qfDtMj2RIqof9P1q6HP ;;
+  2) attempt_id=att_033qfF8sghfZ8fcdn4r0nT ;;
+  3) attempt_id=att_033qfF9KTFqAlaJCRVsGk7 ;;
+  *) echo "self-test API attempt ID pool exhausted" >&2; exit 1 ;;
+esac
+attempt_group_id="ag_fuzz_drive_stub_\$api_n"
+cat >"\${SERF_STATE_DIR}/sessions/stub-\$api_n.api.jsonl" <<APILOG
+{"kind":"api_attempt","schema_version":1,"attempt_id":"\$attempt_id","attempt_group_id":"\$attempt_group_id","attempt_index":1,"timestamp":"2026-07-16T00:00:00Z","latency_ms":1,"provider_instance":"stub","request_model":"stub-model","request":{"method":"POST","endpoint":"https://provider.test/v1/stream","body":{"encoding":"utf8","data":"{}","byte_count":2}},"response":{"status_code":200,"body":{"encoding":"utf8","data":"data: {\"x\":1}\n\n","byte_count":15},"text_length":0,"tool_call_count":0},"outcome":"success"}
+{"kind":"attempt_group_settlement","schema_version":1,"attempt_group_id":"\$attempt_group_id","final_attempt_id":"\$attempt_id","final_attempt_count":1,"outcome":"success","settled_at":"2026-07-16T00:00:00Z"}
+APILOG
 exit 0
 STUB
 	# harvest stub: records its args; writes a fake new seed so git sees a change.
@@ -77,6 +92,13 @@ run_drive "$r" --providers "openai/gpt-5.4-mini"; rc=$?
 n=$(grep -c RECORD= "$r/serf-invocations.log" 2>/dev/null)
 [ "$n" -eq 2 ] && ok "drove 2 runs" || bad "ran $n times, want 2"
 grep -q 'RECORD=1 STATE=' "$r/serf-invocations.log" && ok "recording on (SERF_FUZZ_RECORD=1 + state dir)" || bad "recorder env not set"
+state_dir=$(sed -n 's/^fuzz-drive: state dir: //p' "$r/drive.err" | head -1)
+api_logs=("$state_dir"/sessions/*.api.jsonl)
+[ "${#api_logs[@]}" -eq 2 ] && ok "canonical per-session API attempts recorded" || bad "canonical API logs missing"
+api_lines=0
+for api_log in "${api_logs[@]}"; do api_lines=$((api_lines + $(wc -l <"$api_log"))); done
+[ "$api_lines" -eq 4 ] && ok "one attempt and settlement per driven session" || bad "canonical API logs have $api_lines lines, want 4"
+grep -q '"kind":"api_attempt"' "${api_logs[0]}" && grep -q '"kind":"attempt_group_settlement"' "${api_logs[0]}" && ok "attempt and settlement records present" || bad "canonical API record kinds missing"
 distinct=$(awk '{print $3}' "$r/serf-invocations.log" | sort -u | wc -l)
 [ "$distinct" -eq 2 ] && ok "isolated cwd per run" || bad "cwd not isolated ($distinct distinct)"
 [ -f "$r/harvest-invocations.log" ] && ok "harvest invoked" || bad "harvest not invoked"

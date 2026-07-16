@@ -263,7 +263,6 @@ func FuzzCmdutilScenarioReplay(f *testing.F) {
 			{"load-custom-gateway", TestLoadProviderConfig_NoTypeEnvKeyForCustomGateways},
 			{"list-models", TestListModelsFunc},
 			{"api-jsonl", TestAttachAPILoggerWritesAPIJSONL},
-			{"api-raw", TestAttachAPILoggerEnablesRawWhenProcessEnvSet},
 			{"max-rounds", TestMaxRoundsToConfig},
 			{"reasoning", TestResolveReasoningEffort},
 			{"model-cli", TestResolveModelRef_QualifiedModelSuppliesProvider},

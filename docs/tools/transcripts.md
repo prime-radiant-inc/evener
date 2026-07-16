@@ -33,11 +33,12 @@ mutated.
 
 ## Core concepts
 
-**Transcript.** One append-only `.transcript.jsonl` per session: a header line, then one
-line per *entry* (a turn), with `api_call` log lines interleaved. Immutable once written.
+**Transcript.** One append-only `.transcript.jsonl` per session: exactly one v2 header,
+then one semantic *entry* per turn. Provider requests and responses are never transcript
+records. Immutable once written.
 
 **Turn number.** The addressing unit across both tools. A 0-based index over *entry*
-lines only (header and `api_call` lines do not advance it). It is what every tool emits
+lines (the header does not advance it). It is what every tool emits
 and accepts — outline lines, markdown headings, `range`, `expand_turn` — so they compose
 without translation. (Internally this is a derived index, not the on-disk line counter;
 that counter is never shown to the agent.)
@@ -122,14 +123,19 @@ Views one session at one of three verbosities, selected by `format`.
 | Param | Applies to | Meaning |
 |-------|-----------|---------|
 | `transcript_ref` | all | ref / bare id / omitted = current session |
-| `format` | — | `outline` \| `markdown` (default) \| `jsonl` |
-| `range` | all formats | turn-number window (below); omit for the default last 40 |
-| `expand_turn` | markdown | a `Turn N` whose tool results to render in full; omit for none |
+| `source` | all | `transcript` (default) or explicit private `api_log` |
+| `format` | transcript | `outline` \| `markdown` (default) \| `jsonl` |
+| `range` | transcript/API summary | turn or API-record window; defaults to last 40 turns or last 20 API records |
+| `expand_turn` | transcript markdown | a `Turn N` whose exact result evidence to expand |
+| `attempt_id` | API log | one explicit attempt; implies `source=api_log` |
+| `body` | API attempt | `request` or `response`; requires `attempt_id` |
+| `offset_bytes` | expansion | continuation byte offset |
+| `max_bytes` | expansion | defaults to 16 KiB; hard maximum 64 KiB |
 
 Registered `strict:false`, so every parameter is optional. The three formats are one
-escalating ladder — outline to see the shape, markdown to read it, jsonl to replay it —
+escalating ladder — outline to see the shape, markdown to read it, JSONL to inspect its structure —
 and each returns the same envelope skeleton (`transcript_ref`, `format`, `content`,
-format-specific `meta`).
+format-specific `meta`). API-log reads use a separate bounded record envelope.
 
 **`range` grammar** (over `Turn` numbers, length = `turns_total`):
 
@@ -203,20 +209,35 @@ Rendering rules:
   shown call"** section with an honest note — the call is outside the range, or absent after
   a historical repair; not corruption.
 
-### `format: "jsonl"` — replay it (debug hatch)
+### `format: "jsonl"` — inspect the semantic format (debug hatch)
 
-The verbatim JSONL lines for the range — header plus interleaved `api_call` lines,
-including the system prompt and raw API records. It is **noisy and rarely what you want**:
-reserved for byte-exact replay or for debugging the transcript format itself. For
-comprehension, use markdown. Bounded only by the 200k hard cap (head-only, valid NDJSON).
+The bounded transcript-v2 JSONL for the range: one header followed only by semantic
+entries. It contains neither the system prompt nor provider request/response records.
+This is rarely what you want: reserve it for debugging transcript structure. For
+comprehension, use markdown; for provider forensics, explicitly select `source=api_log`.
 
 ```
 { "transcript_ref", "format":"jsonl", "content_type":"application/x-ndjson",
   "content": "<raw lines>",
   "meta": { "lines_returned", "truncated", "skipped_corrupt_lines",
-            "hint":"raw NDJSON; for comprehension, re-read with format=markdown.",
+            "hint":"semantic transcript JSONL; for comprehension, re-read with format=markdown.",
             "range_warning"? } }
 ```
+
+### `source: "api_log"` — explicit provider forensics
+
+When API logging is attached, `<session-id>.api.jsonl` is the private exact-attempt log.
+Each completed transport attempt is appended as `api_attempt`; after the outer model call
+settles, an `attempt_group_settlement` records final attempt identity, count, and outcome.
+A crash between those appends leaves a readable attempt whose group is truthfully
+unsettled.
+
+The default API-log read returns at most the last 20 records (100 maximum and 64 KiB
+serialized output). Summaries include attempt/group identity, endpoint, outcome, timing,
+usage, and body encoding/byte counts, but not body data. Every result states
+`credential_values_excluded:true`. Exact request or response bytes require `attempt_id`
+plus `body`; expansions are byte-paged with a continuation handle. Transcript reads never
+open this file.
 
 ## Truncation and size budgets (markdown)
 

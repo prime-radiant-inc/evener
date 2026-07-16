@@ -50,7 +50,8 @@ Every round of `processOneInput()` emits a `ROUND_TIMINGS` event with per-phase 
 | `LoopOverhead` | Loop detection, steering drain, task reminders |
 | `TotalRound` | Wall clock for the entire round |
 
-In `--verbose` mode, these appear as NDJSON events on stderr. To extract from transcripts, use the API log timestamps to compute inter-call gaps.
+In `--verbose` mode, these appear as NDJSON events on stderr. For provider timing,
+use the canonical API log independently of the semantic transcript.
 
 ## Synthetic Benchmark
 
@@ -80,13 +81,16 @@ inert old state; remove it manually when it is no longer needed.
 
 ### API log timing
 
-Every LLM call is logged per session to `<state-dir>/sessions/<session-id>.api.jsonl` with latency:
+Every provider attempt is logged per session to
+`<state-dir>/sessions/<session-id>.api.jsonl` with latency. Settlement records do
+not carry `latency_ms`, so select attempts explicitly:
 
 ```bash
 # Total LLM time vs wall clock
 python3 -c "
 import json
-calls = [json.loads(l) for l in open('state/sessions/SESSION_ID.api.jsonl')]
+records = [json.loads(line) for line in open('state/sessions/SESSION_ID.api.jsonl')]
+calls = [record for record in records if record.get('kind') == 'api_attempt']
 total_ms = sum(c['latency_ms'] for c in calls)
 print(f'API calls: {len(calls)}')
 print(f'LLM time:  {total_ms/1000:.1f}s')
@@ -143,7 +147,7 @@ With current optimizations, expect ~30ms/round of pure framework overhead.
 | `LoadProjectDocs` per round | `git rev-parse` subprocess every round | Cached at session init |
 | `maybeAutoSave` | Full history JSON (MBs, `MarshalIndent`) every round | 500-byte meta JSON |
 | Transcript fsync | `file.Sync()` per write (3-6/round) | Periodic (1s interval) |
-| API log fsync | `file.Sync()` per write | Periodic (2s interval) |
+| API log durability | exact attempts and settlements | Synchronous append/sync before retry, fallback, or return |
 | Tool definitions | Rebuilt every round | Cached, two lists for MinResultRound gate |
 | System prompt components | Rebuilt every round | Cached at init |
 | History copies | 3x per round | 1x per round |

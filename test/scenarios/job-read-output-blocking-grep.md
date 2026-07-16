@@ -32,8 +32,8 @@ rules. Executed by plan Phase 5.2.
    >    full JSON verbatim.
    > 3. End your turn.
 3. Clock the step-2 tool round: wall clock externally, or afterwards
-   via the gap between the consecutive api_call timestamps that
-   bracket it in the transcript JSONL. The token prints ~20s after the
+   via the gap between consecutive `api_attempt` timestamps that
+   bracket it in `sessions/<SID>.api.jsonl`. The token prints ~20s after the
    job starts.
 4. Turn 2 — entry check (new user prompt):
 
@@ -87,8 +87,8 @@ rules. Executed by plan Phase 5.2.
 
 - Model thinking time inflates every wall-clock measure by seconds;
   the margins (10s vs 30s, ~5s vs a 60s bound) absorb that. When
-  external clocking is too coarse, the api_call timestamps in the
-  transcript JSONL bracket each tool round exactly.
+  external clocking is too coarse, canonical `api_attempt` timestamps
+  bracket each tool round.
 - One bounded-wait call per arm, by design — `max_wait_ms` with grep
   must not become a polling loop (contract anti-pattern). The card
   issues exactly three.

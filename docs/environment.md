@@ -13,7 +13,6 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `SERF_HUB_BIN` | Path to the `serf-hub` binary used by `serf-tui` autostart. |
 | `SERF_HUB_EDITOR_URL_TEMPLATE` | Open-in-editor URL template; use `{path}` for the encoded path. |
 | `SERF_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
-| `SERF_LOG_RAW_HTTP` | Includes raw provider HTTP bodies in API logs when set to `1`, `true`, `yes`, or `on`. |
 | `SERF_MODEL` | Default model as `provider/model` when `--model` is omitted. |
 | `SERF_OPENAI_RESPONSES_CONTINUATION` | Default OpenAI Responses continuation mode: `off` or `auto`. The default is `off`; `--openai-responses-continuation` and hub launch settings override it. On resume, an explicit launch value layers over the persisted session snapshot. `auto` is reserved for future continuation enablement and may allow provider-side storage/retention and affect provider-token/cost behavior. |
 | `SERF_PROVIDER` | Fallback provider for `llmcall` when `--provider` and `LLM_PROVIDER` are unset. |
@@ -107,6 +106,6 @@ process environments.
 | `SERF_FLUENCY_MODEL` | Default model for the tool-fluency development harness. |
 | `SERF_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `SERF_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
-| `SERF_FUZZ_RECORD` | Master switch enabling all fuzz-corpus recorders (provider `api-raw.jsonl`, AppWire frames, hub HTTP) by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`SERF_LOG_RAW_HTTP`/`SERF_RECORD_APPWIRE`/`SERF_RECORD_HTTP`) overrides it. Intended for local dev; unset everywhere else, so recording is off by default in shipped binaries, CI, and production. |
+| `SERF_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`SERF_RECORD_APPWIRE`/`SERF_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
 | `SERF_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `serf-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal `~/.serf` source. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

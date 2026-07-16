@@ -13,7 +13,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	// Layer "project": app_replay_size is excluded because it is only defaultable in "global".
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("project-layer fields=%v, want %v", fields, want)
 	}
@@ -23,7 +23,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	// mode must use DefaultableLayers, not PerLaunch, to include this field.
 	rows = launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerGlobal, launchSchemaRowsSettings)
 	fields = rowFields(rows)
-	wantGlobal := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "app_replay_size", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
+	wantGlobal := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "app_replay_size", "system_prompt_file", "mcps", "verbose", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, wantGlobal) {
 		t.Fatalf("global-layer fields=%v, want %v", fields, wantGlobal)
 	}
@@ -33,7 +33,7 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "raw_http_logging", "export_atif_provider_handles"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "openai_responses_continuation", "system_prompt_file", "mcps", "verbose", "export_atif_provider_handles"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -79,20 +79,6 @@ func TestSchemaRows_MCPsExposeEditableRows(t *testing.T) {
 	}
 	if rows[0].editValue != `[{"name":"docs","command":"sh","args":["-c","docs"]},{"name":"files","command":"/bin/sh","args":null}]` {
 		t.Fatalf("row.editValue=%q, want serialized MCP rows", rows[0].editValue)
-	}
-}
-
-func TestSchemaRows_RawHTTPLoggingUsesBooleanDisplay(t *testing.T) {
-	schema := []appwire.LaunchOption{
-		{Field: "raw_http_logging", Label: "Raw HTTP logging", Kind: "boolean", DefaultableLayers: []string{"global"}, PerLaunch: true},
-	}
-	rawHTTPLogging := true
-	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{RawHTTPLogging: &rawHTTPLogging}, launchLayerGlobal, launchSchemaRowsSettings)
-	if len(rows) != 1 {
-		t.Fatalf("rows=%+v, want one raw_http_logging row", rows)
-	}
-	if rows[0].value != "true" || rows[0].editValue != "true" {
-		t.Fatalf("row=%+v, want true boolean display", rows[0])
 	}
 }
 
@@ -143,7 +129,6 @@ func testLaunchSchema() []appwire.LaunchOption {
 		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "verbose", Label: "Verbose event log", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
-		{Field: "raw_http_logging", Label: "Raw HTTP logging", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
 		{Field: "export_atif_provider_handles", Label: "ATIF provider handles", Kind: "select", DefaultableLayers: all, PerLaunch: true},
 	}
 }

@@ -28,7 +28,7 @@ import (
 // truncation + seq recovery) machinery with zero real-disk dependency in the
 // mem lane.
 //
-// The fuzzed bytes decode into an op sequence. Every payload (turn, api_call,
+// The fuzzed bytes decode into an op sequence. Every payload (semantic turn
 // and any raw tail-corruption fragment used to exercise OpenWriter's partial
 // line recovery) is built deterministically from the fuzz bytes and fed
 // IDENTICALLY to both lanes, so equal programs marshal equal bytes; the oracle

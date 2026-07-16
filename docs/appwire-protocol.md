@@ -492,7 +492,6 @@ _(no fields)_
 | `mcps` | `[]appwire.MCPServerSpec` | yes |  |
 | `env` | `map[string]string` | yes |  |
 | `verbose` | `*bool` | yes |  |
-| `rawHTTPLogging` | `*bool` | yes |  |
 | `traceFile` | `string` | yes |  |
 | `cpuProfile` | `string` | yes |  |
 | `exportATIFPath` | `string` | yes |  |

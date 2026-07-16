@@ -9,7 +9,6 @@
 /.serf/prompts/
 /.serf/launch.local.toml
 # Raw, unscrubbed fuzz-corpus recordings (SERF_FUZZ_RECORD); only scrubbed seeds are committed.
-/.serf/api-raw.jsonl
 /.serf/appwire-frames.jsonl
 /.serf/hub-http.jsonl
 /.build/

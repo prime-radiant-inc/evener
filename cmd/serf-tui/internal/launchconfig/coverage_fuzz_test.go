@@ -111,7 +111,6 @@ func exerciseLaunchConfigCoverage(t *testing.T) {
 	TestSchemaRows_PathFieldsRequestCompletion(t)
 	TestSchemaRows_ModelFallbacksDistinguishesUnsetAndExplicitEmpty(t)
 	TestSchemaRows_MCPsExposeEditableRows(t)
-	TestSchemaRows_RawHTTPLoggingUsesBooleanDisplay(t)
 	TestSchemaRows_OpenAIResponsesContinuationUsesStringDisplay(t)
 	TestSchemaRows_ExportATIFProviderHandlesUsesStringDisplay(t)
 
@@ -369,7 +368,7 @@ func exerciseApplyEditBranches(t *testing.T) {
 		{"agent", "x"}, {"context_strategy", "x"}, {"openai_responses_continuation", "x"},
 		{"export_atif_provider_handles", "x"}, {"max_subagent_depth", "bad"}, {"app_replay_size", "bad"},
 		{"max_subagent_depth", "2"}, {"app_replay_size", "2"},
-		{"no_project_prompts", "bad"}, {"no_project_prompts", "true"}, {"sandbox_net", "bad"}, {"sandbox_net", "true"}, {"raw_http_logging", "bad"},
+		{"no_project_prompts", "bad"}, {"no_project_prompts", "true"}, {"sandbox_net", "bad"}, {"sandbox_net", "true"},
 		{"system_prompt_mode", "x"}, {"system_prompt_file", file}, {"system_prompt_append_mode", "x"},
 		{"system_prompt_append_file", file}, {"system_prompt_append_file", "(default)"}, {"system_prompt_append_text", "(default)"},
 		{"trace_file", filepath.Join(dir, "trace")}, {"cpu_profile", filepath.Join(dir, "cpu")},
@@ -380,9 +379,8 @@ func exerciseApplyEditBranches(t *testing.T) {
 		_, _ = applyEdit(appwire.LaunchConfigLayer{}, tc.field, tc.value)
 	}
 	i := 1
-	f := false
 	tr := true
-	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i, NoProjectPrompts: &tr, RawHTTPLogging: &f})
+	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i, NoProjectPrompts: &tr})
 	originalMarshal := marshalMCPEditSpecs
 	marshalMCPEditSpecs = func([]mcpEditSpec) ([]byte, error) { return nil, errors.New("x") }
 	_ = mcpEditValue([]appwire.MCPServerSpec{{Name: "x"}})

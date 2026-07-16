@@ -21,12 +21,12 @@ import (
 // Appending the path fields keeps the existing index-addressed seeds valid.
 var applyEditFields = []string{
 	"max_rounds", "max_subagent_depth", "app_replay_size", // 0,1,2
-	"no_project_prompts", "verbose", "raw_http_logging", // 3,4,5
-	"mcps", "env", "model_fallbacks", // 6,7,8
-	"model", "reasoning_effort", "system_prompt_text", // 9,10,11
-	"skills_dirs", "plugin_dirs", "mcp_configs", // 12,13,14
-	"trace_file", "cpu_profile", "export_atif_path", // 15,16,17
-	"system_prompt_file", "system_prompt_append_file", // 18,19
+	"no_project_prompts", "verbose", // 3,4
+	"mcps", "env", "model_fallbacks", // 5,6,7
+	"model", "reasoning_effort", "system_prompt_text", // 8,9,10
+	"skills_dirs", "plugin_dirs", "mcp_configs", // 11,12,13
+	"trace_file", "cpu_profile", "export_atif_path", // 14,15,16
+	"system_prompt_file", "system_prompt_append_file", // 17,18
 }
 
 // fuzzApplyEditCoverage is installed by the serffuzz-only coverage union.

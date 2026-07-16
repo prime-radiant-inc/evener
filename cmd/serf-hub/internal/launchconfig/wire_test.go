@@ -110,7 +110,6 @@ func checkToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 
 func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	verbose := true
-	rawHTTPLogging := true
 	nonInteractive := true
 	in := Layer{
 		SystemPromptMode:          "inline",
@@ -119,7 +118,6 @@ func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 		SystemPromptAppendFile:    "/append.md",
 		NonInteractive:            &nonInteractive,
 		Verbose:                   &verbose,
-		RawHTTPLogging:            &rawHTTPLogging,
 		TraceFile:                 "/trace",
 		CPUProfile:                "/cpu",
 		ExportATIFPath:            "/atif",
@@ -134,9 +132,6 @@ func checkWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	}
 	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" || got.ExportATIFProviderHandles != "raw-local" {
 		t.Fatalf("debug round trip = %#v", got)
-	}
-	if got.RawHTTPLogging == nil || *got.RawHTTPLogging != true {
-		t.Fatalf("raw_http_logging round trip = %#v", got.RawHTTPLogging)
 	}
 }
 

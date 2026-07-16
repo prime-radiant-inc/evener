@@ -256,7 +256,7 @@ traffic** into each target's `testdata/fuzz/<FuzzName>/` (Go auto-loads it under
 
 | Surface | Source | Targets |
 |---|---|---|
-| `sse` | `api-raw.jsonl` stream bodies (needs `SERF_LOG_RAW_HTTP=1` when the traffic flows) | `FuzzParseSSE` + the matching provider metamorphic decoder |
+| `sse` | canonical `sessions/*.api.jsonl` `api_attempt` response bodies | `FuzzParseSSE` + the matching provider metamorphic decoder |
 | `toolargs` | transcript tool-call args (always recorded) | `FuzzToolArgsValidate` |
 | `appwire` | `appwire-frames.jsonl` (needs `SERF_RECORD_APPWIRE=1`) | `FuzzMessageDecode`, `FuzzMethodParams` |
 | `http` | `hub-http.jsonl` (needs `SERF_RECORD_HTTP=1`) | `FuzzWebHandler` (GET routes reverse-mapped) |
@@ -281,7 +281,7 @@ quarantine under `--keep-values`) drops any leaking seed and fails the run.
 `SERF_FUZZ_CAPTURE_ENV=1` marks a dedicated capture box, and is forced off for a
 personal `~/.serf` source.
 
-### The recorders (opt-in, default off)
+### The opt-in recorders
 
 AppWire frames and inbound hub HTTP requests are not written to disk in normal
 operation. Two default-off recorders capture them for harvesting, with **no
@@ -291,8 +291,10 @@ behavior change** when their env var is unset:
   in `appwire.WSTransport`).
 - `SERF_RECORD_HTTP=1` → `<HubStateRoot>/hub-http.jsonl` (hub HTTP middleware).
 
-These logs hold raw, unscrubbed bytes (like `api-raw.jsonl`) and are **never
-committed**; scrubbing happens only in the harvester.
+These recorder logs hold raw, unscrubbed bytes and are **never committed**;
+scrubbing happens only in the harvester. Canonical per-session API logs also
+contain exact provider request/response bodies and must receive the same private
+handling; their recording is independent of these fuzz-recorder switches.
 
 ## Secret scanning (gitleaks)
 
