@@ -219,6 +219,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
+	if readErr != nil {
+		return llm.Response{}, readErr
+	}
+	if jsonErr != nil {
+		return llm.Response{}, jsonErr
+	}
 
 	r := fromGeminiResponse(raw, req.Model)
 	llm.StampEndpointURL(&r, endpoint)

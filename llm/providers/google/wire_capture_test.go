@@ -15,7 +15,8 @@ import (
 )
 
 type wireCaptureSink struct {
-	attempts []apilog.APIAttemptRecord
+	attempts    []apilog.APIAttemptRecord
+	settlements []apilog.APIAttemptGroupSettlement
 }
 
 func TestStreamWireCaptureRecordsExactAttemptBeforeFinish(t *testing.T) {
@@ -90,8 +91,35 @@ func (s *wireCaptureSink) AppendAttempt(_ context.Context, record apilog.APIAtte
 	return nil
 }
 
-func (*wireCaptureSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+func (s *wireCaptureSink) AppendSettlement(_ context.Context, settlement apilog.APIAttemptGroupSettlement) error {
+	s.settlements = append(s.settlements, settlement)
 	return nil
+}
+
+func TestCompleteMalformed2xxReturnsDecodeFailureAndSettlesNonSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"candidates":`)
+	}))
+	t.Cleanup(server.Close)
+
+	adapter := &Adapter{APIKey: "test-key", BaseURL: server.URL, Client: server.Client()}
+	sink := &wireCaptureSink{}
+	group := llm.NewAPIAttemptGroup("ag_google_malformed_2xx")
+	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), group), sink)
+
+	_, err := adapter.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hello")}})
+	if err == nil {
+		t.Fatal("Complete accepted malformed 2xx response")
+	}
+	group.SettleResult(ctx, err)
+	if len(sink.attempts) != 1 || sink.attempts[0].Outcome != apilog.AttemptDecodeFail {
+		t.Fatalf("canonical attempts = %+v, want one response_decoding_failure", sink.attempts)
+	}
+	if len(sink.settlements) != 1 || sink.settlements[0].Outcome != apilog.AttemptDecodeFail {
+		t.Fatalf("canonical settlements = %+v, want one response_decoding_failure", sink.settlements)
+	}
 }
 
 func TestCompleteWireCaptureRecordsExactCredentialFreeAttempt(t *testing.T) {

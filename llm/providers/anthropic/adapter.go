@@ -211,6 +211,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
+	if readErr != nil {
+		return llm.Response{}, readErr
+	}
+	if jsonErr != nil {
+		return llm.Response{}, jsonErr
+	}
 
 	r := fromAnthropicResponse(raw, req.Model)
 	llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
