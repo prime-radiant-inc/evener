@@ -111,6 +111,20 @@ This is project 5 and assumes the delegate-budget truthfulness, transcript/API-l
 - Modify: `envvars/envvars_test.go`
 - Modify: `docs/environment.md`
 
+- [ ] **Step 0: Capture the pre-project base commit**
+
+```bash
+base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+if git show-ref --verify --quiet "$base_ref"; then
+  echo "ref already exists; inspect it before resuming: $base_ref" >&2
+  exit 1
+fi
+git update-ref "$base_ref" HEAD
+git rev-parse "$base_ref"
+```
+
+Use this ref for every whole-project diff and review range. Do not replace it with `HEAD~N`; task review fixes may add commits.
+
 **Interfaces:**
 - Consumes: `os.TempDir`, the existing `serf-sandbox-` reserved prefix, and the existing 24-hour best-effort sweep.
 - Produces:
@@ -1389,7 +1403,8 @@ Expected: PASS with no live-provider or network calls.
 - [ ] **Step 2: Run static scope-lock audits**
 
 ```bash
-IMPLEMENTATION_BASE="$(git rev-parse HEAD~6)"
+base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+IMPLEMENTATION_BASE="$(git rev-parse "$base_ref")"
 git diff --unified=0 "$IMPLEMENTATION_BASE"..HEAD -- agent envvars docs/environment.md | \
   rg -n 'protected_paths|automatic.*worktree|auto.*compact|cycle detector|HOME=' || true
 git diff --unified=0 "$IMPLEMENTATION_BASE"..HEAD -- agent envvars docs/environment.md | \
@@ -1410,7 +1425,7 @@ Expected:
 - No files under Superpowers code/skills/prompts changed; only this implementation plan lives under `docs/superpowers/plans`.
 - Pre-existing untracked files remain unmodified and unstaged.
 
-`HEAD~6` is the commit immediately before the six task commits specified above. If an implementer intentionally made more than one scoped commit for a task, replace the derived value with that run's recorded pre-Task-1 commit before interpreting the audit; do not widen the range to unrelated branch history.
+The private base ref is the authoritative commit immediately before this project. Do not derive the range from a task or commit count.
 
 - [ ] **Step 3: Run the repository gate**
 
@@ -1423,7 +1438,8 @@ Expected: PASS. A provider credential by itself causes no live request; all new 
 - [ ] **Step 4: Inspect final diff for exact exclusions and accidental churn**
 
 ```bash
-IMPLEMENTATION_BASE="$(git rev-parse HEAD~6)"
+base_ref=refs/serf-plan-bases/session-scratch-orchestration-posture
+IMPLEMENTATION_BASE="$(git rev-parse "$base_ref")"
 git diff --check
 git diff --check "$IMPLEMENTATION_BASE"..HEAD
 git diff --name-only "$IMPLEMENTATION_BASE"..HEAD

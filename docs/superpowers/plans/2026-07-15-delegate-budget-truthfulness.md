@@ -100,6 +100,20 @@ This spec does not:
 - Test: `agent/session_budget_test.go`
 - Test: `agent/session_dod_definition_test.go`
 
+- [ ] **Step 0: Capture the pre-project base commit**
+
+```bash
+base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+if git show-ref --verify --quiet "$base_ref"; then
+  echo "ref already exists; inspect it before resuming: $base_ref" >&2
+  exit 1
+fi
+git update-ref "$base_ref" HEAD
+git rev-parse "$base_ref"
+```
+
+Use this ref for every whole-project diff and review range. Do not replace it with `HEAD~N`; task review fixes may add commits.
+
 - [ ] **Step 1: Re-read the test policy and verify the worktree boundary**
 
 Run:
@@ -1143,7 +1157,8 @@ Expected: one UI-projection commit with no unrelated paths staged.
 Run:
 
 ```bash
-git diff HEAD~5 -- agent/subagents.go agent/session_config.go agent/session_goal.go agent/session_lifecycle.go
+base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+git diff "$base_ref"..HEAD -- agent/subagents.go agent/session_config.go agent/session_goal.go agent/session_lifecycle.go
 rg -n 'MaxTurns:[[:space:]]*500|MaxTurns[[:space:]]*=[[:space:]]*500' agent
 rg -n 'Goal.*Limit|MaxGoal|retry' agent/session_goal.go agent/session_lifecycle.go agent/session_config.go
 ```
@@ -1178,8 +1193,9 @@ Run:
 ```bash
 git status --short
 git diff --check
-git diff --stat HEAD~5
-git diff HEAD~5 -- . ':(exclude)docs/superpowers/specs/2026-07-15-delegate-budget-truthfulness-design.md'
+base_ref=refs/serf-plan-bases/delegate-budget-truthfulness
+git diff --stat "$base_ref"..HEAD
+git diff "$base_ref"..HEAD -- . ':(exclude)docs/superpowers/specs/2026-07-15-delegate-budget-truthfulness-design.md'
 rg -n 'StatusExhausted|SubagentExhausted|ExhaustionBudget|ExhaustionLimit|turn_budget_exhausted|tool_round_budget_exhausted' agent appwire internal server cmd
 rg -n 'Superpowers|automatic escalation|reslic|compatib' agent appwire internal server cmd
 ```

@@ -86,6 +86,20 @@ Project 2 deletes `transcript.APICall`, `appendModelAPICallFunc`, `llm.AdapterAt
 - Modify: `tools/tool-fluency/cmd/serf-fluency/main.go`
 - Modify: `tools/tool-fluency/cmd/serf-fluency/coverage_program_fuzz_test.go`
 
+- [ ] **Step 0: Capture the pre-project base commit**
+
+```bash
+base_ref=refs/serf-plan-bases/agent-model-selection-correctness
+if git show-ref --verify --quiet "$base_ref"; then
+  echo "ref already exists; inspect it before resuming: $base_ref" >&2
+  exit 1
+fi
+git update-ref "$base_ref" HEAD
+git rev-parse "$base_ref"
+```
+
+Use this ref for every whole-project diff and review range. Do not replace it with `HEAD~N`; task review fixes may add commits.
+
 **Interfaces:**
 - Consumes: `(*Session).resolveProfileForRef(base *provider.Profile, ref string) (*provider.Profile, bool, error)`, `(*llm.Client).ListModels(context.Context, string) ([]llm.ModelInfo, error)`, `llm.EmbeddedModelCatalog() *llm.ModelCatalog`, `llm.NormalizeReasoningEffort(string) string`, and `llm.ClampReasoningEffort(string, []string) string`.
 - Produces:
@@ -1422,8 +1436,9 @@ Expected: `gofmt` is clean, `git diff --check` prints nothing, and the suite pas
 Run:
 
 ```bash
-git diff --name-only HEAD~4..HEAD
-git diff HEAD~4..HEAD -- docs/superpowers/specs docs/superpowers/plans agent/internal/tool appwire cmd/serf-hub cmd/serf-tui
+base_ref=refs/serf-plan-bases/agent-model-selection-correctness
+git diff --name-only "$base_ref"..HEAD
+git diff "$base_ref"..HEAD -- docs/superpowers/specs docs/superpowers/plans agent/internal/tool appwire cmd/serf-hub cmd/serf-tui
 rg -n 'Complete\(|Stream\(' agent/model_selection.go
 rg -n 'fallback|price|latency|risk|escalat' agent/model_selection.go agent/subagents.go
 rg -n 'ProviderNames\(' agent/model_selection.go agent/subagents.go cmdutil/load_client.go cmd/serf/run.go cmd/serf/serve.go tools/tool-fluency/cmd/serf-fluency/main.go
