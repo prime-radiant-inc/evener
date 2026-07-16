@@ -143,11 +143,9 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 		t.Fatalf("first input: %v", err)
 	}
 
-	// Second input hits the turn limit but returns nil error.
+	// Second input hits the configured turn limit.
 	_, err = sess.ProcessInput(ctx, "second", nil)
-	if err != nil {
-		t.Fatalf("turn limit should return nil error, got %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 
 	if got := sess.State(); got != SessionIdle {
 		t.Fatalf("state after MaxTurns: got %q want %q", got, SessionIdle)

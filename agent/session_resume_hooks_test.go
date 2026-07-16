@@ -327,9 +327,8 @@ func TestRestoreSessionMaxTurnsRejectedUserInputKeepsPendingResumeHooks(t *testi
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "rejected by max turns", nil); err != nil {
-		t.Fatalf("MaxTurns-rejected ProcessInput returned error: %v", err)
-	}
+	_, err := sess.ProcessInput(ctx, "rejected by max turns", nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 	if got := len(adapter.Requests()); got != 0 {
 		t.Fatalf("adapter requests after MaxTurns rejection = %d, want 0", got)
 	}

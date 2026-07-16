@@ -593,8 +593,8 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	}
 }
 
-// kata ztne: when MaxToolRoundsPerInput is reached, processOneInput falls
-// out of the run loop and returns nil error. The deferred flush must run.
+// kata ztne: when MaxToolRoundsPerInput is reached, processOneInput returns
+// typed exhaustion. The deferred flush must run.
 // With MaxToolRoundsPerInput=1, after one round the loop exits without ever
 // hitting the happy-path autosave at the end of the round (no communicate
 // delivery). meta.json must still reflect the bumped modelResponses.
@@ -644,9 +644,8 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi", nil); err != nil {
-		t.Fatalf("ProcessInput (max-rounds exit): %v", err)
-	}
+	_, err = sess.ProcessInput(ctx, "hi", nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 1, true)
 	sessID := sess.ID()
 	sess.Close()
 

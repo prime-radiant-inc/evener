@@ -261,15 +261,16 @@ func rttRunDirect(t *testing.T, sess *Session, adapter *agenttest.ScriptedAdapte
 	// The second input proves both sides of the MaxTurns gate and that a drained
 	// resume hook cannot run a second time after its first accepted delivery.
 	out, err = sess.ProcessInput(context.Background(), "RTH_SECOND_INPUT", nil)
-	if err != nil {
-		t.Fatalf("second ProcessInput: %v", err)
-	}
 	requests = rttModelRequests(adapter.Requests())
 	if program.maxTurns == 1 {
+		requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 		if out != "" || len(requests) != 1 {
 			t.Fatalf("MaxTurns=1 accepted a second model turn: output=%q requests=%d", out, len(requests))
 		}
 		return
+	}
+	if err != nil {
+		t.Fatalf("second ProcessInput: %v", err)
 	}
 	if !strings.Contains(out, rttDone) || len(requests) != 2 {
 		t.Fatalf("unlimited/2-turn session second output=%q requests=%d, want another model turn", out, len(requests))

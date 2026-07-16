@@ -25,12 +25,14 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel string          `json:"cheap_model,omitempty"`
-	Config     ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo    EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt  time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt  time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount  int             `json:"turn_count"` // number of user-input turns processed
+	CheapModel               string          `json:"cheap_model,omitempty"`
+	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt                time.Time       `json:"updated_at"` // last time the meta was written
+	TurnCount                int             `json:"turn_count"` // number of model responses processed
+	AcceptedInputTurns       int             `json:"accepted_input_turns,omitempty"`
+	TurnBudgetWarningEmitted bool            `json:"turn_budget_warning_emitted,omitempty"`
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`

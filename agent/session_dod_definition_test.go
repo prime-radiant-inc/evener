@@ -40,8 +40,11 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 		}
 		return llm.Response{
 			Message: llm.Message{
-				Role:    llm.RoleAssistant,
-				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Text: "partial " + id},
+					{Kind: llm.ContentToolCall, ToolCall: &call},
+				},
 			},
 		}
 	}
@@ -63,9 +66,10 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err = sess.ProcessInput(ctx, "loop", nil)
-	if err != nil {
-		t.Fatalf("round limit should return nil error, got %v", err)
+	out, err := sess.ProcessInput(ctx, "loop", nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 2, true)
+	if out != "partial 2" {
+		t.Fatalf("round limit output = %q, want final assistant text %q", out, "partial 2")
 	}
 	sess.Close()
 
@@ -112,9 +116,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err = sess.ProcessInput(ctx, "loop", nil)
-	if err != nil {
-		t.Fatalf("round limit should return nil error, got %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 2, true)
 	sess.Close()
 
 	turnLimit := false
@@ -439,11 +441,9 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 		t.Fatalf("expected first input to succeed, got %v", err)
 	}
 
-	// Second input should hit the turn limit but return nil error.
+	// Second input should hit the turn limit and return typed exhaustion.
 	_, err = sess.ProcessInput(ctx, "second input", nil)
-	if err != nil {
-		t.Fatalf("turn limit should return nil error, got %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 	sess.Close()
 
 	turnLimit := false
@@ -2310,11 +2310,9 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second input: %v", err)
 	}
-	// Third input (turn 3): should hit limit but return nil error
+	// Third input (turn 3): should hit the configured lifetime limit.
 	_, err = sess.ProcessInput(context.Background(), "third", nil)
-	if err != nil {
-		t.Fatalf("turn limit should return nil error, got: %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 2, false)
 }
 
 func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
@@ -3647,8 +3645,8 @@ func TestDetectLoop_Patterns(t *testing.T) {
 	}
 }
 
-// GAP-2.16: Round limit returns nil error and accumulated text (not an error).
-func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
+// GAP-2.16: Round limit returns typed exhaustion and preserves partial text.
+func TestSession_RoundLimit_ReturnsTypedErrorAndPartialOutput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3695,9 +3693,10 @@ func TestSession_RoundLimit_ReturnsNilError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = sess.ProcessInput(ctx, "loop", nil)
-	if err != nil {
-		t.Fatalf("round limit should return nil error, got: %v", err)
+	out, err := sess.ProcessInput(ctx, "loop", nil)
+	requireBudgetExhaustion(t, err, exhaustedBudgetToolRounds, 2, true)
+	if out != "round two" {
+		t.Fatalf("round limit output = %q, want %q", out, "round two")
 	}
 }
 
@@ -3747,16 +3746,13 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 		t.Fatalf("second input should succeed: %v", err)
 	}
 
-	// Turn 3 should be blocked (turns=3 >= MaxTurns=2).
+	// Turn 3 should be rejected (turns=2 >= MaxTurns=2).
 	_, err = sess.ProcessInput(ctx, "third", nil)
-	// Under GAP-2.04, the turn limit returns nil error, not an error.
-	if err != nil {
-		t.Fatalf("turn limit should return nil error, got: %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 2, false)
 }
 
-// GAP-2.04: Turn limit returns nil error (not an error).
-func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
+// GAP-2.04: Turn limit returns typed, non-resumable exhaustion.
+func TestSession_TurnLimit_ReturnsTypedError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -3792,11 +3788,9 @@ func TestSession_TurnLimit_ReturnsNilError(t *testing.T) {
 		t.Fatalf("first input should succeed: %v", err)
 	}
 
-	// Turn 2 should be blocked but return nil error.
+	// Turn 2 should be rejected with typed exhaustion.
 	_, err = sess.ProcessInput(ctx, "second", nil)
-	if err != nil {
-		t.Fatalf("turn limit should return nil error, got: %v", err)
-	}
+	requireBudgetExhaustion(t, err, exhaustedBudgetTurns, 1, false)
 }
 func TestSession_SetsGenerousRequestTimeout(t *testing.T) {
 	t.Parallel()

@@ -88,7 +88,8 @@ type Session struct {
 	// (TaskStore.mu — note it may be SHARED with child sessions when
 	// ShareTasksWithChildren is set), and transcript (transcript.Writer.mu).
 	//
-	// mu guards: history, state, closing, turns, modelResponses, totalRounds,
+	// mu guards: history, state, closing, turns, turnBudgetWarningEmitted,
+	//   modelResponses, totalRounds,
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
 	//   env (swapped here; read via currentEnv()), envInfo (swapped alongside
 	//   env so the two never observe a torn intermediate state), the mutable
@@ -161,6 +162,7 @@ type Session struct {
 	state                         SessionState
 	closing                       bool
 	turns                         int       // user input count (for MaxTurns enforcement)
+	turnBudgetWarningEmitted      bool      // five-turn warning has been queued or recovered from history
 	modelResponses                int       // LLM round-trip count (for meta.json turn_count)
 	createdAt                     time.Time // stamped once at construction/restore; Meta() reads it rather than re-stamping "now" on every call
 	workMillis                    int64     // accumulated wall-clock work time across turns; seeded from SessionMeta on restore, mapped out via Meta()

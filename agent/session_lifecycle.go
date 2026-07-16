@@ -662,9 +662,11 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			}
 			// The drain-loop gate below is unreachable on an error return, so a
 			// goal that is still active when the turn fails must be terminated
-			// here (spec §2/C11). terminateGoalOnError no-ops on a genuine user
-			// interrupt, leaving the goal active to resume after the next turn.
-			s.terminateGoalOnError(processCtx, err)
+			// here (spec §2/C11). Budget exhaustion is an expected terminal
+			// boundary and leaves the unrelated active goal unchanged.
+			if _, exhausted := budgetExhaustionFromError(err); !exhausted {
+				s.terminateGoalOnError(processCtx, err)
+			}
 			s.finishProcessingAtBoundary(processCtx, SessionIdle)
 			return strings.Join(outputs, "\n"), err
 		}
@@ -919,8 +921,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if !s.acceptNotificationInput(ctx) {
 			return "", false, nil
 		}
-	} else if !s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput) {
-		return "", false, nil
+	} else if err := s.acceptUserInput(ctx, input, images, inputProvenance, kind == EntryUserInput); err != nil {
+		return "", false, err
 	}
 
 	var toolSigs []string
@@ -1151,18 +1153,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.finishProcessingAtBoundary(ctx, SessionIdle)
-	return lastText, progressed, nil
+	if roundCap != s.cfg.MaxToolRoundsPerInput {
+		return lastText, progressed, nil
+	}
+	return lastText, progressed, &budgetExhaustionError{
+		Budget:    exhaustedBudgetToolRounds,
+		Limit:     s.cfg.MaxToolRoundsPerInput,
+		Resumable: true,
+	}
 }
 
 // acceptUserInput records a new user input at the start of an input turn: it
-// repairs any orphaned tool results, enforces MaxTurns, and returns proceed=false
-// (the caller returns "", nil) when the turn limit is already reached. Once the
+// repairs any orphaned tool results, enforces MaxTurns, and returns typed
+// exhaustion when the turn limit is already reached. Once the
 // turn is accepted, it increments the turn counter. For real external user
 // input only, it drains any pending resume SessionStart hook output before
 // appending the user turn. It then emits EventUserInput, appends the user turn,
 // launches the session namer, runs UserPromptSubmit hooks, drains any pending
-// steering, and returns proceed=true.
-func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) (proceed bool) {
+// steering, and returns nil.
+func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment, inputProvenance *provenance.Causal, drainResumeSessionStart bool) error {
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
 	// external user input.
@@ -1178,8 +1187,14 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
 		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
-		return false
+		return &budgetExhaustionError{
+			Budget:    exhaustedBudgetTurns,
+			Limit:     s.cfg.MaxTurns,
+			Resumable: false,
+		}
 	}
+
+	s.queueTurnBudgetWarning()
 
 	s.mu.Lock()
 	s.turns++
@@ -1225,7 +1240,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
-	return true
+	return nil
 }
 
 // goalContinuationMarker is the compact fallback text surfaced for a goal
