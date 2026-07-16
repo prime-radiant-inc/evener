@@ -165,20 +165,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		return llm.Response{}, err
 	}
 	a.setJSONHeaders(httpReq)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.Name(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     "google_generate_content",
-		RequestBody:        b,
-		CredentialMaterial: credentialMaterial,
-	})
 	var (
 		statusCode   int
 		responseBody []byte
 		decodeErr    error
 		transportErr error
+		attempt      *transport.APIAttemptCapture
 	)
 	defer func() {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
@@ -195,7 +187,16 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}()
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "google_generate_content",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		transportErr = err
 		return llm.Response{}, llm.WrapContextError("google", err)
@@ -372,18 +373,18 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		return nil, err
 	}
 	a.setJSONHeaders(httpReq)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.Name(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     "google_stream_generate_content",
-		RequestBody:        b,
-		CredentialMaterial: credentialMaterial,
-	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "google_stream_generate_content",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("google", err)

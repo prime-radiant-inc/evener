@@ -72,6 +72,33 @@ func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
 	}
 }
 
+func TestBuildAPIAttemptRecordSanitizesCredentialNamesButPreservesOrdinaryNames(t *testing.T) {
+	const (
+		credentialHeader = "X-Private-Gateway-Sentinel"
+		credentialQuery  = "signed_secret_parameter"
+		ordinaryHeader   = "X-Visible-Debug-Sentinel"
+	)
+	record := buildAPIAttemptRecord("ag_test", "aa_test", 1, APIAttemptMeta{
+		StartedAt: time.Unix(1, 0),
+		CredentialMaterial: NewAPILogCredentialMaterial(
+			[]string{credentialHeader},
+			[]string{credentialQuery},
+		),
+	}, APIAttemptResult{
+		Err:        errors.New(strings.Join([]string{credentialHeader, credentialQuery, ordinaryHeader}, " | ")),
+		Outcome:    apilog.AttemptTransportFail,
+		FinishedAt: time.Unix(2, 0),
+	})
+	for _, credentialName := range []string{credentialHeader, credentialQuery} {
+		if strings.Contains(record.ErrorMessage, credentialName) {
+			t.Fatalf("persisted error contains credential name %q: %q", credentialName, record.ErrorMessage)
+		}
+	}
+	if !strings.Contains(record.ErrorMessage, ordinaryHeader) {
+		t.Fatalf("persisted error hid ordinary header name %q: %q", ordinaryHeader, record.ErrorMessage)
+	}
+}
+
 type credentialFailureSink struct {
 	err      error
 	observed []APILogFailure
@@ -112,6 +139,69 @@ func TestAPIAttemptAppendWarningSanitizesOwnedCredentialMaterial(t *testing.T) {
 	}
 	if got := sink.observed[0].Err.Error(); strings.Contains(got, secret) {
 		t.Fatalf("failure warning leaked credential: %q", got)
+	}
+}
+
+func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryNames(t *testing.T) {
+	const (
+		credentialHeader = "X-Private-Warning-Sentinel"
+		credentialQuery  = "warning_secret_parameter"
+		ordinaryHeader   = "X-Visible-Warning-Sentinel"
+	)
+	storageErr := errors.New(strings.Join([]string{credentialHeader, credentialQuery, ordinaryHeader}, " | "))
+	sink := &credentialFailureSink{err: storageErr}
+	ctx := WithAPIAttemptSink(
+		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_warning_name_sanitize")),
+		sink,
+	)
+	attempt := BeginAPIAttempt(ctx, APIAttemptMeta{
+		StartedAt: time.Now(),
+		CredentialMaterial: NewAPILogCredentialMaterial(
+			[]string{credentialHeader},
+			[]string{credentialQuery},
+		),
+	})
+	attempt.Complete(APIAttemptResult{
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: time.Now(),
+	})
+
+	if len(sink.observed) != 1 {
+		t.Fatalf("failure observations = %d, want 1", len(sink.observed))
+	}
+	got := sink.observed[0].Err.Error()
+	for _, credentialName := range []string{credentialHeader, credentialQuery} {
+		if strings.Contains(got, credentialName) {
+			t.Fatalf("failure warning contains credential name %q: %q", credentialName, got)
+		}
+	}
+	if !strings.Contains(got, ordinaryHeader) {
+		t.Fatalf("failure warning hid ordinary header name %q: %q", ordinaryHeader, got)
+	}
+	if !errors.Is(sink.observed[0].Err, storageErr) {
+		t.Fatalf("sanitized warning lost storage error identity: %v", sink.observed[0].Err)
+	}
+}
+
+func TestAPIAttemptAppendWarningSanitizationPreservesObservedMarker(t *testing.T) {
+	const credentialHeader = "X-Private-Observed-Sentinel"
+	sink := &credentialFailureSink{
+		err: observedAPILogError{err: errors.New("sync failed for " + credentialHeader)},
+	}
+	ctx := WithAPIAttemptSink(
+		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_warning_observed_marker")),
+		sink,
+	)
+	BeginAPIAttempt(ctx, APIAttemptMeta{
+		StartedAt:          time.Now(),
+		CredentialMaterial: NewAPILogCredentialMaterial([]string{credentialHeader}, nil),
+	}).Complete(APIAttemptResult{
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: time.Now(),
+	})
+
+	if len(sink.observed) != 0 {
+		t.Fatalf("already-observed sanitized failure was reported again: %+v", sink.observed)
 	}
 }
 

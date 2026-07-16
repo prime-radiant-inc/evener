@@ -78,6 +78,18 @@ func WithAPIAttemptSink(ctx context.Context, sink APIAttemptSink) context.Contex
 	return context.WithValue(ctx, apiAttemptSinkContextKey{}, apiAttemptSinkContext{sink: sink})
 }
 
+// APIAttemptContextActive reports whether the caller explicitly supplied both
+// canonical attempt coordination and persistence. Transports use it to leave
+// ordinary calls entirely on their existing client path.
+func APIAttemptContextActive(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
+	state, _ := ctx.Value(apiAttemptSinkContextKey{}).(apiAttemptSinkContext)
+	return group != nil && state.sink != nil
+}
+
 type APIAttemptGroup struct {
 	ID string
 
@@ -98,6 +110,7 @@ func NewAPIAttemptGroup(id string) *APIAttemptGroup {
 
 type APIAttempt struct {
 	once  sync.Once
+	mu    sync.Mutex
 	group *APIAttemptGroup
 	sink  APIAttemptSink
 	ctx   context.Context
@@ -110,6 +123,17 @@ type APIAttempt struct {
 // sink and therefore needs exact transport evidence retained.
 func (a *APIAttempt) Active() bool {
 	return a != nil && a.group != nil && a.sink != nil
+}
+
+// SetRequestBody supplies exact bytes observed at an HTTP transport boundary.
+// It is used only when a request body cannot be cloned before RoundTrip.
+func (a *APIAttempt) SetRequestBody(body []byte) {
+	if !a.Active() {
+		return
+	}
+	a.mu.Lock()
+	a.meta.RequestBody = append([]byte(nil), body...)
+	a.mu.Unlock()
 }
 
 func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
@@ -158,16 +182,16 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		if a.sink == nil {
 			return
 		}
-		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, a.meta, result)
+		a.mu.Lock()
+		meta := a.meta
+		a.mu.Unlock()
+		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, meta, result)
 		appendCtx := context.WithoutCancel(a.ctx)
 		if err := a.sink.AppendAttempt(appendCtx, record); err != nil {
 			failureErr := err
-			var observed apiLogObservedFailure
-			if !errors.As(err, &observed) {
-				sanitized := SanitizeErrorForAPILog(err.Error(), a.meta.CredentialMaterial)
-				if sanitized != err.Error() {
-					failureErr = errors.New(sanitized)
-				}
+			sanitized := SanitizeErrorForAPILog(err.Error(), meta.CredentialMaterial)
+			if sanitized != err.Error() {
+				failureErr = sanitizedAPILogError{text: sanitized, err: err}
 			}
 			a.group.recordFailure(APILogFailure{
 				Operation:      "append_attempt",
@@ -179,6 +203,14 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		}
 	})
 }
+
+type sanitizedAPILogError struct {
+	text string
+	err  error
+}
+
+func (e sanitizedAPILogError) Error() string { return e.text }
+func (e sanitizedAPILogError) Unwrap() error { return e.err }
 
 func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutcomeClass) {
 	if g == nil {

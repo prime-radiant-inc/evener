@@ -26,6 +26,7 @@ import (
 
 type Adapter struct {
 	name              string
+	ProviderInstance  string
 	APIKey            string
 	BaseURL           string
 	Client            *http.Client
@@ -167,6 +168,13 @@ func (a *Adapter) Name() string {
 		return a.name
 	}
 	return "openai-compatible"
+}
+
+func (a *Adapter) apiLogProviderInstance() string {
+	if a.ProviderInstance != "" {
+		return a.ProviderInstance
+	}
+	return a.Name()
 }
 
 // sessionAffinityHeaders are the per-request headers a gateway uses to pin a
@@ -312,18 +320,18 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		return nil, err
 	}
 	a.setChatHeaders(httpReq, req)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.Name(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     "openai_compatible_chat_completions",
-		RequestBody:        jsonBody,
-		CredentialMaterial: credentialMaterial,
-	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "openai_compatible_chat_completions",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, err)
 		returnedErr := llm.WrapContextError("openai-compatible", err)
@@ -385,7 +393,7 @@ func (a *Adapter) responsesAdapter() *openairesponses.Adapter {
 		client = &http.Client{Timeout: 0}
 	}
 	return &openairesponses.Adapter{
-		ProviderInstance:    a.Name(),
+		ProviderInstance:    a.apiLogProviderInstance(),
 		APIKey:              a.APIKey,
 		BaseURL:             a.BaseURL,
 		ResponsesPath:       "/responses",
@@ -729,21 +737,22 @@ func (a *Adapter) doHTTP(parentCtx, ctx context.Context, req llm.Request, body m
 		return chatHTTPResult{}, err
 	}
 	a.setChatHeaders(httpReq, req)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
 	wire := chatHTTPResult{
 		rawReqBody: jsonBody,
-		attempt: transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
-			ProviderInstance:   a.Name(),
-			RequestModel:       req.Model,
-			HistoryMode:        req.HistoryMode,
-			EndpointFamily:     "openai_compatible_chat_completions",
-			RequestBody:        jsonBody,
-			CredentialMaterial: credentialMaterial,
-		}),
 	}
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "openai_compatible_chat_completions",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
+	wire.attempt = attempt
 	if err != nil {
 		wire.transportErr = err
 		return wire, llm.WrapContextError("openai-compatible", err)

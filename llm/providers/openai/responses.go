@@ -253,18 +253,18 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		return nil, err
 	}
 	a.setRequestHeaders(httpReq, req)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.apiLogProviderInstance(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     string(a.responsesEndpointFamily()),
-		RequestBody:        b,
-		CredentialMaterial: credentialMaterial,
-	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     string(a.responsesEndpointFamily()),
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("openai", err)

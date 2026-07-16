@@ -225,6 +225,7 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 	var retryNotifications atomic.Int32
 	var sleepCalls atomic.Int32
 	var attemptCalls atomic.Int32
+	secondAttemptEntered := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
 		done <- llm.RetryStream(ctx, llm.RetryStreamOptions{
@@ -242,7 +243,9 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 				return nil
 			},
 		}, func(attemptCtx context.Context) (bool, error) {
-			attemptCalls.Add(1)
+			if attemptCalls.Add(1) == 2 {
+				close(secondAttemptEntered)
+			}
 			stream, err := adapter.Stream(attemptCtx, llm.Request{
 				Model:    "compat-test",
 				Messages: []llm.Message{llm.User("hello")},
@@ -281,9 +284,14 @@ func TestStreamingHappensBeforeRetryPreservesGroupAndPolicy(t *testing.T) {
 		t.Fatalf("retry sleeps while first append blocked = %d, want 0", got)
 	}
 	select {
+	case <-secondAttemptEntered:
+		t.Fatal("second RetryStream attempt entered before first canonical append returned")
+	default:
+	}
+	select {
 	case <-secondStarted:
-		t.Fatal("second stream attempt started before first canonical append returned")
-	case <-time.After(50 * time.Millisecond):
+		t.Fatal("second stream HTTP request started before first canonical append returned")
+	default:
 	}
 
 	close(sink.releaseFirst)

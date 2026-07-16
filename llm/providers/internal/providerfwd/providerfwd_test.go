@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/anthropic"
+	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 // Concrete embedding must promote the optional ModelLister capability from the
@@ -29,6 +30,30 @@ func TestOpenAICompat_Name(t *testing.T) {
 	// Falls back to the provider-type default when the instance name is empty.
 	if got := NewOpenAICompat("", "deflt", nil).Name(); got != "deflt" {
 		t.Fatalf("Name() = %q, want deflt", got)
+	}
+}
+
+func TestOpenAICompatWireCaptureProvenanceDoesNotChangeBackingResponseProvider(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"compat-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	backing := &openaicompat.Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	forwarder := NewOpenAICompat("proxy-instance", "proxy-default", backing)
+	response, err := forwarder.Complete(context.Background(), llm.Request{
+		Model:    "compat-test",
+		Messages: []llm.Message{llm.User("hello")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if forwarder.Name() != "proxy-instance" || backing.ProviderInstance != "proxy-instance" {
+		t.Fatalf("forwarder/capture names = %q/%q, want proxy-instance", forwarder.Name(), backing.ProviderInstance)
+	}
+	if backing.Name() != "openai-compatible" || response.Provider != "openai-compatible" {
+		t.Fatalf("backing name/response provider = %q/%q, want unchanged openai-compatible semantics", backing.Name(), response.Provider)
 	}
 }
 

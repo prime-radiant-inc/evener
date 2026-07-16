@@ -32,6 +32,9 @@ type OpenAICompat struct {
 // default name. Name() returns instanceName when non-empty, otherwise
 // defaultName.
 func NewOpenAICompat(instanceName, defaultName string, backing *openaicompat.Adapter) *OpenAICompat {
+	if backing != nil {
+		backing.ProviderInstance = providerName(instanceName, defaultName)
+	}
 	return &OpenAICompat{Adapter: backing, name: instanceName, defaultName: defaultName}
 }
 

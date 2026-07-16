@@ -56,18 +56,18 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	// Chat Completions does not use the Responses-API-specific ChatGPT-Account-ID header.
 	// setHeaders already sets it from a.ChatGPTAccountID; we leave it for compatibility
 	// with non-standard deployments.
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, sctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.apiLogProviderInstance(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     "openai_chat_completions",
-		RequestBody:        jsonBody,
-		CredentialMaterial: credentialMaterial,
-	})
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "openai_chat_completions",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, sctx, err)
 		returnedErr := llm.WrapContextError("openai", err)

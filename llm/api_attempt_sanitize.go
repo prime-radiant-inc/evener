@@ -93,14 +93,80 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 	return endpoint, headers
 }
 
-// SanitizeErrorForAPILog removes raw and URL-escaped credential values from
-// provider errors before they become durable API-log text or warnings.
+// SanitizeErrorForAPILog removes provider/config-derived credential names and
+// raw or URL-escaped credential values before errors become durable API-log
+// text or warnings.
 func SanitizeErrorForAPILog(text string, material APILogCredentialMaterial) string {
+	for _, name := range credentialNameVariants(material) {
+		text = replaceCredentialNameFold(text, name)
+	}
 	variants := credentialValueVariants(material.Values)
 	for _, value := range variants {
 		text = strings.ReplaceAll(text, value, apiLogCredentialReplacement)
 	}
 	return text
+}
+
+func credentialNameVariants(material APILogCredentialMaterial) []string {
+	seen := make(map[string]struct{}, len(material.HeaderNames)+len(material.QueryNames))
+	for name := range material.HeaderNames {
+		seen[name] = struct{}{}
+	}
+	for name := range material.QueryNames {
+		seen[name] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if len(names[i]) == len(names[j]) {
+			return names[i] < names[j]
+		}
+		return len(names[i]) > len(names[j])
+	})
+	return names
+}
+
+func replaceCredentialNameFold(text, name string) string {
+	if text == "" || name == "" {
+		return text
+	}
+	lowerText := strings.ToLower(text)
+	lowerName := strings.ToLower(name)
+	var out strings.Builder
+	start := 0
+	for {
+		relative := strings.Index(lowerText[start:], lowerName)
+		if relative < 0 {
+			out.WriteString(text[start:])
+			return out.String()
+		}
+		index := start + relative
+		end := index + len(name)
+		if credentialNameBoundary(text, index, end) {
+			out.WriteString(text[start:index])
+			out.WriteString(apiLogCredentialReplacement)
+			start = end
+			continue
+		}
+		out.WriteString(text[start : index+1])
+		start = index + 1
+	}
+}
+
+func credentialNameBoundary(text string, start, end int) bool {
+	return (start == 0 || !credentialNameByte(text[start-1])) &&
+		(end == len(text) || !credentialNameByte(text[end]))
+}
+
+func credentialNameByte(value byte) bool {
+	return value >= 'a' && value <= 'z' ||
+		value >= 'A' && value <= 'Z' ||
+		value >= '0' && value <= '9' ||
+		value == '-' || value == '_'
 }
 
 func sanitizeRawQuery(rawQuery string, material APILogCredentialMaterial) string {

@@ -583,20 +583,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		return llm.Response{}, err
 	}
 	a.setRequestHeaders(httpReq, req)
-	credentialMaterial := a.apiLogCredentialMaterial(httpReq)
-	attempt := transport.BeginAPIAttempt(parentCtx, ctx, httpReq, llm.APIAttemptMeta{
-		ProviderInstance:   a.apiLogProviderInstance(),
-		RequestModel:       req.Model,
-		HistoryMode:        req.HistoryMode,
-		EndpointFamily:     string(a.responsesEndpointFamily()),
-		RequestBody:        b,
-		CredentialMaterial: credentialMaterial,
-	})
 	var (
 		statusCode   int
 		responseBody []byte
 		decodeErr    error
 		transportErr error
+		attempt      *transport.APIAttemptCapture
 	)
 	completeAttempt := func(response *llm.Response, attemptErr error) {
 		timeoutSource := llm.APITimeoutSourceForTransport(parentCtx, ctx, transportErr)
@@ -616,7 +608,16 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}()
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     string(a.responsesEndpointFamily()),
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
 		transportErr = err
 		return llm.Response{}, llm.WrapContextError("openai", err)

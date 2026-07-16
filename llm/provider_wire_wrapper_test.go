@@ -11,6 +11,9 @@ import (
 	"primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/glm"
+	_ "primeradiant.com/serf/llm/providers/kimi"
+	_ "primeradiant.com/serf/llm/providers/ollama"
+	_ "primeradiant.com/serf/llm/providers/openrouter"
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
 )
 
@@ -108,6 +111,49 @@ func TestWrapperFactoriesInheritWireCaptureExactlyOnce(t *testing.T) {
 			}
 			if attempt.ProviderInstance != tt.provider {
 				t.Fatalf("provider instance = %q, want wrapper instance %q", attempt.ProviderInstance, tt.provider)
+			}
+		})
+	}
+}
+
+func TestDefaultNameOpenAICompatibleWrapperFactoriesPreserveWireCaptureProvenance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","model":"wrapper-test","choices":[{"index":0,"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	for _, providerType := range []string{"glm", "kimi", "ollama", "openrouter"} {
+		providerType := providerType
+		t.Run(providerType, func(t *testing.T) {
+			client, err := llm.NewFromProviders(providercfg.Config{
+				Instances: []providercfg.InstanceConfig{{
+					Type:    providercfg.Type(providerType),
+					BaseURL: server.URL,
+					APIKey:  "provider-key",
+				}},
+			})
+			if err != nil {
+				t.Fatalf("NewFromProviders: %v", err)
+			}
+			sink := &wrapperWireCaptureSink{}
+			ctx := llm.WithAPIAttemptSink(
+				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_default_wrapper_"+providerType)),
+				sink,
+			)
+			response, err := client.Complete(ctx, providerRequest(providerType, "wrapper-test"))
+			if err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if response.Text() != "hello" {
+				t.Fatalf("response text = %q, want hello", response.Text())
+			}
+			attempts := sink.snapshot()
+			if len(attempts) != 1 {
+				t.Fatalf("canonical attempts = %d, want exactly 1 inherited core attempt", len(attempts))
+			}
+			if got := attempts[0].ProviderInstance; got != providerType {
+				t.Fatalf("provider instance = %q, want default wrapper name %q", got, providerType)
 			}
 		})
 	}
