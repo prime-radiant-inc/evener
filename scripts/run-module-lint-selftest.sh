@@ -66,6 +66,41 @@ run_lint() {
 	) >"$output" 2>&1
 }
 
+# Bound cases that may expose a scheduler hang. The watchdog first requests a
+# normal TERM so runner cleanup remains observable, then uses a second FIFO to
+# force a terminal state only if the runner does not exit.
+run_lint_bounded() {
+	modules="$1"
+	output="$2"
+	shift 2
+	mkfifo "$state/runner-watchdog-cancel" "$state/runner-terminated"
+	exec 8<>"$state/runner-watchdog-cancel"
+	exec 9<>"$state/runner-terminated"
+	(
+		cd "$repo" || exit 1
+		exec env TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" \
+			MODULES="$modules" "$@" "$runner"
+	) >"$output" 2>&1 &
+	lint_pid=$!
+	(
+		if IFS= read -r -t 5 _ <&8; then
+			exit 0
+		fi
+		printf 'timed out\n' >"$state/runner-timeout"
+		kill -TERM "$lint_pid" 2>/dev/null || :
+		if ! IFS= read -r -t 1 _ <&9; then
+			kill -KILL "$lint_pid" 2>/dev/null || :
+		fi
+	) &
+	watchdog_pid=$!
+	if wait "$lint_pid"; then bounded_rc=0; else bounded_rc=$?; fi
+	printf 'cancel\n' >&8 || :
+	printf 'terminated\n' >&9 || :
+	wait "$watchdog_pid" || :
+	exec 8>&-
+	exec 9>&-
+}
+
 new_case
 out="$case_dir/success.out"
 if run_lint ". agent llm" "$out"; then rc=0; else rc=$?; fi
@@ -119,10 +154,11 @@ if run_lint "." "$out" LINT_PARALLEL=; then rc=0; else rc=$?; fi
 assert_eq "$rc" "0" "empty LINT_PARALLEL uses the default"
 assert_eq "$(cut -f1 "$state/calls" 2>/dev/null)" "." "empty LINT_PARALLEL still launches the requested check"
 
-for value in 0 -1 nope; do
+for value in 0 -1 nope 00 08 010; do
 	new_case
 	out="$case_dir/invalid-parallel.out"
-	if run_lint ". agent" "$out" LINT_PARALLEL="$value"; then rc=0; else rc=$?; fi
+	run_lint_bounded ". agent" "$out" LINT_PARALLEL="$value"
+	rc=$bounded_rc
 	if [ "$rc" -ne 0 ]; then ok "LINT_PARALLEL=$value exits nonzero"; else bad "LINT_PARALLEL=$value exits zero"; fi
 	assert_has "$out" "LINT_PARALLEL must be a positive integer" "LINT_PARALLEL=$value has one useful diagnostic"
 	assert_eq "$(wc -l <"$out" | tr -d ' ')" "1" "LINT_PARALLEL=$value emits one diagnostic"
@@ -201,6 +237,57 @@ exec 3>&-
 exec 4>&-
 assert_eq "$rc" "0" "bounded-concurrency scenario exits zero"
 assert_eq "$(cat "$state/max" 2>/dev/null)" "2" "concurrency never exceeds LINT_PARALLEL=2"
+
+# Defaults: synchronized canonical modules prove both the exact default module
+# set and the default four-child bound without inspecting runner source.
+new_case
+mkfifo "$state/started" "$state/release"
+exec 3<>"$state/started"
+exec 4<>"$state/release"
+cat >"$bin/golangci-lint" <<'FAKE_DEFAULTS'
+#!/usr/bin/env bash
+set -u
+module="$(basename "$PWD")"
+[ "$PWD" = "$FAKE_REPO" ] && module=.
+printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/calls"
+while ! mkdir "$FAKE_STATE/lock" 2>/dev/null; do :; done
+active="$(cat "$FAKE_STATE/active" 2>/dev/null || printf 0)"
+active=$((active + 1))
+printf '%s\n' "$active" >"$FAKE_STATE/active"
+max="$(cat "$FAKE_STATE/max" 2>/dev/null || printf 0)"
+[ "$active" -le "$max" ] || printf '%s\n' "$active" >"$FAKE_STATE/max"
+rmdir "$FAKE_STATE/lock"
+printf '%s\n' "$$" >"$FAKE_STATE/started"
+IFS= read -r _ <"$FAKE_STATE/release"
+while ! mkdir "$FAKE_STATE/lock" 2>/dev/null; do :; done
+active="$(cat "$FAKE_STATE/active")"
+printf '%s\n' "$((active - 1))" >"$FAKE_STATE/active"
+rmdir "$FAKE_STATE/lock"
+FAKE_DEFAULTS
+chmod +x "$bin/golangci-lint"
+(
+	cd "$repo" || exit 1
+	exec env -u MODULES -u LINT_PARALLEL TMPDIR="$case_dir" PATH="$bin:/usr/bin:/bin" \
+		FAKE_REPO="$repo" FAKE_STATE="$state" "$runner"
+) >"$case_dir/defaults.out" 2>&1 &
+lint_pid=$!
+default_started=0
+for _ in one two three four; do
+	if IFS= read -r -t 5 _ <&3; then
+		default_started=$((default_started + 1))
+	fi
+done
+assert_eq "$default_started" "4" "default wave launches four checks"
+for _ in one two three four five six seven; do printf 'go\n' >&4; done
+if wait "$lint_pid"; then rc=0; else rc=$?; fi
+exec 3>&-
+exec 4>&-
+assert_eq "$rc" "0" "default-path scenario exits zero"
+assert_eq "$(wc -l <"$state/calls" | tr -d ' ')" "7" "default path runs exactly seven modules"
+assert_eq "$(cut -f1 "$state/calls" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "default path runs the canonical module set"
+assert_eq "$(cut -f2 "$state/calls" | sort -u)" "run ./..." "default modules receive the unchanged argv"
+assert_eq "$(cat "$state/max" 2>/dev/null)" "4" "default concurrency is bounded at four"
+assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "default path removes temporary logs"
 
 # Interruption: the fake publishes its PID, then blocks. The acknowledged TERM
 # and a bounded watchdog prove relay, wait, and cleanup without polling races.

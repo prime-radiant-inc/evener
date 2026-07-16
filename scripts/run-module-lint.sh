@@ -5,8 +5,8 @@ set -uo pipefail
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 LINT_PARALLEL=${LINT_PARALLEL:-4}
 case "$LINT_PARALLEL" in
-	''|*[!0-9]*|0)
-		printf 'lint: LINT_PARALLEL must be a positive integer (got %s)\n' "$LINT_PARALLEL" >&2
+	''|*[!0-9]*|0*)
+		printf 'lint: LINT_PARALLEL must be a positive integer without leading zeroes (got %s)\n' "$LINT_PARALLEL" >&2
 		exit 2
 		;;
 esac
