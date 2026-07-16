@@ -3,6 +3,8 @@
 Date: 2026-07-15
 Status: Approved
 Tracker: #20
+Program order: Project 3 of 6; implement after delegate-budget truthfulness and
+transcript/API-log separation.
 
 ## Purpose
 
@@ -42,6 +44,7 @@ them; the obsolete public result shape and prompt references are deleted.
 - transcript reference;
 - shell exit code when applicable;
 - resumability for delegate jobs;
+- the non-resumable reason when Serf knows it;
 - exhausted status from the budget-truthfulness design when that slice has
   landed.
 

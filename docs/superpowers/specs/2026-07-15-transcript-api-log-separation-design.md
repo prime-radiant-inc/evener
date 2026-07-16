@@ -3,6 +3,7 @@
 Date: 2026-07-15
 Status: Approved
 Tracker: #20
+Program order: Project 2 of 6; implement after delegate-budget truthfulness.
 
 ## Purpose
 
@@ -84,6 +85,12 @@ credentials, arbitrary configured credential headers, URL userinfo and secret
 query parameters, and persisted error text that may echo a credential-bearing
 endpoint.
 
+Provider configuration distinguishes ordinary custom headers, which are
+non-secret and must be logged exactly, from custom credential headers, whose
+names and values are credential material and must never be persisted. A common
+credential-name denylist is defense in depth, not the classification source of
+truth.
+
 Bodies must be lossless. Valid UTF-8 bodies may be stored as JSON strings;
 otherwise the record uses an explicit binary encoding such as base64. The log
 schema records the encoding.
@@ -151,6 +158,8 @@ API-log behavior is explicit and rare:
 - callers select `source=api_log` or request an `attempt_id` expansion;
 - default transcript reads never touch the API-log file;
 - API-log reads are bounded by records and bytes;
+- bounded summaries report group settlement as `settled`, `unsettled`, or
+  `unknown_outside_range`; absence from a page is not evidence of interruption;
 - exact bodies require an explicit record/attempt expansion;
 - results clearly identify that credential values were excluded.
 

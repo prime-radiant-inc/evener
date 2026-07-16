@@ -3,6 +3,8 @@
 Date: 2026-07-15
 Status: Approved
 Tracker: #20
+Program order: Project 4 of 6; implement after the budget, transcript/API-log,
+and job-supervision projects.
 
 ## Purpose
 

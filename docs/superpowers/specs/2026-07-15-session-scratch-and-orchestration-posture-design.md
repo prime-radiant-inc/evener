@@ -3,6 +3,8 @@
 Date: 2026-07-15
 Status: Approved
 Tracker: #20
+Program order: Project 5 of 6; implement after the budget, transcript/API-log,
+job-supervision, and model-selection projects.
 
 ## Purpose
 
@@ -30,6 +32,10 @@ Properties:
 - not placed inside the Git worktree;
 - not a durable artifact or cross-session communication channel.
 
+Allocation enforces the worktree exclusion even when ambient `TMPDIR` points
+inside the checkout. Serf selects a safe operating-system temporary/cache base
+instead of accepting an in-worktree scratch path.
+
 Promote/rename the existing sandbox `SessionTmp` ownership mechanism rather than
 building a parallel cleanup system.
 
@@ -44,6 +50,9 @@ The exact path appears in the session's dynamic environment/system-prompt
 section. `HOME` is not redirected. This feature does not newly redirect
 `GOCACHE`, npm, Cargo, or other durable build caches; sandbox cache policy remains
 a separate concern and must preserve safe shared caches where supported.
+Existing sandbox environment filters for credentials, agents, and external
+configuration remain unchanged. Short-lived execution-environment clones and
+invocation grants preserve the same scratch path as their owning session.
 
 ### System-prompt contract
 
@@ -67,10 +76,14 @@ durability fact is normative.
 - Scratch survives turns and worktree re-rooting within one live session.
 - It does not survive daemon/session restoration; a restored session receives a
   new empty scratch directory.
-- Cleanup terminates tracked processes before removing scratch.
+- Cleanup terminates tracked processes, finishes SessionEnd hooks, and closes
+  stdio MCP processes before removing scratch.
 - Normal close/dispose removes the directory recursively.
-- Spawn failure cleans a newly provisioned directory.
-- Startup/provisioning sweeps Serf-owned crash leftovers older than 24 hours.
+- Spawn, restore, and abandoned-candidate failure paths clean a newly
+  provisioned directory.
+- Startup/provisioning sweeps Serf-owned crash leftovers older than 24 hours,
+  but an operating-system-released liveness lease prevents an old yet active
+  session directory from being swept.
 - Cleanup recognizes only Serf's reserved directory prefix and never removes
   unrelated operating-system temporary files.
 
