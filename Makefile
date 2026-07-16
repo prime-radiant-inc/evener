@@ -285,7 +285,7 @@ refresh-model-catalog:
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
 # when gitleaks is not installed (required in CI).
 secret-scan:
-	@scripts/gitleaks-scan.sh repo
+	$(call run_quiet_lint,scripts/gitleaks-scan.sh repo,preserve-gitleaks-warning)
 
 # fuzz-corpus-scan runs gitleaks over only the fuzz seed corpora — the
 # corpus-scoped subset of secret-scan, for fast harvester feedback.
@@ -295,25 +295,37 @@ fuzz-corpus-scan:
 # lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
 # struct tag and TOML file in the repo. Fast (well under a second) and
 # safe to run as a separate `go vet`-style gate.
+define run_quiet_lint
+	@set -u; log="$$(mktemp -t serf-lint-check.XXXXXX)" || exit 1; \
+	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
+	if ( $(1) ) >"$$log" 2>&1; then \
+		if [ "$(2)" = preserve-gitleaks-warning ]; then \
+			grep -F 'warning: gitleaks not installed; skipping repo secret scan' "$$log" >&2 || :; \
+		fi; \
+	else \
+		status=$$?; cat "$$log"; exit $$status; \
+	fi
+endef
+
 lint-naming:
-	go run ./cmd/serf-namingcheck
+	$(call run_quiet_lint,go run ./cmd/serf-namingcheck)
 
 # lint-internal fails if any exported symbol in the agent/llm/providercfg
 # libraries names a serf-internal type — keeping them externally importable.
 lint-internal:
-	go run ./cmd/serf-internalcheck
+	$(call run_quiet_lint,go run ./cmd/serf-internalcheck)
 
 # lint-docs fails if any exported package-level declaration in the published
 # library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.
 lint-docs:
-	go run ./cmd/serf-docscheck
+	$(call run_quiet_lint,go run ./cmd/serf-docscheck)
 
 build-namingcheck:
 	go build -o serf-namingcheck ./cmd/serf-namingcheck/
 
 # golangci-lint across every module (./... is per-module under go.work).
 lint-golangci:
-	@for m in $(GO_MODULES); do (cd $$m && golangci-lint run ./...) || exit 1; done
+	@MODULES="$(GO_MODULES)" scripts/run-module-lint.sh
 
 # generate runs all `go generate` directives. Currently the AppWire protocol
 # reference (docs/appwire-protocol.md) from the catalog in appwire/protocol.go.
@@ -322,9 +334,8 @@ generate:
 
 # lint-generated fails if a committed generated file is stale — i.e. the
 # AppWire catalog changed without regenerating the protocol doc.
-lint-generated: generate
-	@git diff --exit-code -- docs/appwire-protocol.md || \
-	  { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }
+lint-generated:
+	$(call run_quiet_lint,go generate ./appwire/... && { git diff --exit-code -- docs/appwire-protocol.md || { echo "docs/appwire-protocol.md is stale; run 'make generate' and commit."; exit 1; }; })
 
 lint: lint-naming lint-internal lint-docs lint-golangci lint-generated secret-scan
 

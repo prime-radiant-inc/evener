@@ -2,7 +2,9 @@
 # run-module-lint-selftest.sh - offline behavioral tests for module linting.
 set -uo pipefail
 
-runner="$(cd "$(dirname "$0")" && pwd)/run-module-lint.sh"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+runner="$script_dir/run-module-lint.sh"
+makefile="$(cd "$script_dir/.." && pwd)/Makefile"
 work="$(mktemp -d -t serf-module-lint-selftest.XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
@@ -28,6 +30,11 @@ assert_not_has() {
 	else
 		ok "$3"
 	fi
+}
+
+assert_count() {
+	actual="$(grep -cF -- "$2" "$1" || :)"
+	assert_eq "$actual" "$3" "$4"
 }
 
 new_case() {
@@ -357,6 +364,111 @@ if [ "$rc" -ne 0 ]; then ok "interrupted runner exits nonzero"; else bad "interr
 if [ -f "$state/stopped" ]; then ok "interrupted child handled termination"; else bad "interrupted child was not terminated"; fi
 if [ "$child_pid" != missing ] && ! kill -0 "$child_pid" 2>/dev/null; then ok "interrupted child was waited"; else bad "interrupted child remains alive"; fi
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "interruption removes temporary logs"
+
+# Makefile integration: copy the real build entry point, fake only external
+# commands, and prove both quiet success and unchanged lint-family coverage.
+case_dir="$(mktemp -d "$work/make-case.XXXXXX")"
+repo="$case_dir/repo"
+state="$case_dir/state"
+bin="$case_dir/bin"
+tmp="$case_dir/tmp"
+mkdir -p "$repo/scripts" "$state" "$bin" "$tmp"
+cp "$makefile" "$repo/Makefile"
+cp "$runner" "$repo/scripts/run-module-lint.sh"
+chmod +x "$repo/scripts/run-module-lint.sh"
+for module in agent llm auth envvars invariant identifier; do mkdir -p "$repo/$module"; done
+
+cat >"$bin/go" <<'FAKE_GO'
+#!/usr/bin/env bash
+case "$*" in
+	"env GOOS") printf 'darwin\n'; exit 0 ;;
+	"env GOARCH") printf 'arm64\n'; exit 0 ;;
+esac
+printf 'go %s\n' "$*" >>"$FAKE_STATE/families"
+printf 'go-success-chatter\n'
+if [ "${FAKE_FAIL_DOCS:-0}" = 1 ] && [ "$*" = "run ./cmd/serf-docscheck" ]; then
+	printf 'docs stdout diagnostic\n'
+	printf 'docs stderr diagnostic\n' >&2
+	exit 9
+fi
+FAKE_GO
+cat >"$bin/git" <<'FAKE_GIT'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >>"$FAKE_STATE/families"
+printf 'git-success-chatter\n'
+FAKE_GIT
+cat >"$bin/golangci-lint" <<'FAKE_MAKE_LINT'
+#!/usr/bin/env bash
+module="$(basename "$PWD")"
+[ "$PWD" = "$FAKE_REPO" ] && module=.
+printf '%s\t%s\n' "$module" "$*" >>"$FAKE_STATE/modules"
+printf 'golangci-success-chatter\n'
+FAKE_MAKE_LINT
+cat >"$repo/scripts/gitleaks-scan.sh" <<'FAKE_SECRET_SCAN'
+#!/usr/bin/env bash
+printf 'secret-scan %s\n' "$*" >>"$FAKE_STATE/families"
+if [ "${FAKE_GITLEAKS_MISSING:-0}" = 1 ]; then
+	printf 'warning: gitleaks not installed; skipping repo secret scan (install: https://github.com/gitleaks/gitleaks)\n' >&2
+	exit 0
+fi
+printf 'secret-success-chatter\n'
+FAKE_SECRET_SCAN
+chmod +x "$bin/go" "$bin/git" "$bin/golangci-lint" "$repo/scripts/gitleaks-scan.sh"
+
+out="$case_dir/make-lint.out"
+if (
+	cd "$repo" || exit 1
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_REPO="$repo" FAKE_STATE="$state" make lint
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "real make lint wiring exits zero with healthy fakes"
+assert_eq "$(wc -l <"$out" | tr -d ' ')" "2" "real make lint keeps the two-line success contract"
+assert_eq "$(sed -n '1p' "$out")" "lint: checking 7 modules" "Makefile passes the canonical module count"
+case "$(sed -n '2p' "$out")" in
+	"PASS lint (7 modules, "*"s)") ok "real make lint prints the final PASS line" ;;
+	*) bad "real make lint PASS line has the wrong shape" ;;
+esac
+assert_not_has "$out" "success-chatter" "all successful lint-family chatter is hidden"
+assert_eq "$(cut -f1 "$state/modules" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "Makefile passes every canonical non-fuzz module"
+assert_eq "$(cut -f2 "$state/modules" | sort -u)" "run ./..." "Makefile wiring preserves golangci-lint run ./..."
+cat >"$state/want-families" <<'WANT_FAMILIES'
+go run ./cmd/serf-namingcheck
+go run ./cmd/serf-internalcheck
+go run ./cmd/serf-docscheck
+go generate ./appwire/...
+git diff --exit-code -- docs/appwire-protocol.md
+secret-scan repo
+WANT_FAMILIES
+if cmp -s "$state/want-families" "$state/families"; then
+	ok "make lint retains all six existing lint families with exact arguments"
+else
+	bad "make lint changed the existing lint families or arguments"
+	diff -u "$state/want-families" "$state/families" || :
+fi
+assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "healthy checks remove quiet-wrapper logs"
+
+# The missing-gitleaks path is successful but degraded. Its existing warning is
+# part of the secret-scan policy and must survive routine-success suppression.
+out="$case_dir/make-secret-degraded.out"
+if (
+	cd "$repo" || exit 1
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_GITLEAKS_MISSING=1 make secret-scan
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "missing-gitleaks secret scan remains successful"
+assert_eq "$(cat "$out")" "warning: gitleaks not installed; skipping repo secret scan (install: https://github.com/gitleaks/gitleaks)" "missing-gitleaks warning remains exact and visible"
+assert_not_has "$out" "secret-success-chatter" "routine secret-scan success chatter remains hidden"
+assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "degraded secret scan removes its quiet-wrapper log"
+
+: >"$state/families"
+out="$case_dir/make-docs-failure.out"
+if (
+	cd "$repo" || exit 1
+	TMPDIR="$tmp" PATH="$bin:/usr/bin:/bin" FAKE_STATE="$state" FAKE_FAIL_DOCS=1 make lint-docs
+) >"$out" 2>&1; then rc=0; else rc=$?; fi
+if [ "$rc" -ne 0 ]; then ok "failed non-module lint family returns nonzero"; else bad "failed non-module lint family returns zero"; fi
+assert_count "$out" "docs stdout diagnostic" "1" "failed non-module stdout is replayed completely once"
+assert_count "$out" "docs stderr diagnostic" "1" "failed non-module stderr is replayed completely once"
+assert_has "$out" "Error 9" "failed non-module check reports its original status"
+assert_eq "$(find "$tmp" -type f -name 'serf-lint-check.*' | wc -l | tr -d ' ')" "0" "failed check removes its quiet-wrapper log"
 
 echo "----"
 echo "run-module-lint-selftest: $checks checks, $fails failed"
