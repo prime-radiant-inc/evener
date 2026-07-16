@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -280,6 +281,66 @@ func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
 	}
 	if !reflect.DeepEqual(events, []string{"append_settlement"}) {
 		t.Fatalf("events = %v", events)
+	}
+}
+
+func TestClientSessionGroupSettlesFailuresBeforeProviderMiddleware(t *testing.T) {
+	tests := []struct {
+		name string
+		req  Request
+	}{
+		{
+			name: "request validation",
+			req:  Request{Provider: "missing"},
+		},
+		{
+			name: "provider resolution",
+			req: Request{
+				Provider: "missing",
+				Model:    "model-a",
+				Messages: []Message{User("hello")},
+			},
+		},
+	}
+	for _, tt := range tests {
+		for _, operation := range []string{"complete", "stream"} {
+			t.Run(tt.name+"/"+operation, func(t *testing.T) {
+				stateDir := t.TempDir()
+				logger, err := NewSessionAPILogger(stateDir)
+				if err != nil {
+					t.Fatalf("NewSessionAPILogger: %v", err)
+				}
+				client := NewClient()
+				client.Use(logger)
+
+				suffix := strings.ReplaceAll(tt.name, " ", "-") + "-" + operation
+				sessionID := "sess-preflight-" + suffix
+				group := NewAPIAttemptGroup("ag_preflight_" + strings.ReplaceAll(suffix, "-", "_"))
+				ctx := WithAPILogContext(context.Background(), sessionID, 1)
+				ctx = WithAPIAttemptGroup(ctx, group)
+				var callErr error
+				if operation == "complete" {
+					_, callErr = client.Complete(ctx, tt.req)
+				} else {
+					_, callErr = client.Stream(ctx, tt.req)
+				}
+				if callErr == nil {
+					t.Fatalf("%s succeeded", operation)
+				}
+				group.SettleResult(ctx, callErr)
+				if err := logger.Close(); err != nil {
+					t.Fatalf("Close: %v", err)
+				}
+
+				settlement := readOnlyCanonicalSettlement(t, filepath.Join(stateDir, "sessions", sessionID+".api.jsonl"))
+				if settlement.AttemptGroupID != group.ID || settlement.FinalAttemptID != "" || settlement.FinalAttemptCount != 0 {
+					t.Fatalf("zero-attempt settlement = %+v", settlement)
+				}
+				if settlement.Outcome != apilog.AttemptTransportFail {
+					t.Fatalf("settlement outcome = %q, want %q", settlement.Outcome, apilog.AttemptTransportFail)
+				}
+			})
+		}
 	}
 }
 

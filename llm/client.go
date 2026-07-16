@@ -101,6 +101,7 @@ func (c *Client) ProviderNames() []string {
 // and the selected adapter, and returns the response. The resolved provider
 // name and behavior tag are stamped onto the response and any error.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
+	ctx = c.bindAPIAttemptSinkBeforeDispatch(ctx)
 	if err := req.Validate(); err != nil {
 		return Response{}, err
 	}
@@ -142,6 +143,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 // the selected adapter, and returns a Stream. The resolved provider name and
 // behavior tag are stamped onto stream events and any error.
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
+	ctx = c.bindAPIAttemptSinkBeforeDispatch(ctx)
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
@@ -210,6 +212,29 @@ func (c *Client) Use(mw ...Middleware) {
 		return
 	}
 	c.middleware = append(c.middleware, mw...)
+}
+
+// bindAPIAttemptSinkBeforeDispatch gives a caller-owned logical attempt group
+// its canonical destination before request validation and provider resolution.
+// Provider middleware still owns implicit groups for ordinary direct calls.
+func (c *Client) bindAPIAttemptSinkBeforeDispatch(ctx context.Context) context.Context {
+	group := apiAttemptGroupFromContext(ctx)
+	if group == nil {
+		return ctx
+	}
+	var sink APIAttemptSink
+	for _, middleware := range c.middleware {
+		if candidate, ok := middleware.(APIAttemptSink); ok {
+			sink = candidate
+		}
+	}
+	if sink == nil {
+		return ctx
+	}
+	group.mu.Lock()
+	group.bindSinkLocked(apiAttemptSinkContext{sink: sink})
+	group.mu.Unlock()
+	return WithAPIAttemptSink(ctx, sink)
 }
 
 // Optional adapter interfaces. Adapters may implement these for additional lifecycle
