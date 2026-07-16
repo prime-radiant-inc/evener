@@ -221,14 +221,18 @@ func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
 	}
 	outcome := apilog.AttemptSuccess
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+		if ctx != nil && ctx.Err() != nil {
 			outcome = apilog.AttemptCallerCancel
 		} else {
 			g.mu.Lock()
 			outcome = g.finalOutcome
 			g.mu.Unlock()
 			if outcome == "" {
-				outcome = apilog.AttemptTransportFail
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					outcome = apilog.AttemptCallerCancel
+				} else {
+					outcome = apilog.AttemptTransportFail
+				}
 			}
 		}
 	}

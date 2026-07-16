@@ -204,6 +204,48 @@ func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompl
 	}
 }
 
+func TestAPIAttemptGroupSettlementPreservesProviderTimeoutWithLiveParent(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_provider_timeout")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	timeoutErr := NewRequestTimeoutError("primary", "request timed out", context.DeadlineExceeded)
+
+	attempt := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	attempt.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptProviderTimeout, timeoutErr))
+	group.SettleResult(ctx, timeoutErr)
+
+	_, settlements, _ := sink.snapshot()
+	if len(settlements) != 1 {
+		t.Fatalf("settlements = %d, want 1", len(settlements))
+	}
+	if settlements[0].Outcome != apilog.AttemptProviderTimeout {
+		t.Fatalf("settlement outcome = %q, want %q", settlements[0].Outcome, apilog.AttemptProviderTimeout)
+	}
+}
+
+func TestAPIAttemptGroupSettlementParentCancellationOverridesAttemptOutcome(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_parent_canceled")
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(parent, group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	timeoutErr := NewRequestTimeoutError("primary", "request timed out", context.DeadlineExceeded)
+
+	attempt := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+	attempt.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptProviderTimeout, timeoutErr))
+	cancel()
+	group.SettleResult(ctx, timeoutErr)
+
+	_, settlements, _ := sink.snapshot()
+	if len(settlements) != 1 {
+		t.Fatalf("settlements = %d, want 1", len(settlements))
+	}
+	if settlements[0].Outcome != apilog.AttemptCallerCancel {
+		t.Fatalf("settlement outcome = %q, want %q", settlements[0].Outcome, apilog.AttemptCallerCancel)
+	}
+}
+
 func TestAPIAttemptCompleteWaitsForSynchronousAppend(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
