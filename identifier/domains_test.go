@@ -21,6 +21,7 @@ func TestGeneratedIDDomains(t *testing.T) {
 		{"watch-generation", "wg_", NewWatchGeneration, ValidateWatchGeneration},
 		{"watch-delivery", "wd_", NewWatchDeliveryID, ValidateWatchDeliveryID},
 		{"agent-call", "ag_", NewAgentCallID, ValidateAgentCallID},
+		{"api-attempt", "att_", NewAPIAttemptID, ValidateAPIAttemptID},
 		{"synthetic-call", "call_", NewSyntheticCallID, ValidateSyntheticCallID},
 		{"terminal-generation", "", NewTerminalGeneration, ValidateTerminalGeneration},
 	}
@@ -56,6 +57,7 @@ func TestGeneratedIDValidatorsRejectWrongDomain(t *testing.T) {
 		{"watch-generation", "wg_", NewWatchGeneration, ValidateWatchGeneration},
 		{"watch-delivery", "wd_", NewWatchDeliveryID, ValidateWatchDeliveryID},
 		{"agent-call", "ag_", NewAgentCallID, ValidateAgentCallID},
+		{"api-attempt", "att_", NewAPIAttemptID, ValidateAPIAttemptID},
 		{"synthetic-call", "call_", NewSyntheticCallID, ValidateSyntheticCallID},
 		{"terminal-generation", "", NewTerminalGeneration, ValidateTerminalGeneration},
 	}
@@ -87,7 +89,8 @@ func TestGeneratedIDValidatorsRejectCrossDomain(t *testing.T) {
 	}
 	for name, validate := range map[string]func(string) error{
 		"session": ValidateSessionID, "delegate": ValidateDelegateID, "watch": ValidateWatchID,
-		"agent call": ValidateAgentCallID, "synthetic call": ValidateSyntheticCallID,
+		"agent call": ValidateAgentCallID, "API attempt": ValidateAPIAttemptID,
+		"synthetic call": ValidateSyntheticCallID,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := validate(job); err == nil {
@@ -103,12 +106,30 @@ func TestMustGeneratedIDDomains(t *testing.T) {
 		"delegate": MustNewDelegateID, "delegate generation": MustNewDelegateGeneration,
 		"watch": MustNewWatchID, "watch generation": MustNewWatchGeneration,
 		"watch delivery": MustNewWatchDeliveryID, "agent call": MustNewAgentCallID,
-		"synthetic call": MustNewSyntheticCallID, "terminal generation": MustNewTerminalGeneration,
+		"API attempt": MustNewAPIAttemptID, "synthetic call": MustNewSyntheticCallID,
+		"terminal generation": MustNewTerminalGeneration,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := newID(); got == "" {
 				t.Fatal("returned empty ID")
 			}
 		})
+	}
+}
+
+func TestAPIAttemptGeneratedIDsAreValidAndUnique(t *testing.T) {
+	seen := make(map[string]struct{}, 1000)
+	for range 1000 {
+		id, err := NewAPIAttemptID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ValidateAPIAttemptID(id); err != nil {
+			t.Fatalf("ValidateAPIAttemptID(%q): %v", id, err)
+		}
+		if _, exists := seen[id]; exists {
+			t.Fatalf("duplicate API attempt ID %q", id)
+		}
+		seen[id] = struct{}{}
 	}
 }

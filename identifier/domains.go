@@ -24,6 +24,7 @@ func NewWatchID() (string, error)            { return newDomainID("watch_") }
 func NewWatchGeneration() (string, error)    { return newDomainID("wg_") }
 func NewWatchDeliveryID() (string, error)    { return newDomainID("wd_") }
 func NewAgentCallID() (string, error)        { return newDomainID("ag_") }
+func NewAPIAttemptID() (string, error)       { return newDomainID("att_") }
 func NewSyntheticCallID() (string, error)    { return newDomainID("call_") }
 func NewTerminalGeneration() (string, error) { return newDomainID("") }
 
@@ -36,6 +37,7 @@ func ValidateWatchID(value string) error            { return validateDomainID(va
 func ValidateWatchGeneration(value string) error    { return validateDomainID(value, "wg_") }
 func ValidateWatchDeliveryID(value string) error    { return validateDomainID(value, "wd_") }
 func ValidateAgentCallID(value string) error        { return validateDomainID(value, "ag_") }
+func ValidateAPIAttemptID(value string) error       { return validateDomainID(value, "att_") }
 func ValidateSyntheticCallID(value string) error    { return validateDomainID(value, "call_") }
 func ValidateTerminalGeneration(value string) error { return validateDomainID(value, "") }
 
@@ -56,5 +58,6 @@ func MustNewWatchID() string            { return mustDomainID(NewWatchID) }
 func MustNewWatchGeneration() string    { return mustDomainID(NewWatchGeneration) }
 func MustNewWatchDeliveryID() string    { return mustDomainID(NewWatchDeliveryID) }
 func MustNewAgentCallID() string        { return mustDomainID(NewAgentCallID) }
+func MustNewAPIAttemptID() string       { return mustDomainID(NewAPIAttemptID) }
 func MustNewSyntheticCallID() string    { return mustDomainID(NewSyntheticCallID) }
 func MustNewTerminalGeneration() string { return mustDomainID(NewTerminalGeneration) }
