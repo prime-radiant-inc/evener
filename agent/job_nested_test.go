@@ -2028,6 +2028,105 @@ func TestNestedTerminalForwardRecoveryReplaysStoredTerminal(t *testing.T) {
 	}
 }
 
+func TestRecoverForwardedExhaustedTerminalAfterParentRestart(t *testing.T) {
+	t.Parallel()
+	parentDir := t.TempDir()
+	childDir := t.TempDir()
+	parentSeed, err := newJobManagerNoSync(parentDir, "PARENT", nil)
+	if err != nil {
+		t.Fatalf("new seed parent jobManager: %v", err)
+	}
+	childSeed, err := newJobManagerNoSync(childDir, "CHILD", nil)
+	if err != nil {
+		_ = parentSeed.closeStoreOnly()
+		t.Fatalf("new seed child jobManager: %v", err)
+	}
+
+	startedAt := time.Unix(4400, 0).UTC()
+	jobID := jobstore.NewJobID()
+	started := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		Description:      "exhausted descendant",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		ParentJobID:      "job_PARENTDELEGATE",
+		StartedAt:        &startedAt,
+	}
+	if err := childSeed.store.Append(started); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	if err := parentSeed.forwardEvent(started); err != nil {
+		t.Fatalf("append parent forwarded start: %v", err)
+	}
+	if err := parentSeed.closeStoreOnly(); err != nil {
+		t.Fatalf("close seed parent store: %v", err)
+	}
+
+	endedAt := startedAt.Add(time.Second)
+	terminalGen := jobstore.NewTerminalGeneration()
+	resumable := true
+	if err := childSeed.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobFinished,
+		TS:               endedAt,
+		JobID:            jobID,
+		Status:           jobstore.StatusExhausted,
+		Reason:           "tool_round_budget_exhausted",
+		ExhaustionBudget: string(exhaustedBudgetToolRounds),
+		ExhaustionLimit:  30,
+		Resumable:        &resumable,
+		EndedAt:          &endedAt,
+		TerminalGen:      terminalGen,
+	}); err != nil {
+		t.Fatalf("append child exhausted terminal: %v", err)
+	}
+	if err := childSeed.closeStoreOnly(); err != nil {
+		t.Fatalf("close seed child store: %v", err)
+	}
+
+	parentRestored, err := newJobManagerNoSync(parentDir, "PARENT", nil)
+	if err != nil {
+		t.Fatalf("restore parent jobManager: %v", err)
+	}
+	childRestored, err := newJobManagerNoSync(childDir, "CHILD", nil)
+	if err != nil {
+		_ = parentRestored.closeStoreOnly()
+		t.Fatalf("restore child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = childRestored.closeStoreOnly()
+		_ = parentRestored.closeStoreOnly()
+	})
+	childRestored.forward = parentRestored.forwardEvent
+	childRestored.parentJobID = "job_PARENTDELEGATE"
+
+	if err := childRestored.recoverForwardedTerminalEvents(); err != nil {
+		t.Fatalf("recoverForwardedTerminalEvents: %v", err)
+	}
+	parentRecords, err := parentRestored.store.Load()
+	if err != nil {
+		t.Fatalf("load restored parent store: %v", err)
+	}
+	parentRec := parentRecords[jobID]
+	if parentRec == nil {
+		t.Fatalf("restored parent record missing for %s", jobID)
+	}
+	if parentRec.Status != jobstore.StatusExhausted {
+		t.Fatalf("restored parent status = %q, want %q", parentRec.Status, jobstore.StatusExhausted)
+	}
+	if parentRec.ExhaustionBudget != string(exhaustedBudgetToolRounds) || parentRec.ExhaustionLimit != 30 {
+		t.Fatalf("restored parent exhaustion = %q/%d, want %q/30", parentRec.ExhaustionBudget, parentRec.ExhaustionLimit, exhaustedBudgetToolRounds)
+	}
+	if parentRec.Resumable == nil || !*parentRec.Resumable {
+		t.Fatalf("restored parent resumable = %v, want true", parentRec.Resumable)
+	}
+	if parentRec.TerminalGen != terminalGen {
+		t.Fatalf("restored parent TerminalGen = %q, want %q", parentRec.TerminalGen, terminalGen)
+	}
+}
+
 func TestDeferredRestoreSideEffectsRecoverNestedTerminalForward(t *testing.T) {
 	t.Parallel()
 	var parentNotifications []jobNotification
