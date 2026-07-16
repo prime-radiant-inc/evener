@@ -77,6 +77,82 @@ type responseCloseActionBody struct {
 	closeOnce   sync.Once
 }
 
+type claimedReadAfterCloseBody struct {
+	data          []byte
+	readErr       error
+	readEntered   chan struct{}
+	closeReturned chan struct{}
+	appendEntered <-chan struct{}
+	readDone      chan struct{}
+	closeErr      error
+	wrapper       *apiAttemptResponseBody
+	readOnce      sync.Once
+	closeOnce     sync.Once
+}
+
+func (b *claimedReadAfterCloseBody) Read(p []byte) (int, error) {
+	b.readOnce.Do(func() { close(b.readEntered) })
+	<-b.closeReturned
+	b.wrapper.mu.Lock()
+	closing := b.wrapper.closing
+	b.wrapper.mu.Unlock()
+	if !closing {
+		<-b.appendEntered
+	}
+	n := copy(p, b.data)
+	close(b.readDone)
+	return n, b.readErr
+}
+
+func (b *claimedReadAfterCloseBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closeReturned) })
+	return b.closeErr
+}
+
+type waitForReadAttemptSink struct {
+	mu            sync.Mutex
+	attempts      []apilog.APIAttemptRecord
+	appendEntered chan struct{}
+	readDone      <-chan struct{}
+}
+
+func (s *waitForReadAttemptSink) AppendAttempt(_ context.Context, attempt apilog.APIAttemptRecord) error {
+	close(s.appendEntered)
+	<-s.readDone
+	s.mu.Lock()
+	s.attempts = append(s.attempts, attempt)
+	s.mu.Unlock()
+	return nil
+}
+
+func (*waitForReadAttemptSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	return nil
+}
+
+type countedCloseBody struct {
+	io.Reader
+	mu         sync.Mutex
+	closeCount int
+	firstErr   error
+	nextErr    error
+}
+
+func (b *countedCloseBody) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closeCount++
+	if b.closeCount == 1 {
+		return b.firstErr
+	}
+	return b.nextErr
+}
+
+func (b *countedCloseBody) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCount
+}
+
 func (b *responseCloseActionBody) Close() error {
 	b.closeOnce.Do(func() {
 		if b.closeAction != nil {
@@ -412,6 +488,185 @@ func TestAPIAttemptStreamingTransportClosesVisibleResponseBeforeRequestSnapshot(
 	}
 	if !bytes.Equal(recordedBody, requestBytes) {
 		t.Fatalf("recorded request body = %q, want %q", recordedBody, requestBytes)
+	}
+}
+
+func TestAPIAttemptClaimedCloseWaitsForAdmittedResponseReadBeforeSnapshot(t *testing.T) {
+	readDone := make(chan struct{})
+	sink := &waitForReadAttemptSink{
+		appendEntered: make(chan struct{}),
+		readDone:      readDone,
+	}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_claimed_read_after_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readErr := errors.New("final admitted read error")
+	closeErr := errors.New("visible response close error")
+	body := &claimedReadAfterCloseBody{
+		data:          []byte("final-response-bytes"),
+		readErr:       readErr,
+		readEntered:   make(chan struct{}),
+		closeReturned: make(chan struct{}),
+		appendEntered: sink.appendEntered,
+		readDone:      readDone,
+		closeErr:      closeErr,
+	}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt == nil {
+		t.Fatal("final response did not claim canonical attempt")
+	}
+	sharedBody, ok := response.Body.(*apiAttemptSharedResponseBody)
+	if !ok {
+		t.Fatalf("response body = %T, want shared final body", response.Body)
+	}
+	wrapper, ok := sharedBody.ReadCloser.(*apiAttemptResponseBody)
+	if !ok {
+		t.Fatalf("shared body inner = %T, want canonical attempt body", sharedBody.ReadCloser)
+	}
+	body.wrapper = wrapper
+	readResult := make(chan error, 1)
+	go func() {
+		_, readResultErr := response.Body.Read(make([]byte, len(body.data)))
+		readResult <- readResultErr
+	}()
+	<-body.readEntered
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, readErr, nil)
+	if err := <-readResult; !errors.Is(err, readErr) {
+		t.Fatalf("response Read error = %v, want %v", err, readErr)
+	}
+	sink.mu.Lock()
+	if len(sink.attempts) != 1 {
+		sink.mu.Unlock()
+		t.Fatalf("canonical attempts = %d, want 1", len(sink.attempts))
+	}
+	recorded := sink.attempts[0]
+	sink.mu.Unlock()
+	recordedBody, err := apilog.DecodeBody(recorded.Response.Body)
+	if err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if !bytes.Equal(recordedBody, body.data) {
+		t.Fatalf("recorded response body = %q, want final admitted bytes %q", recordedBody, body.data)
+	}
+	if recorded.Outcome != apilog.AttemptDecodeFail {
+		t.Fatalf("admitted response read outcome = %q, want %q", recorded.Outcome, apilog.AttemptDecodeFail)
+	}
+}
+
+func TestAPIAttemptFinalVisibleBodySharesOneIdempotentClose(t *testing.T) {
+	firstCloseErr := errors.New("first visible close sentinel")
+	duplicateCloseErr := errors.New("duplicate underlying close")
+	underlying := &countedCloseBody{
+		Reader:   strings.NewReader("response"),
+		firstErr: firstCloseErr,
+		nextErr:  duplicateCloseErr,
+	}
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_shared_final_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{
+		Timeout: time.Hour,
+		Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
+		}),
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt == nil || attempt.responseClose == nil {
+		t.Fatal("final response did not bind canonical close ownership")
+	}
+	firstErr := attempt.responseClose()
+	secondErr := response.Body.Close()
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+	thirdErr := response.Body.Close()
+	for i, closeResult := range []error{firstErr, secondErr, thirdErr} {
+		if closeResult != firstCloseErr {
+			t.Fatalf("Close result %d = %v, want identical sentinel %v", i+1, closeResult, firstCloseErr)
+		}
+	}
+	if got := underlying.count(); got != 1 {
+		t.Fatalf("underlying Close count = %d, want exactly 1", got)
+	}
+}
+
+func TestAPIAttemptClaimedResponseRejectsReadAfterTerminalClose(t *testing.T) {
+	underlying := &countedCloseBody{Reader: strings.NewReader("unread-response")}
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_response_read_after_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt == nil {
+		t.Fatal("final response did not claim canonical attempt")
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := response.Body.Read(make([]byte, 1)); !errors.Is(err, http.ErrBodyReadAfterClose) {
+		t.Fatalf("Read after terminal Close error = %v, want %v", err, http.ErrBodyReadAfterClose)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+	if got := underlying.count(); got != 1 {
+		t.Fatalf("underlying Close count = %d, want 1", got)
+	}
+}
+
+func TestAPIAttemptInactiveFinalBodyRemainsUnwrapped(t *testing.T) {
+	underlying := &countedCloseBody{Reader: strings.NewReader("response")}
+	request, err := http.NewRequest(http.MethodGet, "https://provider.test/request", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if attempt != nil {
+		t.Fatal("inactive call returned canonical attempt")
+	}
+	if response.Body != underlying {
+		t.Fatalf("inactive response body = %T/%p, want original %T/%p", response.Body, response.Body, underlying, underlying)
 	}
 }
 

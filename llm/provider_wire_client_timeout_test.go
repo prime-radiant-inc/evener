@@ -163,6 +163,26 @@ type streamCloseResponseBody struct {
 	closeOnce   sync.Once
 }
 
+type closeCountingReadCloser struct {
+	io.Reader
+	mu       sync.Mutex
+	count    int
+	closeErr error
+}
+
+func (b *closeCountingReadCloser) Close() error {
+	b.mu.Lock()
+	b.count++
+	b.mu.Unlock()
+	return b.closeErr
+}
+
+func (b *closeCountingReadCloser) closeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.count
+}
+
 func (b *streamCloseResponseBody) Read([]byte) (int, error) {
 	b.readOnce.Do(func() { close(b.readEntered) })
 	<-b.closed
@@ -250,6 +270,68 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 				t.Fatalf("Stream.Close attempt outcome = %q, want %q", got, apilog.AttemptCallerCancel)
 			}
 		})
+	}
+}
+
+func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
+	for _, provider := range timeoutProviders() {
+		provider := provider
+		for _, streaming := range []bool{false, true} {
+			name := "complete"
+			if streaming {
+				name = "stream"
+			}
+			t.Run(provider.name+"/"+name, func(t *testing.T) {
+				responseBody := provider.completeBody
+				contentType := "application/json"
+				if streaming {
+					responseBody = provider.streamBody
+					contentType = "text/event-stream"
+				}
+				closeErr := errors.New("underlying response close sentinel")
+				body := &closeCountingReadCloser{Reader: strings.NewReader(responseBody), closeErr: closeErr}
+				client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{contentType}},
+						Body:       body,
+					}, nil
+				})}
+				sink := &lockedAttemptSink{}
+				ctx := llm.WithAPIAttemptSink(
+					llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_final_close_once")),
+					sink,
+				)
+				adapter := provider.new("https://provider.test", client)
+				if streaming {
+					stream, err := adapter.Stream(ctx, llm.Request{Model: "test-model", Messages: []llm.Message{llm.User("hello")}})
+					if err != nil {
+						t.Fatalf("Stream: %v", err)
+					}
+					var finish *llm.Response
+					for event := range stream.Events() {
+						if event.Type == llm.StreamEventFinish {
+							finish = event.Response
+						}
+					}
+					if finish == nil {
+						t.Fatal("stream returned no semantic finish")
+					}
+				} else {
+					response, err := adapter.Complete(ctx, llm.Request{Model: "test-model", Messages: []llm.Message{llm.User("hello")}})
+					if err != nil || response.Text() != "hello" {
+						t.Fatalf("Complete = (%q, %v), want hello success", response.Text(), err)
+					}
+				}
+				if got := body.closeCount(); got != 1 {
+					t.Fatalf("underlying response Close count = %d, want exactly 1", got)
+				}
+				attempts := sink.snapshot()
+				if len(attempts) != 1 || attempts[0].Outcome != apilog.AttemptSuccess {
+					t.Fatalf("canonical attempts = %+v, want one semantic success", attempts)
+				}
+			})
+		}
 	}
 }
 

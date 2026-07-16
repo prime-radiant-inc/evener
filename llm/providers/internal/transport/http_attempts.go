@@ -41,7 +41,9 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 	}
 	attempt := roundTripper.claimResponse(response)
 	if attempt != nil {
-		attempt.bindResponseBody(response.Body)
+		sharedBody := &apiAttemptSharedResponseBody{ReadCloser: response.Body}
+		response.Body = sharedBody
+		attempt.bindResponseBody(sharedBody)
 	}
 	return response, attempt, nil
 }
@@ -79,6 +81,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		attempt:    attempt,
 		statusCode: response.StatusCode,
 		closeDone:  make(chan struct{}),
+		readsDone:  make(chan struct{}),
 	}
 	body.associationDone = func() { t.releaseResponse(response, body) }
 	attempt.responseBody = body.snapshot
@@ -197,44 +200,53 @@ type apiAttemptResponseBody struct {
 	attempt    *APIAttemptCapture
 	statusCode int
 
-	mu        sync.Mutex
-	buf       bytes.Buffer
-	readErr   error
-	claimed   bool
-	closing   bool
-	completed bool
-	closeDone chan struct{}
-	closeErr  error
-	doneOnce  sync.Once
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	readErr     error
+	activeReads int
+	claimed     bool
+	closing     bool
+	completed   bool
+	closeDone   chan struct{}
+	readsDone   chan struct{}
+	closeErr    error
+	readsOnce   sync.Once
+	doneOnce    sync.Once
 
 	associationDone func()
 	waitForClose    func(<-chan struct{})
 }
 
 func (b *apiAttemptResponseBody) Read(p []byte) (int, error) {
-	n, err := b.ReadCloser.Read(p)
-	if n > 0 {
-		b.mu.Lock()
-		_, _ = b.buf.Write(p[:n])
+	b.mu.Lock()
+	if b.closing {
 		b.mu.Unlock()
+		return 0, http.ErrBodyReadAfterClose
+	}
+	b.activeReads++
+	b.mu.Unlock()
+
+	n, err := b.ReadCloser.Read(p)
+	b.mu.Lock()
+	if n > 0 {
+		_, _ = b.buf.Write(p[:n])
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
-		b.mu.Lock()
 		if b.readErr == nil {
 			b.readErr = err
 		}
-		b.mu.Unlock()
 	}
+	b.activeReads--
+	if b.closing && b.activeReads == 0 {
+		b.readsOnce.Do(func() { close(b.readsDone) })
+	}
+	b.mu.Unlock()
 	return n, err
 }
 
 func (b *apiAttemptResponseBody) Close() error {
 	b.mu.Lock()
-	claimed := b.claimed
-	closing := b.closing
-	completed := b.completed
-	readErr := b.readErr
-	if closing {
+	if b.closing {
 		closeDone := b.closeDone
 		waitForClose := b.waitForClose
 		b.mu.Unlock()
@@ -248,16 +260,28 @@ func (b *apiAttemptResponseBody) Close() error {
 		b.mu.Unlock()
 		return closeErr
 	}
-	ownsCompletion := !claimed && !closing && !completed
-	if ownsCompletion {
-		b.closing = true
+	b.closing = true
+	claimed := b.claimed
+	if b.activeReads == 0 {
+		b.readsOnce.Do(func() { close(b.readsDone) })
 	}
 	b.mu.Unlock()
-	if !ownsCompletion {
-		return b.ReadCloser.Close()
+	if claimed {
+		closeErr := b.ReadCloser.Close()
+		<-b.readsDone
+		b.mu.Lock()
+		b.closeErr = closeErr
+		b.mu.Unlock()
+		close(b.closeDone)
+		return closeErr
 	}
+
+	<-b.readsDone
+	b.mu.Lock()
+	readErr := b.readErr
+	b.mu.Unlock()
 	if readErr == nil {
-		_, _ = io.Copy(io.Discard, b)
+		_, _ = io.Copy(io.Discard, apiAttemptResponseDrainReader{body: b})
 	}
 	closeErr := b.ReadCloser.Close()
 	b.mu.Lock()
@@ -267,6 +291,34 @@ func (b *apiAttemptResponseBody) Close() error {
 	b.completeUnclaimed(errors.Join(readErr, closeErr))
 	close(b.closeDone)
 	return closeErr
+}
+
+type apiAttemptResponseDrainReader struct {
+	body *apiAttemptResponseBody
+}
+
+func (r apiAttemptResponseDrainReader) Read(p []byte) (int, error) {
+	n, err := r.body.ReadCloser.Read(p)
+	r.body.mu.Lock()
+	if n > 0 {
+		_, _ = r.body.buf.Write(p[:n])
+	}
+	if err != nil && !errors.Is(err, io.EOF) && r.body.readErr == nil {
+		r.body.readErr = err
+	}
+	r.body.mu.Unlock()
+	return n, err
+}
+
+type apiAttemptSharedResponseBody struct {
+	io.ReadCloser
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (b *apiAttemptSharedResponseBody) Close() error {
+	b.closeOnce.Do(func() { b.closeErr = b.ReadCloser.Close() })
+	return b.closeErr
 }
 
 func (b *apiAttemptResponseBody) claim() *APIAttemptCapture {
