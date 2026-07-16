@@ -44,8 +44,9 @@ the area they exercise.
   keyboard navigation via tmux send-keys / capture-pane: arrow
   movement, project collapse/expand, command palette, browse vs
   compose mode, double-Ctrl+C exit (kata `57be`).
-- `state-stuck-processing-display.md` — past session whose last
-  turn errored shows `ended`/`error` not `processing` (kata `r6y9`).
+- `state-stuck-processing-display.md` — deterministic scripted-provider
+  checks prove recoverable failed turns return the owning daemon to `idle`;
+  an optional live check confirms Hub projections follow that owning state.
 - `reconnect-auto-resume.md` — killing the daemon and sending a
   new turn transparently spawns a fresh daemon and replays (katas
   `e465`, `t65c`, `ws5f`, `xcas`).

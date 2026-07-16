@@ -15,7 +15,7 @@ Subagents remain the right abstraction for isolated multi-turn work with tools, 
 - Reuse the existing `llm.Client`, `llm.Request`, `llm.Generate`, `llm.GenerateObject`, and `llm.StreamGenerate` paths instead of inventing a second provider abstraction.
 - Keep helper calls standalone: no subagent job, no child transcript, no task-store mutation, no tool loop unless the caller deliberately uses a lower-level API outside the helper contract.
 - Provide a precise helper API pattern that is thin enough to implement incrementally and test with fake adapters.
-- Preserve existing middleware, provider selection, request validation, usage, adapter timeout/error stamping, and error classification behavior. Helpers built on `llm.Generate`/`StreamGenerate` also use the generate retry path; helpers that call `llm.Client.Complete` directly preserve validation/middleware/provider stamping/error typing only and must wrap retry explicitly if they need it. Complete-based helper calls preserve API logging when the provided client has logging middleware attached; streaming helpers preserve stream middleware, but current API logging middleware does not log streams until `APILogger.WrapStream` is implemented. Active rate limiting should not be implied beyond current rate-limit header parsing/metadata.
+- Preserve existing middleware, provider selection, request validation, usage, adapter timeout/error stamping, and error classification behavior. Helpers built on `llm.Generate`/`StreamGenerate` also use the generate retry path; helpers that call `llm.Client.Complete` directly preserve validation/middleware/provider stamping/error typing only and must wrap retry explicitly if they need it. Complete and streaming helper calls through the instrumented core provider adapters preserve canonical API logging when the provided client has `APILogger` middleware attached; actual adapter attempts record exact request and raw response bodies, and streaming group settlement waits for terminal stream state or `Close`. Active rate limiting should not be implied beyond current rate-limit header parsing/metadata.
 - Make helper calls observable through their owning operation, hook, or session event rather than through `job_list` or delegate/job lifecycle tools.
 - Keep helper prompts bounded, deterministic where possible, and easy to unit test.
 
@@ -41,7 +41,7 @@ LLM package anchors:
 - `llm/retry.go` and `llm/retry_util.go`: existing retry machinery used by high-level generate paths.
 - `llm/ratelimit.go`: current rate-limit header parsing/metadata helpers; do not treat this as an active limiter unless one is added.
 - `llm/classify.go`: error classification (`Classify`) for retry/fallback/permanent behavior. Do not confuse this with label-classification helpers; name any label helper to avoid ambiguity if needed.
-- `llm/apilog.go`: middleware-based API logging support that Complete-based helper calls preserve when the provided client has the middleware attached. Current `APILogger.WrapStream` is a passthrough, so streaming helpers are not API-logged until stream logging is implemented.
+- `llm/apilog.go`: `APILogger.WrapComplete` and `APILogger.WrapStream` attach the canonical attempt sink when the logger is registered with `Client.Use`. Both complete and streaming helpers using instrumented core adapters retain exact adapter-boundary attempt records; `WrapStream` also settles an implicit group on terminal stream state or `Close`.
 
 Session and helper-call anchors:
 
@@ -275,7 +275,7 @@ Standalone helpers must not:
 - automatically read project docs, skills, MCP resources, filesystem paths, URLs, or prior history;
 - execute tools;
 - bypass provider/model policy implemented in the client/request layer;
-- bypass middleware, the intended retry path for the chosen underlying API, rate-limit metadata propagation, Complete-based API logging middleware when attached, stream middleware for streaming helpers, or adapter timeouts.
+- bypass middleware, the intended retry path for the chosen underlying API, rate-limit metadata propagation, canonical API logging for complete or streaming calls through an instrumented core adapter when attached, or adapter timeouts.
 
 Helpers may:
 
@@ -329,7 +329,7 @@ Rules:
 - Existing direct use of `llm.Client.Complete`, `llm.Client.Stream`, `llm.Generate`, `llm.GenerateObject`, and `llm.StreamGenerate` remains supported.
 - Helper APIs are thin wrappers over existing `llm` APIs and do not create a new provider, middleware, retry, stream, or subagent abstraction.
 - Helper calls require `context.Context` and respect cancellation/timeouts.
-- Helper calls use existing request validation, provider resolution, middleware, the intended retry path for the chosen underlying API, rate-limit metadata handling, adapter timeout defaults, Complete-based API logging middleware when attached, stream middleware for streaming helpers, and error classification.
+- Helper calls use existing request validation, provider resolution, middleware, the intended retry path for the chosen underlying API, rate-limit metadata handling, adapter timeout defaults, canonical API logging for complete and streaming calls through instrumented core adapters when attached, and error classification.
 - Helper calls do not create sessions, child transcripts, subagent jobs, task records, or lineage metadata.
 - Tool-free helpers never populate `Tools`, set `ToolChoice` to `none` only where supported, set `MaxToolRounds` to `0` when using `llm.Generate`/stream helpers, and reject any returned passive tool calls.
 - Text/object helpers return usage/model/provider metadata when the adapter provides it, falling back to requested model metadata when response model is empty.

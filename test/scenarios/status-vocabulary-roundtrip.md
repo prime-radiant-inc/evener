@@ -1,10 +1,9 @@
-# status-vocabulary-roundtrip: unified icon/word/color agree across sidebar, thread page, and TUI
+# status-vocabulary-roundtrip: attainable status words and icons agree across sidebar and TUI
 
-**What this covers**: Track A §1 (unified status vocabulary & icons) — the same state must
-render the same icon+tooltip on the web sidebar, the same word on the TUI session-header
-badge, and the same word from `hubapi.StateWord` in both, for the palette v2 mapping (green
-Working, blue Needs-you split into Question-waiting/Your-move, amber Warning, red Error, gray
-Idle/Ended).
+**What this covers**: Track A §1 (unified status vocabulary & icons). The live steps compare
+the attainable your-move and question-waiting states across the web sidebar and TUI session
+header. A deterministic gate pins the complete `hubapi.StateWord` vocabulary, including
+`errored`, without pretending this setup can manufacture every owning runtime state.
 
 ## Pre-state
 
@@ -37,11 +36,14 @@ Idle/Ended).
 3. In the TUI dashboard, filter to the same session (`/` + a suffix of its ID + Enter) and
    press Enter again to open/attach it. Capture the pane and find the `SERF / SESSION` header
    line, which carries the state badge.
-4. Repeat steps 2-3 after forcing the same session into `errored` (a bad prompt / injected
-   failure).
-5. Force a genuine `ask_user` question, re-check both surfaces plus the sidebar's `data-ask`
+4. Force a genuine `ask_user` question, re-check both surfaces plus the sidebar's `data-ask`
    attribute on every row copy, and check whether the TUI dashboard's per-row list (filtered by
    project, *not* opened) shows any ask-specific marker on this session's row.
+5. Run the deterministic vocabulary gate for states that this live setup cannot transition into
+   on demand:
+   ```bash
+   go test ./hubapi -run '^TestStateWord$' -count=1
+   ```
 
 ## Expected
 
@@ -49,9 +51,10 @@ Idle/Ended).
   for the your-move state, `title === "Your move"` and `dataAsk` is absent (`null`) on all
   copies; `hasSvg === true` on all copies.
 - Step 3: the `SERF / SESSION` header's badge line reads `● YOUR MOVE`.
-- Step 4 (errored): sidebar tooltip `"Error"` on every row copy; TUI header badge `● ERROR`.
-- Step 5 (ask-pending): every sidebar row copy reads tooltip `"Question waiting"` and
+- Step 4 (ask-pending): every sidebar row copy reads tooltip `"Question waiting"` and
   `data-ask="true"`; TUI header badge reads `● QUESTION WAITING`.
+- Step 5: the deterministic mapping includes `StateWord("errored", false) == "Error"`. This
+  pins vocabulary only; it does not claim that this scenario produced a live `errored` state.
 - Falsification: if the sidebar tooltip word and the TUI header-badge word ever disagree for
   the same underlying state (e.g. sidebar says "Working" while the TUI still says "ACTIVE"),
   or if two DOM rows for the *same* session ever disagree with each other, the shared
@@ -113,11 +116,10 @@ Idle/Ended).
   will not *notice* this — step 2's all-rows query is written specifically to catch it. Found
   live in this run; same root cause as the TUI gap above (`AskPending` only set on the
   `needs_you` `TreeNode`s in `cmd/serf-hub/internal/hubcore/tree.go`).
-- **Forcing `errored` live could not be verified in this pass.** A bad model name is rejected
-  at spawn time before a session exists, so it is not a reliable state-transition fixture.
-  Do not substitute transcript-tail or API-log heuristics: the owning runtime state is the
-  source of truth. The word/icon mapping itself remains deterministically pinned by
-  `hubapi.TestStateWord` (`hubapi/attention_test.go`), while
-  `TestSession_StreamErrorReturnsSessionToIdle` proves recoverable provider failures return
-  the live session to `idle`. Re-run step 4 live once a deterministic owning-state error
-  injection exists.
+- **Historical result: forcing `errored` live could not be verified in the original pass.** A
+  bad model name was rejected at spawn time before a session existed, and recoverable provider
+  failures return the live session to `idle`. The obsolete procedure has therefore been removed
+  from the runnable steps. Do not substitute transcript-tail or API-log heuristics: the owning
+  runtime state is the source of truth. `hubapi.TestStateWord` pins the vocabulary mapping; a
+  future live `errored` scenario needs a deterministic owning-state transition and should be a
+  separate card.

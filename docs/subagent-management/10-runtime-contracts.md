@@ -255,7 +255,7 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 3. A helper must not execute tools.
 4. A helper must not mutate task stores, session history, plugin agent state, or project docs.
 5. A helper must not run plugin hooks by default. If a future hook handler uses an LLM internally, that is hook-owned behavior and still must obey hook policy.
-6. A helper may reuse provider/profile/model resolution, the retry semantics of its chosen underlying LLM API, rate-limit header metadata, Complete-based API logging middleware when attached, stream middleware for streaming helpers, prompt cache, and usage accounting where safe.
+6. A helper may reuse provider/profile/model resolution, the retry semantics of its chosen underlying LLM API, rate-limit header metadata, canonical API logging for complete and streaming calls through instrumented core adapters when `APILogger` middleware is attached, prompt cache, and usage accounting where safe.
 7. Helper diagnostics belong to the owning operation: tool result metadata, events, debug logs, or SDK callback data. They must not appear in `job_list` or child job status.
 8. Helper prompts must be bounded and testable. Cacheable helper outputs require input hash, prompt version, model/profile version, and relevant option keys in the cache key.
 9. Helper failures are surfaced as part of the owning operation. They should not be reported as child-agent failures.
