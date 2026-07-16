@@ -57,9 +57,14 @@ type APIAttemptResult struct {
 
 type apiAttemptGroupContextKey struct{}
 type apiAttemptSinkContextKey struct{}
+type apiLogCredentialMaterialContextKey struct{}
 
 type apiAttemptSinkContext struct {
 	sink APIAttemptSink
+}
+
+type apiLogCredentialMaterialContext struct {
+	material APILogCredentialMaterial
 }
 
 type apiLogFailureObserverSource interface {
@@ -99,6 +104,7 @@ type APIAttemptGroup struct {
 	finalAttemptCount  int
 	finalOutcome       apilog.AttemptOutcomeClass
 	forensicIncomplete bool
+	credentialMaterial APILogCredentialMaterial
 	settling           bool
 	sinkBound          bool
 	sink               APIAttemptSink
@@ -150,6 +156,7 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 		return &APIAttempt{}
 	}
 	group.bindSinkLocked(state)
+	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)
 	if group.sink == nil {
 		group.mu.Unlock()
 		return &APIAttempt{}
@@ -192,19 +199,14 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 			a.group.finalOutcome = result.Outcome
 		}
 		a.group.mu.Unlock()
-		appendCtx := context.WithoutCancel(a.ctx)
+		appendCtx := withAPILogCredentialMaterial(context.WithoutCancel(a.ctx), meta.CredentialMaterial)
 		if err := a.sink.AppendAttempt(appendCtx, record); err != nil {
-			failureErr := err
-			sanitized := SanitizeErrorForAPILog(err.Error(), meta.CredentialMaterial)
-			if sanitized != err.Error() {
-				failureErr = sanitizedAPILogError{text: sanitized, err: err}
-			}
 			a.group.recordFailure(APILogFailure{
 				Operation:      "append_attempt",
 				SessionID:      apiLogSessionID(a.ctx),
 				AttemptGroupID: a.group.ID,
 				AttemptID:      a.id,
-				Err:            failureErr,
+				Err:            sanitizeAPILogError(err, meta.CredentialMaterial),
 			})
 		}
 	})
@@ -255,6 +257,49 @@ type sanitizedAPILogError struct {
 func (e sanitizedAPILogError) Error() string { return e.text }
 func (e sanitizedAPILogError) Unwrap() error { return e.err }
 
+func sanitizeAPILogError(err error, material APILogCredentialMaterial) error {
+	if err == nil {
+		return nil
+	}
+	sanitized := SanitizeErrorForAPILog(err.Error(), material)
+	if sanitized == err.Error() {
+		return err
+	}
+	return sanitizedAPILogError{text: sanitized, err: err}
+}
+
+func withAPILogCredentialMaterial(ctx context.Context, material APILogCredentialMaterial) context.Context {
+	return context.WithValue(ctx, apiLogCredentialMaterialContextKey{}, apiLogCredentialMaterialContext{material: material})
+}
+
+func apiLogCredentialMaterialFromContext(ctx context.Context) (APILogCredentialMaterial, bool) {
+	if ctx == nil {
+		return APILogCredentialMaterial{}, false
+	}
+	state, ok := ctx.Value(apiLogCredentialMaterialContextKey{}).(apiLogCredentialMaterialContext)
+	return state.material, ok
+}
+
+func mergeAPILogCredentialMaterial(left, right APILogCredentialMaterial) APILogCredentialMaterial {
+	headerNames := make([]string, 0, len(left.HeaderNames)+len(right.HeaderNames))
+	for name := range left.HeaderNames {
+		headerNames = append(headerNames, name)
+	}
+	for name := range right.HeaderNames {
+		headerNames = append(headerNames, name)
+	}
+	queryNames := make([]string, 0, len(left.QueryNames)+len(right.QueryNames))
+	for name := range left.QueryNames {
+		queryNames = append(queryNames, name)
+	}
+	for name := range right.QueryNames {
+		queryNames = append(queryNames, name)
+	}
+	values := append([]string(nil), left.Values...)
+	values = append(values, right.Values...)
+	return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
+}
+
 func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutcomeClass) {
 	if g == nil {
 		return
@@ -283,11 +328,12 @@ func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutc
 		SettledAt:          time.Now().UTC(),
 	}
 	sink := g.sink
+	credentialMaterial := g.credentialMaterial
 	g.mu.Unlock()
 	if sink == nil {
 		return
 	}
-	appendCtx := context.WithoutCancel(ctx)
+	appendCtx := withAPILogCredentialMaterial(context.WithoutCancel(ctx), credentialMaterial)
 	if err := sink.AppendSettlement(appendCtx, settlement); err != nil {
 		g.recordFailure(APILogFailure{
 			Operation:      "append_settlement",

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -140,6 +142,51 @@ func TestAPIAttemptAppendWarningSanitizesOwnedCredentialMaterial(t *testing.T) {
 	}
 	if got := sink.observed[0].Err.Error(); strings.Contains(got, secret) {
 		t.Fatalf("failure warning leaked credential: %q", got)
+	}
+}
+
+func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce(t *testing.T) {
+	const secret = "sync-warning-credential-sentinel"
+	syncErr := errors.New("sync failed for " + secret)
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldSync := apiLogFileSync
+	apiLogFileSync = func(*os.File) error { return syncErr }
+	t.Cleanup(func() {
+		apiLogFileSync = oldSync
+		_ = logger.Close()
+	})
+	var observed []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) {
+		observed = append(observed, failure)
+	})
+	ctx := WithAPIAttemptSink(
+		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_sync_warning_sanitize")),
+		logger,
+	)
+	BeginAPIAttempt(ctx, APIAttemptMeta{
+		StartedAt:          time.Now(),
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
+	}).Complete(APIAttemptResult{
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: time.Now(),
+	})
+
+	if len(observed) != 1 {
+		t.Fatalf("sync failure observer calls = %d, want exactly 1: %+v", len(observed), observed)
+	}
+	if got := observed[0].Err.Error(); strings.Contains(got, secret) {
+		t.Fatalf("sync failure warning leaked credential: %q", got)
+	}
+	if !errors.Is(observed[0].Err, syncErr) {
+		t.Fatalf("sanitized sync warning lost storage error identity: %v", observed[0].Err)
+	}
+
+	apiLogFileSync = oldSync
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
