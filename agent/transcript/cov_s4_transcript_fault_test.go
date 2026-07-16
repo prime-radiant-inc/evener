@@ -324,81 +324,6 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 	}
 }
 
-// --- 3. AppendAPICall ----------------------------------------------------------
-
-func TestAppendAPICall_Success(t *testing.T) {
-	base := afero.NewMemMapFs()
-	w, err := newWriterFS(base, faultTranscriptPath, faultTestHeader())
-	if err != nil {
-		t.Fatalf("newWriterFS: %v", err)
-	}
-	call := APICall{Round: 7, LatencyMs: 42, SystemPrompt: "sp"}
-	if err := w.AppendAPICall(call); err != nil {
-		t.Fatalf("AppendAPICall: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	data, err := afero.ReadFile(base, faultTranscriptPath)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	lines := bytes.Split(bytes.TrimRight(data, "\n"), []byte{'\n'})
-	if len(lines) != 2 {
-		t.Fatalf("lines = %d, want 2 (header + api_call)", len(lines))
-	}
-	var got APICall
-	if err := json.Unmarshal(lines[1], &got); err != nil {
-		t.Fatalf("unmarshal api_call: %v", err)
-	}
-	if got.Kind != "api_call" {
-		t.Fatalf("kind = %q, want api_call", got.Kind)
-	}
-	if got.Seq != 0 || got.Round != 7 || got.LatencyMs != 42 {
-		t.Fatalf("api_call = %+v, want seq 0 / round 7 / latency 42", got)
-	}
-}
-
-// AppendAPICall op indices after newWriterFS consumes 0-3 (SyncInterval == 0):
-//
-//	4 = Write   5 = Sync
-func TestAppendAPICall_WriteFails(t *testing.T) {
-	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(4)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
-	if err != nil {
-		t.Fatalf("newWriterFS: %v", err)
-	}
-	err = w.AppendAPICall(APICall{Round: 1})
-	if err == nil {
-		t.Fatal("expected error from faulted api_call write")
-	}
-	if !strings.HasPrefix(err.Error(), "write transcript api_call") {
-		t.Fatalf("error = %q, want prefix %q", err.Error(), "write transcript api_call")
-	}
-	if !errors.Is(err, fault.ErrInjected) {
-		t.Fatalf("error = %v, want wrapped fault.ErrInjected", err)
-	}
-}
-
-func TestAppendAPICall_SyncFails(t *testing.T) {
-	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes(faultPlan(5)))
-	w, err := newWriterFS(fs, faultTranscriptPath, faultTestHeader())
-	if err != nil {
-		t.Fatalf("newWriterFS: %v", err)
-	}
-	err = w.AppendAPICall(APICall{Round: 1})
-	if err == nil {
-		t.Fatal("expected error from faulted api_call sync")
-	}
-	if !strings.HasPrefix(err.Error(), "sync transcript api_call") {
-		t.Fatalf("error = %q, want prefix %q", err.Error(), "sync transcript api_call")
-	}
-	if !errors.Is(err, fault.ErrInjected) {
-		t.Fatalf("error = %v, want wrapped fault.ErrInjected", err)
-	}
-}
-
 // Nil and closed receivers must swallow every write as a no-op, never panicking
 // or erroring.
 func TestWriter_NilAndClosedNoOps(t *testing.T) {
@@ -410,9 +335,6 @@ func TestWriter_NilAndClosedNoOps(t *testing.T) {
 	}
 	if err := nilW.AppendDurable(turn); err != nil {
 		t.Fatalf("nil AppendDurable: %v", err)
-	}
-	if err := nilW.AppendAPICall(APICall{}); err != nil {
-		t.Fatalf("nil AppendAPICall: %v", err)
 	}
 
 	base := afero.NewMemMapFs()
@@ -426,9 +348,6 @@ func TestWriter_NilAndClosedNoOps(t *testing.T) {
 	// After Close, further writes are no-ops (closed flag short-circuits).
 	if err := w.Append(turn); err != nil {
 		t.Fatalf("closed Append: %v", err)
-	}
-	if err := w.AppendAPICall(APICall{}); err != nil {
-		t.Fatalf("closed AppendAPICall: %v", err)
 	}
 	// The persisted file still holds only the header: the closed writes did nothing.
 	data, err := afero.ReadFile(base, faultTranscriptPath)

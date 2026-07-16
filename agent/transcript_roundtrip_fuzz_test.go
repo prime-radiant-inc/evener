@@ -58,32 +58,29 @@ func jsonEqual(t *testing.T, a, b any) (bool, []byte, []byte) {
 //     mis-tagged content field shows up as a turn divergence.
 //   - ResumeHistory idempotence: re-resuming a resumed history is a fixed point.
 //     A compaction-scan or orphan-repair regression breaks it.
-//   - APICall round-trip fixed point: api_call lines survive AppendAPICall + read
-//     (Seq stripped, since AppendAPICall reassigns it from the writer counter).
 func FuzzTranscriptReplay(f *testing.F) {
 	seeds := []string{
-		// Header + user + assistant(thinking/text/tool_call) + tool_results + api_call.
-		`{"kind":"header","format_version":1,"session_id":"s1","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
+		// Header + user + assistant(thinking/text/tool_call) + tool_results.
+		`{"kind":"header","format_version":2,"session_id":"s1","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"hello"}]},"timestamp":"2026-06-01T10:00:00Z"}}
 {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"thinking","thinking":{"text":"hmm"}},{"kind":"text","text":"hi"},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:01Z"}}
-{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"out","is_error":false}}]},"timestamp":"2026-06-01T10:00:02Z"}}
-{"kind":"api_call","seq":3,"round":0,"ts":"2026-06-01T10:00:03Z","latency_ms":120,"system_prompt":"you are","request":{},"response":{}}`,
+{"kind":"entry","seq":2,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"c1","name":"shell","content":"out","is_error":false}}]},"timestamp":"2026-06-01T10:00:02Z"}}`,
 		// Compaction turn (SUMMARY) exercises the ResumeHistory compaction branch.
-		`{"kind":"header","format_version":1,"session_id":"s2","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
+		`{"kind":"header","format_version":2,"session_id":"s2","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"old"}]},"timestamp":"2026-06-01T10:00:00Z"}}
 {"kind":"entry","seq":1,"turn":{"kind":"SUMMARY","message":{"role":"assistant","content":[{"kind":"text","text":"summary so far"}]},"timestamp":"2026-06-01T10:00:01Z"}}
 {"kind":"entry","seq":2,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"new"}]},"timestamp":"2026-06-01T10:00:02Z"}}`,
 		// Orphaned tool result (no preceding tool_call) exercises orphan repair.
-		`{"kind":"header","format_version":1,"session_id":"s3","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
+		`{"kind":"header","format_version":2,"session_id":"s3","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"orphan","content":"dangling"}}]},"timestamp":"2026-06-01T10:00:00Z"}}`,
 		// Orphaned tool CALL (assistant tool_call with no following tool_result)
 		// forces ResumeHistory to insert a synthetic result (repairs > 0), which
 		// exercises the post-repair re-scan invariant.
-		`{"kind":"header","format_version":1,"session_id":"s5","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
+		`{"kind":"header","format_version":2,"session_id":"s5","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}
 {"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"go"}]},"timestamp":"2026-06-01T10:00:00Z"}}
 {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c9","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:01Z"}}`,
 		// Header only.
-		`{"kind":"header","format_version":1,"session_id":"s4","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}`,
+		`{"kind":"header","format_version":2,"session_id":"s4","created_at":"2026-06-01T10:00:00Z","profile_id":"openai","model":"gpt-5.5"}`,
 		`not a transcript`,
 		``,
 	}
@@ -104,7 +101,6 @@ func FuzzTranscriptReplay(f *testing.F) {
 
 		assertTranscriptWriteReadRoundTrip(t, dir, data)
 		assertResumeHistoryIdempotent(t, data.Entries)
-		assertAPICallRoundTrip(t, dir, data)
 
 		// Also drive the strict child-transcript reader/validator — a separate,
 		// size-bounded, session-pinned decode seam the round-trip path skips. Hit
@@ -149,44 +145,4 @@ func assertResumeHistoryIdempotent(t *testing.T, entries []transcript.Entry) {
 	if eq, a, b := jsonEqual(t, h1, h2); !eq {
 		t.Fatalf("ResumeHistory is not idempotent:\n once =%s\n twice=%s", a, b)
 	}
-}
-
-// assertAPICallRoundTrip checks the api_call persistence fidelity. AppendAPICall
-// reassigns Kind/Seq from the writer counter, so the re-read seqs are 1..N in
-// write order, not the originals; Seq is zeroed on both sides before compare.
-func assertAPICallRoundTrip(t *testing.T, dir string, data transcriptData) {
-	t.Helper()
-	if len(data.APICalls) == 0 {
-		return
-	}
-	out := filepath.Join(dir, "api.jsonl")
-	w, err := transcript.NewWriter(out, data.Header)
-	if err != nil {
-		t.Fatalf("new api writer: %v", err)
-	}
-	for _, c := range data.APICalls {
-		if err := w.AppendAPICall(c); err != nil {
-			t.Fatalf("append api_call: %v", err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("close api writer: %v", err)
-	}
-	reread, err := readTranscriptFull(out)
-	if err != nil {
-		t.Fatalf("re-read api transcript: %v", err)
-	}
-	want := normalizeAPICallSeq(data.APICalls)
-	got := normalizeAPICallSeq(reread.APICalls)
-	if eq, a, b := jsonEqual(t, want, got); !eq {
-		t.Fatalf("api_call round-trip fixed point diverged:\n in =%s\n out=%s", a, b)
-	}
-}
-
-func normalizeAPICallSeq(calls []transcript.APICall) []transcript.APICall {
-	out := append([]transcript.APICall(nil), calls...)
-	for i := range out {
-		out[i].Seq = 0
-	}
-	return out
 }

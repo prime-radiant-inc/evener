@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -33,14 +32,11 @@ func (rt chatCoverageRoundTripper) RoundTrip(*http.Request) (*http.Response, err
 // FuzzOpenAIChatCompletionsCoverage replays branch-focused request and stream
 // shapes. Every transport is in-memory; local-file cases use the fuzz temp dir.
 func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
-	for i := byte(0); i < 19; i++ {
+	for i := byte(0); i < 18; i++ {
 		f.Add(i)
 	}
 
 	f.Fuzz(func(t *testing.T, selector byte) {
-		if raw, ok := chatCompletionsRawBody(bytes.NewBufferString("raw")); !ok || raw != "raw" {
-			t.Fatalf("raw body helper = %q, %v", raw, ok)
-		}
 		tmp := t.TempDir()
 		imagePath := tmp + "/image.unknown"
 		docPath := tmp + "/document.unknown"
@@ -94,7 +90,7 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 			llm.ToolResult("c", "plain", false),
 		})
 
-		switch selector % 19 {
+		switch selector % 18 {
 		case 0, 1, 2, 3, 4, 5:
 			modes := []llm.ToolChoice{
 				{}, {Mode: "none"}, {Mode: "required"}, {Mode: "named", Name: "tool"},
@@ -145,18 +141,6 @@ func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
 				}
 				_ = stream.Close()
 			}
-		case 18:
-			original := chatCompletionsRawBody
-			chatCompletionsRawBody = func(*bytes.Buffer) (string, bool) { return "captured", true }
-			t.Cleanup(func() { chatCompletionsRawBody = original })
-			a := &Adapter{BaseURL: "https://example.test", Client: &http.Client{Transport: chatCoverageRoundTripper{status: 200, body: "data: [DONE]\n\n"}}}
-			stream, err := a.streamViaChatCompletions(context.Background(), req)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for range stream.Events() {
-			}
-			_ = stream.Close()
 		}
 	})
 }

@@ -544,11 +544,6 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
-
-	// Raw HTTP bodies for debugging. Populated only when SERF_LOG_RAW_HTTP=1.
-	// Excluded from JSON serialization to avoid bloating api.jsonl.
-	RawRequestBody  string `json:"-"`
-	RawResponseBody string `json:"-"`
 }
 
 // Text returns the concatenated text content of the response message.

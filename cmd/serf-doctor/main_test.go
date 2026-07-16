@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/internal/plugins"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // fixture writes a session state tree with a runaway-fuse drop, using raw JSONL.
@@ -24,7 +28,7 @@ func fixture(t *testing.T) (base, sid string) {
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), `{"kind":"header","session_id":"`+sid+`"}`+"\n")
+	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), `{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n")
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`"}`)
 
 	jobs := strings.Join([]string{
@@ -54,6 +58,9 @@ func TestRun_LocateHuman(t *testing.T) {
 	if !strings.Contains(out.String(), filepath.Join("sessions", sid, "jobs.jsonl")) {
 		t.Errorf("locate output missing jobs subdir path:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), filepath.Join("sessions", sid+".api.jsonl")) {
+		t.Errorf("locate output missing canonical API log path:\n%s", out.String())
+	}
 }
 
 func TestRun_LocateJSON(t *testing.T) {
@@ -63,13 +70,17 @@ func TestRun_LocateJSON(t *testing.T) {
 		t.Fatal(errb.String())
 	}
 	var p struct {
-		JobsPath string `json:"jobs_path"`
+		JobsPath   string `json:"jobs_path"`
+		APILogPath string `json:"api_log_path"`
 	}
 	if err := json.Unmarshal(out.Bytes(), &p); err != nil {
 		t.Fatalf("invalid json: %v\n%s", err, out.String())
 	}
 	if !strings.HasSuffix(p.JobsPath, filepath.Join("sessions", sid, "jobs.jsonl")) {
 		t.Errorf("jobs_path = %q, want the subdir form", p.JobsPath)
+	}
+	if !strings.HasSuffix(p.APILogPath, filepath.Join("sessions", sid+".api.jsonl")) {
+		t.Errorf("api_log_path = %q, want the sibling canonical API log", p.APILogPath)
 	}
 }
 
@@ -137,8 +148,8 @@ func TestRun_NoSelectorErrors(t *testing.T) {
 	}
 }
 
-// fixtureWithAPILogData writes a session state tree with api_call transcript
-// lines so that cmdAPILog has data to aggregate and filter.
+// fixtureWithAPILogData writes canonical attempts and settlements beside a
+// semantic transcript so cmdAPILog can aggregate and filter them.
 func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	t.Helper()
 	base = t.TempDir()
@@ -148,23 +159,82 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	if err := os.MkdirAll(filepath.Join(sess, sid), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	lines := []string{
-		`{"kind":"header","session_id":"` + sid + `"}`,
-		// Normal call with text and one tool call.
-		`{"kind":"api_call","seq":2,"round":1,"latency_ms":120,"request":{"model":"gpt-test","provider":"openai","message_count":3,"tool_count":5,"endpoint_family":"chat","history_mode":"full_history"},"response":{"model":"gpt-test","finish_reason":"stop","text_length":42,"tool_call_count":1,"usage":{"input_tokens":1000,"output_tokens":200,"total_tokens":1200,"cache_read_tokens":200,"cache_write_tokens":100}}}`,
-		// Empty call (no text, no tools) — used for --empty filter.
-		`{"kind":"api_call","seq":3,"round":2,"latency_ms":80,"request":{"model":"gpt-test","provider":"openai","message_count":2,"tool_count":5,"endpoint_family":"chat","history_mode":"full_history"},"response":{"model":"gpt-test","finish_reason":"stop","text_length":0,"tool_call_count":0,"usage":{"input_tokens":500,"output_tokens":0,"total_tokens":500,"cache_read_tokens":100,"cache_write_tokens":50}}}`,
-		// Error call — used for --errors filter.
-		`{"kind":"api_call","seq":4,"round":3,"latency_ms":200,"request":{"model":"gpt-test","provider":"openai","message_count":2,"tool_count":5,"endpoint_family":"chat","history_mode":"full_history"},"error":"ERROR:"}`,
-		// High uncached input call — used for --cache-spikes filter.
-		`{"kind":"api_call","seq":5,"round":4,"latency_ms":300,"request":{"model":"gpt-test","provider":"openai","message_count":10,"tool_count":5,"endpoint_family":"chat","history_mode":"full_history"},"response":{"model":"gpt-test","finish_reason":"length","text_length":100,"tool_call_count":2,"usage":{"input_tokens":60000,"output_tokens":500,"total_tokens":60500,"cache_read_tokens":1000,"cache_write_tokens":500}}}`,
+	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), `{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n")
+
+	attempts := []apilog.APIAttemptRecord{
+		commandAPIAttempt(1, apilog.AttemptSuccess, 120, 1000, 200, 200, 42, 1),
+		commandAPIAttempt(2, apilog.AttemptSuccess, 80, 500, 0, 100, 0, 0),
+		commandAPIAttempt(3, apilog.AttemptProviderTimeout, 200, 0, 0, 0, 0, 0),
+		commandAPIAttempt(4, apilog.AttemptSuccess, 300, 60000, 500, 1000, 100, 2),
 	}
-	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), strings.Join(lines, "\n")+"\n")
-	// Minimal meta.
+	var lines []string
+	for _, attempt := range attempts {
+		attemptLine, err := json.Marshal(attempt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		settlement := apilog.APIAttemptGroupSettlement{
+			Kind:              "attempt_group_settlement",
+			SchemaVersion:     1,
+			AttemptGroupID:    attempt.AttemptGroupID,
+			FinalAttemptID:    attempt.AttemptID,
+			FinalAttemptCount: 1,
+			Outcome:           attempt.Outcome,
+			SettledAt:         attempt.Timestamp.Add(time.Second),
+		}
+		settlementLine, err := json.Marshal(settlement)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, string(attemptLine), string(settlementLine))
+	}
+	mustWrite(t, filepath.Join(sess, sid+".api.jsonl"), strings.Join(lines, "\n")+"\n")
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"), `{"id":"`+sid+`"}`)
-	// Minimal jobs (no delegate events needed for apilog).
 	mustWrite(t, filepath.Join(sess, sid, "jobs.jsonl"), "")
 	return base, sid
+}
+
+func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency int64, input, output, cacheRead, textLength, toolCalls int) apilog.APIAttemptRecord {
+	attempt := apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   fmt.Sprintf("ag_command_%d", index),
+		AttemptIndex:     1,
+		Timestamp:        time.Unix(int64(index), 0).UTC(),
+		LatencyMS:        latency,
+		ProviderInstance: "openai",
+		RequestModel:     "gpt-test",
+		Request: apilog.APIAttemptRequest{
+			Method:         "POST",
+			Endpoint:       "https://provider.test/v1/responses",
+			Body:           apilog.EncodeBody([]byte("{}")),
+			Model:          "gpt-test",
+			EndpointFamily: "chat",
+			HistoryMode:    "full_history",
+		},
+		Outcome: outcome,
+	}
+	if outcome == apilog.AttemptSuccess {
+		attempt.Response = &apilog.APIAttemptResponse{
+			StatusCode:    200,
+			Body:          apilog.EncodeBody([]byte("{}")),
+			Model:         "gpt-test",
+			FinishReason:  "stop",
+			TextLength:    textLength,
+			ToolCallCount: toolCalls,
+			Usage: apilog.Usage{
+				InputTokens:     input,
+				OutputTokens:    output,
+				TotalTokens:     input + output,
+				CacheReadTokens: &cacheRead,
+			},
+		}
+	} else {
+		attempt.ErrorClass = "timeout"
+		attempt.ErrorMessage = "ERROR:"
+	}
+	return attempt
 }
 
 // treeGrandchildSID is the delegate two hops below the root in
@@ -196,18 +266,14 @@ func fixtureWithTreeData(t *testing.T) (base, sid string) {
 	if err := os.MkdirAll(filepath.Join(sess, grandchildSID), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Header + one api_call for the root transcript.
-	rootLines := []string{
-		`{"kind":"header","session_id":"` + sid + `"}`,
-		`{"kind":"api_call","seq":2,"round":1,"latency_ms":100,"request":{"model":"gpt-test","provider":"openai","message_count":2,"tool_count":5},"response":{"model":"gpt-test","finish_reason":"stop","text_length":10,"tool_call_count":0,"usage":{"input_tokens":100,"output_tokens":50,"total_tokens":150}}}`,
-	}
-	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"), strings.Join(rootLines, "\n")+"\n")
+	mustWrite(t, filepath.Join(sess, sid+".transcript.jsonl"),
+		`{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n")
 	// Child transcript (minimal).
 	mustWrite(t, filepath.Join(sess, childSID+".transcript.jsonl"),
-		`{"kind":"header","session_id":"`+childSID+`"}`+"\n")
+		`{"kind":"header","format_version":2,"session_id":"`+childSID+`"}`+"\n")
 	// Grandchild transcript (minimal).
 	mustWrite(t, filepath.Join(sess, grandchildSID+".transcript.jsonl"),
-		`{"kind":"header","session_id":"`+grandchildSID+`"}`+"\n")
+		`{"kind":"header","format_version":2,"session_id":"`+grandchildSID+`"}`+"\n")
 	// Root meta with observed_by for observer edges.
 	mustWrite(t, filepath.Join(sess, sid+".meta.json"),
 		`{"id":"`+sid+`","observed_by":["`+observerSID+`"]}`)

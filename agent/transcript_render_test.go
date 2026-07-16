@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -316,179 +317,63 @@ func TestRenderMarkdown_UnknownAndSystemTurns(t *testing.T) {
 	})
 }
 
-// buildRawTestTranscript writes a temp JSONL transcript file with a known layout:
-//
-//	line 0: header
-//	line 1: entry0 (entry-pos 0)
-//	line 2: entry1 (entry-pos 1)
-//	line 3: api_call (interleaved between entry1 and entry2)
-//	line 4: entry2 (entry-pos 2)
-//	line 5: entry3 (entry-pos 3)
-//	line 6: corrupt/torn trailing line (not a valid JSON object)
-//
-// Returns the path and the verbatim line strings (without trailing newlines),
-// one per line (indices matching the layout above).
+// buildRawTestTranscript writes a v2 semantic transcript and returns its
+// verbatim lines without trailing newlines.
 func buildRawTestTranscript(t *testing.T) (path string, lines []string) {
 	t.Helper()
 
-	headerLine := `{"kind":"header","format_version":1,"session_id":"test-session","created_at":"2026-01-01T00:00:00Z","profile_id":"p","model":"m"}`
+	headerLine := `{"kind":"header","format_version":2,"session_id":"test-session","created_at":"2026-01-01T00:00:00Z","profile_id":"p","model":"m"}`
 	entry0Line := `{"kind":"entry","seq":0,"turn":{"kind":"user_input","message":{"role":"user","content":[{"kind":"text","text":"turn zero"}]}}}`
 	entry1Line := `{"kind":"entry","seq":1,"turn":{"kind":"user_input","message":{"role":"user","content":[{"kind":"text","text":"turn one"}]}}}`
-	apiCallLine := `{"kind":"api_call","seq":2,"round":1,"ts":"2026-01-01T00:00:01Z","latency_ms":100,"system_prompt":"sys","request":{}}`
-	entry2Line := `{"kind":"entry","seq":3,"turn":{"kind":"assistant","message":{"role":"assistant","content":[{"kind":"text","text":"turn two"}]}}}`
-	entry3Line := `{"kind":"entry","seq":4,"turn":{"kind":"user_input","message":{"role":"user","content":[{"kind":"text","text":"turn three"}]}}}`
-	corruptLine := `{not valid json`
+	entry2Line := `{"kind":"entry","seq":2,"turn":{"kind":"assistant","message":{"role":"assistant","content":[{"kind":"text","text":"turn two"}]}}}`
+	entry3Line := `{"kind":"entry","seq":3,"turn":{"kind":"user_input","message":{"role":"user","content":[{"kind":"text","text":"turn three"}]}}}`
+	verbatim := []string{headerLine, entry0Line, entry1Line, entry2Line, entry3Line}
 
-	verbatim := []string{headerLine, entry0Line, entry1Line, apiCallLine, entry2Line, entry3Line, corruptLine}
-
-	dir := t.TempDir()
-	p := filepath.Join(dir, "test.transcript.jsonl")
-
-	content := strings.Join(verbatim, "\n") + "\n"
-	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+	path = filepath.Join(t.TempDir(), "test.transcript.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(verbatim, "\n")+"\n"), 0o644); err != nil {
 		t.Fatalf("write test transcript: %v", err)
 	}
-
-	return p, verbatim
+	return path, verbatim
 }
 
-// TestRawLinesForRange exercises rawLinesForRange with the spec-documented behavior:
-//   - range [1,2] returns header + entry1 + interleaved api_call + entry2 verbatim
-//   - entry0 and entry3 are excluded
-//   - the api_call within the span is included
-//   - a corrupt trailing line increments skipped, does not error
-func TestRawLinesForRange(t *testing.T) {
+func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 	t.Parallel()
-	t.Run("range [1,2] returns header+entry1+api_call+entry2 verbatim", func(t *testing.T) {
-		path, verbatim := buildRawTestTranscript(t)
-		// verbatim[0]=header, [1]=entry0, [2]=entry1, [3]=api_call, [4]=entry2, [5]=entry3, [6]=corrupt
+	path, verbatim := buildRawTestTranscript(t)
+	content, lineCount, skipped, truncated, err := rawLinesForRange(path, 1, 2)
+	if err != nil {
+		t.Fatalf("rawLinesForRange: %v", err)
+	}
+	if lineCount != 3 || skipped != 0 || truncated {
+		t.Fatalf("lines/skipped/truncated = %d/%d/%v, want 3/0/false", lineCount, skipped, truncated)
+	}
+	got := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	want := []string{verbatim[0], verbatim[2], verbatim[3]}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("range lines = %q, want %q", got, want)
+	}
+	if strings.Contains(content, "turn zero") || strings.Contains(content, "turn three") {
+		t.Fatalf("range leaked excluded entries: %s", content)
+	}
+	if !strings.HasSuffix(content, "\n") {
+		t.Fatalf("output must remain NDJSON: %q", content)
+	}
+}
 
-		content, lineCount, skipped, truncated, err := rawLinesForRange(path, 1, 2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+func TestRawLinesForRangeRejectsMixedOrCorruptTranscript(t *testing.T) {
+	tests := []string{
+		`{"kind":"header","format_version":1,"session_id":"legacy"}` + "\n",
+		`{"kind":"header","format_version":2,"session_id":"mixed"}` + "\n" + `{"kind":"api_call"}` + "\n",
+		`{"kind":"header","format_version":2,"session_id":"corrupt"}` + "\n" + "{not-json}\n",
+	}
+	for _, body := range tests {
+		path := filepath.Join(t.TempDir(), "bad.transcript.jsonl")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
 		}
-
-		// Corrupt line should be counted in skipped.
-		if skipped != 1 {
-			t.Errorf("expected skipped=1 (corrupt line), got %d", skipped)
+		if _, _, _, _, err := rawLinesForRange(path, 0, 1); err == nil {
+			t.Fatalf("rawLinesForRange accepted invalid transcript: %q", body)
 		}
-
-		// Returned lines: header + entry1 + api_call + entry2 = 4 lines.
-		if lineCount != 4 {
-			t.Errorf("expected lineCount=4, got %d", lineCount)
-		}
-
-		// Normal range: no truncation expected.
-		if truncated {
-			t.Errorf("expected truncated=false for normal range, got true")
-		}
-
-		// Verbatim: split output on newlines (trim trailing empty).
-		got := strings.Split(strings.TrimRight(content, "\n"), "\n")
-		if len(got) != 4 {
-			t.Fatalf("expected 4 output lines, got %d: %q", len(got), got)
-		}
-
-		// Line 0 must be the verbatim header.
-		if got[0] != verbatim[0] {
-			t.Errorf("line 0: want %q, got %q", verbatim[0], got[0])
-		}
-		// Line 1 must be verbatim entry1.
-		if got[1] != verbatim[2] {
-			t.Errorf("line 1: want %q (entry1), got %q", verbatim[2], got[1])
-		}
-		// Line 2 must be verbatim api_call.
-		if got[2] != verbatim[3] {
-			t.Errorf("line 2: want %q (api_call), got %q", verbatim[3], got[2])
-		}
-		// Line 3 must be verbatim entry2.
-		if got[3] != verbatim[4] {
-			t.Errorf("line 3: want %q (entry2), got %q", verbatim[4], got[3])
-		}
-	})
-
-	t.Run("entry0 is excluded from range [1,2]", func(t *testing.T) {
-		path, verbatim := buildRawTestTranscript(t)
-		content, _, _, _, err := rawLinesForRange(path, 1, 2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// entry0 text must not appear in the output.
-		if strings.Contains(content, "turn zero") {
-			t.Errorf("entry0 text %q must not appear in range [1,2] output", "turn zero")
-		}
-		_ = verbatim
-	})
-
-	t.Run("entry3 is excluded from range [1,2]", func(t *testing.T) {
-		path, verbatim := buildRawTestTranscript(t)
-		content, _, _, _, err := rawLinesForRange(path, 1, 2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// entry3 text must not appear in the output.
-		if strings.Contains(content, "turn three") {
-			t.Errorf("entry3 text %q must not appear in range [1,2] output", "turn three")
-		}
-		_ = verbatim
-	})
-
-	t.Run("api_call within span is included", func(t *testing.T) {
-		path, verbatim := buildRawTestTranscript(t)
-		content, _, _, _, err := rawLinesForRange(path, 1, 2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		// The api_call line must be present verbatim.
-		if !strings.Contains(content, verbatim[3]) {
-			t.Errorf("api_call line %q must appear in output; got:\n%s", verbatim[3], content)
-		}
-	})
-
-	t.Run("corrupt trailing line increments skipped and does not error", func(t *testing.T) {
-		path, _ := buildRawTestTranscript(t)
-		// Request the full range to exercise all lines including corrupt.
-		_, _, skipped, _, err := rawLinesForRange(path, 0, 3)
-		if err != nil {
-			t.Fatalf("unexpected error with corrupt line: %v", err)
-		}
-		if skipped != 1 {
-			t.Errorf("expected skipped=1, got %d", skipped)
-		}
-	})
-
-	t.Run("range [0,0] returns only header and entry0", func(t *testing.T) {
-		path, verbatim := buildRawTestTranscript(t)
-		content, lineCount, _, _, err := rawLinesForRange(path, 0, 0)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if lineCount != 2 {
-			t.Errorf("expected lineCount=2 (header+entry0), got %d", lineCount)
-		}
-		got := strings.Split(strings.TrimRight(content, "\n"), "\n")
-		if got[0] != verbatim[0] {
-			t.Errorf("line 0: want header, got %q", got[0])
-		}
-		if got[1] != verbatim[1] {
-			t.Errorf("line 1: want entry0, got %q", got[1])
-		}
-		// api_call should NOT appear: it falls after entry1, outside span [0,0].
-		if strings.Contains(content, `"api_call"`) {
-			t.Errorf("api_call must not appear in range [0,0] output")
-		}
-	})
-
-	t.Run("output ends with trailing newline (NDJSON convention)", func(t *testing.T) {
-		path, _ := buildRawTestTranscript(t)
-		content, _, _, _, err := rawLinesForRange(path, 1, 2)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !strings.HasSuffix(content, "\n") {
-			t.Errorf("output should end with newline, got: %q", content)
-		}
-	})
+	}
 }
 
 // buildOvercapTranscript writes a temp JSONL transcript file whose total raw
@@ -503,7 +388,7 @@ func buildOvercapTranscript(t *testing.T) (path string, firstEntryLine string) {
 	// hardCapChars = 200,000; build lines of ~50,000 runes each so 5 lines total ~250k.
 	bigText := strings.Repeat("x", 50000)
 
-	headerLine := `{"kind":"header","format_version":1,"session_id":"cap-test","created_at":"2026-01-01T00:00:00Z","profile_id":"p","model":"m"}`
+	headerLine := `{"kind":"header","format_version":2,"session_id":"cap-test","created_at":"2026-01-01T00:00:00Z","profile_id":"p","model":"m"}`
 
 	// Build entry lines as valid JSON objects with a large text payload.
 	makeEntry := func(seq int, text string) string {

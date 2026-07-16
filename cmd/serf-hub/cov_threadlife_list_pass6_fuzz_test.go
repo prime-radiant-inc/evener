@@ -183,13 +183,9 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		for _, th := range []appwire.Thread{{}, {Source: "remote"}, {Serf: appwire.SerfThread{Ref: "remote:x"}}, {ID: "past", Preview: "past", Path: ".", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}} {
 			_ = threadListSourceID("local", th)
 			_ = mergePastMetadataForList(cfg, "local", th)
-			_ = sanitizeStaleProcessingStatus(cfg, th)
 		}
 		_ = mergePastMetadataForList(hubcore.WebConfig{}, "local", thread)
 		_ = mergePastMetadataForList(cfg, "remote", thread)
-		_ = sanitizeStaleProcessingStatus(hubcore.WebConfig{}, thread)
-		_ = sanitizeStaleProcessingStatus(cfg, appwire.Thread{ID: "past", Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}})
-		_ = sanitizeStaleProcessingStatus(cfg, appwire.Thread{ID: "missing", Source: "local", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}})
 		_ = threadListSourceKey("", "")
 		_ = sourceAllowedForList("local", appwire.ThreadListParams{SourceIDs: []string{"remote", "local"}})
 		_ = sourceExplicitlyRequestedForList("local", appwire.ThreadListParams{SourceIDs: []string{"remote"}})

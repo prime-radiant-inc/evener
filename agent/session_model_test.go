@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
@@ -1640,11 +1639,7 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 	}
 }
 
-// kata 3xbh: when ProcessInput returns the provider error to the caller, the
-// transcript MUST still record the api_call error entry. This preserves the
-// existing observability surface — debug-run, dashboards, the session viewer
-// all rely on the per-round api_call records.
-func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
+func TestSession_ProviderErrorDoesNotRecordAssistantTurn(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1686,80 +1681,10 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
-	// Find the api_call entry that recorded the provider failure.
-	var found *transcript.APICall
-	for i := range data.APICalls {
-		if data.APICalls[i].Error != "" {
-			found = &data.APICalls[i]
-			break
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnAssistant {
+			t.Fatalf("terminal provider failure recorded assistant turn: %+v", entry.Turn)
 		}
-	}
-	if found == nil {
-		t.Fatalf("transcript has no api_call entry with Error set; got %d api_calls", len(data.APICalls))
-	}
-	if !strings.Contains(found.Error, "failed on both endpoints") &&
-		!strings.Contains(found.Error, "openai") {
-		t.Fatalf("api_call.Error does not contain provider failure text: %q", found.Error)
-	}
-}
-
-func TestSession_TranscriptAPICallRecordsFullToolDefinitions(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	c := llm.NewClient()
-	f := &streamingAdapter{
-		name:      "openai",
-		streamErr: llm.ErrorFromHTTPStatus("openai", 500, "boom", nil, nil),
-	}
-	c.Register(f)
-
-	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir:       dir,
-		LLMRetryPolicy: &policy,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	go func() {
-		for range sess.Events() {
-		}
-	}()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
-		t.Fatalf("ProcessInput: got nil error, want provider error")
-	}
-	tpath := sess.TranscriptPath()
-	sess.Close()
-	if tpath == "" {
-		t.Fatal("TranscriptPath is empty")
-	}
-
-	data, err := readTranscriptFull(tpath)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if len(data.APICalls) == 0 {
-		t.Fatalf("no api calls recorded")
-	}
-	req := data.APICalls[0].Request
-	if req.ToolCount == 0 || len(req.Tools) != req.ToolCount {
-		t.Fatalf("request tools not fully recorded: count=%d tools=%+v", req.ToolCount, req.Tools)
-	}
-	var readFile *llm.ToolDefinition
-	for i := range req.Tools {
-		if req.Tools[i].Name == "read_file" {
-			readFile = &req.Tools[i]
-			break
-		}
-	}
-	if readFile == nil {
-		t.Fatalf("read_file tool missing from transcript tools: %+v", req.Tools)
-	}
-	if strings.TrimSpace(readFile.Description) == "" || readFile.Parameters["type"] != "object" {
-		t.Fatalf("read_file definition incomplete: %+v", *readFile)
 	}
 }
 
@@ -1800,28 +1725,6 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	if len(data.APICalls) != 1 {
-		t.Fatalf("api_calls = %d", len(data.APICalls))
-	}
-	call := data.APICalls[0]
-	if call.AttemptIndex != 1 || call.AttemptCount != 1 {
-		t.Fatalf("attempt fields = %+v", call)
-	}
-	if !strings.HasPrefix(call.AttemptGroupID, "ag_") {
-		t.Fatalf("AttemptGroupID = %q", call.AttemptGroupID)
-	}
-	if err := identifier.ValidateAgentCallID(call.AttemptGroupID); err != nil {
-		t.Fatalf("AttemptGroupID %q: %v", call.AttemptGroupID, err)
-	}
-	if call.FinalAttemptCount == nil || *call.FinalAttemptCount != 1 {
-		t.Fatalf("FinalAttemptCount = %v", call.FinalAttemptCount)
-	}
-	if call.HistoryMode != llm.HistoryModeFullHistory {
-		t.Fatalf("HistoryMode = %q", call.HistoryMode)
-	}
-	if call.Request.HistoryMode != llm.HistoryModeFullHistory {
-		t.Fatalf("request HistoryMode = %q", call.Request.HistoryMode)
-	}
 	if len(data.Entries) == 0 {
 		t.Fatalf("no transcript entries")
 	}
@@ -1843,6 +1746,12 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" {
 		t.Fatalf("assistant response metadata = %+v", assistant)
 	}
+	if !strings.HasPrefix(assistant.AttemptGroupID, "ag_") {
+		t.Fatalf("AttemptGroupID = %q", assistant.AttemptGroupID)
+	}
+	if err := identifier.ValidateAgentCallID(assistant.AttemptGroupID); err != nil {
+		t.Fatalf("AttemptGroupID %q: %v", assistant.AttemptGroupID, err)
+	}
 	if assistant.ResponseContextMarker != "" ||
 		assistant.ResponseRequestFingerprint != "" ||
 		assistant.ResponseStorageScopeFingerprint != "" {
@@ -1850,7 +1759,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	}
 }
 
-func TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest(t *testing.T) {
+func TestSingleAttemptRequestMetadataCreatesSemanticGroup(t *testing.T) {
 	req, attempt := singleAttemptRequestMetadata(llm.Request{
 		Model:       "gpt-5.2",
 		Provider:    "openai",
@@ -1860,17 +1769,14 @@ func TestSingleAttemptRequestMetadataKeepsAttemptCountersOffRequest(t *testing.T
 		},
 	})
 
-	if attempt.AttemptIndex != 1 || attempt.AttemptCount != 1 {
-		t.Fatalf("attempt counters = %+v", attempt)
-	}
 	if !strings.HasPrefix(attempt.AttemptGroupID, "ag_") {
 		t.Fatalf("AttemptGroupID = %q", attempt.AttemptGroupID)
 	}
 	if req.Continuation == nil || req.Continuation.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
 		t.Fatalf("request continuation = %+v", req.Continuation)
 	}
-	if got := llm.BuildAPILogRequest(req); got.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
-		t.Fatalf("APILogRequest.PreviousResponseIDHash = %q", got.PreviousResponseIDHash)
+	if attempt.PreviousResponseIDHash != "cont-handle-v1:response_id:abc" {
+		t.Fatalf("PreviousResponseIDHash = %q", attempt.PreviousResponseIDHash)
 	}
 }
 
@@ -1945,11 +1851,7 @@ func TestProviderErrorEmitsStructuredCause(t *testing.T) {
 	}
 }
 
-// kata ts0x (regression lock): the structured Cause on EventError must NOT
-// suppress the existing transcript api_call entry. Consumers that already
-// rely on the api_call.Error field (debug-run, dashboards, session viewer)
-// must continue to see the raw adapter error text.
-func TestProviderErrorTranscriptEntryStillRecorded(t *testing.T) {
+func TestProviderErrorTranscriptRemainsSemanticOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -1987,18 +1889,10 @@ func TestProviderErrorTranscriptEntryStillRecorded(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
-	var found *transcript.APICall
-	for i := range data.APICalls {
-		if data.APICalls[i].Error != "" {
-			found = &data.APICalls[i]
-			break
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnAssistant {
+			t.Fatalf("provider error recorded assistant turn: %+v", entry.Turn)
 		}
-	}
-	if found == nil {
-		t.Fatalf("transcript has no api_call entry with Error set; got %d api_calls", len(data.APICalls))
-	}
-	if !strings.Contains(found.Error, "openai") {
-		t.Fatalf("api_call.Error does not retain raw adapter detail: %q", found.Error)
 	}
 }
 

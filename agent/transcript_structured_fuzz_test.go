@@ -25,8 +25,8 @@ import (
 // followed by a legal sequence of entries covering EVERY turn kind
 // (USER_INPUT/STEERING/ASSISTANT/TOOL/TOOL_RESULTS/SYSTEM/CHECKPOINT/SUMMARY) and
 // every content-part kind (text/thinking/redacted_thinking/tool_call/tool_result/
-// image/audio/document/web_search), interleaved with api_call lines — so the
-// fuzzer spends its budget inside readTranscriptFull, the strict child reader,
+// image/audio/document/web_search), so the fuzzer spends its budget inside
+// readTranscriptFull, the strict child reader,
 // ResumeHistory, and repairOrphanedToolResults rather than in the JSON tokenizer.
 //
 // Adversarial content lives where the typed decoders accept it: tool_call/result
@@ -53,12 +53,6 @@ func generateTranscript(s schemagen.Source) ([]byte, error) {
 		return nil, err
 	}
 	for i := 0; i < n; i++ {
-		if s.Bool("emit_api_call") {
-			if err := g.emit(g.apiCall()); err != nil {
-				return nil, err
-			}
-			continue
-		}
 		if err := g.emit(g.entry()); err != nil {
 			return nil, err
 		}
@@ -150,7 +144,7 @@ func (g *transcriptGen) header() map[string]any {
 	s := g.s
 	h := map[string]any{
 		"kind":           "header",
-		"format_version": pick(s, []int{1, 0, 2}, "format_version"),
+		"format_version": 2,
 		"session_id":     pick(s, transcriptSessions, "session_id"),
 		"created_at":     g.timestamp("created_at"),
 		"profile_id":     pick(s, transcriptProfiles, "profile_id"),
@@ -498,50 +492,6 @@ func (g *transcriptGen) usage() map[string]any {
 	return u
 }
 
-func (g *transcriptGen) apiCall() map[string]any {
-	s := g.s
-	req := map[string]any{
-		"model":         pick(s, transcriptModels, "ac_req_model"),
-		"provider":      pick(s, transcriptProfiles, "ac_req_provider"),
-		"message_count": s.IntRange(0, 500, "ac_msg_count"),
-		"tool_count":    s.IntRange(0, 50, "ac_tool_count"),
-	}
-	if s.Bool("ac_tool_names") {
-		req["tool_names"] = g.toolNameList()
-	}
-	if s.Bool("ac_effort") {
-		req["reasoning_effort"] = pick(s, []string{"low", "medium", "high", "none", ""}, "ac_effort_v")
-	}
-
-	call := map[string]any{
-		"kind":          "api_call",
-		"seq":           g.nextSeq(),
-		"round":         s.IntRange(0, 20, "ac_round"),
-		"ts":            g.timestamp("ac_ts"),
-		"latency_ms":    s.IntRange(0, 600000, "ac_latency"),
-		"system_prompt": s.String("ac_sysprompt"),
-		"request":       req,
-	}
-	if s.Bool("ac_with_response") {
-		resp := map[string]any{
-			"model":           pick(s, transcriptModels, "ac_resp_model"),
-			"finish_reason":   pick(s, []string{"stop", "length", "tool_calls", "error", ""}, "ac_finish"),
-			"text_length":     s.IntRange(0, 100000, "ac_textlen"),
-			"tool_call_count": s.IntRange(0, 50, "ac_tcc"),
-			"usage":           g.usage(),
-			// APILogResponse.Raw is map[string]any; supply an object.
-			"raw": map[string]any{"k": schemagen.Value(s, nil, g.mode("ac_raw_mode"))},
-		}
-		call["response"] = resp
-	} else if s.Bool("ac_with_error") {
-		call["error"] = s.String("ac_error")
-		call["source"] = s.String("ac_source")
-		call["title"] = s.String("ac_title")
-		call["hint"] = s.String("ac_hint")
-	}
-	return call
-}
-
 func (g *transcriptGen) toolNameList() []any {
 	n := g.s.IntRange(0, 4, "n_tool_names")
 	out := make([]any, 0, n)
@@ -588,7 +538,7 @@ var transcriptStructuredSeeds = [][]byte{
 // synthesize a valid-but-adversarial transcript, then drives it through the REAL
 // readTranscriptFull / write-read / ResumeHistory / strict-child-reader path and
 // asserts the IDENTICAL oracles as the raw-byte target: never panic, write→read
-// round-trip fixed point, ResumeHistory idempotence, and api_call round-trip.
+// round-trip fixed point and ResumeHistory idempotence.
 // Because the transcripts are structurally valid, this target reaches the entry
 // decoders, orphan-repair, and compaction-scan logic that random bytes almost
 // never construct — see TestStructuredTranscriptReachesDeeper for the gap. A
@@ -617,7 +567,6 @@ func FuzzTranscriptReplayStructured(f *testing.F) {
 
 		assertTranscriptWriteReadRoundTrip(t, dir, d)
 		assertResumeHistoryIdempotent(t, d.Entries)
-		assertAPICallRoundTrip(t, dir, d)
 
 		sid := d.Header.SessionID
 		_, _ = readStrictChildTranscript(inPath, sid, transcriptJSONLMaxLineBytes)

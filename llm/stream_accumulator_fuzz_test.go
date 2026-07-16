@@ -86,7 +86,6 @@ func FuzzStreamAccumulator(f *testing.F) {
 			ID: "response-id", Model: "model", Provider: "provider", Raw: map[string]any{"raw": true},
 			Finish: FinishReason{Reason: FinishReasonStop}, Usage: Usage{InputTokens: 1},
 			Warnings: []Warning{{Message: "warning"}}, RateLimit: &RateLimitInfo{},
-			RawRequestBody: "request", RawResponseBody: "response",
 		}
 		acc.Process(StreamEvent{Type: StreamEventFinish, Response: &meta})
 		resp := acc.Response()

@@ -2,7 +2,6 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -131,6 +130,112 @@ func TestSessionAPILoggerCanonicalRoutesPerSession(t *testing.T) {
 	}
 	assertOnlyCanonicalAttempt(t, filepath.Join(stateDir, "sessions", "sess-a.api.jsonl"), first.AttemptID)
 	assertOnlyCanonicalAttempt(t, filepath.Join(stateDir, "sessions", "sess-b.api.jsonl"), second.AttemptID)
+}
+
+func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_unattributed", 1)); err != nil {
+		t.Fatalf("append missing session: %v", err)
+	}
+	unsafeCtx := WithAPILogContext(context.Background(), "../evil", 1)
+	if err := logger.AppendAttempt(unsafeCtx, standaloneCanonicalAttempt("ag_unsafe", 1)); err != nil {
+		t.Fatalf("append unsafe session: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := canonicalRecordCount(t, filepath.Join(stateDir, "sessions", "unattributed.api.jsonl")); got != 2 {
+		t.Fatalf("unattributed record count = %d, want 2", got)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "evil.api.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("unsafe session escaped sessions directory: %v", err)
+	}
+}
+
+func TestAPILoggerCanonicalPeriodicSync(t *testing.T) {
+	t.Run("interval retains dirty records until close", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "api.jsonl")
+		logger, err := NewAPILogger(path)
+		if err != nil {
+			t.Fatalf("NewAPILogger: %v", err)
+		}
+		logger.SyncInterval = time.Hour
+		for index := 1; index <= 5; index++ {
+			if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_periodic", index)); err != nil {
+				t.Fatalf("AppendAttempt %d: %v", index, err)
+			}
+		}
+		logger.mu.Lock()
+		dirty := len(logger.dirty)
+		logger.mu.Unlock()
+		if dirty != 1 {
+			t.Fatalf("dirty files = %d, want 1", dirty)
+		}
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if got := canonicalRecordCount(t, path); got != 5 {
+			t.Fatalf("record count after close = %d, want 5", got)
+		}
+	})
+
+	t.Run("zero interval syncs every append", func(t *testing.T) {
+		logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+		if err != nil {
+			t.Fatalf("NewAPILogger: %v", err)
+		}
+		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_immediate", 1)); err != nil {
+			t.Fatalf("AppendAttempt: %v", err)
+		}
+		logger.mu.Lock()
+		dirty := len(logger.dirty)
+		logger.mu.Unlock()
+		if dirty != 0 {
+			t.Fatalf("dirty files = %d, want 0", dirty)
+		}
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+
+	t.Run("expired interval syncs pending records", func(t *testing.T) {
+		logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+		if err != nil {
+			t.Fatalf("NewAPILogger: %v", err)
+		}
+		logger.SyncInterval = time.Hour
+		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_expired", 1)); err != nil {
+			t.Fatalf("first AppendAttempt: %v", err)
+		}
+		logger.mu.Lock()
+		logger.lastSync = time.Now().Add(-2 * time.Hour)
+		logger.mu.Unlock()
+		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_expired", 2)); err != nil {
+			t.Fatalf("second AppendAttempt: %v", err)
+		}
+		logger.mu.Lock()
+		dirty := len(logger.dirty)
+		logger.mu.Unlock()
+		if dirty != 0 {
+			t.Fatalf("dirty files = %d, want 0", dirty)
+		}
+		if err := logger.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+}
+
+func TestStampEndpointURL(t *testing.T) {
+	StampEndpointURL(nil, "https://example.invalid/api")
+	resp := &Response{Raw: map[string]any{"other": 1}}
+	StampEndpointURL(resp, "https://example.invalid/api")
+	if resp.Raw["endpoint_url"] != "https://example.invalid/api" || resp.Raw["other"] != 1 {
+		t.Fatalf("stamped response raw metadata = %+v", resp.Raw)
+	}
 }
 
 func TestAPILoggerCloseWaitsForAdmittedCanonicalAppendAndRejectsLateAppend(t *testing.T) {
@@ -306,37 +411,114 @@ func TestAPILoggerCloseObservesPendingCanonicalSyncFailureIdentity(t *testing.T)
 	}
 }
 
-func TestAPILoggerOrdinaryMiddlewareStillWritesOnlyLegacyFormat(t *testing.T) {
+func TestAPILoggerOrdinaryMiddlewareCreatesAndSettlesCanonicalGroup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
 	if err != nil {
 		t.Fatalf("NewAPILogger: %v", err)
 	}
-	want := Response{ID: "legacy-response", Model: "model-a", Provider: "primary", Message: Assistant("ok"), Finish: FinishReason{Reason: FinishReasonStop}}
-	got, err := logger.WrapComplete(func(context.Context, Request) (Response, error) { return want, nil })(context.Background(), Request{Model: "model-a", Provider: "primary"})
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	want := Response{ID: "canonical-response", Model: "model-a", Provider: "primary", Message: Assistant("ok"), Finish: FinishReason{Reason: FinishReasonStop}}
+	got, err := logger.WrapComplete(func(ctx context.Context, _ Request) (Response, error) {
+		BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+		return want, nil
+	})(context.Background(), Request{Model: "model-a", Provider: "primary"})
 	if err != nil || got.ID != want.ID {
 		t.Fatalf("WrapComplete = (%+v, %v)", got, err)
 	}
 	if err := logger.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	data, err := os.ReadFile(path)
+	assertCanonicalAttemptAndSettlement(t, path)
+}
+
+func TestAPILoggerOrdinaryMiddlewareSettlesZeroAttemptFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	logger, err := NewAPILogger(path)
 	if err != nil {
-		t.Fatalf("read legacy API log: %v", err)
+		t.Fatalf("NewAPILogger: %v", err)
 	}
-	line := []byte(strings.TrimSuffix(string(data), "\n"))
-	var envelope struct {
-		Kind    string          `json:"kind"`
-		Request json.RawMessage `json:"request"`
+	wantErr := errors.New("request rejected before transport")
+	_, gotErr := logger.WrapComplete(func(context.Context, Request) (Response, error) {
+		return Response{}, wantErr
+	})(context.Background(), Request{})
+	if !errors.Is(gotErr, wantErr) {
+		t.Fatalf("WrapComplete error = %v, want %v", gotErr, wantErr)
 	}
-	if err := json.Unmarshal(line, &envelope); err != nil {
-		t.Fatalf("decode legacy entry: %v", err)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
-	if envelope.Kind != "" || len(envelope.Request) == 0 {
-		t.Fatalf("ordinary middleware emitted non-legacy envelope: %s", line)
+
+	settlement := readOnlyCanonicalSettlement(t, path)
+	if settlement.FinalAttemptID != "" || settlement.FinalAttemptCount != 0 || settlement.Outcome != apilog.AttemptTransportFail {
+		t.Fatalf("zero-attempt settlement = %+v", settlement)
 	}
-	if record, err := apilog.DecodeRecord(line); err == nil {
-		t.Fatalf("ordinary middleware emitted canonical record %T", record)
+}
+
+func TestAPILoggerStreamSettlesOnlyAfterTerminalEventAndAttemptAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	inner := &controlledAPILogStream{events: make(chan StreamEvent, 1)}
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	var callCtx context.Context
+	stream, err := logger.WrapStream(func(ctx context.Context, _ Request) (Stream, error) {
+		callCtx = ctx
+		return inner, nil
+	})(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("WrapStream: %v", err)
+	}
+	if got := canonicalRecordCount(t, path); got != 0 {
+		t.Fatalf("records after stream handle return = %d, want 0", got)
+	}
+
+	attempt := BeginAPIAttempt(callCtx, testAPIAttemptMeta(startedAt))
+	attempt.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+	inner.events <- StreamEvent{Type: StreamEventFinish}
+	close(inner.events)
+	for range stream.Events() {
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("stream Close: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("logger Close: %v", err)
+	}
+	assertCanonicalAttemptAndSettlement(t, path)
+	settlement := readOnlyCanonicalSettlement(t, path)
+	if settlement.FinalAttemptID == "" || settlement.FinalAttemptCount != 1 || settlement.Outcome != apilog.AttemptSuccess {
+		t.Fatalf("stream settlement = %+v", settlement)
+	}
+}
+
+type controlledAPILogStream struct {
+	events chan StreamEvent
+}
+
+func (s *controlledAPILogStream) Events() <-chan StreamEvent { return s.events }
+func (s *controlledAPILogStream) Close() error               { return nil }
+
+func canonicalRecordCount(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open canonical API log: %v", err)
+	}
+	defer f.Close()
+	decoder := apilog.NewDecoder(f, 1<<20)
+	count := 0
+	for {
+		_, err := decoder.Next()
+		if errors.Is(err, io.EOF) {
+			return count
+		}
+		if err != nil {
+			t.Fatalf("decode canonical API log: %v", err)
+		}
+		count++
 	}
 }
 

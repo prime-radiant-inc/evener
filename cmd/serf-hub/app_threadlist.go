@@ -8,7 +8,6 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/identifier"
 )
 
@@ -39,7 +38,6 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 				}
 			}
 			thread = mergePastMetadataForList(cfg, source.ID(), thread)
-			thread = sanitizeStaleProcessingStatus(cfg, thread)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -54,7 +52,10 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
 			}
-			thread := pastEntryThread(cfg, entry, false)
+			thread, err := pastEntryThread(cfg, entry, false)
+			if err != nil {
+				return appwire.ThreadListResponse{}, err
+			}
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -174,7 +175,10 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 	if !ok {
 		return live
 	}
-	past := pastEntryThread(cfg, entry, false)
+	past, err := pastEntryThread(cfg, entry, false)
+	if err != nil {
+		return live
+	}
 	if live.ID == "" {
 		live.ID = past.ID
 	}
@@ -268,40 +272,4 @@ func normalizeThreadListStatusFilter(status string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}
-}
-
-// sanitizeStaleProcessingStatus rewrites a thread's status when the live
-// source claims the session is active but hubcore.WedgedStatus finds it
-// wedged (see that doc for the underlying agent-loop gap this compensates
-// for, kata r6y9) — otherwise hub readers conclude "active" and the
-// workspace UI disables steer/send forever. Only local-source threads are
-// checked: other sources have no past index entry, and therefore no
-// transcript to inspect.
-func sanitizeStaleProcessingStatus(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
-	if cfg.Past == nil {
-		return thread
-	}
-	if thread.Status.Type != appwire.ThreadStatusActive {
-		return thread
-	}
-	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
-	if threadID == "" {
-		return thread
-	}
-	if thread.Serf.Ref != "" {
-		ref, err := appwire.ParseRef(thread.Serf.Ref)
-		if err == nil && ref.SourceID != "" && ref.SourceID != "local" {
-			return thread
-		}
-	} else if thread.Source != "" && thread.Source != "local" {
-		return thread
-	}
-	entry, ok := cfg.Past.Find(threadID)
-	if !ok {
-		return thread
-	}
-	if hubcore.WedgedStatus(entry) {
-		thread.Status = appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError}
-	}
-	return thread
 }

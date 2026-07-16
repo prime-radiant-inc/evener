@@ -19,8 +19,6 @@ import (
 	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
-var responsesRawBodyEnabled = llm.RawBodyEnabled
-
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	instructions, inputItems, err := toResponsesInput(req.Messages, req.Model)
 	if err != nil {
@@ -283,7 +281,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("responses.create(stream) failed: %v", raw)
-		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		returnedErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {
 			decodeErr = readErr
@@ -337,12 +335,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 
 	var sseBody io.Reader = resp.Body
 	var sseBuf *bytes.Buffer
-	if responsesRawBodyEnabled() || attempt.Active() {
+	if attempt.Active() {
 		sseBuf = &bytes.Buffer{}
 		sseBody = io.TeeReader(resp.Body, sseBuf)
 	}
-	rawReqBody := string(b)
-
 	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 		if len(ev.Data) == 0 {
 			return nil
@@ -585,10 +581,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			}
 			sentContent = true
 			rp := r
-			if sseBuf != nil {
-				rp.RawRequestBody = rawReqBody
-				rp.RawResponseBody = sseBuf.String()
-			}
 			event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
 			if attempt.Active() {
 				finalEvent = &event

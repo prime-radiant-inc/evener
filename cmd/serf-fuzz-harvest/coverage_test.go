@@ -66,7 +66,13 @@ func scenarioMixedSurfaceFixtures(t *testing.T) {
 	mustHarvestWrite(t, http, "bad\n"+marshalLine(t, recordedHTTPRequest{Method: "POST", Path: "/health"})+"\n"+marshalLine(t, recordedHTTPRequest{Method: "GET", Path: "/health"})+"\n")
 	harvestHTTP(r, []string{http})
 	api := filepath.Join(d, "api.jsonl")
-	entries := []string{"bad", marshalLine(t, llm.APIRawLogEntry{Mode: "sync"}), marshalLine(t, llm.APIRawLogEntry{Mode: "stream", Provider: "anthropic", ResponseBody: "data: {\"type\":\"x\"}\n\n"}), marshalLine(t, llm.APIRawLogEntry{Mode: "stream", Provider: "google", ResponseBody: "data: {}\n\n"}), marshalLine(t, llm.APIRawLogEntry{Mode: "stream", Provider: "openai-compatible", ResponseBody: "data: {}\n\n"}), marshalLine(t, llm.APIRawLogEntry{Mode: "stream", Provider: "unknown", ResponseBody: "{}"})}
+	entries := []string{
+		canonicalAPIAttemptLine(t, "anthropic", []byte("data: {\"type\":\"x\"}\n\n")),
+		canonicalAPIAttemptLine(t, "google", []byte("data: {}\n\n")),
+		canonicalAPIAttemptLine(t, "openai-compatible", []byte("data: {}\n\n")),
+		canonicalAPIAttemptLine(t, "unknown", []byte("{}")),
+		"bad",
+	}
 	mustHarvestWrite(t, api, strings.Join(entries, "\n")+"\n")
 	harvestSSE(r, san, []string{api})
 	entry := transcript.Entry{Kind: "entry", Turn: schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "x"}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Name: "unknown"}}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{Name: "known", Arguments: nil}}}}}}
@@ -156,8 +162,8 @@ func scenarioHarvestLeakExitAndSmallHelpers(t *testing.T) {
 	t.Cleanup(func() { harvestDiscoverSources = oldDiscover })
 	d := t.TempDir()
 	api := filepath.Join(d, "api.jsonl")
-	mustHarvestWrite(t, api, marshalLine(t, llm.APIRawLogEntry{Mode: "stream", Provider: "unknown", ResponseBody: `{"x":"Zk9q3SxV1pLmTtRwYbNcHgJdFeUoIa72Qw0PzXyB"}`})+"\n")
-	harvestDiscoverSources = func(string) (recordedSources, error) { return recordedSources{sse: []string{api}}, nil }
+	mustHarvestWrite(t, api, canonicalAPIAttemptLine(t, "unknown", []byte("data: {\"x\":\"Zk9q3SxV1pLmTtRwYbNcHgJdFeUoIa72Qw0PzXyB\"}\n\n"))+"\n")
+	harvestDiscoverSources = func(string) (recordedSources, error) { return recordedSources{apiLogs: []string{api}}, nil }
 	t.Setenv(envvars.SERFFuzzCaptureEnv.Name, "yes")
 	var out, errOut bytes.Buffer
 	if got := run([]string{"--keep-values", "--surface", "sse", "--state-dir", d, "--dry-run"}, &out, &errOut); got != 1 {

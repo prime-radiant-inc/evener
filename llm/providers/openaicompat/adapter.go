@@ -266,7 +266,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 	if wire.status != http.StatusOK {
 		msg := extractErrorMessage(wire.raw)
 		retryAfter := llm.ParseRetryAfter(wire.headers.Get("Retry-After"), time.Now())
-		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", wire.status, msg, wire.raw, retryAfter, string(wire.rawReqBody), string(wire.rawRespBody))
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", wire.status, msg, wire.raw, retryAfter)
 	}
 
 	resp, err := fromChatCompletionResponse(wire.raw, a.compatFor(req.Model).Quirks)
@@ -276,10 +276,6 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 	}
 	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions")
 	resp.RateLimit = llm.ParseRateLimitHeaders(wire.headers)
-	if llm.RawBodyEnabled() {
-		resp.RawRequestBody = string(wire.rawReqBody)
-		resp.RawResponseBody = string(wire.rawRespBody)
-	}
 	return resp, nil
 }
 
@@ -349,7 +345,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		jsonErr := json.Unmarshal(b, &raw)
 		msg := extractErrorMessage(raw)
 		retryAfter := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai-compatible", resp.StatusCode, msg, raw, retryAfter, string(jsonBody), string(b))
+		returnedErr := llm.ErrorFromHTTPStatus("openai-compatible", resp.StatusCode, msg, raw, retryAfter)
 		decodeErr := jsonErr
 		if readErr != nil {
 			decodeErr = readErr
@@ -483,22 +479,19 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	finished := false
 	var finalEvent *llm.StreamEvent
 
-	rawReqBody := string(jsonBody)
-
 	runner := &transport.StreamRunner{
-		Provider:       "openai-compatible",
-		Resp:           resp,
-		RawRequestBody: rawReqBody,
-		Stream:         s,
-		Attempt:        attempt,
-		StatusCode:     resp.StatusCode,
+		Provider:   "openai-compatible",
+		Resp:       resp,
+		Stream:     s,
+		Attempt:    attempt,
+		StatusCode: resp.StatusCode,
 		FinalEvent: func() *llm.StreamEvent {
 			return finalEvent
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: "openai-compatible stream ended without completion",
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -585,10 +578,6 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 					}
 				}
 				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
-				if sseBuf != nil {
-					finalResp.RawRequestBody = rawReqBody
-					finalResp.RawResponseBody = sseBuf.String()
-				}
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,
@@ -721,7 +710,6 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 
 type chatHTTPResult struct {
 	raw          map[string]any
-	rawReqBody   []byte
 	rawRespBody  []byte
 	status       int
 	headers      http.Header
@@ -741,9 +729,7 @@ func (a *Adapter) doHTTP(parentCtx, ctx context.Context, req llm.Request, body m
 		return chatHTTPResult{}, err
 	}
 	a.setChatHeaders(httpReq, req)
-	wire := chatHTTPResult{
-		rawReqBody: jsonBody,
-	}
+	wire := chatHTTPResult{}
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
 	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {

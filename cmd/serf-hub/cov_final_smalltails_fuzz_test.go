@@ -111,9 +111,8 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, web.sources, appwire.ThreadTranscriptListParams{})
 		_ = threadRef(appwire.Thread{})
 		_ = transcriptTargetSource("bad", "fallback")
-		_ = pastEntryTurns(hubcore.PastEntry{Meta: meta, StateDir: state})
+		_, _ = pastEntryTurns(hubcore.PastEntry{Meta: meta, StateDir: state})
 		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{}, map[string]string{})
-		_ = sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}})
 		_ = variant
 	})
 }

@@ -158,24 +158,6 @@ func FuzzATIFConversionProgram(f *testing.F) {
 				}},
 			}),
 		}
-		calls := []transcript.APICall{
-			{},
-			{
-				PreviousResponseIDHash: "present-hash",
-				ConversationIDHash:     "conversation-hash",
-				Request: llm.APILogRequest{
-					HistoryMode:             llm.HistoryModeResponsesDelta,
-					EndpointFamily:          "responses",
-					RequestFingerprint:      "request-fingerprint",
-					ContextMarker:           "request-context",
-					StorageScopeFingerprint: "request-scope",
-					StoragePolicyLabel:      "storage-policy",
-				},
-			},
-			{PreviousResponseIDHash: "missing-hash", HistoryMode: llm.HistoryModeFullHistoryFallback},
-			{HistoryMode: llm.HistoryModeResponsesDelta},
-		}
-
 		if got := Convert(transcript.Header{}, nil); got.Agent.Version != "unknown" || got.SchemaVersion != "ATIF-v1.7" {
 			t.Fatalf("empty Convert() = %+v; want unknown ATIF trajectory", got.Agent)
 		}
@@ -183,8 +165,8 @@ func FuzzATIFConversionProgram(f *testing.F) {
 			t.Fatalf("ConvertWithOptions invalid mode did not produce ATIF")
 		}
 
-		redacted := ConvertTranscriptWithOptions(header, entries, calls, Options{ProviderHandles: ProviderHandleModeRedacted})
-		rawLocal := ConvertTranscriptWithOptions(header, entries, calls, Options{ProviderHandles: ProviderHandleModeRawLocal})
+		redacted := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRedacted})
+		rawLocal := ConvertTranscriptWithOptions(header, entries, Options{ProviderHandles: ProviderHandleModeRawLocal})
 		atifProgramAssertTrajectory(t, redacted, rawLocal, responseID, usage, cacheRead)
 	})
 }

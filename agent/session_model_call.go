@@ -6,21 +6,19 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
 // ModelAttemptMetadata records continuation, endpoint, and attempt-grouping
 // details captured across one model call (including any fallback retries) for
-// transcript and API-log reporting.
+// the successful semantic assistant turn.
 type ModelAttemptMetadata struct {
 	HistoryMode             llm.HistoryMode
 	EndpointFamily          string
@@ -30,28 +28,20 @@ type ModelAttemptMetadata struct {
 	StorageScopeFingerprint string
 	ContextMarker           string
 	AttemptGroupID          string
-	AttemptIndex            int
-	AttemptCount            int
-	FinalAttemptCount       *int
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
 	ResponseIDHash          string
 	StoragePolicyLabel      string
-	AdapterAttempts         []llm.AdapterAttemptRecord
 }
 
 func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMetadata) {
 	if req.HistoryMode == "" {
 		req.HistoryMode = llm.HistoryModeFullHistory
 	}
-	finalCount := 1
 	meta := ModelAttemptMetadata{
-		HistoryMode:       req.HistoryMode,
-		RequestModel:      req.Model,
-		AttemptGroupID:    newAttemptGroupID(),
-		AttemptIndex:      1,
-		AttemptCount:      1,
-		FinalAttemptCount: &finalCount,
+		HistoryMode:    req.HistoryMode,
+		RequestModel:   req.Model,
+		AttemptGroupID: newAttemptGroupID(),
 	}
 	if req.Continuation != nil {
 		meta.EndpointFamily = req.Continuation.EndpointFamily
@@ -67,45 +57,6 @@ func singleAttemptRequestMetadata(req llm.Request) (llm.Request, ModelAttemptMet
 
 func newAttemptGroupID() string {
 	return identifier.MustNewAgentCallID()
-}
-
-type modelAttemptRecorder struct {
-	mu      sync.Mutex
-	groupID string
-	records []llm.AdapterAttemptRecord
-}
-
-func newModelAttemptRecorder(groupID string) *modelAttemptRecorder {
-	return &modelAttemptRecorder{groupID: groupID}
-}
-
-func (r *modelAttemptRecorder) record(ctx context.Context, rec llm.AdapterAttemptRecord) llm.AdapterAttemptRecord {
-	_ = ctx
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if rec.HistoryMode == "" {
-		rec.HistoryMode = rec.Request.HistoryMode
-	}
-	if rec.Request.HistoryMode == "" {
-		rec.Request.HistoryMode = rec.HistoryMode
-	}
-	rec.AttemptGroupID = r.groupID
-	rec.AttemptIndex = len(r.records) + 1
-	if rec.Terminal {
-		finalCount := rec.AttemptIndex
-		rec.AttemptCount = finalCount
-		rec.FinalAttemptCount = &finalCount
-	}
-	r.records = append(r.records, rec)
-	return rec
-}
-
-func (r *modelAttemptRecorder) attempts() []llm.AdapterAttemptRecord {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]llm.AdapterAttemptRecord, len(r.records))
-	copy(out, r.records)
-	return out
 }
 
 func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) ModelAttemptMetadata {
@@ -796,17 +747,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		policy = *s.cfg.LLMRetryPolicy
 	}
 	req, attempt := singleAttemptRequestMetadata(req)
-	adapterRecorder := newModelAttemptRecorder(attempt.AttemptGroupID)
-	callCtx := llm.WithAPILogAttemptContext(ctx, llm.APILogContext{
-		SessionID:         s.id,
-		Round:             round,
-		AttemptGroupID:    attempt.AttemptGroupID,
-		AttemptIndex:      attempt.AttemptIndex,
-		AttemptCount:      attempt.AttemptCount,
-		FinalAttemptCount: attempt.FinalAttemptCount,
-		HistoryMode:       attempt.HistoryMode,
-		AttemptRecorder:   adapterRecorder.record,
-	})
+	group := llm.NewAPIAttemptGroup(attempt.AttemptGroupID)
+	callCtx := llm.WithAPIAttemptGroup(ctx, group)
 	modelResp, err := s.callModel(callCtx, policy, profile, req)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
@@ -890,11 +832,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 	}
 	if err != nil {
-		attempt.AdapterAttempts = adapterRecorder.attempts()
+		group.SettleResult(callCtx, err)
 		return modelResp, req, attempt, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
-	attempt.AdapterAttempts = adapterRecorder.attempts()
+	group.SettleResult(callCtx, nil)
 	return modelResp, req, attempt, nil
 }
 
@@ -945,101 +887,6 @@ func responsesContinuationModelFallbackRequest(req llm.Request) llm.Request {
 		fallbackReq.FullHistoryFallbackMessages = nil
 	}
 	return fallbackReq
-}
-
-// logAPICall records one round's request/response (or error) to the transcript.
-func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error, attempt ModelAttemptMetadata) {
-	if s.transcript != nil {
-		if len(attempt.AdapterAttempts) > 0 {
-			for _, adapterAttempt := range attempt.AdapterAttempts {
-				s.appendAdapterAttemptAPICall(round, roundStart, llmLatency, sys, historyLen, adapterAttempt)
-			}
-			return
-		}
-		apiCall := transcript.APICall{
-			Round:                  round,
-			AttemptGroupID:         attempt.AttemptGroupID,
-			AttemptIndex:           attempt.AttemptIndex,
-			AttemptCount:           attempt.AttemptCount,
-			FinalAttemptCount:      attempt.FinalAttemptCount,
-			HistoryMode:            attempt.HistoryMode,
-			PreviousResponseIDHash: attempt.PreviousResponseIDHash,
-			ConversationIDHash:     attempt.ConversationIDHash,
-			Timestamp:              roundStart.UTC().Format(time.RFC3339),
-			LatencyMs:              llmLatency.Milliseconds(),
-			SystemPrompt:           sys,
-			ContextHistoryTurns:    historyLen,
-			SystemPromptBytes:      len(sys),
-			Request:                llm.BuildAPILogRequest(req),
-		}
-		if err != nil {
-			apiCall.Error = err.Error()
-			setAPICallDiagnostic(&apiCall, err)
-		} else {
-			apiCall.Response = buildTranscriptAPILogResponse(resp, attempt.ResponseIDHash)
-		}
-		if werr := s.appendModelAPICall(apiCall); werr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", werr)})
-		}
-	}
-}
-
-func (s *Session) appendAdapterAttemptAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, attempt llm.AdapterAttemptRecord) {
-	apiCall := transcript.APICall{
-		Round:               round,
-		AttemptGroupID:      attempt.AttemptGroupID,
-		AttemptIndex:        attempt.AttemptIndex,
-		AttemptCount:        attempt.AttemptCount,
-		FinalAttemptCount:   attempt.FinalAttemptCount,
-		HistoryMode:         attempt.HistoryMode,
-		Timestamp:           roundStart.UTC().Format(time.RFC3339),
-		LatencyMs:           llmLatency.Milliseconds(),
-		SystemPrompt:        sys,
-		ContextHistoryTurns: historyLen,
-		SystemPromptBytes:   len(sys),
-		Request:             llm.BuildAPILogRequest(attempt.Request),
-	}
-	if attempt.Error != nil {
-		apiCall.Error = attempt.Error.Error()
-		setAPICallDiagnostic(&apiCall, attempt.Error)
-	} else if attempt.Response != nil {
-		apiCall.Response = buildTranscriptAPILogResponse(*attempt.Response, "")
-	}
-	if werr := s.appendModelAPICall(apiCall); werr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", werr)})
-	}
-}
-
-func (s *Session) appendModelAPICall(call transcript.APICall) error {
-	if s.cfg.testOnly.appendModelAPICallFunc != nil {
-		return s.cfg.testOnly.appendModelAPICallFunc(call)
-	}
-	return s.transcript.AppendAPICall(call)
-}
-
-func buildTranscriptAPILogResponse(resp llm.Response, idHash string) *llm.APILogResponse {
-	var endpoint string
-	if resp.Raw != nil {
-		if v, ok := resp.Raw["endpoint_url"].(string); ok {
-			endpoint = v
-		}
-	}
-	if idHash == "" && resp.Raw != nil {
-		if v, ok := resp.Raw["id_hash"].(string); ok {
-			idHash = v
-		}
-	}
-	return &llm.APILogResponse{
-		ID:            resp.ID,
-		IDHash:        idHash,
-		Model:         resp.Model,
-		FinishReason:  resp.Finish.Reason,
-		TextLength:    len(resp.Text()),
-		ToolCallCount: len(resp.ToolCalls()),
-		Usage:         resp.Usage,
-		EndpointURL:   endpoint,
-		Raw:           resp.Raw,
-	}
 }
 
 // replayScope carries the outgoing target identity that decides whether

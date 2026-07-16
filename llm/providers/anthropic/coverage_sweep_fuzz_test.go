@@ -9,15 +9,11 @@ import (
 	"os"
 	"strings"
 	"testing"
-	_ "unsafe"
 
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
-
-//go:linkname sweepRawBodyEnabled primeradiant.com/serf/llm.rawBodyEnabled
-var sweepRawBodyEnabled bool
 
 type sweepRoundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -267,15 +263,12 @@ func transportCoverageSweep(ctx context.Context, t *testing.T) {
 		}
 	}
 
-	oldRaw := sweepRawBodyEnabled
-	sweepRawBodyEnabled = true
-	t.Cleanup(func() { sweepRawBodyEnabled = oldRaw })
 	completeRT := sweepRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return sweepResponse(r, http.StatusOK, `{"content":[{"type":"text","text":"ok"}]}`)
 	})
 	complete, err := (&Adapter{BaseURL: "https://anthropic.test", Client: &http.Client{Transport: completeRT}}).Complete(ctx, llm.Request{})
-	if err != nil || complete.RawRequestBody == "" || complete.RawResponseBody == "" {
-		t.Fatalf("raw complete capture: response=%+v err=%v", complete, err)
+	if err != nil || complete.Text() != "ok" {
+		t.Fatalf("complete response=%+v err=%v", complete, err)
 	}
 
 	invalidComplete := &Adapter{BaseURL: ":"}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +19,51 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
+
+func requirePastThreadForRead(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
+	t.Helper()
+	thread, found, err := pastThreadForRead(cfg, params)
+	if err != nil {
+		t.Fatalf("pastThreadForRead: %v", err)
+	}
+	return thread, found
+}
+
+func requirePastThreadReadResponse(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool) {
+	t.Helper()
+	resp, found, err := pastThreadReadResponse(cfg, params)
+	if err != nil {
+		t.Fatalf("pastThreadReadResponse: %v", err)
+	}
+	return resp, found
+}
+
+func requirePastThreadTurnsList(t testing.TB, cfg hubcore.WebConfig, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, bool) {
+	t.Helper()
+	resp, found, err := pastThreadTurnsList(cfg, params)
+	if err != nil {
+		t.Fatalf("pastThreadTurnsList: %v", err)
+	}
+	return resp, found
+}
+
+func requirePastEntryTurns(t testing.TB, entry hubcore.PastEntry) []appwire.Turn {
+	t.Helper()
+	turns, err := pastEntryTurns(entry)
+	if err != nil {
+		t.Fatalf("pastEntryTurns: %v", err)
+	}
+	return turns
+}
+
+func requirePastEntryThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
+	t.Helper()
+	thread, err := pastEntryThread(cfg, entry, includeTurns)
+	if err != nil {
+		t.Fatalf("pastEntryThread: %v", err)
+	}
+	return thread
+}
 
 func TestThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_A","delegate_id":"dlg_A","status":"running","task":"inspect billing","transcript_ref":"local:child"}`)
@@ -143,7 +189,7 @@ func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	thread, ok := pastThreadForRead(hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + parentID, IncludeTurns: true})
+	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + parentID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
@@ -206,7 +252,7 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	thread, ok := pastThreadForRead(hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
+	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
@@ -276,7 +322,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	thread, ok := pastThreadForRead(hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
+	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
 	if !ok {
 		t.Fatal("past thread not found")
 	}
@@ -331,7 +377,7 @@ func TestPastEntryTurns_StampsCostFromSessionModel(t *testing.T) {
 		Meta:     schema.SessionMeta{ID: sessionID, Model: "claude-opus-4-5"},
 		StateDir: stateDir,
 	}
-	turns := pastEntryTurns(entry)
+	turns := requirePastEntryTurns(t, entry)
 	var found bool
 	for _, turn := range turns {
 		if turn.Usage == nil {
@@ -359,7 +405,7 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 		},
 	}
 
-	thread := pastEntryThread(hubcore.WebConfig{}, entry, false)
+	thread := requirePastEntryThread(t, hubcore.WebConfig{}, entry, false)
 
 	if thread.Serf.WorkMillis != 5000 {
 		t.Fatalf("thread.Serf.WorkMillis = %d, want 5000", thread.Serf.WorkMillis)
@@ -405,7 +451,7 @@ func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 
 func TestPastThreadReadProjectsRunningSubagentActive(t *testing.T) {
 	cfg, childID := runningSubagentProjectionConfig(t)
-	thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + childID})
+	thread, ok := requirePastThreadForRead(t, cfg, appwire.ThreadReadParams{Ref: "local:" + childID})
 	if !ok {
 		t.Fatal("running subagent not found in past index")
 	}
@@ -458,7 +504,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 
 func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	full, ok := pastThreadForRead(cfg, params)
+	full, ok := requirePastThreadForRead(t, cfg, params)
 	if !ok || len(full.Turns) != 200 {
 		t.Fatalf("full saved thread found=%v turns=%d, want true/200", ok, len(full.Turns))
 	}
@@ -467,7 +513,7 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
-	got, ok := pastThreadReadResponse(cfg, params)
+	got, ok := requirePastThreadReadResponse(t, cfg, params)
 	if !ok {
 		t.Fatal("past thread not found")
 	}
@@ -483,9 +529,30 @@ func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	}
 }
 
+func TestPastThreadTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, found, err := pastThreadReadResponse(cfg, params)
+	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
+		t.Fatalf("past thread/read = (%+v, %v, %v), want found empty ErrUnsupportedFormat", resp, found, err)
+	}
+	page, found, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Limit: 1})
+	if !found || !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
+		t.Fatalf("past thread/turns/list = (%+v, %v, %v), want found empty ErrUnsupportedFormat", page, found, err)
+	}
+}
+
 func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
-	full, ok := pastThreadForRead(cfg, params)
+	full, ok := requirePastThreadForRead(t, cfg, params)
 	if !ok {
 		t.Fatal("past thread not found")
 	}
@@ -495,7 +562,7 @@ func TestPastThreadTurnsListUsesBoundedSavedTranscript(t *testing.T) {
 	var projected []int
 	restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 	t.Cleanup(restore)
-	got, ok := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: cursor, Limit: 30})
+	got, ok := requirePastThreadTurnsList(t, cfg, appwire.ThreadTurnsListParams{Ref: params.Ref, Cursor: cursor, Limit: 30})
 	if !ok {
 		t.Fatal("past thread not found")
 	}

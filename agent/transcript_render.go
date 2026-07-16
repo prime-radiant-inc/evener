@@ -272,8 +272,7 @@ func parseDashRange(spec string) (lo, hi int, ok bool) {
 
 // rawLinesForRange reads the transcript file at path and returns the verbatim
 // JSONL lines for the derived entry-seq range [startSeq, endSeq] (inclusive),
-// including the header line and any api_call lines interleaved within that span.
-// Lines that fail to parse are counted in skipped (not included). Output is
+// including the header line. Output is
 // bounded by the 200k hard cap: when it would exceed hardCapChars, the result is
 // truncated to a contiguous prefix at a line boundary (head-only), truncated is
 // set to true, and no non-JSON marker is injected. Returns the joined content,
@@ -296,24 +295,18 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		return "", 0, 0, false, errors.New("transcript file is empty: no header")
 	}
 	headerLine := scanner.Text()
+	var header transcript.Header
+	if err := json.Unmarshal([]byte(headerLine), &header); err != nil {
+		return "", 0, 0, false, fmt.Errorf("parse transcript header: %w", err)
+	}
+	if err := transcript.ValidateHeader(header); err != nil {
+		return "", 0, 0, false, err
+	}
 
 	// Walk remaining lines.
 	// entryPos tracks how many "entry" lines we've seen (the derived seq).
-	// We include a line when:
-	//   - it is an "entry" with entryPos in [startSeq, endSeq], OR
-	//   - it is an "api_call" that falls between the first and last included entry
-	//     (i.e., entryPos > startSeq once the first entry was seen, and the last
-	//     included entry is not yet past endSeq).
-	//
-	// We model this with two flags:
-	//   inSpan  — set when we've seen the first included entry (entryPos==startSeq)
-	//   pastEnd — set when we've passed the last included entry (entryPos>endSeq)
-	//
-	// api_call lines are included iff inSpan && !pastEnd.
 	var included []string
 	entryPos := -1
-	inSpan := false
-	pastEnd := false
 
 	var peekKind struct {
 		Kind string `json:"kind"`
@@ -325,28 +318,18 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 			continue
 		}
 		if err := json.Unmarshal([]byte(rawLine), &peekKind); err != nil {
-			skipped++
-			continue
+			return "", 0, skipped, false, fmt.Errorf("parse transcript record: %w", err)
 		}
-		kind := peekKind.Kind
-
-		switch kind {
-		case "entry":
-			entryPos++
-			if entryPos > endSeq {
-				pastEnd = true
-			}
-			if entryPos >= startSeq && entryPos <= endSeq {
-				inSpan = true
-				included = append(included, rawLine)
-			}
-		case "api_call":
-			if inSpan && !pastEnd {
-				included = append(included, rawLine)
-			}
-		default:
-			// Unknown kind: skip (counted as skipped per crash-recovery tolerance).
-			skipped++
+		if err := transcript.ValidateRecordKind(peekKind.Kind); err != nil {
+			return "", 0, skipped, false, err
+		}
+		var entry transcript.Entry
+		if err := json.Unmarshal([]byte(rawLine), &entry); err != nil {
+			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
+		}
+		entryPos++
+		if entryPos >= startSeq && entryPos <= endSeq {
+			included = append(included, rawLine)
 		}
 	}
 	if scanErr := scanner.Err(); scanErr != nil {

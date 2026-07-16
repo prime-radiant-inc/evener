@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -133,15 +132,6 @@ func TestS5Cov_ProviderCauseFromError(t *testing.T) {
 	cause := providerCauseFromError(le, "gpt-5")
 	if cause == nil || cause.Provider != "openai" || cause.Model != "gpt-5" || cause.Status != 429 {
 		t.Errorf("provider cause = %+v", cause)
-	}
-}
-
-func TestS5Cov_SetAPICallDiagnostic(t *testing.T) {
-	setAPICallDiagnostic(nil, stubError("x")) // must not panic
-	call := &transcript.APICall{}
-	setAPICallDiagnostic(call, stubError("unknown provider: foo"))
-	if call.Source == "" || call.Title == "" {
-		t.Errorf("api call diagnostic not set: %+v", call)
 	}
 }
 

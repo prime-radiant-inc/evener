@@ -27,17 +27,10 @@ func FuzzStreamRunner(f *testing.F) {
 		}
 
 		finished := false
-		var captureRawBody *bool
-		if mode%4 == 3 {
-			enabled := true
-			captureRawBody = &enabled
-		}
 		r := &StreamRunner{
-			Provider:       "fuzz-provider",
-			Resp:           respFrom(payload),
-			RawRequestBody: "fuzz-request",
-			CaptureRawBody: captureRawBody,
-			Stream:         llm.NewChanStream(nil),
+			Provider: "fuzz-provider",
+			Resp:     respFrom(payload),
+			Stream:   llm.NewChanStream(nil),
 			OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
 				if mode%4 == 1 || strings.Contains(string(ev.Data), "finish") {
 					finished = true

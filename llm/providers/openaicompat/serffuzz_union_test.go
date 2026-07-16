@@ -4,20 +4,13 @@ package openaicompat
 
 import (
 	"testing"
-	_ "unsafe"
 )
-
-//go:linkname serfFuzzRawBodyEnabled primeradiant.com/serf/llm.rawBodyEnabled
-var serfFuzzRawBodyEnabled bool
 
 // FuzzOpenAICompatDeterministicUnion replays the package's deterministic wire
 // scenarios when the coverage gate selects fuzz targets only.
 func FuzzOpenAICompatDeterministicUnion(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
-		previousRawBodyEnabled := serfFuzzRawBodyEnabled
-		serfFuzzRawBodyEnabled = true
-		t.Cleanup(func() { serfFuzzRawBodyEnabled = previousRawBodyEnabled })
 		tests := []struct {
 			name string
 			fn   func(*testing.T)

@@ -15,7 +15,7 @@ import (
 
 // FuzzTranscriptWriterPersistence is the differential that proves the afero
 // filesystem seam changes nothing observable: the same program of writer
-// operations (Append / AppendDurable / AppendAPICall / Close+reopen), replayed
+// operations (Append / AppendDurable / Close+reopen), replayed
 // through two Writers whose ONLY difference is the injected afero.Fs — one an OS
 // filesystem sandboxed under a t.TempDir (afero.NewBasePathFs over
 // afero.NewOsFs), the other a pure in-memory afero.NewMemMapFs — must produce
@@ -45,9 +45,9 @@ import (
 // every path beneath it); the mem lane never touches disk. No network, no
 // subprocess, no destructive op outside the sandbox.
 func FuzzTranscriptWriterPersistence(f *testing.F) {
-	f.Add([]byte{opAppend, 1, opAppendDurable, 2, opAPICall, 3, opReopen, 0})
+	f.Add([]byte{opAppend, 1, opAppendDurable, 2, opAppend, 3, opReopen, 0})
 	f.Add([]byte{opAppend, 5, opAppend, 6, opReopen, 0, opAppend, 7})
-	f.Add([]byte{opAPICall, 1, opAPICall, 2, opAppendDurable, 3, opReopen, 1, 42})
+	f.Add([]byte{opAppend, 1, opAppend, 2, opAppendDurable, 3, opReopen, 1, 42})
 	f.Add([]byte{opReopen, 1, 9, opAppend, 1, opReopen, 0})
 	f.Add([]byte{})
 
@@ -85,11 +85,6 @@ func FuzzTranscriptWriterPersistence(f *testing.F) {
 				errOS := osW.AppendDurable(turn)
 				errMem := memW.AppendDurable(turn)
 				requireErrParity(t, "AppendDurable", errOS, errMem)
-			case opAPICall:
-				call := makeAPICall(r.next())
-				errOS := osW.AppendAPICall(call)
-				errMem := memW.AppendAPICall(call)
-				requireErrParity(t, "AppendAPICall", errOS, errMem)
 			case opReopen:
 				if err := osW.Close(); err != nil {
 					t.Fatalf("os Close: %v", err)
@@ -134,7 +129,6 @@ func FuzzTranscriptWriterPersistence(f *testing.F) {
 const (
 	opAppend = iota
 	opAppendDurable
-	opAPICall
 	opReopen
 	opCount
 )
@@ -170,16 +164,6 @@ func makeTurn(b byte) schema.Turn {
 		Kind:      kinds[int(b)%len(kinds)],
 		Message:   llm.Assistant(fmt.Sprintf("m%d", b)),
 		Timestamp: time.Unix(int64(b), 0).UTC(),
-	}
-}
-
-// makeAPICall builds a deterministic api_call record from a single byte.
-func makeAPICall(b byte) APICall {
-	return APICall{
-		Round:        int(b),
-		Timestamp:    time.Unix(int64(b), 0).UTC().Format(time.RFC3339),
-		LatencyMs:    int64(b),
-		SystemPrompt: fmt.Sprintf("sp%d", b),
 	}
 }
 

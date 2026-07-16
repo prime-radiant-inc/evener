@@ -97,6 +97,7 @@ type APIAttemptGroup struct {
 	nextAttemptIndex   int
 	finalAttemptID     string
 	finalAttemptCount  int
+	finalOutcome       apilog.AttemptOutcomeClass
 	forensicIncomplete bool
 	settling           bool
 	sinkBound          bool
@@ -186,6 +187,9 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		meta := a.meta
 		a.mu.Unlock()
 		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, meta, result)
+		a.group.mu.Lock()
+		a.group.finalOutcome = result.Outcome
+		a.group.mu.Unlock()
 		appendCtx := context.WithoutCancel(a.ctx)
 		if err := a.sink.AppendAttempt(appendCtx, record); err != nil {
 			failureErr := err
@@ -202,6 +206,39 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 			})
 		}
 	})
+}
+
+// SettleResult settles the group from the outer logical call result. When the
+// call made transport attempts, their terminal outcome remains authoritative;
+// a caller cancellation overrides it because the caller owns that terminal
+// boundary. A pre-transport failure is recorded as a zero-attempt transport
+// failure.
+func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
+	if g == nil {
+		return
+	}
+	outcome := apilog.AttemptSuccess
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+			outcome = apilog.AttemptCallerCancel
+		} else {
+			g.mu.Lock()
+			outcome = g.finalOutcome
+			g.mu.Unlock()
+			if outcome == "" {
+				outcome = apilog.AttemptTransportFail
+			}
+		}
+	}
+	g.Settle(ctx, outcome)
+}
+
+func apiAttemptGroupFromContext(ctx context.Context) *APIAttemptGroup {
+	if ctx == nil {
+		return nil
+	}
+	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
+	return group
 }
 
 type sanitizedAPILogError struct {
@@ -317,6 +354,8 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 		if result.Response != nil {
 			response.Model = result.Response.Model
 			response.FinishReason = result.Response.Finish.Reason
+			response.TextLength = len(result.Response.Text())
+			response.ToolCallCount = len(result.Response.ToolCalls())
 			response.Usage = apilog.Usage{
 				InputTokens:      result.Response.Usage.InputTokens,
 				OutputTokens:     result.Response.Usage.OutputTokens,

@@ -1217,7 +1217,7 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 		{
 			name: "session mismatch",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
-				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":1,"session_id":"other"}`+"\n"))
+				writeChildTranscript(t, s, rec, []byte(`{"kind":"header","format_version":2,"session_id":"other"}`+"\n"))
 			},
 			want: "target_not_resumable:transcript_session_mismatch",
 		},

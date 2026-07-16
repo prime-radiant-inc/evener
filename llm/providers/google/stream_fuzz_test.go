@@ -72,8 +72,6 @@ func normalizeGeminiResponse(r *llm.Response) *llm.Response {
 		return nil
 	}
 	cp := *r
-	cp.RawRequestBody = ""
-	cp.RawResponseBody = ""
 	parts := make([]llm.ContentPart, len(cp.Message.Content))
 	for i, p := range cp.Message.Content {
 		if p.ToolCall != nil {

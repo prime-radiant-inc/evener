@@ -231,7 +231,7 @@ func exerciseAppWireResiduals() {
 	_ = s.acceptsSessionEvent("other")
 	s.SetStatus(StatusInfo{})
 	s.SetTranscriptPathFunc(func() string { return " " })
-	_ = s.appTurnsFromTranscript()
+	_, _ = s.appTurnsFromTranscript()
 
 	_, _ = s.handleAppTurnStart(ctx, appwire.TurnStartParams{})
 	for i := 0; i < cap(s.inputCh); i++ {

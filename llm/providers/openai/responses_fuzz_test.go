@@ -71,8 +71,6 @@ func normalizeResponse(r *llm.Response) *llm.Response {
 		return nil
 	}
 	cp := *r
-	cp.RawRequestBody = ""
-	cp.RawResponseBody = ""
 	return &cp
 }
 

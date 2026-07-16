@@ -2,14 +2,19 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
@@ -41,7 +46,11 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	data, mediaType, ok := findImageInTranscript(transcriptPath, sha)
+	data, mediaType, ok, err := findImageInTranscript(transcriptPath, sha)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -59,28 +68,57 @@ func (s *WebServer) handleSessionImage(w http.ResponseWriter, r *http.Request, s
 // findImageInTranscript scans the transcript for any USER_INPUT turn
 // containing an image part with the given sha256. Returns the raw bytes and
 // media type. Image bytes can be large; we only buffer the matching one.
-func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
+func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, "", false
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, "", false, nil
+		}
+		return nil, "", false, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	reader := bufio.NewReaderSize(f, 64*1024)
+	headerRead := false
+	var matchedData []byte
+	var matchedMediaType string
+	for {
+		line, readErr := readImageTranscriptLine(reader)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return nil, "", false, readErr
+		}
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+			break
+		}
+		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
+		if len(line) == 0 {
+			continue
+		}
+		if !headerRead {
+			var header transcript.Header
+			if err := json.Unmarshal(line, &header); err != nil {
+				return nil, "", false, fmt.Errorf("parse transcript header: %w", err)
+			}
+			if err := transcript.ValidateHeader(header); err != nil {
+				return nil, "", false, err
+			}
+			headerRead = true
+			continue
+		}
 		var head struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(line, &head); err != nil {
-			continue
+			return nil, "", false, fmt.Errorf("parse transcript record: %w", err)
 		}
-		if head.Kind != "entry" {
-			continue
+		if err := transcript.ValidateRecordKind(head.Kind); err != nil {
+			return nil, "", false, err
 		}
 		var rec hubcore.ReplayEntry
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+			return nil, "", false, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		for _, p := range rec.Turn.Message.Content {
 			switch p.Kind {
@@ -89,23 +127,43 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
 					continue
 				}
 				h := sha256.Sum256(p.Image.Data)
-				if hex.EncodeToString(h[:]) == wantSha {
-					return p.Image.Data, p.Image.MediaType, true
+				if matchedData == nil && hex.EncodeToString(h[:]) == wantSha {
+					matchedData = p.Image.Data
+					matchedMediaType = p.Image.MediaType
 				}
 			case "tool_result":
 				if p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 {
 					continue
 				}
 				h := sha256.Sum256(p.ToolResult.ImageData)
-				if hex.EncodeToString(h[:]) == wantSha {
-					return p.ToolResult.ImageData, p.ToolResult.ImageMediaType, true
+				if matchedData == nil && hex.EncodeToString(h[:]) == wantSha {
+					matchedData = p.ToolResult.ImageData
+					matchedMediaType = p.ToolResult.ImageMediaType
 				}
 			default:
 				continue
 			}
 		}
 	}
-	return nil, "", false
+	if !headerRead {
+		return nil, "", false, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
+	}
+	return matchedData, matchedMediaType, matchedData != nil, nil
+}
+
+func readImageTranscriptLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > transcriptJSONLMaxLineBytes {
+			return nil, fmt.Errorf("transcript line exceeds %d bytes", transcriptJSONLMaxLineBytes)
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line, err
+	}
 }
 
 // imageSha returns the lowercase hex sha256 of raw image bytes.

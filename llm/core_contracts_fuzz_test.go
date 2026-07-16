@@ -26,7 +26,6 @@ func FuzzCoreDeterministicScenarios(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
 		TestConfigurationErrorSatisfiesErrorContract(t)
-		TestErrorFromHTTPStatusWithRawBodiesAttachesBodies(t)
 		TestRewriteErrorProviderLeavesEmptyProviderUnstamped(t)
 		TestClassifyByMessageAuthenticationSignals(t)
 		TestMessageConstructors(t)
@@ -41,7 +40,6 @@ func FuzzCoreDeterministicScenarios(f *testing.F) {
 		TestPrepareToolsRejectsInvalidToolName(t)
 		TestGenerateOptionsValidate(t)
 		TestPrepareGenerationInputValidation(t)
-		TestWithAPILogAttemptContextInheritsUnsetFields(t)
 		TestStreamAccumulatorToolCallDeltaWithoutStart(t)
 		TestStreamAccumulatorFinishRebuildsEmptyResponse(t)
 		TestCopyResponseMetadataNilSource(t)
@@ -125,7 +123,7 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 		t.Fatal("configuration error contract failed")
 	}
 	raw := map[string]any{"error": map[string]any{"code": "code", "type": "type"}}
-	err := ErrorFromHTTPStatusWithRawBodies("provider", []int{400, 401, 403, 404, 408, 413, 422, 429, 500, 418}[int(seed)%10], "message", raw, nil, "req", "resp")
+	err := ErrorFromHTTPStatus("provider", []int{400, 401, 403, 404, 408, 413, 422, 429, 500, 418}[int(seed)%10], "message", raw, nil)
 	var le Error
 	if !errors.As(err, &le) {
 		t.Fatalf("typed error missing: %T", err)
@@ -146,7 +144,7 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 	}
 	for _, e := range []error{
 		NewAbortError("", cause),
-		NewStreamErrorWithRawBodies("p", "", cause, "req", "resp"),
+		NewStreamError("p", "", cause),
 		NewNoObjectGeneratedError("bad", "raw", cause),
 		NewUnsupportedToolChoiceError("p", ""),
 	} {
@@ -163,9 +161,6 @@ func fuzzErrorContracts(t *testing.T, seed uint8) {
 		_ = nonHTTP.RetryAfter()
 		_ = nonHTTP.Raw()
 		_ = errors.Unwrap(nonHTTP)
-		if bodies, ok := e.(RawHTTPBodyError); ok {
-			_, _ = bodies.RawHTTPBodies()
-		}
 	}
 }
 

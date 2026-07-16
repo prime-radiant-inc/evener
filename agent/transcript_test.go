@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,8 +91,8 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 	if got.Kind != "header" {
 		t.Errorf("header kind = %q, want %q", got.Kind, "header")
 	}
-	if got.FormatVersion != 1 {
-		t.Errorf("format_version = %d, want 1", got.FormatVersion)
+	if got.FormatVersion != transcript.FormatVersion {
+		t.Errorf("format_version = %d, want %d", got.FormatVersion, transcript.FormatVersion)
 	}
 	if got.SessionID != "sess-001" {
 		t.Errorf("session_id = %q, want %q", got.SessionID, "sess-001")
@@ -968,8 +969,8 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	if header.Model != "gpt-5.2" {
 		t.Errorf("header model: got %q want %q", header.Model, "gpt-5.2")
 	}
-	if header.FormatVersion != 1 {
-		t.Errorf("header format_version: got %d want 1", header.FormatVersion)
+	if header.FormatVersion != transcript.FormatVersion {
+		t.Errorf("header format_version: got %d want %d", header.FormatVersion, transcript.FormatVersion)
 	}
 	if header.Kind != "header" {
 		t.Errorf("header kind: got %q want %q", header.Kind, "header")
@@ -1071,63 +1072,12 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		t.Errorf("second entry should record communicate tool call, got %+v", entries[1].Turn.Message.Content)
 	}
 
-	// Sequence numbers should be monotonically increasing (may have gaps due
-	// to interleaved api_call lines that share the seq counter).
+	// Sequence numbers should be monotonically increasing.
 	for i := 1; i < len(entries); i++ {
 		if entries[i].Seq <= entries[i-1].Seq {
 			t.Errorf("entry[%d].Seq = %d not greater than entry[%d].Seq = %d",
 				i, entries[i].Seq, i-1, entries[i-1].Seq)
 		}
-	}
-}
-
-func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	stateDir := t.TempDir()
-
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return finalResponse("hello back")
-			},
-		},
-	})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: stateDir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-	sess.Close()
-
-	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	data, err := readTranscriptFull(tpath)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if len(data.APICalls) != 1 {
-		t.Fatalf("expected 1 api_call, got %d", len(data.APICalls))
-	}
-
-	call := data.APICalls[0]
-	if call.ContextHistoryTurns != 1 {
-		t.Errorf("context_history_turns = %d, want 1", call.ContextHistoryTurns)
-	}
-	if call.SystemPromptBytes != len(call.SystemPrompt) {
-		t.Errorf("system_prompt_bytes = %d, want %d", call.SystemPromptBytes, len(call.SystemPrompt))
-	}
-	if call.SystemPromptBytes == 0 {
-		t.Fatal("system_prompt_bytes = 0, want non-zero")
 	}
 }
 
@@ -1405,8 +1355,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	if hdr.Kind != "header" {
 		t.Errorf("header kind = %q, want %q", hdr.Kind, "header")
 	}
-	if hdr.FormatVersion != 1 {
-		t.Errorf("FormatVersion = %d, want 1", hdr.FormatVersion)
+	if hdr.FormatVersion != transcript.FormatVersion {
+		t.Errorf("FormatVersion = %d, want %d", hdr.FormatVersion, transcript.FormatVersion)
 	}
 	if hdr.SessionID != sess.ID() {
 		t.Errorf("SessionID = %q, want %q", hdr.SessionID, sess.ID())
@@ -1419,7 +1369,6 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// --- Verify seq numbers are monotonically increasing ---
-	// Seq numbers may have gaps due to interleaved api_call lines.
 	for i, e := range entries {
 		if e.Kind != "entry" {
 			t.Errorf("entry %d: kind = %q, want %q", i, e.Kind, "entry")
@@ -1523,7 +1472,7 @@ func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
 
 // --- Fix 2: readTranscript returns corrupt line count ---
 
-func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
+func TestReadTranscript_RejectsCorruptInteriorLines(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
@@ -1563,14 +1512,8 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 	f.Close()
 
 	_, entries, skipped, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("readTranscript: %v", err)
-	}
-	if len(entries) != 3 {
-		t.Fatalf("expected 3 valid entries, got %d", len(entries))
-	}
-	if skipped != 2 {
-		t.Errorf("expected 2 skipped lines, got %d", skipped)
+	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
 
@@ -1845,517 +1788,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	}
 }
 
-// --- transcript.APICall tests ---
-
-func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-api-001",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	call := transcript.APICall{
-		Round:               1,
-		Timestamp:           "2026-03-25T12:00:00Z",
-		LatencyMs:           1500,
-		SystemPrompt:        "You are a helpful assistant.",
-		ContextHistoryTurns: 3,
-		SystemPromptBytes:   len("You are a helpful assistant."),
-		Request: llm.APILogRequest{
-			Model:        "gpt-5.2",
-			Provider:     "openai",
-			MessageCount: 3,
-			ToolCount:    2,
-			ToolNames:    []string{"read_file", "write_file"},
-		},
-		Response: &llm.APILogResponse{
-			ID:            "resp-123",
-			Model:         "gpt-5.2",
-			FinishReason:  "stop",
-			TextLength:    42,
-			ToolCallCount: 0,
-		},
-	}
-
-	if err := w.AppendAPICall(call); err != nil {
-		t.Fatalf("AppendAPICall: %v", err)
-	}
-
-	lines := readTranscriptLines(t, path)
-	if len(lines) != 2 { // header + 1 api_call
-		t.Fatalf("expected 2 lines, got %d", len(lines))
-	}
-
-	var got transcript.APICall
-	if err := json.Unmarshal([]byte(lines[1]), &got); err != nil {
-		t.Fatalf("unmarshal api_call: %v", err)
-	}
-	if got.Kind != "api_call" {
-		t.Errorf("kind = %q, want %q", got.Kind, "api_call")
-	}
-	if got.Seq != 0 {
-		t.Errorf("seq = %d, want 0", got.Seq)
-	}
-	if got.Round != 1 {
-		t.Errorf("round = %d, want 1", got.Round)
-	}
-	if got.LatencyMs != 1500 {
-		t.Errorf("latency_ms = %d, want 1500", got.LatencyMs)
-	}
-	if got.SystemPrompt != "You are a helpful assistant." {
-		t.Errorf("system_prompt = %q, want %q", got.SystemPrompt, "You are a helpful assistant.")
-	}
-	if got.ContextHistoryTurns != 3 {
-		t.Errorf("context_history_turns = %d, want 3", got.ContextHistoryTurns)
-	}
-	if got.SystemPromptBytes != len("You are a helpful assistant.") {
-		t.Errorf("system_prompt_bytes = %d, want %d", got.SystemPromptBytes, len("You are a helpful assistant."))
-	}
-	if got.Request.Model != "gpt-5.2" {
-		t.Errorf("request.model = %q, want %q", got.Request.Model, "gpt-5.2")
-	}
-	if got.Request.Provider != "openai" {
-		t.Errorf("request.provider = %q, want %q", got.Request.Provider, "openai")
-	}
-	if got.Request.ToolCount != 2 {
-		t.Errorf("request.tool_count = %d, want 2", got.Request.ToolCount)
-	}
-	if got.Response == nil {
-		t.Fatal("response is nil, expected non-nil")
-	}
-	if got.Response.FinishReason != "stop" {
-		t.Errorf("response.finish_reason = %q, want %q", got.Response.FinishReason, "stop")
-	}
-}
-
-func TestTranscriptContinuationMetadataRoundTrips(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "session.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "sess"})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	finalCount := 1
-	turn := schema.Turn{
-		Kind:                            schema.TurnAssistant,
-		Message:                         llm.Assistant("ok"),
-		Timestamp:                       time.Unix(1, 0).UTC(),
-		ResponseID:                      "resp_raw_local",
-		ResponseIDHash:                  "cont-handle-v1:response_id:abc",
-		ResponseProvider:                "openai",
-		ResponseModel:                   "gpt-5.2",
-		ResponseRequestModel:            "gpt-5.2",
-		ResponseEndpoint:                "https://api.openai.com/v1/responses",
-		ResponseStorageScopeFingerprint: "cont-scope-v1:abc",
-		ResponseRequestFingerprint:      "cont-req-v1:abc",
-		ResponseContextMarker:           "cont-ctx-v1",
-	}
-	if err := w.Append(turn); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	if err := w.AppendAPICall(transcript.APICall{
-		Round:                  1,
-		AttemptGroupID:         "ag_01KTRANSCRIPTGROUP",
-		AttemptIndex:           1,
-		AttemptCount:           1,
-		FinalAttemptCount:      &finalCount,
-		HistoryMode:            llm.HistoryModeFullHistory,
-		PreviousResponseIDHash: "cont-handle-v1:previous_response_id:def",
-		ConversationIDHash:     "cont-handle-v1:conversation_id:ghi",
-		Request: llm.APILogRequest{
-			Model:       "gpt-5.2",
-			Provider:    "openai",
-			HistoryMode: llm.HistoryModeFullHistory,
-		},
-		Response: &llm.APILogResponse{
-			ID:     "resp_raw_local",
-			IDHash: "cont-handle-v1:response_id:abc",
-			Model:  "gpt-5.2",
-		},
-	}); err != nil {
-		t.Fatalf("AppendAPICall: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	data, err := readTranscriptFull(path)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if len(data.Entries) != 1 || len(data.APICalls) != 1 {
-		t.Fatalf("entries/api_calls = %d/%d", len(data.Entries), len(data.APICalls))
-	}
-	gotTurn := data.Entries[0].Turn
-	if gotTurn.ResponseIDHash != "cont-handle-v1:response_id:abc" ||
-		gotTurn.ResponseContextMarker != "cont-ctx-v1" ||
-		gotTurn.ResponseRequestFingerprint != "cont-req-v1:abc" {
-		t.Fatalf("turn metadata = %+v", gotTurn)
-	}
-	gotCall := data.APICalls[0]
-	if gotCall.AttemptGroupID != "ag_01KTRANSCRIPTGROUP" ||
-		gotCall.AttemptIndex != 1 ||
-		gotCall.AttemptCount != 1 ||
-		gotCall.HistoryMode != llm.HistoryModeFullHistory ||
-		gotCall.PreviousResponseIDHash != "cont-handle-v1:previous_response_id:def" ||
-		gotCall.ConversationIDHash != "cont-handle-v1:conversation_id:ghi" {
-		t.Fatalf("api_call metadata = %+v", gotCall)
-	}
-	if gotCall.FinalAttemptCount == nil || *gotCall.FinalAttemptCount != 1 {
-		t.Fatalf("FinalAttemptCount = %v", gotCall.FinalAttemptCount)
-	}
-}
-
-func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-api-err",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	call := transcript.APICall{
-		Round:     2,
-		Timestamp: "2026-03-25T12:01:00Z",
-		LatencyMs: 500,
-		Request: llm.APILogRequest{
-			Model:    "gpt-5.2",
-			Provider: "openai",
-		},
-		Error: "context deadline exceeded",
-	}
-
-	if err := w.AppendAPICall(call); err != nil {
-		t.Fatalf("AppendAPICall: %v", err)
-	}
-
-	lines := readTranscriptLines(t, path)
-	if len(lines) != 2 {
-		t.Fatalf("expected 2 lines, got %d", len(lines))
-	}
-
-	var got transcript.APICall
-	if err := json.Unmarshal([]byte(lines[1]), &got); err != nil {
-		t.Fatalf("unmarshal api_call: %v", err)
-	}
-	if got.Kind != "api_call" {
-		t.Errorf("kind = %q, want %q", got.Kind, "api_call")
-	}
-	if got.Error != "context deadline exceeded" {
-		t.Errorf("error = %q, want %q", got.Error, "context deadline exceeded")
-	}
-	if got.Response != nil {
-		t.Errorf("response should be nil for error case, got %+v", got.Response)
-	}
-}
-
-func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-interleave",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Interleave: entry, api_call, entry, api_call, entry
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
-		t.Fatalf("Append 0: %v", err)
-	}
-	if err := w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}}); err != nil {
-		t.Fatalf("AppendAPICall 0: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi"))); err != nil {
-		t.Fatalf("Append 1: %v", err)
-	}
-	if err := w.AppendAPICall(transcript.APICall{Round: 2, Request: llm.APILogRequest{Model: "m"}}); err != nil {
-		t.Fatalf("AppendAPICall 1: %v", err)
-	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))); err != nil {
-		t.Fatalf("Append 2: %v", err)
-	}
-
-	lines := readTranscriptLines(t, path)
-	if len(lines) != 6 { // header + 3 entries + 2 api_calls
-		t.Fatalf("expected 6 lines, got %d", len(lines))
-	}
-
-	// Parse all non-header lines and verify seq numbers are 0,1,2,3,4.
-	type seqLine struct {
-		Kind string `json:"kind"`
-		Seq  int    `json:"seq"`
-	}
-	expectedKinds := []string{"entry", "api_call", "entry", "api_call", "entry"}
-	for i := 1; i < len(lines); i++ {
-		var sl seqLine
-		if err := json.Unmarshal([]byte(lines[i]), &sl); err != nil {
-			t.Fatalf("unmarshal line %d: %v", i, err)
-		}
-		wantSeq := i - 1
-		if sl.Seq != wantSeq {
-			t.Errorf("line %d: seq = %d, want %d", i, sl.Seq, wantSeq)
-		}
-		if sl.Kind != expectedKinds[i-1] {
-			t.Errorf("line %d: kind = %q, want %q", i, sl.Kind, expectedKinds[i-1])
-		}
-	}
-}
-
-func TestTranscriptWriter_NilAppendAPICallSafe(t *testing.T) {
-	t.Parallel()
-	var w *transcript.Writer
-
-	// AppendAPICall on nil should not panic and should return nil.
-	if err := w.AppendAPICall(transcript.APICall{}); err != nil {
-		t.Errorf("nil AppendAPICall returned error: %v", err)
-	}
-}
-
-func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-full-001",
-		CreatedAt: time.Date(2026, 3, 25, 12, 0, 0, 0, time.UTC),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-
-	// Write interleaved entries and api_calls.
-	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(transcript.APICall{
-		Round:     1,
-		Timestamp: "2026-03-25T12:00:01Z",
-		LatencyMs: 100,
-		Request:   llm.APILogRequest{Model: "gpt-5.2", Provider: "openai"},
-		Response:  &llm.APILogResponse{Model: "gpt-5.2", FinishReason: "stop"},
-	})
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
-	w.AppendAPICall(transcript.APICall{
-		Round:     2,
-		Timestamp: "2026-03-25T12:00:02Z",
-		LatencyMs: 200,
-		Request:   llm.APILogRequest{Model: "gpt-5.2", Provider: "openai"},
-		Error:     "rate limit",
-	})
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done")))
-	w.Close()
-
-	data, err := readTranscriptFull(path)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-
-	// Header
-	if data.Header.SessionID != "sess-full-001" {
-		t.Errorf("header session_id = %q, want %q", data.Header.SessionID, "sess-full-001")
-	}
-
-	// Entries
-	if len(data.Entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(data.Entries))
-	}
-	if data.Entries[0].Turn.Kind != schema.TurnUserInput {
-		t.Errorf("entry 0 turn kind = %q, want %q", data.Entries[0].Turn.Kind, schema.TurnUserInput)
-	}
-	if data.Entries[1].Turn.Kind != schema.TurnAssistant {
-		t.Errorf("entry 1 turn kind = %q, want %q", data.Entries[1].Turn.Kind, schema.TurnAssistant)
-	}
-
-	// API Calls
-	if len(data.APICalls) != 2 {
-		t.Fatalf("expected 2 api_calls, got %d", len(data.APICalls))
-	}
-	if data.APICalls[0].Round != 1 {
-		t.Errorf("api_call 0 round = %d, want 1", data.APICalls[0].Round)
-	}
-	if data.APICalls[0].Response == nil {
-		t.Error("api_call 0 response should not be nil")
-	}
-	if data.APICalls[1].Error != "rate limit" {
-		t.Errorf("api_call 1 error = %q, want %q", data.APICalls[1].Error, "rate limit")
-	}
-	if data.APICalls[1].Response != nil {
-		t.Error("api_call 1 response should be nil for error case")
-	}
-
-	// Seq numbers should be interleaved correctly.
-	if data.Entries[0].Seq != 0 {
-		t.Errorf("entry 0 seq = %d, want 0", data.Entries[0].Seq)
-	}
-	if data.APICalls[0].Seq != 1 {
-		t.Errorf("api_call 0 seq = %d, want 1", data.APICalls[0].Seq)
-	}
-	if data.Entries[1].Seq != 2 {
-		t.Errorf("entry 1 seq = %d, want 2", data.Entries[1].Seq)
-	}
-	if data.APICalls[1].Seq != 3 {
-		t.Errorf("api_call 1 seq = %d, want 3", data.APICalls[1].Seq)
-	}
-	if data.Entries[2].Seq != 4 {
-		t.Errorf("entry 2 seq = %d, want 4", data.Entries[2].Seq)
-	}
-
-	if data.Skipped != 0 {
-		t.Errorf("expected 0 skipped, got %d", data.Skipped)
-	}
-}
-
-func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-full-corrupt",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.Close()
-
-	// Append a corrupt line.
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatalf("OpenFile: %v", err)
-	}
-	f.WriteString("{bad json\n")
-	f.Close()
-
-	data, err := readTranscriptFull(path)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if len(data.Entries) != 1 {
-		t.Errorf("expected 1 entry, got %d", len(data.Entries))
-	}
-	if data.Skipped != 1 {
-		t.Errorf("expected 1 skipped, got %d", data.Skipped)
-	}
-}
-
-func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-compat",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-
-	// Interleave entries and api_calls.
-	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
-	w.Close()
-
-	// readTranscript should only return entries, silently skipping api_call lines.
-	_, entries, skipped, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("readTranscript: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(entries))
-	}
-	if skipped != 0 {
-		t.Errorf("expected 0 skipped (api_call lines should not count as corrupt), got %d", skipped)
-	}
-	if entries[0].Turn.Kind != schema.TurnUserInput {
-		t.Errorf("entry 0 kind = %q, want %q", entries[0].Turn.Kind, schema.TurnUserInput)
-	}
-	if entries[1].Turn.Kind != schema.TurnAssistant {
-		t.Errorf("entry 1 kind = %q, want %q", entries[1].Turn.Kind, schema.TurnAssistant)
-	}
-}
-
-func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID: "sess-resume-api",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("transcript.NewWriter: %v", err)
-	}
-
-	// Write entry (seq 0), api_call (seq 1), entry (seq 2).
-	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
-	w.Close()
-
-	// Reopen and append more.
-	w2, err := transcript.OpenWriter(path)
-	if err != nil {
-		t.Fatalf("transcript.OpenWriter: %v", err)
-	}
-	defer w2.Close()
-
-	// Next seq should be 3 (one past the api_call and entries).
-	w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("more")))
-
-	data, err := readTranscriptFull(path)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-
-	if len(data.Entries) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(data.Entries))
-	}
-	if len(data.APICalls) != 1 {
-		t.Fatalf("expected 1 api_call, got %d", len(data.APICalls))
-	}
-
-	// The resumed entry should have seq 3 (after seq 0, 1, 2).
-	if data.Entries[2].Seq != 3 {
-		t.Errorf("resumed entry seq = %d, want 3", data.Entries[2].Seq)
-	}
-}
-
-func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips(t *testing.T) {
+func TestTranscriptReadersRejectCorruptNonFinalLine(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{
@@ -2393,11 +1826,8 @@ func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, entries, skipped, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("lenient readTranscript: %v", err)
-	}
-	if len(entries) != 2 || skipped != 1 {
-		t.Fatalf("lenient entries/skipped = %d/%d, want 2/1", len(entries), skipped)
+	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
 
@@ -2448,11 +1878,8 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, entries, skipped, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("lenient readTranscript: %v", err)
-	}
-	if len(entries) != 1 || skipped != 1 {
-		t.Fatalf("lenient entries/skipped = %d/%d, want 1/1", len(entries), skipped)
+	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
 
@@ -2464,11 +1891,11 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 	}{
 		{
 			name: "missing kind",
-			line: `{"session_id":"child-session","format_version":1}`,
+			line: `{"session_id":"child-session","format_version":2}`,
 		},
 		{
 			name: "wrong kind",
-			line: `{"kind":"entry","session_id":"child-session","format_version":1}`,
+			line: `{"kind":"entry","session_id":"child-session","format_version":2}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2477,11 +1904,11 @@ func TestStrictChildTranscriptRejectsMalformedHeaderShape(t *testing.T) {
 				t.Fatalf("write transcript: %v", err)
 			}
 
-			if _, err := readStrictChildTranscript(path, "child-session", 0); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
-				t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+			if _, err := readStrictChildTranscript(path, "child-session", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("strict read error = %v, want ErrUnsupportedFormat", err)
 			}
-			if _, _, _, err := readTranscript(path); err != nil {
-				t.Fatalf("lenient readTranscript changed behavior: %v", err)
+			if _, _, _, err := readTranscript(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("readTranscript error = %v, want ErrUnsupportedFormat", err)
 			}
 		})
 	}
@@ -2527,7 +1954,7 @@ func TestStrictChildTranscriptRejectsOversizedBodyLine(t *testing.T) {
 		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
 	}
 	_, _, _, err = readTranscript(path)
-	if err != nil {
-		t.Fatalf("lenient readTranscript changed behavior: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+		t.Fatalf("readTranscript error = %v, want corruption error", err)
 	}
 }

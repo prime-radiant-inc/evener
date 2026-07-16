@@ -6,6 +6,22 @@ import (
 	"testing"
 )
 
+type streamGenerateCoverageSliceStream struct {
+	events chan StreamEvent
+}
+
+func newSliceStream(events ...StreamEvent) *streamGenerateCoverageSliceStream {
+	ch := make(chan StreamEvent, len(events))
+	for _, event := range events {
+		ch <- event
+	}
+	close(ch)
+	return &streamGenerateCoverageSliceStream{events: ch}
+}
+
+func (s *streamGenerateCoverageSliceStream) Events() <-chan StreamEvent { return s.events }
+func (s *streamGenerateCoverageSliceStream) Close() error               { return nil }
+
 type streamGenerateCoverageAdapter struct {
 	stream func(context.Context, Request) (Stream, error)
 }

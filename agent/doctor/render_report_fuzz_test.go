@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // doctor_reader is a tiny deterministic byte consumer that decodes a fuzz blob
@@ -295,21 +296,31 @@ func doctor_buildAPILogResult(r *doctor_reader) (APILogResult, APILogOpts) {
 		AvgLatencyMs:    int64(r.doctor_int(200)),
 	}
 	for i, n := 0, r.doctor_int(6); i < n; i++ {
-		res.Calls = append(res.Calls, APICallRow{
-			Round:         r.doctor_int(50),
-			Model:         r.doctor_str(),
-			Provider:      r.doctor_str(),
-			LatencyMs:     int64(r.doctor_int(200)),
-			InputTokens:   r.doctor_int(200),
-			OutputTokens:  r.doctor_int(200),
-			CacheRead:     r.doctor_int(200),
-			UncachedInput: r.doctor_int(200),
-			FinishReason:  r.doctor_str(),
-			TextLength:    r.doctor_int(200),
-			ToolCalls:     r.doctor_int(10),
-			Empty:         r.doctor_bool(),
-			Error:         r.doctor_str(),
-		})
+		row := APICallRow{
+			AttemptID:        r.doctor_str(),
+			AttemptGroupID:   r.doctor_str(),
+			AttemptIndex:     r.doctor_int(50),
+			ProviderInstance: r.doctor_str(),
+			Model:            r.doctor_str(),
+			LatencyMs:        int64(r.doctor_int(200)),
+			InputTokens:      r.doctor_int(200),
+			OutputTokens:     r.doctor_int(200),
+			CacheRead:        r.doctor_int(200),
+			UncachedInput:    r.doctor_int(200),
+			FinishReason:     r.doctor_str(),
+			TextLength:       r.doctor_int(200),
+			ToolCalls:        r.doctor_int(10),
+			Empty:            r.doctor_bool(),
+			Error:            r.doctor_str(),
+			Final:            r.doctor_bool(),
+			SettlementState:  r.doctor_str(),
+		}
+		if row.Error == "" {
+			row.Outcome = apilog.AttemptSuccess
+		} else {
+			row.Outcome = apilog.AttemptTransportFail
+		}
+		res.Calls = append(res.Calls, row)
 	}
 	opts := APILogOpts{
 		EmptyOnly:      r.doctor_bool(),
@@ -331,9 +342,11 @@ func FuzzDoctorRenderAPILog(f *testing.F) {
 	// empty=true (with no error) hits the "(empty)" branch, and neither hits the
 	// plain finish-reason path.
 	putCall := func(w *doctor_writer, errMsg string, empty bool) {
-		w.doctor_putInt(1)      // Round
+		w.doctor_putStr("att")  // AttemptID
+		w.doctor_putStr("ag")   // AttemptGroupID
+		w.doctor_putInt(1)      // AttemptIndex
+		w.doctor_putStr("oai")  // ProviderInstance
 		w.doctor_putStr("gpt5") // Model
-		w.doctor_putStr("oai")  // Provider
 		w.doctor_putInt(20)     // LatencyMs
 		w.doctor_putInt(100)    // InputTokens
 		w.doctor_putInt(50)     // OutputTokens
@@ -344,6 +357,8 @@ func FuzzDoctorRenderAPILog(f *testing.F) {
 		w.doctor_putInt(1)      // ToolCalls
 		w.doctor_putBool(empty) // Empty
 		w.doctor_putStr(errMsg) // Error
+		w.doctor_putBool(true)  // Final
+		w.doctor_putStr("done")
 	}
 	// header writes SessionID + the eight totals fields.
 	header := func(w *doctor_writer) {

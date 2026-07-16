@@ -43,7 +43,6 @@ func FuzzCmdutilCoverage(f *testing.F) {
 	f.Add(uint8(0))
 	f.Fuzz(func(t *testing.T, _ uint8) {
 		oldClient := http.DefaultClient
-		oldRaw := apiRawBodyEnabled
 		oldFromEnv := newClientFromEnv
 		oldAvailable := newClientFromAvailableProviders
 		oldFindEnvVar := findEnvVar
@@ -51,14 +50,12 @@ func FuzzCmdutilCoverage(f *testing.F) {
 		oldLookupProviderEnv := lookupProviderEnv
 		t.Cleanup(func() {
 			http.DefaultClient = oldClient
-			apiRawBodyEnabled = oldRaw
 			newClientFromEnv = oldFromEnv
 			newClientFromAvailableProviders = oldAvailable
 			findEnvVar = oldFindEnvVar
 			loadCredentialStore = oldLoadCredentialStore
 			lookupProviderEnv = oldLookupProviderEnv
 		})
-		apiRawBodyEnabled = func() bool { return true }
 		closeLog, err := AttachAPILogger(llm.NewClient(), t.TempDir(), nil)
 		if err != nil {
 			t.Fatal(err)

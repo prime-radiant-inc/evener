@@ -69,7 +69,7 @@ func TestListThreadsWithFallbackRetainsLastGood(t *testing.T) {
 	}
 }
 
-func TestListThreadsWithFallbackFirstCallErrorsEmpty(t *testing.T) {
+func TestListThreadsWithFallbackInitialCallErrorsEmpty(t *testing.T) {
 	s := &WebServer{cfg: hubcore.WebConfig{}}
 	lister := &stubThreadLister{id: "codex", err: errors.New("down")}
 	got := s.listThreadsWithFallback(context.Background(), lister)

@@ -230,28 +230,6 @@ func fuzzScenarioCoveragePureEdges(t *testing.T) {
 	BuildTreeAt([]schema.SessionMeta{{ID: "sub", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/p"}}}, []LiveEntry{{SessionID: ""}, {SessionID: "missing-session-id", Status: "awaiting"}, {SessionID: "sub", Status: "awaiting"}}, nil, time.Now())
 }
 
-func fuzzScenarioCoverageTranscriptEdges(t *testing.T) {
-	dir := t.TempDir()
-	cases := []struct{ name, body string }{
-		{"empty", "\n\n"},
-		{"invalid", "{\n"},
-		{"blank-lines", "\n{\"kind\":\"api_call\",\"error\":\" x \"}\n"},
-		{"too-long", strings.Repeat("x", wedgeTranscriptMaxLineBytes+1)},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := filepath.Join(dir, tc.name)
-			if err := os.WriteFile(p, []byte(tc.body), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			kind, bad := transcriptTailSummary(p)
-			if tc.name == "blank-lines" && (kind != "api_call" || !bad) {
-				t.Fatalf("%q %v", kind, bad)
-			}
-		})
-	}
-}
-
 func fuzzScenarioCoverageHTTPFailures(t *testing.T) {
 	for _, h := range []http.Handler{
 		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }),

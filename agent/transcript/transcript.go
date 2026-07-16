@@ -1,7 +1,7 @@
 // Package transcript defines the on-disk JSONL transcript format and the
-// append-only writer that records an agent session's turns and API calls.
+// append-only writer that records an agent session's semantic turns.
 // Readers live with their consumers; this package owns the write side and the
-// shared line schema (Header, Entry, APICall).
+// shared line schema (Header and Entry).
 package transcript
 
 import (
@@ -21,15 +21,18 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/llm"
 )
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
+const FormatVersion = 2
+
+var ErrUnsupportedFormat = errors.New("unsupported transcript format")
+
 // Header is the first line of a transcript JSONL file.
 type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
-	FormatVersion int    `json:"format_version"` // Currently 1
+	FormatVersion int    `json:"format_version"` // Currently 2
 	SessionID     string `json:"session_id"`     // ID of the session this transcript records
 	// ParentSessionID and ParentToolCallID are set only for spawned subagent
 	// transcripts: the parent session and the tool call that spawned this run.
@@ -59,31 +62,21 @@ type Entry struct {
 	Turn schema.Turn `json:"turn"` // the recorded conversation turn
 }
 
-// APICall records an LLM API call in the transcript JSONL file.
-type APICall struct {
-	Kind                   string              `json:"kind"`  // Always "api_call"
-	Seq                    int                 `json:"seq"`   // line sequence number in the transcript
-	Round                  int                 `json:"round"` // tool-call round within the turn
-	AttemptGroupID         string              `json:"attempt_group_id,omitempty"`
-	AttemptIndex           int                 `json:"attempt_index,omitempty"`
-	AttemptCount           int                 `json:"attempt_count,omitempty"`
-	FinalAttemptCount      *int                `json:"final_attempt_count,omitempty"`
-	HistoryMode            llm.HistoryMode     `json:"history_mode,omitempty"`
-	PreviousResponseIDHash string              `json:"previous_response_id_hash,omitempty"`
-	ConversationIDHash     string              `json:"conversation_id_hash,omitempty"`
-	Timestamp              string              `json:"ts"`                              // RFC3339 time the round started
-	LatencyMs              int64               `json:"latency_ms"`                      // LLM call latency in milliseconds
-	SystemPrompt           string              `json:"system_prompt"`                   // system prompt sent on this call
-	ContextHistoryTurns    int                 `json:"context_history_turns,omitempty"` // number of history turns in the request
-	SystemPromptBytes      int                 `json:"system_prompt_bytes,omitempty"`   // byte length of SystemPrompt
-	Request                llm.APILogRequest   `json:"request"`                         // sanitized request log
-	Response               *llm.APILogResponse `json:"response,omitempty"`              // sanitized response log; nil on error
-	Error                  string              `json:"error,omitempty"`                 // error message when the call failed
-	// Source, Title, and Hint are the diagnostic classification of Error
-	// (provider/model/etc.), populated only on failed calls.
-	Source string `json:"source,omitempty"`
-	Title  string `json:"title,omitempty"`
-	Hint   string `json:"hint,omitempty"`
+// ValidateHeader enforces the hard transcript-v2 boundary shared by writers
+// and semantic readers.
+func ValidateHeader(header Header) error {
+	if header.Kind != "header" || header.FormatVersion != FormatVersion {
+		return fmt.Errorf("%w: require transcript header with format_version %d", ErrUnsupportedFormat, FormatVersion)
+	}
+	return nil
+}
+
+// ValidateRecordKind rejects every non-semantic record after the v2 header.
+func ValidateRecordKind(kind string) error {
+	if kind != "entry" {
+		return fmt.Errorf("%w: record kind %q is not valid in transcript format %d", ErrUnsupportedFormat, kind, FormatVersion)
+	}
+	return nil
 }
 
 // Writer appends turns to an immutable JSONL transcript file.
@@ -122,7 +115,7 @@ func NewWriterWithFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 // persistence fuzzer inject an in-memory or sandboxed filesystem.
 func newWriterFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 	header.Kind = "header"
-	header.FormatVersion = 1
+	header.FormatVersion = FormatVersion
 
 	if err := fs.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create transcript dir: %w", err)
@@ -265,48 +258,6 @@ func (w *Writer) rollbackAppendLocked(startOffset int64) error {
 	return nil
 }
 
-// AppendAPICall writes an API call record to the JSONL file.
-// Safe for concurrent use. No-op if the receiver is nil.
-// Shares the seq counter with Append so entries and api_calls are interleaved in order.
-func (w *Writer) AppendAPICall(call APICall) error {
-	if w == nil || w.closed.Load() {
-		return nil
-	}
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	// Re-check after acquiring lock: Close may have raced between the
-	// fast-path check above and the lock acquisition.
-	if w.closed.Load() {
-		return nil
-	}
-
-	call.Kind = "api_call"
-	call.Seq = w.seq
-
-	data, err := json.Marshal(call)
-	if err != nil {
-		return fmt.Errorf("marshal transcript api_call: %w", err)
-	}
-
-	if _, err := w.file.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("write transcript api_call: %w", err)
-	}
-
-	w.dirty = true
-	if w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
-		if err := w.file.Sync(); err != nil {
-			return fmt.Errorf("sync transcript api_call: %w", err)
-		}
-		w.lastSync = time.Now()
-		w.dirty = false
-	}
-
-	w.seq++
-	return nil
-}
-
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.
 // No-op if the receiver is nil.
 func (w *Writer) Close() error {
@@ -374,22 +325,52 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 		}
 	}
 
-	// Parse entries to find the max seq number.
+	// Validate the v2 header and semantic entries while finding the max seq.
 	maxSeq := -1
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-	first := true
+	headerRead := false
 	for scanner.Scan() {
-		if first {
-			first = false
-			continue // skip header
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		if !headerRead {
+			var header Header
+			if err := json.Unmarshal(line, &header); err != nil {
+				_ = f.Close()
+				return nil, fmt.Errorf("parse transcript header: %w", err)
+			}
+			if err := ValidateHeader(header); err != nil {
+				_ = f.Close()
+				return nil, err
+			}
+			headerRead = true
+			continue
+		}
+		var kind struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &kind); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("parse transcript record: %w", err)
+		}
+		if err := ValidateRecordKind(kind.Kind); err != nil {
+			_ = f.Close()
+			return nil, err
 		}
 		var entry Entry
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && (entry.Kind == "entry" || entry.Kind == "api_call") {
-			if entry.Seq > maxSeq {
-				maxSeq = entry.Seq
-			}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("parse transcript entry: %w", err)
 		}
+		if entry.Seq > maxSeq {
+			maxSeq = entry.Seq
+		}
+	}
+	if !headerRead {
+		_ = f.Close()
+		return nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if err := scanner.Err(); err != nil {

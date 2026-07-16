@@ -16,7 +16,7 @@ var harvestAbs = filepath.Abs
 // recordedSources are the on-disk files a single state directory yields, grouped
 // by the fuzz surface they feed. Each list is sorted for deterministic harvest.
 type recordedSources struct {
-	sse         []string // api-raw.jsonl
+	apiLogs     []string // sessions/<session-id>.api.jsonl
 	transcripts []string // *.transcript.jsonl
 	appwire     []string // appwire-frames.jsonl
 	http        []string // hub-http.jsonl
@@ -37,10 +37,8 @@ func discoverSources(stateDir string) (recordedSources, error) {
 			return nil
 		}
 		switch base := d.Name(); {
-		// Frozen project-level api-raw.jsonl AND per-session
-		// sessions/<id>.api-raw.jsonl both feed the SSE surface.
-		case base == "api-raw.jsonl" || strings.HasSuffix(base, ".api-raw.jsonl"):
-			s.sse = append(s.sse, path)
+		case strings.HasSuffix(base, ".api.jsonl") && filepath.Base(filepath.Dir(path)) == "sessions":
+			s.apiLogs = append(s.apiLogs, path)
 		case base == "appwire-frames.jsonl":
 			s.appwire = append(s.appwire, path)
 		case base == "hub-http.jsonl":
@@ -55,7 +53,7 @@ func discoverSources(stateDir string) (recordedSources, error) {
 	if err != nil {
 		return recordedSources{}, err
 	}
-	sort.Strings(s.sse)
+	sort.Strings(s.apiLogs)
 	sort.Strings(s.transcripts)
 	sort.Strings(s.appwire)
 	sort.Strings(s.http)

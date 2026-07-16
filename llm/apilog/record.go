@@ -35,11 +35,13 @@ type APIAttemptRequest struct {
 }
 
 type APIAttemptResponse struct {
-	StatusCode   int         `json:"status_code,omitempty"`
-	Body         EncodedBody `json:"body"`
-	Model        string      `json:"model,omitempty"`
-	FinishReason string      `json:"finish_reason,omitempty"`
-	Usage        Usage       `json:"usage,omitempty"`
+	StatusCode    int         `json:"status_code,omitempty"`
+	Body          EncodedBody `json:"body"`
+	Model         string      `json:"model,omitempty"`
+	FinishReason  string      `json:"finish_reason,omitempty"`
+	Usage         Usage       `json:"usage,omitempty"`
+	TextLength    int         `json:"text_length"`
+	ToolCallCount int         `json:"tool_call_count"`
 }
 
 type Usage struct {
@@ -175,6 +177,9 @@ func (r APIAttemptGroupSettlement) validateRecord() error {
 func (r APIAttemptResponse) validate() error {
 	if r.StatusCode < 0 {
 		return fmt.Errorf("response status code must be non-negative")
+	}
+	if r.TextLength < 0 || r.ToolCallCount < 0 {
+		return fmt.Errorf("response compact counts must be non-negative")
 	}
 	if _, err := DecodeBody(r.Body); err != nil {
 		return fmt.Errorf("invalid response body: %w", err)

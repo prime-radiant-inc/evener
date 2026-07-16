@@ -12,15 +12,11 @@ import (
 	"strings"
 	"testing"
 	"time"
-	_ "unsafe"
 
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
-
-//go:linkname googleSeedRawBodyEnabled primeradiant.com/serf/llm.rawBodyEnabled
-var googleSeedRawBodyEnabled bool
 
 type googleSeedRoundTripper func(*http.Request) (*http.Response, error)
 
@@ -75,10 +71,6 @@ func drainGoogleSeedStream(s llm.Stream) {
 // runGoogleCoverageSeedUnion is the deterministic, offline branch seed bank
 // replayed by FuzzGoogleComplete's distinguished committed seed.
 func runGoogleCoverageSeedUnion(t *testing.T) {
-	oldRawBodyEnabled := googleSeedRawBodyEnabled
-	googleSeedRawBodyEnabled = true
-	defer func() { googleSeedRawBodyEnabled = oldRawBodyEnabled }()
-
 	ctx := context.Background()
 	req := googleSeedRequest()
 

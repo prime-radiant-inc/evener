@@ -32,10 +32,12 @@ func validAPIAttemptRecord(t *testing.T) APIAttemptRecord {
 			HistoryMode: "messages",
 		},
 		Response: &APIAttemptResponse{
-			StatusCode:   200,
-			Body:         EncodeBody([]byte{0x00, 0xff, 0x80, '\n'}),
-			Model:        "gpt-test-2026-07-15",
-			FinishReason: "stop",
+			StatusCode:    200,
+			Body:          EncodeBody([]byte{0x00, 0xff, 0x80, '\n'}),
+			Model:         "gpt-test-2026-07-15",
+			FinishReason:  "stop",
+			TextLength:    17,
+			ToolCallCount: 2,
 			Usage: Usage{
 				InputTokens:  12,
 				OutputTokens: 4,
@@ -100,6 +102,9 @@ func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
 	}
 	if got.AttemptID != want.AttemptID || got.AttemptGroupID != want.AttemptGroupID || got.AttemptIndex != want.AttemptIndex {
 		t.Fatalf("attempt identity = (%q, %q, %d), want (%q, %q, %d)", got.AttemptID, got.AttemptGroupID, got.AttemptIndex, want.AttemptID, want.AttemptGroupID, want.AttemptIndex)
+	}
+	if got.Response.TextLength != 17 || got.Response.ToolCallCount != 2 {
+		t.Fatalf("compact response counts = text %d tools %d, want text 17 tools 2", got.Response.TextLength, got.Response.ToolCallCount)
 	}
 }
 

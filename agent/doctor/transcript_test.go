@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 func assistantText(s string) llm.ContentPart {
@@ -29,9 +31,9 @@ func toolResult(name string, content any, isError bool) llm.ContentPart {
 	}}
 }
 
-// writeRichSession writes a real transcript (header + turns + api_calls) plus a
-// meta file, via serf's own transcript.Writer so the bytes match production.
-func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, apiCalls []transcript.APICall, meta schema.SessionMeta) {
+// writeRichSession writes the semantic transcript, canonical API log, and meta
+// file through Serf's durable record types so fixtures match production.
+func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, apiRecords []apilog.APILogRecord, meta schema.SessionMeta) {
 	t.Helper()
 	path := filepath.Join(bucket, "sessions", sid+".transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sid})
@@ -43,13 +45,27 @@ func writeRichSession(t *testing.T, bucket, sid string, turns []schema.Turn, api
 			t.Fatal(err)
 		}
 	}
-	for _, ac := range apiCalls {
-		if err := w.AppendAPICall(ac); err != nil {
-			t.Fatal(err)
-		}
-	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if len(apiRecords) > 0 {
+		apiPath := filepath.Join(bucket, "sessions", sid+".api.jsonl")
+		f, err := os.OpenFile(apiPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, record := range apiRecords {
+			line, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Write(append(line, '\n')); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	meta.ID = sid
 	if err := schema.SaveSessionMeta(bucket, meta); err != nil {
@@ -72,10 +88,7 @@ func countFixture(t *testing.T) (base, sid string) {
 			toolCall("communicate", `{"message":"done"}`),
 		}}),
 	}
-	apiCalls := []transcript.APICall{
-		{SystemPrompt: "available tools: read_file, delegate_send. policy: do not call delegate_send."},
-	}
-	writeRichSession(t, bucket, sid, turns, apiCalls, schema.SessionMeta{})
+	writeRichSession(t, bucket, sid, turns, nil, schema.SessionMeta{})
 	return base, sid
 }
 
@@ -99,9 +112,6 @@ func TestCount_StructuralVsMentions(t *testing.T) {
 	}
 	if ds.MentionsAssistantText < 1 {
 		t.Errorf("delegate_send assistant-text mentions = %d, want >=1", ds.MentionsAssistantText)
-	}
-	if ds.MentionsAPICalls < 2 {
-		t.Errorf("delegate_send api_call mentions = %d, want >=2", ds.MentionsAPICalls)
 	}
 }
 

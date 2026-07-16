@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -76,6 +77,33 @@ func turnIDs(turns []appwire.Turn) []string {
 	return out
 }
 
+func requireAppAllTurns(t testing.TB, srv *Server, threadID string) []appwire.Turn {
+	t.Helper()
+	turns, err := srv.appAllTurns(threadID)
+	if err != nil {
+		t.Fatalf("appAllTurns: %v", err)
+	}
+	return turns
+}
+
+func requireAppLatestTurns(t testing.TB, srv *Server, threadID string, limit int) ([]appwire.Turn, string) {
+	t.Helper()
+	turns, cursor, err := srv.appLatestTurns(threadID, limit)
+	if err != nil {
+		t.Fatalf("appLatestTurns: %v", err)
+	}
+	return turns, cursor
+}
+
+func requireAppPageTurns(t testing.TB, srv *Server, threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
+	t.Helper()
+	page, err := srv.appPageTurns(threadID, cursor, limit)
+	if err != nil {
+		t.Fatalf("appPageTurns: %v", err)
+	}
+	return page
+}
+
 func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
 	srv := seedTranscriptServer(t, 4)
 	conn := srv.AppServer().NewConnection("test")
@@ -120,6 +148,30 @@ func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
 		if id != want {
 			t.Fatalf("position %d = %q, want %q (full order: %v)", i, id, want, turnIDs(all))
 		}
+	}
+}
+
+func TestDaemonTranscriptReadersPropagateUnsupportedFormat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1,"session_id":"th_1"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetTranscriptPathFunc(func() string { return path })
+
+	for _, params := range []appwire.ThreadReadParams{
+		{IncludeTurns: true},
+		{IncludeTurns: true, TurnLimit: 1},
+	} {
+		resp, err := srv.handleAppThreadRead(context.Background(), params)
+		if !errors.Is(err, transcript.ErrUnsupportedFormat) || resp.Thread.Turns != nil {
+			t.Fatalf("thread/read = (%+v, %v), want empty ErrUnsupportedFormat", resp, err)
+		}
+	}
+	page, err := srv.handleAppThreadTurnsList(context.Background(), appwire.ThreadTurnsListParams{Limit: 1})
+	if !errors.Is(err, transcript.ErrUnsupportedFormat) || page.Data != nil {
+		t.Fatalf("thread/turns/list = (%+v, %v), want empty ErrUnsupportedFormat", page, err)
 	}
 }
 
@@ -215,7 +267,7 @@ func TestServerAppWireDirectPageUsesExactTranscriptAuthority(t *testing.T) {
 	// than the transcript. A direct page must still choose the richer transcript.
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "notification-only"}})
 
-	all := srv.appAllTurns("th_1")
+	all := requireAppAllTurns(t, srv, "th_1")
 	want := appwire.PageTurns(all, "160", 30)
 	if len(want.Data) != 30 {
 		t.Fatalf("reference page has %d turns, want 30", len(want.Data))
@@ -226,7 +278,7 @@ func TestServerAppWireDirectPageUsesExactTranscriptAuthority(t *testing.T) {
 		projected = append(projected, stats.ProjectedTurns)
 	})
 	t.Cleanup(restore)
-	got := srv.appPageTurns("th_1", "160", 30)
+	got := requireAppPageTurns(t, srv, "th_1", "160", 30)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("direct page did not preserve transcript authority\n got: %v\nwant: %v", turnIDs(got.Data), turnIDs(want.Data))
 	}
@@ -246,7 +298,7 @@ func TestServerAppWireNotificationSnapshotMatchesRetainedWindowAfterEviction(t *
 
 	wantAll := appTurnsFromNotifications(srv.AppNotificationsAfter(0, "th_1"))
 	want, wantCursor := appwire.WindowTurns(wantAll, 40)
-	got, gotCursor := srv.appLatestTurns("th_1", 40)
+	got, gotCursor := requireAppLatestTurns(t, srv, "th_1", 40)
 	if !reflect.DeepEqual(got, want) || gotCursor != wantCursor {
 		t.Fatalf("bounded notification snapshot retained evicted state\n got: %v cursor=%q\nwant: %v cursor=%q", turnIDs(got), gotCursor, turnIDs(want), wantCursor)
 	}
@@ -290,14 +342,14 @@ func TestServerAppWirePageRecomputesTranscriptAuthorityAfterInputsChange(t *test
 	t.Run("transcript append reverses notification authority", func(t *testing.T) {
 		srv := seedTranscriptServer(t, 1)
 		recordNotificationTurns(t, srv, 4)
-		_, _ = srv.appLatestTurns("th_1", 1)
+		_, _ = requireAppLatestTurns(t, srv, "th_1", 1)
 		appendTranscriptTurns(t, srv.transcriptPath(), 8)
 
-		want := appwire.PageTurns(srv.appAllTurns("th_1"), "8", 2)
+		want := appwire.PageTurns(requireAppAllTurns(t, srv, "th_1"), "8", 2)
 		var projected []int
 		restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 		t.Cleanup(restore)
-		got := srv.appPageTurns("th_1", "8", 2)
+		got := requireAppPageTurns(t, srv, "th_1", "8", 2)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("page retained stale notification authority\n got: %v\nwant: %v", turnIDs(got.Data), turnIDs(want.Data))
 		}
@@ -308,14 +360,14 @@ func TestServerAppWirePageRecomputesTranscriptAuthorityAfterInputsChange(t *test
 
 	t.Run("notification growth reverses transcript authority", func(t *testing.T) {
 		srv := seedTranscriptServer(t, 2)
-		_, _ = srv.appLatestTurns("th_1", 1)
+		_, _ = requireAppLatestTurns(t, srv, "th_1", 1)
 		recordNotificationTurns(t, srv, 4)
 
-		want := appwire.PageTurns(srv.appAllTurns("th_1"), "4", 2)
+		want := appwire.PageTurns(requireAppAllTurns(t, srv, "th_1"), "4", 2)
 		var projected []int
 		restore := apptranscript.InstallReadObserverForTesting(func(stats apptranscript.ReadStats) { projected = append(projected, stats.ProjectedTurns) })
 		t.Cleanup(restore)
-		got := srv.appPageTurns("th_1", "4", 2)
+		got := requireAppPageTurns(t, srv, "th_1", "4", 2)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("page retained stale transcript authority\n got: %v\nwant: %v", turnIDs(got.Data), turnIDs(want.Data))
 		}
@@ -497,17 +549,21 @@ func TestServerAppWireStaleTranscriptPathCannotCrossIdentity(t *testing.T) {
 		<-release
 		return newPath
 	})
-	done := make(chan []appwire.Turn, 1)
+	type latestResult struct {
+		turns []appwire.Turn
+		err   error
+	}
+	done := make(chan latestResult, 1)
 	go func() {
-		turns, _ := srv.appLatestTurns("old", 40)
-		done <- turns
+		turns, _, err := srv.appLatestTurns("old", 40)
+		done <- latestResult{turns: turns, err: err}
 	}()
 	<-entered
 	srv.SetAppIdentity("local", "new")
 	srv.SetTranscriptPathFunc(func() string { return oldPath })
 	close(release)
-	if turns := <-done; len(turns) != 0 {
-		t.Fatalf("stale old-identity latest returned transcript from switched identity: %v", turnIDs(turns))
+	if result := <-done; result.err != nil || len(result.turns) != 0 {
+		t.Fatalf("stale old-identity latest returned (%v, %v)", turnIDs(result.turns), result.err)
 	}
 
 	entered = make(chan struct{})
@@ -517,14 +573,21 @@ func TestServerAppWireStaleTranscriptPathCannotCrossIdentity(t *testing.T) {
 		<-release
 		return oldPath
 	})
-	pageDone := make(chan appwire.ThreadTurnsListResponse, 1)
-	go func() { pageDone <- srv.appPageTurns("new", "2", 1) }()
+	type pageResult struct {
+		page appwire.ThreadTurnsListResponse
+		err  error
+	}
+	pageDone := make(chan pageResult, 1)
+	go func() {
+		page, err := srv.appPageTurns("new", "2", 1)
+		pageDone <- pageResult{page: page, err: err}
+	}()
 	<-entered
 	srv.SetAppIdentity("local", "newer")
 	srv.SetTranscriptPathFunc(func() string { return newPath })
 	close(release)
-	if page := <-pageDone; len(page.Data) != 0 || page.NextCursor != "" {
-		t.Fatalf("stale page crossed identity generation: %+v", page)
+	if result := <-pageDone; result.err != nil || len(result.page.Data) != 0 || result.page.NextCursor != "" {
+		t.Fatalf("stale page crossed identity generation: %+v err=%v", result.page, result.err)
 	}
 }
 
@@ -593,7 +656,7 @@ func TestServerAppWireOldIdentityRejectsCallbackBackingSwitchBeforeIdentity(t *t
 	// Match production clear ordering: setSession changes callback backing before
 	// SetAppIdentity advances the server identity generation.
 	backingPath = newPath
-	turns, _ := srv.appLatestTurns("old", 40)
+	turns, _ := requireAppLatestTurns(t, srv, "old", 40)
 	if len(turns) != 0 {
 		t.Fatalf("old identity returned new callback backing before identity switch: %v", turnIDs(turns))
 	}

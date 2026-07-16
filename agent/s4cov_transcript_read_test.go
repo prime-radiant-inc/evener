@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/transcript"
 )
 
 // s4covWriteFile writes content to a fresh temp file and returns its path.
@@ -18,15 +20,41 @@ func s4covWriteFile(t *testing.T, content string) string {
 	return path
 }
 
+func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"version one", `{"kind":"header","format_version":1,"session_id":"01SESS"}` + "\n"},
+		{"missing version", `{"kind":"header","session_id":"01SESS"}` + "\n"},
+		{"mixed api call", `{"kind":"header","format_version":2,"session_id":"01SESS"}` + "\n" + `{"kind":"api_call"}` + "\n"},
+		{"unknown record", `{"kind":"header","format_version":2,"session_id":"01SESS"}` + "\n" + `{"kind":"mystery"}` + "\n"},
+		{"duplicate header", `{"kind":"header","format_version":2,"session_id":"01SESS"}` + "\n" + `{"kind":"header","format_version":2}` + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := s4covWriteFile(t, tc.body)
+			if _, _, _, err := readTranscript(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("readTranscript error = %v, want ErrUnsupportedFormat", err)
+			}
+			if _, err := readTranscriptFull(path); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("readTranscriptFull error = %v, want ErrUnsupportedFormat", err)
+			}
+			if _, err := readStrictChildTranscript(path, "01SESS", 0); !errors.Is(err, transcript.ErrUnsupportedFormat) {
+				t.Fatalf("readStrictChildTranscript error = %v, want ErrUnsupportedFormat", err)
+			}
+		})
+	}
+}
+
 // --- readTranscript ---
 
 func TestS4covReadTranscript_HappyPath(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"entry","seq":1,"turn":{}}
 {"kind":"entry","seq":2,"turn":{}}
-{"kind":"api_call","seq":3}
-{"kind":"entry","seq":4,"turn":{}}
+{"kind":"entry","seq":3,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
 	header, entries, skipped, err := readTranscript(path)
@@ -37,30 +65,24 @@ func TestS4covReadTranscript_HappyPath(t *testing.T) {
 		t.Fatalf("header session = %q, want 01SESS", header.SessionID)
 	}
 	if len(entries) != 3 {
-		t.Fatalf("entries = %d, want 3 (api_call skipped, not counted)", len(entries))
+		t.Fatalf("entries = %d, want 3", len(entries))
 	}
 	if skipped != 0 {
 		t.Fatalf("skipped = %d, want 0", skipped)
 	}
 }
 
-func TestS4covReadTranscript_CorruptLineCounted(t *testing.T) {
+func TestS4covReadTranscript_CorruptInteriorLineRejected(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"entry","seq":1,"turn":{}}
 {this is not valid json
 {"kind":"entry","seq":2,"turn":{}}
 `
 	path := s4covWriteFile(t, content)
 	_, entries, skipped, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("readTranscript: %v", err)
-	}
-	if len(entries) != 2 {
-		t.Fatalf("entries = %d, want 2", len(entries))
-	}
-	if skipped != 1 {
-		t.Fatalf("skipped = %d, want 1", skipped)
+	if err == nil || !strings.Contains(err.Error(), "parsing transcript line") {
+		t.Fatalf("readTranscript = entries %d skipped %d err %v, want corruption error", len(entries), skipped, err)
 	}
 }
 
@@ -92,32 +114,6 @@ func TestS4covReadTranscript_OpenFail(t *testing.T) {
 
 // --- readTranscriptFull ---
 
-func TestS4covReadTranscriptFull_Mixed(t *testing.T) {
-	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
-{"kind":"entry","seq":1,"turn":{}}
-{"kind":"api_call","seq":2}
-{"kind":"mystery","seq":3}
-{not parseable json
-{"kind":"entry","seq":"not-a-number"}
-`
-	path := s4covWriteFile(t, content)
-	data, err := readTranscriptFull(path)
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if len(data.Entries) != 1 {
-		t.Fatalf("Entries = %d, want 1", len(data.Entries))
-	}
-	if len(data.APICalls) != 1 {
-		t.Fatalf("APICalls = %d, want 1", len(data.APICalls))
-	}
-	// Three lines are skipped (unknown-kind, unparseable, entry-with-bad-body).
-	if data.Skipped != 3 {
-		t.Fatalf("Skipped = %d, want 3", data.Skipped)
-	}
-}
-
 func TestS4covReadTranscriptFull_EmptyFile(t *testing.T) {
 	t.Parallel()
 	path := s4covWriteFile(t, "")
@@ -148,9 +144,8 @@ func TestS4covReadTranscriptFull_OpenFail(t *testing.T) {
 
 func TestS4covStrictChildTranscript_HappyPath(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"entry","seq":1,"turn":{}}
-{"kind":"api_call","seq":2}
 `
 	path := s4covWriteFile(t, content)
 	data, err := readStrictChildTranscript(path, "01SESS", 0)
@@ -163,16 +158,12 @@ func TestS4covStrictChildTranscript_HappyPath(t *testing.T) {
 	if len(data.Entries) != 1 {
 		t.Fatalf("Entries = %d, want 1 (retained)", len(data.Entries))
 	}
-	if len(data.APICalls) != 1 {
-		t.Fatalf("APICalls = %d, want 1 (retained)", len(data.APICalls))
-	}
 }
 
 func TestS4covStrictChildTranscript_ValidateDoesNotRetain(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"entry","seq":1,"turn":{}}
-{"kind":"api_call","seq":2}
 `
 	path := s4covWriteFile(t, content)
 	header, err := validateStrictChildTranscript(path, "01SESS", 0)
@@ -202,11 +193,8 @@ func TestS4covStrictChildTranscript_HeaderKindWrong(t *testing.T) {
 `
 	path := s4covWriteFile(t, content)
 	_, err := readStrictChildTranscript(path, "01SESS", 0)
-	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
-		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
-	}
-	if !strings.Contains(err.Error(), "transcript header kind") {
-		t.Fatalf("err = %v, want 'transcript header kind'", err)
+	if !errors.Is(err, transcript.ErrUnsupportedFormat) {
+		t.Fatalf("err = %v, want transcript.ErrUnsupportedFormat", err)
 	}
 }
 
@@ -224,7 +212,7 @@ func TestS4covStrictChildTranscript_BadHeaderJSON(t *testing.T) {
 
 func TestS4covStrictChildTranscript_SessionMismatch(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 `
 	path := s4covWriteFile(t, content)
 	_, err := readStrictChildTranscript(path, "01OTHER", 0)
@@ -237,7 +225,7 @@ func TestS4covStrictChildTranscript_CorruptNonFinalLine(t *testing.T) {
 	t.Parallel()
 	// A corrupt line that is NOT the final line (a valid entry follows) must
 	// abort the whole read as corrupt.
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {this is broken json
 {"kind":"entry","seq":1,"turn":{}}
 `
@@ -253,22 +241,19 @@ func TestS4covStrictChildTranscript_CorruptNonFinalLine(t *testing.T) {
 
 func TestS4covStrictChildTranscript_UnknownKind(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"mystery","seq":1}
 `
 	path := s4covWriteFile(t, content)
 	_, err := readStrictChildTranscript(path, "01SESS", 0)
-	if !errors.Is(err, errStrictChildTranscriptCorrupt) {
-		t.Fatalf("err = %v, want errStrictChildTranscriptCorrupt", err)
-	}
-	if !strings.Contains(err.Error(), "unknown transcript line kind") {
-		t.Fatalf("err = %v, want 'unknown transcript line kind'", err)
+	if !errors.Is(err, transcript.ErrUnsupportedFormat) {
+		t.Fatalf("err = %v, want transcript.ErrUnsupportedFormat", err)
 	}
 }
 
 func TestS4covStrictChildTranscript_LineExceedsMaxBytes(t *testing.T) {
 	t.Parallel()
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 `
 	path := s4covWriteFile(t, content)
 	// A tiny maxLineBytes makes even the header line exceed the cap.
@@ -285,7 +270,7 @@ func TestS4covStrictChildTranscript_FinalIncompleteTolerated(t *testing.T) {
 	t.Parallel()
 	// A truncated final line (no trailing newline, unparseable) is tolerated:
 	// it increments Skipped and the read returns cleanly.
-	content := `{"kind":"header","session_id":"01SESS"}
+	content := `{"kind":"header","format_version":2,"session_id":"01SESS"}
 {"kind":"entry","seq":1,"turn":{}}
 {"kind":"entry","seq":2,"tur`
 	path := s4covWriteFile(t, content)

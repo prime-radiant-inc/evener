@@ -81,7 +81,11 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 	if cfg.Past != nil {
 		_ = cfg.Past.Rebuild()
 		for _, entry := range cfg.Past.All() {
-			addTarget(pastEntryThread(cfg, entry, false), entry.Meta.TurnCount)
+			thread, err := pastEntryThread(cfg, entry, false)
+			if err != nil {
+				return appwire.ThreadTranscriptListResponse{}, err
+			}
+			addTarget(thread, entry.Meta.TurnCount)
 		}
 	}
 
@@ -97,7 +101,11 @@ func hubTranscriptRoot(ctx context.Context, cfg hubcore.WebConfig, sources *apps
 		}
 		err = readErr
 	}
-	if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}); ok {
+	thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+	if pastErr != nil {
+		return appwire.Thread{}, pastErr
+	}
+	if ok {
 		return thread, nil
 	}
 	return appwire.Thread{}, err

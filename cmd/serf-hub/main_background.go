@@ -17,7 +17,6 @@ var (
 		t := time.NewTicker(d)
 		return t.C, t.Stop
 	}
-	hubNow          = time.Now
 	hubSeedDefaults = func() error {
 		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
 		return err
@@ -50,15 +49,9 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	})
 	ticks, stop := hubTicker(5 * time.Second)
 	defer stop()
-	seenActive := map[string]time.Time{}
 	run := func() {
 		decisions, _ := archive.Decisions()
 		m, sum := hubcore.DeriveAttention(past.AllMetas(), roster.List(), decisions)
-		for _, id := range hubcore.StaleActives(seenActive, m, hubNow()) {
-			if entry, ok := past.Find(id); ok && hubcore.WedgedStatus(entry) {
-				hubcore.ApplyWedgeOverride(m, &sum, id)
-			}
-		}
 		w.Tick(m, sum)
 	}
 	run()

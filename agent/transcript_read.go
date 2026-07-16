@@ -19,65 +19,19 @@ var openTranscriptFile = func(path string) (io.ReadCloser, error) {
 	return os.Open(path)
 }
 
-// readTranscript reads a transcript JSONL file, returning the header, all valid entries,
-// and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
-// to decide whether to warn about data loss from crash recovery.
+// readTranscript reads a semantic transcript-v2 JSONL file. Only an incomplete
+// final line is skipped; corrupt complete lines and unsupported record kinds
+// reject the whole file.
 func readTranscript(path string) (transcript.Header, []transcript.Entry, int, error) {
-	f, err := openTranscriptFile(path)
-	if err != nil {
-		return transcript.Header{}, nil, 0, fmt.Errorf("open transcript: %w", err)
-	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-
-	// First line must be the header.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return transcript.Header{}, nil, 0, fmt.Errorf("reading transcript header: %w", err)
-		}
-		return transcript.Header{}, nil, 0, errors.New("transcript file is empty: no header")
-	}
-
-	var header transcript.Header
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return transcript.Header{}, nil, 0, fmt.Errorf("parsing transcript header: %w", err)
-	}
-
-	// Remaining lines are entries. Skip non-entry lines (e.g. api_call) and
-	// any that fail to parse.
-	var entries []transcript.Entry
-	skipped := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry transcript.Entry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			// Skip corrupt/partial lines (crash recovery).
-			skipped++
-			continue
-		}
-		if entry.Kind != "entry" {
-			continue // skip non-entry lines (e.g. api_call)
-		}
-		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return transcript.Header{}, nil, 0, fmt.Errorf("reading transcript: %w", err)
-	}
-
-	return header, entries, skipped, nil
+	data, err := readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, nil)
+	return data.Header, data.Entries, data.Skipped, err
 }
 
 // transcriptData holds all parsed content from a transcript JSONL file.
 type transcriptData struct {
-	Header   transcript.Header
-	Entries  []transcript.Entry
-	APICalls []transcript.APICall
-	Skipped  int
+	Header  transcript.Header
+	Entries []transcript.Entry
+	Skipped int
 }
 
 var (
@@ -85,71 +39,9 @@ var (
 	errStrictChildTranscriptSessionMismatch = errors.New("transcript_session_mismatch")
 )
 
-// readTranscriptFull reads a transcript JSONL file, returning all line types:
-// header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
+// readTranscriptFull reads the full semantic transcript-v2 file.
 func readTranscriptFull(path string) (transcriptData, error) {
-	f, err := openTranscriptFile(path)
-	if err != nil {
-		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
-	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-
-	// First line must be the header.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
-		}
-		return transcriptData{}, errors.New("transcript file is empty: no header")
-	}
-
-	var data transcriptData
-	if err := json.Unmarshal(scanner.Bytes(), &data.Header); err != nil {
-		return transcriptData{}, fmt.Errorf("parsing transcript header: %w", err)
-	}
-
-	// Remaining lines are entries or api_calls. Dispatch by "kind" field.
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		// Peek at the kind field to decide which struct to unmarshal into.
-		var peek struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &peek); err != nil {
-			data.Skipped++
-			continue
-		}
-
-		switch peek.Kind {
-		case "entry":
-			var entry transcript.Entry
-			if err := json.Unmarshal(line, &entry); err != nil {
-				data.Skipped++
-				continue
-			}
-			data.Entries = append(data.Entries, entry)
-		case "api_call":
-			var call transcript.APICall
-			if err := json.Unmarshal(line, &call); err != nil {
-				data.Skipped++
-				continue
-			}
-			data.APICalls = append(data.APICalls, call)
-		default:
-			data.Skipped++
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return transcriptData{}, fmt.Errorf("reading transcript: %w", err)
-	}
-
-	return data, nil
+	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, nil)
 }
 
 func readStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
@@ -162,6 +54,17 @@ func validateStrictChildTranscript(path, expectedSessionID string, maxLineBytes 
 }
 
 func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
+	data, err := readSemanticTranscript(path, maxLineBytes, retainLines, errStrictChildTranscriptCorrupt)
+	if err != nil {
+		return transcriptData{}, err
+	}
+	if data.Header.SessionID != expectedSessionID {
+		return transcriptData{}, fmt.Errorf("%w: header session %q does not match %q", errStrictChildTranscriptSessionMismatch, data.Header.SessionID, expectedSessionID)
+	}
+	return data, nil
+}
+
+func readSemanticTranscript(path string, maxLineBytes int, retainEntries bool, corruptSentinel error) (transcriptData, error) {
 	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
@@ -169,88 +72,75 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	defer func() { _ = f.Close() }()
 
 	reader := bufio.NewReaderSize(f, 64*1024)
-	headerLine, err := readStrictTranscriptLine(reader, maxLineBytes)
-	if err != nil && (!errors.Is(err, io.EOF) || len(headerLine) == 0) {
-		if errors.Is(err, io.EOF) {
-			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", errStrictChildTranscriptCorrupt)
-		}
-		if errors.Is(err, errStrictChildTranscriptCorrupt) {
-			return transcriptData{}, err
-		}
-		return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
-	}
-
 	var data transcriptData
-	if err := json.Unmarshal(bytes.TrimSuffix(headerLine, []byte{'\n'}), &data.Header); err != nil {
-		return transcriptData{}, fmt.Errorf("%w: parsing transcript header: %w", errStrictChildTranscriptCorrupt, err)
-	}
-	if data.Header.Kind != "header" {
-		return transcriptData{}, fmt.Errorf("%w: transcript header kind %q", errStrictChildTranscriptCorrupt, data.Header.Kind)
-	}
-
+	headerRead := false
 	for {
 		line, readErr := readStrictTranscriptLine(reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
-			if errors.Is(readErr, errStrictChildTranscriptCorrupt) {
-				return transcriptData{}, readErr
-			}
-			return transcriptData{}, fmt.Errorf("reading transcript: %w", readErr)
+			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "reading transcript", readErr)
 		}
 		if len(line) == 0 && errors.Is(readErr, io.EOF) {
 			break
 		}
 		finalIncomplete := errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'})
-		line = bytes.TrimSuffix(line, []byte{'\n'})
+		if finalIncomplete {
+			data.Skipped++
+			break
+		}
+		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
 		if len(line) == 0 {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			continue
+		}
+		if !headerRead {
+			if err := json.Unmarshal(line, &data.Header); err != nil {
+				return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript header", err)
+			}
+			if err := transcript.ValidateHeader(data.Header); err != nil {
+				return transcriptData{}, err
+			}
+			headerRead = true
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 		var peek struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(line, &peek); err != nil {
-			if finalIncomplete {
-				data.Skipped++
-				break
-			}
-			return transcriptData{}, fmt.Errorf("%w: parsing transcript line: %w", errStrictChildTranscriptCorrupt, err)
+			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript line", err)
 		}
-		switch peek.Kind {
-		case "entry":
-			var entry transcript.Entry
-			if err := json.Unmarshal(line, &entry); err != nil {
-				if finalIncomplete {
-					data.Skipped++
-					break
-				}
-				return transcriptData{}, fmt.Errorf("%w: parsing transcript entry: %w", errStrictChildTranscriptCorrupt, err)
-			}
-			if retainLines {
-				data.Entries = append(data.Entries, entry)
-			}
-		case "api_call":
-			var call transcript.APICall
-			if err := json.Unmarshal(line, &call); err != nil {
-				if finalIncomplete {
-					data.Skipped++
-					break
-				}
-				return transcriptData{}, fmt.Errorf("%w: parsing transcript api_call: %w", errStrictChildTranscriptCorrupt, err)
-			}
-			if retainLines {
-				data.APICalls = append(data.APICalls, call)
-			}
-		default:
-			return transcriptData{}, fmt.Errorf("%w: unknown transcript line kind %q", errStrictChildTranscriptCorrupt, peek.Kind)
+		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
+			return transcriptData{}, err
+		}
+		var entry transcript.Entry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript entry", err)
+		}
+		if retainEntries {
+			data.Entries = append(data.Entries, entry)
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 	}
-
-	if data.Header.SessionID != expectedSessionID {
-		return transcriptData{}, fmt.Errorf("%w: header session %q does not match %q", errStrictChildTranscriptSessionMismatch, data.Header.SessionID, expectedSessionID)
+	if !headerRead {
+		if corruptSentinel != nil {
+			return transcriptData{}, fmt.Errorf("%w: transcript file is empty", corruptSentinel)
+		}
+		return transcriptData{}, errors.New("transcript file is empty: no header")
 	}
 	return data, nil
+}
+
+func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
+	if sentinel != nil {
+		return fmt.Errorf("%w: %s: %w", sentinel, operation, err)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func readStrictTranscriptLine(reader *bufio.Reader, maxLineBytes int) ([]byte, error) {

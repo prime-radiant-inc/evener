@@ -28,14 +28,13 @@ func writeFixtureState(t *testing.T) string {
 		t.Fatal(err)
 	}
 
-	// api-raw.jsonl — an OpenAI Responses incomplete-stream body.
+	// Canonical per-session API log with an OpenAI Responses stream body.
 	respStream := "event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}}` + "\n\n"
-	rawEntry, _ := json.Marshal(llm.APIRawLogEntry{Provider: "openai", Model: "gpt-5", Mode: "stream", ResponseBody: respStream})
-	writeFile(t, filepath.Join(root, "api-raw.jsonl"), string(rawEntry)+"\n")
+	writeFile(t, filepath.Join(sessDir, "01SID.api.jsonl"), canonicalAPIAttemptLine(t, "openai", []byte(respStream))+"\n")
 
 	// transcript with a tool call whose args embed a secret.
-	header, _ := json.Marshal(transcript.Header{Kind: "header", FormatVersion: 1, SessionID: "01SID", CreatedAt: time.Now()})
+	header, _ := json.Marshal(transcript.Header{Kind: "header", FormatVersion: 2, SessionID: "01SID", CreatedAt: time.Now()})
 	entry, _ := json.Marshal(transcript.Entry{
 		Kind: "entry", Seq: 1,
 		Turn: schema.Turn{Message: llm.Message{
@@ -286,20 +285,17 @@ func equalSnapshot(a, b map[string]bool) bool {
 	return true
 }
 
-// TestDiscoverSourcesFindsPerSessionRawLogs verifies discovery picks up the
-// per-session raw HTTP logs (sessions/<id>.api-raw.jsonl) alongside the frozen
-// project-level api-raw.jsonl.
-func scenarioDiscoverSourcesFindsPerSessionRawLogs(t *testing.T) {
+// scenarioDiscoverSourcesFindsCanonicalSessionLogs verifies discovery selects
+// only sessions/<id>.api.jsonl.
+func scenarioDiscoverSourcesFindsCanonicalSessionLogs(t *testing.T) {
 	state := writeFixtureState(t)
 	sessDir := filepath.Join(state, "serf", "projects", "abcdef0123456789", "sessions")
-	rawEntry, _ := json.Marshal(llm.APIRawLogEntry{Provider: "openai", Model: "gpt-5", Mode: "stream", ResponseBody: "data: {}\n\n"})
-	writeFile(t, filepath.Join(sessDir, "01SID.api-raw.jsonl"), string(rawEntry)+"\n")
 
 	src, err := discoverSources(state)
 	if err != nil {
 		t.Fatalf("discoverSources: %v", err)
 	}
-	if len(src.sse) != 2 {
-		t.Fatalf("sse sources = %v, want the project api-raw.jsonl AND sessions/01SID.api-raw.jsonl", src.sse)
+	if len(src.apiLogs) != 1 || src.apiLogs[0] != filepath.Join(sessDir, "01SID.api.jsonl") {
+		t.Fatalf("API-log sources = %v, want only sessions/01SID.api.jsonl", src.apiLogs)
 	}
 }

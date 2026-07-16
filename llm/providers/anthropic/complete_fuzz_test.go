@@ -13,7 +13,7 @@ import (
 // a local httptest server replaying the fuzz bytes as the response body, with
 // the HTTP status steered by the first input byte. This exercises BOTH non-decode
 // seams B4 targets: the non-streaming response decode (fromAnthropicResponse on a
-// 2xx body) and the HTTP error mapping (ErrorFromHTTPStatusWithRawBodies on a
+// 2xx body) and the HTTP error mapping on a
 // non-2xx body).
 //
 // Oracles:

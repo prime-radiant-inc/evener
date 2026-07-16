@@ -9,7 +9,7 @@ import (
 )
 
 // FuzzErrorFromHTTPStatus drives the shared HTTP-status → classified-error seam
-// used by every provider adapter's non-2xx path (ErrorFromHTTPStatusWithRawBodies
+// used by every provider adapter's non-2xx path (ErrorFromHTTPStatus
 // → errorFromHTTPStatus → extractErrorCode / classifyByMessage). The fuzzer
 // supplies the status code and the parsed error body (decoded UseNumber like the
 // adapters do), plus a message derived from the body.
@@ -51,9 +51,9 @@ func FuzzErrorFromHTTPStatus(f *testing.F) {
 		_ = dec.Decode(&raw) // adapters tolerate decode failure; raw may be nil.
 
 		ra := ParseRetryAfter("", time.Now())
-		err := ErrorFromHTTPStatusWithRawBodies("fuzzprov", status, string(body), raw, ra, "req", string(body))
+		err := ErrorFromHTTPStatus("fuzzprov", status, string(body), raw, ra)
 		if err == nil {
-			t.Fatalf("ErrorFromHTTPStatusWithRawBodies returned nil for status %d (body %q)", status, body)
+			t.Fatalf("ErrorFromHTTPStatus returned nil for status %d (body %q)", status, body)
 		}
 
 		var sc interface{ StatusCode() int }

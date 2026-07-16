@@ -41,10 +41,14 @@ func TestLocate_StateHomeLayout_BareID(t *testing.T) {
 		t.Fatalf("Locate: %v", err)
 	}
 	wantTranscript := filepath.Join(bucket, "sessions", sidA+".transcript.jsonl")
+	wantAPILog := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
 	wantMeta := filepath.Join(bucket, "sessions", sidA+".meta.json")
 	wantJobs := filepath.Join(bucket, "sessions", sidA, "jobs.jsonl")
 	if got.TranscriptPath != wantTranscript {
 		t.Errorf("TranscriptPath = %q, want %q", got.TranscriptPath, wantTranscript)
+	}
+	if got.APILogPath != wantAPILog {
+		t.Errorf("APILogPath = %q, want %q", got.APILogPath, wantAPILog)
 	}
 	if got.MetaPath != wantMeta {
 		t.Errorf("MetaPath = %q, want %q", got.MetaPath, wantMeta)

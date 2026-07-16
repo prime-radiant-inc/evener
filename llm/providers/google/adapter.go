@@ -216,17 +216,13 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "generateContent failed: " + strings.TrimSpace(string(rawBytes))
-		httpErr := llm.ErrorFromHTTPStatusWithRawBodies("google", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 
 	r := fromGeminiResponse(raw, req.Model)
 	llm.StampEndpointURL(&r, endpoint)
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
-	if llm.RawBodyEnabled() {
-		r.RawRequestBody = string(b)
-		r.RawResponseBody = string(rawBytes)
-	}
 	return r, nil
 }
 
@@ -399,7 +395,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "streamGenerateContent failed: " + strings.TrimSpace(string(rawBytes))
-		httpErr := llm.ErrorFromHTTPStatusWithRawBodies("google", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		returnedErr := classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 		decodeErr := jsonErr
 		if readErr != nil {
@@ -449,22 +445,19 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 		textBuf.Reset()
 	}
 
-	rawReqBody := string(b)
-
 	runner := &transport.StreamRunner{
-		Provider:       "google",
-		Resp:           resp,
-		RawRequestBody: rawReqBody,
-		Stream:         s,
-		Attempt:        attempt,
-		StatusCode:     resp.StatusCode,
+		Provider:   "google",
+		Resp:       resp,
+		Stream:     s,
+		Attempt:    attempt,
+		StatusCode: resp.StatusCode,
 		FinalEvent: func() *llm.StreamEvent {
 			return finalEvent
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: "google stream ended without completion",
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -598,10 +591,6 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						// tool calls override it with the provider-neutral continuation reason.
 						invariant.Hold(r.Finish.Reason != "", "google finished response has an empty finish reason")
 						rp := r
-						if sseBuf != nil {
-							rp.RawRequestBody = rawReqBody
-							rp.RawResponseBody = sseBuf.String()
-						}
 						event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
 						if attempt.Active() {
 							finalEvent = &event

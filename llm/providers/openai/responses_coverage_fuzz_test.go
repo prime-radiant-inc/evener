@@ -219,9 +219,6 @@ func responsesCoverageRemainingBranches(t testing.TB) {
 
 func responsesCoverageAdversarialStreamBranches(t testing.TB) {
 	t.Helper()
-	originalRawBodyEnabled := responsesRawBodyEnabled
-	responsesRawBodyEnabled = func() bool { return true }
-	t.Cleanup(func() { responsesRawBodyEnabled = originalRawBodyEnabled })
 	sse := strings.Join([]string{
 		"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"alias-delta\",\"name\":\"tool\"}}\n\n",
 		"data: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"missing-delta\",\"item_id\":\"alias-delta\",\"delta\":\"x\"}\n\n",

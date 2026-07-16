@@ -21,6 +21,7 @@ type Paths struct {
 	ProjectID      string `json:"project_id"`      // project dir name under serf/projects/, else ""
 	BucketDir      string `json:"-"`               // absolute bucket dir (internal pivot for other subcommands)
 	TranscriptPath string `json:"transcript_path"` // <bucket>/sessions/<sid>.transcript.jsonl
+	APILogPath     string `json:"api_log_path"`    // <bucket>/sessions/<sid>.api.jsonl
 	MetaPath       string `json:"meta_path"`       // <bucket>/sessions/<sid>.meta.json
 	JobsPath       string `json:"jobs_path"`       // <bucket>/sessions/<sid>/jobs.jsonl  (SUBDIR)
 }

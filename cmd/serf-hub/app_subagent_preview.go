@@ -89,7 +89,12 @@ func (s *WebServer) handleSubagentPreview(w http.ResponseWriter, r *http.Request
 	defer cancel()
 	source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
 	if err != nil {
-		if thread, ok := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+		thread, ok, pastErr := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+		if pastErr != nil {
+			http.Error(w, "preview unavailable", http.StatusInternalServerError)
+			return
+		}
+		if ok {
 			writeJSON(w, subagentPreviewFromThread(thread, ref, limit))
 			return
 		}
@@ -98,7 +103,12 @@ func (s *WebServer) handleSubagentPreview(w http.ResponseWriter, r *http.Request
 	}
 	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 	if err != nil {
-		if thread, ok := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+		thread, ok, pastErr := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+		if pastErr != nil {
+			http.Error(w, "preview unavailable", http.StatusInternalServerError)
+			return
+		}
+		if ok {
 			writeJSON(w, subagentPreviewFromThread(thread, ref, limit))
 			return
 		}

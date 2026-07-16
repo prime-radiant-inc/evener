@@ -46,25 +46,6 @@ func TestConfigurationErrorSatisfiesErrorContract(t *testing.T) {
 	}
 }
 
-// TestErrorFromHTTPStatusWithRawBodiesAttachesBodies covers the raw-body
-// attachment branch (only taken when raw logging is enabled) and the
-// RawHTTPBodies accessor on the resulting error.
-func TestErrorFromHTTPStatusWithRawBodiesAttachesBodies(t *testing.T) {
-	orig := rawBodyEnabled
-	rawBodyEnabled = true
-	t.Cleanup(func() { rawBodyEnabled = orig })
-
-	err := ErrorFromHTTPStatusWithRawBodies("openai", 500, "boom", nil, nil, "REQ", "RESP")
-	rhe, ok := err.(RawHTTPBodyError)
-	if !ok {
-		t.Fatalf("error %T does not implement RawHTTPBodyError", err)
-	}
-	req, resp := rhe.RawHTTPBodies()
-	if req != "REQ" || resp != "RESP" {
-		t.Fatalf("RawHTTPBodies() = (%q, %q), want (REQ, RESP)", req, resp)
-	}
-}
-
 // TestRewriteErrorProviderLeavesEmptyProviderUnstamped covers the guard that
 // refuses to attribute a provider to an error that intentionally has none.
 func TestRewriteErrorProviderLeavesEmptyProviderUnstamped(t *testing.T) {
@@ -279,39 +260,6 @@ func TestPrepareGenerationInputValidation(t *testing.T) {
 	sys := "be terse"
 	if _, err := prepareGeneration(GenerateOptions{Client: c, Model: "m", System: &sys, Prompt: &prompt}); err != nil {
 		t.Fatalf("prepareGeneration(system+prompt) error = %v, want success", err)
-	}
-}
-
-// TestWithAPILogAttemptContextInheritsUnsetFields covers the inheritance arms
-// that pull SessionID, Round, AttemptGroupID, and AttemptRecorder from an
-// existing API-log context when the incoming meta leaves them unset.
-func TestWithAPILogAttemptContextInheritsUnsetFields(t *testing.T) {
-	recorderCalls := 0
-	base := APILogContext{
-		SessionID:      "sess-1",
-		Round:          3,
-		AttemptGroupID: "grp-1",
-		AttemptRecorder: func(_ context.Context, r AdapterAttemptRecord) AdapterAttemptRecord {
-			recorderCalls++
-			return r
-		},
-	}
-	ctx := context.WithValue(context.Background(), apiLogKey{}, base)
-
-	ctx = WithAPILogAttemptContext(ctx, APILogContext{AttemptIndex: 2})
-	got, ok := getAPILogContext(ctx)
-	if !ok {
-		t.Fatal("getAPILogContext returned ok=false")
-	}
-	if got.SessionID != "sess-1" || got.Round != 3 || got.AttemptGroupID != "grp-1" {
-		t.Fatalf("inherited fields = %+v, want sess-1/3/grp-1", got)
-	}
-	if got.AttemptRecorder == nil {
-		t.Fatal("AttemptRecorder was not inherited")
-	}
-	got.AttemptRecorder(context.Background(), AdapterAttemptRecord{})
-	if recorderCalls != 1 {
-		t.Fatalf("inherited recorder invoked %d times, want 1", recorderCalls)
 	}
 }
 

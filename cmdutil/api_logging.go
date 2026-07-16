@@ -8,14 +8,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-var apiRawBodyEnabled = llm.RawBodyEnabled
-
 // AttachAPILogger installs the standard Serf API logger on client. Entries
-// route per session to <stateDir>/sessions/<session_id>.api.jsonl (raw HTTP
-// bodies, when enabled, to <session_id>.api-raw.jsonl), sibling to the
-// session's transcript. The legacy project-level api.jsonl is frozen: never
-// written, migrated, or deleted. The returned function must be called by the
-// caller during shutdown.
+// route per session to <stateDir>/sessions/<session_id>.api.jsonl, sibling to
+// the session transcript. The returned function must be called during shutdown.
 func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
 	apiLog, err := llm.NewSessionAPILogger(stateDir)
 	if err != nil {
@@ -26,8 +21,11 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (f
 	}
 
 	apiLog.SyncInterval = 2 * time.Second
-	if apiRawBodyEnabled() {
-		apiLog.EnableSessionRawLogging()
+	if warnings != nil {
+		apiLog.SetFailureObserver(func(failure llm.APILogFailure) {
+			fmt.Fprintf(warnings, "warning: canonical API log %s failed (session=%s group=%s attempt=%s): %v\n",
+				failure.Operation, failure.SessionID, failure.AttemptGroupID, failure.AttemptID, failure.Err) //nolint:errcheck
+		})
 	}
 	client.Use(apiLog)
 	return apiLog.Close, nil

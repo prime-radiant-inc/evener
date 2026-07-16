@@ -18,9 +18,9 @@ func TestTurnCacheReusesParseUntilFileChanges(t *testing.T) {
 	}
 	cache := NewTurnCache()
 	parses := 0
-	parse := func() []appwire.Turn {
+	parse := func() ([]appwire.Turn, error) {
 		parses++
-		return []appwire.Turn{{ID: "turn_1"}}
+		return []appwire.Turn{{ID: "turn_1"}}, nil
 	}
 
 	cache.load(path, parse)
@@ -47,7 +47,7 @@ func TestTurnCacheMissingFileParsesUncached(t *testing.T) {
 	missingPath := filepath.Join(dir, "nope.jsonl")
 	cache := NewTurnCache()
 	parses := 0
-	parse := func() []appwire.Turn { parses++; return nil }
+	parse := func() ([]appwire.Turn, error) { parses++; return nil, nil }
 	cache.load(missingPath, parse)
 	cache.load(missingPath, parse)
 	if parses != 2 {
@@ -65,7 +65,7 @@ func TestTurnCacheEvictsBeyondBound(t *testing.T) {
 		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		cache.load(p, func() []appwire.Turn { return nil })
+		cache.load(p, func() ([]appwire.Turn, error) { return nil, nil })
 	}
 	if len(cache.entries) != defaultTurnCacheSize {
 		t.Fatalf("cache holds %d entries, want %d (bounded)", len(cache.entries), defaultTurnCacheSize)

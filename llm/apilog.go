@@ -10,193 +10,25 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/envvars"
+	"primeradiant.com/serf/identifier"
 	apilog "primeradiant.com/serf/llm/apilog"
 )
 
-// Context keys for API log metadata.
-
 type apiLogKey struct{}
 
-// APILogContext carries session-level metadata into the API logger middleware.
+// APILogContext carries the session that owns canonical attempt evidence.
 type APILogContext struct {
-	SessionID         string
-	Round             int
-	AttemptGroupID    string
-	AttemptIndex      int
-	AttemptCount      int
-	FinalAttemptCount *int
-	HistoryMode       HistoryMode
-	AttemptRecorder   AdapterAttemptRecorder
+	SessionID string
 }
 
-// WithAPILogContext returns a context carrying API log metadata.
-func WithAPILogContext(ctx context.Context, sessionID string, round int) context.Context {
-	return context.WithValue(ctx, apiLogKey{}, APILogContext{SessionID: sessionID, Round: round})
-}
-
-// WithAPILogAttemptContext returns a context carrying meta, inheriting any unset
-// SessionID, Round, AttemptGroupID, and AttemptRecorder from an existing
-// API-log context.
-func WithAPILogAttemptContext(ctx context.Context, meta APILogContext) context.Context {
-	if existing, ok := getAPILogContext(ctx); ok {
-		if meta.SessionID == "" {
-			meta.SessionID = existing.SessionID
-		}
-		if meta.Round == 0 {
-			meta.Round = existing.Round
-		}
-		if meta.AttemptGroupID == "" {
-			meta.AttemptGroupID = existing.AttemptGroupID
-		}
-		if meta.AttemptRecorder == nil {
-			meta.AttemptRecorder = existing.AttemptRecorder
-		}
-	}
-	return context.WithValue(ctx, apiLogKey{}, meta)
+func WithAPILogContext(ctx context.Context, sessionID string, _ int) context.Context {
+	return context.WithValue(ctx, apiLogKey{}, APILogContext{SessionID: sessionID})
 }
 
 func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 	v, ok := ctx.Value(apiLogKey{}).(APILogContext)
 	return v, ok
 }
-
-// AdapterAttemptRecorder is a callback an adapter invokes per call attempt; it
-// may enrich the record (filling group/history fields) and returns the record
-// actually logged.
-type AdapterAttemptRecorder func(context.Context, AdapterAttemptRecord) AdapterAttemptRecord
-
-// AdapterAttemptRecord holds the request, response or error, history mode,
-// endpoint, raw HTTP bodies, and attempt-group fields for a single adapter call
-// attempt logged to the API log.
-type AdapterAttemptRecord struct {
-	Request           Request
-	Response          *Response
-	Error             error
-	Mode              string
-	HistoryMode       HistoryMode
-	EndpointURL       string
-	EndpointFamily    string
-	RawRequestBody    string
-	RawResponseBody   string
-	Terminal          bool
-	AttemptGroupID    string
-	AttemptIndex      int
-	AttemptCount      int
-	FinalAttemptCount *int
-}
-
-// RecordAdapterAttempt normalizes a record (defaulting history mode, mode, and
-// raw bodies) and forwards it to the AttemptRecorder in ctx, returning the
-// (possibly enriched) record; it is a no-op passthrough when no recorder is set.
-func RecordAdapterAttempt(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
-	if rec.HistoryMode == "" {
-		rec.HistoryMode = rec.Request.HistoryMode
-	}
-	if rec.Request.HistoryMode == "" {
-		rec.Request.HistoryMode = rec.HistoryMode
-	}
-	if rec.Mode == "" {
-		rec.Mode = "stream"
-	}
-	if rec.RawRequestBody == "" || rec.RawResponseBody == "" {
-		reqBody, respBody := rawBodiesFromAttempt(rec)
-		if rec.RawRequestBody == "" {
-			rec.RawRequestBody = reqBody
-		}
-		if rec.RawResponseBody == "" {
-			rec.RawResponseBody = respBody
-		}
-	}
-	lc, ok := getAPILogContext(ctx)
-	if !ok || lc.AttemptRecorder == nil {
-		return rec
-	}
-	return lc.AttemptRecorder(ctx, rec)
-}
-
-// APILogEntry is a single JSONL line in the API log.
-type APILogEntry struct {
-	Timestamp         string          `json:"ts"`
-	SessionID         string          `json:"session_id,omitempty"`
-	Round             int             `json:"round,omitempty"`
-	AttemptGroupID    string          `json:"attempt_group_id,omitempty"`
-	AttemptIndex      int             `json:"attempt_index,omitempty"`
-	AttemptCount      int             `json:"attempt_count,omitempty"`
-	FinalAttemptCount *int            `json:"final_attempt_count,omitempty"`
-	HistoryMode       HistoryMode     `json:"history_mode,omitempty"`
-	Request           APILogRequest   `json:"request"`
-	Response          *APILogResponse `json:"response,omitempty"`
-	Error             string          `json:"error,omitempty"`
-	LatencyMs         int64           `json:"latency_ms"`
-}
-
-// APILogRequest captures request metadata and tool definitions.
-type APILogRequest struct {
-	Model                          string           `json:"model"`
-	Provider                       string           `json:"provider"`
-	MessageCount                   int              `json:"message_count"`
-	ToolCount                      int              `json:"tool_count"`
-	ToolNames                      []string         `json:"tool_names,omitempty"`
-	Tools                          []ToolDefinition `json:"tools,omitempty"`
-	ReasoningEffort                string           `json:"reasoning_effort,omitempty"`
-	HistoryMode                    HistoryMode      `json:"history_mode,omitempty"`
-	PreviousResponseIDHash         string           `json:"previous_response_id_hash,omitempty"`
-	ConversationIDHash             string           `json:"conversation_id_hash,omitempty"`
-	AnchorTurnIndex                int              `json:"anchor_turn_index,omitempty"`
-	DeltaTurnCount                 int              `json:"delta_turn_count,omitempty"`
-	DeltaTurnKinds                 []string         `json:"delta_turn_kinds,omitempty"`
-	EndpointFamily                 string           `json:"endpoint_family,omitempty"`
-	RequestFingerprint             string           `json:"request_fingerprint,omitempty"`
-	ContextMarker                  string           `json:"context_marker,omitempty"`
-	StoragePolicyLabel             string           `json:"storage_policy_label,omitempty"`
-	StorageScopeFingerprint        string           `json:"storage_scope_fingerprint,omitempty"`
-	ChatFallbackHistoryLen         int              `json:"chat_fallback_history_len,omitempty"`
-	InputTokensEstimate            int              `json:"input_tokens_estimate,omitempty"`
-	FullHistoryInputTokensEstimate int              `json:"full_history_input_tokens_estimate,omitempty"`
-	ContinuationDiagnostic         string           `json:"continuation_diagnostic,omitempty"`
-}
-
-// APILogResponse captures the full response including raw provider data.
-type APILogResponse struct {
-	ID            string `json:"id,omitempty"`
-	IDHash        string `json:"id_hash,omitempty"`
-	Model         string `json:"model"`
-	FinishReason  string `json:"finish_reason"`
-	TextLength    int    `json:"text_length"`
-	ToolCallCount int    `json:"tool_call_count"`
-	Usage         Usage  `json:"usage"`
-	// EndpointURL is the full HTTP URL the adapter dialed for this call.
-	// Promoted from Raw["endpoint_url"] (string) so QA can tell, e.g., whether
-	// an OpenAI call went to /v1/responses (API key) vs /backend-api/codex/responses
-	// (ChatGPT OAuth). Empty when the adapter did not stash it.
-	EndpointURL string         `json:"endpoint_url,omitempty"`
-	Raw         map[string]any `json:"raw"`
-}
-
-// APIRawLogEntry is a JSONL line in the raw HTTP body log.
-type APIRawLogEntry struct {
-	Timestamp         string      `json:"ts"`
-	SessionID         string      `json:"session_id,omitempty"`
-	Round             int         `json:"round,omitempty"`
-	AttemptGroupID    string      `json:"attempt_group_id,omitempty"`
-	AttemptIndex      int         `json:"attempt_index,omitempty"`
-	AttemptCount      int         `json:"attempt_count,omitempty"`
-	FinalAttemptCount *int        `json:"final_attempt_count,omitempty"`
-	HistoryMode       HistoryMode `json:"history_mode,omitempty"`
-	Provider          string      `json:"provider"`
-	Model             string      `json:"model"`
-	Mode              string      `json:"mode"` // "complete" or "stream"
-	RequestBody       string      `json:"request_body,omitempty"`
-	ResponseBody      string      `json:"response_body,omitempty"`
-	LatencyMs         int64       `json:"latency_ms"`
-}
-
-// RawBodyEnabled returns true when SERF_LOG_RAW_HTTP is set.
-// Adapters check this before populating RawRequestBody/RawResponseBody.
-func RawBodyEnabled() bool { return rawBodyEnabled }
-
-var rawBodyEnabled = envvars.RecorderEnabled(envvars.SERFLogRawHTTP)
 
 var apiLogJSONMarshal = json.Marshal
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
@@ -212,17 +44,11 @@ func (e observedAPILogError) Error() string           { return e.err.Error() }
 func (e observedAPILogError) Unwrap() error           { return e.err }
 func (observedAPILogError) apiLogFailureWasObserved() {}
 
-// APILogger is middleware that logs every LLM API call to a JSONL file.
-//
-// It runs in one of two modes:
-//   - single-file (NewAPILogger): every entry appends to one fixed path.
-//   - per-session (NewSessionAPILogger): each entry routes to
-//     <stateDir>/sessions/<session_id>.api.jsonl by the session id carried in
-//     the entry; entries without a session id go to sessions/unattributed.api.jsonl.
+// APILogger persists canonical transport attempts and logical-call settlements.
+// NewAPILogger writes one file; NewSessionAPILogger routes by session id.
 type APILogger struct {
-	file    *os.File
-	rawFile *os.File // nil when raw logging is disabled
-	mu      sync.Mutex
+	file *os.File
+	mu   sync.Mutex
 
 	canonicalAdmissionMu sync.Mutex
 	canonicalClosing     bool
@@ -230,43 +56,16 @@ type APILogger struct {
 	failureMu            sync.RWMutex
 	failureObserver      func(APILogFailure)
 
-	// sessionsDir, when non-empty, selects per-session mode: entries route to
-	// <sessionsDir>/<session_id>.api.jsonl instead of file/rawFile.
-	sessionsDir     string
-	sessionRaw      bool // per-session mode: also write <session_id>.api-raw.jsonl
-	sessionFiles    map[string]*os.File
-	sessionRawFiles map[string]*os.File
+	sessionsDir  string
+	sessionFiles map[string]*os.File
 
-	// SyncInterval controls how often write calls fsync.
-	// If 0, every write fsyncs (backward-compatible default for tests).
-	// If >0, write only fsyncs when this duration has elapsed since the last sync.
 	SyncInterval time.Duration
-
-	dirty    map[*os.File]struct{}
-	lastSync time.Time
+	dirty        map[*os.File]struct{}
+	lastSync     time.Time
 
 	canonicalPending map[*os.File][]APILogFailure
 }
 
-type apiLogAdapterAttemptState struct {
-	mu    sync.Mutex
-	count int
-}
-
-func (s *apiLogAdapterAttemptState) mark() {
-	s.mu.Lock()
-	s.count++
-	s.mu.Unlock()
-}
-
-func (s *apiLogAdapterAttemptState) recorded() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.count > 0
-}
-
-// NewAPILogger creates an API logger that writes to the given path.
-// Creates the parent directory if it doesn't exist.
 func NewAPILogger(path string) (*APILogger, error) {
 	if err := ensurePrivateAPILogDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -283,11 +82,6 @@ func NewAPILogger(path string) (*APILogger, error) {
 	}, nil
 }
 
-// NewSessionAPILogger creates an API logger that routes each entry to
-// <stateDir>/sessions/<session_id>.api.jsonl, sibling to the session's
-// transcript and log files. Entries carrying no session id (or one that is not
-// a safe filename component) go to sessions/unattributed.api.jsonl. The frozen
-// project-level api.jsonl is never written.
 func NewSessionAPILogger(stateDir string) (*APILogger, error) {
 	sessionsDir := filepath.Join(stateDir, "sessions")
 	if err := ensurePrivateAPILogDirectory(sessionsDir); err != nil {
@@ -296,25 +90,12 @@ func NewSessionAPILogger(stateDir string) (*APILogger, error) {
 	return &APILogger{
 		sessionsDir:      sessionsDir,
 		sessionFiles:     map[string]*os.File{},
-		sessionRawFiles:  map[string]*os.File{},
 		dirty:            map[*os.File]struct{}{},
 		canonicalPending: map[*os.File][]APILogFailure{},
 		lastSync:         time.Now(),
 	}, nil
 }
 
-// EnableSessionRawLogging turns on per-session raw HTTP body logs
-// (<session_id>.api-raw.jsonl). Only meaningful in per-session mode.
-func (l *APILogger) EnableSessionRawLogging() { l.sessionRaw = true }
-
-// rawLoggingEnabled reports whether raw HTTP body entries have somewhere to go:
-// a fixed raw file in single-file mode, or per-session raw routing.
-func (l *APILogger) rawLoggingEnabled() bool {
-	return l.rawFile != nil || (l.sessionsDir != "" && l.sessionRaw)
-}
-
-// sessionLogBaseName returns the routing key for a session id: the id itself
-// when it is a safe filename component, otherwise "unattributed".
 func sessionLogBaseName(sessionID string) string {
 	if sessionID == "" {
 		return "unattributed"
@@ -329,42 +110,21 @@ func sessionLogBaseName(sessionID string) string {
 	return sessionID
 }
 
-// sessionFile returns (opening and caching on first use) the log file for a
-// session id. Caller holds l.mu. Returns nil when the open fails; the entry is
-// dropped (diagnostic data is never load-bearing).
-func (l *APILogger) sessionFile(files map[string]*os.File, sessionID, suffix string) *os.File {
-	f, _ := l.sessionFileWithError(files, sessionID, suffix)
-	return f
-}
-
-func (l *APILogger) sessionFileWithError(files map[string]*os.File, sessionID, suffix string) (*os.File, error) {
+func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 	base := sessionLogBaseName(sessionID)
-	if f, ok := files[base]; ok {
+	if f, ok := l.sessionFiles[base]; ok {
 		if f == nil {
 			return nil, fmt.Errorf("API log for %q is unavailable", base)
 		}
 		return f, nil
 	}
-	f, err := openPrivateAPILogFile(filepath.Join(l.sessionsDir, base+suffix))
+	f, err := openPrivateAPILogFile(filepath.Join(l.sessionsDir, base+".api.jsonl"))
 	if err != nil {
-		files[base] = nil
+		l.sessionFiles[base] = nil
 		return nil, err
 	}
-	files[base] = f
+	l.sessionFiles[base] = f
 	return f, nil
-}
-
-// EnableRawLogging opens a separate JSONL file for raw HTTP request/response bodies.
-func (l *APILogger) EnableRawLogging(path string) error {
-	if err := ensurePrivateAPILogDirectory(filepath.Dir(path)); err != nil {
-		return err
-	}
-	f, err := openPrivateAPILogFile(path)
-	if err != nil {
-		return err
-	}
-	l.rawFile = f
-	return nil
 }
 
 func ensurePrivateAPILogDirectory(path string) error {
@@ -388,91 +148,121 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 	return f, nil
 }
 
-// WrapComplete wraps a CompleteFunc to log request metadata and full response.
+// WrapComplete binds the canonical sink and owns settlement only when the
+// caller did not supply an outer logical attempt group.
 func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 	return func(ctx context.Context, req Request) (Response, error) {
-		start := time.Now()
-
+		ctx, group, ownsSettlement := l.bindAPIAttemptGroup(ctx)
 		resp, err := next(ctx, req)
-
-		entry := buildAPILogEntry(ctx, req, start)
-
-		if err != nil {
-			entry.Error = err.Error()
-		} else {
-			entry.Response = buildLogResponse(resp)
+		if ownsSettlement {
+			group.SettleResult(ctx, err)
 		}
-
-		l.write(entry)
-		if err != nil {
-			l.writeRawError(entry, req, "complete", err)
-		} else {
-			l.writeRawResponse(entry, req, "complete", resp)
-		}
-
 		return resp, err
 	}
 }
 
-// WrapStream wraps streaming calls so the final streamed Response is recorded
-// with the same request/response metadata and optional raw HTTP bodies as
-// non-streaming calls.
+// WrapStream settles an implicit group only at terminal stream state or Close.
 func (l *APILogger) WrapStream(next StreamFunc) StreamFunc {
 	return func(ctx context.Context, req Request) (Stream, error) {
-		start := time.Now()
-		attemptState := &apiLogAdapterAttemptState{}
-		ctx = l.withAdapterAttemptLogging(ctx, attemptState)
-
-		st, err := next(ctx, req)
+		ctx, group, ownsSettlement := l.bindAPIAttemptGroup(ctx)
+		stream, err := next(ctx, req)
 		if err != nil {
-			if attemptState.recorded() {
-				return nil, err
+			if ownsSettlement {
+				group.SettleResult(ctx, err)
 			}
-			entry := buildAPILogEntry(ctx, req, start)
-			entry.Error = err.Error()
-			l.write(entry)
-			l.writeRawError(entry, req, "stream", err)
 			return nil, err
 		}
-		if st == nil {
+		if stream == nil {
+			if ownsSettlement {
+				group.SettleResult(ctx, nil)
+			}
 			return nil, nil
 		}
-		return newAPILogStream(ctx, st, l, req, start, attemptState), nil
+		if !ownsSettlement {
+			return stream, nil
+		}
+		return newAPIAttemptSettlementStream(ctx, stream, group), nil
 	}
 }
 
-func (l *APILogger) withAdapterAttemptLogging(ctx context.Context, state *apiLogAdapterAttemptState) context.Context {
-	lc, ok := getAPILogContext(ctx)
-	if !ok {
-		lc = APILogContext{}
+func (l *APILogger) bindAPIAttemptGroup(ctx context.Context) (context.Context, *APIAttemptGroup, bool) {
+	group := apiAttemptGroupFromContext(ctx)
+	ownsSettlement := group == nil
+	if group == nil {
+		group = NewAPIAttemptGroup(identifier.MustNewAgentCallID())
+		ctx = WithAPIAttemptGroup(ctx, group)
 	}
-	previous := lc.AttemptRecorder
-	lc.AttemptRecorder = func(ctx context.Context, rec AdapterAttemptRecord) AdapterAttemptRecord {
-		if previous != nil {
-			rec = previous(ctx, rec)
-		}
-		if rec.AttemptGroupID == "" {
-			rec.AttemptGroupID = lc.AttemptGroupID
-		}
-		if rec.HistoryMode == "" {
-			rec.HistoryMode = rec.Request.HistoryMode
-		}
-		if rec.Request.HistoryMode == "" {
-			rec.Request.HistoryMode = rec.HistoryMode
-		}
-		state.mark()
-		l.writeAdapterAttempt(lc, rec)
-		return rec
+	return WithAPIAttemptSink(ctx, l), group, ownsSettlement
+}
+
+type apiAttemptSettlementStream struct {
+	inner   Stream
+	ctx     context.Context
+	group   *APIAttemptGroup
+	out     chan StreamEvent
+	done    chan struct{}
+	closing chan struct{}
+	close   sync.Once
+	settle  sync.Once
+}
+
+func newAPIAttemptSettlementStream(ctx context.Context, inner Stream, group *APIAttemptGroup) *apiAttemptSettlementStream {
+	stream := &apiAttemptSettlementStream{
+		inner: inner, ctx: ctx, group: group,
+		out: make(chan StreamEvent, 128), done: make(chan struct{}), closing: make(chan struct{}),
 	}
-	return context.WithValue(ctx, apiLogKey{}, lc)
+	go stream.pump()
+	return stream
+}
+
+func (s *apiAttemptSettlementStream) pump() {
+	defer close(s.done)
+	defer close(s.out)
+	for {
+		select {
+		case <-s.closing:
+			return
+		case event, ok := <-s.inner.Events():
+			if !ok {
+				s.settleResult(errors.New("stream ended without terminal event"))
+				return
+			}
+			switch event.Type {
+			case StreamEventFinish:
+				s.settleResult(nil)
+			case StreamEventError:
+				s.settleResult(event.Err)
+			}
+			select {
+			case s.out <- event:
+			case <-s.closing:
+				return
+			}
+		}
+	}
+}
+
+func (s *apiAttemptSettlementStream) settleResult(err error) {
+	s.settle.Do(func() { s.group.SettleResult(s.ctx, err) })
+}
+
+func (s *apiAttemptSettlementStream) Events() <-chan StreamEvent { return s.out }
+
+func (s *apiAttemptSettlementStream) Close() error {
+	var err error
+	s.close.Do(func() {
+		close(s.closing)
+		err = s.inner.Close()
+		s.settleResult(context.Canceled)
+	})
+	<-s.done
+	return err
 }
 
 func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
 	failure := APILogFailure{
-		Operation:      "append_attempt",
-		SessionID:      apiLogSessionID(ctx),
-		AttemptGroupID: rec.AttemptGroupID,
-		AttemptID:      rec.AttemptID,
+		Operation: "append_attempt", SessionID: apiLogSessionID(ctx),
+		AttemptGroupID: rec.AttemptGroupID, AttemptID: rec.AttemptID,
 	}
 	if err := l.appendCanonicalRecord(ctx, rec, failure); err != nil {
 		failure.Err = err
@@ -483,9 +273,7 @@ func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptReco
 
 func (l *APILogger) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
 	failure := APILogFailure{
-		Operation:      "append_settlement",
-		SessionID:      apiLogSessionID(ctx),
-		AttemptGroupID: rec.AttemptGroupID,
+		Operation: "append_settlement", SessionID: apiLogSessionID(ctx), AttemptGroupID: rec.AttemptGroupID,
 	}
 	if err := l.appendCanonicalRecord(ctx, rec, failure); err != nil {
 		failure.Err = err
@@ -539,7 +327,7 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	l.mu.Lock()
 	f := l.file
 	if l.sessionsDir != "" {
-		f, err = l.sessionFileWithError(l.sessionFiles, apiLogSessionID(ctx), ".api.jsonl")
+		f, err = l.sessionFileWithError(apiLogSessionID(ctx))
 		if err != nil {
 			l.mu.Unlock()
 			return fmt.Errorf("open session API log: %w", err)
@@ -552,9 +340,6 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		l.mu.Unlock()
 		return fmt.Errorf("append API-log record: %w", err)
-	}
-	if l.canonicalPending == nil {
-		l.canonicalPending = map[*os.File][]APILogFailure{}
 	}
 	l.dirty[f] = struct{}{}
 	l.canonicalPending[f] = append(l.canonicalPending[f], failure)
@@ -576,76 +361,6 @@ func (l *APILogger) admitCanonicalAppend() error {
 	}
 	l.canonicalAppends.Add(1)
 	return nil
-}
-
-// Close flushes and closes the log file(s).
-func (l *APILogger) Close() error {
-	l.canonicalAdmissionMu.Lock()
-	l.canonicalClosing = true
-	l.canonicalAdmissionMu.Unlock()
-	l.canonicalAppends.Wait()
-
-	l.mu.Lock()
-	var firstErr error
-	var observations []APILogFailure
-	closeFile := func(f *os.File) {
-		if f == nil {
-			return
-		}
-		if err := apiLogFileSync(f); err != nil {
-			observations = append(observations, l.takeCanonicalSyncFailuresLocked(f, fmt.Errorf("sync API-log record: %w", err))...)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			delete(l.dirty, f)
-			delete(l.canonicalPending, f)
-		}
-		if err := apiLogFileClose(f); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	closeFile(l.file)
-	l.file = nil
-	closeFile(l.rawFile)
-	l.rawFile = nil
-	for _, f := range l.sessionFiles {
-		closeFile(f)
-	}
-	l.sessionFiles = map[string]*os.File{}
-	for _, f := range l.sessionRawFiles {
-		closeFile(f)
-	}
-	l.sessionRawFiles = map[string]*os.File{}
-	l.dirty = map[*os.File]struct{}{}
-	l.canonicalPending = map[*os.File][]APILogFailure{}
-	l.sessionsDir = ""
-	l.mu.Unlock()
-	l.observeAPILogFailures(observations)
-	return firstErr
-}
-
-func (l *APILogger) write(entry APILogEntry) {
-	data, err := apiLogJSONMarshal(entry)
-	if err != nil {
-		return
-	}
-
-	l.mu.Lock()
-	f := l.file
-	if l.sessionsDir != "" {
-		f = l.sessionFile(l.sessionFiles, entry.SessionID, ".api.jsonl")
-	}
-	if f == nil {
-		l.mu.Unlock()
-		return
-	}
-	f.Write(append(data, '\n')) //nolint:errcheck
-
-	l.dirty[f] = struct{}{}
-	_, observations := l.syncDirtyLocked()
-	l.mu.Unlock()
-	l.observeAPILogFailures(observations)
 }
 
 func (l *APILogger) syncDirtyLocked() (map[*os.File]error, []APILogFailure) {
@@ -680,209 +395,47 @@ func (l *APILogger) takeCanonicalSyncFailuresLocked(file *os.File, err error) []
 	return failures
 }
 
-func (l *APILogger) writeRaw(entry APIRawLogEntry) {
-	data, err := apiLogJSONMarshal(entry)
-	if err != nil {
-		return
-	}
+func (l *APILogger) Close() error {
+	l.canonicalAdmissionMu.Lock()
+	l.canonicalClosing = true
+	l.canonicalAdmissionMu.Unlock()
+	l.canonicalAppends.Wait()
+
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	f := l.rawFile
-	if l.sessionsDir != "" {
-		if !l.sessionRaw {
+	var firstErr error
+	var observations []APILogFailure
+	closeFile := func(f *os.File) {
+		if f == nil {
 			return
 		}
-		f = l.sessionFile(l.sessionRawFiles, entry.SessionID, ".api-raw.jsonl")
-	}
-	if f == nil {
-		return
-	}
-	f.Write(append(data, '\n')) //nolint:errcheck
-	f.Sync()                    //nolint:errcheck
-}
-
-func buildAPILogEntry(ctx context.Context, req Request, start time.Time) APILogEntry {
-	entry := APILogEntry{
-		Timestamp: start.UTC().Format(time.RFC3339),
-		LatencyMs: time.Since(start).Milliseconds(),
-		Request:   BuildAPILogRequest(req),
-	}
-	if lc, ok := getAPILogContext(ctx); ok {
-		entry.SessionID = lc.SessionID
-		entry.Round = lc.Round
-		entry.AttemptGroupID = lc.AttemptGroupID
-		entry.AttemptIndex = lc.AttemptIndex
-		entry.AttemptCount = lc.AttemptCount
-		entry.FinalAttemptCount = lc.FinalAttemptCount
-		entry.HistoryMode = lc.HistoryMode
-	}
-	return entry
-}
-
-func (l *APILogger) writeRawResponse(entry APILogEntry, req Request, mode string, resp Response) {
-	if !l.rawLoggingEnabled() || (resp.RawRequestBody == "" && resp.RawResponseBody == "") {
-		return
-	}
-	l.writeRaw(APIRawLogEntry{
-		Timestamp:         entry.Timestamp,
-		SessionID:         entry.SessionID,
-		Round:             entry.Round,
-		AttemptGroupID:    entry.AttemptGroupID,
-		AttemptIndex:      entry.AttemptIndex,
-		AttemptCount:      entry.AttemptCount,
-		FinalAttemptCount: entry.FinalAttemptCount,
-		HistoryMode:       entry.HistoryMode,
-		Provider:          req.Provider,
-		Model:             req.Model,
-		Mode:              mode,
-		RequestBody:       resp.RawRequestBody,
-		ResponseBody:      resp.RawResponseBody,
-		LatencyMs:         entry.LatencyMs,
-	})
-}
-
-func (l *APILogger) writeRawError(entry APILogEntry, req Request, mode string, err error) {
-	if !l.rawLoggingEnabled() || err == nil {
-		return
-	}
-	var rawErr RawHTTPBodyError
-	if !errors.As(err, &rawErr) {
-		return
-	}
-	requestBody, responseBody := rawErr.RawHTTPBodies()
-	if requestBody == "" && responseBody == "" {
-		return
-	}
-	l.writeRaw(APIRawLogEntry{
-		Timestamp:         entry.Timestamp,
-		SessionID:         entry.SessionID,
-		Round:             entry.Round,
-		AttemptGroupID:    entry.AttemptGroupID,
-		AttemptIndex:      entry.AttemptIndex,
-		AttemptCount:      entry.AttemptCount,
-		FinalAttemptCount: entry.FinalAttemptCount,
-		HistoryMode:       entry.HistoryMode,
-		Provider:          req.Provider,
-		Model:             req.Model,
-		Mode:              mode,
-		RequestBody:       requestBody,
-		ResponseBody:      responseBody,
-		LatencyMs:         entry.LatencyMs,
-	})
-}
-
-func (l *APILogger) writeAdapterAttempt(lc APILogContext, rec AdapterAttemptRecord) {
-	timestamp := time.Now().UTC().Format(time.RFC3339)
-	entry := APILogEntry{
-		Timestamp:         timestamp,
-		SessionID:         lc.SessionID,
-		Round:             lc.Round,
-		AttemptGroupID:    rec.AttemptGroupID,
-		AttemptIndex:      rec.AttemptIndex,
-		AttemptCount:      rec.AttemptCount,
-		FinalAttemptCount: rec.FinalAttemptCount,
-		HistoryMode:       rec.HistoryMode,
-		Request:           BuildAPILogRequest(rec.Request),
-	}
-	if rec.Error != nil {
-		entry.Error = rec.Error.Error()
-	} else if rec.Response != nil {
-		resp := *rec.Response
-		if rec.EndpointURL != "" {
-			StampEndpointURL(&resp, rec.EndpointURL)
-		}
-		entry.Response = buildLogResponse(resp)
-	}
-	l.write(entry)
-
-	if !l.rawLoggingEnabled() || (rec.RawRequestBody == "" && rec.RawResponseBody == "") {
-		return
-	}
-	l.writeRaw(APIRawLogEntry{
-		Timestamp:         entry.Timestamp,
-		SessionID:         entry.SessionID,
-		Round:             entry.Round,
-		AttemptGroupID:    entry.AttemptGroupID,
-		AttemptIndex:      entry.AttemptIndex,
-		AttemptCount:      entry.AttemptCount,
-		FinalAttemptCount: entry.FinalAttemptCount,
-		HistoryMode:       entry.HistoryMode,
-		Provider:          rec.Request.Provider,
-		Model:             rec.Request.Model,
-		Mode:              rec.Mode,
-		RequestBody:       rec.RawRequestBody,
-		ResponseBody:      rec.RawResponseBody,
-		LatencyMs:         entry.LatencyMs,
-	})
-}
-
-func rawBodiesFromAttempt(rec AdapterAttemptRecord) (requestBody, responseBody string) {
-	if rec.Response != nil {
-		requestBody = rec.Response.RawRequestBody
-		responseBody = rec.Response.RawResponseBody
-	}
-	if (requestBody == "" || responseBody == "") && rec.Error != nil {
-		var rawErr RawHTTPBodyError
-		if errors.As(rec.Error, &rawErr) {
-			errReq, errResp := rawErr.RawHTTPBodies()
-			if requestBody == "" {
-				requestBody = errReq
+		if err := apiLogFileSync(f); err != nil {
+			observations = append(observations, l.takeCanonicalSyncFailuresLocked(f, fmt.Errorf("sync API-log record: %w", err))...)
+			if firstErr == nil {
+				firstErr = err
 			}
-			if responseBody == "" {
-				responseBody = errResp
-			}
+		} else {
+			delete(l.dirty, f)
+			delete(l.canonicalPending, f)
+		}
+		if err := apiLogFileClose(f); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
-	return requestBody, responseBody
+	closeFile(l.file)
+	l.file = nil
+	for _, f := range l.sessionFiles {
+		closeFile(f)
+	}
+	l.sessionFiles = map[string]*os.File{}
+	l.dirty = map[*os.File]struct{}{}
+	l.canonicalPending = map[*os.File][]APILogFailure{}
+	l.sessionsDir = ""
+	l.mu.Unlock()
+	l.observeAPILogFailures(observations)
+	return firstErr
 }
 
-// BuildAPILogRequest projects an LLM request into the metadata recorded in API
-// logs and transcript api_call entries.
-func BuildAPILogRequest(req Request) APILogRequest {
-	lr := APILogRequest{
-		Model:                          req.Model,
-		Provider:                       req.Provider,
-		MessageCount:                   len(req.Messages),
-		ToolCount:                      len(req.Tools),
-		HistoryMode:                    req.HistoryMode,
-		InputTokensEstimate:            req.InputTokensEstimate,
-		FullHistoryInputTokensEstimate: req.FullHistoryInputTokensEstimate,
-		ContinuationDiagnostic:         req.ContinuationDiagnostic,
-	}
-	if req.ReasoningEffort != nil {
-		lr.ReasoningEffort = *req.ReasoningEffort
-	}
-	if len(req.Tools) > 0 {
-		names := make([]string, len(req.Tools))
-		for i, t := range req.Tools {
-			names[i] = t.Name
-		}
-		lr.ToolNames = names
-		lr.Tools = append([]ToolDefinition(nil), req.Tools...)
-	}
-	if req.Continuation != nil {
-		lr.PreviousResponseIDHash = req.Continuation.PreviousResponseIDHash
-		lr.ConversationIDHash = req.Continuation.ConversationIDHash
-		lr.AnchorTurnIndex = req.Continuation.AnchorTurnIndex
-		lr.DeltaTurnCount = req.Continuation.DeltaTurnCount
-		lr.DeltaTurnKinds = append([]string(nil), req.Continuation.DeltaTurnKinds...)
-		lr.EndpointFamily = req.Continuation.EndpointFamily
-		lr.RequestFingerprint = req.Continuation.RequestFingerprint
-		lr.ContextMarker = req.Continuation.ContextMarker
-		lr.StoragePolicyLabel = req.Continuation.StoragePolicyLabel
-		lr.StorageScopeFingerprint = req.Continuation.StorageScopeFingerprint
-		lr.ChatFallbackHistoryLen = req.Continuation.ChatFallbackHistoryLen
-	}
-	return lr
-}
-
-// StampEndpointURL records the full URL an adapter dialed onto resp.Raw so
-// buildLogResponse can promote it to a top-level field in the api_call
-// transcript. It initialises Raw if nil so adapters that build responses
-// incrementally don't have to special-case it, and is a no-op when resp is nil
-// or endpoint is empty. Callers pass the URL they want logged; for providers
-// that carry secrets in the URL (e.g. Google's API key as a query parameter),
-// pass the pre-query base form (host + path) only to avoid leaking the secret.
+// StampEndpointURL records a sanitized dialed endpoint on a response.
 func StampEndpointURL(resp *Response, endpoint string) {
 	if resp == nil || endpoint == "" {
 		return
@@ -891,134 +444,4 @@ func StampEndpointURL(resp *Response, endpoint string) {
 		resp.Raw = map[string]any{}
 	}
 	resp.Raw["endpoint_url"] = endpoint
-}
-
-func buildLogResponse(resp Response) *APILogResponse {
-	var endpoint string
-	var idHash string
-	if resp.Raw != nil {
-		if v, ok := resp.Raw["endpoint_url"].(string); ok {
-			endpoint = v
-		}
-		if v, ok := resp.Raw["id_hash"].(string); ok {
-			idHash = v
-		}
-	}
-	return &APILogResponse{
-		ID:            resp.ID,
-		IDHash:        idHash,
-		Model:         resp.Model,
-		FinishReason:  resp.Finish.Reason,
-		TextLength:    len(resp.Text()),
-		ToolCallCount: len(resp.ToolCalls()),
-		Usage:         resp.Usage,
-		EndpointURL:   endpoint,
-		Raw:           resp.Raw,
-	}
-}
-
-type apiLogStream struct {
-	inner    Stream
-	logger   *APILogger
-	ctx      context.Context
-	req      Request
-	start    time.Time
-	out      chan StreamEvent
-	once     sync.Once
-	logOnce  sync.Once
-	done     chan struct{}
-	closing  chan struct{}
-	attempts *apiLogAdapterAttemptState
-}
-
-func newAPILogStream(ctx context.Context, inner Stream, logger *APILogger, req Request, start time.Time, attempts *apiLogAdapterAttemptState) *apiLogStream {
-	s := &apiLogStream{
-		inner:    inner,
-		logger:   logger,
-		ctx:      ctx,
-		req:      req,
-		start:    start,
-		out:      make(chan StreamEvent, 128),
-		done:     make(chan struct{}),
-		closing:  make(chan struct{}),
-		attempts: attempts,
-	}
-	go s.pump()
-	return s
-}
-
-func (s *apiLogStream) pump() {
-	defer close(s.done)
-	defer close(s.out)
-	acc := NewStreamAccumulator()
-	for {
-		select {
-		case <-s.closing:
-			return
-		case ev, ok := <-s.inner.Events():
-			if !ok {
-				return
-			}
-			acc.Process(ev)
-			if ev.Type == StreamEventFinish {
-				var resp Response
-				if ev.Response != nil {
-					resp = *ev.Response
-				} else if accumulated := acc.Response(); accumulated != nil {
-					resp = *accumulated
-				}
-				if resp.Model == "" {
-					resp.Model = s.req.Model
-				}
-				if resp.Provider == "" {
-					resp.Provider = s.req.Provider
-				}
-				s.logFinish(resp)
-			}
-			if ev.Type == StreamEventError && ev.Err != nil {
-				s.logError(ev.Err)
-			}
-			select {
-			case s.out <- ev:
-			case <-s.closing:
-				return
-			}
-		}
-	}
-}
-
-func (s *apiLogStream) logFinish(resp Response) {
-	s.logOnce.Do(func() {
-		if s.attempts != nil && s.attempts.recorded() {
-			return
-		}
-		entry := buildAPILogEntry(s.ctx, s.req, s.start)
-		entry.Response = buildLogResponse(resp)
-		s.logger.write(entry)
-		s.logger.writeRawResponse(entry, s.req, "stream", resp)
-	})
-}
-
-func (s *apiLogStream) logError(err error) {
-	s.logOnce.Do(func() {
-		if s.attempts != nil && s.attempts.recorded() {
-			return
-		}
-		entry := buildAPILogEntry(s.ctx, s.req, s.start)
-		entry.Error = err.Error()
-		s.logger.write(entry)
-		s.logger.writeRawError(entry, s.req, "stream", err)
-	})
-}
-
-func (s *apiLogStream) Events() <-chan StreamEvent { return s.out }
-
-func (s *apiLogStream) Close() error {
-	var err error
-	s.once.Do(func() {
-		close(s.closing)
-		err = s.inner.Close()
-	})
-	<-s.done
-	return err
 }

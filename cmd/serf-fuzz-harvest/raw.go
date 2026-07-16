@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
+	"os"
 	"strings"
 
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
-// harvestSSE walks api-raw.jsonl files and emits each streaming response body as
-// seeds for FuzzParseSSE (provider-agnostic) plus the matching provider
+const harvestAPILogMaxLineBytes = 128 << 20
+
+// harvestSSE walks canonical per-session API logs and emits each SSE response
+// body as seeds for FuzzParseSSE (provider-agnostic) plus the matching provider
 // metamorphic decoder, routed by the recorded provider and body shape.
 //
 // Real provider streams for an agent turn are large (commonly 150–250 KB), far
@@ -21,26 +23,35 @@ import (
 func harvestSSE(r *runner, san *Sanitizer, paths []string) {
 	st := r.stat("sse")
 	for _, path := range paths {
-		_ = forEachJSONLine(path, func(line []byte) { //nolint:errcheck // best-effort per file
-			var entry llm.APIRawLogEntry
-			if json.Unmarshal(line, &entry) != nil {
-				return
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		decoder := apilog.NewDecoder(f, harvestAPILogMaxLineBytes)
+		for {
+			record, err := decoder.Next()
+			if err != nil {
+				break
 			}
-			if entry.Mode != "stream" || entry.ResponseBody == "" {
-				return
+			attempt, ok := record.(apilog.APIAttemptRecord)
+			if !ok || attempt.Response == nil {
+				continue
+			}
+			body, err := apilog.DecodeBody(attempt.Response.Body)
+			if err != nil || len(body) == 0 || !looksLikeSSE(body) {
+				continue
 			}
 			st.scanned++
-			body := []byte(entry.ResponseBody)
-			sse := looksLikeSSE(body)
-			dirs := append([]string{r.dir(dirParseSSE)}, providerTargetDirs(r, entry.Provider, body)...)
+			dirs := append([]string{r.dir(dirParseSSE)}, providerTargetDirs(r, attempt.ProviderInstance, body)...)
 			for _, win := range sseSeedWindows(body, r.emit.maxSeedBytes) {
-				out, ok := r.scrub(st, san, win, sse)
+				out, ok := r.scrub(st, san, win, true)
 				if !ok {
 					continue
 				}
 				r.emitBytesTo(st, out, dirs...)
 			}
-		})
+		}
+		_ = f.Close()
 	}
 }
 

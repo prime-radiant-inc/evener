@@ -20,15 +20,6 @@ func TestCov_NormalizeProviderHandleMode(t *testing.T) {
 	}
 }
 
-func TestCov_FirstNonEmpty(t *testing.T) {
-	if got := firstNonEmpty("", "", "x", "y"); got != "x" {
-		t.Errorf("firstNonEmpty = %q, want x", got)
-	}
-	if got := firstNonEmpty("", ""); got != "" {
-		t.Errorf("all-empty firstNonEmpty = %q, want empty", got)
-	}
-}
-
 func TestCov_BuildRootExtra(t *testing.T) {
 	if extra := buildRootExtra(transcript.Header{}); len(extra) != 0 {
 		t.Errorf("empty header should yield empty extra, got %v", extra)

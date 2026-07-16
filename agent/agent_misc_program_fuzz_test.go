@@ -25,7 +25,6 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -122,12 +121,6 @@ func miscDiagnosticProgram(t *testing.T, token string) {
 	}
 	if providerCauseFromError(&llm.ConfigurationError{Message: token}, token) != nil {
 		t.Fatal("empty provider acquired a cause")
-	}
-	setAPICallDiagnostic(nil, providerErr)
-	call := &transcript.APICall{}
-	setAPICallDiagnostic(call, providerErr)
-	if call.Source == "" {
-		t.Fatalf("API call diagnostic = %#v", call)
 	}
 }
 

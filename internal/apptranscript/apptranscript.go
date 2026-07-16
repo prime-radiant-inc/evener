@@ -2,15 +2,17 @@ package apptranscript
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
@@ -32,46 +34,16 @@ type ImageProjector func(image llm.ImageData) appwire.InputItem
 // image descriptors. The descriptors carry fetch metadata only, not image bytes.
 type OutputImageProjector func(result *llm.ToolResultData) []appwire.OutputImage
 
-// ScanPrelude reads the transcript header and first API call, if present.
-func ScanPrelude(path string, maxLineBytes int) (transcript.Header, *transcript.APICall) {
-	f, err := os.Open(path)
-	if err != nil {
-		return transcript.Header{}, nil
-	}
-	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	var header transcript.Header
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
-		}
-		switch head.Kind {
-		case "header":
-			_ = json.Unmarshal(raw, &header)
-		case "api_call":
-			var call transcript.APICall
-			if err := json.Unmarshal(raw, &call); err == nil {
-				return header, &call
-			}
-		}
-	}
-	return header, nil
+// ScanPrelude validates the full semantic transcript and returns its v2 header.
+func ScanPrelude(path string, maxLineBytes int) (transcript.Header, error) {
+	return scanSemanticTranscript(path, maxLineBytes, nil)
 }
 
-// PreludeTurn projects transcript header/API-call context into the synthetic
+// PreludeTurn projects semantic transcript header context into the synthetic
 // system turn shown before conversation entries.
-func PreludeTurn(header transcript.Header, firstCall *transcript.APICall) *appwire.Turn {
+func PreludeTurn(header transcript.Header) *appwire.Turn {
 	var items []appwire.ThreadItem
 	systemPrompt := strings.TrimSpace(header.SystemPrompt)
-	if systemPrompt == "" && firstCall != nil {
-		systemPrompt = strings.TrimSpace(firstCall.SystemPrompt)
-	}
 	if systemPrompt != "" {
 		items = append(items, appwire.ThreadItem{
 			Type:        "systemMessage",
@@ -82,34 +54,10 @@ func PreludeTurn(header transcript.Header, firstCall *transcript.APICall) *appwi
 			Status:      appwire.TurnStatusCompleted,
 		})
 	}
-	if firstCall != nil {
-		if tools := FormatTools(firstCall.Request); tools != "" {
-			items = append(items, appwire.ThreadItem{
-				Type:        "systemMessage",
-				ID:          "item_tools",
-				TurnID:      "turn_system",
-				Description: fmt.Sprintf("Tools (%d)", len(firstCall.Request.Tools)),
-				Text:        tools,
-				Status:      appwire.TurnStatusCompleted,
-			})
-		}
-	}
 	if len(items) == 0 {
 		return nil
 	}
 	return &appwire.Turn{ID: "turn_system", Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-}
-
-// FormatTools renders the full tool definitions presented to the LLM.
-func FormatTools(req llm.APILogRequest) string {
-	if len(req.Tools) == 0 {
-		return ""
-	}
-	data, err := json.MarshalIndent(req.Tools, "", "  ")
-	if err != nil {
-		return ""
-	}
-	return "```json\n" + string(data) + "\n```"
 }
 
 // CompactionDescription returns the user-facing label for compaction turns.
@@ -523,86 +471,130 @@ func ImagesFromContent(parts []llm.ContentPart, imageProjector ImageProjector) [
 	return images
 }
 
-// TurnsFromFile projects a transcript JSONL file into AppWire turns.
-func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
-	header, firstCall := ScanPrelude(path, maxLineBytes)
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+// TurnsFromFile projects a semantic transcript-v2 JSONL file into AppWire turns.
+func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
 	var turns []appwire.Turn
 	preludeEmitted := false
 	entryIndex := 0
+	header, err := ScanPrelude(path, maxLineBytes)
+	if err != nil {
+		return nil, err
+	}
 	emitPrelude := func() {
 		if preludeEmitted {
 			return
 		}
 		preludeEmitted = true
-		if prelude := PreludeTurn(header, firstCall); prelude != nil {
+		if prelude := PreludeTurn(header); prelude != nil {
 			turns = append(turns, *prelude)
 		}
 	}
-	for scanner.Scan() {
-		raw := json.RawMessage(append([]byte(nil), scanner.Bytes()...))
-		var head struct {
+	_, err = scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
+		emitPrelude()
+		entryIndex++
+		turnID := fmt.Sprintf("turn_%d", entryIndex)
+		var items []appwire.ThreadItem
+		if project != nil {
+			items = project(raw, turnID, entryIndex)
+		}
+		if len(items) == 0 {
+			return nil
+		}
+		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+		var entry transcript.Entry
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return err
+		}
+		if !entry.Turn.Timestamp.IsZero() {
+			startedAt := entry.Turn.Timestamp.Unix()
+			turn.StartedAt = &startedAt
+		}
+		if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
+			turn.Usage = usage
+		}
+		turns = append(turns, turn)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	emitPrelude()
+	return turns, nil
+}
+
+func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMessage) error) (transcript.Header, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return transcript.Header{}, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
+	if maxLineBytes <= 0 {
+		maxLineBytes = 128 << 20
+	}
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var header transcript.Header
+	headerRead := false
+	for {
+		line, readErr := readSemanticLine(reader, maxLineBytes)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return transcript.Header{}, readErr
+		}
+		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+			break
+		}
+		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+			break
+		}
+		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
+		if len(line) == 0 {
+			continue
+		}
+		if !headerRead {
+			if err := json.Unmarshal(line, &header); err != nil {
+				return transcript.Header{}, fmt.Errorf("parse transcript header: %w", err)
+			}
+			if err := transcript.ValidateHeader(header); err != nil {
+				return transcript.Header{}, err
+			}
+			headerRead = true
+			continue
+		}
+		var kind struct {
 			Kind string `json:"kind"`
 		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
+		if err := json.Unmarshal(line, &kind); err != nil {
+			return transcript.Header{}, fmt.Errorf("parse transcript record: %w", err)
 		}
-		switch head.Kind {
-		case "header":
-			continue
-		case "api_call":
-			var call transcript.APICall
-			if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
-				emitPrelude()
-				info := diagnostic.FromFields(call.Source, call.Title, call.Hint, call.Error)
-				entryIndex++
-				turns = append(turns, appwire.Turn{
-					ID:        fmt.Sprintf("turn_%d", entryIndex),
-					ItemsView: "full",
-					Status:    appwire.TurnStatusFailed,
-					Error: &appwire.TurnError{
-						Message: call.Error,
-						Source:  string(info.Source),
-						Title:   info.Title,
-						Hint:    info.Hint,
-					},
-				})
-			}
-			continue
-		case "entry":
-			emitPrelude()
-			entryIndex++
-			turnID := fmt.Sprintf("turn_%d", entryIndex)
-			var items []appwire.ThreadItem
-			if project != nil {
-				items = project(raw, turnID, entryIndex)
-			}
-			if len(items) > 0 {
-				turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-				// Stamp StartedAt from the entry's recorded timestamp; DurationMS
-				// stays nil because a message record captures a point in time, not
-				// a span (unlike the live projector's EventTurnEnded timing).
-				var entry transcript.Entry
-				if json.Unmarshal(raw, &entry) == nil {
-					if !entry.Turn.Timestamp.IsZero() {
-						startedAt := entry.Turn.Timestamp.Unix()
-						turn.StartedAt = &startedAt
-					}
-					if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {
-						turn.Usage = usage
-					}
-				}
-				turns = append(turns, turn)
+		if err := transcript.ValidateRecordKind(kind.Kind); err != nil {
+			return transcript.Header{}, err
+		}
+		var entry transcript.Entry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return transcript.Header{}, fmt.Errorf("parse transcript entry: %w", err)
+		}
+		if visit != nil {
+			if err := visit(json.RawMessage(append([]byte(nil), line...))); err != nil {
+				return transcript.Header{}, err
 			}
 		}
 	}
-	emitPrelude()
-	return turns
+	if !headerRead {
+		return transcript.Header{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
+	}
+	return header, nil
+}
+
+func readSemanticLine(reader *bufio.Reader, maxLineBytes int) ([]byte, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > maxLineBytes {
+			return nil, fmt.Errorf("transcript line exceeds %d bytes", maxLineBytes)
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		return line, err
+	}
 }

@@ -13,7 +13,7 @@ import (
 // Completions) against a local httptest server replaying the fuzz bytes, status
 // steered by the first byte. It exercises the non-streaming response decode
 // (doHTTP JSON parse + fromChatCompletionResponse on a 2xx body) and the HTTP
-// error mapping (extractErrorMessage + ErrorFromHTTPStatusWithRawBodies on a
+// error mapping (extractErrorMessage plus status mapping on a
 // non-2xx body). Adaptive is left false so the Chat Completions path is taken.
 //
 // Oracles:

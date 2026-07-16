@@ -20,6 +20,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func requireTranscriptFileTurns(t testing.TB, path string) []appwire.Turn {
+	t.Helper()
+	turns, err := appTurnsFromTranscriptFile(path)
+	if err != nil {
+		t.Fatalf("appTurnsFromTranscriptFile: %v", err)
+	}
+	return turns
+}
+
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
@@ -1010,7 +1019,7 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	turns := appTurnsFromTranscriptFile(path)
+	turns := requireTranscriptFileTurns(t, path)
 	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 1 {
 		t.Fatalf("turns=%+v", turns)
 	}
@@ -1036,50 +1045,20 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	strict := true
-	if err := w.AppendAPICall(transcript.APICall{
-		Round: 1,
-		Request: llm.APILogRequest{
-			Provider:  "openai",
-			Model:     "gpt-5",
-			ToolCount: 2,
-			ToolNames: []string{"read_file", "apply_patch"},
-			Tools: []llm.ToolDefinition{
-				{
-					Name:        "read_file",
-					Description: "Read a file from disk.",
-					Parameters: map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"path": map[string]any{"type": "string"},
-						},
-						"required": []any{"path"},
-					},
-					Strict: &strict,
-				},
-				{Name: "apply_patch", Description: "Apply a patch."},
-			},
-		},
-	}); err != nil {
-		t.Fatalf("append api call: %v", err)
-	}
 	if err := w.Close(); err != nil {
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	turns := appTurnsFromTranscriptFile(path)
+	turns := requireTranscriptFileTurns(t, path)
 	if len(turns) != 2 {
 		t.Fatalf("turns=%+v", turns)
 	}
 	prelude := turns[0]
-	if prelude.ID != "turn_system" || len(prelude.Items) != 2 {
+	if prelude.ID != "turn_system" || len(prelude.Items) != 1 {
 		t.Fatalf("prelude=%+v", prelude)
 	}
 	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
 		t.Fatalf("system item=%+v", got)
-	}
-	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, `"name": "read_file"`) || !strings.Contains(got.Text, `"parameters"`) || !strings.Contains(got.Text, `"strict": true`) || strings.Contains(got.Text, "- read_file") {
-		t.Fatalf("tools item=%+v", got)
 	}
 	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {
 		t.Fatalf("first user item=%+v", got)
@@ -1102,7 +1081,7 @@ func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 		t.Fatalf("close transcript: %v", err)
 	}
 
-	turns := appTurnsFromTranscriptFile(path)
+	turns := requireTranscriptFileTurns(t, path)
 	if len(turns) != 2 {
 		t.Fatalf("turns=%+v", turns)
 	}

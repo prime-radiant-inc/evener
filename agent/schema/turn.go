@@ -49,6 +49,8 @@ type Turn struct {
 	ResponseProvider                string `json:"response_provider,omitempty"`
 	ResponseModel                   string `json:"response_model,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
+	AttemptGroupID                  string `json:"attempt_group_id,omitempty"`
+	ResponseEndpointFamily          string `json:"response_endpoint_family,omitempty"`
 	ResponseEndpoint                string `json:"response_endpoint,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`

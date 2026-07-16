@@ -5,14 +5,12 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/rendezvous"
 )
 
 func FuzzFinalMainBackground(f *testing.F) {
@@ -21,10 +19,10 @@ func FuzzFinalMainBackground(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {
 		mode %= 6
-		oldWatch, oldTicker, oldNow := hubRosterWatch, hubTicker, hubNow
+		oldWatch, oldTicker := hubRosterWatch, hubTicker
 		oldSeed, oldGC, oldUpgrade := hubSeedDefaults, hubPluginGC, hubStartUpgrade
 		t.Cleanup(func() {
-			hubRosterWatch, hubTicker, hubNow = oldWatch, oldTicker, oldNow
+			hubRosterWatch, hubTicker = oldWatch, oldTicker
 			hubSeedDefaults, hubPluginGC, hubStartUpgrade = oldSeed, oldGC, oldUpgrade
 		})
 
@@ -72,29 +70,6 @@ func runFinalBackgroundLoops(t *testing.T, root string, past *hubcore.PastIndex,
 	hubTicker = func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }
 	archive := hubcore.NewArchiveStore(filepath.Join(root, "archive.db"))
 	web := NewWebServer(hubcore.WebConfig{})
-	project := filepath.Join(root, "project")
-	meta := schema.SessionMeta{ID: "wedged"}
-	if err := schema.SaveSessionMeta(project, meta); err != nil {
-		t.Fatal(err)
-	}
-	transcript := filepath.Join(project, "sessions", "wedged.transcript.jsonl")
-	if err := os.WriteFile(transcript, []byte("{\"kind\":\"api_call\",\"error\":\"stopped\"}\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	past = hubcore.NewPastIndex(filepath.Join(root, "*"))
-	if err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "wedged", Status: "active", Entry: rendezvous.Entry{SessionID: "wedged"}})
-	start := time.Now()
-	nowCalls := 0
-	hubNow = func() time.Time {
-		nowCalls++
-		if nowCalls == 1 {
-			return start
-		}
-		return start.Add(hubcore.StallThreshold + time.Second)
-	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	poke := make(chan struct{})

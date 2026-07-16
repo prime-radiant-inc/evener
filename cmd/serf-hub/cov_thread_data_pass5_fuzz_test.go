@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -63,7 +62,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
 		ctx := context.Background()
-		past, stateDir, id := pass5Past(t)
+		past, _, id := pass5Past(t)
 		cfg := hubcore.WebConfig{Past: past}
 
 		switch variant % 6 {
@@ -89,24 +88,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 			}
 
 		case 1:
-			sessions := filepath.Join(stateDir, "sessions")
-			if err := os.WriteFile(filepath.Join(sessions, id+".transcript.jsonl"), []byte("{\"kind\":\"api_call\",\"error\":\"stream failed\"}\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			active := appwire.Thread{ID: id, Source: "local", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}}
-			if got := sanitizeStaleProcessingStatus(cfg, active); got.Status.Type != appwire.ThreadStatusSystemError {
-				t.Fatalf("status = %q", got.Status.Type)
-			}
-			for _, thread := range []appwire.Thread{
-				{}, {ID: id, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}},
-				{ID: "missing", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-				{ID: id, Source: "remote", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-				{ID: id, Serf: appwire.SerfThread{Ref: "remote:" + id}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-				{ID: id, Serf: appwire.SerfThread{Ref: "not a ref"}, Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
-			} {
-				_ = sanitizeStaleProcessingStatus(cfg, thread)
-			}
-			_ = sanitizeStaleProcessingStatus(hubcore.WebConfig{}, active)
+			_ = normalizeThreadListStatusFilter("active")
 
 		case 2:
 			parts := []hubcore.ReplayPart{
@@ -128,7 +110,7 @@ func FuzzThreadDataPass5(f *testing.F) {
 			_ = appItemsFromReplayTurn(id, "empty", 0, hubcore.ReplayTurn{}, nil)
 			_ = windowedReadResponse(appwire.Thread{Turns: []appwire.Turn{{ID: "one"}, {ID: "two"}}}, 1)
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
-				_, _ = pastThreadForRead(cfg, params)
+				_, _, _ = pastThreadForRead(cfg, params)
 			}
 			for _, thread := range []appwire.Thread{{}, {Source: "local"}, {Source: "remote"}, {Serf: appwire.SerfThread{Ref: "local:x"}}, {Serf: appwire.SerfThread{Ref: "bad"}}} {
 				_ = liveThreadCanMergeLocalPast(thread)

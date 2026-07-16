@@ -15,7 +15,7 @@ func FuzzHarvestProgram(f *testing.F) {
 		scenarioEncodeBytesSeedRoundTrips, scenarioEmitWritesDedupsAndIsIdempotent,
 		scenarioEmitDropsOversize, scenarioEmitDryRunWritesNothing, scenarioEmitIntBytesShape,
 		scenarioHarvestEndToEnd, scenarioHarvestPersonalSourceForcesScrub,
-		scenarioDiscoverSourcesFindsPerSessionRawLogs, scenarioSplitSSEEvents,
+		scenarioDiscoverSourcesFindsCanonicalSessionLogs, scenarioSplitSSEEvents,
 		scenarioSSESeedWindows, scenarioSSESeedWindows_SkipsOversizedEvent,
 		scenarioShapeScrubStripsPlantedSecret, scenarioAbortGateCatchesSecretInEnumValue,
 		scenarioKeepValuesRedactsKnownSecret, scenarioKeepValuesEntropyQuarantineAborts,

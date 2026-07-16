@@ -2,8 +2,42 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
+	"time"
+
+	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/llm/apilog"
 )
+
+func canonicalAPIAttemptLine(t *testing.T, provider string, body []byte) string {
+	t.Helper()
+	record := apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   "ag_harvest",
+		AttemptIndex:     1,
+		Timestamp:        time.Unix(1, 0).UTC(),
+		ProviderInstance: provider,
+		RequestModel:     "test-model",
+		Request: apilog.APIAttemptRequest{
+			Method:   "POST",
+			Endpoint: "https://provider.test/v1/stream",
+			Body:     apilog.EncodeBody([]byte("{}")),
+		},
+		Response: &apilog.APIAttemptResponse{
+			StatusCode: 200,
+			Body:       apilog.EncodeBody(body),
+		},
+		Outcome: apilog.AttemptSuccess,
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(line)
+}
 
 func scenarioSplitSSEEvents(t *testing.T) {
 	body := []byte("data: a\n\ndata: b\n\ndata: c\n\n")

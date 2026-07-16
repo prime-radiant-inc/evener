@@ -146,20 +146,30 @@ func registerThreadHandlers(
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			if resp, ok := pastThreadReadResponse(cfg, params); ok {
+			resp, ok, pastErr := pastThreadReadResponse(cfg, params)
+			if pastErr != nil {
+				return appwire.ThreadReadResponse{}, pastErr
+			}
+			if ok {
 				return resp, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, params)
 		if err != nil {
-			if saved, ok := pastThreadReadResponse(cfg, params); ok {
+			saved, ok, pastErr := pastThreadReadResponse(cfg, params)
+			if pastErr != nil {
+				return appwire.ThreadReadResponse{}, pastErr
+			}
+			if ok {
 				return saved, nil
 			}
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp.Thread = mergePastThreadForRead(cfg, params, resp.Thread)
-		resp.Thread = sanitizeStaleProcessingStatus(cfg, resp.Thread)
+		resp.Thread, err = mergePastThreadForRead(cfg, params, resp.Thread)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
 		resp.Thread = enrichThreadFileBackedOutputImages(resp.Thread)
 		annotateThreadProjects([]appwire.Thread{resp.Thread})
 		// Window any turns the source itself didn't (Codex thread/read and the
@@ -199,7 +209,11 @@ func registerThreadHandlers(
 				return live, nil
 			}
 		}
-		if saved, ok := pastThreadTurnsList(cfg, params); ok {
+		saved, ok, pastErr := pastThreadTurnsList(cfg, params)
+		if pastErr != nil {
+			return appwire.ThreadTurnsListResponse{}, pastErr
+		}
+		if ok {
 			return saved, nil
 		}
 		if srcErr != nil {
@@ -214,14 +228,22 @@ func registerThreadHandlers(
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			if pastErr != nil {
+				return appwire.SerfSubagentPreviewResponse{}, pastErr
+			}
+			if ok {
 				return subagentPreviewFromThread(thread, ref, params.Limit), nil
 			}
 			return appwire.SerfSubagentPreviewResponse{}, err
 		}
 		resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			if thread, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); ok {
+			thread, ok, pastErr := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
+			if pastErr != nil {
+				return appwire.SerfSubagentPreviewResponse{}, pastErr
+			}
+			if ok {
 				return subagentPreviewFromThread(thread, ref, params.Limit), nil
 			}
 			return appwire.SerfSubagentPreviewResponse{}, err

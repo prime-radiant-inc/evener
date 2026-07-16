@@ -962,7 +962,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		default:
 		}
 
-		profile, sys, history, req, reqEffort := s.prepareModelRequest(ctx, round, &timings)
+		profile, sys, _, req, reqEffort := s.prepareModelRequest(ctx, round, &timings)
 		if kind == EntryWatchDelivery {
 			req.ToolChoice = &llm.ToolChoice{Mode: "auto"}
 		}
@@ -981,8 +981,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				return "", progressed, abortErr
 			}
 		}
-
-		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err, attempt)
 
 		if err != nil {
 			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)

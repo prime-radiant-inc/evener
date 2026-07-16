@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -15,7 +14,6 @@ import (
 	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -138,7 +136,6 @@ func FuzzModelCallExactCoverage(f *testing.F) {
 
 		modelCallTailPlanningCases(t)
 		modelCallTailWebCases(t)
-		modelCallTailTranscriptErrors(t, s)
 		modelCallTailCatalogFallback(t, selector)
 	})
 }
@@ -218,13 +215,6 @@ func modelCallTailWebCases(t *testing.T) {
 	env := &modelCallTailEnv{DenyEnv: &agenttest.DenyEnv{WorkDir: t.TempDir(), Seed: 100}, wrapper: w}
 	s.env = env
 	_ = s.providerWebSearchEnabled(provider.NewOpenAIProfile("tail"))
-}
-
-func modelCallTailTranscriptErrors(t *testing.T, s *Session) {
-	t.Helper()
-	s.cfg.testOnly.appendModelAPICallFunc = func(transcript.APICall) error { return errors.New("append failure") }
-	s.logAPICall(1, time.Unix(1, 0), time.Millisecond, "sys", 0, llm.Request{}, llm.Response{}, nil, ModelAttemptMetadata{})
-	s.appendAdapterAttemptAPICall(1, time.Unix(1, 0), time.Millisecond, "sys", 0, llm.AdapterAttemptRecord{})
 }
 
 func modelCallTailCatalogFallback(t *testing.T, selector byte) {

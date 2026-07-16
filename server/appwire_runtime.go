@@ -120,10 +120,16 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 	}
 	var olderCursor string
 	if params.IncludeTurns {
+		var err error
 		if params.TurnLimit <= 0 {
-			thread.Turns, olderCursor = appwire.WindowTurns(s.appAllTurns(thread.ID), params.TurnLimit)
+			var turns []appwire.Turn
+			turns, err = s.appAllTurns(thread.ID)
+			thread.Turns, olderCursor = appwire.WindowTurns(turns, params.TurnLimit)
 		} else {
-			thread.Turns, olderCursor = s.appLatestTurns(thread.ID, params.TurnLimit)
+			thread.Turns, olderCursor, err = s.appLatestTurns(thread.ID, params.TurnLimit)
+		}
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
 		}
 	}
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, nil
@@ -131,13 +137,16 @@ func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadR
 
 // appAllTurns materializes the full ordered turn list (oldest-first), choosing
 // the transcript-file turns over the notification-derived turns when richer.
-func (s *Server) appAllTurns(threadID string) []appwire.Turn {
+func (s *Server) appAllTurns(threadID string) ([]appwire.Turn, error) {
 	notificationTurns := appTurnsFromNotifications(s.AppNotificationsAfter(0, threadID))
-	transcriptTurns := s.appTurnsFromTranscript()
-	if useTranscriptTurns(transcriptTurns, notificationTurns) {
-		return transcriptTurns
+	transcriptTurns, err := s.appTurnsFromTranscript()
+	if err != nil {
+		return nil, err
 	}
-	return notificationTurns
+	if useTranscriptTurns(transcriptTurns, notificationTurns) {
+		return transcriptTurns, nil
+	}
+	return notificationTurns, nil
 }
 
 func (s *Server) appNotificationTurns(threadID string) ([]appwire.Turn, *appTurnSnapshot) {
@@ -229,28 +238,37 @@ func (s *Server) transcriptPath() string {
 	return strings.TrimSpace(fn())
 }
 
-func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
+func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string, error) {
 	if limit <= 0 {
-		return appwire.WindowTurns(s.appAllTurns(threadID), limit)
+		turns, err := s.appAllTurns(threadID)
+		if err != nil {
+			return nil, "", err
+		}
+		turns, cursor := appwire.WindowTurns(turns, limit)
+		return turns, cursor, nil
 	}
 	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
 	if !ok {
-		return nil, ""
+		return nil, "", nil
 	}
 	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, ""
+		return nil, "", nil
 	}
 	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, ""
+		return nil, "", nil
 	}
 	if path == "" {
-		return appwire.WindowTurns(notificationTurns, limit)
+		turns, cursor := appwire.WindowTurns(notificationTurns, limit)
+		return turns, cursor, nil
 	}
-	transcriptTurns, cursor := transcriptTurnCache.LatestFromFile(path, 128<<20, limit, projectBoundedDaemonTranscriptTurn)
+	transcriptTurns, cursor, err := transcriptTurnCache.LatestFromFile(path, 128<<20, limit, projectBoundedDaemonTranscriptTurn)
+	if err != nil {
+		return nil, "", err
+	}
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return nil, ""
+		return nil, "", nil
 	}
 	transcriptCount := len(transcriptTurns)
 	if cursor != "" {
@@ -260,53 +278,64 @@ func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, str
 	}
 	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
 	if authoritative {
-		return transcriptTurns, cursor
+		return transcriptTurns, cursor, nil
 	}
-	return appwire.WindowTurns(notificationTurns, limit)
+	turns, cursor := appwire.WindowTurns(notificationTurns, limit)
+	return turns, cursor, nil
 }
 
-func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
+func (s *Server) appPageTurns(threadID, cursor string, limit int) (appwire.ThreadTurnsListResponse, error) {
 	if limit <= 0 {
-		return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
+		turns, err := s.appAllTurns(threadID)
+		if err != nil {
+			return appwire.ThreadTurnsListResponse{}, err
+		}
+		return appwire.PageTurns(turns, cursor, limit), nil
 	}
 	snapshot, generation, pathFn, ok := s.appReadIdentity(threadID)
 	if !ok {
-		return appwire.ThreadTurnsListResponse{}
+		return appwire.ThreadTurnsListResponse{}, nil
 	}
 	notificationTurns, _ := s.appNotificationTurnsForIdentity(threadID, snapshot, generation)
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}
+		return appwire.ThreadTurnsListResponse{}, nil
 	}
 	path := validatedTranscriptPath(threadID, transcriptPathFrom(pathFn))
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}
+		return appwire.ThreadTurnsListResponse{}, nil
 	}
 	if path == "" {
-		return appwire.PageTurns(notificationTurns, cursor, limit)
+		return appwire.PageTurns(notificationTurns, cursor, limit), nil
 	}
-	page := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
-	transcriptCount := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
+	page, err := transcriptTurnCache.PageFromFile(path, 128<<20, cursor, limit, projectBoundedDaemonTranscriptTurn)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
+	transcriptCount, err := transcriptTurnCache.TurnCountFromFile(path, 128<<20, projectBoundedDaemonTranscriptTurn)
+	if err != nil {
+		return appwire.ThreadTurnsListResponse{}, err
+	}
 	if !s.appReadIdentityCurrent(threadID, snapshot, generation) {
-		return appwire.ThreadTurnsListResponse{}
+		return appwire.ThreadTurnsListResponse{}, nil
 	}
 	authoritative := transcriptCount > 0 && (len(notificationTurns) == 0 || transcriptCount > len(notificationTurns) || notificationTurns[0].ID != "turn_1")
 	if authoritative {
-		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}
+		return appwire.ThreadTurnsListResponse{Data: page.Turns, NextCursor: page.NextCursor}, nil
 	}
-	return appwire.PageTurns(notificationTurns, cursor, limit)
+	return appwire.PageTurns(notificationTurns, cursor, limit), nil
 }
 
 // handleAppThreadTurnsList pages turns backward (older) for lazy transcript
 // loading. The web client seeds the latest window via thread/read(TurnLimit)
 // and walks back with this as the user scrolls up.
 func (s *Server) handleAppThreadTurnsList(_ context.Context, params appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
-	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit), nil
+	return s.appPageTurns(s.appThread().ID, params.Cursor, params.Limit)
 }
 
-func (s *Server) appTurnsFromTranscript() []appwire.Turn {
+func (s *Server) appTurnsFromTranscript() ([]appwire.Turn, error) {
 	path := s.transcriptPath()
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	return appTurnsFromTranscriptFile(path)
 }

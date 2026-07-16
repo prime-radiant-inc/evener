@@ -26,7 +26,7 @@ func exportATIF(transcriptPath, outPath, providerHandleMode string) error {
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	traj := atif.ConvertTranscriptWithOptions(transcriptData.Header, transcriptData.Entries, transcriptData.APICalls, atif.Options{ProviderHandles: mode})
+	traj := atif.ConvertTranscriptWithOptions(transcriptData.Header, transcriptData.Entries, atif.Options{ProviderHandles: mode})
 	data, err := atifMarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)

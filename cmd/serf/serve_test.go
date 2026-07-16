@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/llm"
+	apilog "primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -488,14 +489,28 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 		t.Fatalf("closeAPILog: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(stateDir, "sessions", "serve-session.api.jsonl"))
+	path := filepath.Join(stateDir, "sessions", "serve-session.api.jsonl")
+	f, err := os.Open(path)
 	if err != nil {
-		t.Fatalf("read sessions/serve-session.api.jsonl: %v", err)
+		t.Fatalf("open sessions/serve-session.api.jsonl: %v", err)
 	}
-	for _, want := range []string{`"provider":"openai"`, `"model":"gpt-test"`, `"session_id":"serve-session"`, `"round":4`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("sessions/serve-session.api.jsonl missing %s:\n%s", want, string(data))
-		}
+	defer f.Close()
+	decoder := apilog.NewDecoder(f, 1<<20)
+	first, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode attempt: %v", err)
+	}
+	attempt, ok := first.(apilog.APIAttemptRecord)
+	if !ok || attempt.ProviderInstance != "openai" || attempt.RequestModel != "gpt-test" || attempt.Request.Model != "gpt-test" {
+		t.Fatalf("canonical attempt = %+v", first)
+	}
+	second, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode settlement: %v", err)
+	}
+	settlement, ok := second.(apilog.APIAttemptGroupSettlement)
+	if !ok || settlement.AttemptGroupID != attempt.AttemptGroupID || settlement.FinalAttemptCount != 1 {
+		t.Fatalf("canonical settlement = %+v", second)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "api.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("frozen project-level api.jsonl was written (stat err=%v)", err)
@@ -513,18 +528,35 @@ type serveLoggingAdapter struct {
 
 func (a serveLoggingAdapter) Name() string { return "openai" }
 
-func (a serveLoggingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+func (a serveLoggingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	select {
 	case a.called <- struct{}{}:
 	default:
 	}
-	return llm.Response{
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
+		ProviderInstance: req.Provider,
+		RequestModel:     req.Model,
+		Method:           http.MethodPost,
+		Endpoint:         "https://example.test/v1/responses",
+		RequestBody:      []byte(`{"input":"hi"}`),
+		StartedAt:        startedAt,
+	})
+	resp := llm.Response{
 		Provider: req.Provider,
 		Model:    req.Model,
 		Message:  llm.Assistant("ok"),
 		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
 		Usage:    llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
-	}, nil
+	}
+	attempt.Complete(llm.APIAttemptResult{
+		StatusCode:   http.StatusOK,
+		ResponseBody: []byte(`{"output":"ok"}`),
+		Response:     &resp,
+		Outcome:      apilog.AttemptSuccess,
+		FinishedAt:   startedAt.Add(time.Millisecond),
+	})
+	return resp, nil
 }
 
 func (a serveLoggingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {

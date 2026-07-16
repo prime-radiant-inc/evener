@@ -1,212 +1,237 @@
 package doctor
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 func intp(n int) *int { return &n }
 
-// apilogFixture writes a session with four representative api_calls: a normal
-// call, an empty response, a failed call, and a cache-spike (large uncached
-// input).
-func apilogFixture(t *testing.T) (base, sid string) {
+func doctorAttempt(group string, index int, outcome apilog.AttemptOutcomeClass, latency int64, input, output, cache, text, tools int) apilog.APIAttemptRecord {
+	attempt := apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   group,
+		AttemptIndex:     index,
+		Timestamp:        time.Date(2026, 7, 15, 12, index, 0, 0, time.UTC),
+		LatencyMS:        latency,
+		ProviderInstance: "openai-primary",
+		RequestModel:     "gpt-5.2-codex",
+		Request: apilog.APIAttemptRequest{
+			Method:         "POST",
+			Endpoint:       "https://provider.test/v1/responses",
+			Body:           apilog.EncodeBody([]byte("{}")),
+			Model:          "gpt-5.2-codex",
+			EndpointFamily: "openai_public",
+		},
+		Outcome: outcome,
+	}
+	if outcome == apilog.AttemptSuccess {
+		attempt.Response = &apilog.APIAttemptResponse{
+			StatusCode:    200,
+			Body:          apilog.EncodeBody([]byte("{}")),
+			Model:         "gpt-5.2-codex",
+			FinishReason:  "stop",
+			TextLength:    text,
+			ToolCallCount: tools,
+			Usage: apilog.Usage{
+				InputTokens:     input,
+				OutputTokens:    output,
+				TotalTokens:     input + output,
+				CacheReadTokens: intp(cache),
+			},
+		}
+	} else {
+		attempt.ErrorClass = "context_deadline"
+		attempt.ErrorMessage = "context deadline exceeded"
+	}
+	return attempt
+}
+
+func doctorSettlement(attempt apilog.APIAttemptRecord, count int) apilog.APIAttemptGroupSettlement {
+	return apilog.APIAttemptGroupSettlement{
+		Kind:              "attempt_group_settlement",
+		SchemaVersion:     1,
+		AttemptGroupID:    attempt.AttemptGroupID,
+		FinalAttemptID:    attempt.AttemptID,
+		FinalAttemptCount: count,
+		Outcome:           attempt.Outcome,
+		SettledAt:         attempt.Timestamp.Add(time.Second),
+	}
+}
+
+func apilogFixture(t *testing.T) (base, sid string, attempts []apilog.APIAttemptRecord) {
 	t.Helper()
 	base = t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	sid = sidA
-	apiCalls := []transcript.APICall{
-		{ // normal: text + a tool call, mostly cached input
-			Round:     0,
-			LatencyMs: 1200,
-			Request:   llm.APILogRequest{Model: "gpt-5.2-codex", Provider: "openai"},
-			Response: &llm.APILogResponse{
-				FinishReason: "stop", TextLength: 40, ToolCallCount: 1,
-				Usage: llm.Usage{InputTokens: 10000, OutputTokens: 200, CacheReadTokens: intp(9000)},
-			},
-		},
-		{ // empty: no text, no tool calls
-			Round:     1,
-			LatencyMs: 800,
-			Request:   llm.APILogRequest{Model: "gpt-5.2-codex", Provider: "openai"},
-			Response: &llm.APILogResponse{
-				FinishReason: "stop", TextLength: 0, ToolCallCount: 0,
-				Usage: llm.Usage{InputTokens: 11000, OutputTokens: 0, CacheReadTokens: intp(11000)},
-			},
-		},
-		{ // error: no response
-			Round:     2,
-			LatencyMs: 50,
-			Request:   llm.APILogRequest{Model: "gpt-5.2-codex", Provider: "openai"},
-			Error:     "context deadline exceeded",
-		},
-		{ // cache spike: large uncached input (60000 - 1000 = 59000)
-			Round:     3,
-			LatencyMs: 3000,
-			Request:   llm.APILogRequest{Model: "gpt-5.2-codex", Provider: "openai"},
-			Response: &llm.APILogResponse{
-				FinishReason: "stop", TextLength: 100, ToolCallCount: 0,
-				Usage: llm.Usage{InputTokens: 60000, OutputTokens: 500, CacheReadTokens: intp(1000)},
-			},
-		},
+	attempts = []apilog.APIAttemptRecord{
+		doctorAttempt("ag_normal", 1, apilog.AttemptSuccess, 1200, 10000, 200, 9000, 40, 1),
+		doctorAttempt("ag_empty", 1, apilog.AttemptSuccess, 800, 11000, 0, 11000, 0, 0),
+		doctorAttempt("ag_error", 1, apilog.AttemptProviderTimeout, 50, 0, 0, 0, 0, 0),
+		doctorAttempt("ag_spike", 1, apilog.AttemptSuccess, 3000, 60000, 500, 1000, 100, 0),
 	}
-	writeRichSession(t, bucket, sid, nil, apiCalls, schema.SessionMeta{})
-	return base, sid
+	records := make([]apilog.APILogRecord, 0, len(attempts)*2)
+	for _, attempt := range attempts {
+		records = append(records, attempt, doctorSettlement(attempt, 1))
+	}
+	writeRichSession(t, bucket, sid, nil, records, schema.SessionMeta{})
+	return base, sid, attempts
 }
 
-func TestAPILog_Totals(t *testing.T) {
-	base, sid := apilogFixture(t)
+func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
+	base, sid, attempts := apilogFixture(t)
 	res, err := APILog(base, sid, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	tot := res.Totals
-	if tot.Calls != 4 {
-		t.Errorf("calls = %d, want 4", tot.Calls)
+	if tot.Calls != 4 || tot.Empties != 1 || tot.Errors != 1 {
+		t.Fatalf("calls/empties/errors = %d/%d/%d, want 4/1/1", tot.Calls, tot.Empties, tot.Errors)
 	}
-	if tot.Empties != 1 {
-		t.Errorf("empties = %d, want 1", tot.Empties)
+	if tot.InputTokens != 81000 || tot.OutputTokens != 700 || tot.CacheReadTokens != 21000 || tot.TotalTokens != 81700 {
+		t.Fatalf("token totals = %+v", tot)
 	}
-	if tot.Errors != 1 {
-		t.Errorf("errors = %d, want 1", tot.Errors)
-	}
-	wantIn := 10000 + 11000 + 0 + 60000
-	if tot.InputTokens != wantIn {
-		t.Errorf("input tokens = %d, want %d", tot.InputTokens, wantIn)
-	}
-	wantCache := 9000 + 11000 + 1000
-	if tot.CacheReadTokens != wantCache {
-		t.Errorf("cache_read = %d, want %d", tot.CacheReadTokens, wantCache)
-	}
-	if tot.TotalTokens != wantIn+(200+0+0+500) {
-		t.Errorf("total tokens = %d, want %d", tot.TotalTokens, wantIn+700)
-	}
-	wantAvg := int64((1200 + 800 + 50 + 3000) / 4)
-	if tot.AvgLatencyMs != wantAvg {
-		t.Errorf("avg latency = %d, want %d", tot.AvgLatencyMs, wantAvg)
+	if tot.AvgLatencyMs != 1262 {
+		t.Fatalf("average latency = %d, want 1262", tot.AvgLatencyMs)
 	}
 	if len(res.Calls) != 4 {
-		t.Errorf("rows = %d, want 4 (no filter)", len(res.Calls))
+		t.Fatalf("rows = %d, want 4", len(res.Calls))
+	}
+	first := res.Calls[0]
+	if first.AttemptID != attempts[0].AttemptID || first.AttemptGroupID != "ag_normal" || first.AttemptIndex != 1 {
+		t.Fatalf("attempt identity = %+v", first)
+	}
+	if first.ProviderInstance != "openai-primary" || first.Outcome != apilog.AttemptSuccess {
+		t.Fatalf("provider/outcome = %q/%q", first.ProviderInstance, first.Outcome)
+	}
+	if !first.Final || first.SettlementState != SettlementSettled || first.FinalAttemptCount == nil || *first.FinalAttemptCount != 1 {
+		t.Fatalf("finality = final %v state %q count %v", first.Final, first.SettlementState, first.FinalAttemptCount)
+	}
+
+	empty, err := APILog(base, sid, APILogOpts{EmptyOnly: true})
+	if err != nil || len(empty.Calls) != 1 || !empty.Calls[0].Empty {
+		t.Fatalf("empty filter = %+v, err %v", empty.Calls, err)
+	}
+	failures, err := APILog(base, sid, APILogOpts{ErrorsOnly: true})
+	if err != nil || len(failures.Calls) != 1 || failures.Calls[0].Outcome != apilog.AttemptProviderTimeout {
+		t.Fatalf("error filter = %+v, err %v", failures.Calls, err)
+	}
+	spikes, err := APILog(base, sid, APILogOpts{CacheSpikes: true})
+	if err != nil || len(spikes.Calls) != 1 || spikes.Calls[0].UncachedInput != 59000 {
+		t.Fatalf("spike filter = %+v, err %v", spikes.Calls, err)
+	}
+	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
+	if err != nil || len(low.Calls) != 2 {
+		t.Fatalf("low spike filter rows = %d, err %v", len(low.Calls), err)
 	}
 }
 
 func TestAPILogContinuationCountsByEndpointFamily(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
-	sid := sidA
-	apiCalls := []transcript.APICall{
-		{
-			Round: 0,
-			Request: llm.APILogRequest{
-				Model:          "gpt-5.4",
-				Provider:       "openai",
-				HistoryMode:    llm.HistoryModeResponsesDelta,
-				EndpointFamily: "openai_public",
-			},
-			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 10}},
-		},
-		{
-			Round: 1,
-			Request: llm.APILogRequest{
-				Model:          "gpt-5.4",
-				Provider:       "openai",
-				HistoryMode:    llm.HistoryModeFullHistory,
-				EndpointFamily: "openai_public",
-			},
-			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 20}},
-		},
-		{
-			Round: 2,
-			Request: llm.APILogRequest{
-				Model:          "gpt-5.4",
-				Provider:       "openai",
-				HistoryMode:    llm.HistoryModeFullHistoryFallback,
-				EndpointFamily: "openai_public",
-			},
-			Response: &llm.APILogResponse{Usage: llm.Usage{InputTokens: 30}},
-		},
+	modes := []string{"responses_delta", "full_history", "full_history_fallback"}
+	var records []apilog.APILogRecord
+	for i, mode := range modes {
+		attempt := doctorAttempt("ag_mode_"+mode, 1, apilog.AttemptSuccess, 1, 10*(i+1), 0, 0, 1, 0)
+		attempt.Request.HistoryMode = mode
+		records = append(records, attempt, doctorSettlement(attempt, 1))
 	}
-	writeRichSession(t, bucket, sid, nil, apiCalls, schema.SessionMeta{})
-
-	res, err := APILog(base, sid, APILogOpts{})
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+	res, err := APILog(base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := res.Totals.ContinuationByEndpointFamily["openai_public"]
-	if got.ResponsesDelta != 1 ||
-		got.FullHistory != 1 ||
-		got.FullHistoryFallback != 1 {
+	if got.ResponsesDelta != 1 || got.FullHistory != 1 || got.FullHistoryFallback != 1 {
 		t.Fatalf("openai_public counts = %+v", got)
 	}
 }
 
-func TestAPILog_EmptyFilter(t *testing.T) {
-	base, sid := apilogFixture(t)
-	res, err := APILog(base, sid, APILogOpts{EmptyOnly: true})
+func TestAPILogCleanEOFMakesMissingSettlementUnsettled(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_crash", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+
+	res, err := APILog(base, sidA, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Calls) != 1 {
-		t.Fatalf("empty rows = %d, want 1", len(res.Calls))
-	}
-	if res.Calls[0].Round != 1 || !res.Calls[0].Empty {
-		t.Errorf("empty filter returned wrong row: %+v", res.Calls[0])
-	}
-	// Totals still span the whole session.
-	if res.Totals.Calls != 4 {
-		t.Errorf("totals.calls = %d, want 4 even under filter", res.Totals.Calls)
+	row := res.Calls[0]
+	if row.SettlementState != SettlementUnsettled || row.Final || row.FinalAttemptCount != nil {
+		t.Fatalf("unsettled row = %+v", row)
 	}
 }
 
-func TestAPILog_ErrorsFilter(t *testing.T) {
-	base, sid := apilogFixture(t)
-	res, err := APILog(base, sid, APILogOpts{ErrorsOnly: true})
+func TestAPILogPartialTailMakesUnsettledGroupUnknown(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_partial", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Calls) != 1 || res.Calls[0].Error == "" {
-		t.Fatalf("errors filter = %+v, want 1 error row", res.Calls)
+	if _, err := f.WriteString("{\"kind\":\"attempt_group_settlement\""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := APILog(base, sidA, APILogOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := res.Calls[0]
+	if row.SettlementState != SettlementUnknownOutsideRange || row.Final || row.FinalAttemptCount != nil {
+		t.Fatalf("partial-tail row = %+v", row)
 	}
 }
 
-func TestAPILog_CacheSpikes(t *testing.T) {
-	base, sid := apilogFixture(t)
-	// Default threshold (50000) catches only the round-3 spike (59000 uncached).
-	res, err := APILog(base, sid, APILogOpts{CacheSpikes: true})
+func TestAPILogInteriorCorruptionIsError(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_corrupt", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+	path := filepath.Join(bucket, "sessions", sidA+".api.jsonl")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(res.Calls) != 1 || res.Calls[0].Round != 3 {
-		t.Fatalf("default-threshold spikes = %+v, want only round 3", res.Calls)
-	}
-	if res.Calls[0].UncachedInput != 59000 {
-		t.Errorf("uncached input = %d, want 59000", res.Calls[0].UncachedInput)
-	}
-	// A low threshold catches the normal call too (1000 uncached).
-	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
-	if err != nil {
+	if _, err := f.WriteString("{bad json}\n"); err != nil {
 		t.Fatal(err)
 	}
-	if len(low.Calls) != 2 {
-		t.Errorf("low-threshold spikes = %d, want 2", len(low.Calls))
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := APILog(base, sidA, APILogOpts{}); err == nil {
+		t.Fatal("APILog accepted interior corruption")
 	}
 }
 
-func TestRenderAPILog_SummaryOnly(t *testing.T) {
-	base, sid := apilogFixture(t)
-	res, err := APILog(base, sid, APILogOpts{SummaryOnly: true})
+func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
+	base, sid, _ := apilogFixture(t)
+	res, err := APILog(base, sid, APILogOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := RenderAPILog(res, APILogOpts{SummaryOnly: true})
-	if !strings.Contains(out, "calls=4") || !strings.Contains(out, "errors=1") {
-		t.Errorf("summary missing aggregate line:\n%s", out)
+	summary := RenderAPILog(res, APILogOpts{SummaryOnly: true})
+	if !strings.Contains(summary, "calls=4") || strings.Contains(summary, "attempt_id") {
+		t.Fatalf("summary output = %q", summary)
 	}
-	if strings.Contains(out, "round") {
-		t.Errorf("summary-only should not render the per-call table:\n%s", out)
+	out := RenderAPILog(res, APILogOpts{})
+	if !strings.Contains(out, "attempt_id") || !strings.Contains(out, "settled") {
+		t.Fatalf("detailed output missing canonical identity/finality:\n%s", out)
 	}
 }

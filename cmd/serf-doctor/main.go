@@ -75,7 +75,7 @@ USAGE:
   serf-doctor <subcommand> <selector> [flags]
 
 SUBCOMMANDS:
-  locate      resolve a selector to its on-disk transcript/meta/jobs paths
+  locate      resolve a selector to its transcript/API-log/meta/jobs paths
   transcript  render a session's turns; --count <tool> prints the structural call count
   apilog      API-call diagnostics: per-call tokens/latency, empties, errors, cache spikes
   watches     watch/delivery inspector: distinct deliveries, provenance, breaker telemetry (self-influence depth, runaway drops)
@@ -179,8 +179,8 @@ func cmdLocate(args []string, stdout, stderr io.Writer) int {
 	if bucket == "" {
 		bucket = "(override root)"
 	}
-	return writef(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  meta:       %s\n  jobs:       %s\n  bucket:     %s\n",
-		paths.SessionID, paths.TranscriptRef, paths.TranscriptPath, paths.MetaPath, paths.JobsPath, bucket)
+	return writef(stdout, "session %s\n  ref:        %s\n  transcript: %s\n  api log:    %s\n  meta:       %s\n  jobs:       %s\n  bucket:     %s\n",
+		paths.SessionID, paths.TranscriptRef, paths.TranscriptPath, paths.APILogPath, paths.MetaPath, paths.JobsPath, bucket)
 }
 
 func cmdTranscript(args []string, stdout, stderr io.Writer) int {

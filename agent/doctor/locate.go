@@ -127,6 +127,7 @@ func pathsFor(b bucket, sid string) Paths {
 		ProjectID:      b.projectID,
 		BucketDir:      b.dir,
 		TranscriptPath: filepath.Join(sess, sid+".transcript.jsonl"),
+		APILogPath:     filepath.Join(sess, sid+".api.jsonl"),
 		MetaPath:       filepath.Join(sess, sid+".meta.json"),
 		JobsPath:       filepath.Join(sess, sid, "jobs.jsonl"),
 	}

@@ -16,7 +16,7 @@ var googleCoverageSeedMarker = []byte("serf-google-coverage-seed-union-v1")
 // local httptest server replaying the fuzz bytes, status steered by the first
 // byte. It exercises the non-streaming response decode (fromGeminiResponse +
 // normalizeJSONNumbers on a 2xx body) and the HTTP error mapping
-// (ErrorFromHTTPStatusWithRawBodies + classifyGeminiError on a non-2xx body).
+// (status mapping plus classifyGeminiError on a non-2xx body).
 //
 // Oracles:
 //   - never panics for arbitrary bodies (floor);

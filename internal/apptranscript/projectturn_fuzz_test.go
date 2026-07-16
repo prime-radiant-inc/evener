@@ -64,13 +64,10 @@ func exerciseTranscriptSurface(t testing.TB) {
 	TurnsFromFile(missing, 1<<20, nil)
 
 	path := filepath.Join(dir, "session.jsonl")
-	data := []byte("not json\n" +
-		`{"kind":"header","system_prompt":" system "}` + "\n" +
-		`{"kind":"api_call","request":"invalid"}` + "\n" +
-		`{"kind":"api_call","error":" failed ","source":"provider","title":"Failure"}` + "\n" +
-		`{"kind":"api_call"}` + "\n" +
-		`{"kind":"entry","turn":{"timestamp":"2023-11-14T22:13:20Z","usage":{"input_tokens":1}}}` + "\n" +
-		`{"kind":"entry","turn":` + "\n")
+	data := []byte(
+		`{"kind":"header","format_version":2,"system_prompt":" system "}` + "\n" +
+			`{"kind":"entry","turn":{"timestamp":"2023-11-14T22:13:20Z","usage":{"input_tokens":1}}}` + "\n" +
+			`{"kind":"entry","turn":` + "\n")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +77,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	})
 	TurnsFromFile(path, 1<<20, func(json.RawMessage, string, int) []appwire.ThreadItem { return nil })
 
-	PreludeTurn(transcript.Header{}, nil)
-	PreludeTurn(transcript.Header{}, &transcript.APICall{SystemPrompt: " fallback "})
-	PreludeTurn(transcript.Header{}, &transcript.APICall{Request: llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "shell"}}}})
-	FormatTools(llm.APILogRequest{})
-	FormatTools(llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "shell"}}})
-	FormatTools(llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "bad", Parameters: map[string]any{"bad": make(chan int)}}}})
+	PreludeTurn(transcript.Header{})
 	_ = CompactionDescription("checkpoint")
 	ImagePlaceholder(0)
 	ImagePlaceholder(1)
@@ -123,7 +115,7 @@ func exerciseTranscriptSurface(t testing.TB) {
 	cache.TurnsFromFile(path, 1<<20, nil)
 	cache.TurnsFromFile(missing, 1<<20, nil)
 	second := filepath.Join(dir, "second.jsonl")
-	if err := os.WriteFile(second, []byte(`{"kind":"header"}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(second, []byte(`{"kind":"header","format_version":2}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cache.TurnsFromFile(second, 1<<20, nil)

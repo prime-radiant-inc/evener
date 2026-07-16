@@ -35,7 +35,7 @@ var (
 	appTurnsItemForDeltaHook func(*appwire.ThreadItem)
 )
 
-func appTurnsFromTranscriptFile(path string) []appwire.Turn {
+func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, error) {
 	toolNames := map[string]string{}
 	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)

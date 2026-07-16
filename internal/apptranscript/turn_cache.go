@@ -47,14 +47,14 @@ func NewTurnCache() *TurnCache {
 // TurnsFromFile returns the cached turns for path when its size and modtime
 // match the cached entry, otherwise parses via the package TurnsFromFile and
 // caches the result.
-func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
-	return c.load(path, func() []appwire.Turn {
+func (c *TurnCache) TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]appwire.Turn, error) {
+	return c.load(path, func() ([]appwire.Turn, error) {
 		return TurnsFromFile(path, maxLineBytes, project)
 	})
 }
 
 // load is the cache core, split out so tests can supply a counting parse fn.
-func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Turn {
+func (c *TurnCache) load(path string, parse func() ([]appwire.Turn, error)) ([]appwire.Turn, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		// Without a stable identity we can't cache safely; parse uncached.
@@ -66,12 +66,16 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 		c.touch(path)
 		turns := e.turns
 		c.mu.Unlock()
-		return turns
+		return turns, nil
 	}
 	c.mu.Unlock()
 
 	// Parse outside the lock so a slow read doesn't block other sessions.
-	turns := parse()
+	turns, err := parse()
+	if err != nil {
+		c.invalidate(path)
+		return nil, err
+	}
 
 	c.mu.Lock()
 	entry := c.entries[path]
@@ -85,7 +89,21 @@ func (c *TurnCache) load(path string, parse func() []appwire.Turn) []appwire.Tur
 	c.touch(path)
 	c.evictLocked()
 	c.mu.Unlock()
-	return turns
+	return turns, nil
+}
+
+func (c *TurnCache) invalidate(path string) {
+	c.mu.Lock()
+	delete(c.entries, path)
+	for i, candidate := range c.order {
+		if candidate == path {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.mu.Unlock()
+	_ = os.Remove(path + ".appwire-index.json")
+	_ = os.Remove(path + ".appwire-index.json.journal")
 }
 
 func (c *TurnCache) touch(path string) {

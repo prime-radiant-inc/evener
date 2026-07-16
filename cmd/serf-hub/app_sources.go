@@ -50,6 +50,6 @@ func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 	if _, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return true
 	}
-	_, ok := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref})
+	_, ok, _ := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: ref})
 	return ok
 }

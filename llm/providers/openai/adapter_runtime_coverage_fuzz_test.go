@@ -356,14 +356,12 @@ func adapterRuntimeExerciseInjectedErrors(t *testing.T) {
 	t.Helper()
 	originalBuild := adapterRuntimeBuildRequestBody
 	originalMarshal := adapterRuntimeMarshal
-	originalRaw := adapterRuntimeRawBodyEnabled
 	originalHash := adapterRuntimeHashResponseID
 	originalStream := adapterRuntimeOpenStream
 	originalFallback := adapterRuntimeFallbackStream
 	defer func() {
 		adapterRuntimeBuildRequestBody = originalBuild
 		adapterRuntimeMarshal = originalMarshal
-		adapterRuntimeRawBodyEnabled = originalRaw
 		adapterRuntimeHashResponseID = originalHash
 		adapterRuntimeOpenStream = originalStream
 		adapterRuntimeFallbackStream = originalFallback
@@ -382,12 +380,6 @@ func adapterRuntimeExerciseInjectedErrors(t *testing.T) {
 		t.Fatal("injected marshal error ignored")
 	}
 	adapterRuntimeMarshal = originalMarshal
-	adapterRuntimeRawBodyEnabled = func() bool { return true }
-	if resp, err := a.Complete(context.Background(), llm.Request{}); err != nil || resp.RawRequestBody == "" || resp.RawResponseBody == "" {
-		t.Fatalf("raw completion = (%q, %q, %v)", resp.RawRequestBody, resp.RawResponseBody, err)
-	}
-	adapterRuntimeRawBodyEnabled = originalRaw
-
 	a.ContinuationHasher = llm.NewContinuationHasher(bytes.Repeat([]byte{2}, 32))
 	adapterRuntimeHashResponseID = func(*llm.ContinuationHasher, string) (string, error) { return "", errors.New("hash") }
 	r := &llm.Response{ID: "r"}

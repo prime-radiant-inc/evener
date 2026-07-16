@@ -140,7 +140,7 @@ func TestLoadTranscript_PartialTrailingTolerated(t *testing.T) {
 	sid := sidA
 	sess := filepath.Join(bucket, "sessions")
 	writeFile(t, filepath.Join(sess, sid+".transcript.jsonl"),
-		`{"kind":"header","session_id":"`+sid+`"}`+"\n"+`{"kind":"api_call"`)
+		`{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n"+`{"kind":"entry"`)
 	doc, err := loadTranscript(filepath.Join(sess, sid+".transcript.jsonl"))
 	if err != nil {
 		t.Fatalf("partial trailing line should be tolerated: %v", err)
@@ -156,7 +156,7 @@ func TestLoadTranscript_MalformedInteriorLineErrors(t *testing.T) {
 	sid := sidA
 	sess := filepath.Join(bucket, "sessions")
 	writeFile(t, filepath.Join(sess, sid+".transcript.jsonl"),
-		`{not json`+"\n"+`{"kind":"header"}`+"\n")
+		`{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n"+`{not json`+"\n")
 	if _, err := loadTranscript(filepath.Join(sess, sid+".transcript.jsonl")); err == nil {
 		t.Fatal("malformed interior line should error")
 	}
@@ -169,7 +169,7 @@ func TestLoadTranscript_BadEntryErrors(t *testing.T) {
 	sess := filepath.Join(bucket, "sessions")
 	// An entry line whose "turn" field is the wrong shape fails entry unmarshal.
 	writeFile(t, filepath.Join(sess, sid+".transcript.jsonl"),
-		`{"kind":"entry","turn":"not-an-object"}`+"\n"+`{"kind":"header"}`+"\n")
+		`{"kind":"header","format_version":2,"session_id":"`+sid+`"}`+"\n"+`{"kind":"entry","turn":"not-an-object"}`+"\n")
 	if _, err := loadTranscript(filepath.Join(sess, sid+".transcript.jsonl")); err == nil {
 		t.Fatal("malformed entry should error")
 	}

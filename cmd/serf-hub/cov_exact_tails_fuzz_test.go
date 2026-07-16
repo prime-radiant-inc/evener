@@ -118,7 +118,7 @@ func FuzzExactTails(f *testing.F) {
 		// Transcript projection tails: malformed JSON, usage cost stamping,
 		// empty input images, and default output-image media type.
 		entry := hubcore.PastEntry{StateDir: t.TempDir(), Meta: schema.SessionMeta{ID: "missing", Model: "gpt-5"}}
-		_ = pastEntryTurns(entry)
+		_, _ = pastEntryTurns(entry)
 		state := filepath.Join(t.TempDir(), "state")
 		if err := os.MkdirAll(filepath.Join(state, "sessions"), 0o755); err != nil {
 			t.Fatal(err)
@@ -137,7 +137,7 @@ func FuzzExactTails(f *testing.F) {
 			t.Fatal(err)
 		}
 		if pe, ok := past.Find("past"); ok {
-			_ = pastEntryTurns(pe)
+			_, _ = pastEntryTurns(pe)
 		}
 		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{Kind: string(schema.TurnUserInput), Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{
 			{Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{}},

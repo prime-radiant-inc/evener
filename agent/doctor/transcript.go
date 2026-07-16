@@ -13,13 +13,10 @@ import (
 
 var readTranscriptFile = os.ReadFile
 
-// transcriptDoc is a parsed transcript file: the header, the conversation
-// entries (turns), and the raw api_call lines (kept verbatim for the mentions
-// scan, which is deliberately separate from the structural tool-call count).
+// transcriptDoc is the semantic transcript header and conversation entries.
 type transcriptDoc struct {
-	Header   transcript.Header
-	Entries  []transcript.Entry
-	apiLines []string
+	Header  transcript.Header
+	Entries []transcript.Entry
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
@@ -32,32 +29,43 @@ func loadTranscript(path string) (transcriptDoc, error) {
 		lines = lines[:n-1]
 	}
 	var doc transcriptDoc
+	headerRead := false
+	completeTail := len(data) == 0 || data[len(data)-1] == '\n'
 	for i, raw := range lines {
+		if i == len(lines)-1 && !completeTail {
+			break
+		}
 		line := strings.TrimSpace(raw)
 		if line == "" {
+			continue
+		}
+		if !headerRead {
+			if err := json.Unmarshal([]byte(line), &doc.Header); err != nil {
+				return transcriptDoc{}, fmt.Errorf("parse transcript header line %d: %w", i+1, err)
+			}
+			if err := transcript.ValidateHeader(doc.Header); err != nil {
+				return transcriptDoc{}, err
+			}
+			headerRead = true
 			continue
 		}
 		var peek struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal([]byte(line), &peek); err != nil {
-			if i == len(lines)-1 {
-				break // tolerate a partial trailing line from an in-flight append
-			}
 			return transcriptDoc{}, fmt.Errorf("parse transcript line %d: %w", i+1, err)
 		}
-		switch peek.Kind {
-		case "header":
-			_ = json.Unmarshal([]byte(line), &doc.Header)
-		case "entry":
-			var e transcript.Entry
-			if err := json.Unmarshal([]byte(line), &e); err != nil {
-				return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", i+1, err)
-			}
-			doc.Entries = append(doc.Entries, e)
-		case "api_call":
-			doc.apiLines = append(doc.apiLines, line)
+		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
+			return transcriptDoc{}, err
 		}
+		var e transcript.Entry
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", i+1, err)
+		}
+		doc.Entries = append(doc.Entries, e)
+	}
+	if !headerRead {
+		return transcriptDoc{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return doc, nil
 }
@@ -69,14 +77,12 @@ type CountResult struct {
 	SessionID             string `json:"session_id"`
 	Tool                  string `json:"tool"`
 	Calls                 int    `json:"calls"`
-	MentionsAPICalls      int    `json:"mentions_api_calls"`
 	MentionsAssistantText int    `json:"mentions_assistant_text"`
 }
 
 // Count returns how many times a tool was structurally invoked in a session
 // (a content part of kind tool_call whose ToolCall.Name matches), distinct from
-// how many times the tool name merely appears as text in api_call payloads or
-// assistant prose.
+// how many times the tool name merely appears in assistant prose.
 func Count(stateBase, selector, tool string) (CountResult, error) {
 	paths, err := Locate(stateBase, selector)
 	if err != nil {
@@ -97,9 +103,6 @@ func Count(stateBase, selector, tool string) (CountResult, error) {
 			}
 		}
 	}
-	for _, line := range doc.apiLines {
-		res.MentionsAPICalls += strings.Count(line, tool)
-	}
 	return res, nil
 }
 
@@ -111,9 +114,9 @@ func RenderCount(r CountResult) string {
 		calls = "call"
 	}
 	out := fmt.Sprintf("%s: %d %s", r.Tool, r.Calls, calls)
-	if r.MentionsAPICalls > 0 || r.MentionsAssistantText > 0 {
-		out += fmt.Sprintf("  (%d textual mention(s) in api_call payloads, %d in assistant text — not invocations)",
-			r.MentionsAPICalls, r.MentionsAssistantText)
+	if r.MentionsAssistantText > 0 {
+		out += fmt.Sprintf("  (%d textual mention(s) in assistant text — not invocations)",
+			r.MentionsAssistantText)
 	}
 	return out
 }

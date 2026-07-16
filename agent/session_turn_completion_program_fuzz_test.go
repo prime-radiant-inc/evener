@@ -4,10 +4,8 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +22,7 @@ import (
 // stream fuzzers intentionally do not own:
 //
 //   - a complete turn through non-streaming completion, continuation recovery,
-//     same-provider model fallback, transcript API-attempt logging, and terminal
-//     model errors; and
+//     same-provider model fallback, and terminal model errors; and
 //   - the human-only sandbox escalation waiter lifecycle, including approval,
 //     denial, cancellation, close, and stable pending-card ordering.
 //
@@ -136,14 +133,6 @@ func (a *tfpAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respons
 
 	resp, err := a.outcome(req, call)
 	if err != nil {
-		llm.RecordAdapterAttempt(ctx, llm.AdapterAttemptRecord{
-			Request:        req,
-			Error:          err,
-			Mode:           "complete",
-			HistoryMode:    req.HistoryMode,
-			EndpointURL:    "https://offline.invalid/v1/responses",
-			EndpointFamily: "offline-test",
-		})
 		return llm.Response{}, err
 	}
 	resp.Provider = "openai"
@@ -155,15 +144,6 @@ func (a *tfpAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respons
 		"endpoint_url": "https://offline.invalid/v1/responses",
 		"id_hash":      fmt.Sprintf("tfp-id-hash-%d", call),
 	}
-	llm.RecordAdapterAttempt(ctx, llm.AdapterAttemptRecord{
-		Request:        req,
-		Response:       &resp,
-		Mode:           "complete",
-		HistoryMode:    req.HistoryMode,
-		EndpointURL:    "https://offline.invalid/v1/responses",
-		EndpointFamily: "offline-test",
-		Terminal:       true,
-	})
 	return resp, nil
 }
 
@@ -373,9 +353,6 @@ func FuzzTurnFallbackLifecycleProgram(f *testing.F) {
 		}
 
 		tfpAssertScenarioRequests(t, program, requests)
-		if calls := tfpTranscriptAPICallCount(t, sess.TranscriptPath()); calls != len(requests) {
-			t.Fatalf("api-call transcript records = %d, want one per scripted completion (%d)", calls, len(requests))
-		}
 	})
 }
 
@@ -410,27 +387,6 @@ func tfpAssertScenarioRequests(t *testing.T, program tfpProgram, requests []llm.
 			t.Fatalf("content-filter recovery made %d requests, want retry", len(requests))
 		}
 	}
-}
-
-func tfpTranscriptAPICallCount(t *testing.T, path string) int {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read transcript %q: %v", path, err)
-	}
-	count := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-		var record struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			t.Fatalf("decode transcript line %q: %v", line, err)
-		}
-		if record.Kind == "api_call" {
-			count++
-		}
-	}
-	return count
 }
 
 // -----------------------------------------------------------------------------
@@ -722,7 +678,7 @@ func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r := &tfpReader{data: data}
-			efforts := []string{"", "low", "medium", "high", "xhigh", "max"}
+		efforts := []string{"", "low", "medium", "high", "xhigh", "max"}
 		before := efforts[r.intn(len(efforts))]
 		sess := &Session{cfg: SessionConfig{ReasoningEffort: before}}
 		count := r.intn(5) + 1
@@ -735,8 +691,8 @@ func FuzzSessionLoopRecoveryProgram(f *testing.F) {
 			switch before {
 			case "", "low", "medium":
 				want = "high"
-				case "high", "xhigh":
-					want = "max"
+			case "high", "xhigh":
+				want = "max"
 			}
 			if got := sess.cfg.ReasoningEffort; got != want {
 				t.Fatalf("first stuck escalation effort = %q, want %q", got, want)

@@ -990,6 +990,8 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseProvider:                resp.Provider,
 		ResponseModel:                   resp.Model,
 		ResponseRequestModel:            finalAttempt.RequestModel,
+		AttemptGroupID:                  finalAttempt.AttemptGroupID,
+		ResponseEndpointFamily:          finalAttempt.EndpointFamily,
 		ResponseEndpoint:                finalAttempt.EndpointURL,
 		ResponseStorageScopeFingerprint: finalAttempt.StorageScopeFingerprint,
 		ResponseRequestFingerprint:      finalAttempt.RequestFingerprint,

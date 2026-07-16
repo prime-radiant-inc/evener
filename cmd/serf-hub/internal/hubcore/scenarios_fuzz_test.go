@@ -9,9 +9,6 @@ func FuzzHubcoreScenarios(f *testing.F) {
 	scenarios := []func(*testing.T){
 		fuzzScenarioAgeString,
 		fuzzScenarioAllTestSessionsClassifyAsTestRun,
-		fuzzScenarioApplyWedgeOverrideMovesWorkingToErrorConsistently,
-		fuzzScenarioApplyWedgeOverrideNoopIfIDMissing,
-		fuzzScenarioApplyWedgeOverrideNoopIfNotWorking,
 		fuzzScenarioAppwireThreadLess,
 		fuzzScenarioAppwireThreadOrderKeyTitleFallback,
 		fuzzScenarioArchiveStoreDelete,
@@ -65,7 +62,6 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioCoverageHTTPFailures,
 		fuzzScenarioCoveragePersistenceEdges,
 		fuzzScenarioCoveragePureEdges,
-		fuzzScenarioCoverageTranscriptEdges,
 		fuzzScenarioDeriveAttention_CarriesAskPending,
 		fuzzScenarioDeriveAttention_PendingEscalationNeverDowngradesError,
 		fuzzScenarioDeriveAttention_PendingEscalationPromotesToNeedsYou,
@@ -150,12 +146,6 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioRoster_Watch_PicksUpNewFile,
 		fuzzScenarioShortID,
 		fuzzScenarioSplitLivePath,
-		fuzzScenarioStaleActivesBelowThresholdIsNotYetStale,
-		fuzzScenarioStaleActivesContinuousPastThresholdIsStale,
-		fuzzScenarioStaleActivesDisappearedDropsTracking,
-		fuzzScenarioStaleActivesFlippedToNonWorkingDropsTracking,
-		fuzzScenarioStaleActivesNewlyWorkingIsNotStale,
-		fuzzScenarioStallThresholdIsThreeMinutes,
 		fuzzScenarioStatusProberSendsHubTokenBearer,
 		fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse,
 		fuzzScenarioStatusProber_BadJSON,
@@ -172,11 +162,6 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioUnixTime,
 		fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree,
 		fuzzScenarioUpdateMetaReordersAndPreservesStateDir,
-		fuzzScenarioWedgedStatusFlipsOnFailedAPICallTail,
-		fuzzScenarioWedgedStatusLeavesCompletedAssistantTailAlone,
-		fuzzScenarioWedgedStatusLeavesSuccessfulAPICallTailAlone,
-		fuzzScenarioWedgedStatusLeavesUserInputTailAlone,
-		fuzzScenarioWedgedStatusMissingTranscriptIsNotWedged,
 	}
 	for i := range scenarios {
 		f.Add(uint16(i))

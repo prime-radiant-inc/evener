@@ -14,8 +14,8 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // FuzzDoctorFilesystemProgram drives the doctor package through its real
@@ -114,47 +114,20 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 			{Kind: llm.ContentToolResult},
 		}}),
 	}
-	cacheRead := 9000
-	spikeCacheRead := 1000
-	apiCalls := []transcript.APICall{
-		{
-			Round:        0,
-			LatencyMs:    100,
-			SystemPrompt: "tools read_file delegate_send read_file",
-			Request: llm.APILogRequest{
-				Model: "fixture-model", Provider: "fixture-provider",
-				EndpointFamily: "openai_public", HistoryMode: llm.HistoryModeResponsesDelta,
-			},
-			Response: &llm.APILogResponse{FinishReason: "tool_calls", TextLength: 20, ToolCallCount: 2,
-				Usage: llm.Usage{InputTokens: 10000, OutputTokens: 200, CacheReadTokens: &cacheRead}},
-		},
-		{
-			Round:     1,
-			LatencyMs: 50,
-			Request: llm.APILogRequest{
-				Model: "fixture-model", Provider: "fixture-provider",
-				EndpointFamily: "openai_public", HistoryMode: llm.HistoryModeFullHistory,
-			},
-			Response: &llm.APILogResponse{FinishReason: "stop", Usage: llm.Usage{InputTokens: 1000}},
-		},
-		{
-			Round:     2,
-			LatencyMs: 25,
-			Request: llm.APILogRequest{
-				Model: "fixture-model", Provider: "fixture-provider",
-				EndpointFamily: "openai_public", HistoryMode: llm.HistoryModeFullHistoryFallback,
-			},
-			Error: "fixture error",
-		},
-		{
-			Round:     3,
-			LatencyMs: 75,
-			Request:   llm.APILogRequest{Model: "fixture-model", Provider: "fixture-provider"},
-			Response: &llm.APILogResponse{FinishReason: "stop", TextLength: 1,
-				Usage: llm.Usage{InputTokens: 60000, OutputTokens: 500, CacheReadTokens: &spikeCacheRead}},
-		},
+	attempts := []apilog.APIAttemptRecord{
+		doctorAttempt("ag_program_normal", 1, apilog.AttemptSuccess, 100, 10000, 200, 9000, 20, 2),
+		doctorAttempt("ag_program_empty", 1, apilog.AttemptSuccess, 50, 1000, 0, 0, 0, 0),
+		doctorAttempt("ag_program_error", 1, apilog.AttemptProviderTimeout, 25, 0, 0, 0, 0, 0),
+		doctorAttempt("ag_program_spike", 1, apilog.AttemptSuccess, 75, 60000, 500, 1000, 1, 0),
 	}
-	writeRichSession(t, rootBucket, fixture.rootSID, rootTurns, apiCalls, schema.SessionMeta{
+	attempts[0].Request.HistoryMode = string(llm.HistoryModeResponsesDelta)
+	attempts[1].Request.HistoryMode = string(llm.HistoryModeFullHistory)
+	attempts[2].Request.HistoryMode = string(llm.HistoryModeFullHistoryFallback)
+	apiRecords := make([]apilog.APILogRecord, 0, len(attempts)*2)
+	for _, attempt := range attempts {
+		apiRecords = append(apiRecords, attempt, doctorSettlement(attempt, 1))
+	}
+	writeRichSession(t, rootBucket, fixture.rootSID, rootTurns, apiRecords, schema.SessionMeta{
 		Config:     schema.ConfigSnapshot{ResultToolName: resultTool},
 		ObservedBy: []string{fixture.observerSID, "doctor_missing_observer"},
 	})
@@ -358,7 +331,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 		}
 		trace.CountRenders = append(trace.CountRenders, rendered)
 	}
-	if trace.Counts[0].Calls != 1 || trace.Counts[1].Calls != 1 || trace.Counts[2].Calls != 0 || trace.Counts[2].MentionsAssistantText == 0 || trace.Counts[2].MentionsAPICalls == 0 {
+	if trace.Counts[0].Calls != 1 || trace.Counts[1].Calls != 1 || trace.Counts[2].Calls != 0 || trace.Counts[2].MentionsAssistantText == 0 {
 		t.Fatalf("Count results = %#v", trace.Counts)
 	}
 	if _, err := Count(fixture.base, "local:doctor_absent", "read_file"); err == nil {

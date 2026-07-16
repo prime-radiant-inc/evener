@@ -219,7 +219,7 @@ func equalProjections(a, b projection) bool {
 //     legitimate encoding difference, not decode drift.
 //   - Usage pointer fields (ReasoningTokens, ReasoningTokensEstimated, Cache*) —
 //     provider-specific native counts / char-based estimates.
-//   - RawRequestBody / RawResponseBody / Warnings / RateLimit / ContentPart.Phase
+//   - Warnings / RateLimit / ContentPart.Phase
 //     — framing/diagnostic metadata, not model content.
 
 // crossProviderDivergence drives every provider, projects, and returns a

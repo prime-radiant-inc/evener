@@ -46,13 +46,11 @@ func TestInstallReadObserverForTestingObserveAndRestore(t *testing.T) {
 
 func TestTurnCacheTurnCountFromFileUsesIndexedLogicalVisibilityWithoutProjection(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "count.transcript.jsonl")
-	header := transcript.Header{Kind: "header", FormatVersion: 1, SessionID: "count", SystemPrompt: "system"}
-	firstCall := transcript.APICall{Kind: "api_call", Seq: 1, Request: llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file"}}}}
-	visible := transcript.Entry{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("visible"))}
-	hidden := transcript.Entry{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{})}
-	failed := transcript.APICall{Kind: "api_call", Seq: 4, Error: "failed"}
+	header := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "count", SystemPrompt: "system"}
+	visible := transcript.Entry{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("visible"))}
+	hidden := transcript.Entry{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{})}
 	var data []byte
-	for _, record := range []any{header, firstCall, visible, hidden, failed} {
+	for _, record := range []any{header, visible, hidden} {
 		line, err := json.Marshal(record)
 		if err != nil {
 			t.Fatal(err)
@@ -67,9 +65,9 @@ func TestTurnCacheTurnCountFromFileUsesIndexedLogicalVisibilityWithoutProjection
 	var observed []ReadStats
 	restore := InstallReadObserverForTesting(func(stats ReadStats) { observed = append(observed, stats) })
 	t.Cleanup(restore)
-	got := NewTurnCache().TurnCountFromFile(path, testMaxLineBytes, boundedTestProjector)
-	if got != 3 {
-		t.Fatalf("logical count = %d, want prelude + visible entry + failed API call = 3", got)
+	got := requireTurnCountFromFile(t, NewTurnCache(), path, testMaxLineBytes, boundedTestProjector)
+	if got != 2 {
+		t.Fatalf("logical count = %d, want prelude + visible entry = 2", got)
 	}
 	if len(observed) != 1 || observed[0].ProjectedTurns != 0 {
 		t.Fatalf("observed = %+v, want one zero-projection count read", observed)
@@ -78,10 +76,10 @@ func TestTurnCacheTurnCountFromFileUsesIndexedLogicalVisibilityWithoutProjection
 
 func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	fixture := writeBoundedFixture(t)
-	full := TurnsFromFile(fixture.path, testMaxLineBytes, sequentialTestProjector())
+	full := requireTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
 
-	got, cursor := cache.LatestFromFile(fixture.path, testMaxLineBytes, 3, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 3)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("latest turns differ\n got: %#v\nwant: %#v", got, want)
@@ -90,7 +88,7 @@ func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 		t.Fatalf("cursor=%q want=%q", cursor, wantCursor)
 	}
 
-	page := cache.PageFromFile(fixture.path, testMaxLineBytes, cursor, 2, boundedTestProjector)
+	page := requirePageFromFile(t, cache, fixture.path, testMaxLineBytes, cursor, 2, boundedTestProjector)
 	wantPage := appwire.PageTurns(full, cursor, 2)
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) {
 		t.Fatalf("page turns differ\n got: %#v\nwant: %#v", page.Turns, wantPage.Data)
@@ -112,13 +110,6 @@ func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	if full[2].Usage == nil || full[2].Usage.InputTokens != 11 || full[2].Usage.OutputTokens != 7 || full[2].Usage.TotalTokens != 18 {
 		t.Fatalf("turn_2 usage=%+v", full[2].Usage)
 	}
-	failed := full[5]
-	if failed.Status != appwire.TurnStatusFailed || failed.Error == nil {
-		t.Fatalf("failed turn=%+v", failed)
-	}
-	if *failed.Error != (appwire.TurnError{Message: "provider exploded", Source: "provider", Title: "Provider error", Hint: "retry later"}) {
-		t.Fatalf("failed error=%+v", failed.Error)
-	}
 	if got[0].Items[0].ToolName != "read_file" {
 		t.Fatalf("bounded legacy tool-result name=%q want=%q", got[0].Items[0].ToolName, "read_file")
 	}
@@ -136,7 +127,7 @@ func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
 		{Kind: "entry", Seq: 7, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-4")}},
 		{Kind: "entry", Seq: 8, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("visible-5")}},
 	}
-	var data []byte
+	data := transcriptHeaderLine(t)
 	for _, entry := range entries {
 		data = append(data, marshalEntryLine(t, entry)...)
 	}
@@ -144,9 +135,9 @@ func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
-	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 3)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("latest got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
@@ -155,7 +146,7 @@ func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
 		t.Fatalf("latest IDs=%v", gotIDs)
 	}
 
-	page := cache.PageFromFile(path, testMaxLineBytes, cursor, 2, boundedTestProjector)
+	page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 2, boundedTestProjector)
 	wantPage := appwire.PageTurns(full, cursor, 2)
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
 		t.Fatalf("page got=(%v,%q) want=(%v,%q)", turnIDs(page.Turns), page.NextCursor, turnIDs(wantPage.Data), wantPage.NextCursor)
@@ -165,14 +156,12 @@ func TestTurnCacheBoundedPagesCountOnlyVisibleTurns(t *testing.T) {
 	}
 }
 
-func TestTurnCacheBoundedPreludeFreezesAtFirstAPICall(t *testing.T) {
+func TestTurnCacheBoundedPreludeUsesSemanticHeader(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prelude.transcript.jsonl")
 	records := []any{
-		transcript.Header{Kind: "header", FormatVersion: 1, SystemPrompt: "first header"},
-		transcript.APICall{Kind: "api_call", Seq: 1},
-		transcript.Header{Kind: "header", FormatVersion: 1, SystemPrompt: "later header"},
-		userEntry(2, "hello"),
-		userEntry(3, "later"),
+		transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SystemPrompt: "first header"},
+		userEntry(1, "hello"),
+		userEntry(2, "later"),
 	}
 	var data []byte
 	for _, record := range records {
@@ -189,13 +178,13 @@ func TestTurnCacheBoundedPreludeFreezesAtFirstAPICall(t *testing.T) {
 
 	assertBoundedLatestMatchesFull(t, path, 3)
 	cache := NewTurnCache()
-	got, _ := cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	got, _ := requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 	if text := turnText(got[0]); text != "first header" {
 		t.Fatalf("prelude text=%q want=%q", text, "first header")
 	}
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
-	page := cache.PageFromFile(path, testMaxLineBytes, "2", 2, boundedTestProjector)
-	wantPage := appwire.PageTurns(full, "2", 2)
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	page := requirePageFromFile(t, cache, path, testMaxLineBytes, "1", 2, boundedTestProjector)
+	wantPage := appwire.PageTurns(full, "1", 2)
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
 		t.Fatalf("prelude page got=(%v,%q) want=(%v,%q)", turnIDs(page.Turns), page.NextCursor, turnIDs(wantPage.Data), wantPage.NextCursor)
 	}
@@ -229,7 +218,7 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 		toolResultEntry(2, "", "", "contents"),
 		userEntry(3, "after result"),
 	)
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	if got := turnIDs(full); !reflect.DeepEqual(got, []string{"turn_1", "turn_2", "turn_3"}) {
 		t.Fatalf("full turn IDs=%v want=%v", got, []string{"turn_1", "turn_2", "turn_3"})
 	}
@@ -239,7 +228,7 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 
 	assertLatest := func(label string, cache *TurnCache) {
 		t.Helper()
-		got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 2, boundedTestProjector)
+		got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
 		want, wantCursor := appwire.WindowTurns(full, 2)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[0].Items[0].ToolName, turnIDs(want), want[0].Items[0].ToolName)
@@ -259,7 +248,7 @@ func TestTurnCacheBoundedPreservesEmptyToolCallID(t *testing.T) {
 	assertLatest("latest", cache)
 	assertLatest("warm latest", cache)
 
-	page := cache.PageFromFile(path, testMaxLineBytes, "2", 1, boundedTestProjector)
+	page := requirePageFromFile(t, cache, path, testMaxLineBytes, "2", 1, boundedTestProjector)
 	wantPage := appwire.PageTurns(full, "2", 1)
 	if !reflect.DeepEqual(page.Turns, wantPage.Data) {
 		t.Fatalf("page exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", turnIDs(page.Turns), page.Turns[0].Items[0].ToolName, turnIDs(wantPage.Data), wantPage.Data[0].Items[0].ToolName)
@@ -300,14 +289,14 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 				toolResultEntry(3, "shared", "", "done"),
 			)
 
-			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			if got := full[len(full)-1].Items[0].ToolName; got != "read_file" {
 				t.Fatalf("full result tool name=%q want=%q", got, "read_file")
 			}
 
 			assertLatest := func(label string, cache *TurnCache) string {
 				t.Helper()
-				got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 2, boundedTestProjector)
+				got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
 				want, wantCursor := appwire.WindowTurns(full, 2)
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("%s exact items differ: got IDs=%v result tool=%q; want IDs=%v result tool=%q", label, turnIDs(got), got[len(got)-1].Items[0].ToolName, turnIDs(want), want[len(want)-1].Items[0].ToolName)
@@ -325,7 +314,7 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 			cursor := assertLatest("latest", cache)
 			assertLatest("warm latest", cache)
 
-			page := cache.PageFromFile(path, testMaxLineBytes, cursor, 2, boundedTestProjector)
+			page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 2, boundedTestProjector)
 			wantPage := appwire.PageTurns(full, cursor, 2)
 			if !reflect.DeepEqual(page.Turns, wantPage.Data) || page.NextCursor != wantPage.NextCursor {
 				t.Fatalf("page got=(%#v,%q) want=(%#v,%q)", page.Turns, page.NextCursor, wantPage.Data, wantPage.NextCursor)
@@ -339,7 +328,7 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 	fixture := writeBoundedFixture(t)
 	cache := NewTurnCache()
-	before, _ := cache.LatestFromFile(fixture.path, testMaxLineBytes, 3, boundedTestProjector)
+	before, _ := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
 	if got := turnIDs(before); !reflect.DeepEqual(got, []string{"turn_3", "turn_4", "turn_5"}) {
 		t.Fatalf("before append IDs=%v", got)
 	}
@@ -356,8 +345,8 @@ func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	full := TurnsFromFile(fixture.path, testMaxLineBytes, sequentialTestProjector())
-	got, cursor := cache.LatestFromFile(fixture.path, testMaxLineBytes, 3, boundedTestProjector)
+	full := requireTurnsFromFile(t, fixture.path, testMaxLineBytes, sequentialTestProjector())
+	got, cursor := requireLatestFromFile(t, cache, fixture.path, testMaxLineBytes, 3, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 3)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("after append got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
@@ -378,14 +367,14 @@ func TestTurnCacheIndexesOnlyAppendedSuffixAndBoundsProjection(t *testing.T) {
 	observeTurnIndexRead = func(stat ReadStats) { stats = append(stats, stat) }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
 
-	latest, cursor := cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	latest, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 	if len(latest) != 40 || cursor != "60" {
 		t.Fatalf("cold latest=(%d,%q) want=(40,%q)", len(latest), cursor, "60")
 	}
 	if got := stats[len(stats)-1]; got.IndexedBytes <= 0 || got.ProjectedTurns != 40 {
 		t.Fatalf("cold stats=%+v want positive indexed bytes and 40 projected", got)
 	}
-	latest, cursor = cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	latest, cursor = requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 	if len(latest) != 40 || cursor != "60" {
 		t.Fatalf("warm latest=(%d,%q) want=(40,%q)", len(latest), cursor, "60")
 	}
@@ -395,7 +384,7 @@ func TestTurnCacheIndexesOnlyAppendedSuffixAndBoundsProjection(t *testing.T) {
 
 	line := numberedEntryLine(t, 101, strings.Repeat("x", 257))
 	appendFile(t, path, line)
-	latest, cursor = cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	latest, cursor = requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 	if len(latest) != 40 || cursor != "61" {
 		t.Fatalf("appended latest=(%d,%q) want=(40,%q)", len(latest), cursor, "61")
 	}
@@ -403,7 +392,7 @@ func TestTurnCacheIndexesOnlyAppendedSuffixAndBoundsProjection(t *testing.T) {
 		t.Fatalf("append stats=%+v want indexed=%d projected=40", got, len(line))
 	}
 
-	page := cache.PageFromFile(path, testMaxLineBytes, cursor, 30, boundedTestProjector)
+	page := requirePageFromFile(t, cache, path, testMaxLineBytes, cursor, 30, boundedTestProjector)
 	if len(page.Turns) != 30 || page.NextCursor != "31" {
 		t.Fatalf("older page=(%d,%q) want=(30,%q)", len(page.Turns), page.NextCursor, "31")
 	}
@@ -422,7 +411,7 @@ func TestTurnCacheAppendIndexWorkIsBoundedBySuffix(t *testing.T) {
 	for _, count := range []int{100, 1_000, 10_000} {
 		path := writeNumberedTranscript(t, count)
 		cache := NewTurnCache()
-		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 		basePath := path + ".appwire-index.json"
 		baseBefore, err := os.ReadFile(basePath)
 		if err != nil {
@@ -434,7 +423,7 @@ func TestTurnCacheAppendIndexWorkIsBoundedBySuffix(t *testing.T) {
 		var stat ReadStats
 		previous := observeTurnIndexRead
 		observeTurnIndexRead = func(got ReadStats) { stat = got }
-		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 		observeTurnIndexRead = previous
 
 		baseAfter, err := os.ReadFile(basePath)
@@ -474,16 +463,16 @@ func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) 
 		t.Run(fmt.Sprintf("calls=%d", count), func(t *testing.T) {
 			path := writeToolHeavyTranscript(t, count)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			line := numberedEntryLine(t, count+1, "fixed-size-append")
 			appendFile(t, path, line)
 
 			var stat ReadStats
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
-			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 1)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("append projection got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
@@ -504,14 +493,14 @@ func TestTurnCacheToolHeavyAppendDoesNotPersistCumulativeResolver(t *testing.T) 
 			seq := count + 2
 			allocs := testing.AllocsPerRun(1, func() {
 				appendFile(t, path, numberedEntryLine(t, seq, "fixed-size-append"))
-				cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+				requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 				seq++
 			})
 			runtime.GC()
 			var before, after runtime.MemStats
 			runtime.ReadMemStats(&before)
 			appendFile(t, path, numberedEntryLine(t, seq, "fixed-size-append"))
-			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			runtime.ReadMemStats(&after)
 			allocated := after.TotalAlloc - before.TotalAlloc
 			if allocs > 256 || allocated > 64<<10 {
@@ -534,9 +523,9 @@ func TestTurnCacheToolProjectionSeedsMatchSequentialProjection(t *testing.T) {
 		toolResultEntry(4, "communicate", "", "orphan"),
 		multiple,
 	)
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 	cache := NewTurnCache()
-	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, len(full), boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, len(full), boundedTestProjector)
 	if !reflect.DeepEqual(got, full) || cursor != "" {
 		t.Fatalf("seed projection differs\n got: %#v\nwant: %#v", got, full)
 	}
@@ -554,18 +543,18 @@ func TestTurnCacheToolProjectionSeedsMatchSequentialProjection(t *testing.T) {
 	}
 }
 
-func TestTurnCacheFailedAPICallSelectionIsVisibleRankBounded(t *testing.T) {
+func TestTurnCacheSemanticSelectionIsVisibleRankBounded(t *testing.T) {
 	for _, count := range []int{100, 1_000, 10_000} {
-		t.Run(fmt.Sprintf("failed=%d", count), func(t *testing.T) {
-			path := writeFailedAPICalls(t, count)
+		t.Run(fmt.Sprintf("entries=%d", count), func(t *testing.T) {
+			path := writeNumberedTranscript(t, count)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 20, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 20, boundedTestProjector)
 			var stat ReadStats
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
-			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 20, boundedTestProjector)
+			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 20, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 20)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("latest differs: got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
@@ -582,13 +571,16 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 		t.Run(fmt.Sprintf("fresh=%v", fresh), func(t *testing.T) {
 			path := writeNumberedTranscript(t, 40)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 5, boundedTestProjector)
 			before, err := os.Stat(path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			file, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.Write(transcriptHeaderLine(t)); err != nil {
 				t.Fatal(err)
 			}
 			for i := 1; i <= 60; i++ {
@@ -612,9 +604,9 @@ func TestTurnCacheGrowthRewriteAnchorMismatchRebuilds(t *testing.T) {
 			var stat ReadStats
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
-			got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 5, boundedTestProjector)
+			got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 5, boundedTestProjector)
 			observeTurnIndexRead = previous
-			full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
+			full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
 			want, wantCursor := appwire.WindowTurns(full, 5)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor || !stat.rebuilt {
 				t.Fatalf("anchor recovery got=(%v,%q) stats=%+v want=(%v,%q) rebuild", turnIDs(got), cursor, stat, turnIDs(want), wantCursor)
@@ -631,7 +623,7 @@ func TestTurnCacheSidecarStoresRecordSeedsAndBoundedAnchors(t *testing.T) {
 		assistantToolCallEntry(1, "call", "read_file", `{}`),
 		toolResultEntry(2, "call", "", "done"),
 	)
-	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
 	data, err := os.ReadFile(path + ".appwire-index.json")
 	if err != nil {
 		t.Fatal(err)
@@ -649,7 +641,7 @@ func TestTurnCacheSidecarStoresRecordSeedsAndBoundedAnchors(t *testing.T) {
 func TestTurnCacheSuffixAdvancementDoesNotMutatePublishedHistory(t *testing.T) {
 	path := writeNumberedTranscript(t, 100)
 	cache := NewTurnCache()
-	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 
 	cache.mu.Lock()
 	published := *cache.entries[path].turnIndex
@@ -661,7 +653,7 @@ func TestTurnCacheSuffixAdvancementDoesNotMutatePublishedHistory(t *testing.T) {
 	appendFile(t, path, numberedEntryLine(t, 101, "appended"))
 	advanced := make(chan struct{})
 	go func() {
-		cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+		requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 		close(advanced)
 	}()
 
@@ -685,7 +677,7 @@ func TestTurnCacheSuffixAdvancementDoesNotMutatePublishedHistory(t *testing.T) {
 func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 	path := writeNumberedTranscript(t, 100)
 	cache := NewTurnCache()
-	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 	basePath := path + ".appwire-index.json"
 	baseBefore, err := os.ReadFile(basePath)
 	if err != nil {
@@ -694,7 +686,7 @@ func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 	appendFile(t, path, numberedEntryLine(t, 101, "delta-one"))
 	appendFile(t, path, assistantToolCallLine(t, 102, "restart-call", "restart_tool"))
 	appendFile(t, path, toolResultLine(t, 103, "restart-call", "", "restart output"))
-	cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 
 	baseAfter, err := os.ReadFile(basePath)
 	if err != nil {
@@ -716,8 +708,8 @@ func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 	previous := observeTurnIndexRead
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
-	want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 40)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 40, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 40)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("restart got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 	}
@@ -732,13 +724,13 @@ func TestTurnCacheRestartLoadsBasePlusValidJournalDeltas(t *testing.T) {
 func TestTurnCacheTruncatedFinalJournalAcceptsPrefixAndRepairsSuffix(t *testing.T) {
 	path := writeNumberedTranscript(t, 20)
 	cache := NewTurnCache()
-	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 	line21 := numberedEntryLine(t, 21, "delta-21")
 	appendFile(t, path, line21)
-	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 	line22 := numberedEntryLine(t, 22, "delta-22")
 	appendFile(t, path, line22)
-	cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 
 	journalPath := path + ".appwire-index.json.journal"
 	journal, err := os.ReadFile(journalPath)
@@ -762,8 +754,8 @@ func TestTurnCacheTruncatedFinalJournalAcceptsPrefixAndRepairsSuffix(t *testing.
 	previous := observeTurnIndexRead
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
-	want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 10)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
+	want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("truncated-journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 	}
@@ -779,7 +771,7 @@ func TestTurnCacheTruncatedFinalJournalAcceptsPrefixAndRepairsSuffix(t *testing.
 	}
 
 	stat = ReadStats{}
-	got, cursor = NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	got, cursor = requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor || stat.IndexedBytes != 0 {
 		t.Fatalf("second restart got=(%#v,%q) stats=%+v want=(%#v,%q) with no scan", got, cursor, stat, want, wantCursor)
 	}
@@ -816,9 +808,9 @@ func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeNumberedTranscript(t, 20)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 			appendFile(t, path, numberedEntryLine(t, 21, "durable delta"))
-			cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 			journalPath := path + ".appwire-index.json.journal"
 			journal, err := os.ReadFile(journalPath)
 			if err != nil {
@@ -832,8 +824,8 @@ func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			t.Cleanup(func() { observeTurnIndexRead = previous })
-			got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
-			want, wantCursor := appwire.WindowTurns(TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector()), 10)
+			got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
+			want, wantCursor := appwire.WindowTurns(requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector()), 10)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 				t.Fatalf("journal recovery got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
 			}
@@ -846,7 +838,7 @@ func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
 			}
 
 			stat = ReadStats{}
-			got, cursor = NewTurnCache().LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+			got, cursor = requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 10, boundedTestProjector)
 			if !reflect.DeepEqual(got, want) || cursor != wantCursor || stat.IndexedBytes != 0 {
 				t.Fatalf("post-rebuild restart got=(%#v,%q) stats=%+v want=(%#v,%q) with no scan", got, cursor, stat, want, wantCursor)
 			}
@@ -857,16 +849,17 @@ func TestTurnCacheRejectsCorruptOrChainMismatchedJournal(t *testing.T) {
 func TestTurnCacheRebuildsIndexAfterTranscriptReplacement(t *testing.T) {
 	path := writeNumberedTranscript(t, 4)
 	cache := NewTurnCache()
-	warm, _ := cache.LatestFromFile(path, testMaxLineBytes, 2, boundedTestProjector)
+	warm, _ := requireLatestFromFile(t, cache, path, testMaxLineBytes, 2, boundedTestProjector)
 	if got := turnText(warm[len(warm)-1]); got != "entry-4" {
 		t.Fatalf("warm latest text=%q want=%q", got, "entry-4")
 	}
 
-	replacement := append(numberedEntryLine(t, 1, "replacement-one"), numberedEntryLine(t, 2, "replacement-two")...)
+	replacement := append(transcriptHeaderLine(t), numberedEntryLine(t, 1, "replacement-one")...)
+	replacement = append(replacement, numberedEntryLine(t, 2, "replacement-two")...)
 	if err := os.WriteFile(path, replacement, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 10, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 10, boundedTestProjector)
 	if cursor != "" || len(got) != 2 {
 		t.Fatalf("replacement latest=(%d,%q) want=(2, empty)", len(got), cursor)
 	}
@@ -878,7 +871,7 @@ func TestTurnCacheRebuildsIndexAfterTranscriptReplacement(t *testing.T) {
 func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime(t *testing.T) {
 	path := writeNumberedTranscript(t, 120)
 	cache := NewTurnCache()
-	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 	before, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
@@ -919,8 +912,8 @@ func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime
 		t.Fatalf("rewrite replaced inode: before=%q after=%q", fileIdentity(before), fileIdentity(after))
 	}
 
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
-	got, cursor := cache.LatestFromFile(path, testMaxLineBytes, 61, boundedTestProjector)
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	got, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 61, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, 61)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("same-size replacement got=(%v,%q) want=(%v,%q)", turnIDs(got), cursor, turnIDs(want), wantCursor)
@@ -930,7 +923,7 @@ func TestTurnCacheRebuildsIndexAfterSameSizeMiddleReplacementWithRestoredModTime
 func TestTurnCacheRebuildsStructurallyValidMutatedSidecar(t *testing.T) {
 	path := writeNumberedTranscript(t, 8)
 	indexPath := path + ".appwire-index.json"
-	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 	index, err := readTurnIndex(indexPath)
 	if err != nil {
 		t.Fatal(err)
@@ -948,7 +941,7 @@ func TestTurnCacheRebuildsStructurallyValidMutatedSidecar(t *testing.T) {
 	previous := observeTurnIndexRead
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
 	if cursor != "7" || !reflect.DeepEqual(turnIDs(got), []string{"turn_8"}) || turnText(got[0]) != "entry-8" {
 		t.Fatalf("mutated sidecar latest=(%v,%q,%q)", turnIDs(got), cursor, turnText(got[0]))
 	}
@@ -968,7 +961,7 @@ func TestTurnCacheRebuildsIndexWhenProjectionIdentityChanges(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeNumberedTranscript(t, 4)
 			cache := NewTurnCache()
-			first, cursor := cache.LatestFromFile(path, testMaxLineBytes, 3, projectionKeepingAllEntries)
+			first, cursor := requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, projectionKeepingAllEntries)
 			if cursor != "1" || !reflect.DeepEqual(turnIDs(first), []string{"turn_2", "turn_3", "turn_4"}) {
 				t.Fatalf("first projection=(%v,%q)", turnIDs(first), cursor)
 			}
@@ -977,7 +970,7 @@ func TestTurnCacheRebuildsIndexWhenProjectionIdentityChanges(t *testing.T) {
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			t.Cleanup(func() { observeTurnIndexRead = previous })
-			got, cursor := test.secondCache(cache).LatestFromFile(path, testMaxLineBytes, 3, projectionKeepingOddEntries)
+			got, cursor := requireLatestFromFile(t, test.secondCache(cache), path, testMaxLineBytes, 3, projectionKeepingOddEntries)
 			if cursor != "" || !reflect.DeepEqual(turnIDs(got), []string{"turn_1", "turn_3"}) {
 				t.Fatalf("changed projection=(%v,%q) want=([turn_1 turn_3], empty)", turnIDs(got), cursor)
 			}
@@ -996,7 +989,7 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 	entries = append(entries, toolResultEntry(129, "shared", "", "done"))
 	path := writeEntries(t, entries...)
 	indexPath := path + ".appwire-index.json"
-	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
 	index, err := readTurnIndex(indexPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1015,7 +1008,7 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, _ := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+	got, _ := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 1, boundedTestProjector)
 	if len(got) != 1 || len(got[0].Items) != 1 || got[0].Items[0].ToolName != "correct_tool" {
 		t.Fatalf("invalid seed was reused: turns=%#v", got)
 	}
@@ -1024,7 +1017,7 @@ func TestTurnCacheRebuildsSidecarWithInvalidToolSeed(t *testing.T) {
 func TestTurnCacheRebuildsMissingOrCorruptSidecar(t *testing.T) {
 	path := writeNumberedTranscript(t, 8)
 	indexPath := path + ".appwire-index.json"
-	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 
 	for _, test := range []struct {
 		name   string
@@ -1043,14 +1036,14 @@ func TestTurnCacheRebuildsMissingOrCorruptSidecar(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// Restore a valid sidecar before applying each mutation.
-			NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+			requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 			test.mutate(t)
 			var stat ReadStats
 			previous := observeTurnIndexRead
 			observeTurnIndexRead = func(got ReadStats) { stat = got }
 			t.Cleanup(func() { observeTurnIndexRead = previous })
 
-			got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+			got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 			if cursor != "5" || len(got) != 3 || turnText(got[2]) != "entry-8" {
 				t.Fatalf("rebuilt latest=(%d,%q,%q)", len(got), cursor, turnText(got[2]))
 			}
@@ -1067,7 +1060,7 @@ func TestTurnCacheRebuildsMissingOrCorruptSidecar(t *testing.T) {
 func TestTurnCacheRebuildsOversizedBaseSidecar(t *testing.T) {
 	path := writeNumberedTranscript(t, 8)
 	indexPath := path + ".appwire-index.json"
-	NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1089,7 +1082,7 @@ func TestTurnCacheRebuildsOversizedBaseSidecar(t *testing.T) {
 	previous := observeTurnIndexRead
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 	if cursor != "5" || len(got) != 3 || turnText(got[2]) != "entry-8" || !stat.rebuilt {
 		t.Fatalf("oversized-base recovery=(%d,%q,%q) stats=%+v want authoritative rebuild", len(got), cursor, turnText(got[2]), stat)
 	}
@@ -1098,9 +1091,9 @@ func TestTurnCacheRebuildsOversizedBaseSidecar(t *testing.T) {
 func TestTurnCacheRebuildsOversizedJournalFrame(t *testing.T) {
 	path := writeNumberedTranscript(t, 8)
 	cache := NewTurnCache()
-	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 	appendFile(t, path, numberedEntryLine(t, 9, "journal-delta"))
-	cache.LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	requireLatestFromFile(t, cache, path, testMaxLineBytes, 3, boundedTestProjector)
 
 	journalPath := path + ".appwire-index.json.journal"
 	frame, err := os.ReadFile(journalPath)
@@ -1129,7 +1122,7 @@ func TestTurnCacheRebuildsOversizedJournalFrame(t *testing.T) {
 	previous := observeTurnIndexRead
 	observeTurnIndexRead = func(got ReadStats) { stat = got }
 	t.Cleanup(func() { observeTurnIndexRead = previous })
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, 3, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, 3, boundedTestProjector)
 	if cursor != "6" || len(got) != 3 || turnText(got[2]) != "journal-delta" || !stat.rebuilt {
 		t.Fatalf("oversized-journal recovery=(%d,%q,%q) stats=%+v want authoritative rebuild", len(got), cursor, turnText(got[2]), stat)
 	}
@@ -1143,11 +1136,11 @@ func TestTurnCacheReadsLineLargerThanScannerDefault(t *testing.T) {
 		t.Fatalf("fixture line bytes=%d want >%d and <%d", len(line), bufioMaxScanTokenSizeForTest, maxLineBytes)
 	}
 	path := filepath.Join(t.TempDir(), "large.transcript.jsonl")
-	if err := os.WriteFile(path, line, 0o644); err != nil {
+	if err := os.WriteFile(path, append(transcriptHeaderLine(t), line...), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	got, cursor := NewTurnCache().LatestFromFile(path, maxLineBytes, 1, boundedTestProjector)
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, maxLineBytes, 1, boundedTestProjector)
 	if cursor != "" || len(got) != 1 || turnText(got[0]) != text {
 		t.Fatalf("large-line latest=(%d,%q,text-bytes=%d)", len(got), cursor, len(turnText(got[0])))
 	}
@@ -1160,10 +1153,11 @@ func TestTurnCacheBoundedReadsEvictBeyondDefaultPathLimit(t *testing.T) {
 	for i := range paths {
 		path := filepath.Join(dir, fmt.Sprintf("%02d.transcript.jsonl", i))
 		paths[i] = path
-		if err := os.WriteFile(path, numberedEntryLine(t, 1, fmt.Sprintf("path-%d", i)), 0o644); err != nil {
+		data := append(transcriptHeaderLine(t), numberedEntryLine(t, 1, fmt.Sprintf("path-%d", i))...)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+		requireLatestFromFile(t, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 	}
 	if len(cache.entries) != defaultTurnCacheSize {
 		t.Fatalf("bounded cache entries=%d want=%d", len(cache.entries), defaultTurnCacheSize)
@@ -1200,7 +1194,7 @@ func BenchmarkTurnCacheLatest40(b *testing.B) {
 				}
 				cache := NewTurnCache()
 				b.StartTimer()
-				cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+				requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
 		})
@@ -1208,7 +1202,7 @@ func BenchmarkTurnCacheLatest40(b *testing.B) {
 		b.Run(fmt.Sprintf("entries=%d/warm", count), func(b *testing.B) {
 			path := writeNumberedTranscript(b, count)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+			requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			var indexedBytes int64
 			var projectedTurns int64
 			previous := observeTurnIndexRead
@@ -1220,7 +1214,7 @@ func BenchmarkTurnCacheLatest40(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+				requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
 		})
@@ -1232,7 +1226,7 @@ func BenchmarkTurnCacheLatest40AfterAppend(b *testing.B) {
 		b.Run(fmt.Sprintf("entries=%d", count), func(b *testing.B) {
 			path := writeNumberedTranscript(b, count)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+			requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			var indexedBytes int64
 			var projectedTurns int64
 			var indexBytesCopied int64
@@ -1251,7 +1245,7 @@ func BenchmarkTurnCacheLatest40AfterAppend(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				appendFile(b, path, numberedEntryLine(b, count+i+1, "appended"))
-				cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+				requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
 			reportIndexWriteMetrics(b, indexBytesCopied, indexBytesSerialized, indexBytesPersisted)
@@ -1264,12 +1258,12 @@ func BenchmarkTurnCacheToolHeavyLatestAfterAppend(b *testing.B) {
 		b.Run(fmt.Sprintf("calls=%d", count), func(b *testing.B) {
 			path := writeToolHeavyTranscript(b, count)
 			cache := NewTurnCache()
-			cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+			requireLatestFromFile(b, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				appendFile(b, path, numberedEntryLine(b, count+i+1, "fixed-size-append"))
-				cache.LatestFromFile(path, testMaxLineBytes, 1, boundedTestProjector)
+				requireLatestFromFile(b, cache, path, testMaxLineBytes, 1, boundedTestProjector)
 			}
 		})
 	}
@@ -1280,7 +1274,7 @@ func BenchmarkTurnCacheOlder30(b *testing.B) {
 		b.Run(fmt.Sprintf("entries=%d", count), func(b *testing.B) {
 			path := writeNumberedTranscript(b, count)
 			cache := NewTurnCache()
-			_, cursor := cache.LatestFromFile(path, testMaxLineBytes, 40, boundedTestProjector)
+			_, cursor := requireLatestFromFile(b, cache, path, testMaxLineBytes, 40, boundedTestProjector)
 			var indexedBytes int64
 			var projectedTurns int64
 			previous := observeTurnIndexRead
@@ -1292,7 +1286,7 @@ func BenchmarkTurnCacheOlder30(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				cache.PageFromFile(path, testMaxLineBytes, cursor, 30, boundedTestProjector)
+				requirePageFromFile(b, cache, path, testMaxLineBytes, cursor, 30, boundedTestProjector)
 			}
 			reportReadMetrics(b, indexedBytes, projectedTurns)
 		})
@@ -1344,8 +1338,8 @@ func projectionKeepingOddEntries(raw json.RawMessage, turnID string, turnIndex i
 
 func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
 	t.Helper()
-	full := TurnsFromFile(path, testMaxLineBytes, sequentialTestProjector())
-	got, cursor := NewTurnCache().LatestFromFile(path, testMaxLineBytes, limit, boundedTestProjector)
+	full := requireTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	got, cursor := requireLatestFromFile(t, NewTurnCache(), path, testMaxLineBytes, limit, boundedTestProjector)
 	want, wantCursor := appwire.WindowTurns(full, limit)
 	if !reflect.DeepEqual(got, want) || cursor != wantCursor {
 		t.Fatalf("latest got=(%#v,%q) want=(%#v,%q)", got, cursor, want, wantCursor)
@@ -1355,7 +1349,7 @@ func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
 func writeEntries(t testing.TB, entries ...transcript.Entry) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "entries.transcript.jsonl")
-	var data []byte
+	data := transcriptHeaderLine(t)
 	for _, entry := range entries {
 		data = append(data, marshalEntryLine(t, entry)...)
 	}
@@ -1396,19 +1390,18 @@ func writeBoundedFixture(t *testing.T) boundedFixture {
 		time.Unix(1_700_000_004, 0).UTC(),
 		time.Unix(1_700_000_005, 0).UTC(),
 	}
-	header := transcript.Header{Kind: "header", FormatVersion: 1, SessionID: "fixture", SystemPrompt: "You are Serf."}
-	firstCall := transcript.APICall{Kind: "api_call", Seq: 1, Request: llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file", Description: "Read a file."}}}}
+	header := transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: "fixture", SystemPrompt: "You are Serf."}
 	entries := []transcript.Entry{
-		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("first"), Timestamp: times[0]}},
-		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}}}}, Timestamp: times[1], Usage: llm.Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}}},
-		{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_read", Content: "contents"}}}}, Timestamp: times[2]}},
-		{Kind: "entry", Seq: 5, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("fourth"), Timestamp: times[3]}},
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("first"), Timestamp: times[0]}},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"README.md"}`)}}}}, Timestamp: times[1], Usage: llm.Usage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}}},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_read", Content: "contents"}}}}, Timestamp: times[2]}},
+		{Kind: "entry", Seq: 4, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("fourth"), Timestamp: times[3]}},
+		{Kind: "entry", Seq: 5, Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("last"), Timestamp: times[4]}},
 	}
-	failedCall := transcript.APICall{Kind: "api_call", Seq: 6, Error: "provider exploded", Source: "provider", Title: "Provider error", Hint: "retry later"}
-	partial := transcript.Entry{Kind: "entry", Seq: 7, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("completed later"), Timestamp: times[4]}}
+	partial := transcript.Entry{Kind: "entry", Seq: 6, Turn: schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("completed later"), Timestamp: times[4]}}
 
 	var data []byte
-	for _, record := range []any{header, firstCall, entries[0], entries[1], entries[2], entries[3], failedCall} {
+	for _, record := range []any{header, entries[0], entries[1], entries[2], entries[3], entries[4]} {
 		line, err := json.Marshal(record)
 		if err != nil {
 			t.Fatal(err)
@@ -1416,7 +1409,6 @@ func writeBoundedFixture(t *testing.T) boundedFixture {
 		data = append(data, line...)
 		data = append(data, '\n')
 	}
-	data = append(data, []byte("{malformed\n")...)
 	partialLine, err := json.Marshal(partial)
 	if err != nil {
 		t.Fatal(err)
@@ -1449,7 +1441,7 @@ func turnText(turn appwire.Turn) string {
 func writeNumberedTranscript(t testing.TB, count int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "numbered.transcript.jsonl")
-	var data []byte
+	data := transcriptHeaderLine(t)
 	for i := 1; i <= count; i++ {
 		data = append(data, numberedEntryLine(t, i, fmt.Sprintf("entry-%d", i))...)
 	}
@@ -1466,32 +1458,12 @@ func writeToolHeavyTranscript(t testing.TB, count int) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := file.Write(transcriptHeaderLine(t)); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
 	for i := 1; i <= count; i++ {
 		if _, err := file.Write(assistantToolCallLine(t, i, fmt.Sprintf("call-%d", i), fmt.Sprintf("tool-%d", i))); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func writeFailedAPICalls(t testing.TB, count int) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "failed-api-calls.transcript.jsonl")
-	file, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 1; i <= count; i++ {
-		line, err := json.Marshal(transcript.APICall{Kind: "api_call", Seq: i, Error: fmt.Sprintf("failed-%d", i)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		line = append(line, '\n')
-		if _, err := file.Write(line); err != nil {
 			_ = file.Close()
 			t.Fatal(err)
 		}
@@ -1514,6 +1486,15 @@ func numberedEntryLine(t testing.TB, seq int, text string) []byte {
 		},
 	}
 	return marshalEntryLine(t, entry)
+}
+
+func transcriptHeaderLine(t testing.TB) []byte {
+	t.Helper()
+	line, err := json.Marshal(transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(line, '\n')
 }
 
 func marshalEntryLine(t testing.TB, entry transcript.Entry) []byte {

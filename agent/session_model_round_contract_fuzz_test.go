@@ -70,23 +70,11 @@ func FuzzModelRoundContracts(f *testing.F) {
 		}
 
 		normalized, meta := singleAttemptRequestMetadata(req)
-		if normalized.HistoryMode == "" || meta.AttemptGroupID == "" || meta.AttemptIndex != 1 || meta.FinalAttemptCount == nil {
+		if normalized.HistoryMode == "" || meta.AttemptGroupID == "" {
 			t.Fatalf("incomplete single-attempt metadata: req=%+v meta=%+v", normalized, meta)
 		}
 		resp := llm.Response{Raw: map[string]any{"endpoint_url": modelRoundChoice(r, "https://scripted.invalid", "", text), "id_hash": text}}
 		meta = completeAttemptMetadata(meta, resp)
-
-		recorder := newModelAttemptRecorder(meta.AttemptGroupID)
-		first := recorder.record(context.Background(), llm.AdapterAttemptRecord{Request: normalized})
-		terminal := recorder.record(context.Background(), llm.AdapterAttemptRecord{HistoryMode: normalized.HistoryMode, Terminal: true})
-		attempts := recorder.attempts()
-		if first.AttemptIndex != 1 || terminal.AttemptIndex != 2 || terminal.FinalAttemptCount == nil || len(attempts) != 2 {
-			t.Fatalf("attempt recorder invariant failed: first=%+v terminal=%+v attempts=%d", first, terminal, len(attempts))
-		}
-		attempts[0].AttemptIndex = 99
-		if recorder.attempts()[0].AttemptIndex == 99 {
-			t.Fatal("attempts returned aliased storage")
-		}
 
 		plan := llm.ResponsesContinuationPlan{
 			EndpointFamily:          llm.ResponsesEndpointFamily(modelRoundChoice(r, "responses", "chat_completions", "")),
@@ -159,8 +147,6 @@ func FuzzModelRoundContracts(f *testing.F) {
 		_, _ = effectiveRecordedInputTokens(llm.Usage{CacheReadTokens: &zero, CacheWriteTokens: &one}, 0, false)
 		_, _ = effectiveRecordedInputTokens(llm.Usage{InputTokens: 1}, 100, false)
 		_, _ = effectiveRecordedInputTokens(llm.Usage{InputTokens: 1}, 100, true)
-		_ = buildTranscriptAPILogResponse(resp, modelRoundChoice(r, "hash", "", text))
-
 		ctx, cancel := context.WithCancel(context.Background())
 		if r.boolean() {
 			cancel()

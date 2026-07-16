@@ -14,98 +14,13 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestPreludeTurnRendersFullToolsOnly(t *testing.T) {
-	strict := true
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, &transcript.APICall{
-		Request: llm.APILogRequest{
-			ToolCount: 1,
-			ToolNames: []string{"read_file"},
-			Tools: []llm.ToolDefinition{{
-				Name:        "read_file",
-				Description: "Read a file from disk.",
-				Parameters: map[string]any{
-					"type": "object",
-					"properties": map[string]any{
-						"path": map[string]any{"type": "string"},
-					},
-					"required": []any{"path"},
-				},
-				Strict: &strict,
-			}},
-		},
-	})
-
-	if turn == nil || len(turn.Items) != 2 {
-		t.Fatalf("prelude=%+v", turn)
-	}
-	tools := turn.Items[1]
-	if tools.Type != "systemMessage" || tools.Description != "Tools (1)" {
-		t.Fatalf("tools item=%+v", tools)
-	}
-	for _, want := range []string{"```json", `"name": "read_file"`, `"description": "Read a file from disk."`, `"parameters"`, `"strict": true`} {
-		if !strings.Contains(tools.Text, want) {
-			t.Fatalf("tools text missing %q:\n%s", want, tools.Text)
-		}
-	}
-	if strings.Contains(tools.Text, "- read_file") {
-		t.Fatalf("tools text should not render legacy name list:\n%s", tools.Text)
-	}
-}
-
-func TestPreludeTurnDoesNotRenderToolNamesWithoutDefinitions(t *testing.T) {
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, &transcript.APICall{
-		Request: llm.APILogRequest{
-			ToolCount: 2,
-			ToolNames: []string{"read_file", "apply_patch"},
-		},
-	})
-
+func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
 	if turn == nil || len(turn.Items) != 1 {
 		t.Fatalf("prelude=%+v, want only system prompt", turn)
 	}
 	if turn.Items[0].Description != "System prompt" {
 		t.Fatalf("item=%+v", turn.Items[0])
-	}
-}
-
-func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := transcript.NewWriter(path, transcript.Header{
-		SessionID:    "th_1",
-		SystemPrompt: "You are Serf.",
-	})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	if err := w.AppendAPICall(transcript.APICall{
-		Request: llm.APILogRequest{
-			Tools: []llm.ToolDefinition{{Name: "read_file", Description: "Read a file."}},
-		},
-		Error:  "provider failed",
-		Source: "provider",
-		Title:  "Provider error",
-	}); err != nil {
-		t.Fatalf("AppendAPICall: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	turns := TurnsFromFile(path, 128<<20, nil)
-	if len(turns) != 2 {
-		t.Fatalf("turns=%+v", turns)
-	}
-	if turns[0].ID != "turn_system" || len(turns[0].Items) != 2 {
-		t.Fatalf("prelude=%+v", turns[0])
-	}
-	if turns[1].Status != appwire.TurnStatusFailed || turns[1].Error == nil || turns[1].Error.Title != "Provider error" {
-		t.Fatalf("error turn=%+v", turns[1])
-	}
-	if turns[1].Error.Message != "provider failed" {
-		t.Fatalf("error turn Message=%q, want %q", turns[1].Error.Message, "provider failed")
-	}
-	if turns[1].Error.Source != "provider" {
-		t.Fatalf("error turn Source=%q, want %q", turns[1].Error.Source, "provider")
 	}
 }
 
@@ -138,7 +53,10 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		}
 		return ProjectTurn(turnID, turnIndex, entry.Turn, map[string]string{}, nil, nil)
 	}
-	turns := TurnsFromFile(path, 128<<20, project)
+	turns, err := TurnsFromFile(path, 128<<20, project)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
 	if len(turns) != 1 {
 		t.Fatalf("turns=%+v, want 1", turns)
 	}
@@ -596,70 +514,36 @@ func TestFirstNonEmpty(t *testing.T) {
 	}
 }
 
-func TestFormatTools(t *testing.T) {
-	// Empty tools returns empty.
-	if got := FormatTools(llm.APILogRequest{}); got != "" {
-		t.Errorf("FormatTools empty = %q, want empty", got)
-	}
-	// Tools present returns the markdown-fenced MarshalIndent of the tools,
-	// including the closing fence.
-	req := llm.APILogRequest{Tools: []llm.ToolDefinition{{Name: "read_file"}}}
-	want := "```json\n[\n  {\n    \"name\": \"read_file\"\n  }\n]\n```"
-	if got := FormatTools(req); got != want {
-		t.Errorf("FormatTools = %q, want %q", got, want)
-	}
-}
-
 func TestScanPrelude(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.jsonl")
 
-	// File with header then api_call.
-	content := `{"kind":"header","system_prompt":"You are Serf."}
-{"kind":"api_call","system_prompt":"Call prompt.","request":{"tools":[{"name":"read_file"}]}}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
 {"kind":"entry","turn":{}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	header, call := ScanPrelude(path, 1<<20)
+	header, err := ScanPrelude(path, 1<<20)
+	if err != nil {
+		t.Fatalf("ScanPrelude: %v", err)
+	}
 	if strings.TrimSpace(header.SystemPrompt) != "You are Serf." {
 		t.Errorf("header.SystemPrompt = %q", header.SystemPrompt)
 	}
-	if call == nil {
-		t.Fatal("expected api_call")
-		return
-	}
-	// The api_call line must be fully parsed, not discarded.
-	if call.SystemPrompt != "Call prompt." {
-		t.Errorf("call.SystemPrompt = %q, want %q", call.SystemPrompt, "Call prompt.")
-	}
-	if len(call.Request.Tools) != 1 || call.Request.Tools[0].Name != "read_file" {
-		t.Errorf("call.Request.Tools = %+v, want one read_file tool", call.Request.Tools)
-	}
-
-	// Missing file returns zero header and nil call.
-	header, call = ScanPrelude(filepath.Join(dir, "missing"), 1<<20)
-	if header.SystemPrompt != "" || call != nil {
-		t.Errorf("missing file: header=%+v call=%+v", header, call)
+	if _, err := ScanPrelude(filepath.Join(dir, "missing"), 1<<20); err == nil {
+		t.Fatal("missing file error = nil")
 	}
 }
 
 func TestPreludeTurn(t *testing.T) {
-	// Empty header and no call returns nil.
-	if got := PreludeTurn(transcript.Header{}, nil); got != nil {
+	if got := PreludeTurn(transcript.Header{}); got != nil {
 		t.Errorf("empty prelude = %+v, want nil", got)
 	}
-	// Header with system prompt only.
-	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, nil)
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
 	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "You are Serf." {
 		t.Errorf("system prompt only = %+v", turn)
-	}
-	// Header with fallback system prompt from first call.
-	turn = PreludeTurn(transcript.Header{}, &transcript.APICall{SystemPrompt: "Fallback."})
-	if turn == nil || len(turn.Items) != 1 || turn.Items[0].Text != "Fallback." {
-		t.Errorf("fallback system prompt = %+v", turn)
 	}
 }
 
@@ -667,7 +551,7 @@ func TestTurnsFromFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
-	content := `{"kind":"header","system_prompt":"You are Serf."}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
 {"kind":"entry","turn":{}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -675,7 +559,10 @@ func TestTurnsFromFile(t *testing.T) {
 	}
 
 	// Without projector, only prelude turns are emitted (since no projector returns items).
-	turns := TurnsFromFile(path, 1<<20, nil)
+	turns, err := TurnsFromFile(path, 1<<20, nil)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
 	if len(turns) != 1 || turns[0].ID != "turn_system" {
 		t.Errorf("turns = %+v", turns)
 	}
@@ -684,7 +571,10 @@ func TestTurnsFromFile(t *testing.T) {
 	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}}
 	}
-	turns = TurnsFromFile(path, 1<<20, project)
+	turns, err = TurnsFromFile(path, 1<<20, project)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
 	}
@@ -695,10 +585,8 @@ func TestTurnsFromFile(t *testing.T) {
 		t.Errorf("second turn = %+v", turns[1])
 	}
 
-	// Missing file returns nil.
-	turns = TurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil)
-	if turns != nil {
-		t.Errorf("missing file turns = %+v", turns)
+	if _, err := TurnsFromFile(filepath.Join(dir, "missing"), 1<<20, nil); err == nil {
+		t.Fatal("missing file error = nil")
 	}
 }
 
@@ -710,7 +598,7 @@ func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
 
-	content := `{"kind":"header","system_prompt":"You are Serf."}
+	content := `{"kind":"header","format_version":2,"system_prompt":"You are Serf."}
 {"kind":"entry","turn":{"usage":{"input_tokens":100,"output_tokens":50}}}
 `
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
@@ -720,7 +608,10 @@ func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", Text: "hi"}}
 	}
-	turns := TurnsFromFile(path, 1<<20, project)
+	turns, err := TurnsFromFile(path, 1<<20, project)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
 	if len(turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d: %+v", len(turns), turns)
 	}

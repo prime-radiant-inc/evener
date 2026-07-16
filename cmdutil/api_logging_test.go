@@ -2,13 +2,16 @@ package cmdutil
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/llm"
+	apilog "primeradiant.com/serf/llm/apilog"
 )
 
 type loggingTestAdapter struct{}
@@ -16,16 +19,21 @@ type loggingTestAdapter struct{}
 func (loggingTestAdapter) Name() string { return "test" }
 
 func (loggingTestAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return llm.Response{
-		Provider:        req.Provider,
-		Model:           req.Model,
-		Message:         llm.Assistant("ok"),
-		Finish:          llm.FinishReason{Reason: llm.FinishReasonStop},
-		Usage:           llm.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
-		Raw:             map[string]any{"endpoint_url": "https://example.test/v1/responses"},
-		RawRequestBody:  `{"input":"hi"}`,
-		RawResponseBody: `{"output":"ok"}`,
-	}, nil
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	attempt := llm.BeginAPIAttempt(ctx, llm.APIAttemptMeta{
+		ProviderInstance: "test", RequestModel: req.Model, Method: http.MethodPost,
+		Endpoint: "https://example.test/v1/responses", RequestBody: []byte(`{"input":"hi"}`), StartedAt: startedAt,
+	})
+	resp := llm.Response{
+		Provider: req.Provider, Model: req.Model, Message: llm.Assistant("ok"),
+		Finish: llm.FinishReason{Reason: llm.FinishReasonStop},
+		Usage:  llm.Usage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5},
+	}
+	attempt.Complete(llm.APIAttemptResult{
+		StatusCode: http.StatusOK, ResponseBody: []byte(`{"output":"ok"}`), Response: &resp,
+		Outcome: apilog.AttemptSuccess, FinishedAt: startedAt.Add(time.Millisecond),
+	})
+	return resp, nil
 }
 
 func (loggingTestAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
@@ -54,78 +62,34 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 		t.Fatalf("closeLog: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, "sessions", "sess-1.api.jsonl"))
+	apiPath := filepath.Join(dir, "sessions", "sess-1.api.jsonl")
+	f, err := os.Open(apiPath)
 	if err != nil {
-		t.Fatalf("read sessions/sess-1.api.jsonl: %v", err)
+		t.Fatalf("open sessions/sess-1.api.jsonl: %v", err)
 	}
-	for _, want := range []string{`"session_id":"sess-1"`, `"round":7`, `"endpoint_url":"https://example.test/v1/responses"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("sessions/sess-1.api.jsonl missing %s:\n%s", want, string(data))
-		}
+	defer f.Close()
+	decoder := apilog.NewDecoder(f, 1<<20)
+	first, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode attempt: %v", err)
+	}
+	attempt, ok := first.(apilog.APIAttemptRecord)
+	if !ok || attempt.Request.Endpoint != "https://example.test/v1/responses" || attempt.Request.Body.Data != `{"input":"hi"}` {
+		t.Fatalf("attempt = %+v", first)
+	}
+	second, err := decoder.Next()
+	if err != nil {
+		t.Fatalf("decode settlement: %v", err)
+	}
+	settlement, ok := second.(apilog.APIAttemptGroupSettlement)
+	if !ok || settlement.AttemptGroupID != attempt.AttemptGroupID || settlement.FinalAttemptCount != 1 {
+		t.Fatalf("settlement = %+v", second)
+	}
+	if tail, err := decoder.Next(); tail != nil || !errors.Is(err, io.EOF) {
+		t.Fatalf("tail = (%T, %v)", tail, err)
 	}
 	// The project-level api.jsonl is frozen: never written by new sessions.
 	if _, err := os.Stat(filepath.Join(dir, "api.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("project-level api.jsonl was written (stat err=%v)", err)
-	}
-}
-
-func TestAttachAPILoggerEnablesRawWhenProcessEnvSet(t *testing.T) {
-	if os.Getenv("SERF_ATTACH_API_LOGGER_RAW_HELPER") == "1" {
-		runAttachAPILoggerRawHelper(t)
-		return
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	cmd := exec.Command(exe, "-test.run=TestAttachAPILoggerEnablesRawWhenProcessEnvSet", "-test.count=1")
-	cmd.Env = append(os.Environ(),
-		"SERF_ATTACH_API_LOGGER_RAW_HELPER=1",
-		"SERF_LOG_RAW_HTTP=1",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("raw logging subprocess failed: %v\n%s", err, string(out))
-	}
-}
-
-func runAttachAPILoggerRawHelper(t *testing.T) {
-	t.Helper()
-	if !llm.RawBodyEnabled() {
-		t.Fatalf("RawBodyEnabled is false despite process env")
-	}
-
-	dir := t.TempDir()
-	client := llm.NewClient()
-	client.Register(loggingTestAdapter{})
-
-	closeLog, err := AttachAPILogger(client, dir, nil)
-	if err != nil {
-		t.Fatalf("AttachAPILogger: %v", err)
-	}
-	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "sess-raw", 2), llm.Request{
-		Provider: "test",
-		Model:    "m",
-		Messages: []llm.Message{llm.User("hi")},
-	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-	if err := closeLog(); err != nil {
-		t.Fatalf("closeLog: %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "sessions", "sess-raw.api-raw.jsonl"))
-	if err != nil {
-		t.Fatalf("read sessions/sess-raw.api-raw.jsonl: %v", err)
-	}
-	for _, want := range []string{`"session_id":"sess-raw"`, `"request_body":"{\"input\":\"hi\"}"`, `"response_body":"{\"output\":\"ok\"}"`} {
-		if !strings.Contains(string(data), want) {
-			t.Fatalf("sessions/sess-raw.api-raw.jsonl missing %s:\n%s", want, string(data))
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dir, "api-raw.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("project-level api-raw.jsonl was written (stat err=%v)", err)
 	}
 }

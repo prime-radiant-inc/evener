@@ -19,13 +19,6 @@ import (
 	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
-var chatCompletionsRawBody = func(buf *bytes.Buffer) (string, bool) {
-	if buf == nil {
-		return "", false
-	}
-	return buf.String(), true
-}
-
 // streamViaChatCompletions provides a fallback streaming path using the
 // Chat Completions API (/v1/chat/completions). This handles models that do
 // not support the Responses API endpoint.
@@ -85,7 +78,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := fmt.Sprintf("chat.completions(stream) failed: %v", raw)
-		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("openai", resp.StatusCode, msg, raw, ra, string(jsonBody), string(rawBytes))
+		returnedErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {
 			decodeErr = readErr
@@ -131,22 +124,19 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 	finished := false
 	var finalEvent *llm.StreamEvent
 
-	rawReqBody := string(jsonBody)
-
 	runner := &transport.StreamRunner{
-		Provider:       "openai",
-		Resp:           resp,
-		RawRequestBody: rawReqBody,
-		Stream:         s,
-		Attempt:        attempt,
-		StatusCode:     resp.StatusCode,
+		Provider:   "openai",
+		Resp:       resp,
+		Stream:     s,
+		Attempt:    attempt,
+		StatusCode: resp.StatusCode,
 		FinalEvent: func() *llm.StreamEvent {
 			return finalEvent
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -192,10 +182,6 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 					finalResp.Usage = *usage
 				}
 				llm.StampEndpointURL(finalResp, a.chatCompletionsURL())
-				if rawResponseBody, ok := chatCompletionsRawBody(sseBuf); ok {
-					finalResp.RawRequestBody = rawReqBody
-					finalResp.RawResponseBody = rawResponseBody
-				}
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,

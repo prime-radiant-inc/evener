@@ -1,5 +1,5 @@
 // Command serf-fuzz-harvest turns recorded serf traffic — provider SSE bodies
-// (api-raw.jsonl), conversation transcripts, the opt-in AppWire/HTTP recorder
+// from canonical per-session API logs, conversation transcripts, AppWire/HTTP recorder
 // logs, and jobs.jsonl — into Go fuzz seed corpora under each target's native
 // testdata/fuzz/<FuzzName>/.
 //
@@ -118,7 +118,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			continue
 		}
 		if surfaces["sse"] {
-			harvestSSE(r, san, src.sse)
+			harvestSSE(r, san, src.apiLogs)
 		}
 		if surfaces["toolargs"] {
 			harvestToolArgs(r, san, src.transcripts, coreNames)
@@ -155,11 +155,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // defaultStateDirs returns the roots to harvest when no --state-dir is given.
-// serf splits its on-disk state across two roots: provider config and the raw
-// API log live under cmdutil.DefaultStateRoot (~/.serf), while session
-// transcripts and jobs.jsonl live under the XDG session base
-// (doctor.ResolveStateBase, ~/.local/state/serf). Both are walked, deduped, and
-// scoped to the serf/ subtree where one exists.
+// Serf installations may have session state under an explicit/default state
+// root or the XDG session base. Both are walked and deduplicated.
 func defaultStateDirs() stringSlice {
 	seen := map[string]bool{}
 	var out stringSlice

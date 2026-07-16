@@ -356,11 +356,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// broadcasts serf/attention/changed whenever a session's level actually
 	// transitions (notifications.js drives the tab title/favicon badge and OS
 	// notifications from it). Ticks every 5s and on-demand via attentionPoke.
-	// seenActive tracks, across ticks, how long each session has continuously
-	// reported "working" (hubcore.StaleActives); once a session has been
-	// working past hubcore.StallThreshold, the watcher runs the stale-wedge
-	// probe (hubcore.WedgedStatus) against it and, on a positive, overrides
-	// its level to "error" before broadcasting.
 	startBackground(func() { watchHubAttention(ctx, attentionPoke, archive, past, roster, web) })
 
 	// Seed the bundled default marketplaces (best-effort, first-run-gated —

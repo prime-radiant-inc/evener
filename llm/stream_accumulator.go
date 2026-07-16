@@ -248,12 +248,6 @@ func copyResponseMetadata(dst *Response, src *Response) {
 	if src.RateLimit != nil {
 		dst.RateLimit = src.RateLimit
 	}
-	if src.RawRequestBody != "" {
-		dst.RawRequestBody = src.RawRequestBody
-	}
-	if src.RawResponseBody != "" {
-		dst.RawResponseBody = src.RawResponseBody
-	}
 }
 
 func usageHasValue(u Usage) bool {

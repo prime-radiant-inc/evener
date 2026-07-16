@@ -15,10 +15,12 @@ import (
 // line populated the doc header kind when present.
 func FuzzDoctorLoadTranscript(f *testing.F) {
 	seeds := []string{
-		`{"kind":"header","format_version":1,"session_id":"s1","model":"gpt-5.5"}
-{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}
-{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]}}}
-{"kind":"api_call","seq":2,"round":0,"ts":"2026-06-01T10:00:00Z","request":{},"response":{}}`,
+		`{"kind":"header","format_version":2,"session_id":"s1","model":"gpt-5.5"}
+{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[{"kind":"text","text":"hi"}]}}}`,
+		`{"kind":"header","format_version":1,"session_id":"legacy"}
+{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[]}}}`,
+		`{"kind":"header","format_version":2,"session_id":"mixed"}
+{"kind":"api_call"}`,
 		`{"kind":"header","session_id":"s2"}`,
 		`{"kind":"entry","seq":0,"turn":{"kind":"TOOL_RESULTS","message":{"role":"tool","content":[{"kind":"tool_result","tool_result":{"tool_call_id":"x","content":"out"}}]}}}`,
 		``,

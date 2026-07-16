@@ -6,8 +6,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -36,106 +34,6 @@ func drain(ctx context.Context, t *testing.T, r *StreamRunner) []llm.StreamEvent
 	}
 	<-done
 	return got
-}
-
-// TestRun_TeeOnlyWhenRawBodyEnabled asserts the runner tees the response body
-// into a buffer exactly when llm.RawBodyEnabled() is true, and hands that buffer
-// (else nil) to OnEvent. Both branches are exercised unconditionally: the
-// disabled path runs inline; the enabled path runs in a subprocess with
-// SERF_LOG_RAW_HTTP=1 so the positive assertions always execute.
-func TestRun_TeeOnlyWhenRawBodyEnabled(t *testing.T) {
-	if os.Getenv("SERF_TRANSPORT_TEE_ENABLED_HELPER") == "1" {
-		runTeeEnabledHelper(t)
-		return
-	}
-
-	const body = "event: ping\ndata: {\"a\":1}\n\ndata: [DONE]\n\n"
-
-	var lastBuf *bytes.Buffer
-	var sawEvent bool
-	finished := false
-	r := &StreamRunner{
-		Provider: "test",
-		Resp:     respFrom(body),
-		Stream:   llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
-			sawEvent = true
-			lastBuf = sseBuf
-			if string(ev.Data) == "[DONE]" {
-				finished = true
-			}
-			return nil
-		},
-		Finished:      &finished,
-		IncompleteMsg: "incomplete",
-	}
-	got := drain(context.Background(), t, r)
-
-	if !sawEvent {
-		t.Fatal("OnEvent was never invoked; runner did not read the body")
-	}
-	// finished was set on [DONE], so no terminal error event must be emitted.
-	for _, ev := range got {
-		if ev.Type == llm.StreamEventError {
-			t.Fatalf("unexpected error event after completion: %v", ev.Err)
-		}
-	}
-	if !llm.RawBodyEnabled() {
-		if lastBuf != nil {
-			t.Fatalf("RawBody disabled: expected nil sseBuf, got %q", lastBuf.String())
-		}
-	}
-
-	// Spawn a subprocess with SERF_LOG_RAW_HTTP=1 to unconditionally exercise
-	// the tee path (sseBuf non-nil and populated with body content).
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	cmd := exec.Command(exe, "-test.run=TestRun_TeeOnlyWhenRawBodyEnabled", "-test.count=1")
-	cmd.Env = append(os.Environ(),
-		"SERF_TRANSPORT_TEE_ENABLED_HELPER=1",
-		"SERF_LOG_RAW_HTTP=1",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("tee-enabled helper failed: %v\n%s", err, out)
-	}
-}
-
-func runTeeEnabledHelper(t *testing.T) {
-	t.Helper()
-	if !llm.RawBodyEnabled() {
-		t.Fatal("RawBodyEnabled is false in helper subprocess")
-	}
-
-	const body = "event: ping\ndata: {\"a\":1}\n\ndata: [DONE]\n\n"
-
-	var lastBuf *bytes.Buffer
-	finished := false
-	r := &StreamRunner{
-		Provider: "test",
-		Resp:     respFrom(body),
-		Stream:   llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
-			lastBuf = sseBuf
-			if string(ev.Data) == "[DONE]" {
-				finished = true
-			}
-			return nil
-		},
-		Finished:      &finished,
-		IncompleteMsg: "incomplete",
-	}
-	drain(context.Background(), t, r)
-
-	if lastBuf == nil {
-		t.Fatal("RawBodyEnabled: expected non-nil sseBuf in OnEvent")
-	}
-	// The tee mirrors everything the parser consumed from the body.
-	if !strings.Contains(lastBuf.String(), "[DONE]") {
-		t.Fatalf("RawBodyEnabled: tee buffer did not capture body, got %q", lastBuf.String())
-	}
 }
 
 // TestRun_EpilogueWrapsContextErrorOnCancel asserts that when the stream ends
@@ -222,71 +120,6 @@ func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
 	}
 	if !strings.Contains(streamErr.Error(), "google stream ended without completion") {
 		t.Fatalf("StreamError message = %q, want IncompleteMsg embedded", streamErr.Error())
-	}
-}
-
-func TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled(t *testing.T) {
-	if os.Getenv("SERF_TRANSPORT_RAW_INCOMPLETE_HELPER") == "1" {
-		runIncompleteRawBodyHelper(t)
-		return
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
-	cmd := exec.Command(exe, "-test.run=TestRun_IncompleteErrorCarriesRawBodiesWhenEnabled", "-test.count=1")
-	cmd.Env = append(os.Environ(),
-		"SERF_TRANSPORT_RAW_INCOMPLETE_HELPER=1",
-		"SERF_LOG_RAW_HTTP=1",
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("raw incomplete stream helper failed: %v\n%s", err, out)
-	}
-}
-
-func runIncompleteRawBodyHelper(t *testing.T) {
-	t.Helper()
-	if !llm.RawBodyEnabled() {
-		t.Fatal("RawBodyEnabled is false in helper subprocess")
-	}
-
-	const requestBody = `{"model":"test"}`
-	const body = "data: {\"partial\":1}\n\n"
-	finished := false
-	r := &StreamRunner{
-		Provider:       "openai-compatible",
-		Resp:           respFrom(body),
-		RawRequestBody: requestBody,
-		Stream:         llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
-			return nil
-		},
-		Finished:      &finished,
-		IncompleteMsg: "openai-compatible stream ended without completion",
-	}
-	got := drain(context.Background(), t, r)
-
-	var errEv *llm.StreamEvent
-	for i := range got {
-		if got[i].Type == llm.StreamEventError {
-			errEv = &got[i]
-		}
-	}
-	if errEv == nil {
-		t.Fatal("expected a terminal error event")
-	}
-	var rawErr llm.RawHTTPBodyError
-	if !errors.As(errEv.Err, &rawErr) {
-		t.Fatalf("error %T (%v) does not expose raw HTTP bodies", errEv.Err, errEv.Err)
-	}
-	gotRequestBody, responseBody := rawErr.RawHTTPBodies()
-	if gotRequestBody != requestBody {
-		t.Fatalf("raw request body = %q, want %q", gotRequestBody, requestBody)
-	}
-	if responseBody != body {
-		t.Fatalf("raw response body = %q, want %q", responseBody, body)
 	}
 }
 

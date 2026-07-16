@@ -209,16 +209,12 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
-		return llm.Response{}, llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 
 	r := fromAnthropicResponse(raw, req.Model)
 	llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
-	if llm.RawBodyEnabled() {
-		r.RawRequestBody = string(b)
-		r.RawResponseBody = string(rawBytes)
-	}
 	return r, nil
 }
 
@@ -365,7 +361,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.create(stream) failed: " + strings.TrimSpace(string(rawBytes))
-		returnedErr := llm.ErrorFromHTTPStatusWithRawBodies("anthropic", resp.StatusCode, msg, raw, ra, string(b), string(rawBytes))
+		returnedErr := llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {
 			decodeErr = readErr
@@ -456,22 +452,19 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 	var rawMessage map[string]any
 	var finalEvent *llm.StreamEvent
 
-	rawReqBody := string(b) // captured above
-
 	runner := &transport.StreamRunner{
-		Provider:       "anthropic",
-		Resp:           resp,
-		RawRequestBody: rawReqBody,
-		Stream:         s,
-		Attempt:        attempt,
-		StatusCode:     resp.StatusCode,
+		Provider:   "anthropic",
+		Resp:       resp,
+		Stream:     s,
+		Attempt:    attempt,
+		StatusCode: resp.StatusCode,
 		FinalEvent: func() *llm.StreamEvent {
 			return finalEvent
 		},
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: "anthropic stream ended without completion",
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -773,10 +766,6 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				}
 
 				rp := r
-				if sseBuf != nil {
-					rp.RawRequestBody = rawReqBody
-					rp.RawResponseBody = sseBuf.String()
-				}
 				event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
 				if attempt.Active() {
 					finalEvent = &event

@@ -7,12 +7,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/provenance"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/fuzz/oracle"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // This lane fuzzes the doctor READ/BUILD path — the functions that reconstruct a
@@ -392,59 +394,64 @@ func dr2_maybeEndpointFamily(r *doctor_reader) string {
 	}
 }
 
-func dr2_buildAPICall(r *doctor_reader) transcript.APICall {
-	call := transcript.APICall{
-		Kind:      "api_call",
-		Round:     r.doctor_int(50),
-		LatencyMs: int64(r.doctor_int(500)),
-		Request: llm.APILogRequest{
-			Model:          dr2_maybeStr(r, "gpt-5.5"),
-			Provider:       dr2_maybeStr(r, "openai"),
+func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
+	attempt := apilog.APIAttemptRecord{
+		Kind:             "api_attempt",
+		SchemaVersion:    1,
+		AttemptID:        identifier.MustNewAPIAttemptID(),
+		AttemptGroupID:   "ag_fuzz",
+		AttemptIndex:     1,
+		Timestamp:        time.Unix(1, 0).UTC(),
+		LatencyMS:        int64(r.doctor_int(500)),
+		ProviderInstance: dr2_maybeStr(r, "openai"),
+		RequestModel:     dr2_maybeStr(r, "gpt-5.5"),
+		Request: apilog.APIAttemptRequest{
+			Method:         "POST",
+			Endpoint:       "https://provider.test/v1/responses",
+			Body:           apilog.EncodeBody([]byte("{}")),
+			Model:          "gpt-5.5",
 			EndpointFamily: dr2_maybeEndpointFamily(r),
-			HistoryMode:    dr2_maybeHistoryMode(r),
+			HistoryMode:    string(dr2_maybeHistoryMode(r)),
 		},
+		Outcome: apilog.AttemptSuccess,
 	}
 	if r.doctor_bool() {
-		call.Error = "boom"
+		attempt.Outcome = apilog.AttemptProviderTimeout
+		attempt.ErrorMessage = "boom"
 	}
 	if r.doctor_bool() {
-		resp := &llm.APILogResponse{
+		resp := &apilog.APIAttemptResponse{
+			StatusCode:    200,
+			Body:          apilog.EncodeBody([]byte("{}")),
 			FinishReason:  dr2_maybeStr(r, "stop"),
 			TextLength:    r.doctor_int(500),
 			ToolCallCount: r.doctor_int(5),
-			Usage: llm.Usage{
-				InputTokens:  r.doctor_int(100000), // spans the cache-spike threshold
+			Usage: apilog.Usage{
+				InputTokens:  r.doctor_int(100000),
 				OutputTokens: r.doctor_int(1000),
 			},
 		}
 		if r.doctor_bool() {
-			cr := r.doctor_int(100000)
-			resp.Usage.CacheReadTokens = &cr
+			cacheRead := r.doctor_int(100000)
+			resp.Usage.CacheReadTokens = &cacheRead
 		}
-		call.Response = resp
+		attempt.Response = resp
 	}
-	return call
+	return attempt
 }
 
-// dr2_buildTranscript decodes a fuzz blob into a transcript JSONL file body: a
-// header, then a mix of valid api_call lines, corrupt-but-kind-tagged api_call
-// lines (which loadTranscript keeps but APILog's json.Unmarshal rejects — the
-// diagnostic-data continue), and entry lines (ignored by APILog but part of the
-// real file shape loadTranscript walks).
-func dr2_buildTranscript(r *doctor_reader) string {
+// dr2_buildAPILog decodes a fuzz blob into canonical API-log JSONL.
+func dr2_buildAPILog(r *doctor_reader) string {
 	var b strings.Builder
-	b.WriteString(`{"kind":"header","format_version":1,"session_id":"s1"}` + "\n")
 	n := r.doctor_int(9)
 	for i := 0; i < n; i++ {
 		switch r.doctor_int(5) {
 		case 0:
-			// Valid JSON, kind peeks as api_call, but round is an object where an
-			// int is wanted -> APICall unmarshal fails -> diagnostic continue.
-			b.WriteString(`{"kind":"api_call","round":{"x":1}}` + "\n")
+			b.WriteString(`{"kind":"api_attempt","attempt_index":{"x":1}}` + "\n")
 		case 1:
-			b.WriteString(`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[]}}}` + "\n")
+			b.WriteString(`{"kind":"unknown"}` + "\n")
 		default:
-			line, err := json.Marshal(dr2_buildAPICall(r))
+			line, err := json.Marshal(dr2_buildAPIAttempt(r))
 			if err != nil {
 				continue
 			}
@@ -458,21 +465,23 @@ func dr2_buildTranscript(r *doctor_reader) string {
 func dr2_writeSession(t *testing.T, body string) string {
 	t.Helper()
 	base := t.TempDir()
-	path := filepath.Join(base, "sessions", "s1.transcript.jsonl")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	sessions := filepath.Join(base, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write transcript: %v", err)
+	transcriptBody := `{"kind":"header","format_version":2,"session_id":"s1"}` + "\n"
+	if err := os.WriteFile(filepath.Join(sessions, "s1.transcript.jsonl"), []byte(transcriptBody), 0o644); err != nil {
+		t.Fatalf("write transcript locator: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sessions, "s1.api.jsonl"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write API log: %v", err)
 	}
 	return base
 }
 
 func dr2_apiOptsEqual(a, b APILogResult) bool { return reflect.DeepEqual(a, b) }
 
-// FuzzDr2APILog drives APILog end-to-end over a fuzzed on-disk transcript: Locate
-// resolves an override/scratch state base, loadTranscript walks the JSONL, and
-// APILog flattens each api_call into a row plus the whole-session aggregate.
+// FuzzDr2APILog drives APILog end-to-end over a fuzzed canonical API log.
 // Oracles beyond never-panic:
 //   - determinism: two reads of the same file + opts yield a DeepEqual result;
 //   - structural reflection: the result carries the session id;
@@ -489,7 +498,7 @@ func FuzzDr2APILog(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		r := doctor_newReader(raw)
-		body := dr2_buildTranscript(r)
+		body := dr2_buildAPILog(r)
 		opts := APILogOpts{
 			EmptyOnly:      r.doctor_bool(),
 			ErrorsOnly:     r.doctor_bool(),
@@ -498,8 +507,8 @@ func FuzzDr2APILog(f *testing.F) {
 			SummaryOnly:    r.doctor_bool(),
 		}
 		// A trailing mode byte occasionally steers the read down APILog's two
-		// error returns: an unresolvable selector (Locate fails) or a transcript
-		// whose non-last garbage line makes loadTranscript fail. The no-panic and
+		// error returns: an unresolvable selector (Locate fails) or an API log
+		// whose non-last garbage line fails canonical decode. The no-panic and
 		// error-determinism floors must still hold on those paths.
 		selector := "local:s1"
 		switch r.doctor_int(6) {
@@ -553,7 +562,7 @@ func FuzzDr2APILog(f *testing.F) {
 	})
 }
 
-// dr2_apiSeeds authors transcript files that reach each api_call branch.
+// dr2_apiSeeds authors canonical API-log files that reach attempt branches.
 func dr2_apiSeeds() [][]byte {
 	putCall := func(w *doctor_writer, family int, mode int, withErr, withResp, spike bool) {
 		w.doctor_putInt(2)      // dr2_buildTranscript arm: default -> marshaled api_call
