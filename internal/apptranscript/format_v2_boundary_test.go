@@ -1,7 +1,9 @@
 package apptranscript
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +86,79 @@ func TestSemanticFullAndIndexedReadersShareLineFraming(t *testing.T) {
 			t.Fatal("LatestFromFile accepted a max+1 complete record")
 		}
 	})
+}
+
+func TestLegacyV7IndexCannotMaskStrictTranscriptErrors(t *testing.T) {
+	validHeader := []byte(`{"kind":"header","format_version":2,"model":"cached"}` + "\n")
+	olderEntry := numberedEntryLine(t, 1, "older")
+	newerEntry := numberedEntryLine(t, 2, "newer")
+	validTranscript := bytes.Join([][]byte{validHeader, olderEntry, newerEntry}, nil)
+	tests := []struct {
+		name        string
+		old         []byte
+		replacement []byte
+		wantError   string
+	}{
+		{name: "unknown header field", old: []byte(`"model"`), replacement: []byte(`"bogus"`), wantError: "parse transcript header"},
+		{name: "unknown older entry field", old: []byte(`"seq":1`), replacement: []byte(`"bad":1`), wantError: "parse transcript entry"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "legacy-index.transcript.jsonl")
+			if err := os.WriteFile(path, validTranscript, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cache := NewTurnCache()
+			if _, _, err := cache.LatestFromFile(path, 1<<20, 1, boundedTestProjector); err != nil {
+				t.Fatalf("build valid sidecar: %v", err)
+			}
+			index, err := readTurnIndex(path + ".appwire-index.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			corruptTranscript := bytes.Replace(validTranscript, tc.old, tc.replacement, 1)
+			if bytes.Equal(corruptTranscript, validTranscript) || len(corruptTranscript) != len(validTranscript) {
+				t.Fatal("corruption fixture must replace one equal-length transcript field")
+			}
+			if err := os.WriteFile(path, corruptTranscript, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeMatchingLegacyV7Index(t, path, index)
+
+			turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector)
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) || !strings.Contains(err.Error(), "unknown field") {
+				t.Fatalf("LatestFromFile = (%v, %q, %v), want %q unknown-field error", turns, cursor, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func writeMatchingLegacyV7Index(t testing.TB, path string, index turnIndexDisk) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close() //nolint:errcheck // read-only test fixture
+
+	index.Version = 7
+	index.TranscriptSize = info.Size()
+	index.CompleteSize = info.Size()
+	index.ModTimeUnixNS = info.ModTime().UnixNano()
+	index.FileIdentity = fileIdentity(info)
+	index.ChangeIdentity = fileChangeIdentity(info)
+	index.PrefixStamp, _ = prefixStamp(file, index.CompleteSize)
+	index.FirstAnchor, index.TailAnchor = transcriptAnchors(file, index.CompleteSize)
+	projectionPrefix := fmt.Sprintf("turn-index-v%d:", turnIndexVersion)
+	index.ProjectionID = "turn-index-v7:" + strings.TrimPrefix(index.ProjectionID, projectionPrefix)
+	if err := writeTurnIndex(path+".appwire-index.json", index, nil); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func requireLatestFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes, limit int, project BoundedEntryProjector) ([]appwire.Turn, string) {
