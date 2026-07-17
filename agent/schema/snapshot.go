@@ -233,6 +233,9 @@ func loadSessionMetaFS(fs afero.Fs, dir, id string) (SessionMeta, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return SessionMeta{}, fmt.Errorf("unmarshal session meta %s: %w", id, err)
 	}
+	if meta.ID != id {
+		return SessionMeta{}, fmt.Errorf("session meta ID %q does not match requested session ID %q", meta.ID, id)
+	}
 	return meta, nil
 }
 

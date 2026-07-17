@@ -109,3 +109,31 @@ func TestOpenWriterToleratesOnlyIncompleteFinalLine(t *testing.T) {
 		t.Fatalf("appended seq = %d, want 1", appended.Seq)
 	}
 }
+
+func TestOpenWriterRejectsSymlinkWithoutChangingTarget(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.jsonl")
+	path := filepath.Join(dir, "transcript.jsonl")
+	body := `{"kind":"header","format_version":2,"session_id":"session-a"}` + "\npartial-tail"
+	if err := os.WriteFile(target, []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile target: %v", err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	w, err := OpenWriter(path)
+	if w != nil {
+		_ = w.Close()
+	}
+	if err == nil {
+		t.Fatal("OpenWriter followed a symlink")
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("ReadFile target: %v", readErr)
+	}
+	if string(got) != body {
+		t.Fatalf("symlink target changed: got %q want %q", got, body)
+	}
+}

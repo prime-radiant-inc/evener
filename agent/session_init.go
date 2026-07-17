@@ -372,6 +372,27 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if env == nil {
 		return nil, errors.New("execution environment is nil")
 	}
+
+	// Validate and reserve the existing transcript before initialization can
+	// mutate any session artifacts. Missing transcripts are created later;
+	// every other open or parse error fails the resume closed.
+	var resumeTranscript *transcript.Writer
+	var transcriptEntries []transcript.Entry
+	if cfg.StateDir != "" {
+		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+		var openErr error
+		resumeTranscript, transcriptEntries, openErr = transcript.OpenWriterForSession(tpath, meta.ID)
+		if openErr != nil && !errors.Is(openErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
+		}
+	}
+	restoreComplete := false
+	defer func() {
+		if !restoreComplete && resumeTranscript != nil {
+			_ = resumeTranscript.Close()
+		}
+	}()
+
 	// Engage enforcement for the RESUMED session from its PERSISTED mode. The flag
 	// layer governs only a fresh session; on resume the persisted request is
 	// authoritative (immutable across restart) and is RE-RESOLVED against
@@ -397,12 +418,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var resumeHistory []schema.Turn
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
-	} else if cfg.StateDir != "" {
-		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
-		_, entries, _, readErr := readTranscript(tpath)
-		if readErr == nil && len(entries) > 0 {
-			resumeHistory = ResumeHistory(entries)
-		}
+	} else if len(transcriptEntries) > 0 {
+		resumeHistory = ResumeHistory(transcriptEntries)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -562,9 +579,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Open or create transcript for appending.
 	if s.stateDir != "" {
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw, twErr := transcript.OpenWriter(tpath)
-		if twErr != nil {
-			// Transcript might not exist (new session from meta). Create new.
+		tw := resumeTranscript
+		if tw == nil {
 			hdr := transcript.Header{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.spawn.parentSessionID,
@@ -578,14 +594,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				BuildVersion:     BuildVersion,
 				SystemPrompt:     s.cachedSystemPrompt,
 			}
+			var twErr error
 			if fault := s.sessionInitFault("restore_new_transcript"); fault != nil {
 				twErr = fault
 			} else {
 				tw, twErr = transcript.NewWriter(tpath, hdr)
 			}
 			if twErr != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+				return nil, fmt.Errorf("create transcript for resume: %w", twErr)
 			}
+			resumeTranscript = tw
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
@@ -678,6 +696,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	closeJobManagerOnError = false
 	closeMCPManagerOnError = false
+	restoreComplete = true
 	return s, nil
 }
 

@@ -1,14 +1,48 @@
 package cmdutil
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/kimicoding"
 )
+
+func TestResolveSessionMetaRejectsMismatchedIDWithoutMutation(t *testing.T) {
+	const requestedID = "02wMz5Txv1C3Hut0M8GCeB"
+	stateDir := t.TempDir()
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	meta := schema.SessionMeta{ID: "02wMz5Txv2enqVTitaig6F", ProfileID: "openai", Model: "gpt-5.2"}
+	contents, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	path := filepath.Join(sessionsDir, requestedID+".meta.json")
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err = ResolveSessionMeta(stateDir, requestedID, false)
+	if err == nil {
+		t.Fatal("ResolveSessionMeta accepted metadata for another session")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(got) != string(contents) {
+		t.Fatalf("failed resolution mutated metadata: got %q want %q", got, contents)
+	}
+}
 
 func TestMaxRoundsToConfig(t *testing.T) {
 	tests := []struct {

@@ -402,22 +402,42 @@ func (w *Writer) Close() error {
 // Truncates any partial last line for crash recovery. Uses a single file handle
 // for the entire read-truncate-append sequence to avoid TOCTOU races.
 func OpenWriter(path string) (*Writer, error) {
-	return openWriterFS(afero.NewOsFs(), path)
+	w, _, err := openWriter(path, "")
+	return w, err
 }
 
-// openWriterFS is the filesystem-injecting seam behind OpenWriter. Production
-// passes afero.NewOsFs() (byte-identical to direct os calls); tests and the
-// persistence fuzzer inject an in-memory or sandboxed filesystem.
+// OpenWriterForSession opens a transcript for resume, requiring its header to
+// belong to expectedSessionID and returning the validated semantic entries.
+func OpenWriterForSession(path, expectedSessionID string) (*Writer, []Entry, error) {
+	return openWriter(path, expectedSessionID)
+}
+
+func openWriter(path, expectedSessionID string) (*Writer, []Entry, error) {
+	f, err := openTranscriptAppendFile(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open transcript for resume: %w", err)
+	}
+	return resumeWriter(afero.NewOsFs(), f, expectedSessionID)
+}
+
+// openWriterFS is the filesystem-injecting seam used by tests and the
+// persistence fuzzer. Production uses openWriter so it can refuse symlinks at
+// the operating-system open boundary.
 func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	f, err := fs.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open transcript for resume: %w", err)
 	}
+	w, _, err := resumeWriter(fs, f, "")
+	return w, err
+}
 
+func resumeWriter(fs afero.Fs, f afero.File, expectedSessionID string) (*Writer, []Entry, error) {
 	// Validate complete v2 records while finding the next sequence and the byte
 	// boundary before any crash tail. The shared framer drains an arbitrarily
 	// large unterminated tail without retaining the file in memory.
 	maxSeq := -1
+	var entries []Entry
 	reader := bufio.NewReaderSize(f, 64*1024)
 	var validLen int64
 	hasPartialTail := false
@@ -426,7 +446,7 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
 		if readErr != nil {
 			_ = f.Close()
-			return nil, fmt.Errorf("read transcript for resume: %w", readErr)
+			return nil, nil, fmt.Errorf("read transcript for resume: %w", readErr)
 		}
 		if !complete {
 			hasPartialTail = bytesRead > 0
@@ -438,9 +458,14 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 			continue
 		}
 		if !headerRead {
-			if _, err := DecodeHeader(line); err != nil {
+			header, err := DecodeHeader(line)
+			if err != nil {
 				_ = f.Close()
-				return nil, fmt.Errorf("parse transcript header: %w", err)
+				return nil, nil, fmt.Errorf("parse transcript header: %w", err)
+			}
+			if expectedSessionID != "" && header.SessionID != expectedSessionID {
+				_ = f.Close()
+				return nil, nil, fmt.Errorf("transcript header session ID %q does not match requested session ID %q", header.SessionID, expectedSessionID)
 			}
 			headerRead = true
 			continue
@@ -448,8 +473,9 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 		entry, err := DecodeEntry(line)
 		if err != nil {
 			_ = f.Close()
-			return nil, fmt.Errorf("parse transcript entry: %w", err)
+			return nil, nil, fmt.Errorf("parse transcript entry: %w", err)
 		}
+		entries = append(entries, entry)
 		if entry.Seq > maxSeq {
 			maxSeq = entry.Seq
 		}
@@ -457,15 +483,15 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	if !headerRead {
 		_ = f.Close()
 		if hasPartialTail && validLen == 0 {
-			return nil, errors.New("transcript has no complete lines")
+			return nil, nil, errors.New("transcript has no complete lines")
 		}
-		return nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
+		return nil, nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
 	}
 
 	if hasPartialTail {
 		if err := f.Truncate(validLen); err != nil {
 			_ = f.Close() // cleanup on error path; the truncate error is what matters
-			return nil, fmt.Errorf("truncate partial line: %w", err)
+			return nil, nil, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
 
@@ -479,8 +505,8 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
 		_ = f.Close() // cleanup on error path; the seek error is what matters
-		return nil, fmt.Errorf("seek to end of transcript: %w", err)
+		return nil, nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now()}, nil
+	return &Writer{fs: fs, file: f, seq: nextSeq, lastSync: time.Now()}, entries, nil
 }
