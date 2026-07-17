@@ -2,10 +2,12 @@ package transport
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	"primeradiant.com/serf/llm"
@@ -28,10 +30,12 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 	if base == nil {
 		base = http.DefaultTransport
 	}
+	base, standardCompression := ownStandardCompression(base)
 	roundTripper := &apiAttemptRoundTripper{
-		base:      base,
-		parentCtx: parentCtx,
-		build:     build,
+		base:                base,
+		parentCtx:           parentCtx,
+		build:               build,
+		standardCompression: standardCompression,
 	}
 	clientCopy := *client
 	clientCopy.Transport = roundTripper
@@ -53,16 +57,32 @@ type apiAttemptRoundTripper struct {
 	parentCtx context.Context
 	build     APIAttemptMetaBuilder
 
+	standardCompression bool
+
 	mu               sync.Mutex
 	transportFailure *APIAttemptCapture
 	responses        map[*http.Response]*apiAttemptResponseBody
 }
 
 func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	request, decodeGzip := requestWithOwnedStandardCompression(request, t.standardCompression)
+	written := newWireRequestMetadata(request)
+	request = written.trace(request)
 	requestBodySnapshot := captureRequestBody(request)
 	meta := t.build(request, nil)
 	attempt := BeginAPIAttempt(t.parentCtx, request.Context(), request, meta)
 	attempt.requestBody = requestBodySnapshot
+	attempt.requestMeta = func() {
+		headers, ok := written.snapshot()
+		if !ok {
+			return
+		}
+		materialRequest := request.Clone(request.Context())
+		materialRequest.Header = headers
+		material := llm.APILogCredentialMaterialForRequest(materialRequest, meta.CredentialMaterial)
+		endpoint, sanitizedHeaders := llm.SanitizeRequestForAPILog(materialRequest, material)
+		attempt.attempt.SetWireRequestMetadata(request.Method, endpoint, http.Header(sanitizedHeaders), material)
+	}
 
 	response, err := t.base.RoundTrip(request)
 	if err != nil {
@@ -86,6 +106,13 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	body.associationDone = func() { t.releaseResponse(response, body) }
 	attempt.responseBody = body.snapshot
 	response.Body = body
+	if decodeGzip && strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
+		response.Body = &standardGzipResponseBody{body: body}
+		response.Header.Del("Content-Encoding")
+		response.Header.Del("Content-Length")
+		response.ContentLength = -1
+		response.Uncompressed = true
+	}
 	t.mu.Lock()
 	if t.responses == nil {
 		t.responses = make(map[*http.Response]*apiAttemptResponseBody)
@@ -93,6 +120,27 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	t.responses[response] = body
 	t.mu.Unlock()
 	return response, nil
+}
+
+type standardGzipResponseBody struct {
+	body io.ReadCloser
+	once sync.Once
+	zr   *gzip.Reader
+	err  error
+}
+
+func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		b.zr, b.err = gzip.NewReader(b.body)
+	})
+	if b.err != nil {
+		return 0, b.err
+	}
+	return b.zr.Read(p)
+}
+
+func (b *standardGzipResponseBody) Close() error {
+	return b.body.Close()
 }
 
 func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {

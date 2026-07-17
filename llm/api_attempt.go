@@ -11,11 +11,15 @@ import (
 	apilog "primeradiant.com/serf/llm/apilog"
 )
 
+// APIAttemptSink durably appends canonical provider attempts and their group
+// settlements.
 type APIAttemptSink interface {
 	AppendAttempt(context.Context, apilog.APIAttemptRecord) error
 	AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error
 }
 
+// APILogFailure describes a forensic storage failure without changing the
+// provider result that triggered the write.
 type APILogFailure struct {
 	Operation      string
 	SessionID      string
@@ -32,6 +36,8 @@ type APILogCredentialMaterial struct {
 	Values      []string
 }
 
+// APIAttemptMeta carries provider provenance and exact request evidence for one
+// transport attempt.
 type APIAttemptMeta struct {
 	ProviderInstance   string
 	RequestModel       string
@@ -45,6 +51,8 @@ type APIAttemptMeta struct {
 	CredentialMaterial APILogCredentialMaterial
 }
 
+// APIAttemptResult carries exact response evidence and the adapter-owned result
+// classification for one transport attempt.
 type APIAttemptResult struct {
 	StatusCode   int
 	ResponseBody []byte
@@ -75,10 +83,12 @@ type apiLogObservedFailure interface {
 	apiLogFailureWasObserved()
 }
 
+// WithAPIAttemptGroup attaches logical provider-attempt coordination to ctx.
 func WithAPIAttemptGroup(ctx context.Context, group *APIAttemptGroup) context.Context {
 	return context.WithValue(ctx, apiAttemptGroupContextKey{}, group)
 }
 
+// WithAPIAttemptSink attaches canonical provider-attempt persistence to ctx.
 func WithAPIAttemptSink(ctx context.Context, sink APIAttemptSink) context.Context {
 	return context.WithValue(ctx, apiAttemptSinkContextKey{}, apiAttemptSinkContext{sink: sink})
 }
@@ -95,6 +105,8 @@ func APIAttemptContextActive(ctx context.Context) bool {
 	return group != nil && state.sink != nil
 }
 
+// APIAttemptGroup coordinates attempt identity, append ordering, and final
+// settlement for one logical model call.
 type APIAttemptGroup struct {
 	ID string
 
@@ -111,10 +123,13 @@ type APIAttemptGroup struct {
 	pendingAttempts    sync.WaitGroup
 }
 
+// NewAPIAttemptGroup returns an empty logical attempt group with the supplied
+// stable identifier.
 func NewAPIAttemptGroup(id string) *APIAttemptGroup {
 	return &APIAttemptGroup{ID: id}
 }
 
+// APIAttempt owns the canonical record for one actual provider transport call.
 type APIAttempt struct {
 	once  sync.Once
 	mu    sync.Mutex
@@ -143,6 +158,27 @@ func (a *APIAttempt) SetRequestBody(body []byte) {
 	a.mu.Unlock()
 }
 
+// SetWireRequestMetadata replaces the preliminary request snapshot with the
+// credential-free method, endpoint, headers, and credential material observed
+// after the HTTP transport wrote the request.
+func (a *APIAttempt) SetWireRequestMetadata(method, endpoint string, headers http.Header, material APILogCredentialMaterial) {
+	if !a.Active() {
+		return
+	}
+	a.mu.Lock()
+	a.meta.Method = method
+	a.meta.Endpoint = endpoint
+	a.meta.Headers = headers.Clone()
+	a.meta.CredentialMaterial = material
+	a.mu.Unlock()
+
+	a.group.mu.Lock()
+	a.group.credentialMaterial = mergeAPILogCredentialMaterial(a.group.credentialMaterial, material)
+	a.group.mu.Unlock()
+}
+
+// BeginAPIAttempt allocates the next attempt in the group attached to ctx. It
+// returns an inert attempt when canonical coordination is not attached.
 func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 	group, _ := ctx.Value(apiAttemptGroupContextKey{}).(*APIAttemptGroup)
 	if group == nil {

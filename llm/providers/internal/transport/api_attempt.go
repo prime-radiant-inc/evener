@@ -17,6 +17,7 @@ type APIAttemptCapture struct {
 	attempt       *llm.APIAttempt
 	owner         llm.APIAttemptContextOwnership
 	requestBody   func() []byte
+	requestMeta   func()
 	responseBody  func() []byte
 	responseClose func() error
 	closeOnce     sync.Once
@@ -56,6 +57,9 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	}
 	if c.requestBody != nil {
 		c.attempt.SetRequestBody(c.requestBody())
+	}
+	if c.requestMeta != nil {
+		c.requestMeta()
 	}
 	if c.responseBody != nil {
 		result.ResponseBody = c.responseBody()

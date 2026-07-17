@@ -11,14 +11,20 @@ import (
 	apilog "primeradiant.com/serf/llm/apilog"
 )
 
+// APITimeoutSource identifies the layer that owned a provider-attempt timeout.
 type APITimeoutSource string
 
 const (
-	APITimeoutNone           APITimeoutSource = ""
-	APITimeoutAdapter        APITimeoutSource = "adapter_deadline"
+	// APITimeoutNone indicates that no owned timeout was observed.
+	APITimeoutNone APITimeoutSource = ""
+	// APITimeoutAdapter identifies an adapter-owned overall deadline.
+	APITimeoutAdapter APITimeoutSource = "adapter_deadline"
+	// APITimeoutResponseHeader identifies the standard transport's response-header deadline.
 	APITimeoutResponseHeader APITimeoutSource = "response_header_timeout"
-	APITimeoutSSERead        APITimeoutSource = "sse_read_timeout"
-	APITimeoutTransport      APITimeoutSource = "transport_timeout"
+	// APITimeoutSSERead identifies the streaming decoder's per-read deadline.
+	APITimeoutSSERead APITimeoutSource = "sse_read_timeout"
+	// APITimeoutTransport identifies a timeout owned by the caller's HTTP transport.
+	APITimeoutTransport APITimeoutSource = "transport_timeout"
 )
 
 // APIAttemptContextOwnership keeps caller cancellation distinct from timeout
@@ -218,6 +224,14 @@ func (t *responseHeaderTimeoutTransport) RoundTrip(req *http.Request) (*http.Res
 
 func (t *responseHeaderTimeoutTransport) CloseIdleConnections() {
 	t.base.CloseIdleConnections()
+}
+
+// APILogTransportUsesStandardCompression reports whether the wrapped standard
+// transport would automatically request and decode gzip responses. The API
+// transport layer uses this to preserve raw response bytes while restoring the
+// same decoded response semantics for provider adapters.
+func (t *responseHeaderTimeoutTransport) APILogTransportUsesStandardCompression() bool {
+	return t != nil && t.base != nil && !t.base.DisableCompression
 }
 
 // ClientWithAdapterTimeout returns a copy of client configured with adapter
