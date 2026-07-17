@@ -249,7 +249,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {
 			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.hookRunner.RunSessionEnd(hookCtx, s.hookInput(plugin.HookSessionEnd))
+			s.hookRunner.RunSessionEnd(s.apiLogContext(hookCtx), s.hookInput(plugin.HookSessionEnd))
 			hookCancel()
 		}
 
@@ -1225,7 +1225,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		// the same value: Claude-style hooks read "prompt".
 		hi.Prompt = input
 		hi.UserPrompt = input
-		result := s.hookRunner.RunUserPromptSubmit(ctx, hi)
+		result := s.hookRunner.RunUserPromptSubmit(s.apiLogContext(ctx), hi)
 		for _, m := range result.ModelContext {
 			s.deliverHookContext(m)
 		}

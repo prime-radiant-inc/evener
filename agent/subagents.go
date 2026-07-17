@@ -1191,7 +1191,7 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	} else {
 		input.Reason = "complete"
 	}
-	stopResult := a.sess.hookRunner.RunSubagentStop(ctx, input)
+	stopResult := a.sess.hookRunner.RunSubagentStop(a.sess.apiLogContext(ctx), input)
 	for _, m := range stopResult.ModelContext {
 		a.sess.deliverHookContext(m)
 	}

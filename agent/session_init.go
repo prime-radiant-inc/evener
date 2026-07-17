@@ -1257,7 +1257,7 @@ func (s *Session) runSessionStartHooksWithContext(ctx context.Context, sessionSt
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	result := s.hookRunner.RunSessionStartFor(ctx, s.hookInput(plugin.HookSessionStart), sessionStartKind)
+	result := s.hookRunner.RunSessionStartFor(s.apiLogContext(ctx), s.hookInput(plugin.HookSessionStart), sessionStartKind)
 	s.logSessionStartHookDispatch(sessionStartKind, len(result.ModelContext)+len(result.UserMessages))
 	return result
 }

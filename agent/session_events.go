@@ -155,7 +155,7 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
-	result := s.hookRunner.RunNotification(ctx, input)
+	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		s.deliverHookContext(m)
 	}

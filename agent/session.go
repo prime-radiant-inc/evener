@@ -576,6 +576,13 @@ type forkInfo struct {
 // ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
+func (s *Session) apiLogContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return llm.WithAPILogContext(ctx, s.id)
+}
+
 // The contextmgr.Host seam is satisfied by the ctxHost adapter (context_host.go),
 // not by *Session directly: contextmgr.Host requires exported Emit / Snapshot /
 // WithResponseSideEffects methods, and we do not want those on the public Session

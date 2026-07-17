@@ -317,6 +317,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	if !s.shouldApplySessionName(source) {
 		return nil
 	}
+	ctx = s.apiLogContext(ctx)
 	if s.nameSessionFromTextFunc != nil {
 		return s.nameSessionFromTextFunc(ctx, source, text)
 	}

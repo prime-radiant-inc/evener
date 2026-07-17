@@ -427,7 +427,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		// boundary — spec §5.1/§5.5).
 		hi := s.hookInput(plugin.HookStop)
 		hi.Reason = "communicate.end_turn"
-		stopResult := s.hookRunner.RunStop(ctx, hi)
+		stopResult := s.hookRunner.RunStop(s.apiLogContext(ctx), hi)
 		for _, m := range stopResult.ModelContext {
 			s.deliverHookContext(m)
 		}

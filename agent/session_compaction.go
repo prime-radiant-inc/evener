@@ -140,7 +140,7 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 	}
 	var messages []string
 	if s.hookRunner != nil {
-		compactResult := s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact))
+		compactResult := s.hookRunner.RunPreCompact(s.apiLogContext(ctx), s.hookInput(plugin.HookPreCompact))
 		for _, m := range compactResult.ModelContext {
 			messages = append(messages, wrapHookContext(m))
 		}

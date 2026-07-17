@@ -332,7 +332,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
 
-		preResult := s.hookRunner.RunPreToolUse(ctx, hi)
+		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range preResult.ModelContext {
 			s.deliverHookContext(m)
 		}
@@ -502,7 +502,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		hi.ToolUseID = call.ID
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field
-		postResult := s.hookRunner.RunPostToolUse(ctx, hi)
+		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range postResult.ModelContext {
 			s.deliverHookContext(m)
 		}
