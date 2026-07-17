@@ -1309,6 +1309,64 @@ func TestDoWithAPIAttemptsLearnsCredentialTrailerPopulatedWhileReadingRequestBod
 	}
 }
 
+func TestDoWithAPIAttemptsWaitsForAsyncRequestTrailerBeforePersistence(t *testing.T) {
+	const (
+		trailerName   = "X-Gateway-Credential"
+		trailerSecret = "async-request-trailer-secret-sentinel"
+	)
+	ctx, group, logPath := durableAttemptContext(t, "sess-async-trailer", "ag_async_trailer")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Trailer = http.Header{trailerName: nil}
+	request.Body = &credentialTrailerBody{
+		request: request,
+		reader:  bytes.NewReader([]byte("request body")),
+		name:    trailerName,
+		value:   trailerSecret,
+	}
+	request.ContentLength = -1
+
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: &finishRequestOnCloseBody{
+				ReadCloser:  io.NopCloser(strings.NewReader("provider echoed " + trailerSecret)),
+				requestBody: request.Body,
+			},
+		}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+			),
+		}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close response: %v", err)
+	}
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 1 {
+		t.Fatalf("durable attempts = %d, want one", len(attempts))
+	}
+	assertDurableAttemptExcludes(t, attempts[0], trailerSecret)
+}
+
 func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempts(t *testing.T) {
 	const (
 		trailerName   = "X-Gateway-Credential"

@@ -328,6 +328,12 @@ func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
 	if got := observedRequestBody.observedBytes(); len(got) != 0 {
 		t.Fatalf("unconsumed request recorded %d bytes", len(got))
 	}
+	if sink.count() != 0 {
+		t.Fatalf("attempt count before request close = %d, want 0", sink.count())
+	}
+	if err := observedRequestBody.Close(); err != nil {
+		t.Fatalf("close unconsumed request: %v", err)
+	}
 	recorded := onlyAttempt(t, sink)
 	if recorded.Request.Body.Exact {
 		t.Fatal("durable unconsumed request was marked exact")

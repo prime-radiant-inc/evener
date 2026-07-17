@@ -56,8 +56,8 @@ func (c *APIAttemptCapture) mergeCredentialMaterial(material llm.APILogCredentia
 	c.attempt.MergeCredentialMaterial(material)
 }
 
-// Complete appends synchronously unless a redirect chain must wait for its
-// request bodies to finish producing credential material.
+// Complete queues the canonical append until the request body has reached EOF
+// or Close and cannot produce more credential material.
 func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	if c == nil {
 		return
