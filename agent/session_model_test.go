@@ -1759,6 +1759,68 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	}
 }
 
+func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		want     string
+	}{
+		{
+			name:     "credential components",
+			endpoint: "https://endpoint-user:endpoint-password@provider.test/v1/responses?credential=endpoint-query#endpoint-fragment",
+			want:     "https://provider.test/v1/responses",
+		},
+		{
+			name:     "invalid endpoint",
+			endpoint: "://not-a-valid-endpoint?credential=endpoint-query",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			client := llm.NewClient()
+			client.Register(&fakeAdapter{
+				name: "openai",
+				steps: []func(req llm.Request) llm.Response{
+					func(llm.Request) llm.Response {
+						resp := toolCallResponse(communicateCall("c1", "ok"))
+						resp.Raw = map[string]any{"endpoint_url": tt.endpoint}
+						return resp
+					},
+				},
+			})
+			sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			go func() {
+				for range sess.Events() {
+				}
+			}()
+			if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {
+				t.Fatalf("ProcessInput: %v", err)
+			}
+			transcriptPath := sess.TranscriptPath()
+			sess.Close()
+
+			data, err := readTranscriptFull(transcriptPath)
+			if err != nil {
+				t.Fatalf("readTranscriptFull: %v", err)
+			}
+			var assistant schema.Turn
+			for _, entry := range data.Entries {
+				if entry.Turn.Kind == schema.TurnAssistant {
+					assistant = entry.Turn
+				}
+			}
+			if got := assistant.ResponseEndpoint; got != tt.want {
+				t.Fatalf("ResponseEndpoint = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSingleAttemptRequestMetadataCreatesSemanticGroup(t *testing.T) {
 	req, attempt := singleAttemptRequestMetadata(llm.Request{
 		Model:       "gpt-5.2",

@@ -84,6 +84,59 @@ func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	}
 }
 
+func TestExportATIF_SanitizesTranscriptResponseEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	transcriptPath := filepath.Join(dir, "sessions", "test-sess.transcript.jsonl")
+	const (
+		endpointUser     = "endpoint-user-sentinel"
+		endpointPassword = "endpoint-password-sentinel"
+		endpointQuery    = "endpoint-query-sentinel"
+		endpointFragment = "endpoint-fragment-sentinel"
+	)
+	credentialEndpoint := "https://" + endpointUser + ":" + endpointPassword +
+		"@provider.test/v1/responses?credential=" + endpointQuery + "#" + endpointFragment
+
+	tw, err := transcript.NewWriter(transcriptPath, transcript.Header{
+		SessionID: "test-sess",
+		Model:     "custom-model",
+		CreatedAt: time.Date(2026, 7, 17, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	for _, endpoint := range []string{credentialEndpoint, "://not-a-valid-endpoint?credential=" + endpointQuery} {
+		if err := tw.Append(schema.Turn{
+			Kind:             schema.TurnAssistant,
+			Message:          llm.Assistant("done"),
+			ResponseEndpoint: endpoint,
+			Timestamp:        time.Date(2026, 7, 17, 0, 0, 1, 0, time.UTC),
+		}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	outputPath := filepath.Join(dir, "output", "trajectory.json")
+	if err := exportATIF(transcriptPath, outputPath, ""); err != nil {
+		t.Fatalf("exportATIF: %v", err)
+	}
+	atifBytes, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFile ATIF: %v", err)
+	}
+	assertEndpointSentinelsAbsent(t, "ATIF", atifBytes, endpointUser, endpointPassword, endpointQuery, endpointFragment)
+
+	trajectory := readExportedATIF(t, outputPath)
+	if got := trajectory.Steps[0].Extra["response_endpoint"]; got != "https://provider.test/v1/responses" {
+		t.Fatalf("ATIF response_endpoint = %#v, want sanitized endpoint", got)
+	}
+	if _, ok := trajectory.Steps[1].Extra["response_endpoint"]; ok {
+		t.Fatalf("ATIF persisted invalid response_endpoint: %#v", trajectory.Steps[1].Extra["response_endpoint"])
+	}
+}
+
 func assertEndpointSentinelsAbsent(t *testing.T, artifact string, data []byte, sentinels ...string) {
 	t.Helper()
 	for _, sentinel := range sentinels {

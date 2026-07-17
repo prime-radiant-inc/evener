@@ -369,8 +369,8 @@ func convertAssistantTurn(turn schema.Turn, stepID int, opts Options) Step {
 	if turn.ResponseEndpointFamily != "" {
 		step.Extra["response_endpoint_family"] = turn.ResponseEndpointFamily
 	}
-	if turn.ResponseEndpoint != "" {
-		step.Extra["response_endpoint"] = turn.ResponseEndpoint
+	if endpoint := llm.SanitizeEndpointURL(turn.ResponseEndpoint); endpoint != "" {
+		step.Extra["response_endpoint"] = endpoint
 	}
 	if turn.ResponseStorageScopeFingerprint != "" {
 		step.Extra["response_storage_scope_fingerprint"] = turn.ResponseStorageScopeFingerprint

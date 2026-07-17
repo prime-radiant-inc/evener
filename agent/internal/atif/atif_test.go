@@ -1223,7 +1223,7 @@ func TestConvertToATIF_ResponsesProviderHandlesRedacted(t *testing.T) {
 			Message:                         llm.Assistant("done"),
 			ResponseID:                      "resp_raw_phase11",
 			ResponseIDHash:                  "cont-handle-v1:response_id:phase11",
-			ResponseEndpoint:                "openai_responses",
+			ResponseEndpoint:                "https://api.openai.com/v1/responses",
 			ResponseStorageScopeFingerprint: "scope-phase11",
 			ResponseRequestFingerprint:      "request-phase11",
 			ResponseContextMarker:           "ctx-phase11",
@@ -1241,7 +1241,7 @@ func TestConvertToATIF_ResponsesProviderHandlesRedacted(t *testing.T) {
 	}
 	wantExtra := map[string]string{
 		"response_id_hash":                   "cont-handle-v1:response_id:phase11",
-		"response_endpoint":                  "openai_responses",
+		"response_endpoint":                  "https://api.openai.com/v1/responses",
 		"response_storage_scope_fingerprint": "scope-phase11",
 		"response_request_fingerprint":       "request-phase11",
 		"response_context_marker":            "ctx-phase11",
@@ -1298,7 +1298,7 @@ func TestConvertTranscriptToATIF_SemanticAttemptAttribution(t *testing.T) {
 	}
 	extra := traj.Steps[0].Extra
 	wantExtra := map[string]string{
-		"attempt_group_id":          "ag_phase11",
+		"attempt_group_id":         "ag_phase11",
 		"response_endpoint_family": string(llm.ResponsesEndpointFamilyOpenAIPublic),
 	}
 	for key, want := range wantExtra {

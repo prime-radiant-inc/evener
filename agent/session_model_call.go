@@ -62,7 +62,7 @@ func newAttemptGroupID() string {
 func completeAttemptMetadata(meta ModelAttemptMetadata, resp llm.Response) ModelAttemptMetadata {
 	if resp.Raw != nil {
 		if endpoint, _ := resp.Raw["endpoint_url"].(string); endpoint != "" {
-			meta.EndpointURL = endpoint
+			meta.EndpointURL = llm.SanitizeEndpointURL(endpoint)
 		}
 		if idHash, _ := resp.Raw["id_hash"].(string); idHash != "" {
 			meta.ResponseIDHash = idHash
