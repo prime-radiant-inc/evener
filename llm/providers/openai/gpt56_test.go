@@ -186,9 +186,10 @@ func TestGPT56_MaxEffortSentVerbatim(t *testing.T) {
 	}
 }
 
-// prompt_cache_retention is deprecated in favor of prompt_cache_options.ttl;
-// gpt-5.6 uses the new field while older models keep the deprecated one.
-func TestPromptCacheRetention_FieldMigration(t *testing.T) {
+// prompt_cache_retention is a legacy maximum-retention policy. GPT-5.6's
+// prompt_cache_options.ttl has different semantics and defaults to 30m, so the
+// adapter must not copy a legacy 24h value into the new field.
+func TestPromptCacheRetention_FieldCompatibility(t *testing.T) {
 	build := func(model string) map[string]any {
 		return buildBodyForTest(t, llm.Request{
 			Model:                model,
@@ -197,14 +198,13 @@ func TestPromptCacheRetention_FieldMigration(t *testing.T) {
 		})
 	}
 
-	t.Run("gpt-5.6 sends prompt_cache_options.ttl", func(t *testing.T) {
-		body := build("gpt-5.6-sol")
+	t.Run("gpt-5.6 omits legacy retention", func(t *testing.T) {
+		body := build("gpt-5.6-luna")
 		if v, ok := body["prompt_cache_retention"]; ok {
 			t.Errorf("prompt_cache_retention = %#v, want omitted on gpt-5.6", v)
 		}
-		opts, _ := body["prompt_cache_options"].(map[string]any)
-		if opts == nil || opts["ttl"] != "24h" {
-			t.Fatalf("prompt_cache_options = %#v, want {ttl: \"24h\"}", body["prompt_cache_options"])
+		if v, ok := body["prompt_cache_options"]; ok {
+			t.Errorf("prompt_cache_options = %#v, want omitted so GPT-5.6 uses the 30m default", v)
 		}
 	})
 

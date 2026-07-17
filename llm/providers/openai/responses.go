@@ -109,13 +109,10 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		body["safety_identifier"] = strings.TrimSpace(req.SafetyIdentifier)
 	}
 	if ret := strings.TrimSpace(req.PromptCacheRetention); ret != "" && !a.usesCodexBackend() {
-		if responsesLiteModel(req.Model) {
-			// prompt_cache_retention is deprecated in favor of
-			// prompt_cache_options.ttl; gpt-5.6+ takes the new field. Older
-			// models keep the deprecated field until OpenAI documents that
-			// they accept the new one.
-			body["prompt_cache_options"] = map[string]any{"ttl": ret}
-		} else {
+		// PromptCacheRetention is a legacy maximum-retention policy. GPT-5.6's
+		// prompt_cache_options.ttl is a minimum lifetime with a 30m default, so
+		// do not translate the legacy 24h value into the new field.
+		if !responsesLiteModel(req.Model) {
 			body["prompt_cache_retention"] = ret
 		}
 	}
@@ -755,8 +752,8 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 // caller set an explicit detail — mirroring the first-party codex client, which
 // strips detail from every image on these models. They also expect the
 // reasoning object (and reasoning.encrypted_content in include) on every
-// request, and take prompt cache TTL via prompt_cache_options instead of the
-// deprecated prompt_cache_retention field.
+// request. Prompt-cache TTL is left at the public API's 30m default instead of
+// translating the legacy prompt_cache_retention policy.
 func responsesLiteModel(model string) bool {
 	return strings.HasPrefix(model, "gpt-5.6")
 }
