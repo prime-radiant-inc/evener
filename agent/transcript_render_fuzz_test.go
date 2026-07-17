@@ -281,6 +281,85 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 	})
 }
 
+func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
+	header, entries, _, opt := trender_program([]byte{8}, "oracle")
+	path := filepath.Join(t.TempDir(), "oracle.transcript.jsonl")
+	header.SessionID = "oracle"
+	w, err := transcript.NewWriter(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := w.Append(entry.Turn); err != nil {
+			_ = w.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := bytes.SplitAfter(persisted, []byte{'\n'})
+	wrongSpan := append(bytes.Clone(records[2]), records[3]...)
+	const verifiedPageBytes = 2 * 64
+	wantPrefix := want[:min(len(want), verifiedPageBytes)]
+	wrongPrefix := wrongSpan[:min(len(wrongSpan), verifiedPageBytes)]
+	if len(want) == len(wrongSpan) && bytes.Equal(wantPrefix, wrongPrefix) {
+		t.Fatal("independent expansion oracle cannot reject a neighboring span through the checked pages or total_bytes")
+	}
+}
+
+func trenderExpectedPairedExpansionJSONL(t *testing.T, path string, entries []transcript.Entry, pin int) []byte {
+	t.Helper()
+	if len(entries) < 2 {
+		t.Fatalf("paired expansion fixture has %d entries, want at least 2", len(entries))
+	}
+	if pin != 0 && pin != 1 {
+		t.Fatalf("paired expansion pin = %d, want assistant 0 or its result 1", pin)
+	}
+	if entries[0].Turn.Kind != schema.TurnAssistant || entries[1].Turn.Kind != schema.TurnToolResults {
+		t.Fatalf("paired expansion fixture starts with %s/%s, want ASSISTANT/TOOL_RESULTS", entries[0].Turn.Kind, entries[1].Turn.Kind)
+	}
+
+	callID := ""
+	for _, part := range entries[0].Turn.Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID != "" {
+			if callID != "" {
+				t.Fatal("paired expansion fixture has more than one owned tool call")
+			}
+			callID = part.ToolCall.ID
+		}
+	}
+	resultCallID := ""
+	for _, part := range entries[1].Turn.Message.Content {
+		if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID != "" {
+			if resultCallID != "" {
+				t.Fatal("paired expansion fixture has more than one owned tool result")
+			}
+			resultCallID = part.ToolResult.ToolCallID
+		}
+	}
+	if callID == "" || resultCallID != callID {
+		t.Fatalf("paired expansion ownership = call %q/result %q", callID, resultCallID)
+	}
+
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := bytes.SplitAfter(persisted, []byte{'\n'})
+	if len(records) != len(entries)+2 || len(records[len(records)-1]) != 0 {
+		t.Fatalf("persisted records = %d with trailing bytes %d, want header + %d newline-terminated entries", len(records)-1, len(records[len(records)-1]), len(entries))
+	}
+	want := append(bytes.Clone(records[1]), records[2]...)
+	return want
+}
+
 func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "paged.transcript.jsonl")
@@ -299,14 +378,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatal(err)
 	}
 
-	data, err := readTranscriptFullWithEntryLines(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, err := transcriptExpansionJSONL(data, *opt.fullResultFor)
-	if err != nil {
-		t.Fatal(err)
-	}
+	want := trenderExpectedPairedExpansionJSONL(t, path, entries, *opt.fullResultFor)
 
 	const pageBytes = 64
 	firstAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
