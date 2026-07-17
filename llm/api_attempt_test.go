@@ -73,8 +73,10 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 
 	assertCredentialExcludedBody(t, record.Request.Body)
 	assertCredentialExcludedBody(t, record.Response.Body)
-	if got := record.Request.Headers["X-Visible"]; len(record.Request.Headers) != 1 || len(got) != 1 || got[0] != "visible" {
-		t.Fatalf("request headers = %#v, want only X-Visible", record.Request.Headers)
+	visible := record.Request.Headers["X-Visible"]
+	host := record.Request.Headers["Host"]
+	if len(record.Request.Headers) != 2 || len(visible) != 1 || visible[0] != "visible" || len(host) != 1 || host[0] != "provider.test" {
+		t.Fatalf("request headers = %#v, want Host and X-Visible", record.Request.Headers)
 	}
 	if record.ErrorClass != "" || record.ErrorMessage != "" {
 		t.Fatalf("durable error = (%q, %q), want omitted", record.ErrorClass, record.ErrorMessage)

@@ -40,6 +40,7 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 		t.Fatalf("endpoint = %q", endpoint)
 	}
 	wantHeaders := map[string][]string{
+		"Host":              {"example.test"},
 		"x-visible":         {"first", "second"},
 		"Trailer":           {"X-Visible-Trailer"},
 		"X-Visible-Trailer": {"visible trailer"},

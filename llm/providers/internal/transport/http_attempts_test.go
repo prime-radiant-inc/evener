@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -339,6 +340,143 @@ func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing
 	}
 	if bytes.Contains(encoded, []byte(secret)) {
 		t.Fatalf("third durable attempt contains prior-hop credential %q", secret)
+	}
+}
+
+func TestDoWithAPIAttemptsRecordsEffectiveRedirectHost(t *testing.T) {
+	tests := []struct {
+		name             string
+		host             string
+		credentialValues []string
+		wantRecorded     bool
+	}{
+		{
+			name:         "ordinary override",
+			host:         "tenant.example",
+			wantRecorded: true,
+		},
+		{
+			name:             "credential-bearing override",
+			host:             "credential.example",
+			credentialValues: []string{"credential.example"},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			observedHost := make(chan string, 1)
+			target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				observedHost <- request.Host
+				writer.WriteHeader(http.StatusOK)
+			}))
+			defer target.Close()
+
+			redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				http.Redirect(writer, request, target.URL, http.StatusFound)
+			}))
+			defer redirect.Close()
+
+			client := &http.Client{}
+			client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+				request.Header.Set("Host", "ignored-header.example")
+				request.Host = testCase.host
+				return nil
+			}
+			sink := &responseAssociationSink{}
+			request, err := http.NewRequestWithContext(
+				attemptContext("ag_redirect_host", sink),
+				http.MethodGet,
+				redirect.URL,
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			build := func(*http.Request, []byte) llm.APIAttemptMeta {
+				return llm.APIAttemptMeta{
+					ProviderInstance: "test",
+					RequestModel:     "test-model",
+					CredentialMaterial: llm.NewAPILogCredentialMaterial(
+						nil,
+						nil,
+						testCase.credentialValues...,
+					),
+				}
+			}
+			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, build)
+			if err != nil {
+				t.Fatalf("DoWithAPIAttempts: %v", err)
+			}
+			if _, err := io.ReadAll(response.Body); err != nil {
+				t.Fatalf("read final response: %v", err)
+			}
+			if err := response.Body.Close(); err != nil {
+				t.Fatalf("close final response: %v", err)
+			}
+			attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+			if got := <-observedHost; got != testCase.host {
+				t.Fatalf("target Host = %q, want %q", got, testCase.host)
+			}
+			attempts := sink.snapshot()
+			if len(attempts) != 2 {
+				t.Fatalf("attempt count = %d, want redirect and final", len(attempts))
+			}
+			values, recorded := attempts[1].Request.Headers["Host"]
+			if recorded != testCase.wantRecorded {
+				t.Fatalf("recorded Host presence = %t, want %t (values %q)", recorded, testCase.wantRecorded, values)
+			}
+			if testCase.wantRecorded && (len(values) != 1 || values[0] != testCase.host) {
+				t.Fatalf("recorded Host = %q, want [%q]", values, testCase.host)
+			}
+		})
+	}
+}
+
+func TestDoWithAPIAttemptsDoesNotUseGetBodyClone(t *testing.T) {
+	original := &observingReadCloser{reader: strings.NewReader("request")}
+	var clone *observingReadCloser
+	getBodyCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if _, err := io.ReadAll(request.Body); err != nil {
+			t.Fatalf("transport read request: %v", err)
+		}
+		if err := request.Body.Close(); err != nil {
+			t.Fatalf("transport close request: %v", err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_get_body", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		original,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = int64(len("request"))
+	request.GetBody = func() (io.ReadCloser, error) {
+		getBodyCalls++
+		clone = &observingReadCloser{reader: strings.NewReader("request")}
+		return clone, nil
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+	if getBodyCalls != 0 {
+		t.Fatalf("GetBody calls = %d, want 0", getBodyCalls)
+	}
+	if clone != nil {
+		reads, closes := clone.counts()
+		t.Fatalf("instrumentation used request clone: reads:%d closes:%d", reads, closes)
+	}
+	reads, closes := original.counts()
+	if reads == 0 || closes != 1 {
+		t.Fatalf("original request operations = reads:%d closes:%d, want transport reads and one close", reads, closes)
 	}
 }
 

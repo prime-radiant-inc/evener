@@ -190,6 +190,10 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 
 	var headers map[string][]string
 	for name, values := range req.Header {
+		// Client requests send req.Host as Host and ignore Header["Host"].
+		if strings.EqualFold(name, "Host") {
+			continue
+		}
 		if credentialHeaderName(name, material) || containsCredentialEvidence(name, material) {
 			continue
 		}
@@ -206,6 +210,15 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 			headers = make(map[string][]string)
 		}
 		headers[name] = append([]string(nil), values...)
+	}
+	if req.Host != "" &&
+		!credentialHeaderName("Host", material) &&
+		!containsCredentialEvidence("Host", material) &&
+		!containsCredentialEvidence(req.Host, material) {
+		if headers == nil {
+			headers = make(map[string][]string)
+		}
+		headers["Host"] = []string{req.Host}
 	}
 	return endpoint, headers
 }
