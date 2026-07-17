@@ -217,7 +217,7 @@ Run focused tests until GREEN, then:
 ```sh
 go test ./llm ./llm/apilog ./llm/providers/anthropic ./llm/providers/google ./llm/providers/openai ./llm/providers/openaicompat ./llm/providers/kimi -count=1
 go test -race ./llm ./llm/apilog -count=1
-go vet ./llm/... 
+go vet ./llm/...
 ```
 
 **Step 5: Commit only Task 1.**
