@@ -86,15 +86,6 @@ func TestSemanticFullAndIndexedReadersShareLineFraming(t *testing.T) {
 	})
 }
 
-func requireCacheTurnsFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {
-	t.Helper()
-	turns, err := cache.TurnsFromFile(path, maxLineBytes, project)
-	if err != nil {
-		t.Fatalf("TurnCache.TurnsFromFile: %v", err)
-	}
-	return turns
-}
-
 func requireLatestFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes, limit int, project BoundedEntryProjector) ([]appwire.Turn, string) {
 	t.Helper()
 	turns, cursor, err := cache.LatestFromFile(path, maxLineBytes, limit, project)
