@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -214,6 +215,25 @@ func (c *Client) Use(mw ...Middleware) {
 		return
 	}
 	c.middleware = append(c.middleware, mw...)
+}
+
+type sessionAPILogReleaser interface {
+	ReleaseSession(string) error
+}
+
+// ReleaseSessionAPILog releases any routed API-log ownership held by the
+// client's middleware for sessionID.
+func (c *Client) ReleaseSessionAPILog(sessionID string) error {
+	if c == nil {
+		return nil
+	}
+	var result error
+	for _, middleware := range c.middleware {
+		if releaser, ok := middleware.(sessionAPILogReleaser); ok {
+			result = errors.Join(result, releaser.ReleaseSession(sessionID))
+		}
+	}
+	return result
 }
 
 // bindAPIAttemptSinkBeforeDispatch gives a caller-owned logical attempt group

@@ -137,6 +137,96 @@ func TestSessionAPILoggerCanonicalRoutesPerSession(t *testing.T) {
 	assertOnlyCanonicalAttempt(t, filepath.Join(stateDir, "sessions", "sess-b.api.jsonl"), second.AttemptID)
 }
 
+func TestSessionAPILoggerReleaseSessionReleasesOnlyTarget(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+
+	if err := logger.ReserveSession("sess-a"); err != nil {
+		t.Fatalf("ReserveSession A: %v", err)
+	}
+	if err := logger.ReserveSession("sess-b"); err != nil {
+		t.Fatalf("ReserveSession B: %v", err)
+	}
+	if err := logger.ReleaseSession("sess-a"); err != nil {
+		t.Fatalf("ReleaseSession A: %v", err)
+	}
+
+	reopenedA, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger for A: %v", err)
+	}
+	defer reopenedA.Close() //nolint:errcheck
+	if err := reopenedA.ReserveSession("sess-a"); err != nil {
+		t.Fatalf("ReserveSession released A: %v", err)
+	}
+
+	contenderB, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger for B: %v", err)
+	}
+	defer contenderB.Close() //nolint:errcheck
+	if err := contenderB.ReserveSession("sess-b"); !errors.Is(err, ErrAPILogTargetLocked) {
+		t.Fatalf("ReserveSession owned B = %v, want ErrAPILogTargetLocked", err)
+	}
+}
+
+func TestSessionAPILoggerReleaseSessionWaitsForAdmittedAppend(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+
+	oldSync := apiLogFileSync
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+	syncEntered := make(chan struct{})
+	releaseSync := make(chan struct{})
+	var blockOnce sync.Once
+	apiLogFileSync = func(file *os.File) error {
+		blockOnce.Do(func() {
+			close(syncEntered)
+			<-releaseSync
+		})
+		return file.Sync()
+	}
+
+	appendDone := make(chan error, 1)
+	ctx := WithAPILogContext(context.Background(), "sess-a")
+	go func() {
+		appendDone <- logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_release", 1))
+	}()
+	<-syncEntered
+
+	releaseDone := make(chan error, 1)
+	go func() { releaseDone <- logger.ReleaseSession("sess-a") }()
+	select {
+	case err := <-releaseDone:
+		t.Fatalf("ReleaseSession returned before admitted append synced: %v", err)
+	default:
+	}
+	close(releaseSync)
+	if err := <-appendDone; err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+	if err := <-releaseDone; err != nil {
+		t.Fatalf("ReleaseSession: %v", err)
+	}
+
+	reopened, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger after release: %v", err)
+	}
+	defer reopened.Close() //nolint:errcheck
+	if err := reopened.ReserveSession("sess-a"); err != nil {
+		t.Fatalf("ReserveSession after concurrent append/release: %v", err)
+	}
+}
+
 func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)

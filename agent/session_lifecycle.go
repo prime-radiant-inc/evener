@@ -81,6 +81,12 @@ func (s *Session) Close() {
 	s.close(context.Background(), true)
 }
 
+func (s *Session) releaseAPILogRoute() {
+	if err := s.client.ReleaseSessionAPILog(s.id); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("release session API log: %v", err)})
+	}
+}
+
 // beginDispose admits an in-turn dispose op iff the session is not yet closing,
 // registering it on disposeWG under a single s.mu hold — the sendersWG idiom
 // (session.go): the closing check AND the WaitGroup Add happen atomically, so a
@@ -287,6 +293,7 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// events are delivered before the channel closes. They are already
 		// cancelled above (child Close + cancelFunc), so this returns promptly.
 		s.sendersWG.Wait()
+		s.releaseAPILogRoute()
 		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
 		// the ProcessInput loop — goroutines the session cannot join) can never
 		// send on the closed channel. This replaces the old emit() recover().
@@ -331,6 +338,7 @@ func (s *Session) discardRestoredCandidate() {
 		s.mu.Unlock()
 		s.toolEventsWG.Wait()
 		s.sendersWG.Wait()
+		s.releaseAPILogRoute()
 		s.eventsMu.Lock()
 		s.eventsClosed = true
 		close(s.events)

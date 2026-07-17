@@ -150,6 +150,34 @@ func (l *APILogger) ReserveSession(sessionID string) error {
 	return err
 }
 
+// ReleaseSession closes this logger's file for sessionID without affecting
+// other routed sessions. It waits for appends already admitted by the logger
+// before releasing the file lock.
+func (l *APILogger) ReleaseSession(sessionID string) error {
+	l.canonicalAdmissionMu.Lock()
+	defer l.canonicalAdmissionMu.Unlock()
+	if l.canonicalClosing {
+		return errAPILoggerClosed
+	}
+	l.canonicalAppends.Wait()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.sessionsDir == "" {
+		return nil
+	}
+	base := sessionLogBaseName(sessionID)
+	f, ok := l.sessionFiles[base]
+	if !ok {
+		return nil
+	}
+	delete(l.sessionFiles, base)
+	if f == nil {
+		return nil
+	}
+	return apiLogFileClose(f)
+}
+
 func ensurePrivateAPILogDirectory(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil

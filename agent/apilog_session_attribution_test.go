@@ -235,3 +235,35 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 		t.Fatalf("tail = (%T, %v), want clean EOF", tail, err)
 	}
 }
+
+func TestSessionCloseReleasesAPILogRoute(t *testing.T) {
+	stateDir := t.TempDir()
+	client := llm.NewClient()
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+	client.Use(logger)
+
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		StateDir:         stateDir,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	if err := logger.ReserveSession(s.ID()); err != nil {
+		t.Fatalf("ReserveSession: %v", err)
+	}
+
+	s.Close()
+
+	reopened, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger after session close: %v", err)
+	}
+	defer reopened.Close() //nolint:errcheck
+	if err := reopened.ReserveSession(s.ID()); err != nil {
+		t.Fatalf("session API-log route remained owned after Close: %v", err)
+	}
+}
