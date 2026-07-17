@@ -5,24 +5,41 @@ host. It describes the current code, not a future deployment system.
 
 ## Trust Boundary
 
-`serf-hub` is a local orchestrator with same-origin checks and CSP, but it does
-not currently provide hub-edge authentication. Hub-spawned daemons use an
-internal bearer token, but that does not authenticate users at the Hub edge. Do
-not expose Hub directly on an untrusted network.
+`serf-hub` authenticates its web edge with a long-lived random capability
+token. On startup, Hub loads or creates `auth-token` under `hub_state_root`
+(`~/.serf/auth-token` by default) and prints a browser authorization URL. A new
+token file is created with mode `0600`; Hub does not repair the mode of an
+existing file. Visiting that URL sets an HTTP-only, SameSite=Lax cookie;
+scripted clients may instead send the token as `Authorization: Bearer <token>`.
+Only `/auth`, `/api/health`, and the PWA icons are available without the token.
+
+The capability token is the Hub's user-authentication boundary. Hub-spawned
+daemons separately use the current Hub process's bearer token for Hub-to-daemon
+requests.
+Do not publish the capability URL, token file, or bearer token.
+
+Hub serves plain HTTP itself. A direct connection over an untrusted network can
+expose the capability token or session cookie to a network observer, so do not
+expose Hub directly to the public Internet without authenticated encryption.
 
 Use one of these access patterns:
 
 - SSH tunnel to the Hub host, keeping Hub bound to loopback.
-- VPN/private network plus a host firewall that limits who can reach the Hub.
+- VPN/private network, such as Tailscale, plus a host firewall that limits who
+  can reach the Hub.
 - Authenticated TLS reverse proxy in front of Hub.
 
-The Hub's same-origin guard checks `Host` and `Origin` against the configured
-`addr` and currently compares browser origins as `http://<addr>`. If users browse
-to `hubbox.example:9180`, configure Hub with that exact host and port or make
-the proxy rewrite `Host` and `Origin` to the configured value. Binding to
-`0.0.0.0:9180` is not enough by itself because browser requests will carry a
-different `Host`. A TLS-terminating reverse proxy must also account for the
-current HTTP-origin comparison before forwarding browser writes to Hub.
+To accept both loopback and private-network connections, bind Hub to
+`0.0.0.0:9180` (or `[::]:9180`). The startup log replaces a wildcard address in
+the printed authorization URL with the machine hostname. If that hostname is
+not resolvable from the client, replace only the hostname in the URL with the
+machine's LAN or VPN address; preserve the token query parameter exactly.
+
+When TLS terminates at a reverse proxy, construct the external authorization
+URL with the proxy's `https://` origin instead of the `http://` URL Hub prints.
+Hub emits its cookie with `Secure=false` because it also supports direct HTTP;
+configure the proxy to add the `Secure` attribute to `Set-Cookie` before using
+the Hub over an untrusted network.
 
 ## Required Binaries
 
@@ -40,6 +57,50 @@ Start Hub with the Serf binary it should spawn:
 serf-hub --config /etc/serf/hub.toml --serf /usr/local/bin/serf
 ```
 
+For loopback plus LAN/VPN access:
+
+```bash
+serf-hub --addr 0.0.0.0:9180 --serf /usr/local/bin/serf
+```
+
+Authorize each browser once with the startup log's `/auth?token=...` URL. For a
+remote TUI, pass the same capability out of band:
+
+```bash
+SERF_HUB_AUTH_TOKEN='<token>' \
+  serf-tui --hub-addr http://hubbox.example:9180 --no-auto-start-hub
+```
+
+The TUI otherwise looks for the local machine's `~/.serf/auth-token`, which is
+usually not the remote Hub's token.
+
+### Ad hoc macOS background launch
+
+For a user-session job that survives the invoking shell but not logout or
+reboot, `launchctl submit` can keep Hub running without a plist:
+
+```bash
+launchctl submit \
+  -l com.example.serf-hub \
+  -p /absolute/path/to/serf-hub \
+  -o /absolute/path/to/serf-hub.log \
+  -e /absolute/path/to/serf-hub.log \
+  -- /absolute/path/to/serf-hub \
+  -addr 0.0.0.0:9180 \
+  -serf /absolute/path/to/serf
+```
+
+The executable appears both after `-p` and as the first item after `--` because
+that first item becomes the submitted process's `argv[0]`. Omitting it shifts
+the first Hub flag into `argv[0]` and causes the remaining flag value to be
+reported as an unexpected positional argument.
+
+Stop this ad hoc job with:
+
+```bash
+launchctl remove com.example.serf-hub
+```
+
 Current flags verified from source:
 
 - `serf-hub --config <path>` loads Hub TOML config.
@@ -48,6 +109,8 @@ Current flags verified from source:
 - `serf launch-check --protocol serf-appwire-v1 --model <provider/model> --json`
   validates the binary/protocol/model contract before spawn.
 - `serf-tui --hub-addr <url-or-host-port>` connects the TUI to a Hub.
+- `serf-tui --auth-token <token>` overrides `SERF_HUB_AUTH_TOKEN` and the local
+  token file.
 - `serf-tui --no-auto-start-hub` prevents local auto-start, which is usually
   what you want when targeting a remote Hub.
 
@@ -71,7 +134,8 @@ sse_ring_size = 4096
 XDG_STATE_HOME = "/var/lib/serf/state"
 ```
 
-`addr` is the listen address and the same-origin comparison value.
+`addr` is the listen address. When it is a wildcard address, Hub substitutes
+the machine hostname in the authorization URL printed at startup.
 
 `run_dir` holds daemon rendezvous files. Hub watches this directory and probes
 the daemons it finds there. It is runtime state, not the durable transcript
