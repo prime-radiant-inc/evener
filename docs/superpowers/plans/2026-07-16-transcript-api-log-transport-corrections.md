@@ -85,23 +85,21 @@ Stop and reconcile the interface with Jesse only if the merged prerequisite is g
 ```text
 body-evidence core prerequisite
             |
-            +--> 1 GetConn lifecycle --> 2 repeated-GotConn lifecycle --> 3 bounded body capture --+
-            |                                                                                     |
-            +--> 4 transparent ownership --> 5 gzip race safety ---------------------------------+--> 6 protocol predicates
-                                                                                                  |
-                                            +-----------------------------------------------------+
-                                            |
-                                            +--> 7 OpenAI timeout/fallback
-                                            +--> 8 OpenAI-compatible DONE cancel
-                                            +--> 9 four model listers
-                                            +--> 10 Hub credential headers
-                                            +--> 11 endpoint provenance
-                                            +--> 12 Anthropic test cleanup
-                                                         |
-                                                         +--> 13 integration and review closure
+            v
+1 GetConn lifecycle --> 2 repeated-GotConn lifecycle --> 3 bounded body capture
+                                                               |
+                                                               +--> 4 transparent ownership --> 5 gzip race safety --> 6 protocol predicates
+                                                               +--> 7 OpenAI timeout/fallback
+                                                               +--> 8 OpenAI-compatible DONE cancel
+                                                               +--> 9 four model listers
+                                                               +--> 10 Hub credential headers
+                                                               +--> 11 endpoint provenance
+                                                               +--> 12 Anthropic test cleanup
+
+Tasks 4-12 complete --> 13 integration and review closure
 ```
 
-Task 3's drain and completeness semantics must land before provider Tasks 7-9. Task 4's transparent-transport contract must land before Tasks 5 and 6. Tasks 1 and 2 must both land before Task 6. Harness documentation follows this plan in a later change; it is not part of these commits.
+Task 4 consumes Task 3's `bodyEvidenceSnapshot` and `APIAttemptCapture.Complete` propagation, so Task 3 must land before Task 4. Task 3's drain and completeness semantics must also land before provider Tasks 7-9. Task 4's transparent-transport contract must land before Tasks 5 and 6. Tasks 1 and 2 must both land before Task 6. Task 13 begins only after Tasks 4-12 complete. Harness documentation follows this plan in a later change; it is not part of these commits.
 
 ## File map
 
@@ -780,6 +778,7 @@ distinct Go 1.25 HTTP/1.1 and HTTP/2 read-after-close behavior."
 - Modify: `llm/providers/internal/transport/http_attempts.go`
 - Modify: `llm/providers/internal/transport/request_metadata.go`
 - Modify: `llm/providers/internal/transport/response_compression.go`
+- Test: `llm/providers/internal/transport/http_attempts_test.go`
 - Test: `llm/providers/internal/transport/wire_fidelity_test.go`
 
 **Fresh roles:** Assign a fresh implementer and a different fresh reviewer.
@@ -852,6 +851,7 @@ git status --short
 git add llm/providers/internal/transport/http_attempts.go \
   llm/providers/internal/transport/request_metadata.go \
   llm/providers/internal/transport/response_compression.go \
+  llm/providers/internal/transport/http_attempts_test.go \
   llm/providers/internal/transport/wire_fidelity_test.go
 git commit -m "fix: preserve protocol gzip header semantics
 
