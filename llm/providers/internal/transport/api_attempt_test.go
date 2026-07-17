@@ -456,6 +456,34 @@ func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
 	}
 }
 
+func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
+	tests := []struct {
+		name        string
+		data        []byte
+		knownLength int64
+	}{
+		{name: "short", data: []byte("short"), knownLength: int64(len("short plus declared bytes"))},
+		{name: "overlong", data: []byte("overlong body"), knownLength: int64(len("over"))},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			body := newObservedBody(&terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength)
+			buf := make([]byte, len(testCase.data))
+			n, err := body.Read(buf)
+			if n != len(testCase.data) || err != io.EOF {
+				t.Fatalf("Read = %d, %v; want %d, EOF", n, err, len(testCase.data))
+			}
+			observation := body.snapshot()
+			if !observation.exact {
+				t.Fatalf("EOF observation with %d bytes remained inexact for declared length %d", len(observation.bytes), testCase.knownLength)
+			}
+			if !bytes.Equal(observation.bytes, testCase.data) {
+				t.Fatalf("observed bytes = %q, want %q", observation.bytes, testCase.data)
+			}
+		})
+	}
+}
+
 func TestAPIAttemptConcurrentReadAndCloseSnapshotsPromptlyWithoutExtraOperations(t *testing.T) {
 	body := &concurrentReadCloseBody{
 		data:        []byte("read returns after snapshot"),

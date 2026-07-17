@@ -149,10 +149,12 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	if err == io.EOF {
 		b.sawEOF = true
 	}
-	if b.knownLength >= 0 {
-		b.exact = int64(b.buf.Len()) == b.knownLength && (err == nil || b.sawEOF)
+	if b.sawEOF {
+		b.exact = true
+	} else if b.knownLength >= 0 {
+		b.exact = int64(b.buf.Len()) == b.knownLength && err == nil
 	} else {
-		b.exact = b.sawEOF
+		b.exact = false
 	}
 	b.mu.Unlock()
 	return n, err
