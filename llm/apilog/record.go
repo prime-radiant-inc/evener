@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -275,9 +274,6 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 			if containsForbiddenDurableString(encoded.Data, r.forbiddenEvidence, r.forbiddenCredentialNames) {
 				return fmt.Errorf("request header %q encoded data contains credential material", name)
 			}
-			if containsForbiddenInt(encoded.ByteCount, r.forbiddenEvidence, r.forbiddenCredentialNames) {
-				return fmt.Errorf("request header %q byte count contains credential material", name)
-			}
 		}
 	}
 	if err := validateProviderBodyEvidence("request body", r.Request.Body, r.forbiddenEvidence, r.forbiddenCredentialNames); err != nil {
@@ -289,24 +285,6 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 	if err := validateProviderBodyEvidence("response body", r.Response.Body, r.forbiddenEvidence, r.forbiddenCredentialNames); err != nil {
 		return err
 	}
-	numbers := []struct {
-		name  string
-		value *int
-	}{
-		{name: "response status code", value: r.Response.StatusCode},
-		{name: "response text length", value: r.Response.TextLength},
-		{name: "response tool call count", value: r.Response.ToolCallCount},
-		{name: "input token usage", value: r.Response.Usage.InputTokens},
-		{name: "output token usage", value: r.Response.Usage.OutputTokens},
-		{name: "total token usage", value: r.Response.Usage.TotalTokens},
-		{name: "cache-read token usage", value: r.Response.Usage.CacheReadTokens},
-		{name: "cache-write token usage", value: r.Response.Usage.CacheWriteTokens},
-	}
-	for _, field := range numbers {
-		if field.value != nil && containsForbiddenInt(*field.value, r.forbiddenEvidence, r.forbiddenCredentialNames) {
-			return fmt.Errorf("%s contains credential material", field.name)
-		}
-	}
 	return nil
 }
 
@@ -316,9 +294,6 @@ func validateProviderBodyEvidence(name string, body EncodedBody, patterns, crede
 	}
 	if containsForbiddenDurableString(body.Data, patterns, credentialNames) {
 		return fmt.Errorf("%s encoded data contains credential material", name)
-	}
-	if !body.CredentialValuesExcluded && containsForbiddenInt(body.ByteCount, patterns, credentialNames) {
-		return fmt.Errorf("%s byte count contains credential material", name)
 	}
 	return nil
 }
@@ -332,10 +307,6 @@ func containsForbiddenDurableString(value string, patterns, credentialNames []st
 		return false
 	}
 	return containsForbiddenEvidence(encoded[1:len(encoded)-1], patterns, credentialNames)
-}
-
-func containsForbiddenInt(value int, patterns, credentialNames []string) bool {
-	return containsForbiddenEvidence([]byte(strconv.Itoa(value)), patterns, credentialNames)
 }
 
 func containsForbiddenEvidence(value []byte, patterns, credentialNames []string) bool {

@@ -199,6 +199,51 @@ func TestAPIAttemptNumericEvidencePreservesPresenceAcrossStrictCodec(t *testing.
 	}
 }
 
+func TestMarshalRecordIgnoresCredentialCoincidencesInNumericMetadata(t *testing.T) {
+	record := validAPIAttemptRecord(t)
+	record.ProviderInstance = "provider"
+	record.RequestModel = "model"
+	record.Request.Endpoint = "https://provider.test/responses"
+	record.Request.Model = "model"
+	record.Request.Headers = EncodedHeader{"X-Safe": {"abcdefghij"}}
+	record.Request.Body = EncodeBody([]byte("abcdefghij"))
+	record.Response = &APIAttemptResponse{
+		StatusCode:    recordTestInt(201),
+		Body:          EncodeBody([]byte("abcdefghij")),
+		Model:         "model",
+		FinishReason:  "stop",
+		TextLength:    recordTestInt(1),
+		ToolCallCount: recordTestInt(1),
+		Usage: Usage{
+			InputTokens:      recordTestInt(1),
+			OutputTokens:     recordTestInt(1),
+			TotalTokens:      recordTestInt(1),
+			CacheReadTokens:  recordTestInt(1),
+			CacheWriteTokens: recordTestInt(1),
+		},
+	}
+	record = record.WithForbiddenProviderEvidence([]string{"1"}, nil)
+
+	if _, err := MarshalRecord(record); err != nil {
+		t.Fatalf("MarshalRecord() rejected numeric metadata that coincides with a credential: %v", err)
+	}
+}
+
+func TestMarshalRecordStillRejectsCredentialInProviderEvidence(t *testing.T) {
+	record := validAPIAttemptRecord(t)
+	record.ProviderInstance = "provider"
+	record.RequestModel = "model"
+	record.Request.Endpoint = "https://provider.test/responses"
+	record.Request.Model = "model"
+	record.Response.Model = "model"
+	record.Response.Body = EncodeBody([]byte("provider returned credential 1"))
+	record = record.WithForbiddenProviderEvidence([]string{"1"}, nil)
+
+	if _, err := MarshalRecord(record); err == nil {
+		t.Fatal("MarshalRecord() accepted a credential in provider-derived body content")
+	}
+}
+
 func TestSettlementRecordRoundTripsAsDurableInterface(t *testing.T) {
 	want := validSettlement(t)
 	line, err := json.Marshal(want)

@@ -38,7 +38,7 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 	configured := NewAPILogCredentialMaterial(
 		[]string{customHeaderName},
 		[]string{customQueryName},
-		secret, modelSecret, "123",
+		secret, modelSecret,
 	)
 	material := APILogCredentialMaterialForRequest(request, configured)
 	endpoint, headers := SanitizeRequestForAPILog(request, material)
@@ -84,8 +84,9 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 	if record.Response.Model != "" || record.Response.FinishReason != "" {
 		t.Fatalf("response strings = (%q, %q), want omitted", record.Response.Model, record.Response.FinishReason)
 	}
-	if record.Response.Usage.InputTokens != nil || record.Response.Usage.OutputTokens == nil || *record.Response.Usage.OutputTokens != 45 {
-		t.Fatalf("usage = %+v, want matching value omitted and safe value retained", record.Response.Usage)
+	if record.Response.Usage.InputTokens == nil || *record.Response.Usage.InputTokens != 123 ||
+		record.Response.Usage.OutputTokens == nil || *record.Response.Usage.OutputTokens != 45 {
+		t.Fatalf("usage = %+v, want numeric metadata retained", record.Response.Usage)
 	}
 	line, err := apilog.MarshalRecord(record)
 	if err != nil {
@@ -398,96 +399,78 @@ func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *test
 	}
 }
 
-func TestBuildAPIAttemptRecordOmitsZeroNumericCredentialEvidence(t *testing.T) {
-	zero := 0
+func TestBuildAPIAttemptRecordPreservesNumericCredentialCoincidences(t *testing.T) {
+	one := 1
 	startedAt := time.Unix(25, 0).UTC()
-	record := buildAPIAttemptRecord("ag_zero_numeric_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
-		ProviderInstance:   "provider",
-		RequestModel:       "model",
-		Method:             http.MethodPost,
-		Endpoint:           "https://provider.test/v1/responses",
-		RequestBody:        []byte("safe request"),
+	record := buildAPIAttemptRecord("ag_numeric_coincidence", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+		ProviderInstance: "provider",
+		RequestModel:     "model",
+		Method:           http.MethodPost,
+		Endpoint:         "https://provider.test/responses",
+		Headers: http.Header{
+			"X-Safe": {"abcdefghij"},
+		},
+		RequestBody:        []byte("abcdefghij"),
 		StartedAt:          startedAt,
-		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, "0"),
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, "1"),
 	}, APIAttemptResult{
-		StatusCode:   http.StatusOK,
-		ResponseBody: []byte("safe response"),
+		StatusCode:   http.StatusCreated,
+		ResponseBody: []byte("abcdefghij"),
 		Response: &Response{
-			Model:   "model",
-			Message: Assistant(""),
-			Finish:  FinishReason{Reason: FinishReasonStop},
+			Model: "model",
+			Message: Message{Role: RoleAssistant, Content: []ContentPart{
+				{Kind: ContentText, Text: "x"},
+				{Kind: ContentToolCall, ToolCall: &ToolCallData{Name: "tool"}},
+			}},
+			Finish: FinishReason{Reason: FinishReasonStop},
 			Usage: Usage{
-				CacheReadTokens:  &zero,
-				CacheWriteTokens: &zero,
+				InputTokens:      1,
+				OutputTokens:     1,
+				TotalTokens:      1,
+				CacheReadTokens:  &one,
+				CacheWriteTokens: &one,
 			},
 		},
 		Outcome:    apilog.AttemptSuccess,
 		FinishedAt: startedAt.Add(time.Millisecond),
 	})
-	line, err := apilog.MarshalRecord(record)
-	if err != nil {
-		t.Fatalf("MarshalRecord(): %v", err)
-	}
-	var object map[string]any
-	if err := json.Unmarshal(line, &object); err != nil {
-		t.Fatal(err)
-	}
-	response := object["response"].(map[string]any)
-	usage := response["usage"].(map[string]any)
-	for _, field := range []string{"status_code", "text_length", "tool_call_count"} {
-		if _, present := response[field]; present {
-			t.Fatalf("credential-bearing response field %q persisted: %s", field, line)
-		}
-	}
-	for _, field := range []string{"input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"} {
-		if _, present := usage[field]; present {
-			t.Fatalf("credential-bearing usage field %q persisted: %s", field, line)
-		}
-	}
-}
 
-func TestBuildAPIAttemptRecordOmitsMatchingNonzeroNumericEvidence(t *testing.T) {
-	tests := []struct {
-		name      string
-		secret    string
-		container string
-		field     string
-	}{
-		{name: "status", secret: "418", container: "response", field: "status_code"},
-		{name: "text length", secret: "7", container: "response", field: "text_length"},
-		{name: "tool-call count", secret: "2", container: "response", field: "tool_call_count"},
-		{name: "input tokens", secret: "11", container: "usage", field: "input_tokens"},
-		{name: "output tokens", secret: "13", container: "usage", field: "output_tokens"},
-		{name: "total tokens", secret: "24", container: "usage", field: "total_tokens"},
-		{name: "cache-read tokens", secret: "5", container: "usage", field: "cache_read_tokens"},
-		{name: "cache-write tokens", secret: "6", container: "usage", field: "cache_write_tokens"},
+	if got := record.Request.Headers["X-Safe"]; len(got) != 1 || got[0] != "abcdefghij" {
+		t.Fatalf("request header = %#v, want safe 10-byte value retained", got)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			record := numericEvidenceAttemptRecord(t, tt.secret)
-			line, err := apilog.MarshalRecord(record)
-			if err != nil {
-				t.Fatalf("MarshalRecord(): %v", err)
-			}
-			var object map[string]any
-			if err := json.Unmarshal(line, &object); err != nil {
-				t.Fatal(err)
-			}
-			response := object["response"].(map[string]any)
-			container := response
-			if tt.container == "usage" {
-				container = response["usage"].(map[string]any)
-			}
-			if _, present := container[tt.field]; present {
-				t.Fatalf("credential-bearing numeric field %q persisted: %s", tt.field, line)
-			}
-		})
+	for name, body := range map[string]apilog.EncodedBody{
+		"request":  record.Request.Body,
+		"response": record.Response.Body,
+	} {
+		if body.CredentialValuesExcluded || body.ByteCount != 10 {
+			t.Fatalf("%s body = %+v, want exact 10-byte evidence retained", name, body)
+		}
+	}
+	for name, value := range map[string]*int{
+		"status":             record.Response.StatusCode,
+		"text length":        record.Response.TextLength,
+		"tool-call count":    record.Response.ToolCallCount,
+		"input tokens":       record.Response.Usage.InputTokens,
+		"output tokens":      record.Response.Usage.OutputTokens,
+		"total tokens":       record.Response.Usage.TotalTokens,
+		"cache-read tokens":  record.Response.Usage.CacheReadTokens,
+		"cache-write tokens": record.Response.Usage.CacheWriteTokens,
+	} {
+		if value == nil {
+			t.Fatalf("%s omitted because it coincides with credential text", name)
+		}
+	}
+	if got := *record.Response.StatusCode; got != http.StatusCreated {
+		t.Fatalf("status code = %d, want %d", got, http.StatusCreated)
+	}
+	if _, err := apilog.MarshalRecord(record); err != nil {
+		t.Fatalf("MarshalRecord(): %v", err)
 	}
 }
 
 func TestBuildAPIAttemptRecordOmitsCredentialCollisionsCreatedByCanonicalEncoding(t *testing.T) {
 	startedAt := time.Unix(28, 0).UTC()
-	material := NewAPILogCredentialMaterial(nil, nil, "/w==", `\u003c`, "17")
+	material := NewAPILogCredentialMaterial(nil, nil, "/w==", `\u003c`)
 	record := buildAPIAttemptRecord("ag_encoded_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
 		ProviderInstance: "provider",
 		RequestModel:     "model",
@@ -518,59 +501,13 @@ func TestBuildAPIAttemptRecordOmitsCredentialCollisionsCreatedByCanonicalEncodin
 
 	assertCredentialExcludedBody(t, record.Request.Body)
 	assertCredentialExcludedBody(t, record.Response.Body)
-	if got := record.Request.Headers; len(got) != 1 || got["X-Safe"][0] != "visible" {
-		t.Fatalf("request headers = %#v, want only safe evidence", got)
+	if got := record.Request.Headers; len(got) != 2 || got["X-Count"][0] != strings.Repeat("x", 17) || got["X-Safe"][0] != "visible" {
+		t.Fatalf("request headers = %#v, want safe content and numeric coincidence retained", got)
 	}
 	if record.Response.Model != "" || record.Response.FinishReason != "" || record.ErrorClass != "" || record.ErrorMessage != "" {
 		t.Fatalf("JSON-escaped credential collision survived: response=%+v error=(%q, %q)", record.Response, record.ErrorClass, record.ErrorMessage)
 	}
 
-	for _, tt := range []struct {
-		name   string
-		mutate func(*APIAttemptMeta, *APIAttemptResult)
-		body   func(apilog.APIAttemptRecord) apilog.EncodedBody
-	}{
-		{
-			name: "request body byte count",
-			mutate: func(meta *APIAttemptMeta, _ *APIAttemptResult) {
-				meta.RequestBody = []byte(strings.Repeat("x", 17))
-			},
-			body: func(record apilog.APIAttemptRecord) apilog.EncodedBody { return record.Request.Body },
-		},
-		{
-			name: "response body byte count",
-			mutate: func(_ *APIAttemptMeta, result *APIAttemptResult) {
-				result.ResponseBody = []byte(strings.Repeat("x", 17))
-			},
-			body: func(record apilog.APIAttemptRecord) apilog.EncodedBody { return record.Response.Body },
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			meta := APIAttemptMeta{
-				ProviderInstance:   "provider",
-				RequestModel:       "model",
-				Method:             http.MethodPost,
-				Endpoint:           "https://provider.test/v1/responses",
-				RequestBody:        []byte("safe request"),
-				StartedAt:          startedAt,
-				CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, "17"),
-			}
-			result := APIAttemptResult{
-				StatusCode:   http.StatusOK,
-				ResponseBody: []byte("safe response"),
-				Response: &Response{
-					Model:   "model",
-					Message: Assistant("safe"),
-					Finish:  FinishReason{Reason: FinishReasonStop},
-				},
-				Outcome:    apilog.AttemptSuccess,
-				FinishedAt: startedAt.Add(time.Millisecond),
-			}
-			tt.mutate(&meta, &result)
-			record := buildAPIAttemptRecord("ag_encoded_count", identifier.MustNewAPIAttemptID(), 1, meta, result)
-			assertCredentialExcludedBody(t, tt.body(record))
-		})
-	}
 }
 
 func TestBuildAPIAttemptRecordRendersErrorsOnceAndContainsPanic(t *testing.T) {
@@ -737,42 +674,6 @@ func builtAPIAttemptRecordWithError(t *testing.T, err error) apilog.APIAttemptRe
 	}, APIAttemptResult{
 		Outcome:    apilog.AttemptTransportFail,
 		Err:        err,
-		FinishedAt: startedAt.Add(time.Millisecond),
-	})
-}
-
-func numericEvidenceAttemptRecord(t *testing.T, secret string) apilog.APIAttemptRecord {
-	t.Helper()
-	cacheRead, cacheWrite := 5, 6
-	startedAt := time.Unix(26, 0).UTC()
-	return buildAPIAttemptRecord("ag_numeric_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
-		ProviderInstance:   "provider",
-		RequestModel:       "model",
-		Method:             http.MethodPost,
-		Endpoint:           "https://provider.test/v1/responses",
-		RequestBody:        []byte("safe request"),
-		StartedAt:          startedAt,
-		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
-	}, APIAttemptResult{
-		StatusCode:   http.StatusTeapot,
-		ResponseBody: []byte("safe response"),
-		Response: &Response{
-			Model: "model",
-			Message: Message{Role: RoleAssistant, Content: []ContentPart{
-				{Kind: ContentText, Text: "1234567"},
-				{Kind: ContentToolCall, ToolCall: &ToolCallData{Name: "one"}},
-				{Kind: ContentToolCall, ToolCall: &ToolCallData{Name: "two"}},
-			}},
-			Finish: FinishReason{Reason: FinishReasonStop},
-			Usage: Usage{
-				InputTokens:      11,
-				OutputTokens:     13,
-				TotalTokens:      24,
-				CacheReadTokens:  &cacheRead,
-				CacheWriteTokens: &cacheWrite,
-			},
-		},
-		Outcome:    apilog.AttemptProviderReject,
 		FinishedAt: startedAt.Add(time.Millisecond),
 	})
 }

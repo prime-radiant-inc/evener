@@ -357,27 +357,6 @@ func TestSessionAPILoggerRejectsCredentialCollisionsCreatedByCanonicalEncoding(t
 				record.Request.Headers = apilog.EncodedHeader{"X-Safe": {string([]byte{0xff})}}
 			},
 		},
-		{
-			name:   "request body byte count",
-			secret: "17",
-			mutate: func(record *apilog.APIAttemptRecord) {
-				record.Request.Body = apilog.EncodeBody([]byte(strings.Repeat("x", 17)))
-			},
-		},
-		{
-			name:   "response body byte count",
-			secret: "17",
-			mutate: func(record *apilog.APIAttemptRecord) {
-				record.Response.Body = apilog.EncodeBody([]byte(strings.Repeat("x", 17)))
-			},
-		},
-		{
-			name:   "header value byte count",
-			secret: "17",
-			mutate: func(record *apilog.APIAttemptRecord) {
-				record.Request.Headers = apilog.EncodedHeader{"X-Safe": {strings.Repeat("x", 17)}}
-			},
-		},
 	}
 
 	for _, tt := range tests {

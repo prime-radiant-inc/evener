@@ -6,7 +6,6 @@ import (
 	"net/textproto"
 	"net/url"
 	"sort"
-	"strconv"
 	"strings"
 
 	apilog "primeradiant.com/serf/llm/apilog"
@@ -312,8 +311,7 @@ func containsCredentialHeaderValueEvidence(value string, patterns, secretNames [
 		return true
 	}
 	encoded := apilog.EncodeHeaderValue([]byte(value))
-	return containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames) ||
-		containsCredentialEvidenceParts(strconv.Itoa(encoded.ByteCount), patterns, secretNames)
+	return containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames)
 }
 
 func containsCredentialDurableStringEvidenceParts(text string, valuePatterns, secretNames []string) bool {

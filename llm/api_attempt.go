@@ -3,7 +3,6 @@ package llm
 import (
 	"context"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -506,20 +505,20 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 	}
 	if result.Response != nil || result.StatusCode != 0 || result.ResponseBody != nil {
 		response := apilog.APIAttemptResponse{
-			StatusCode: omitCredentialInt(result.StatusCode, result.StatusCode != 0, patterns, secretNames),
+			StatusCode: optionalAPILogInt(result.StatusCode, result.StatusCode != 0),
 			Body:       encodeProviderBody(result.ResponseBody, result.ResponseBodyInexact, patterns, secretNames),
 		}
 		if result.Response != nil {
 			response.Model = omitCredentialString(result.Response.Model, patterns, secretNames)
 			response.FinishReason = omitCredentialString(result.Response.Finish.Reason, patterns, secretNames)
-			response.TextLength = omitCredentialInt(len(result.Response.Text()), true, patterns, secretNames)
-			response.ToolCallCount = omitCredentialInt(len(result.Response.ToolCalls()), true, patterns, secretNames)
+			response.TextLength = optionalAPILogInt(len(result.Response.Text()), true)
+			response.ToolCallCount = optionalAPILogInt(len(result.Response.ToolCalls()), true)
 			response.Usage = apilog.Usage{
-				InputTokens:      omitCredentialInt(result.Response.Usage.InputTokens, true, patterns, secretNames),
-				OutputTokens:     omitCredentialInt(result.Response.Usage.OutputTokens, true, patterns, secretNames),
-				TotalTokens:      omitCredentialInt(result.Response.Usage.TotalTokens, true, patterns, secretNames),
-				CacheReadTokens:  omitCredentialIntPointer(result.Response.Usage.CacheReadTokens, patterns, secretNames),
-				CacheWriteTokens: omitCredentialIntPointer(result.Response.Usage.CacheWriteTokens, patterns, secretNames),
+				InputTokens:      optionalAPILogInt(result.Response.Usage.InputTokens, true),
+				OutputTokens:     optionalAPILogInt(result.Response.Usage.OutputTokens, true),
+				TotalTokens:      optionalAPILogInt(result.Response.Usage.TotalTokens, true),
+				CacheReadTokens:  cloneAPILogInt(result.Response.Usage.CacheReadTokens),
+				CacheWriteTokens: cloneAPILogInt(result.Response.Usage.CacheWriteTokens),
 			}
 		}
 		record.Response = &response
@@ -551,16 +550,16 @@ func omitCredentialString(value string, patterns, secretNames []string) string {
 	return value
 }
 
-func omitCredentialInt(value int, present bool, patterns, secretNames []string) *int {
-	if !present || containsCredentialEvidenceParts(strconv.Itoa(value), patterns, secretNames) {
+func optionalAPILogInt(value int, present bool) *int {
+	if !present {
 		return nil
 	}
 	valueCopy := value
 	return &valueCopy
 }
 
-func omitCredentialIntPointer(value *int, patterns, secretNames []string) *int {
-	if value == nil || containsCredentialEvidenceParts(strconv.Itoa(*value), patterns, secretNames) {
+func cloneAPILogInt(value *int) *int {
+	if value == nil {
 		return nil
 	}
 	valueCopy := *value
@@ -572,8 +571,7 @@ func encodeProviderBody(body []byte, inexact bool, patterns, secretNames []strin
 		return apilog.EncodedBody{CredentialValuesExcluded: true}
 	}
 	encoded := apilog.EncodeBody(body)
-	if containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames) ||
-		containsCredentialEvidenceParts(strconv.Itoa(encoded.ByteCount), patterns, secretNames) {
+	if containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames) {
 		return apilog.EncodedBody{CredentialValuesExcluded: true}
 	}
 	encoded.Exact = !inexact
