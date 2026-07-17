@@ -385,18 +385,20 @@ func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testi
 	if result.Settlements.Total != fillerSettlements+2 || !result.Settlements.Truncated || len(result.Settlements.Records) != 100 {
 		t.Fatalf("bounded settlements = %+v", result.Settlements)
 	}
-	wanted := map[string]bool{"ag_filtered_success": false, "ag_zero_attempt": false}
-	for _, settlement := range result.Settlements.Records {
-		if _, ok := wanted[settlement.AttemptGroupID]; ok {
-			wanted[settlement.AttemptGroupID] = settlement.ForensicIncomplete
+	wantGroups := make([]string, 0, doctorAPILogMaxSettlements)
+	for i := 5; i < fillerSettlements; i++ {
+		wantGroups = append(wantGroups, fmt.Sprintf("ag_filler_%03d", i))
+	}
+	wantGroups = append(wantGroups, "ag_filtered_success", "ag_zero_attempt")
+	for i, settlement := range result.Settlements.Records {
+		if settlement.AttemptGroupID != wantGroups[i] {
+			t.Fatalf("settlement[%d].attempt_group_id = %q, want %q", i, settlement.AttemptGroupID, wantGroups[i])
+		}
+		if i >= len(wantGroups)-2 && !settlement.ForensicIncomplete {
+			t.Errorf("settlement[%d] %s lost forensic_incomplete", i, settlement.AttemptGroupID)
 		}
 		if settlement.AttemptGroupID == "ag_zero_attempt" && (settlement.FinalAttemptID != "" || settlement.FinalAttemptCount != 0) {
 			t.Fatalf("zero-attempt settlement fabricated provider identity: %+v", settlement)
-		}
-	}
-	for group, foundIncomplete := range wanted {
-		if !foundIncomplete {
-			t.Errorf("filtered settlement integrity evidence missing for %s", group)
 		}
 	}
 	human := RenderAPILog(result, APILogOpts{ErrorsOnly: true})
