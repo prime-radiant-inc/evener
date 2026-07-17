@@ -3007,7 +3007,7 @@ func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testin
 	}
 }
 
-func TestReadJobTranscriptBoundMarkerUsesJobReadOutput(t *testing.T) {
+func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
 	jm, err := newJobManagerNoSync(t.TempDir(), "session", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -3042,8 +3042,11 @@ func TestReadJobTranscriptBoundMarkerUsesJobReadOutput(t *testing.T) {
 	if strings.Contains(envelope.Content, "expand_turn") {
 		t.Fatal("job transcript recommends unsupported expand_turn")
 	}
-	if !strings.Contains(envelope.Content, "job_read_output") {
-		t.Fatal("job transcript omitted supported exact-read hint")
+	if strings.Contains(envelope.Content, "job_read_output") {
+		t.Fatal("job transcript recommends a tool unavailable to the model")
+	}
+	if !strings.Contains(envelope.Content, "additional output is not available from this transcript view") {
+		t.Fatal("job transcript omitted its non-actionable truncation notice")
 	}
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {

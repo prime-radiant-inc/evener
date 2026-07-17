@@ -89,7 +89,7 @@ const (
 	apiLogSource                    = "api_log"
 	maxExpansionBytes               = 64 << 10
 	transcriptExpansionReadHint     = "use expand_turn and its continuation for exact bytes"
-	jobOutputReadHint               = "use job_read_output for a narrower exact window"
+	jobTranscriptTruncationNotice   = "additional output is not available from this transcript view"
 	transcriptV2JSONLRepresentation = "transcript_v2_jsonl"
 )
 
@@ -297,7 +297,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
 		},
 	}
-	return boundReadMarkdownEnvelopeWithHint(envelope, jobOutputReadHint)
+	return boundReadMarkdownEnvelopeWithHint(envelope, jobTranscriptTruncationNotice)
 }
 
 func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
