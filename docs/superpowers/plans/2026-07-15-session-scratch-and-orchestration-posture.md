@@ -1,5 +1,9 @@
 # Session Scratch and Orchestration Posture Implementation Plan
 
+**Status:** Requires a narrow execution reslice after Project 3. Project 4 was
+canceled by Jesse on 2026-07-17, so steps that consume
+`prepareSubagentRunWithModelSelection` are stale and must not be executed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Give every live root and child session one private temporary directory with truthful lifecycle exposure, and add concise Serf-owned guidance for shared-workspace isolation, verification, compaction, and repeated review loops.
@@ -25,7 +29,18 @@ Implementation must not:
 
 ## Prerequisite and Preservation Note
 
-This is project 5 and assumes the delegate-budget truthfulness, transcript/API-log separation, job-supervision surface cleanup, and agent-model selection correctness projects have already landed. Where this plan overlaps `subagents.go`, `job_delegate.go`, `session_tools_jobs.go`, prompt/template files, or environment wiring, preserve those earlier contracts and their focused tests. Do not recreate removed transcript/API or job-read surfaces, alter prior-project result shapes beyond the optional advisory defined here, or add implementation work for those projects.
+This is project 5 and assumes the delegate-budget truthfulness,
+transcript/API-log separation, and job-supervision surface cleanup projects have
+already landed. Project 4 model-selection correctness was canceled and is not a
+prerequisite. Before executing the remaining Project 5 tasks, reslice their
+delegate-construction steps against the accepted Project 3 interfaces; do not
+recreate `prepareSubagentRunWithModelSelection` or add model-selection behavior.
+Where this plan overlaps `subagents.go`, `job_delegate.go`,
+`session_tools_jobs.go`, prompt/template files, or environment wiring, preserve
+the landed earlier-project contracts and their focused tests. Do not recreate
+removed transcript/API or job-read surfaces, alter prior-project result shapes
+beyond the optional advisory defined here, or add implementation work for those
+projects.
 
 ## Testing Discipline
 

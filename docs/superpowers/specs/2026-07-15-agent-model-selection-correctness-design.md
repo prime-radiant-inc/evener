@@ -1,10 +1,13 @@
 # Agent Model Selection Correctness Design
 
 Date: 2026-07-15
-Status: Approved
+Status: Canceled by Jesse on 2026-07-17
 Tracker: #20
 Program order: Project 4 of 6; implement after the budget, transcript/API-log,
 and job-supervision projects.
+
+This document is retained only as historical design context. Do not implement,
+reslice, or treat Project 4 as a prerequisite for any remaining program work.
 
 ## Purpose
 

@@ -1,5 +1,8 @@
 # Aggregate Quiet Lint Implementation Plan
 
+**Status:** Implemented and integrated. Project 4 was canceled by Jesse on
+2026-07-17 and is not a prerequisite for the final program gate.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `make lint` run every existing non-fuzz Go module lint check with bounded concurrency, print only compact status when fully healthy while preserving the existing degraded missing-gitleaks warning, and replay every failed check's complete log followed by one deterministic summary.
@@ -24,7 +27,10 @@ This spec does not:
 
 ## Prerequisite and Program Gate
 
-This is Project 6 of 6. Projects 1-5 must be landed and green before implementation begins. The final real `make lint` run is therefore a program-wide gate over those prior changes as well as this project's quiet aggregation behavior; do not start this plan early or use it to alter failures owned by an earlier project.
+This is Project 6 of 6 and its implementation is already integrated. The final
+real `make lint` run remains a program-wide gate over all active projects.
+Project 4 was canceled and is not part of that gate. Do not use Project 6 to
+alter failures owned by another project.
 
 ---
 

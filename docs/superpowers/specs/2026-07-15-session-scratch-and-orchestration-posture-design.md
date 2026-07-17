@@ -4,7 +4,8 @@ Date: 2026-07-15
 Status: Approved
 Tracker: #20
 Program order: Project 5 of 6; implement after the budget, transcript/API-log,
-job-supervision, and model-selection projects.
+and job-supervision projects. Project 4 model-selection correctness was canceled
+by Jesse on 2026-07-17 and is not a prerequisite.
 
 ## Purpose
 

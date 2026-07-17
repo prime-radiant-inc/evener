@@ -1,5 +1,8 @@
 # Agent Model Selection Correctness Implementation Plan
 
+**Status:** Canceled by Jesse on 2026-07-17. This plan is historical and must
+not be executed, resliced, or used as a prerequisite.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make every explicit delegate or plugin-agent model selection resolve, validate, persist, run, and restore as the selected provider/model, while rejecting unverifiable or incapable selections before any child, job, worktree, transcript, metadata, or watch state is created.
