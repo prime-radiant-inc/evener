@@ -103,9 +103,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	initComplete := false
+	ownedSessionID := ""
 	defer func() {
 		if !initComplete {
 			sessCancel()
+			if ownedSessionID != "" {
+				_ = client.ReleaseSessionAPILog(ownedSessionID)
+			}
 		}
 	}()
 	delegationAllowance := cfg.spawn.delegationAllowance
@@ -132,6 +136,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if err := cfg.AcquireSessionOwnership(sessionID); err != nil {
 			return nil, fmt.Errorf("acquire session ownership: %w", err)
 		}
+		ownedSessionID = sessionID
 	}
 	s := &Session{
 		id:                            sessionID,
@@ -340,6 +345,38 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 // RestoreSessionFromMetaWithConfig is RestoreSessionFromMeta with explicit
 // runtime-only restore configuration.
 func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
+	if client == nil {
+		return nil, errors.New("llm client is nil")
+	}
+	if profile == nil {
+		return nil, errors.New("profile is nil")
+	}
+	if env == nil {
+		return nil, errors.New("execution environment is nil")
+	}
+
+	restoreComplete := false
+	ownershipAcquired := false
+	if restoreCfg.AcquireSessionOwnership != nil {
+		if err := restoreCfg.AcquireSessionOwnership(meta.ID); err != nil {
+			return nil, fmt.Errorf("acquire session ownership: %w", err)
+		}
+		ownershipAcquired = true
+		if restoreCfg.StateDir != "" {
+			currentMeta, err := schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
+			if err != nil {
+				_ = client.ReleaseSessionAPILog(meta.ID)
+				return nil, fmt.Errorf("reload session metadata after ownership: %w", err)
+			}
+			meta = currentMeta
+		}
+	}
+	defer func() {
+		if !restoreComplete && ownershipAcquired {
+			_ = client.ReleaseSessionAPILog(meta.ID)
+		}
+	}()
+
 	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
@@ -363,16 +400,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
-	if client == nil {
-		return nil, errors.New("llm client is nil")
-	}
-	if profile == nil {
-		return nil, errors.New("profile is nil")
-	}
-	if env == nil {
-		return nil, errors.New("execution environment is nil")
-	}
-
 	// Validate and reserve the existing transcript before initialization can
 	// mutate any session artifacts. Missing transcripts are created later;
 	// every other open or parse error fails the resume closed.
@@ -386,7 +413,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
 		}
 	}
-	restoreComplete := false
 	defer func() {
 		if !restoreComplete && resumeTranscript != nil {
 			_ = resumeTranscript.Close()

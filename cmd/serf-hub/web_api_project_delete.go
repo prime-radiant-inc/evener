@@ -164,6 +164,15 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		if s.cfg.Favorite != nil {
 			_ = s.cfg.Favorite.Delete("session", e.ID)
 		}
+		// The API-log pathname is the ownership boundary. Remove it only after
+		// every other session artifact, so a replacement owner can never acquire
+		// the pathname while deletion still has destructive work to do.
+		apiLogPath := filepath.Join(sess, e.ID+".api.jsonl")
+		if err := removeProjectSessionFile(apiLogPath); err != nil && !os.IsNotExist(err) {
+			_ = owner.Close()
+			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: err.Error()})
+			continue
+		}
 		_ = owner.Close()
 		deleted = append(deleted, e.ID)
 	}
@@ -196,8 +205,9 @@ func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
 		return fmt.Errorf("read sessions directory: %w", err)
 	}
 	prefix := sessionID + "."
+	apiLogName := sessionID + ".api.jsonl"
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+		if entry.IsDir() || entry.Name() == apiLogName || !strings.HasPrefix(entry.Name(), prefix) {
 			continue
 		}
 		if err := removeProjectSessionFile(filepath.Join(sessionsDir, entry.Name())); err != nil && !os.IsNotExist(err) {

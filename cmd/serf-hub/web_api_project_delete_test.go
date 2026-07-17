@@ -443,6 +443,61 @@ func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.
 	}
 }
 
+func TestProjectDeleteRemovesAPILogOnlyAfterResumeArtifacts(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+
+	oldRemove := removeProjectSessionFile
+	removeProjectSessionFile = func(path string) error {
+		if err := oldRemove(path); err != nil {
+			return err
+		}
+		if filepath.Base(path) != webTestSessionID+".api.jsonl" {
+			return nil
+		}
+		contender, err := llm.NewSessionAPILogger(stateDir)
+		if err != nil {
+			t.Fatalf("NewSessionAPILogger after API unlink: %v", err)
+		}
+		defer contender.Close() //nolint:errcheck
+		if err := contender.ReserveSession(webTestSessionID); err != nil {
+			t.Fatalf("ReserveSession after API unlink: %v", err)
+		}
+		metaPath := filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")
+		if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+			t.Fatalf("metadata still visible after API unlink: %v", err)
+		}
+		transcriptPath := filepath.Join(stateDir, "sessions", webTestSessionID+".transcript.jsonl")
+		if _, err := os.Stat(transcriptPath); !os.IsNotExist(err) {
+			t.Fatalf("transcript still visible after API unlink: %v", err)
+		}
+		return nil
+	}
+	t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestProjectDeleteSkipsOnRemoveFailure forces a non-ENOENT os.Remove error
 // (permission denied on the containing sessions/ dir) and asserts the
 // session lands ONLY in skipped: never also in deleted, its decision rows
