@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -477,6 +478,210 @@ func TestDoWithAPIAttemptsDoesNotUseGetBodyClone(t *testing.T) {
 	reads, closes := original.counts()
 	if reads == 0 || closes != 1 {
 		t.Fatalf("original request operations = reads:%d closes:%d, want transport reads and one close", reads, closes)
+	}
+}
+
+func TestDoWithAPIAttemptsRedirectSourceWaitsForNextHopCredentialMaterial(t *testing.T) {
+	const secret = "next-hop-secret"
+	tests := []struct {
+		name          string
+		location      string
+		configure     func(*http.Client)
+		build         APIAttemptMetaBuilder
+		assertNextHop func(*testing.T, *http.Request)
+	}{
+		{
+			name:     "query location",
+			location: "/final?access_token=" + url.QueryEscape(secret),
+			build:    attemptMeta,
+			assertNextHop: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.URL.Query().Get("access_token"); got != secret {
+					t.Fatalf("next-hop access_token = %q, want %q", got, secret)
+				}
+			},
+		},
+		{
+			name:     "redirect hook header and userinfo",
+			location: "/final",
+			configure: func(client *http.Client) {
+				client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+					request.Header.Set("X-Redirect-Credential", secret)
+					request.URL.User = url.UserPassword("redirect-user", secret)
+					return nil
+				}
+			},
+			build: func(*http.Request, []byte) llm.APIAttemptMeta {
+				return llm.APIAttemptMeta{
+					ProviderInstance: "test",
+					RequestModel:     "test-model",
+					CredentialMaterial: llm.NewAPILogCredentialMaterial(
+						[]string{"X-Redirect-Credential"},
+						nil,
+					),
+				}
+			},
+			assertNextHop: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				if got := request.Header.Get("X-Redirect-Credential"); got != secret {
+					t.Fatalf("next-hop redirect credential = %q, want %q", got, secret)
+				}
+				if request.URL.User == nil {
+					t.Fatal("next-hop URL has no userinfo")
+				}
+				password, ok := request.URL.User.Password()
+				if !ok || request.URL.User.Username() != "redirect-user" || password != secret {
+					t.Fatalf("next-hop userinfo = %q, %q, %v", request.URL.User.Username(), password, ok)
+				}
+			},
+		},
+		{
+			name:     "cookie jar",
+			location: "/final",
+			configure: func(client *http.Client) {
+				jar, err := cookiejar.New(nil)
+				if err != nil {
+					panic(err)
+				}
+				client.Jar = jar
+			},
+			build: attemptMeta,
+			assertNextHop: func(t *testing.T, request *http.Request) {
+				t.Helper()
+				cookie, err := request.Cookie("session")
+				if err != nil || cookie.Value != secret {
+					t.Fatalf("next-hop session cookie = %#v, %v; want %q", cookie, err, secret)
+				}
+			},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/start" {
+					http.SetCookie(w, &http.Cookie{Name: "session", Value: secret, Path: "/"})
+					w.Header().Set("Location", testCase.location)
+					w.WriteHeader(http.StatusFound)
+					_, _ = w.Write([]byte(secret))
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("final response"))
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			if testCase.configure != nil {
+				testCase.configure(client)
+			}
+			baseTransport := client.Transport
+			var finalRequest *http.Request
+			client.Transport = responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Path != "/start" {
+					finalRequest = request.Clone(request.Context())
+				}
+				return baseTransport.RoundTrip(request)
+			})
+			sink := &responseAssociationSink{}
+			request, err := http.NewRequestWithContext(
+				attemptContext("ag_redirect_source_credentials", sink),
+				http.MethodGet,
+				server.URL+"/start",
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, testCase.build)
+			if err != nil {
+				t.Fatalf("DoWithAPIAttempts: %v", err)
+			}
+			if _, err := io.ReadAll(response.Body); err != nil {
+				t.Fatalf("read final response: %v", err)
+			}
+			attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+			if finalRequest == nil {
+				t.Fatal("redirect did not reach the next hop")
+			}
+			testCase.assertNextHop(t, finalRequest)
+			attempts := sink.snapshot()
+			if len(attempts) != 2 {
+				t.Fatalf("attempt count = %d, want redirect source and final hop", len(attempts))
+			}
+			source := attempts[0]
+			if source.Response == nil || !source.Response.Body.CredentialValuesExcluded {
+				t.Fatalf("redirect source body = %+v, want credential exclusion", source.Response)
+			}
+			encoded, err := apilog.MarshalRecord(source)
+			if err != nil {
+				t.Fatalf("marshal source attempt: %v", err)
+			}
+			if bytes.Contains(encoded, []byte(secret)) {
+				t.Fatalf("redirect source attempt persisted next-hop credential %q", secret)
+			}
+		})
+	}
+}
+
+func TestDoWithAPIAttemptsFlushesRedirectSourceWhenNoNextRoundTripOccurs(t *testing.T) {
+	tests := []struct {
+		name      string
+		location  string
+		wantError error
+	}{
+		{
+			name:      "redirect rejected",
+			location:  "/final",
+			wantError: errors.New("redirect policy sentinel"),
+		},
+		{
+			name:     "invalid location",
+			location: "%",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != "/start" {
+					t.Errorf("unexpected next-hop request %q", request.URL)
+					return
+				}
+				w.Header().Set("Location", testCase.location)
+				w.WriteHeader(http.StatusFound)
+				_, _ = w.Write([]byte("closed redirect source"))
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			if testCase.wantError != nil {
+				client.CheckRedirect = func(*http.Request, []*http.Request) error { return testCase.wantError }
+			}
+			sink := &responseAssociationSink{}
+			request, err := http.NewRequestWithContext(
+				attemptContext("ag_redirect_without_next_round_trip", sink),
+				http.MethodGet,
+				server.URL+"/start",
+				nil,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+			if err == nil {
+				t.Fatal("DoWithAPIAttempts succeeded without a next RoundTrip")
+			}
+			if testCase.wantError != nil && !errors.Is(err, testCase.wantError) {
+				t.Fatalf("DoWithAPIAttempts error = %v, want %v", err, testCase.wantError)
+			}
+			if attempt != nil {
+				t.Fatalf("closed redirect source returned as outer attempt: %#v", attempt)
+			}
+			record := onlyAttempt(t, sink)
+			if record.Response == nil || record.Response.StatusCode == nil || *record.Response.StatusCode != http.StatusFound {
+				t.Fatalf("redirect source response = %+v, want status 302", record.Response)
+			}
+		})
 	}
 }
 

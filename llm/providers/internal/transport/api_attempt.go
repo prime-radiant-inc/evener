@@ -46,6 +46,13 @@ func BeginAPIAttempt(parentCtx, attemptCtx context.Context, request *http.Reques
 	}
 }
 
+func (c *APIAttemptCapture) mergeCredentialMaterial(material llm.APILogCredentialMaterial) {
+	if c == nil {
+		return
+	}
+	c.attempt.MergeCredentialMaterial(material)
+}
+
 // Complete appends the attempt synchronously without changing the provider's
 // response, error, or retry classification.
 func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
