@@ -77,7 +77,7 @@ func TestWriterZeroProgressReturnsErrShortWrite(t *testing.T) {
 	}
 }
 
-func TestWriterAppendRacingCloseStopsAfterLock(t *testing.T) {
+func TestWriterAppendRechecksClosedStateAfterLock(t *testing.T) {
 	previousProcs := runtime.GOMAXPROCS(1)
 	t.Cleanup(func() { runtime.GOMAXPROCS(previousProcs) })
 
@@ -96,7 +96,7 @@ func TestWriterAppendRacingCloseStopsAfterLock(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		started <- struct{}{}
-		done <- w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("raced")))
+		done <- w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("closed")))
 	}()
 	<-started
 	runtime.Gosched()
@@ -104,14 +104,14 @@ func TestWriterAppendRacingCloseStopsAfterLock(t *testing.T) {
 	w.mu.Unlock()
 
 	if err := <-done; err != nil {
-		t.Fatalf("raced Append: %v", err)
+		t.Fatalf("Append after closed-state transition: %v", err)
 	}
 	after, err := afero.ReadFile(fs, faultTranscriptPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(after, before) {
-		t.Fatalf("close-raced append changed transcript:\nbefore=%q\nafter=%q", before, after)
+		t.Fatalf("post-lock closed-state append changed transcript:\nbefore=%q\nafter=%q", before, after)
 	}
 	if err := w.Close(); err != nil {
 		t.Fatal(err)

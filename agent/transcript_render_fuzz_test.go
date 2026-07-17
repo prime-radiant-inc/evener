@@ -305,7 +305,7 @@ func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	records := bytes.SplitAfter(persisted, []byte{'\n'})
-	wrongSpan := append(bytes.Clone(records[2]), records[3]...)
+	wrongSpan := append(bytes.Clone(records[1]), records[2]...)
 	const verifiedPageBytes = 2 * 64
 	wantPrefix := want[:min(len(want), verifiedPageBytes)]
 	wrongPrefix := wrongSpan[:min(len(wrongSpan), verifiedPageBytes)]
@@ -356,8 +356,10 @@ func trenderExpectedPairedExpansionJSONL(t *testing.T, path string, entries []tr
 	if len(records) != len(entries)+2 || len(records[len(records)-1]) != 0 {
 		t.Fatalf("persisted records = %d with trailing bytes %d, want header + %d newline-terminated entries", len(records)-1, len(records[len(records)-1]), len(entries))
 	}
-	want := append(bytes.Clone(records[1]), records[2]...)
-	return want
+	if pin == 0 {
+		return append(bytes.Clone(records[1]), records[2]...)
+	}
+	return bytes.Clone(records[2])
 }
 
 func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) {
@@ -394,7 +396,7 @@ func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries
 		t.Fatal(err)
 	}
 	if !bytes.Equal(firstBytes, want[:len(firstBytes)]) {
-		t.Fatal("first expansion page does not match persisted transcript JSONL")
+		t.Fatalf("first expansion page for pin %d does not match persisted transcript JSONL: got %q want %q", *opt.fullResultFor, firstBytes, want[:len(firstBytes)])
 	}
 	if first.Expansion.Representation != transcriptV2JSONLRepresentation || first.Expansion.TotalBytes != len(want) {
 		t.Fatalf("first expansion metadata = %#v, want representation %q and %d bytes", first.Expansion, transcriptV2JSONLRepresentation, len(want))
@@ -522,10 +524,29 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 		opt.resultToolName = "reply"
 		return header, entries, "0-1", opt
 	case 3:
-		body := `{"job_id":"job-1","status":"completed","reason":"done","transcript_ref":"local:child","output":"` + strings.ReplaceAll(payload, "\n", "\\n") + `","structured_result":{"ok":true},"delivered":true}`
+		bodyBytes, err := json.Marshal(struct {
+			JobID            string          `json:"job_id"`
+			Status           string          `json:"status"`
+			Reason           string          `json:"reason"`
+			TranscriptRef    string          `json:"transcript_ref"`
+			Output           string          `json:"output"`
+			StructuredResult map[string]bool `json:"structured_result"`
+			Delivered        bool            `json:"delivered"`
+		}{
+			JobID:            "job-1",
+			Status:           "completed",
+			Reason:           "done",
+			TranscriptRef:    "local:child",
+			Output:           payload,
+			StructuredResult: map[string]bool{"ok": true},
+			Delivered:        true,
+		})
+		if err != nil {
+			panic(err)
+		}
 		entries := []transcript.Entry{
 			entry(schema.TurnAssistant, call("job", "delegate", `{"task":"child"}`)),
-			entry(schema.TurnToolResults, result("job", "delegate", body, false)),
+			entry(schema.TurnToolResults, result("job", "delegate", string(bodyBytes), false)),
 		}
 		return header, entries, "last:2", opt
 	case 4:
