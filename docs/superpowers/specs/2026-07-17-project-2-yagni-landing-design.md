@@ -1,7 +1,7 @@
 # Project 2 YAGNI Landing Design
 
 Date: 2026-07-17
-Status: Proposed for Jesse review
+Status: Approved by Jesse
 Project: Transcript and API-log separation
 
 ## Purpose
@@ -35,7 +35,8 @@ This design supersedes the implementation direction in:
 
 Those documents remain historical review evidence, not implementation targets.
 Do not implement or preserve their rollback-marker, persistent-name-lock,
-filesystem-identity, ACL/DACL, per-wire-cycle, or compression-emulation work.
+filesystem-identity, permission-framework, per-wire-cycle, or
+compression-emulation work.
 
 Do not merge `wip/p2-thirdwave-apilog-core` as a commit range. It contains
 useful regressions and reviewed findings mixed with rejected architecture.
@@ -74,11 +75,9 @@ The canonical API log is one strict newline-delimited JSON file per session.
 
 ### Open
 
-1. Open or create the exact session leaf without following symlinks or reparse
-   points.
+1. Open or create the exact session leaf without following symlinks.
 2. Require a regular file and acquire its target-file lock.
-3. Create new Unix files with mode `0600`. On Windows, rely on the user-private
-   state-directory ACL; do not create a custom per-file DACL framework.
+3. Create new files with mode `0600` on the supported macOS and Linux targets.
 4. Strictly scan existing complete records.
 5. If and only if the final line is incomplete, truncate it to the last complete
    newline and sync the truncation before accepting appends.
@@ -126,8 +125,7 @@ Project 2 does not include:
 - fresh-name revalidation around filesystem transitions;
 - truncate-and-republish transactions;
 - reserved-directory ownership or namespace durability protocols;
-- POSIX/NFSv4 ACL inspection;
-- protected Windows DACL construction or trustee inspection;
+- POSIX/NFSv4 ACL inspection or a new permission framework;
 - cross-process recovery coordination;
 - operator repair or migration commands.
 
@@ -315,7 +313,7 @@ Required final evidence:
 - explicit API-log reader bounds and exact attempt expansion;
 - doctor, Hub, deletion, grouping, and semantic-turn join tests;
 - full deterministic repository tests, touched-package race tests, vet, lint,
-  and supported-platform cross-compilation;
+  plus Linux cross-compilation from the macOS development host;
 - one independent security review limited to credential persistence and one
   independent whole-project review against this exact design.
 
