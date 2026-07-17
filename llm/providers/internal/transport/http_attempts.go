@@ -69,7 +69,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		responseBody = http.NoBody
 	}
 	body := &apiAttemptResponseBody{
-		observedBody: newObservedBody(responseBody),
+		observedBody: newObservedBody(responseBody, response.ContentLength),
 		attempt:      attempt,
 		statusCode:   response.StatusCode,
 	}
@@ -120,20 +120,22 @@ type bodyObservation struct {
 	exact bool
 }
 
-// observedBody records only bytes returned by application Read calls. Close is
-// passed straight through and never changes the observation's completeness.
+// observedBody records only bytes returned by application Read calls. EOF or a
+// known content length proves completeness; Close never does.
 type observedBody struct {
 	io.ReadCloser
 
-	mu    sync.Mutex
-	buf   bytes.Buffer
-	exact bool
+	mu          sync.Mutex
+	buf         bytes.Buffer
+	exact       bool
+	knownLength int64
 }
 
-func newObservedBody(body io.ReadCloser) *observedBody {
+func newObservedBody(body io.ReadCloser, contentLength int64) *observedBody {
 	return &observedBody{
-		ReadCloser: body,
-		exact:      body == http.NoBody,
+		ReadCloser:  body,
+		exact:       body == http.NoBody || contentLength == 0,
+		knownLength: contentLength,
 	}
 }
 
@@ -143,7 +145,7 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	if n > 0 {
 		_, _ = b.buf.Write(p[:n])
 	}
-	if err == io.EOF {
+	if err == io.EOF || (b.knownLength >= 0 && int64(b.buf.Len()) >= b.knownLength) {
 		b.exact = true
 	}
 	b.mu.Unlock()
@@ -177,9 +179,14 @@ type apiAttemptRequestBody struct {
 
 func captureRequestBody(request *http.Request) func() bodyObservation {
 	if request.Body == nil || request.Body == http.NoBody {
-		return nil
+		return func() bodyObservation { return bodyObservation{exact: true} }
 	}
-	body := &apiAttemptRequestBody{observedBody: newObservedBody(request.Body)}
+	contentLength := request.ContentLength
+	// net/http treats zero with a non-nil client request body as unknown.
+	if contentLength == 0 {
+		contentLength = -1
+	}
+	body := &apiAttemptRequestBody{observedBody: newObservedBody(request.Body, contentLength)}
 	request.Body = body
 	return body.snapshot
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 type observingReadCloser struct {
@@ -62,13 +63,55 @@ func (r *terminalReadCloser) Read(p []byte) (int, error) {
 
 func (*terminalReadCloser) Close() error { return nil }
 
+type concurrentReadCloseBody struct {
+	data        []byte
+	readStarted chan struct{}
+	closeCalled chan struct{}
+	releaseRead chan struct{}
+	readOnce    sync.Once
+	closeOnce   sync.Once
+	releaseOnce sync.Once
+
+	mu         sync.Mutex
+	readCount  int
+	closeCount int
+}
+
+func (b *concurrentReadCloseBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	b.readCount++
+	b.mu.Unlock()
+	b.readOnce.Do(func() { close(b.readStarted) })
+	<-b.releaseRead
+	return copy(p, b.data), nil
+}
+
+func (b *concurrentReadCloseBody) Close() error {
+	b.mu.Lock()
+	b.closeCount++
+	b.mu.Unlock()
+	b.closeOnce.Do(func() { close(b.closeCalled) })
+	return nil
+}
+
+func (b *concurrentReadCloseBody) release() {
+	b.releaseOnce.Do(func() { close(b.releaseRead) })
+}
+
+func (b *concurrentReadCloseBody) counts() (int, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.readCount, b.closeCount
+}
+
 func TestAPIAttemptCompleteDoesNotDrainOrCloseResponseBody(t *testing.T) {
 	body := &observingReadCloser{reader: bytes.NewReader([]byte("observed-unconsumed"))}
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     make(http.Header),
-			Body:       body,
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          body,
+			ContentLength: -1,
 		}, nil
 	})}
 	sink := &responseAssociationSink{}
@@ -238,9 +281,10 @@ func TestAPIAttemptBodyObserversReportOnlyReturnedBytesAndEOFExactness(t *testin
 		t.Run(testCase.name, func(t *testing.T) {
 			client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
-					StatusCode: http.StatusOK,
-					Header:     make(http.Header),
-					Body:       testCase.body(),
+					StatusCode:    http.StatusOK,
+					Header:        make(http.Header),
+					Body:          testCase.body(),
+					ContentLength: -1,
 				}, nil
 			})}
 			sink := &responseAssociationSink{}
@@ -272,5 +316,205 @@ func TestAPIAttemptBodyObserversReportOnlyReturnedBytesAndEOFExactness(t *testin
 				t.Fatalf("observed exactness = %v, want %v", got, testCase.wantExact)
 			}
 		})
+	}
+}
+
+func TestAPIAttemptKnownContentLengthIsExactWithoutEOF(t *testing.T) {
+	requestBytes := []byte("known request")
+	responseBytes := []byte("known response")
+	var requestObservation bodyObservationReporter
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var ok bool
+		requestObservation, ok = request.Body.(bodyObservationReporter)
+		if !ok {
+			t.Fatalf("request body %T does not report observations", request.Body)
+		}
+		buf := make([]byte, len(requestBytes))
+		n, err := request.Body.Read(buf)
+		if n != len(requestBytes) || err != nil {
+			t.Fatalf("transport request read = %d, %v; want %d, nil", n, err, len(requestBytes))
+		}
+		if err := request.Body.Close(); err != nil {
+			t.Fatalf("transport request close: %v", err)
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          &terminalReadCloser{data: responseBytes},
+			ContentLength: int64(len(responseBytes)),
+		}, nil
+	})}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_known_length", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		&terminalReadCloser{data: requestBytes},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = int64(len(requestBytes))
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	responseObservation := response.Body.(bodyObservationReporter)
+	buf := make([]byte, len(responseBytes))
+	n, err := response.Body.Read(buf)
+	if n != len(responseBytes) || err != nil {
+		t.Fatalf("adapter response read = %d, %v; want %d, nil", n, err, len(responseBytes))
+	}
+
+	if !requestObservation.observedExactly() {
+		t.Fatal("known-length request remained inexact after all bytes were observed without EOF")
+	}
+	if !responseObservation.observedExactly() {
+		t.Fatal("known-length response remained inexact after all bytes were observed without EOF")
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+}
+
+func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
+	knownZeroRequest, err := http.NewRequest(http.MethodPost, "https://provider.test/v1", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestSnapshot := captureRequestBody(knownZeroRequest)
+	requestObservation := requestSnapshot()
+	if !requestObservation.exact {
+		t.Fatal("known-zero request was not exact before a read")
+	}
+	if len(requestObservation.bytes) != 0 {
+		t.Fatal("known-zero request invented observed bytes")
+	}
+
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          &terminalReadCloser{data: []byte("must not be read")},
+			ContentLength: 0,
+		}, nil
+	})}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_known_zero", sink),
+		http.MethodGet,
+		"https://provider.test/v1",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	responseObservation := response.Body.(bodyObservationReporter)
+	if !responseObservation.observedExactly() {
+		t.Fatal("known-zero response was not exact before a read")
+	}
+	if len(responseObservation.observedBytes()) != 0 {
+		t.Fatal("known-zero body invented observed bytes")
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+}
+
+func TestAPIAttemptConcurrentReadAndCloseSnapshotsPromptlyWithoutExtraOperations(t *testing.T) {
+	body := &concurrentReadCloseBody{
+		data:        []byte("read returns after snapshot"),
+		readStarted: make(chan struct{}),
+		closeCalled: make(chan struct{}),
+		releaseRead: make(chan struct{}),
+	}
+	defer body.release()
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          body,
+			ContentLength: -1,
+		}, nil
+	})}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(attemptContext("ag_concurrent_read_close", sink), http.MethodGet, "https://provider.test/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+
+	type readResult struct {
+		n   int
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, len(body.data))
+		n, err := response.Body.Read(buf)
+		readDone <- readResult{n: n, err: err}
+	}()
+	select {
+	case <-body.readStarted:
+	case <-time.After(time.Second):
+		t.Fatal("response Read did not enter the underlying body")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- response.Body.Close() }()
+	select {
+	case <-body.closeCalled:
+	case <-time.After(time.Second):
+		t.Fatal("pass-through Close did not reach the underlying body")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("response Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pass-through Close waited for the in-flight Read")
+	}
+
+	completeDone := make(chan struct{})
+	go func() {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+		close(completeDone)
+	}()
+	select {
+	case <-completeDone:
+	case <-time.After(time.Second):
+		t.Fatal("attempt completion waited for the in-flight Read")
+	}
+	reporter := response.Body.(bodyObservationReporter)
+	if reporter.observedExactly() {
+		t.Fatal("snapshot became exact while a Read was still in flight")
+	}
+	if got := reporter.observedBytes(); len(got) != 0 {
+		t.Fatalf("snapshot captured %d bytes before Read returned", len(got))
+	}
+	reads, closes := body.counts()
+	if reads != 1 || closes != 1 {
+		t.Fatalf("underlying operations = reads:%d closes:%d, want 1/1", reads, closes)
+	}
+	recorded, err := apilog.DecodeBody(onlyAttempt(t, sink).Response.Body)
+	if err != nil {
+		t.Fatalf("decode recorded response: %v", err)
+	}
+	if len(recorded) != 0 {
+		t.Fatalf("attempt recorded %d bytes before Read returned", len(recorded))
+	}
+
+	body.release()
+	select {
+	case result := <-readDone:
+		if result.n != len(body.data) || result.err != nil {
+			t.Fatalf("in-flight Read result = %d, %v; want %d, nil", result.n, result.err, len(body.data))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("in-flight Read did not finish after release")
 	}
 }

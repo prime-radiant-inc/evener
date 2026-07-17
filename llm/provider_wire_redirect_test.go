@@ -408,7 +408,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 	}
 }
 
-func TestCoreCompleteWireCaptureDrainsFullLargeRedirectResponseBeforeNextHop(t *testing.T) {
+func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testing.T) {
 	largeRedirectBody := bytes.Repeat([]byte("redirect-evidence-"), 512)
 	if len(largeRedirectBody) <= 2<<10 {
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
@@ -463,7 +463,7 @@ func TestCoreCompleteWireCaptureDrainsFullLargeRedirectResponseBeforeNextHop(t *
 			}
 			select {
 			case <-secondStarted:
-				t.Fatal("second hop started before full redirect attempt append returned")
+				t.Fatal("second hop started before unread redirect attempt append returned")
 			default:
 			}
 			sink.release()
@@ -482,7 +482,7 @@ func TestCoreCompleteWireCaptureDrainsFullLargeRedirectResponseBeforeNextHop(t *
 			if len(attempts) != 2 {
 				t.Fatalf("canonical attempts = %d, want 2", len(attempts))
 			}
-			assertRedirectAttempt(t, attempts[0], groupID, 1, firstRequest, largeRedirectBody, http.StatusFound, apilog.AttemptProviderReject)
+			assertRedirectAttempt(t, attempts[0], groupID, 1, firstRequest, nil, http.StatusFound, apilog.AttemptProviderReject)
 		})
 	}
 }
