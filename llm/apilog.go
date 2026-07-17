@@ -1,12 +1,10 @@
 package llm
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -169,67 +167,20 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 }
 
 func recoverCanonicalAPILogTail(file *os.File, maxLineBytes int) error {
-	if maxLineBytes <= 0 {
-		return fmt.Errorf("recover API log: maximum line bytes must be positive")
+	completeOffset, partialTail, err := apilog.ScanRecovery(file, maxLineBytes)
+	if err != nil {
+		return fmt.Errorf("scan API log for recovery: %w", err)
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("seek API log for recovery: %w", err)
+	if !partialTail {
+		return nil
 	}
-
-	reader := bufio.NewReader(file)
-	var (
-		line           []byte
-		lineNumber     = 1
-		lineOffset     int64
-		completeOffset int64
-		offset         int64
-		tooLong        bool
-	)
-	for {
-		fragment, readErr := reader.ReadSlice('\n')
-		offset += int64(len(fragment))
-		content := fragment
-		if len(content) > 0 && content[len(content)-1] == '\n' {
-			content = content[:len(content)-1]
-		}
-		if !tooLong {
-			if len(line)+len(content) > maxLineBytes {
-				tooLong = true
-			} else {
-				line = append(line, content...)
-			}
-		}
-
-		switch readErr {
-		case nil:
-			if tooLong {
-				return fmt.Errorf("recover API log line %d at offset %d exceeds %d bytes", lineNumber, lineOffset, maxLineBytes)
-			}
-			if _, err := apilog.DecodeRecord(line); err != nil {
-				return fmt.Errorf("recover API log line %d at offset %d: %w", lineNumber, lineOffset, err)
-			}
-			completeOffset = offset
-			line = line[:0]
-			tooLong = false
-			lineNumber++
-			lineOffset = offset
-		case bufio.ErrBufferFull:
-			continue
-		case io.EOF:
-			if len(line) == 0 && !tooLong && offset == completeOffset {
-				return nil
-			}
-			if err := file.Truncate(completeOffset); err != nil {
-				return fmt.Errorf("truncate partial API-log tail at offset %d: %w", completeOffset, err)
-			}
-			if err := file.Sync(); err != nil {
-				return fmt.Errorf("sync recovered API log: %w", err)
-			}
-			return nil
-		default:
-			return fmt.Errorf("read API log line %d at offset %d for recovery: %w", lineNumber, lineOffset, readErr)
-		}
+	if err := file.Truncate(completeOffset); err != nil {
+		return fmt.Errorf("truncate partial API-log tail at offset %d: %w", completeOffset, err)
 	}
+	if err := file.Sync(); err != nil {
+		return fmt.Errorf("sync recovered API log: %w", err)
+	}
+	return nil
 }
 
 // WrapComplete binds the canonical sink and owns settlement only when the

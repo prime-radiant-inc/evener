@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -327,20 +328,20 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 		t.Run(tt.name+"/single-file", func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "api.jsonl")
 			tt.body(t, path)
-			before, err := os.Stat(path)
+			before, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("stat invalid log: %v", err)
+				t.Fatalf("read invalid log: %v", err)
 			}
 			if logger, err := NewAPILogger(path); err == nil {
 				_ = logger.Close()
 				t.Fatal("NewAPILogger accepted an invalid complete line")
 			}
-			after, err := os.Stat(path)
+			after, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("stat rejected log: %v", err)
+				t.Fatalf("read rejected log: %v", err)
 			}
-			if after.Size() != before.Size() {
-				t.Fatalf("rejected log size = %d, want unchanged %d", after.Size(), before.Size())
+			if !bytes.Equal(after, before) {
+				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
 		})
 
@@ -352,9 +353,9 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 				t.Fatalf("mkdir sessions: %v", err)
 			}
 			tt.body(t, path)
-			before, err := os.Stat(path)
+			before, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("stat invalid log: %v", err)
+				t.Fatalf("read invalid log: %v", err)
 			}
 			logger, err := NewSessionAPILogger(stateDir)
 			if err != nil {
@@ -367,12 +368,12 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 			if err := logger.Close(); err != nil {
 				t.Fatalf("Close: %v", err)
 			}
-			after, err := os.Stat(path)
+			after, err := os.ReadFile(path)
 			if err != nil {
-				t.Fatalf("stat rejected log: %v", err)
+				t.Fatalf("read rejected log: %v", err)
 			}
-			if after.Size() != before.Size() {
-				t.Fatalf("rejected log size = %d, want unchanged %d", after.Size(), before.Size())
+			if !bytes.Equal(after, before) {
+				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
 		})
 	}
@@ -385,6 +386,7 @@ func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatalf("write oversized API log: %v", err)
 	}
+	before := append([]byte(nil), data...)
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatalf("open oversized API log: %v", err)
@@ -393,12 +395,12 @@ func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing
 	if err := recoverCanonicalAPILogTail(file, maxLineBytes); err == nil {
 		t.Fatal("recovery accepted an oversized complete line")
 	}
-	info, err := file.Stat()
+	after, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("stat oversized API log: %v", err)
+		t.Fatalf("read rejected oversized API log: %v", err)
 	}
-	if info.Size() != int64(len(data)) {
-		t.Fatalf("rejected API log size = %d, want unchanged %d", info.Size(), len(data))
+	if !bytes.Equal(after, before) {
+		t.Fatalf("rejected oversized API-log bytes changed:\n before: %q\n  after: %q", before, after)
 	}
 }
 

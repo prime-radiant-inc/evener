@@ -13,11 +13,12 @@ import (
 var ErrPartialTail = errors.New("partial API-log tail")
 
 type Decoder struct {
-	reader       *bufio.Reader
-	maxLineBytes int
-	line         int
-	offset       int64
-	done         bool
+	reader             *bufio.Reader
+	maxLineBytes       int
+	line               int
+	offset             int64
+	lastCompleteOffset int64
+	done               bool
 }
 
 func NewDecoder(r io.Reader, maxLineBytes int) *Decoder {
@@ -52,6 +53,7 @@ func (d *Decoder) Next() (APILogRecord, error) {
 	if err != nil {
 		return nil, fmt.Errorf("API log line %d at offset %d: %w", lineNumber, lineOffset, err)
 	}
+	d.lastCompleteOffset = d.offset
 	return record, nil
 }
 
@@ -83,6 +85,30 @@ func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 			return line, false, tooLong, nil
 		default:
 			return nil, false, tooLong, readErr
+		}
+	}
+}
+
+// ScanRecovery validates a current canonical API log from offset zero and
+// reports the byte offset after its last complete record. A final unterminated
+// fragment is reported separately so the file owner can truncate it without
+// treating corrupt or oversized complete records as recoverable.
+func ScanRecovery(r io.ReadSeeker, maxLineBytes int) (lastCompleteOffset int64, partialTail bool, err error) {
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return 0, false, fmt.Errorf("seek API log for recovery: %w", err)
+	}
+	decoder := NewDecoder(r, maxLineBytes)
+	for {
+		_, err := decoder.Next()
+		switch {
+		case err == nil:
+			continue
+		case errors.Is(err, io.EOF):
+			return decoder.lastCompleteOffset, false, nil
+		case errors.Is(err, ErrPartialTail):
+			return decoder.lastCompleteOffset, true, nil
+		default:
+			return decoder.lastCompleteOffset, false, err
 		}
 	}
 }

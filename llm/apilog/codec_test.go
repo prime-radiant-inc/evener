@@ -154,3 +154,51 @@ func TestPartialTailIsReturnedForOversizedFinalFragment(t *testing.T) {
 		t.Fatalf("Next() error = %v, want ErrPartialTail", err)
 	}
 }
+
+func TestScanRecoveryReturnsLastCompleteOffsetAndPartialTail(t *testing.T) {
+	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
+	partial := marshalRecordLine(t, validSettlement(t))
+	prefix := append(append([]byte(nil), complete...), '\n')
+	data := append(append([]byte(nil), prefix...), partial[:len(partial)/2]...)
+
+	lastCompleteOffset, partialTail, err := ScanRecovery(bytes.NewReader(data), len(complete)+len(partial))
+	if err != nil {
+		t.Fatalf("ScanRecovery: %v", err)
+	}
+	if lastCompleteOffset != int64(len(prefix)) || !partialTail {
+		t.Fatalf("ScanRecovery = (%d, %t), want (%d, true)", lastCompleteOffset, partialTail, len(prefix))
+	}
+
+	lastCompleteOffset, partialTail, err = ScanRecovery(bytes.NewReader(prefix), len(complete))
+	if err != nil {
+		t.Fatalf("ScanRecovery clean file: %v", err)
+	}
+	if lastCompleteOffset != int64(len(prefix)) || partialTail {
+		t.Fatalf("clean ScanRecovery = (%d, %t), want (%d, false)", lastCompleteOffset, partialTail, len(prefix))
+	}
+}
+
+func TestScanRecoveryRejectsInvalidCompleteLinesAtCanonicalBoundary(t *testing.T) {
+	complete := marshalRecordLine(t, validAPIAttemptRecord(t))
+	prefix := append(append([]byte(nil), complete...), '\n')
+	tests := []struct {
+		name         string
+		line         []byte
+		maxLineBytes int
+	}{
+		{name: "corrupt", line: []byte("{broken}\n"), maxLineBytes: len(complete)},
+		{name: "oversized", line: []byte(strings.Repeat("x", len(complete)+1) + "\n"), maxLineBytes: len(complete)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := append(append([]byte(nil), prefix...), tt.line...)
+			lastCompleteOffset, partialTail, err := ScanRecovery(bytes.NewReader(data), tt.maxLineBytes)
+			if err == nil {
+				t.Fatal("ScanRecovery accepted an invalid complete line")
+			}
+			if lastCompleteOffset != int64(len(prefix)) || partialTail {
+				t.Fatalf("ScanRecovery failure boundary = (%d, %t), want (%d, false)", lastCompleteOffset, partialTail, len(prefix))
+			}
+		})
+	}
+}
