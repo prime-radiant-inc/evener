@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -239,14 +240,17 @@ func TestDoWithAPIAttemptsRecordsStandardTransportWrittenRequestMetadata(t *test
 	})
 
 	t.Run("chunked transfer and trailers", func(t *testing.T) {
+		const credentialTrailer = "X-Configured-Credential-Trailer"
 		var received struct {
 			transferEncoding []string
 			trailer          []string
+			credential       []string
 		}
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 			received.transferEncoding = append([]string(nil), request.TransferEncoding...)
 			_, _ = io.Copy(io.Discard, request.Body)
 			received.trailer = append([]string(nil), request.Trailer.Values("X-Wire-Trailer")...)
+			received.credential = append([]string(nil), request.Trailer.Values(credentialTrailer)...)
 			_, _ = io.WriteString(w, `{}`)
 		}))
 		t.Cleanup(server.Close)
@@ -261,9 +265,15 @@ func TestDoWithAPIAttemptsRecordsStandardTransportWrittenRequestMetadata(t *test
 			t.Fatal(err)
 		}
 		request.ContentLength = -1
-		request.Trailer = http.Header{"X-Wire-Trailer": []string{"final-value"}}
+		request.Trailer = http.Header{
+			"X-Wire-Trailer":  []string{"final-value"},
+			credentialTrailer: []string{"credential-value"},
+		}
 		response, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, func(*http.Request, []byte) llm.APIAttemptMeta {
-			return llm.APIAttemptMeta{ProviderInstance: "test"}
+			return llm.APIAttemptMeta{
+				ProviderInstance:   "test",
+				CredentialMaterial: llm.NewAPILogCredentialMaterial([]string{credentialTrailer}, nil, "credential-value"),
+			}
 		})
 		if err != nil {
 			t.Fatalf("DoWithAPIAttempts: %v", err)
@@ -275,6 +285,15 @@ func TestDoWithAPIAttemptsRecordsStandardTransportWrittenRequestMetadata(t *test
 		assertHeaderValues(t, record.Request.Headers, "Transfer-Encoding", received.transferEncoding)
 		assertHeaderValues(t, record.Request.Headers, "Trailer", []string{"X-Wire-Trailer"})
 		assertHeaderValues(t, record.Request.Headers, "X-Wire-Trailer", received.trailer)
+		if len(received.credential) == 0 {
+			t.Fatal("server did not receive configured credential trailer")
+		}
+		if strings.Contains(strings.Join(record.Request.Headers["Trailer"], ","), credentialTrailer) {
+			t.Fatalf("canonical Trailer declaration retained credential header name: %#v", record.Request.Headers)
+		}
+		if _, present := record.Request.Headers[credentialTrailer]; present {
+			t.Fatalf("canonical request retained credential trailer: %#v", record.Request.Headers)
+		}
 	})
 }
 
@@ -441,6 +460,94 @@ func TestDoWithAPIAttemptsPartialTraceWithoutWroteRequestDoesNotHang(t *testing.
 	}
 }
 
+func TestDoWithAPIAttemptsBodyWriteFailureDoesNotInventTrailers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(server.Close)
+
+	bodyErr := errors.New("request body read failure")
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_partial_request_body")),
+		sink,
+	)
+	body := io.NopCloser(io.MultiReader(
+		strings.NewReader("partially-written-body"),
+		iotest.ErrReader(bodyErr),
+	))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = -1
+	request.Trailer = http.Header{"X-Unwritten-Trailer": []string{"not-written"}}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if !errors.Is(err, bodyErr) {
+		t.Fatalf("DoWithAPIAttempts error = %v, want request body failure %v", err, bodyErr)
+	}
+	attempt.Complete(llm.APIAttemptResult{Err: err}, llm.APITimeoutNone, nil, err)
+
+	headers := onlyAttempt(t, sink).Request.Headers
+	assertHeaderValues(t, headers, "Trailer", []string{"X-Unwritten-Trailer"})
+	if _, present := headers["X-Unwritten-Trailer"]; present {
+		t.Fatalf("partial body write invented an unwritten trailer value: %#v", headers)
+	}
+}
+
+func TestWireRequestMetadataHandlesEveryTraceCallbackSubset(t *testing.T) {
+	transportErr := errors.New("transport failure after trace callbacks")
+	wroteRequestErr := errors.New("request write failure")
+	for mask := 0; mask < 8; mask++ {
+		wroteRequestErrors := []error{nil}
+		if mask&4 != 0 {
+			wroteRequestErrors = append(wroteRequestErrors, wroteRequestErr)
+		}
+		for _, writeErr := range wroteRequestErrors {
+			name := "callbacks_" + strconv.Itoa(mask)
+			if writeErr != nil {
+				name += "_write_error"
+			}
+			t.Run(name, func(t *testing.T) {
+				request, err := http.NewRequest(http.MethodPost, "https://provider.test/v1", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Trailer = http.Header{"X-Trace-Trailer": []string{"final-value"}}
+				metadata := newWireRequestMetadata(request)
+				traced := metadata.trace(request)
+				trace := httptrace.ContextClientTrace(traced.Context())
+				if mask&1 != 0 {
+					trace.WroteHeaderField("X-Actually-Written", []string{"visible"})
+				}
+				if mask&2 != 0 {
+					trace.WroteHeaders()
+				}
+				if mask&4 != 0 {
+					trace.WroteRequest(httptrace.WroteRequestInfo{Err: writeErr})
+				}
+				metadata.finishRoundTrip(transportErr)
+				headers, ok := metadata.snapshot()
+				if !ok {
+					t.Fatal("finished metadata did not produce a snapshot")
+				}
+				_, hasWrittenHeader := headers["X-Actually-Written"]
+				if hasWrittenHeader != (mask&1 != 0) {
+					t.Fatalf("written-header presence = %v, want %v: %#v", hasWrittenHeader, mask&1 != 0, headers)
+				}
+				_, hasTrailer := headers["X-Trace-Trailer"]
+				wantTrailer := mask&4 != 0 && writeErr == nil
+				if hasTrailer != wantTrailer {
+					t.Fatalf("trailer presence = %v, want %v: %#v", hasTrailer, wantTrailer, headers)
+				}
+			})
+		}
+	}
+}
+
 func TestDoWithAPIAttemptsPreservesHTTP2StandardCompressionSemantics(t *testing.T) {
 	validBody := []byte(strings.Repeat("http2-provider-response-", 256))
 	validGzip := gzipBytes(t, validBody)
@@ -462,13 +569,13 @@ func TestDoWithAPIAttemptsPreservesHTTP2StandardCompressionSemantics(t *testing.
 		case "/corrupt":
 			w.Header().Set("Content-Length", strconv.Itoa(len(corruptGzip)))
 			_, _ = w.Write(corruptGzip)
-		case "/concurrent":
+		case "/slow-close":
 			gate := streamGate{release: make(chan struct{})}
-			_, _ = w.Write(validGzip[:10])
+			_, _ = w.Write(validGzip[:len(validGzip)-8])
 			w.(http.Flusher).Flush()
 			gates <- gate
 			<-gate.release
-			_, _ = w.Write(validGzip[10:])
+			_, _ = w.Write(validGzip[len(validGzip)-8:])
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -528,22 +635,17 @@ func TestDoWithAPIAttemptsPreservesHTTP2StandardCompressionSemantics(t *testing.
 		}
 	})
 
-	t.Run("concurrent read and close", func(t *testing.T) {
-		inactive, _, _ := doHTTP2CompressionRequest(t, client, server.URL+"/concurrent", false)
+	t.Run("early close does not drain an open stream", func(t *testing.T) {
+		inactive, _, _ := doHTTP2CompressionRequest(t, client, server.URL+"/slow-close", false)
 		inactiveGate := <-gates
-		inactiveConcurrent, inactiveBlocked := concurrentReadAndClose(t, inactive.Body, inactiveGate.release)
+		readOneDecodedByte(t, inactive.Body)
+		closePromptly(t, inactive.Body, inactiveGate.release)
 
-		active, attempt, _ := doHTTP2CompressionRequest(t, client, server.URL+"/concurrent", true)
+		active, attempt, _ := doHTTP2CompressionRequest(t, client, server.URL+"/slow-close", true)
 		activeGate := <-gates
-		activeConcurrent, activeBlocked := concurrentReadAndClose(t, active.Body, activeGate.release)
-		attempt.Complete(llm.APIAttemptResult{StatusCode: active.StatusCode}, llm.APITimeoutNone, activeBlocked, nil)
-
-		if inactiveConcurrent.Error() != activeConcurrent.Error() {
-			t.Fatalf("HTTP/2 concurrent-read error drift = inactive:%q active:%q", inactiveConcurrent, activeConcurrent)
-		}
-		if errors.Is(inactiveBlocked, fs.ErrClosed) != errors.Is(activeBlocked, fs.ErrClosed) {
-			t.Fatalf("HTTP/2 blocked read close ownership drift = inactive:%v active:%v", inactiveBlocked, activeBlocked)
-		}
+		readOneDecodedByte(t, active.Body)
+		closePromptly(t, active.Body, activeGate.release)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: active.StatusCode}, llm.APITimeoutNone, nil, nil)
 	})
 }
 
@@ -606,57 +708,28 @@ func readAfterClose(t *testing.T, body io.ReadCloser) error {
 	return nil
 }
 
-type bodyReadResult struct {
-	n   int
-	err error
+func readOneDecodedByte(t *testing.T, body io.Reader) {
+	t.Helper()
+	if n, err := body.Read(make([]byte, 1)); n != 1 || err != nil {
+		t.Fatalf("decoded response read = %d, %v; want one byte", n, err)
+	}
 }
 
-func concurrentReadAndClose(t *testing.T, body io.ReadCloser, release chan struct{}) (error, error) {
+func closePromptly(t *testing.T, body io.Closer, release chan struct{}) {
 	t.Helper()
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
-	results := make(chan bodyReadResult, 2)
-	for range 2 {
-		go func() {
-			n, err := body.Read(make([]byte, 1))
-			results <- bodyReadResult{n: n, err: err}
-		}()
-	}
-	var concurrent bodyReadResult
-	select {
-	case concurrent = <-results:
-	case <-time.After(time.Second):
-		t.Fatal("neither concurrent HTTP/2 read returned")
-	}
-	if concurrent.n != 0 || concurrent.err == nil || !strings.Contains(concurrent.err.Error(), "concurrent read on response body") {
-		t.Fatalf("concurrent HTTP/2 read = %d, %v; want protocol concurrent-read error", concurrent.n, concurrent.err)
-	}
 	closeDone := make(chan error, 1)
 	go func() { closeDone <- body.Close() }()
 	select {
 	case err := <-closeDone:
 		if err != nil {
-			t.Fatalf("close during HTTP/2 read: %v", err)
+			t.Fatalf("close partial HTTP/2 response: %v", err)
 		}
+		close(release)
 	case <-time.After(time.Second):
-		t.Fatal("HTTP/2 response Close hung behind an admitted read")
+		close(release)
+		<-closeDone
+		t.Fatal("HTTP/2 response Close waited for the provider stream to end")
 	}
-	close(release)
-	var blocked bodyReadResult
-	select {
-	case blocked = <-results:
-	case <-time.After(time.Second):
-		t.Fatal("blocked HTTP/2 read did not return after Close")
-	}
-	if blocked.n != 0 || blocked.err == nil {
-		t.Fatalf("blocked HTTP/2 read after Close = %d, %v; want zero bytes and an error", blocked.n, blocked.err)
-	}
-	return concurrent.err, blocked.err
 }
 
 func onlyAttempt(t *testing.T, sink *responseAssociationSink) apilog.APIAttemptRecord {

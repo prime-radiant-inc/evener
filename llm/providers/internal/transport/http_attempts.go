@@ -106,6 +106,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		readsDone:  make(chan struct{}),
 	}
 	body.associationDone = func() { t.releaseResponse(response, body) }
+	attempt.responseDrain = body.drainForDecodeFailure
 	attempt.responseBody = body.snapshot
 	response.Body = body
 	if decodeGzip && strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
@@ -125,86 +126,57 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 }
 
 type standardGzipResponseBody struct {
-	body              io.ReadCloser
-	readClosedErr     error
-	concurrentReadErr error
-	mu                sync.Mutex
-	zr                *gzip.Reader
-	err               error
+	body          io.ReadCloser
+	protocolMajor int
+	mu            sync.Mutex
+	closed        bool
+	zr            *gzip.Reader
+	zerr          error
 }
 
 func newStandardGzipResponseBody(body io.ReadCloser, protocolMajor int) *standardGzipResponseBody {
-	readClosedErr := errHTTP1ReadClosedGzipResponse
-	concurrentReadErr := errHTTP1ConcurrentGzipRead
-	if protocolMajor >= 2 {
-		readClosedErr = fs.ErrClosed
-		concurrentReadErr = errHTTP2ConcurrentGzipRead
-	}
 	return &standardGzipResponseBody{
-		body:              body,
-		readClosedErr:     readClosedErr,
-		concurrentReadErr: concurrentReadErr,
+		body:          body,
+		protocolMajor: protocolMajor,
 	}
 }
 
 func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
-	zr, err := b.acquire()
-	if err != nil {
-		return 0, err
+	if b.zerr != nil {
+		return 0, b.zerr
 	}
-	defer b.release(zr)
-	return zr.Read(p)
+	if b.zr == nil {
+		b.zr, b.zerr = gzip.NewReader(b.body)
+		if b.zerr != nil {
+			return 0, b.zerr
+		}
+	}
+	if b.protocolMajor < 2 {
+		b.mu.Lock()
+		closed := b.closed
+		b.mu.Unlock()
+		if closed {
+			return 0, errHTTP1ReadClosedGzipResponse
+		}
+	}
+	return b.zr.Read(p)
 }
 
 func (b *standardGzipResponseBody) Close() error {
-	b.mu.Lock()
-	readInProgress := errors.Is(b.err, b.concurrentReadErr)
-	if b.err == nil && b.zr != nil {
-		_ = b.zr.Close()
-		b.zr = nil
+	if b.protocolMajor < 2 {
+		b.mu.Lock()
+		b.closed = true
+		b.mu.Unlock()
+		return b.body.Close()
 	}
-	b.err = b.readClosedErr
-	b.mu.Unlock()
-	if !readInProgress {
-		_, _ = io.Copy(io.Discard, b.body)
+	if err := b.body.Close(); err != nil {
+		return err
 	}
-	return b.body.Close()
+	b.zerr = fs.ErrClosed
+	return nil
 }
 
-var (
-	errHTTP1ReadClosedGzipResponse = errors.New("http: read on closed response body")
-	errHTTP1ConcurrentGzipRead     = errors.New("http: concurrent read on response body")
-	errHTTP2ConcurrentGzipRead     = errors.New("http2: concurrent read on response body")
-)
-
-func (b *standardGzipResponseBody) acquire() (*gzip.Reader, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.err != nil {
-		return nil, b.err
-	}
-	if b.zr == nil {
-		b.zr, b.err = gzip.NewReader(b.body)
-		if b.err != nil {
-			return nil, b.err
-		}
-	}
-	zr := b.zr
-	b.zr = nil
-	b.err = b.concurrentReadErr
-	return zr, nil
-}
-
-func (b *standardGzipResponseBody) release(zr *gzip.Reader) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if errors.Is(b.err, b.concurrentReadErr) {
-		b.zr = zr
-		b.err = nil
-		return
-	}
-	_ = zr.Close()
-}
+var errHTTP1ReadClosedGzipResponse = errors.New("http: read on closed response body")
 
 func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {
 	t.mu.Lock()
@@ -431,6 +403,15 @@ func (r apiAttemptResponseDrainReader) Read(p []byte) (int, error) {
 	}
 	r.body.mu.Unlock()
 	return n, err
+}
+
+func (b *apiAttemptResponseBody) drainForDecodeFailure() {
+	b.mu.Lock()
+	canDrain := !b.closing && b.activeReads == 0
+	b.mu.Unlock()
+	if canDrain {
+		_, _ = io.Copy(io.Discard, apiAttemptResponseDrainReader{body: b})
+	}
 }
 
 type apiAttemptSharedResponseBody struct {

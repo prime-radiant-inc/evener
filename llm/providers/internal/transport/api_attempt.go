@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -20,6 +21,7 @@ type APIAttemptCapture struct {
 	requestBody        func() []byte
 	requestMeta        func()
 	responseBody       func() []byte
+	responseDrain      func()
 	responseClose      func() error
 	closeOnce          sync.Once
 }
@@ -54,6 +56,9 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	if c == nil {
 		return
 	}
+	if shouldDrainResponseForDecodeFailure(decodeErr, timeoutSource, transportErr) && c.responseDrain != nil {
+		c.responseDrain()
+	}
 	if c.responseClose != nil {
 		c.closeOnce.Do(func() { _ = c.responseClose() })
 	}
@@ -83,6 +88,15 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 		result.FinishedAt = time.Now()
 	}
 	c.attempt.Complete(result)
+}
+
+func shouldDrainResponseForDecodeFailure(decodeErr error, timeoutSource llm.APITimeoutSource, transportErr error) bool {
+	return decodeErr != nil &&
+		transportErr == nil &&
+		timeoutSource == llm.APITimeoutNone &&
+		!errors.Is(decodeErr, context.Canceled) &&
+		!errors.Is(decodeErr, context.DeadlineExceeded) &&
+		!errors.Is(decodeErr, llm.ErrSSEReadTimeout)
 }
 
 func (c *APIAttemptCapture) bindResponseBody(body io.Closer) {

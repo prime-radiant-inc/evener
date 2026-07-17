@@ -38,12 +38,17 @@ func (m *wireRequestMetadata) trace(request *http.Request) *http.Request {
 			m.last = m.current.Clone()
 			m.mu.Unlock()
 		},
-		WroteRequest: func(httptrace.WroteRequestInfo) {
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
 			m.mu.Lock()
 			m.traceObserved = true
 			m.last = m.current.Clone()
-			for name, values := range m.request.Trailer {
-				m.last[name] = append([]string(nil), values...)
+			if info.Err == nil && len(m.request.Trailer) > 0 {
+				if m.last == nil {
+					m.last = make(http.Header)
+				}
+				for name, values := range m.request.Trailer {
+					m.last[name] = append([]string(nil), values...)
+				}
 			}
 			m.current = nil
 			m.mu.Unlock()

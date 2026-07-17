@@ -22,10 +22,12 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header = http.Header{
-		"x-visible":        {"first", "second"},
-		"X-Gateway-Key":    {"secret token"},
-		"X-Contains-Token": {"prefix secret token suffix"},
-		"Authorization":    {"Bearer built-in-secret"},
+		"x-visible":         {"first", "second"},
+		"X-Gateway-Key":     {"secret token"},
+		"X-Contains-Token":  {"prefix secret token suffix"},
+		"Authorization":     {"Bearer built-in-secret"},
+		"Trailer":           {"X-Gateway-Key, X-Visible-Trailer"},
+		"X-Visible-Trailer": {"visible trailer"},
 	}
 	material := NewAPILogCredentialMaterial(
 		[]string{"x-gateway-key"},
@@ -37,7 +39,11 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 	if endpoint != "https://example.test/v1?keep=visible&ordered=first&ordered=second" {
 		t.Fatalf("endpoint = %q", endpoint)
 	}
-	wantHeaders := map[string][]string{"x-visible": {"first", "second"}}
+	wantHeaders := map[string][]string{
+		"x-visible":         {"first", "second"},
+		"Trailer":           {"X-Visible-Trailer"},
+		"X-Visible-Trailer": {"visible trailer"},
+	}
 	if !reflect.DeepEqual(headers, wantHeaders) {
 		t.Fatalf("headers = %#v, want %#v", headers, wantHeaders)
 	}

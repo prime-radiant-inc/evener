@@ -169,12 +169,46 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 		if credentialHeaderName(name, material) || headerValuesContainCredential(values, material.Values) {
 			continue
 		}
+		if strings.EqualFold(name, "Trailer") {
+			values = sanitizeTrailerHeaderValues(values, material)
+			if len(values) == 0 {
+				continue
+			}
+		}
 		if headers == nil {
 			headers = make(map[string][]string)
 		}
 		headers[name] = append([]string(nil), values...)
 	}
 	return endpoint, headers
+}
+
+func sanitizeTrailerHeaderValues(values []string, material APILogCredentialMaterial) []string {
+	sanitized := make([]string, 0, len(values))
+	for _, value := range values {
+		names := strings.Split(value, ",")
+		kept := make([]string, 0, len(names))
+		removed := false
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if credentialHeaderName(name, material) {
+				removed = true
+				continue
+			}
+			kept = append(kept, name)
+		}
+		if !removed {
+			sanitized = append(sanitized, value)
+			continue
+		}
+		if len(kept) > 0 {
+			sanitized = append(sanitized, strings.Join(kept, ", "))
+		}
+	}
+	return sanitized
 }
 
 // SanitizeErrorForAPILog removes provider/config-derived credential names and
