@@ -163,6 +163,22 @@ func (a *APIAttempt) SetRequestBody(body []byte, exact bool) {
 	a.mu.Unlock()
 }
 
+// MergeCredentialMaterial incorporates credential values learned after an HTTP
+// transport consumed the request body, including final request trailers.
+func (a *APIAttempt) MergeCredentialMaterial(material APILogCredentialMaterial) {
+	if !a.Active() {
+		return
+	}
+	a.mu.Lock()
+	material = mergeAPILogCredentialMaterial(a.meta.CredentialMaterial, material)
+	a.meta.CredentialMaterial = material
+	a.mu.Unlock()
+
+	a.group.mu.Lock()
+	a.group.credentialMaterial = mergeAPILogCredentialMaterial(a.group.credentialMaterial, material)
+	a.group.mu.Unlock()
+}
+
 // SetWireRequestMetadata replaces the preliminary request snapshot with the
 // credential-free method, endpoint, headers, and credential material observed
 // after the HTTP transport wrote the request.

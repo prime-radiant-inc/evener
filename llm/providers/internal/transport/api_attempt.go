@@ -12,10 +12,12 @@ import (
 // It is inert unless the supplied context contains an explicitly attached
 // attempt group and sink.
 type APIAttemptCapture struct {
-	attempt      *llm.APIAttempt
-	owner        llm.APIAttemptContextOwnership
-	requestBody  func() bodyObservation
-	responseBody func() bodyObservation
+	attempt            *llm.APIAttempt
+	owner              llm.APIAttemptContextOwnership
+	request            *http.Request
+	credentialMaterial llm.APILogCredentialMaterial
+	requestBody        func() bodyObservation
+	responseBody       func() bodyObservation
 }
 
 // Active reports whether observed response bytes need to be retained for this
@@ -33,7 +35,9 @@ func BeginAPIAttempt(parentCtx, attemptCtx context.Context, request *http.Reques
 	meta.Endpoint, meta.Headers = llm.SanitizeRequestForAPILog(request, meta.CredentialMaterial)
 	meta.StartedAt = time.Now()
 	return &APIAttemptCapture{
-		attempt: llm.BeginAPIAttempt(attemptCtx, meta),
+		attempt:            llm.BeginAPIAttempt(attemptCtx, meta),
+		request:            request,
+		credentialMaterial: meta.CredentialMaterial,
 		owner: llm.APIAttemptContextOwnership{
 			Parent:  parentCtx,
 			Attempt: attemptCtx,
@@ -47,6 +51,8 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	if c == nil {
 		return
 	}
+	material := llm.APILogCredentialMaterialForRequest(c.request, c.credentialMaterial)
+	c.attempt.MergeCredentialMaterial(material)
 	if c.requestBody != nil {
 		observation := c.requestBody()
 		c.attempt.SetRequestBody(observation.bytes, observation.exact)

@@ -103,16 +103,20 @@ func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCred
 	if req == nil {
 		return NewAPILogCredentialMaterial(headerNames, queryNames, values...)
 	}
-	for name, requestValues := range req.Header {
-		if !credentialHeaderName(name, configured) {
-			continue
-		}
-		headerNames = append(headerNames, name)
-		for _, value := range requestValues {
-			values = append(values, value)
-			values = append(values, structuredCredentialHeaderValues(name, value)...)
+	appendCredentialHeaders := func(headers http.Header) {
+		for name, requestValues := range headers {
+			if !credentialHeaderName(name, configured) {
+				continue
+			}
+			headerNames = append(headerNames, name)
+			for _, value := range requestValues {
+				values = append(values, value)
+				values = append(values, structuredCredentialHeaderValues(name, value)...)
+			}
 		}
 	}
+	appendCredentialHeaders(req.Header)
+	appendCredentialHeaders(req.Trailer)
 	if req.URL != nil {
 		for _, part := range strings.Split(req.URL.RawQuery, "&") {
 			rawName, rawValue, _ := strings.Cut(part, "=")

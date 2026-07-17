@@ -48,6 +48,23 @@ func (f responseAssociationRoundTripper) RoundTrip(request *http.Request) (*http
 	return f(request)
 }
 
+type credentialTrailerBody struct {
+	request *http.Request
+	reader  *bytes.Reader
+	name    string
+	value   string
+}
+
+func (b *credentialTrailerBody) Read(p []byte) (int, error) {
+	n, err := b.reader.Read(p)
+	if b.reader.Len() == 0 {
+		b.request.Trailer.Set(b.name, b.value)
+	}
+	return n, err
+}
+
+func (*credentialTrailerBody) Close() error { return nil }
+
 func attemptContext(groupID string, sink llm.APIAttemptSink) context.Context {
 	return llm.WithAPIAttemptSink(
 		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
@@ -383,6 +400,133 @@ func TestDoWithAPIAttemptsTransportErrorRetainsOneAttempt(t *testing.T) {
 	}
 	if record.Response != nil {
 		t.Fatalf("transport failure invented response: %#v", record.Response)
+	}
+}
+
+func TestDoWithAPIAttemptsLearnsCredentialTrailerPopulatedWhileReadingRequestBody(t *testing.T) {
+	const (
+		trailerName      = "X-Gateway-Credential"
+		configuredSecret = "configured-secret-sentinel"
+		trailerSecret    = "trailer-secret-sentinel"
+	)
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_credential_trailer_success", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Trailer = http.Header{trailerName: nil}
+	request.Header.Set("X-Visible-Debug", configuredSecret)
+	request.Body = &credentialTrailerBody{
+		request: request,
+		reader:  bytes.NewReader([]byte("request body")),
+		name:    trailerName,
+		value:   trailerSecret,
+	}
+	request.ContentLength = int64(len("request body"))
+
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if _, err := io.ReadAll(request.Body); err != nil {
+			return nil, err
+		}
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader("provider echoed " + request.Trailer.Get(trailerName))),
+			ContentLength: int64(len("provider echoed ") + len(trailerSecret)),
+		}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+				configuredSecret,
+			),
+		}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("adapter read response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+	record := onlyAttempt(t, sink)
+	if _, ok := record.Request.Headers["X-Visible-Debug"]; ok {
+		t.Fatal("pre-RoundTrip header containing configured credential was persisted")
+	}
+	if record.Response == nil {
+		t.Fatal("successful attempt omitted response metadata")
+	}
+	if !record.Response.Body.CredentialValuesExcluded || record.Response.Body.Exact {
+		t.Fatalf("credential-bearing response body truth = %+v", record.Response.Body)
+	}
+	if body, err := apilog.DecodeBody(record.Response.Body); err != nil || len(body) != 0 {
+		t.Fatalf("credential-bearing response body = %q, %v; want omitted", body, err)
+	}
+}
+
+func TestDoWithAPIAttemptsLearnsCredentialTrailerMutatedBeforeTransportError(t *testing.T) {
+	const (
+		trailerName   = "X-Gateway-Credential"
+		initialSecret = "initial-trailer-secret-sentinel"
+		finalSecret   = "final-trailer-secret-sentinel"
+	)
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_credential_trailer_transport_error", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Trailer = http.Header{trailerName: {initialSecret}}
+	request.Body = &credentialTrailerBody{
+		request: request,
+		reader:  bytes.NewReader([]byte("request body")),
+		name:    trailerName,
+		value:   finalSecret,
+	}
+	request.ContentLength = int64(len("request body"))
+
+	transportErr := errors.New("provider echoed " + initialSecret + " then " + finalSecret)
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if _, err := io.ReadAll(request.Body); err != nil {
+			return nil, err
+		}
+		return nil, transportErr
+	})}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+			),
+		}
+	})
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("DoWithAPIAttempts error = %v, want %v", err, transportErr)
+	}
+	if attempt == nil {
+		t.Fatal("transport failure lost its attempt")
+	}
+	attempt.Complete(llm.APIAttemptResult{Err: err}, llm.APITimeoutNone, nil, transportErr)
+
+	record := onlyAttempt(t, sink)
+	if record.ErrorMessage != "" {
+		t.Fatalf("credential-bearing transport error persisted as %q", record.ErrorMessage)
 	}
 }
 
