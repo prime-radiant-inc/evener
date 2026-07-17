@@ -3,7 +3,6 @@ package server
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -216,15 +215,18 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close error is not actionable
 
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	reader := bufio.NewReaderSize(file, 64*1024)
+	for {
+		lineBytes, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
+		if err != nil || !complete {
+			return transcript.Header{}
+		}
+		line := strings.TrimSpace(string(lineBytes))
 		if line == "" {
 			continue
 		}
-		var header transcript.Header
-		if json.Unmarshal([]byte(line), &header) != nil || header.Kind != "header" {
+		header, err := transcript.DecodeHeader([]byte(line))
+		if err != nil {
 			return transcript.Header{}
 		}
 		return header

@@ -165,3 +165,20 @@ func TestWeb_SessionImage_RejectsV1AndMixedTranscriptWithoutPartialImage(t *test
 		})
 	}
 }
+
+func TestWeb_SessionImage_RejectsUnknownTranscriptFieldsWithoutServingPartialImage(t *testing.T) {
+	fixture := newImageBoundaryFixture(t)
+	data, err := os.ReadFile(fixture.transcriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte(`"seq":0`), []byte(`"seq":0,"unknown":true`), 1)
+	if err := os.WriteFile(fixture.transcriptPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := fixture.getImage(imageSha(fixture.image))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("unknown-field transcript response = status %d body %q, want 500", rec.Code, rec.Body.String())
+	}
+}

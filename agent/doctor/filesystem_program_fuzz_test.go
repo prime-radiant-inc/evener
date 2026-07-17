@@ -5,6 +5,7 @@ package doctor
 import (
 	"encoding/base64"
 	"errors"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -284,15 +285,15 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if _, err := Locate(fixture.base, "proj:"+hash1+":missing"); err == nil {
 		t.Fatal("missing session in existing bucket unexpectedly resolved")
 	}
-	originalRead := readTranscriptFile
-	readTranscriptFile = func(string) ([]byte, error) { return nil, errors.New("scripted transcript read failure") }
+	originalOpen := openDoctorTranscriptFile
+	openDoctorTranscriptFile = func(string) (io.ReadCloser, error) { return nil, errors.New("scripted transcript read failure") }
 	if _, err := Count(fixture.base, fixture.rootSID, "tool"); err == nil {
 		t.Fatal("Count unreadable transcript unexpectedly succeeded")
 	}
 	if _, err := Transcript(fixture.base, fixture.rootSID, TranscriptOpts{}); err == nil {
 		t.Fatal("Transcript unreadable transcript unexpectedly succeeded")
 	}
-	readTranscriptFile = originalRead
+	openDoctorTranscriptFile = originalOpen
 	blankLine := filepath.Join(fixture.base, "blank-line.jsonl")
 	if err := os.WriteFile(blankLine, []byte("\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
 		t.Fatal(err)

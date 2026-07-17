@@ -3,10 +3,8 @@ package agent
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -80,25 +78,20 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	// The first non-empty complete line is the header.
 	var parentHeader transcript.Header
 	for {
-		line, readErr := readStrictTranscriptLine(reader, maxScanToken)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
+		if readErr != nil {
 			return "", fmt.Errorf("reading parent transcript header: %w", readErr)
 		}
-		if len(line) == 0 && errors.Is(readErr, io.EOF) {
-			return "", errors.New("parent transcript is empty")
-		}
-		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+		if !complete {
 			return "", errors.New("parent transcript is empty")
 		}
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
-		if err := json.Unmarshal(line, &parentHeader); err != nil {
+		parentHeader, err = transcript.DecodeHeader(line)
+		if err != nil {
 			return "", fmt.Errorf("parsing parent transcript header: %w", err)
-		}
-		if err := transcript.ValidateHeader(parentHeader); err != nil {
-			return "", err
 		}
 		break
 	}
@@ -115,14 +108,11 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 	var allEntries []transcript.Entry
 
 	for {
-		line, readErr := readStrictTranscriptLine(reader, maxScanToken)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
+		if readErr != nil {
 			return "", fmt.Errorf("reading parent transcript entries: %w", readErr)
 		}
-		if len(line) == 0 && errors.Is(readErr, io.EOF) {
-			break
-		}
-		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
+		if !complete {
 			break
 		}
 		line = bytes.TrimSpace(line)
@@ -130,18 +120,8 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 			continue
 		}
 
-		var peek struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &peek); err != nil {
-			return "", fmt.Errorf("parsing parent transcript line: %w", err)
-		}
-		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
-			return "", err
-		}
-
-		var entry transcript.Entry
-		if err := json.Unmarshal(line, &entry); err != nil {
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
 			return "", fmt.Errorf("parsing parent transcript entry: %w", err)
 		}
 

@@ -47,6 +47,52 @@ func TestTranscriptReadersRejectUnsupportedFormat(t *testing.T) {
 	}
 }
 
+func TestTranscriptReadersAndRawOutputRejectUnknownFields(t *testing.T) {
+	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"unknown header field", `{"kind":"header","format_version":2,"session_id":"01SESS","unknown":true}` + "\n"},
+		{"unknown entry field", header + "\n" + `{"kind":"entry","seq":0,"turn":{},"unknown":true}` + "\n"},
+		{"unknown turn field", header + "\n" + `{"kind":"entry","seq":0,"turn":{"unknown":true}}` + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := s4covWriteFile(t, tc.body)
+			if _, _, _, err := readTranscript(path); err == nil {
+				t.Fatal("readTranscript accepted unknown field")
+			}
+			if _, err := readTranscriptFull(path); err == nil {
+				t.Fatal("readTranscriptFull accepted unknown field")
+			}
+			if _, err := readStrictChildTranscript(path, "01SESS", 0); err == nil {
+				t.Fatal("readStrictChildTranscript accepted unknown field")
+			}
+			if content, _, _, _, err := rawLinesForRange(path, 0, 0); err == nil || content != "" {
+				t.Fatalf("rawLinesForRange = (%q, %v), want no raw bytes and an error", content, err)
+			}
+		})
+	}
+}
+
+func TestStrictChildTranscriptUsesPayloadOnlyLineBoundAndDiscardsTail(t *testing.T) {
+	header := `{"kind":"header","format_version":2,"session_id":"01SESS"}`
+	path := s4covWriteFile(t, header+"\n"+strings.Repeat("x", len(header)+1))
+	data, err := readStrictChildTranscript(path, "01SESS", len(header))
+	if err != nil {
+		t.Fatalf("readStrictChildTranscript exact-max header plus unterminated tail: %v", err)
+	}
+	if data.Skipped != 1 {
+		t.Fatalf("Skipped = %d, want 1 discarded tail", data.Skipped)
+	}
+
+	path = s4covWriteFile(t, header+"x\n")
+	if _, err := readStrictChildTranscript(path, "01SESS", len(header)); err == nil {
+		t.Fatal("readStrictChildTranscript accepted max+1 complete header")
+	}
+}
+
 // --- readTranscript ---
 
 func TestS4covReadTranscript_HappyPath(t *testing.T) {

@@ -535,11 +535,11 @@ func TestOpenWriterFS_HappyReopen(t *testing.T) {
 	}
 }
 
-// openWriterFS op indices (valid two-entry file, ~578 bytes -> 3 Reads):
+// openWriterFS op indices for the in-memory two-entry fixture:
 //
-//	0 = OpenFile   1..3 = ReadAll's Reads   4 = Seek(end)
+//	0 = OpenFile   1..2 = framed Reads   3 = Seek(end)
 //
-// Partial file adds a Truncate at index 4 and pushes Seek to index 5.
+// A partial file adds Truncate at index 3 and pushes Seek to index 4.
 func TestOpenWriterFS_OpenFileFails(t *testing.T) {
 	_, data := makeValidTranscript(t)
 	fs := fault.FS(memWithFile(t, data), fault.FromBytes(faultPlan(0)))
@@ -558,14 +558,13 @@ func TestOpenWriterFS_OpenFileFails(t *testing.T) {
 	}
 }
 
-func TestOpenWriterFS_ReadAllFails(t *testing.T) {
+func TestOpenWriterFS_ReadFails(t *testing.T) {
 	_, data := makeValidTranscript(t)
-	// Fault the first Read (index 1); io.ReadAll surfaces it regardless of how
-	// many chunked reads the file would otherwise take.
+	// Fault the first framed read.
 	fs := fault.FS(memWithFile(t, data), fault.FromBytes(faultPlan(1)))
 	w, err := openWriterFS(fs, faultTranscriptPath)
 	if err == nil {
-		t.Fatal("expected error from faulted ReadAll")
+		t.Fatal("expected error from faulted read")
 	}
 	if w != nil {
 		t.Fatalf("writer leaked on error path: %+v", w)
@@ -648,8 +647,8 @@ func TestOpenWriterFS_NoCompleteLines(t *testing.T) {
 func TestOpenWriterFS_TruncateFails(t *testing.T) {
 	_, data := makeValidTranscript(t)
 	partial := append(append([]byte{}, data...), []byte("partial-junk-no-nl")...)
-	// OpenFile (0) + 3 Reads (1..3) succeed; Truncate lands at index 4.
-	fs := fault.FS(memWithFile(t, partial), fault.FromBytes(faultPlan(4)))
+	// OpenFile (0) + 2 reads (1..2) succeed; Truncate lands at index 3.
+	fs := fault.FS(memWithFile(t, partial), fault.FromBytes(faultPlan(3)))
 	w, err := openWriterFS(fs, faultTranscriptPath)
 	if err == nil {
 		t.Fatal("expected error from faulted partial-line Truncate")
@@ -667,8 +666,8 @@ func TestOpenWriterFS_TruncateFails(t *testing.T) {
 
 func TestOpenWriterFS_SeekToEndFails(t *testing.T) {
 	_, data := makeValidTranscript(t)
-	// Valid file: no truncate, so Seek(end) lands at index 4.
-	fs := fault.FS(memWithFile(t, data), fault.FromBytes(faultPlan(4)))
+	// Valid file: no truncate, so Seek(end) lands at index 3.
+	fs := fault.FS(memWithFile(t, data), fault.FromBytes(faultPlan(3)))
 	w, err := openWriterFS(fs, faultTranscriptPath)
 	if err == nil {
 		t.Fatal("expected error from faulted Seek-to-end")

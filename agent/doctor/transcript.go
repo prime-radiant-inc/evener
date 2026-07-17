@@ -1,8 +1,11 @@
 package doctor
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -11,7 +14,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-var readTranscriptFile = os.ReadFile
+var openDoctorTranscriptFile = func(path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
 
 // transcriptDoc is the semantic transcript header and conversation entries.
 type transcriptDoc struct {
@@ -20,47 +25,43 @@ type transcriptDoc struct {
 }
 
 func loadTranscript(path string) (transcriptDoc, error) {
-	data, err := readTranscriptFile(path)
+	return loadTranscriptWithMaxLineBytes(path, transcript.DefaultMaxLineBytes)
+}
+
+func loadTranscriptWithMaxLineBytes(path string, maxLineBytes int) (transcriptDoc, error) {
+	file, err := openDoctorTranscriptFile(path)
 	if err != nil {
 		return transcriptDoc{}, fmt.Errorf("read transcript %s: %w", path, err)
 	}
-	lines := strings.Split(string(data), "\n")
-	if n := len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == "" {
-		lines = lines[:n-1]
-	}
+	defer file.Close() //nolint:errcheck // read-only file
+	reader := bufio.NewReaderSize(file, 64*1024)
 	var doc transcriptDoc
 	headerRead := false
-	completeTail := len(data) == 0 || data[len(data)-1] == '\n'
-	for i, raw := range lines {
-		if i == len(lines)-1 && !completeTail {
+	lineNumber := 0
+	for {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
+		if readErr != nil {
+			return transcriptDoc{}, fmt.Errorf("read transcript line %d: %w", lineNumber+1, readErr)
+		}
+		if !complete {
 			break
 		}
-		line := strings.TrimSpace(raw)
-		if line == "" {
+		lineNumber++
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 		if !headerRead {
-			if err := json.Unmarshal([]byte(line), &doc.Header); err != nil {
-				return transcriptDoc{}, fmt.Errorf("parse transcript header line %d: %w", i+1, err)
-			}
-			if err := transcript.ValidateHeader(doc.Header); err != nil {
-				return transcriptDoc{}, err
+			doc.Header, err = transcript.DecodeHeader(line)
+			if err != nil {
+				return transcriptDoc{}, fmt.Errorf("parse transcript header line %d: %w", lineNumber, err)
 			}
 			headerRead = true
 			continue
 		}
-		var peek struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal([]byte(line), &peek); err != nil {
-			return transcriptDoc{}, fmt.Errorf("parse transcript line %d: %w", i+1, err)
-		}
-		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
-			return transcriptDoc{}, err
-		}
-		var e transcript.Entry
-		if err := json.Unmarshal([]byte(line), &e); err != nil {
-			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", i+1, err)
+		e, err := transcript.DecodeEntry(line)
+		if err != nil {
+			return transcriptDoc{}, fmt.Errorf("parse transcript entry line %d: %w", lineNumber, err)
 		}
 		doc.Entries = append(doc.Entries, e)
 	}

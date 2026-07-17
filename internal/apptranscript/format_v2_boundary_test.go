@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/transcript"
@@ -17,6 +18,72 @@ func requireTurnsFromFile(t testing.TB, path string, maxLineBytes int, project E
 		t.Fatalf("TurnsFromFile: %v", err)
 	}
 	return turns
+}
+
+func TestSemanticReadersRejectUnknownTranscriptFields(t *testing.T) {
+	header := `{"kind":"header","format_version":2}`
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"header", `{"kind":"header","format_version":2,"unknown":true}` + "\n"},
+		{"entry", header + "\n" + `{"kind":"entry","seq":0,"turn":{},"unknown":true}` + "\n"},
+		{"turn", header + "\n" + `{"kind":"entry","seq":0,"turn":{"unknown":true}}` + "\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "transcript.jsonl")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ScanPrelude(path, 1<<20); err == nil {
+				t.Fatal("ScanPrelude accepted an unknown field")
+			}
+			if turns, err := TurnsFromFile(path, 1<<20, nil); err == nil || turns != nil {
+				t.Fatalf("TurnsFromFile = (%v, %v), want no turns and an error", turns, err)
+			}
+			if turns, cursor, err := NewTurnCache().LatestFromFile(path, 1<<20, 1, boundedTestProjector); err == nil || turns != nil || cursor != "" {
+				t.Fatalf("LatestFromFile = (%v, %q, %v), want no turns and an error", turns, cursor, err)
+			}
+		})
+	}
+}
+
+func TestSemanticFullAndIndexedReadersShareLineFraming(t *testing.T) {
+	header := `{"kind":"header","format_version":2}`
+	entry := `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}}`
+	maxLineBytes := max(len(header), len(entry))
+
+	t.Run("exact max complete accepted and arbitrary tail discarded", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		body := header + "\n" + entry + "\n" + strings.Repeat("x", maxLineBytes*1000)
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ScanPrelude(path, maxLineBytes); err != nil {
+			t.Fatalf("ScanPrelude: %v", err)
+		}
+		if _, err := TurnsFromFile(path, maxLineBytes, nil); err != nil {
+			t.Fatalf("TurnsFromFile: %v", err)
+		}
+		if _, _, err := NewTurnCache().LatestFromFile(path, maxLineBytes, 1, boundedTestProjector); err != nil {
+			t.Fatalf("LatestFromFile: %v", err)
+		}
+	})
+
+	t.Run("max plus one complete rejected", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "transcript.jsonl")
+		body := header + "\n" + strings.Repeat("x", maxLineBytes+1) + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ScanPrelude(path, maxLineBytes); err == nil {
+			t.Fatal("ScanPrelude accepted a max+1 complete record")
+		}
+		if _, _, err := NewTurnCache().LatestFromFile(path, maxLineBytes, 1, boundedTestProjector); err == nil {
+			t.Fatal("LatestFromFile accepted a max+1 complete record")
+		}
+	})
 }
 
 func requireCacheTurnsFromFile(t testing.TB, cache *TurnCache, path string, maxLineBytes int, project EntryProjector) []appwire.Turn {

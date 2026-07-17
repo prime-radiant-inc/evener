@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
@@ -501,8 +499,8 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 			return nil
 		}
 		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		var entry transcript.Entry
-		if err := json.Unmarshal(raw, &entry); err != nil {
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
 			return err
 		}
 		if !entry.Turn.Timestamp.IsZero() {
@@ -535,41 +533,26 @@ func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMe
 	var header transcript.Header
 	headerRead := false
 	for {
-		line, readErr := readSemanticLine(reader, maxLineBytes)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxLineBytes)
+		if readErr != nil {
 			return transcript.Header{}, readErr
 		}
-		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+		if !complete {
 			break
 		}
-		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
-			break
-		}
-		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 		if !headerRead {
-			if err := json.Unmarshal(line, &header); err != nil {
+			header, err = transcript.DecodeHeader(line)
+			if err != nil {
 				return transcript.Header{}, fmt.Errorf("parse transcript header: %w", err)
-			}
-			if err := transcript.ValidateHeader(header); err != nil {
-				return transcript.Header{}, err
 			}
 			headerRead = true
 			continue
 		}
-		var kind struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &kind); err != nil {
-			return transcript.Header{}, fmt.Errorf("parse transcript record: %w", err)
-		}
-		if err := transcript.ValidateRecordKind(kind.Kind); err != nil {
-			return transcript.Header{}, err
-		}
-		var entry transcript.Entry
-		if err := json.Unmarshal(line, &entry); err != nil {
+		if _, err := transcript.DecodeEntry(line); err != nil {
 			return transcript.Header{}, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		if visit != nil {
@@ -582,19 +565,4 @@ func scanSemanticTranscript(path string, maxLineBytes int, visit func(json.RawMe
 		return transcript.Header{}, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return header, nil
-}
-
-func readSemanticLine(reader *bufio.Reader, maxLineBytes int) ([]byte, error) {
-	var line []byte
-	for {
-		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > maxLineBytes {
-			return nil, fmt.Errorf("transcript line exceeds %d bytes", maxLineBytes)
-		}
-		line = append(line, fragment...)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return line, err
-	}
 }

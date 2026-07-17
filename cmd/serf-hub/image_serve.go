@@ -5,17 +5,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 
 	"primeradiant.com/serf/agent/transcript"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
 // imageShaRegexp limits paths to lowercase hex sha256 (64 chars). The browser
@@ -82,42 +79,26 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
 	var matchedData []byte
 	var matchedMediaType string
 	for {
-		line, readErr := readImageTranscriptLine(reader)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, _, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil {
 			return nil, "", false, readErr
 		}
-		if len(line) == 0 && errors.Is(readErr, io.EOF) {
+		if !complete {
 			break
 		}
-		if errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'}) {
-			break
-		}
-		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 		if !headerRead {
-			var header transcript.Header
-			if err := json.Unmarshal(line, &header); err != nil {
+			if _, err := transcript.DecodeHeader(line); err != nil {
 				return nil, "", false, fmt.Errorf("parse transcript header: %w", err)
-			}
-			if err := transcript.ValidateHeader(header); err != nil {
-				return nil, "", false, err
 			}
 			headerRead = true
 			continue
 		}
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &head); err != nil {
-			return nil, "", false, fmt.Errorf("parse transcript record: %w", err)
-		}
-		if err := transcript.ValidateRecordKind(head.Kind); err != nil {
-			return nil, "", false, err
-		}
-		var rec hubcore.ReplayEntry
-		if err := json.Unmarshal(line, &rec); err != nil {
+		rec, err := transcript.DecodeEntry(line)
+		if err != nil {
 			return nil, "", false, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		for _, p := range rec.Turn.Message.Content {
@@ -149,21 +130,6 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool, error) {
 		return nil, "", false, fmt.Errorf("%w: missing transcript header", transcript.ErrUnsupportedFormat)
 	}
 	return matchedData, matchedMediaType, matchedData != nil, nil
-}
-
-func readImageTranscriptLine(reader *bufio.Reader) ([]byte, error) {
-	var line []byte
-	for {
-		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > transcriptJSONLMaxLineBytes {
-			return nil, fmt.Errorf("transcript line exceeds %d bytes", transcriptJSONLMaxLineBytes)
-		}
-		line = append(line, fragment...)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return line, err
-	}
 }
 
 // imageSha returns the lowercase hex sha256 of raw image bytes.

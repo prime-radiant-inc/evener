@@ -653,40 +653,33 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			// appended. CompleteSize intentionally remains before that tail.
 			break
 		}
-		length := int64(len(line))
-		trimmed := bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
+		length := lineBytes
+		trimmed := bytes.TrimSpace(line)
+		framedLine := make([]byte, len(line)+1)
+		copy(framedLine, line)
+		framedLine[len(line)] = '\n'
 		if len(trimmed) == 0 {
 			offset += length
 			index.CompleteSize = offset
-			index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, line)
+			index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
 			continue
 		}
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(trimmed, &head); err != nil {
-			return readBytes, fmt.Errorf("parse transcript record: %w", err)
-		}
 		if !headerRead {
-			if err := json.Unmarshal(trimmed, &index.Header); err != nil {
+			var err error
+			index.Header, err = transcript.DecodeHeader(trimmed)
+			if err != nil {
 				return readBytes, fmt.Errorf("parse transcript header: %w", err)
-			}
-			if err := transcript.ValidateHeader(index.Header); err != nil {
-				return readBytes, err
 			}
 			index.TranscriptFormatVersion = transcript.FormatVersion
 			headerRead = true
 		} else {
-			if err := transcript.ValidateRecordKind(head.Kind); err != nil {
-				return readBytes, err
-			}
-			var entry transcript.Entry
-			if err := json.Unmarshal(trimmed, &entry); err != nil {
+			entry, err := transcript.DecodeEntry(trimmed)
+			if err != nil {
 				return readBytes, fmt.Errorf("parse transcript entry: %w", err)
 			}
 			entryIndex++
-			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: head.Kind}
-			record.ToolSeed, record.ToolChanges = toolProjectionState(trimmed, projectNames)
+			record := indexedTurn{Offset: offset, Length: length, Index: entryIndex, Kind: entry.Kind}
+			record.ToolSeed, record.ToolChanges = toolProjectionState(entry, projectNames)
 			visible := false
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
@@ -702,7 +695,7 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 		}
 		offset += length
 		index.CompleteSize = offset
-		index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, line)
+		index.PrefixStamp = extendPrefixStamp(index.PrefixStamp, framedLine)
 	}
 	if index.recordCount() == 0 {
 		index.Records = appended
@@ -725,44 +718,10 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 // unterminated, it is consumed and discarded even when it is arbitrarily large;
 // complete oversized records still fail the line-size contract.
 func readTurnIndexLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
-	if maxLineBytes <= 0 {
-		maxLineBytes = 128 << 20
-	}
-	retainedLimit := maxLineBytes + 1 // a maximum-sized record plus '\n'
-	oversized := false
-	for {
-		fragment, readErr := reader.ReadSlice('\n')
-		bytesRead += int64(len(fragment))
-		if !oversized {
-			if len(line)+len(fragment) > retainedLimit {
-				line = nil
-				oversized = true
-			} else {
-				line = append(line, fragment...)
-			}
-		}
-
-		switch {
-		case readErr == nil:
-			if oversized || len(bytes.TrimSuffix(line, []byte{'\n'})) > maxLineBytes {
-				return nil, false, bytesRead, fmt.Errorf("transcript line exceeds %d bytes", maxLineBytes)
-			}
-			return line, true, bytesRead, nil
-		case errors.Is(readErr, bufio.ErrBufferFull):
-			continue
-		case errors.Is(readErr, io.EOF):
-			return nil, false, bytesRead, nil
-		default:
-			return nil, false, bytesRead, fmt.Errorf("read transcript line: %w", readErr)
-		}
-	}
+	return transcript.ReadLine(reader, maxLineBytes)
 }
 
-func toolProjectionState(raw []byte, names map[string]string) (map[string]string, []toolNameChange) {
-	var entry transcript.Entry
-	if json.Unmarshal(raw, &entry) != nil {
-		return nil, nil
-	}
+func toolProjectionState(entry transcript.Entry, names map[string]string) (map[string]string, []toolNameChange) {
 	switch entry.Turn.Kind {
 	case schema.TurnAssistant:
 		var changes []toolNameChange
@@ -941,6 +900,10 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 			return nil, projected, fmt.Errorf("read transcript entry: %w", err)
 		}
 		projected++
+		entry, err := transcript.DecodeEntry(raw)
+		if err != nil {
+			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
+		}
 		var items []appwire.ThreadItem
 		if project != nil {
 			items = project(raw, fmt.Sprintf("turn_%d", record.Index), record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
@@ -949,10 +912,6 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 			continue
 		}
 		turn := appwire.Turn{ID: fmt.Sprintf("turn_%d", record.Index), Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		var entry transcript.Entry
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil, projected, fmt.Errorf("parse transcript entry: %w", err)
-		}
 		if !entry.Turn.Timestamp.IsZero() {
 			startedAt := entry.Turn.Timestamp.Unix()
 			turn.StartedAt = &startedAt

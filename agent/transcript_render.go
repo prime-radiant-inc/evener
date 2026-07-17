@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"sort"
 	"strconv"
@@ -333,25 +332,20 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 	// semantic reader and keeps accepted leading blanks out of returned JSONL.
 	var headerLine string
 	for headerLine == "" {
-		headerBytes, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		headerBytes, complete, _, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil {
 			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
 		}
-		if errors.Is(readErr, io.EOF) {
+		if !complete {
 			return "", 0, 0, false, errors.New("transcript file is empty: no header")
 		}
-		headerLine = strings.TrimSuffix(string(headerBytes), "\n")
-		headerLine = strings.TrimSuffix(headerLine, "\r")
+		headerLine = strings.TrimSuffix(string(headerBytes), "\r")
 		if strings.TrimSpace(headerLine) == "" {
 			headerLine = ""
 		}
 	}
-	var header transcript.Header
-	if err := json.Unmarshal([]byte(headerLine), &header); err != nil {
+	if _, err := transcript.DecodeHeader([]byte(headerLine)); err != nil {
 		return "", 0, 0, false, fmt.Errorf("parse transcript header: %w", err)
-	}
-	if err := transcript.ValidateHeader(header); err != nil {
-		return "", 0, 0, false, err
 	}
 	var semanticHeader map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(headerLine), &semanticHeader); err != nil {
@@ -371,34 +365,22 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 	var included []string
 	entryPos := -1
 
-	var peekKind struct {
-		Kind string `json:"kind"`
-	}
-
 	for {
-		line, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, bytesRead, readErr := transcript.ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil {
 			return "", 0, skipped, false, fmt.Errorf("reading transcript: %w", readErr)
 		}
-		if errors.Is(readErr, io.EOF) {
-			if len(line) > 0 {
+		if !complete {
+			if bytesRead > 0 {
 				skipped++
 			}
 			break
 		}
-		rawLine := strings.TrimSuffix(string(line), "\n")
-		rawLine = strings.TrimSuffix(rawLine, "\r")
-		if rawLine == "" {
+		rawLine := strings.TrimSuffix(string(line), "\r")
+		if strings.TrimSpace(rawLine) == "" {
 			continue
 		}
-		if err := json.Unmarshal([]byte(rawLine), &peekKind); err != nil {
-			return "", 0, skipped, false, fmt.Errorf("parse transcript record: %w", err)
-		}
-		if err := transcript.ValidateRecordKind(peekKind.Kind); err != nil {
-			return "", 0, skipped, false, err
-		}
-		var entry transcript.Entry
-		if err := json.Unmarshal([]byte(rawLine), &entry); err != nil {
+		if _, err := transcript.DecodeEntry([]byte(rawLine)); err != nil {
 			return "", 0, skipped, false, fmt.Errorf("parse transcript entry: %w", err)
 		}
 		entryPos++

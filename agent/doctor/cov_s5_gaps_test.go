@@ -175,6 +175,16 @@ func TestLoadTranscript_BadEntryErrors(t *testing.T) {
 	}
 }
 
+func TestLoadTranscript_RejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	writeFile(t, path,
+		`{"kind":"header","format_version":2,"session_id":"`+sidA+`"}`+"\n"+
+			`{"kind":"entry","seq":0,"turn":{},"unknown":true}`+"\n")
+	if _, err := loadTranscript(path); err == nil {
+		t.Fatal("loadTranscript accepted an unknown entry field")
+	}
+}
+
 // locateInBucket falls through to constructing the bucket path when the hash was
 // not enumerated, and reports not-found for an unknown hash.
 func TestLocate_ProjRefUnknownHash(t *testing.T) {

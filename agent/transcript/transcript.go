@@ -23,13 +23,25 @@ import (
 	"primeradiant.com/serf/agent/task"
 )
 
-const transcriptJSONLMaxLineBytes = 128 << 20
+// DefaultMaxLineBytes is the maximum transcript record payload. The trailing
+// newline is framing and does not count toward this limit.
+const DefaultMaxLineBytes = 128 << 20
+
+const transcriptJSONLMaxLineBytes = DefaultMaxLineBytes
 
 // FormatVersion is the only transcript format this package writes or accepts.
 const FormatVersion = 2
 
 // ErrUnsupportedFormat marks transcripts that are not semantic-only format v2.
 var ErrUnsupportedFormat = errors.New("unsupported transcript format")
+
+// ErrInvalidRecordBoundary marks a transcript line that is not one complete
+// JSON object from which a record kind can be determined.
+var ErrInvalidRecordBoundary = errors.New("invalid transcript record boundary")
+
+// ErrLineTooLong marks a complete transcript record whose payload exceeds the
+// configured framing limit.
+var ErrLineTooLong = errors.New("transcript line too long")
 
 // Header is the first line of a transcript JSONL file.
 type Header struct {
@@ -79,6 +91,103 @@ func ValidateRecordKind(kind string) error {
 		return fmt.Errorf("%w: record kind %q is not valid in transcript format %d", ErrUnsupportedFormat, kind, FormatVersion)
 	}
 	return nil
+}
+
+// DecodeHeader strictly decodes the v2 transcript header. Unknown fields and
+// trailing JSON values are corruption, while a non-v2 boundary is classified
+// as an unsupported transcript format.
+func DecodeHeader(line []byte) (Header, error) {
+	var boundary struct {
+		Kind          string `json:"kind"`
+		FormatVersion int    `json:"format_version"`
+	}
+	if err := json.Unmarshal(line, &boundary); err != nil {
+		return Header{}, fmt.Errorf("decode transcript header boundary: %w", err)
+	}
+	if err := ValidateHeader(Header{Kind: boundary.Kind, FormatVersion: boundary.FormatVersion}); err != nil {
+		return Header{}, err
+	}
+	var header Header
+	if err := decodeStrictJSON(line, &header); err != nil {
+		return Header{}, fmt.Errorf("decode transcript header: %w", err)
+	}
+	return header, nil
+}
+
+// DecodeEntry strictly decodes one semantic v2 entry. Raw entry bytes are safe
+// to pass to a projector only after this function succeeds.
+func DecodeEntry(line []byte) (Entry, error) {
+	var boundary struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.Unmarshal(line, &boundary); err != nil {
+		return Entry{}, fmt.Errorf("%w: %v", ErrInvalidRecordBoundary, err)
+	}
+	if err := ValidateRecordKind(boundary.Kind); err != nil {
+		return Entry{}, err
+	}
+	var entry Entry
+	if err := decodeStrictJSON(line, &entry); err != nil {
+		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
+	}
+	return entry, nil
+}
+
+func decodeStrictJSON(line []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return fmt.Errorf("trailing JSON data: %w", err)
+	}
+	return nil
+}
+
+// ReadLine reads one newline-framed transcript record. maxLineBytes applies to
+// the payload only, excluding the newline. Complete oversized records are
+// drained before ErrLineTooLong is returned. An unterminated final tail is
+// always drained and discarded without retaining it, regardless of its size.
+func ReadLine(reader *bufio.Reader, maxLineBytes int) (line []byte, complete bool, bytesRead int64, err error) {
+	if maxLineBytes <= 0 {
+		maxLineBytes = DefaultMaxLineBytes
+	}
+	overLimit := false
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		bytesRead += int64(len(fragment))
+		payload := fragment
+		if readErr == nil && len(payload) > 0 {
+			payload = payload[:len(payload)-1]
+		}
+		if !overLimit {
+			if len(payload) > maxLineBytes-len(line) {
+				line = nil
+				overLimit = true
+			} else {
+				line = append(line, payload...)
+			}
+		}
+
+		switch {
+		case readErr == nil:
+			if overLimit {
+				return nil, false, bytesRead, fmt.Errorf("%w: transcript line exceeds %d bytes", ErrLineTooLong, maxLineBytes)
+			}
+			return line, true, bytesRead, nil
+		case errors.Is(readErr, bufio.ErrBufferFull):
+			continue
+		case errors.Is(readErr, io.EOF):
+			return nil, false, bytesRead, nil
+		default:
+			return nil, false, bytesRead, fmt.Errorf("read transcript line: %w", readErr)
+		}
+	}
 }
 
 // Writer appends turns to an immutable JSONL transcript file.
@@ -305,64 +414,39 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 		return nil, fmt.Errorf("open transcript for resume: %w", err)
 	}
 
-	data, err := io.ReadAll(f)
-	if err != nil {
-		_ = f.Close() // cleanup on error path; the read error is what matters
-		return nil, fmt.Errorf("read transcript for resume: %w", err)
-	}
-
-	// Identify any trailing partial line before validation, but do not mutate the
-	// file yet. An unsupported or corrupt transcript must remain byte-for-byte
-	// unchanged when resume is rejected.
-	validLen := int64(len(data))
-	hasPartialTail := false
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		lastNL := bytes.LastIndexByte(data, '\n')
-		if lastNL < 0 {
-			_ = f.Close() // cleanup on error path; the validation error is what matters
-			return nil, errors.New("transcript has no complete lines")
-		}
-		validLen = int64(lastNL + 1)
-		data = data[:validLen]
-		hasPartialTail = true
-	}
-
-	// Validate the v2 header and semantic entries while finding the max seq.
+	// Validate complete v2 records while finding the next sequence and the byte
+	// boundary before any crash tail. The shared framer drains an arbitrarily
+	// large unterminated tail without retaining the file in memory.
 	maxSeq := -1
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
+	reader := bufio.NewReaderSize(f, 64*1024)
+	var validLen int64
+	hasPartialTail := false
 	headerRead := false
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	for {
+		line, complete, bytesRead, readErr := ReadLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("read transcript for resume: %w", readErr)
+		}
+		if !complete {
+			hasPartialTail = bytesRead > 0
+			break
+		}
+		validLen += bytesRead
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
 		if !headerRead {
-			var header Header
-			if err := json.Unmarshal(line, &header); err != nil {
+			if _, err := DecodeHeader(line); err != nil {
 				_ = f.Close()
 				return nil, fmt.Errorf("parse transcript header: %w", err)
-			}
-			if err := ValidateHeader(header); err != nil {
-				_ = f.Close()
-				return nil, err
 			}
 			headerRead = true
 			continue
 		}
-		var kind struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &kind); err != nil {
-			_ = f.Close()
-			return nil, fmt.Errorf("parse transcript record: %w", err)
-		}
-		if err := ValidateRecordKind(kind.Kind); err != nil {
-			_ = f.Close()
-			return nil, err
-		}
-		var entry Entry
-		if err := json.Unmarshal(line, &entry); err != nil {
+		entry, err := DecodeEntry(line)
+		if err != nil {
 			_ = f.Close()
 			return nil, fmt.Errorf("parse transcript entry: %w", err)
 		}
@@ -372,12 +456,10 @@ func openWriterFS(fs afero.Fs, path string) (*Writer, error) {
 	}
 	if !headerRead {
 		_ = f.Close()
+		if hasPartialTail && validLen == 0 {
+			return nil, errors.New("transcript has no complete lines")
+		}
 		return nil, fmt.Errorf("%w: missing transcript header", ErrUnsupportedFormat)
-	}
-
-	if err := scanner.Err(); err != nil {
-		_ = f.Close() // cleanup on error path; the scan error is what matters
-		return nil, fmt.Errorf("scanning transcript entries: %w", err)
 	}
 
 	if hasPartialTail {

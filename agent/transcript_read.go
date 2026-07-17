@@ -3,7 +3,6 @@ package agent
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -80,59 +79,48 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retain
 	var data transcriptData
 	headerRead := false
 	for {
-		line, readErr := readStrictTranscriptLine(reader, maxLineBytes)
-		if readErr != nil && !errors.Is(readErr, io.EOF) {
+		line, complete, bytesRead, readErr := transcript.ReadLine(reader, maxLineBytes)
+		if readErr != nil {
 			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "reading transcript", readErr)
 		}
-		if len(line) == 0 && errors.Is(readErr, io.EOF) {
-			break
-		}
-		finalIncomplete := errors.Is(readErr, io.EOF) && !bytes.HasSuffix(line, []byte{'\n'})
-		if finalIncomplete {
-			data.Skipped++
-			break
-		}
-		line = bytes.TrimSpace(bytes.TrimSuffix(line, []byte{'\n'}))
-		if len(line) == 0 {
-			if errors.Is(readErr, io.EOF) {
-				break
+		if !complete {
+			if bytesRead > 0 {
+				data.Skipped++
 			}
+			break
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 		if !headerRead {
-			if err := json.Unmarshal(line, &data.Header); err != nil {
+			header, err := transcript.DecodeHeader(line)
+			if err != nil {
+				if errors.Is(err, transcript.ErrUnsupportedFormat) {
+					return transcriptData{}, err
+				}
 				return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript header", err)
 			}
-			if err := transcript.ValidateHeader(data.Header); err != nil {
-				return transcriptData{}, err
-			}
+			data.Header = header
 			headerRead = true
-			if errors.Is(readErr, io.EOF) {
-				break
-			}
 			continue
 		}
-		var peek struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &peek); err != nil {
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript line", err)
-		}
-		if err := transcript.ValidateRecordKind(peek.Kind); err != nil {
-			return transcriptData{}, err
-		}
-		var entry transcript.Entry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, "parsing transcript entry", err)
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			if errors.Is(err, transcript.ErrUnsupportedFormat) {
+				return transcriptData{}, err
+			}
+			operation := "parsing transcript entry"
+			if errors.Is(err, transcript.ErrInvalidRecordBoundary) {
+				operation = "parsing transcript line"
+			}
+			return transcriptData{}, wrapTranscriptCorrupt(corruptSentinel, operation, err)
 		}
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)
 		}
 		if retainEntryLines {
 			data.EntryLines = append(data.EntryLines, bytes.Clone(line))
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
 		}
 	}
 	if !headerRead {
@@ -149,24 +137,6 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 		return fmt.Errorf("%w: %s: %w", sentinel, operation, err)
 	}
 	return fmt.Errorf("%s: %w", operation, err)
-}
-
-func readStrictTranscriptLine(reader *bufio.Reader, maxLineBytes int) ([]byte, error) {
-	if maxLineBytes <= 0 {
-		maxLineBytes = transcriptJSONLMaxLineBytes
-	}
-	var line []byte
-	for {
-		fragment, err := reader.ReadSlice('\n')
-		if len(line)+len(fragment) > maxLineBytes {
-			return nil, fmt.Errorf("%w: transcript line exceeds %d bytes", errStrictChildTranscriptCorrupt, maxLineBytes)
-		}
-		line = append(line, fragment...)
-		if errors.Is(err, bufio.ErrBufferFull) {
-			continue
-		}
-		return line, err
-	}
 }
 
 // ResumeHistory extracts the history needed for session resume from transcript entries.

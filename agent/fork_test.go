@@ -249,6 +249,42 @@ func TestForkSession_RejectsUnsupportedHeader(t *testing.T) {
 	}
 }
 
+func TestForkSession_RejectsUnknownTranscriptFields(t *testing.T) {
+	tests := []struct {
+		name      string
+		transform func(string) string
+	}{
+		{
+			name: "header",
+			transform: func(raw string) string {
+				return strings.Replace(raw, `"format_version":2`, `"format_version":2,"unknown":true`, 1)
+			},
+		},
+		{
+			name: "entry",
+			transform: func(raw string) string {
+				return strings.Replace(raw, `"seq":0`, `"seq":0,"unknown":true`, 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir, parentID := buildParentSession(t)
+			parentPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+			raw, err := os.ReadFile(parentPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(parentPath, []byte(tt.transform(string(raw))), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ForkSession(stateDir, parentID, 3, "edited", ""); err == nil {
+				t.Fatal("ForkSession accepted an unknown transcript field")
+			}
+		})
+	}
+}
+
 func TestForkSession_UsesFirstNonEmptyRecordAsHeader(t *testing.T) {
 	t.Parallel()
 	stateDir, parentID := buildParentSession(t)
