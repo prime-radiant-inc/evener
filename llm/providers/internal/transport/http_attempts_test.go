@@ -1232,6 +1232,76 @@ func TestDoWithAPIAttemptsLearnsCredentialTrailerPopulatedWhileReadingRequestBod
 	}
 }
 
+func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempts(t *testing.T) {
+	const (
+		trailerName   = "X-Gateway-Credential"
+		trailerSecret = "redirect-trailer-secret-sentinel"
+	)
+	ctx, group, logPath := durableAttemptContext(t, "sess-redirect-trailer", "ag_redirect_trailer")
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Trailer = http.Header{trailerName: nil}
+	request.Body = &credentialTrailerBody{
+		request: request,
+		reader:  bytes.NewReader([]byte("request body")),
+		name:    trailerName,
+		value:   trailerSecret,
+	}
+	request.ContentLength = int64(len("request body"))
+
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		transportCalls++
+		switch transportCalls {
+		case 1:
+			if _, err := io.ReadAll(request.Body); err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://provider.test/final"}},
+				Body:       io.NopCloser(strings.NewReader("source saw " + trailerSecret)),
+			}, nil
+		case 2:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("final echoed " + trailerSecret)),
+			}, nil
+		default:
+			return nil, errors.New("unexpected extra RoundTrip")
+		}
+	})}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+			),
+		}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read final response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 2 {
+		t.Fatalf("durable attempts = %d, want redirect and final", len(attempts))
+	}
+	for _, durable := range attempts {
+		assertDurableAttemptExcludes(t, durable, trailerSecret)
+	}
+}
+
 func TestDoWithAPIAttemptsLearnsCredentialTrailerMutatedBeforeTransportError(t *testing.T) {
 	const (
 		trailerName   = "X-Gateway-Credential"

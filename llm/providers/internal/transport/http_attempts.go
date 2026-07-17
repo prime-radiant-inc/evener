@@ -68,6 +68,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	t.registerAttempt(attempt)
 
 	response, err := t.base.RoundTrip(request)
+	t.mergeCredentialMaterial(llm.APILogCredentialMaterialForRequest(request, attempt.credentialMaterial))
 	if err != nil {
 		t.retainTransportFailure(attempt)
 		return response, err
