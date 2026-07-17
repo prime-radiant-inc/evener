@@ -42,7 +42,7 @@ func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...str
 		}
 		material.HeaderNames[canonical] = struct{}{}
 		if _, structural := commonCredentialHeaderNames[canonical]; !structural {
-			addCredentialSecretNames(secretNames, strings.TrimSpace(name), canonical, strings.ToLower(canonical))
+			addCredentialSecretNames(secretNames, strings.ToLower(strings.TrimSpace(name)), strings.ToLower(canonical))
 		}
 	}
 	for _, name := range queryNames {
@@ -55,7 +55,7 @@ func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...str
 		}
 		material.QueryNames[canonical] = struct{}{}
 		if _, structural := commonCredentialQueryNames[canonical]; !structural {
-			addCredentialSecretNames(secretNames, strings.TrimSpace(name), canonical)
+			addCredentialSecretNames(secretNames, strings.ToLower(strings.TrimSpace(name)), strings.ToLower(canonical))
 		}
 	}
 	seenValues := make(map[string]struct{}, len(values))
@@ -74,7 +74,7 @@ func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...str
 		material.secretNames = append(material.secretNames, name)
 	}
 	sort.Strings(material.secretNames)
-	material.patterns = credentialValueVariants(append(append([]string(nil), material.Values...), material.secretNames...))
+	material.patterns = credentialValueVariants(material.Values)
 	return material
 }
 
@@ -296,8 +296,18 @@ func headerValuesContainCredential(headerValues []string, material APILogCredent
 }
 
 func containsCredentialEvidence(text string, material APILogCredentialMaterial) bool {
-	for _, pattern := range credentialEvidencePatterns(material) {
+	return containsCredentialEvidenceParts(text, credentialEvidencePatterns(material), material.secretNames)
+}
+
+func containsCredentialEvidenceParts(text string, valuePatterns, secretNames []string) bool {
+	for _, pattern := range valuePatterns {
 		if strings.Contains(text, pattern) {
+			return true
+		}
+	}
+	lowerText := strings.ToLower(text)
+	for _, name := range secretNames {
+		if name != "" && strings.Contains(lowerText, name) {
 			return true
 		}
 	}
@@ -308,7 +318,7 @@ func credentialEvidencePatterns(material APILogCredentialMaterial) []string {
 	if material.patterns != nil {
 		return material.patterns
 	}
-	return credentialValueVariants(append(append([]string(nil), material.Values...), material.secretNames...))
+	return credentialValueVariants(material.Values)
 }
 
 func credentialValueVariants(values []string) []string {

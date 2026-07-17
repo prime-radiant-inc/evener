@@ -220,8 +220,8 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 	if got := observed[0].Err.Error(); strings.Contains(got, secret) {
 		t.Fatalf("sync failure warning leaked credential: %q", got)
 	}
-	if !errors.Is(observed[0].Err, syncErr) {
-		t.Fatalf("sanitized sync warning lost storage error identity: %v", observed[0].Err)
+	if errors.Is(observed[0].Err, syncErr) || errors.Unwrap(observed[0].Err) != nil {
+		t.Fatalf("sanitized sync warning retained storage error behavior: %v", observed[0].Err)
 	}
 
 	apiLogFileSync = oldSync
@@ -268,8 +268,8 @@ func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnc
 	if got := observed[0].Err.Error(); strings.Contains(got, secret) {
 		t.Fatalf("settlement sync failure warning leaked credential: %q", got)
 	}
-	if !errors.Is(observed[0].Err, syncErr) {
-		t.Fatalf("sanitized settlement warning lost storage error identity: %v", observed[0].Err)
+	if errors.Is(observed[0].Err, syncErr) || errors.Unwrap(observed[0].Err) != nil {
+		t.Fatalf("sanitized settlement warning retained storage error behavior: %v", observed[0].Err)
 	}
 
 	apiLogFileSync = oldSync
@@ -314,10 +314,52 @@ func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryName
 	if strings.Contains(got, ordinaryHeader) {
 		t.Fatalf("credential-bearing warning was partially preserved: %q", got)
 	}
-	if !errors.Is(sink.observed[0].Err, storageErr) {
-		t.Fatalf("sanitized warning lost storage error identity: %v", sink.observed[0].Err)
+	if errors.Is(sink.observed[0].Err, storageErr) || errors.Unwrap(sink.observed[0].Err) != nil {
+		t.Fatalf("sanitized warning retained storage error behavior: %v", sink.observed[0].Err)
 	}
 }
+
+func TestAPILogErrorSanitizationDetachesOriginalErrorBehavior(t *testing.T) {
+	const secret = "raw-error-secret-sentinel"
+	cause := errors.New(secret)
+	raw := &recoverableAPILogError{text: "storage failed for " + secret, cause: cause}
+	flat := sanitizeAPILogError(raw, NewAPILogCredentialMaterial(nil, nil, secret))
+
+	if raw.calls != 1 {
+		t.Fatalf("raw Error() calls = %d, want 1", raw.calls)
+	}
+	if flat == nil || strings.Contains(flat.Error(), secret) {
+		t.Fatalf("sanitized error leaked secret text: %v", flat)
+	}
+	if errors.Is(flat, raw) || errors.Is(flat, cause) || errors.Unwrap(flat) != nil {
+		t.Fatalf("sanitized error retained original graph: %v", flat)
+	}
+	var recovered *recoverableAPILogError
+	if errors.As(flat, &recovered) {
+		t.Fatalf("sanitized error recovered raw object: %#v", recovered)
+	}
+
+	observed := sanitizeAPILogError(observedAPILogError{err: raw}, NewAPILogCredentialMaterial(nil, nil, secret))
+	if _, ok := observed.(apiLogObservedFailure); !ok {
+		t.Fatalf("sanitized observed error lost marker: %T", observed)
+	}
+	if errors.Unwrap(observed) != nil || errors.Is(observed, raw) || errors.Is(observed, cause) {
+		t.Fatalf("sanitized observed error retained original graph: %v", observed)
+	}
+}
+
+type recoverableAPILogError struct {
+	text  string
+	cause error
+	calls int
+}
+
+func (e *recoverableAPILogError) Error() string {
+	e.calls++
+	return e.text
+}
+
+func (e *recoverableAPILogError) Unwrap() error { return e.cause }
 
 func TestAPIAttemptAppendWarningSanitizationPreservesObservedMarker(t *testing.T) {
 	const credentialHeader = "X-Private-Observed-Sentinel"

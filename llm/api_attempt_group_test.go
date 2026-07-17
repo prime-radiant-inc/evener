@@ -561,8 +561,11 @@ func TestAPILogStorageFailurePreservesProviderResultAndMarksSettlement(t *testin
 		t.Fatalf("failure observer calls = %d, want 1", len(failures))
 	}
 	failure := failures[0]
-	if failure.Operation != "append_attempt" || failure.SessionID != "sess-storage" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" || !errors.Is(failure.Err, storageErr) {
+	if failure.Operation != "append_attempt" || failure.SessionID != "sess-storage" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
 		t.Fatalf("failure = %+v", failure)
+	}
+	if errors.Is(failure.Err, storageErr) || errors.Unwrap(failure.Err) != nil {
+		t.Fatalf("failure retained raw storage error graph: %+v", failure)
 	}
 	if len(settlements) != 1 || !settlements[0].ForensicIncomplete {
 		t.Fatalf("settlements = %+v, want forensic-incomplete", settlements)
@@ -594,8 +597,11 @@ func TestAPIAttemptSettlementFailureObservedExactlyOnce(t *testing.T) {
 	if len(failures) != 1 {
 		t.Fatalf("failure observer calls = %d, want 1", len(failures))
 	}
-	if failure := failures[0]; failure.Operation != "append_settlement" || failure.AttemptID != "" || !errors.Is(failure.Err, storageErr) {
+	if failure := failures[0]; failure.Operation != "append_settlement" || failure.AttemptID != "" {
 		t.Fatalf("failure = %+v", failure)
+	}
+	if failure := failures[0]; errors.Is(failure.Err, storageErr) || errors.Unwrap(failure.Err) != nil {
+		t.Fatalf("failure retained raw settlement error graph: %+v", failure)
 	}
 	if want := []string{"append_settlement", "observe_failure"}; !reflect.DeepEqual(events, want) {
 		t.Fatalf("events = %v, want %v", events, want)

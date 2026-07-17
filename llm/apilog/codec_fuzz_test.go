@@ -39,10 +39,10 @@ func FuzzCanonicalRecordCodec(f *testing.F) {
 				Body:     EncodeBody(requestBody),
 			},
 			Response: &APIAttemptResponse{
-				StatusCode:    200,
+				StatusCode:    recordTestInt(200),
 				Body:          EncodeBody(responseBody),
-				TextLength:    len(responseBody),
-				ToolCallCount: count % 3,
+				TextLength:    recordTestInt(len(responseBody)),
+				ToolCallCount: recordTestInt(count % 3),
 			},
 			Outcome: AttemptSuccess,
 		}

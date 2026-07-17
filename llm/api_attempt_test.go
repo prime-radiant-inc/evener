@@ -82,7 +82,7 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 	if record.Response.Model != "" || record.Response.FinishReason != "" {
 		t.Fatalf("response strings = (%q, %q), want omitted", record.Response.Model, record.Response.FinishReason)
 	}
-	if record.Response.Usage.InputTokens != 0 || record.Response.Usage.OutputTokens != 45 {
+	if record.Response.Usage.InputTokens != nil || record.Response.Usage.OutputTokens == nil || *record.Response.Usage.OutputTokens != 45 {
 		t.Fatalf("usage = %+v, want matching value omitted and safe value retained", record.Response.Usage)
 	}
 	line, err := apilog.MarshalRecord(record)
@@ -118,6 +118,99 @@ func TestMarshalRecordRejectsCredentialInsertedAfterRecordBuild(t *testing.T) {
 	}
 }
 
+func TestBuildAPIAttemptRecordOmitsCustomCredentialNamesCaseInsensitively(t *testing.T) {
+	const (
+		customHeader = "X-Custom-Credential-Name"
+		customQuery  = "private_query_name"
+		literalValue = "CaseSensitiveCredentialValue"
+	)
+	material := NewAPILogCredentialMaterial([]string{customHeader}, []string{customQuery}, literalValue)
+	startedAt := time.Unix(24, 0).UTC()
+	record := buildAPIAttemptRecord("ag_casefold_names", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+		ProviderInstance: "provider",
+		RequestModel:     "model",
+		Method:           http.MethodPost,
+		Endpoint:         "https://provider.test/v1/responses",
+		Headers: http.Header{
+			"X-Ordinary": {"echo x-CuStOm-CrEdEnTiAl-NaMe"},
+		},
+		RequestBody:        []byte("echo PRIVATE_QUERY_NAME"),
+		StartedAt:          startedAt,
+		CredentialMaterial: material,
+	}, APIAttemptResult{
+		StatusCode:   http.StatusBadRequest,
+		ResponseBody: []byte("casesensitivecredentialvalue"),
+		Response: &Response{
+			Model:   "echo X-cUsToM-cReDeNtIaL-nAmE",
+			Message: Assistant("safe"),
+			Finish:  FinishReason{Reason: "PRIVATE_QUERY_NAME"},
+		},
+		Outcome:    apilog.AttemptProviderReject,
+		ErrorClass: "PRIVATE_QUERY_NAME",
+		Err:        errors.New("echo x-CUSTOM-cREDENTIAL-nAME"),
+		FinishedAt: startedAt.Add(time.Millisecond),
+	})
+
+	assertCredentialExcludedBody(t, record.Request.Body)
+	if len(record.Request.Headers) != 0 {
+		t.Fatalf("mixed-case credential name survived in header evidence: %#v", record.Request.Headers)
+	}
+	if record.Response.Model != "" || record.Response.FinishReason != "" || record.ErrorClass != "" || record.ErrorMessage != "" {
+		t.Fatalf("mixed-case credential names survived: response=%+v error=(%q, %q)", record.Response, record.ErrorClass, record.ErrorMessage)
+	}
+	responseBody, err := apilog.DecodeBody(record.Response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(responseBody); got != "casesensitivecredentialvalue" {
+		t.Fatalf("literal-sensitive credential value changed case-insensitive evidence %q", got)
+	}
+	if _, err := apilog.MarshalRecord(record); err != nil {
+		t.Fatalf("MarshalRecord(): %v", err)
+	}
+}
+
+func TestMarshalRecordRejectsMixedCaseCustomCredentialNameInsertedAfterBuild(t *testing.T) {
+	material := NewAPILogCredentialMaterial([]string{"X-Custom-Credential-Name"}, []string{"private_query_name"})
+	for _, tt := range []struct {
+		name   string
+		mutate func(*apilog.APIAttemptRecord)
+	}{
+		{
+			name: "ordinary header",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Headers = apilog.EncodedHeader{"X-Ordinary": {"x-CuStOm-CrEdEnTiAl-NaMe"}}
+			},
+		},
+		{
+			name: "request body",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Body = apilog.EncodeBody([]byte("PRIVATE_QUERY_NAME"))
+			},
+		},
+		{
+			name: "error text",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.ErrorMessage = "echo x-CUSTOM-cREDENTIAL-nAME"
+			},
+		},
+		{
+			name: "response model",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Response.Model = "X-cUsToM-cReDeNtIaL-nAmE"
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			record := validBuiltAPIAttemptRecord(t, material)
+			tt.mutate(&record)
+			if _, err := apilog.MarshalRecord(record); err == nil {
+				t.Fatal("MarshalRecord() accepted mixed-case custom credential name")
+			}
+		})
+	}
+}
+
 func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *testing.T) {
 	record := validBuiltAPIAttemptRecord(t, NewAPILogCredentialMaterial(nil, nil, "api"))
 	line, err := apilog.MarshalRecord(record)
@@ -126,6 +219,93 @@ func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *test
 	}
 	if !strings.Contains(string(line), `"kind":"api_attempt"`) {
 		t.Fatalf("record does not contain expected structural overlap: %s", line)
+	}
+}
+
+func TestBuildAPIAttemptRecordOmitsZeroNumericCredentialEvidence(t *testing.T) {
+	zero := 0
+	startedAt := time.Unix(25, 0).UTC()
+	record := buildAPIAttemptRecord("ag_zero_numeric_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+		ProviderInstance:   "provider",
+		RequestModel:       "model",
+		Method:             http.MethodPost,
+		Endpoint:           "https://provider.test/v1/responses",
+		RequestBody:        []byte("safe request"),
+		StartedAt:          startedAt,
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, "0"),
+	}, APIAttemptResult{
+		StatusCode:   http.StatusOK,
+		ResponseBody: []byte("safe response"),
+		Response: &Response{
+			Model:   "model",
+			Message: Assistant(""),
+			Finish:  FinishReason{Reason: FinishReasonStop},
+			Usage: Usage{
+				CacheReadTokens:  &zero,
+				CacheWriteTokens: &zero,
+			},
+		},
+		Outcome:    apilog.AttemptSuccess,
+		FinishedAt: startedAt.Add(time.Millisecond),
+	})
+	line, err := apilog.MarshalRecord(record)
+	if err != nil {
+		t.Fatalf("MarshalRecord(): %v", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(line, &object); err != nil {
+		t.Fatal(err)
+	}
+	response := object["response"].(map[string]any)
+	usage := response["usage"].(map[string]any)
+	for _, field := range []string{"status_code", "text_length", "tool_call_count"} {
+		if _, present := response[field]; present {
+			t.Fatalf("credential-bearing response field %q persisted: %s", field, line)
+		}
+	}
+	for _, field := range []string{"input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"} {
+		if _, present := usage[field]; present {
+			t.Fatalf("credential-bearing usage field %q persisted: %s", field, line)
+		}
+	}
+}
+
+func TestBuildAPIAttemptRecordOmitsMatchingNonzeroNumericEvidence(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    string
+		container string
+		field     string
+	}{
+		{name: "status", secret: "418", container: "response", field: "status_code"},
+		{name: "text length", secret: "7", container: "response", field: "text_length"},
+		{name: "tool-call count", secret: "2", container: "response", field: "tool_call_count"},
+		{name: "input tokens", secret: "11", container: "usage", field: "input_tokens"},
+		{name: "output tokens", secret: "13", container: "usage", field: "output_tokens"},
+		{name: "total tokens", secret: "24", container: "usage", field: "total_tokens"},
+		{name: "cache-read tokens", secret: "5", container: "usage", field: "cache_read_tokens"},
+		{name: "cache-write tokens", secret: "6", container: "usage", field: "cache_write_tokens"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			record := numericEvidenceAttemptRecord(t, tt.secret)
+			line, err := apilog.MarshalRecord(record)
+			if err != nil {
+				t.Fatalf("MarshalRecord(): %v", err)
+			}
+			var object map[string]any
+			if err := json.Unmarshal(line, &object); err != nil {
+				t.Fatal(err)
+			}
+			response := object["response"].(map[string]any)
+			container := response
+			if tt.container == "usage" {
+				container = response["usage"].(map[string]any)
+			}
+			if _, present := container[tt.field]; present {
+				t.Fatalf("credential-bearing numeric field %q persisted: %s", tt.field, line)
+			}
+		})
 	}
 }
 
@@ -269,6 +449,42 @@ func builtAPIAttemptRecordWithError(t *testing.T, err error) apilog.APIAttemptRe
 	}, APIAttemptResult{
 		Outcome:    apilog.AttemptTransportFail,
 		Err:        err,
+		FinishedAt: startedAt.Add(time.Millisecond),
+	})
+}
+
+func numericEvidenceAttemptRecord(t *testing.T, secret string) apilog.APIAttemptRecord {
+	t.Helper()
+	cacheRead, cacheWrite := 5, 6
+	startedAt := time.Unix(26, 0).UTC()
+	return buildAPIAttemptRecord("ag_numeric_omission", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+		ProviderInstance:   "provider",
+		RequestModel:       "model",
+		Method:             http.MethodPost,
+		Endpoint:           "https://provider.test/v1/responses",
+		RequestBody:        []byte("safe request"),
+		StartedAt:          startedAt,
+		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
+	}, APIAttemptResult{
+		StatusCode:   http.StatusTeapot,
+		ResponseBody: []byte("safe response"),
+		Response: &Response{
+			Model: "model",
+			Message: Message{Role: RoleAssistant, Content: []ContentPart{
+				{Kind: ContentText, Text: "1234567"},
+				{Kind: ContentToolCall, ToolCall: &ToolCallData{Name: "one"}},
+				{Kind: ContentToolCall, ToolCall: &ToolCallData{Name: "two"}},
+			}},
+			Finish: FinishReason{Reason: FinishReasonStop},
+			Usage: Usage{
+				InputTokens:      11,
+				OutputTokens:     13,
+				TotalTokens:      24,
+				CacheReadTokens:  &cacheRead,
+				CacheWriteTokens: &cacheWrite,
+			},
+		},
+		Outcome:    apilog.AttemptProviderReject,
 		FinishedAt: startedAt.Add(time.Millisecond),
 	})
 }

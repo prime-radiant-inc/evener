@@ -475,8 +475,11 @@ func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
 	select {
 	case failure := <-failures:
-		if failure.Operation != "append_attempt" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" || !errors.Is(failure.Err, syncErr) {
+		if failure.Operation != "append_attempt" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
 			t.Fatalf("sync failure = %+v", failure)
+		}
+		if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
+			t.Fatalf("sync failure retained raw error graph: %+v", failure)
 		}
 	default:
 		t.Fatal("sync failure was not reported")
@@ -520,8 +523,11 @@ func TestAPILoggerCanonicalSyncFailureOwnedByAffectedSessionGroup(t *testing.T) 
 		t.Fatalf("sync failure observer calls = %d, want attempt and settlement for session A: %+v", len(failures), failures)
 	}
 	for _, failure := range failures {
-		if failure.SessionID != "sess-a" || failure.AttemptGroupID != "ag_session_a_sync" || !errors.Is(failure.Err, syncErr) {
+		if failure.SessionID != "sess-a" || failure.AttemptGroupID != "ag_session_a_sync" {
 			t.Fatalf("sync failure attributed to unaffected group: %+v", failure)
+		}
+		if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
+			t.Fatalf("sync failure retained raw error graph: %+v", failure)
 		}
 	}
 	if failures[0].Operation != "append_attempt" || failures[0].AttemptID == "" {
@@ -572,8 +578,11 @@ func TestAPILoggerCloseObservesPendingCanonicalSyncFailureIdentity(t *testing.T)
 		t.Fatalf("failure observer calls = %d, want 1: %+v", len(failures), failures)
 	}
 	failure := failures[0]
-	if failure.Operation != "append_attempt" || failure.SessionID != "sess-close-sync" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" || !errors.Is(failure.Err, syncErr) {
+	if failure.Operation != "append_attempt" || failure.SessionID != "sess-close-sync" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
 		t.Fatalf("close sync failure identity = %+v", failure)
+	}
+	if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
+		t.Fatalf("close sync failure retained raw error graph: %+v", failure)
 	}
 }
 
@@ -786,12 +795,14 @@ func standaloneCanonicalAttempt(groupID string, index int) apilog.APIAttemptReco
 			Body:     apilog.EncodeBody([]byte(`{"input":"hello"}`)),
 		},
 		Response: &apilog.APIAttemptResponse{
-			StatusCode: http.StatusOK,
+			StatusCode: apiLogTestInt(http.StatusOK),
 			Body:       apilog.EncodeBody([]byte(`{"output":"hello"}`)),
 		},
 		Outcome: apilog.AttemptSuccess,
 	}
 }
+
+func apiLogTestInt(value int) *int { return &value }
 
 func assertPathMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()

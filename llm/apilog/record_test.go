@@ -32,21 +32,23 @@ func validAPIAttemptRecord(t *testing.T) APIAttemptRecord {
 			HistoryMode: "messages",
 		},
 		Response: &APIAttemptResponse{
-			StatusCode:    200,
+			StatusCode:    recordTestInt(200),
 			Body:          EncodeBody([]byte{0x00, 0xff, 0x80, '\n'}),
 			Model:         "gpt-test-2026-07-15",
 			FinishReason:  "stop",
-			TextLength:    17,
-			ToolCallCount: 2,
+			TextLength:    recordTestInt(17),
+			ToolCallCount: recordTestInt(2),
 			Usage: Usage{
-				InputTokens:  12,
-				OutputTokens: 4,
-				TotalTokens:  16,
+				InputTokens:  recordTestInt(12),
+				OutputTokens: recordTestInt(4),
+				TotalTokens:  recordTestInt(16),
 			},
 		},
 		Outcome: AttemptSuccess,
 	}
 }
+
+func recordTestInt(value int) *int { return &value }
 
 func validSettlement(t *testing.T) APIAttemptGroupSettlement {
 	t.Helper()
@@ -103,8 +105,8 @@ func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
 	if got.AttemptID != want.AttemptID || got.AttemptGroupID != want.AttemptGroupID || got.AttemptIndex != want.AttemptIndex {
 		t.Fatalf("attempt identity = (%q, %q, %d), want (%q, %q, %d)", got.AttemptID, got.AttemptGroupID, got.AttemptIndex, want.AttemptID, want.AttemptGroupID, want.AttemptIndex)
 	}
-	if got.Response.TextLength != 17 || got.Response.ToolCallCount != 2 {
-		t.Fatalf("compact response counts = text %d tools %d, want text 17 tools 2", got.Response.TextLength, got.Response.ToolCallCount)
+	if got.Response.TextLength == nil || *got.Response.TextLength != 17 || got.Response.ToolCallCount == nil || *got.Response.ToolCallCount != 2 {
+		t.Fatalf("compact response counts = text %v tools %v, want text 17 tools 2", got.Response.TextLength, got.Response.ToolCallCount)
 	}
 }
 
@@ -127,6 +129,73 @@ func TestMarshalRecordValidatesCanonicalAttemptAndSettlement(t *testing.T) {
 	invalid.Outcome = "future_outcome"
 	if _, err := MarshalRecord(invalid); err == nil {
 		t.Fatal("MarshalRecord() accepted an invalid durable enum")
+	}
+}
+
+func TestAPIAttemptNumericEvidencePreservesPresenceAcrossStrictCodec(t *testing.T) {
+	base, err := MarshalRecord(validAPIAttemptRecord(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name    string
+		present bool
+	}{
+		{name: "present zero", present: true},
+		{name: "absent", present: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var object map[string]any
+			if err := json.Unmarshal(base, &object); err != nil {
+				t.Fatal(err)
+			}
+			response := object["response"].(map[string]any)
+			usage := response["usage"].(map[string]any)
+			for _, field := range []string{"status_code", "text_length", "tool_call_count"} {
+				if tt.present {
+					response[field] = float64(0)
+				} else {
+					delete(response, field)
+				}
+			}
+			for _, field := range []string{"input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"} {
+				if tt.present {
+					usage[field] = float64(0)
+				} else {
+					delete(usage, field)
+				}
+			}
+			line, err := json.Marshal(object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := DecodeRecord(line)
+			if err != nil {
+				t.Fatalf("DecodeRecord(): %v", err)
+			}
+			canonical, err := MarshalRecord(record)
+			if err != nil {
+				t.Fatalf("MarshalRecord(): %v", err)
+			}
+			var roundTrip map[string]any
+			if err := json.Unmarshal(canonical, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			response = roundTrip["response"].(map[string]any)
+			usage = response["usage"].(map[string]any)
+			for _, field := range []string{"status_code", "text_length", "tool_call_count"} {
+				_, present := response[field]
+				if present != tt.present {
+					t.Fatalf("response field %q presence = %t, want %t: %s", field, present, tt.present, canonical)
+				}
+			}
+			for _, field := range []string{"input_tokens", "output_tokens", "total_tokens", "cache_read_tokens", "cache_write_tokens"} {
+				_, present := usage[field]
+				if present != tt.present {
+					t.Fatalf("usage field %q presence = %t, want %t: %s", field, present, tt.present, canonical)
+				}
+			}
+		})
 	}
 }
 
@@ -184,9 +253,9 @@ func TestAPIAttemptRecordValidationRejectsInvalidDurableFields(t *testing.T) {
 		{"request body", func(r *APIAttemptRecord) { r.Request.Body.ByteCount++ }},
 		{"response body", func(r *APIAttemptRecord) { r.Response.Body.ByteCount++ }},
 		{"outcome", func(r *APIAttemptRecord) { r.Outcome = "unknown" }},
-		{"negative input tokens", func(r *APIAttemptRecord) { r.Response.Usage.InputTokens = -1 }},
-		{"negative output tokens", func(r *APIAttemptRecord) { r.Response.Usage.OutputTokens = -1 }},
-		{"negative total tokens", func(r *APIAttemptRecord) { r.Response.Usage.TotalTokens = -1 }},
+		{"negative input tokens", func(r *APIAttemptRecord) { *r.Response.Usage.InputTokens = -1 }},
+		{"negative output tokens", func(r *APIAttemptRecord) { *r.Response.Usage.OutputTokens = -1 }},
+		{"negative total tokens", func(r *APIAttemptRecord) { *r.Response.Usage.TotalTokens = -1 }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

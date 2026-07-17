@@ -674,7 +674,7 @@ func assertRedirectAttempt(t *testing.T, attempt apilog.APIAttemptRecord, groupI
 	if err != nil || !bytes.Equal(recordedRequest, request.body) {
 		t.Fatalf("recorded request body = %q, %v; want wire bytes %q", recordedRequest, err, request.body)
 	}
-	if attempt.Response == nil || attempt.Response.StatusCode != status {
+	if attempt.Response == nil || attempt.Response.StatusCode == nil || *attempt.Response.StatusCode != status {
 		t.Fatalf("attempt response = %+v, want status %d", attempt.Response, status)
 	}
 	recordedResponse, err := apilog.DecodeBody(attempt.Response.Body)

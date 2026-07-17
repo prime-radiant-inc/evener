@@ -32,7 +32,8 @@ func TestBuildAPIAttemptRecordStoresCompactResponseCounts(t *testing.T) {
 	if record.Response == nil {
 		t.Fatal("Response is nil")
 	}
-	if record.Response.TextLength != len(response.Text()) || record.Response.ToolCallCount != len(response.ToolCalls()) {
-		t.Fatalf("compact counts = text %d tools %d, want text %d tools %d", record.Response.TextLength, record.Response.ToolCallCount, len(response.Text()), len(response.ToolCalls()))
+	if record.Response.TextLength == nil || *record.Response.TextLength != len(response.Text()) ||
+		record.Response.ToolCallCount == nil || *record.Response.ToolCallCount != len(response.ToolCalls()) {
+		t.Fatalf("compact counts = text %v tools %v, want text %d tools %d", record.Response.TextLength, record.Response.ToolCallCount, len(response.Text()), len(response.ToolCalls()))
 	}
 }

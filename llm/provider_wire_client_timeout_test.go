@@ -390,7 +390,9 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 					t.Fatalf("attempt outcome = %q, want %q", attempts[0].Outcome, testCase.wantOutcome)
 				}
 				if testCase.wantSuccess {
-					if attempts[0].Response == nil || attempts[0].Response.Model == "" || attempts[0].Response.Usage.InputTokens+attempts[0].Response.Usage.OutputTokens == 0 {
+					if attempts[0].Response == nil || attempts[0].Response.Model == "" ||
+						attempts[0].Response.Usage.InputTokens == nil || attempts[0].Response.Usage.OutputTokens == nil ||
+						*attempts[0].Response.Usage.InputTokens+*attempts[0].Response.Usage.OutputTokens == 0 {
 						t.Fatalf("attempt lost final semantic response metadata: %+v", attempts[0].Response)
 					}
 				}
@@ -471,7 +473,9 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 					t.Fatalf("attempt outcome = %q, want %q", attempts[0].Outcome, testCase.wantOutcome)
 				}
 				if testCase.wantSuccess {
-					if attempts[0].Response == nil || attempts[0].Response.Model == "" || attempts[0].Response.Usage.InputTokens+attempts[0].Response.Usage.OutputTokens == 0 {
+					if attempts[0].Response == nil || attempts[0].Response.Model == "" ||
+						attempts[0].Response.Usage.InputTokens == nil || attempts[0].Response.Usage.OutputTokens == nil ||
+						*attempts[0].Response.Usage.InputTokens+*attempts[0].Response.Usage.OutputTokens == 0 {
 						t.Fatalf("attempt lost final semantic response metadata: %+v", attempts[0].Response)
 					}
 				}
