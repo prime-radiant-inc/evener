@@ -113,7 +113,7 @@ func fuzzWorktreeCloseResumeRegressionPrograms(t *testing.T) {
 		{"dispose-changed-lock", TestDisposeOneDelegateLane_ChangedLaneUnlockFailsLeavesLocked},
 		{"dispose-changed-foreign", TestDisposeOneDelegateLane_ChangedForeignLockDeclinedNotTouched},
 		{"dispose-unchanged-lock", TestDisposeOneDelegateLane_UnchangedUnlockFailsLeavesLocked},
-		{"dispose-race", TestDisposeRacingDirtyWrite_DowngradesToKeep},
+		{"dispose-race", TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked},
 		{"dispose-mark", TestDisposeOneDelegateLane_DisposedMarkAppendFailureWarnsButStillRemoves},
 		{"dispose-branch", TestDisposeOneDelegateLane_BranchDeleteFailureWarnsButLaneStillGone},
 		{"close-unlock-fails", TestUnlockOwnManagedWorktreeAtClose_LeaveFailsWarns},
