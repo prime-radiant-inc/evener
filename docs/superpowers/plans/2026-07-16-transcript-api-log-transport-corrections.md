@@ -574,13 +574,39 @@ The opaque wrapper must transform or decompress the response body before returni
 - A wrapper whose `APIAttemptUnderlyingTransport` returns itself is rejected without recursion or panic.
 - Two or more wrappers forming a cycle are rejected without recursion or panic.
 
+In `llm/adapter_timeout_test.go`, add this exact contract test for the production timeout wrapper:
+
+```go
+func TestClientWithAdapterTimeout_ExposesTransparentUnderlyingTransport(t *testing.T) {
+    base := http.DefaultTransport.(*http.Transport).Clone()
+    client := ClientWithAdapterTimeout(
+        &http.Client{Transport: base},
+        &AdapterTimeout{Request: time.Second},
+    )
+    transparent, ok := client.Transport.(interface {
+        APIAttemptUnderlyingTransport() http.RoundTripper
+    })
+    if !ok {
+        t.Fatalf("Transport = %T, want transparent timeout wrapper", client.Transport)
+    }
+    underlying, ok := transparent.APIAttemptUnderlyingTransport().(*http.Transport)
+    if !ok {
+        t.Fatalf("underlying transport = %T, want *http.Transport", transparent.APIAttemptUnderlyingTransport())
+    }
+    if underlying.ResponseHeaderTimeout != time.Second {
+        t.Fatalf("ResponseHeaderTimeout = %v, want 1s", underlying.ResponseHeaderTimeout)
+    }
+}
+```
+
 Run and confirm the opaque assertion fails under the old Boolean ownership convention:
 
 ```bash
 go test ./llm/providers/internal/transport -run 'Test(StandardTransport_(RejectsNil|RejectsSelfCycle|RejectsMultiWrapperCycle)|DoWithAPIAttempts_(TransparentTransport|OpaqueTransform))' -count=1
+go test ./llm -run '^TestClientWithAdapterTimeout_ExposesTransparentUnderlyingTransport$' -count=1
 ```
 
-Expected: FAIL because transformed bytes are currently treated as raw exact evidence or compression ownership is inferred without an unwrap proof.
+Expected: FAIL because transformed bytes are currently treated as raw exact evidence or compression ownership is inferred without an unwrap proof, and the production timeout wrapper does not yet expose `APIAttemptUnderlyingTransport`.
 
 - [ ] **Step 2: Introduce one capability and remove the old one**
 
@@ -656,7 +682,8 @@ Assert through the recording API-attempt sink that an opaque body's resulting `a
 
 ```bash
 go test ./llm/providers/internal/transport -run 'Test(StandardTransport_(RejectsNil|RejectsSelfCycle|RejectsMultiWrapperCycle)|DoWithAPIAttempts_(TransparentTransport|OpaqueTransform))' -count=1
-go test ./llm -run 'TestResponseHeaderTimeoutTransport' -count=1
+go test ./llm -run '^TestClientWithAdapterTimeout_ExposesTransparentUnderlyingTransport$' -count=1
+go test ./llm -run '^TestClientWithAdapterTimeout_ConfiguresStandardTransport$' -count=1
 go test ./llm/providers/internal/transport ./llm -count=1
 ```
 
@@ -799,13 +826,24 @@ Run the same method/header cases against local HTTP/1.1 and HTTP/2 servers throu
 
 For every case, assert both what the server receives and whether Serf decodes the final gzip response while retaining compressed raw response evidence. These are behavior tests, not assertions over a generated command or script.
 
+Add `TestStandardCompression_DisableCompressionByProtocolAndWrapper` with this four-case matrix:
+
+| Protocol | Transport chain | Required behavior |
+|---|---|---|
+| HTTP/1.1 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Serf decode |
+| HTTP/1.1 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Serf decode |
+| HTTP/2 | direct `*http.Transport` with `DisableCompression: true` | no injected `Accept-Encoding`; no Serf decode |
+| HTTP/2 | `responseHeaderTimeoutTransport` transparently wrapping that disabled standard transport | no injected `Accept-Encoding`; no Serf decode |
+
+Build the transparent wrapper through `llm.ClientWithAdapterTimeout` with a nonzero request timeout so the test exercises the production Task 4 contract. For each case, have the local server return a gzip-encoded body even though the request did not advertise gzip. Assert the server sees no added `Accept-Encoding`, the adapter reads the still-compressed bytes, `response.Uncompressed` remains false, `Content-Encoding: gzip` remains present, and the API-log response body contains the same compressed bytes. For the wrapped cases, also assert `APIAttemptUnderlyingTransport` resolves to the standard transport whose `DisableCompression` remains true.
+
 Use an `httptest.Server` for HTTP/1.1 and `httptest.NewUnstartedServer` with HTTP/2 enabled for HTTP/2. The server must be local and deterministic.
 
 ```bash
-go test ./llm/providers/internal/transport -run 'TestStandardCompression_ExplicitEmptyHeadersByProtocol' -count=1
+go test ./llm/providers/internal/transport -run '^(TestStandardCompression_ExplicitEmptyHeadersByProtocol|TestStandardCompression_DisableCompressionByProtocolAndWrapper)$' -count=1
 ```
 
-Expected: FAIL because the current pre-`RoundTrip` header predicate cannot distinguish the HTTP/1.1 `Header.Get` rule from the HTTP/2 map-entry-length rule.
+Expected: FAIL because the current pre-`RoundTrip` header predicate cannot distinguish the HTTP/1.1 `Header.Get` rule from the HTTP/2 map-entry-length rule, and the new ownership path does not yet bind its decision to the resolved standard transport's `DisableCompression` value.
 
 - [ ] **Step 2: Select the predicate inside the per-wire connection cycle**
 
@@ -825,9 +863,19 @@ func shouldOwnHTTP2Gzip(method string, h http.Header) bool {
         len(h["Accept-Encoding"]) == 0 &&
         len(h["Range"]) == 0
 }
+
+func shouldOwnStandardGzip(standard *http.Transport, method string, h http.Header, isHTTP2 bool) bool {
+    if standard == nil {
+        return false
+    }
+    if isHTTP2 {
+        return !standard.DisableCompression && shouldOwnHTTP2Gzip(method, h)
+    }
+    return !standard.DisableCompression && shouldOwnHTTP1Gzip(method, h)
+}
 ```
 
-When the selected predicate is true, set `Accept-Encoding: gzip` before the standard transport writes request headers and mark only that active wire cycle as owning gzip decoding. When false, leave the caller's header presence and values untouched.
+The outer `!standard.DisableCompression` conjunction is binding for direct standard transports and every transparent wrapper chain resolved by Task 4. When the combined predicate is true, set `Accept-Encoding: gzip` before the standard transport writes request headers and mark only that active wire cycle as owning gzip decoding. When false, leave the caller's header presence and values untouched and do not wrap the response for Serf gzip decoding.
 
 Do not move this decision back before `RoundTrip`: the negotiated protocol is required to preserve the explicit-empty difference. Do not normalize explicit-empty headers.
 
@@ -836,7 +884,7 @@ Do not move this decision back before `RoundTrip`: the negotiated protocol is re
 Extend both the Task 1 transparent-retry test and Task 2 repeated-`GotConn` regression with gzip-eligible cases. Assert every new cycle resets and recomputes compression state from its own method, header presence, and negotiated protocol; a prior failed cycle must not leak ownership into the successful cycle.
 
 ```bash
-go test ./llm/providers/internal/transport -run 'TestStandardCompression_|TestDoWithAPIAttempts_TransparentRetry|TestWireAttemptLifecycle_RepeatedGotConnStartsHTTP2RetryCycle' -count=1
+go test ./llm/providers/internal/transport -run '^(TestStandardCompression_ExplicitEmptyHeadersByProtocol|TestStandardCompression_DisableCompressionByProtocolAndWrapper|TestDoWithAPIAttempts_TransparentRetry|TestWireAttemptLifecycle_RepeatedGotConnStartsHTTP2RetryCycle|TestDoWithAPIAttemptsRecordsRawGzipResponseWithResponseHeaderTimeout)$' -count=1
 go test -race ./llm/providers/internal/transport -count=1
 ```
 
@@ -844,7 +892,7 @@ Expected: PASS.
 
 - [ ] **Step 4: Fresh review and commit**
 
-The reviewer must compare the two predicates against the Go 1.25 standard-library sources and verify the test covers `method != HEAD`, header absence, and a present empty slice value independently for both protocols.
+The reviewer must compare the two protocol predicates against the Go 1.25 standard-library sources and verify the tests cover `method != HEAD`, `!standard.DisableCompression`, header absence, and a present empty slice value independently for both protocols. The enabled response-header-timeout wrapper must retain raw compressed API-log evidence plus decoded adapter bytes, while a disabled standard transport beneath that same wrapper must perform neither Serf injection nor decode.
 
 ```bash
 git status --short
@@ -1345,7 +1393,7 @@ into transcripts or ATIF exports."
 Inspect the terminal-order tests for fixed negative waits and duplicated timeout branches. Run them repeatedly before editing:
 
 ```bash
-go test ./llm/providers/anthropic -run 'Test.*(Terminal|Settlement).*Order' -count=50
+go test ./llm/providers/anthropic -run '^(TestStreamingHappensBeforeSuccessPublication|TestStreamingHappensBeforeCancellationAndSettlement)$' -count=50
 ```
 
 Record whether they pass, fail, or flake. Passing does not establish correctness; this task fixes the oracle, not a known production defect.
@@ -1375,8 +1423,8 @@ Do not loosen the underlying requirement that terminal delivery and settlement o
 - [ ] **Step 3: Run repeated and race tests**
 
 ```bash
-go test ./llm/providers/anthropic -run 'Test.*(Terminal|Settlement).*Order' -count=100
-go test -race ./llm/providers/anthropic -run 'Test.*(Terminal|Settlement).*Order' -count=10
+go test ./llm/providers/anthropic -run '^(TestStreamingHappensBeforeSuccessPublication|TestStreamingHappensBeforeCancellationAndSettlement)$' -count=100
+go test -race ./llm/providers/anthropic -run '^(TestStreamingHappensBeforeSuccessPublication|TestStreamingHappensBeforeCancellationAndSettlement)$' -count=10
 ```
 
 Expected: PASS without sleeps, duplicate timeout cases, or race reports.
