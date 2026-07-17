@@ -31,7 +31,10 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 		body = skillProgramLimit(body)
 		raw = skillProgramLimit(raw)
 
-		root := t.TempDir()
+		root, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatalf("resolve temp root: %v", err)
+		}
 		project := filepath.Join(root, "project")
 		cwd := filepath.Join(project, "nested")
 		extraFirst := t.TempDir()

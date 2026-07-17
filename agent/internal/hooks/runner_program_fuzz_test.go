@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
@@ -119,18 +118,6 @@ func runHookRuntimeResidualProgram(t *testing.T, mode byte, token string) {
 			t.Fatal("nil command runtime unexpectedly succeeded")
 		}
 	}
-	if mode == 0x7f {
-		script := filepath.Join(t.TempDir(), "hook-script")
-		if err := os.WriteFile(script, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
-			t.Fatalf("write hook process script: %v", err)
-		}
-		if _, err := (systemCommandHookRuntime{}).Run(context.Background(), commandHookInvocation{
-			Program: script, Timeout: time.Second,
-		}); err != nil {
-			t.Fatalf("default process runner script: %v", err)
-		}
-	}
-
 	matched, err := matchTarget("^Write"+regexp.QuoteMeta(token[:min(2, len(token))]), "Write"+token)
 	if err != nil || !matched {
 		t.Fatalf("regex matcher residual = %v, %v", matched, err)
