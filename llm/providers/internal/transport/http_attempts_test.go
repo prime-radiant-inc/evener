@@ -131,7 +131,7 @@ func readDurableAttempts(t *testing.T, path string) []apilog.APIAttemptRecord {
 	var attempts []apilog.APIAttemptRecord
 	for {
 		record, err := decoder.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return attempts
 		}
 		if err != nil {
@@ -389,7 +389,7 @@ func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing
 	var attempts []apilog.APIAttemptRecord
 	for {
 		record, err := decoder.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -826,7 +826,7 @@ func TestDoWithAPIAttemptsRejectedRedirectCandidateSanitizesDurableSource(t *tes
 					),
 				}
 			})
-			if testCase.decision == http.ErrUseLastResponse {
+			if errors.Is(testCase.decision, http.ErrUseLastResponse) {
 				if err != nil {
 					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
 				}
@@ -957,7 +957,7 @@ func TestDoWithAPIAttemptsRejectedRedirectSanitizesRealJarCookieFromSource(t *te
 				t.Fatal(err)
 			}
 			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
-			if testCase.decision == http.ErrUseLastResponse {
+			if errors.Is(testCase.decision, http.ErrUseLastResponse) {
 				if err != nil {
 					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
 				}
@@ -1017,7 +1017,7 @@ func TestDoWithAPIAttemptsRejectedRedirectSanitizesDecodedResponseCookie(t *test
 				t.Fatal(err)
 			}
 			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
-			if testCase.decision == http.ErrUseLastResponse {
+			if errors.Is(testCase.decision, http.ErrUseLastResponse) {
 				if err != nil {
 					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
 				}

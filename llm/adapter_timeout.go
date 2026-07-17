@@ -50,16 +50,16 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 		}
 	}
 	transportCause := transportErr
-	if urlErr, ok := transportErr.(*url.Error); ok {
+	if urlErr, ok := transportErr.(*url.Error); ok { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Unwrap methods.
 		transportCause = urlErr.Err
 	}
-	if _, ok := transportCause.(*responseHeaderTimeoutError); ok {
+	if _, ok := transportCause.(*responseHeaderTimeoutError); ok { //nolint:errorlint // Inspect only Serf's concrete inert wrapper.
 		return APITimeoutResponseHeader
 	}
-	if netErr, ok := transportCause.(*net.OpError); ok {
+	if netErr, ok := transportCause.(*net.OpError); ok { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Unwrap methods.
 		transportCause = netErr.Err
 	}
-	if transportCause == context.DeadlineExceeded {
+	if transportCause == context.DeadlineExceeded { //nolint:errorlint // Transport errors are untrusted; do not invoke arbitrary Is methods.
 		return APITimeoutTransport
 	}
 	return APITimeoutNone

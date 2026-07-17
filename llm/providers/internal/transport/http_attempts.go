@@ -92,7 +92,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		responseBody = http.NoBody
 	}
 	body := &apiAttemptResponseBody{
-		observedBody: newObservedBody(responseBody, response.ContentLength, request.Context()),
+		observedBody: newObservedBody(request.Context(), responseBody, response.ContentLength),
 		attempt:      attempt,
 		statusCode:   response.StatusCode,
 	}
@@ -349,7 +349,7 @@ type observedBody struct {
 	timeout     bool
 }
 
-func newObservedBody(body io.ReadCloser, contentLength int64, ctx context.Context) *observedBody {
+func newObservedBody(ctx context.Context, body io.ReadCloser, contentLength int64) *observedBody {
 	return &observedBody{
 		ReadCloser:  body,
 		exact:       body == http.NoBody || contentLength == 0,
@@ -430,7 +430,7 @@ func captureRequestBody(request *http.Request, requestDone func()) func() bodyOb
 		contentLength = -1
 	}
 	body := &apiAttemptRequestBody{
-		observedBody: newObservedBody(request.Body, contentLength, request.Context()),
+		observedBody: newObservedBody(request.Context(), request.Body, contentLength),
 		requestDone:  requestDone,
 	}
 	request.Body = body
@@ -444,7 +444,7 @@ func (b *apiAttemptRequestBody) Read(p []byte) (int, error) {
 	n, err := b.observedBody.Read(p)
 	b.mu.Lock()
 	b.activeReads--
-	b.terminal = b.terminal || err == io.EOF
+	b.terminal = b.terminal || err == io.EOF //nolint:errorlint // Request-body errors are untrusted; do not invoke arbitrary Is methods.
 	ready := b.terminal && b.activeReads == 0
 	b.mu.Unlock()
 	if ready {

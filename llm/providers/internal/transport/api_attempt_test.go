@@ -559,7 +559,7 @@ func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
 
 func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
 	data := []byte("known body")
-	body := newObservedBody(&terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)), context.Background())
+	body := newObservedBody(context.Background(), &terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)))
 	buf := make([]byte, len(data))
 	n, err := body.Read(buf)
 	if n != len(data) || !errors.Is(err, context.Canceled) {
@@ -577,7 +577,7 @@ func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
 func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
 	data := []byte("known body plus overrun")
 	knownLength := int64(len("known body"))
-	body := newObservedBody(&terminalReadCloser{data: data}, knownLength, context.Background())
+	body := newObservedBody(context.Background(), &terminalReadCloser{data: data}, knownLength)
 	buf := make([]byte, len(data))
 	n, err := body.Read(buf)
 	if n != len(data) || err != nil {
@@ -603,7 +603,7 @@ func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			body := newObservedBody(&terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength, context.Background())
+			body := newObservedBody(context.Background(), &terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength)
 			buf := make([]byte, len(testCase.data))
 			n, err := body.Read(buf)
 			if n != len(testCase.data) || !errors.Is(err, io.EOF) {

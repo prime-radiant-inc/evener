@@ -434,5 +434,5 @@ func optionalIntString(value *int) string {
 	if value == nil {
 		return "-"
 	}
-	return fmt.Sprintf("%d", *value)
+	return strconv.Itoa(*value)
 }

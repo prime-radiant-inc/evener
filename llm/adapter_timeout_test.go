@@ -127,7 +127,7 @@ func TestAPITimeoutSourceForTransportRecognizesOwnedResponseHeaderTimeout(t *tes
 		t.Fatal("Do error = nil, want response-header timeout")
 	}
 	directCause := transportErr
-	if urlErr, ok := transportErr.(*url.Error); ok {
+	if urlErr, ok := transportErr.(*url.Error); ok { //nolint:errorlint // Match the production code's security-safe one-layer inspection.
 		directCause = urlErr.Err
 	}
 	if got := APITimeoutSourceForTransport(context.Background(), request.Context(), transportErr); got != APITimeoutResponseHeader {
