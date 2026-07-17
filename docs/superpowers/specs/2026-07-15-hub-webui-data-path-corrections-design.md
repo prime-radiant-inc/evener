@@ -1,6 +1,6 @@
 # Serf Hub Web UI Data-Path Corrections
 
-**Date:** 2026-07-15  
+**Date:** 2026-07-15<br>
 **Status:** Approved for implementation planning
 
 ## Scope
