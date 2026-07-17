@@ -287,9 +287,11 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 		}
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)
+		callCtx, attemptGroupScope := BeginAPIAttemptGroupScope(callCtx)
 		resp, err := Retry(callCtx, gs.policy, opts.Sleep, nil, func() (Response, error) {
 			return gs.client.Complete(callCtx, req)
 		})
+		attemptGroupScope.SettleResult(err)
 		cancelStep()
 		if err != nil {
 			return nil, WrapContextError(req.Provider, err)

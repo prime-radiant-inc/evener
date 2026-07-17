@@ -169,6 +169,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 			}
 
 			callCtx, cancelStep := WithTimeout(sctx, opts.TimeoutPerStep)
+			callCtx, attemptGroupScope := BeginAPIAttemptGroupScope(callCtx)
 
 			// openAndConsumeStream opens one stream attempt and drains it.
 			// Returns (finishEv, acc, hasPartialOutput, streamErr).
@@ -254,6 +255,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				return hasPartial, err
 			})
 
+			attemptGroupScope.SettleResult(stepErr)
 			cancelStep()
 			if stepErr != nil {
 				stepErr = WrapContextError(req.Provider, stepErr)
