@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -31,7 +30,7 @@ func FuzzStreamRunner(f *testing.F) {
 			Provider: "fuzz-provider",
 			Resp:     respFrom(payload),
 			Stream:   llm.NewChanStream(nil),
-			OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
+			OnEvent: func(ev llm.SSEEvent) error {
 				if mode%4 == 1 || strings.Contains(string(ev.Data), "finish") {
 					finished = true
 				}

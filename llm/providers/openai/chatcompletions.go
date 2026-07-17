@@ -136,7 +136,7 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model),
-		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true

@@ -1,7 +1,6 @@
 package transport
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // respFrom wraps body in a minimal *http.Response for the runner.
@@ -36,6 +36,63 @@ func drain(ctx context.Context, t *testing.T, r *StreamRunner) []llm.StreamEvent
 	return got
 }
 
+func TestRun_PersistsResponseFromBodyObservation(t *testing.T) {
+	const responseBody = "data: finish\n\n"
+	sink := &responseAssociationSink{}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(strings.NewReader(responseBody)),
+			ContentLength: -1,
+		}, nil
+	})}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_stream_runner_observation", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+
+	finished := false
+	runner := &StreamRunner{
+		Provider:   "test",
+		Resp:       response,
+		Attempt:    attempt,
+		StatusCode: response.StatusCode,
+		Stream:     llm.NewChanStream(nil),
+		OnEvent: func(event llm.SSEEvent) error {
+			finished = string(event.Data) == "finish"
+			return nil
+		},
+		Finished:      &finished,
+		IncompleteMsg: "test stream ended without completion",
+	}
+	_ = drain(context.Background(), t, runner)
+
+	record := onlyAttempt(t, sink)
+	if record.Response == nil {
+		t.Fatal("stream runner omitted its observed response")
+	}
+	if !record.Response.Body.Exact {
+		t.Fatal("stream runner marked an EOF-observed response inexact")
+	}
+	got, err := apilog.DecodeBody(record.Response.Body)
+	if err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if string(got) != responseBody {
+		t.Fatalf("recorded response = %q, want %q", got, responseBody)
+	}
+}
+
 // TestRun_EpilogueWrapsContextErrorOnCancel asserts that when the stream ends
 // without the adapter marking Finished and the context carries an error, the
 // runner emits WrapContextError(provider, ctxErr) — not the IncompleteMsg path.
@@ -49,7 +106,7 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 		Provider: "anthropic",
 		Resp:     respFrom("data: {\"a\":1}\n\n"), // no terminal event → not finished
 		Stream:   llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			return nil
 		},
 		Finished:      &finished,
@@ -94,7 +151,7 @@ func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
 		Provider: "google",
 		Resp:     respFrom("data: {\"a\":1}\n\n"), // no terminal event → not finished
 		Stream:   llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			return nil
 		},
 		Finished:      &finished,
@@ -134,7 +191,7 @@ func TestRun_NoErrorWhenFinished(t *testing.T) {
 		Provider: "openai",
 		Resp:     respFrom(""),
 		Stream:   llm.NewChanStream(nil),
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			return nil
 		},
 		Finished:      &finished,
@@ -163,7 +220,7 @@ func TestRun_NeverCallsCancel(t *testing.T) {
 		Provider: "openai-compatible",
 		Resp:     respFrom("data: {\"a\":1}\n\ndata: [DONE]\n\n"),
 		Stream:   stream,
-		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			if string(ev.Data) == "[DONE]" {
 				finished = true
 			}

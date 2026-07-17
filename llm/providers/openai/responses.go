@@ -333,13 +333,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	toolStates := map[string]*toolState{}
 	itemToCallID := map[string]string{}
 
-	var sseBody io.Reader = resp.Body
-	var sseBuf *bytes.Buffer
-	if attempt.Active() {
-		sseBuf = &bytes.Buffer{}
-		sseBody = io.TeeReader(resp.Body, sseBuf)
-	}
-	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
 		if len(ev.Data) == 0 {
 			return nil
 		}
@@ -615,10 +609,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	if finalEvent != nil {
 		response = finalEvent.Response
 	}
-	var responseBody []byte
-	if sseBuf != nil {
-		responseBody = append([]byte(nil), sseBuf.Bytes()...)
-	}
 	decodeErr := terminalErr
 	if finished {
 		decodeErr = nil
@@ -628,10 +618,9 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		timeoutSource = llm.APITimeoutSSERead
 	}
 	attempt.Complete(llm.APIAttemptResult{
-		StatusCode:   resp.StatusCode,
-		ResponseBody: responseBody,
-		Response:     response,
-		Err:          terminalErr,
+		StatusCode: resp.StatusCode,
+		Response:   response,
+		Err:        terminalErr,
 	}, timeoutSource, decodeErr, nil)
 	if finalEvent != nil {
 		s.Send(*finalEvent)

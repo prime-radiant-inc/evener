@@ -493,7 +493,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
 		Finished:      &finished,
 		IncompleteMsg: "anthropic stream ended without completion",
-		OnEvent: func(ev llm.SSEEvent, _ *bytes.Buffer) error {
+		OnEvent: func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
