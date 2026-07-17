@@ -104,6 +104,24 @@ func TestWriteFloorsUpwardOnly(t *testing.T) {
 	}
 }
 
+func TestValidateFloorTargetsRejectsOrphan(t *testing.T) {
+	targets := []target{
+		{name: "FuzzRegistered"},
+		{name: "FuzzRegisteredWithoutFloor"},
+	}
+	if err := validateFloorTargets(map[string]float64{"FuzzRegistered": 42}, targets); err != nil {
+		t.Fatalf("registered floor validation: %v", err)
+	}
+
+	err := validateFloorTargets(map[string]float64{
+		"FuzzRegistered": 42,
+		"FuzzOrphan":     99,
+	}, targets)
+	if err == nil || !strings.Contains(err.Error(), "FuzzOrphan") || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("orphan floor error = %v", err)
+	}
+}
+
 func TestRunGlobalModeCheckUsesStrictThreshold(t *testing.T) {
 	repo := t.TempDir()
 	mustWrite(t, filepath.Join(repo, "go.mod"), "module example.com/m\n\ngo 1.25\n")

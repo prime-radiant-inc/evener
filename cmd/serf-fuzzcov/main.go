@@ -152,6 +152,9 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	if err != nil {
 		return 2, fmt.Errorf("read floors: %w", err)
 	}
+	if err := validateFloorTargets(floors, targets); err != nil {
+		return 2, fmt.Errorf("validate floors: %w", err)
+	}
 
 	// Parse every profile once; build per-target blocks and the merged union.
 	merged := map[string]block{} // file:start -> block (union of counts)
@@ -773,6 +776,24 @@ func readFloors(p string) (map[string]float64, error) {
 		out[fields[0]] = v
 	}
 	return out, sc.Err()
+}
+
+func validateFloorTargets(floors map[string]float64, targets []target) error {
+	registered := make(map[string]bool, len(targets))
+	for _, target := range targets {
+		registered[target.name] = true
+	}
+	orphans := make([]string, 0)
+	for name := range floors {
+		if !registered[name] {
+			orphans = append(orphans, name)
+		}
+	}
+	if len(orphans) == 0 {
+		return nil
+	}
+	sort.Strings(orphans)
+	return fmt.Errorf("floor target(s) not registered: %s", strings.Join(orphans, ", "))
 }
 
 // writeFloors rewrites the floors file, raising each target's floor upward to
