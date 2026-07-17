@@ -628,7 +628,12 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 			},
 		})
 	}
-	s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+	persistedParts := projectToolResultsForTranscript(calls, results, parts)
+	s.appendTurnWithTranscriptMessage(
+		schema.TurnToolResults,
+		llm.Message{Role: llm.RoleTool, Content: parts},
+		llm.Message{Role: llm.RoleTool, Content: persistedParts},
+	)
 }
 
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
