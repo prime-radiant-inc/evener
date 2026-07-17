@@ -231,7 +231,6 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 		}
 		return header
 	}
-	return transcript.Header{}
 }
 
 func (s *Server) transcriptPath() string {
