@@ -85,7 +85,9 @@ run_wave() {
 			exec 7>&-
 			IFS= read -r _ || exit 1
 			cd "$module" || exit 1
-			exec golangci-lint run ./...
+			# This runner already bounds child concurrency; disable the linter's
+			# process-global exclusion so every child can perform its module check.
+			exec golangci-lint run --allow-parallel-runners ./...
 		) <"$gate" >"$log" 2>&1 &
 		active_pids+=("$!")
 		indexes+=("$i")

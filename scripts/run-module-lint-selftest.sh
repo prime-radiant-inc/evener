@@ -121,15 +121,33 @@ esac
 assert_not_has "$out" "stdout:" "successful stdout chatter is absent"
 assert_not_has "$out" "stderr:" "successful stderr chatter is absent"
 assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" ". agent llm" "all requested modules ran"
-assert_eq "$(cut -f2 "$state/calls" 2>/dev/null | sort -u)" "run ./..." "every module receives the unchanged golangci-lint argv"
+assert_eq "$(cut -f2 "$state/calls" 2>/dev/null | sort -u)" "run --allow-parallel-runners ./..." "every module receives the parallel-safe golangci-lint argv"
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "successful temporary logs are removed"
+
+# golangci-lint refuses overlapping processes by default. Model that external
+# contract directly so the aggregate runner must explicitly admit its own
+# bounded parallel children rather than depending on scheduler timing.
+new_case
+cat >"$bin/golangci-lint" <<'FAKE_PARALLEL_ADMISSION'
+#!/usr/bin/env bash
+case " $* " in
+	*" --allow-parallel-runners "*) exit 0 ;;
+esac
+printf 'Error: parallel golangci-lint is running\n' >&2
+exit 3
+FAKE_PARALLEL_ADMISSION
+chmod +x "$bin/golangci-lint"
+out="$case_dir/parallel-admission.out"
+if run_lint ". agent" "$out"; then rc=0; else rc=$?; fi
+assert_eq "$rc" "0" "bounded parallel checks opt in to concurrent golangci-lint processes"
+assert_not_has "$out" "parallel golangci-lint is running" "parallel lock failures do not escape the aggregate runner"
 
 new_case
 out="$case_dir/failure.out"
 if FAKE_FAIL_MODULES="identifier llm" run_lint "identifier agent llm auth" "$out"; then rc=0; else rc=$?; fi
 if [ "$rc" -ne 0 ]; then ok "mixed failures exit nonzero"; else bad "mixed failures unexpectedly exit zero"; fi
 assert_eq "$(cut -f1 "$state/calls" 2>/dev/null | sort | tr '\n' ' ' | sed 's/ $//')" "agent auth identifier llm" "every module runs after early failures"
-assert_eq "$(cut -f2 "$state/calls" 2>/dev/null | sort -u)" "run ./..." "failed and passing modules use the same unchanged argv"
+assert_eq "$(cut -f2 "$state/calls" 2>/dev/null | sort -u)" "run --allow-parallel-runners ./..." "failed and passing modules use the same parallel-safe argv"
 assert_has "$out" "stdout:identifier" "first failed module stdout is complete"
 assert_has "$out" "stderr:identifier" "first failed module stderr is complete"
 assert_has "$out" "stdout:llm" "second failed module stdout is complete"
@@ -292,7 +310,7 @@ exec 4>&-
 assert_eq "$rc" "0" "default-path scenario exits zero"
 assert_eq "$(wc -l <"$state/calls" | tr -d ' ')" "7" "default path runs exactly seven modules"
 assert_eq "$(cut -f1 "$state/calls" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "default path runs the canonical module set"
-assert_eq "$(cut -f2 "$state/calls" | sort -u)" "run ./..." "default modules receive the unchanged argv"
+assert_eq "$(cut -f2 "$state/calls" | sort -u)" "run --allow-parallel-runners ./..." "default modules receive the parallel-safe argv"
 assert_eq "$(cat "$state/max" 2>/dev/null)" "4" "default concurrency is bounded at four"
 assert_eq "$(find "$case_dir" -maxdepth 1 -type d -name 'serf-module-lint.*' | wc -l | tr -d ' ')" "0" "default path removes temporary logs"
 
@@ -429,7 +447,7 @@ case "$(sed -n '2p' "$out")" in
 esac
 assert_not_has "$out" "success-chatter" "all successful lint-family chatter is hidden"
 assert_eq "$(cut -f1 "$state/modules" | sort | tr '\n' ' ' | sed 's/ $//')" ". agent auth envvars identifier invariant llm" "Makefile passes every canonical non-fuzz module"
-assert_eq "$(cut -f2 "$state/modules" | sort -u)" "run ./..." "Makefile wiring preserves golangci-lint run ./..."
+assert_eq "$(cut -f2 "$state/modules" | sort -u)" "run --allow-parallel-runners ./..." "Makefile wiring admits its bounded parallel golangci-lint children"
 cat >"$state/want-families" <<'WANT_FAMILIES'
 go run ./cmd/serf-namingcheck
 go run ./cmd/serf-internalcheck
