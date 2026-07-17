@@ -26,6 +26,13 @@ func covWebRequest(t *testing.T, web *WebServer, method, target, body string) *h
 }
 
 func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
+	previousUpgrade := webHubUpgrade
+	webHubUpgrade = func(context.Context, appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
+		t.Fatal("generic API route coverage crossed the self-update boundary")
+		return appwire.UpgradeResponse{}, nil
+	}
+	t.Cleanup(func() { webHubUpgrade = previousUpgrade })
+
 	web := NewWebServer(hubcore.WebConfig{})
 	firstLock := web.lockForSession("a")
 	if firstLock != web.lockForSession("a") {
@@ -93,11 +100,15 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{http.MethodGet, "/manifest.webmanifest"},
 		{http.MethodPost, "/api/health"}, {http.MethodGet, "/api/health"},
 		{http.MethodPost, "/api/spawn-schema"}, {http.MethodGet, "/api/spawn-schema"},
-		{http.MethodGet, "/api/upgrade"}, {http.MethodPost, "/api/upgrade"},
+		{http.MethodGet, "/api/upgrade"},
 		{http.MethodPost, "/api/path/validate"}, {http.MethodGet, "/api/path/validate?path=/tmp&kind=directory"},
 		{http.MethodPost, "/api/git/head"},
 	} {
 		_ = covWebRequest(t, web, tc.method, tc.target, "")
+	}
+	upgrade := covWebRequest(t, web, http.MethodPost, "/api/upgrade", "{")
+	if upgrade.Code != http.StatusBadRequest {
+		t.Fatalf("malformed upgrade status=%d, want %d", upgrade.Code, http.StatusBadRequest)
 	}
 	for _, call := range []func(http.ResponseWriter, *http.Request, string){web.handleAPIClear, web.handleAPIModel, web.handleAPIReasoningEffort} {
 		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
