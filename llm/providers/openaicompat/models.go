@@ -3,6 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,11 +60,16 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			ContextLength int `json:"context_length"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: err}, llm.APITimeoutNone, err, nil)
-		return nil, err
+	decodeErr := json.NewDecoder(resp.Body).Decode(&result)
+	_, readErr := io.Copy(io.Discard, resp.Body)
+	responseErr := decodeErr
+	if readErr != nil {
+		responseErr = errors.Join(responseErr, readErr)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
+	if responseErr != nil {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: responseErr}, llm.APITimeoutNone, responseErr, nil)
+		return nil, responseErr
+	}
 	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode}, llm.APITimeoutNone, nil, nil)
 
 	models := make([]llm.ModelInfo, 0, len(result.Data))

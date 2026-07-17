@@ -1,6 +1,7 @@
 package llm_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -15,6 +16,26 @@ import (
 	"primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providercfg"
 )
+
+type providerOperationCase struct {
+	name         string
+	providerType providercfg.Type
+	apiStyle     providercfg.APIStyle
+}
+
+var modelListProviderOperations = []providerOperationCase{
+	{name: "openai", providerType: "openai", apiStyle: providercfg.StyleResponses},
+	{name: "anthropic", providerType: "anthropic"},
+	{name: "google", providerType: "google"},
+	{name: "openai compatible", providerType: "openai", apiStyle: providercfg.StyleChatCompletions},
+}
+
+var tokenCountProviderOperations = []providerOperationCase{
+	{name: "openai", providerType: "openai", apiStyle: providercfg.StyleResponses},
+	{name: "anthropic", providerType: "anthropic"},
+	{name: "google", providerType: "google"},
+	{name: "kimi", providerType: "kimi"},
+}
 
 func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -275,6 +296,234 @@ func TestClientProviderOperationFailurePreservesErrorAndSettlement(t *testing.T)
 	if attempt.ErrorClass != llm.KindAccessDenied.String() {
 		t.Fatalf("attempt error class = %q, want %q", attempt.ErrorClass, llm.KindAccessDenied)
 	}
+}
+
+func TestClientModelListDecodeFailurePreservesExactResponse(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	responseBody := append([]byte("!malformed-model-list\n"), bytes.Repeat([]byte("unread-tail-"), 1024)...)
+
+	for _, test := range modelListProviderOperations {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(responseBody)
+			}))
+			t.Cleanup(server.Close)
+
+			client, provider := newProviderOperationClient(t, test, server.URL)
+			logger, logPath := attachProviderOperationLogger(t, client)
+			defer func() { _ = logger.Close() }()
+
+			if _, err := client.ListModels(context.Background(), provider); err == nil {
+				t.Fatal("ListModels error = nil")
+			}
+
+			attempt, settlement := oneProviderOperationAttempt(t, logPath)
+			loggedBody, err := apilog.DecodeBody(attempt.Response.Body)
+			if err != nil {
+				t.Fatalf("DecodeBody(response): %v", err)
+			}
+			if !bytes.Equal(loggedBody, responseBody) {
+				t.Fatalf("logged response bytes = %d, want all %d wire bytes", len(loggedBody), len(responseBody))
+			}
+			if attempt.Outcome != apilog.AttemptDecodeFail || settlement.Outcome != apilog.AttemptDecodeFail {
+				t.Fatalf("attempt/settlement outcomes = %q/%q, want response_decoding_failure", attempt.Outcome, settlement.Outcome)
+			}
+		})
+	}
+}
+
+func TestClientTokenCountResponseFailuresAreNotExactCounts(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	responses := []struct {
+		name          string
+		body          []byte
+		truncateAfter bool
+	}{
+		{name: "malformed JSON", body: []byte("not-json")},
+		{name: "response read error", body: []byte(`{"input_tokens":17,"totalTokens":17,"data":{"total_tokens":17}}`), truncateAfter: true},
+	}
+
+	for _, providerCase := range tokenCountProviderOperations {
+		for _, responseCase := range responses {
+			t.Run(providerCase.name+"/"+responseCase.name, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if responseCase.truncateAfter {
+						w.Header().Set("Content-Length", "4096")
+					}
+					_, _ = w.Write(responseCase.body)
+				}))
+				t.Cleanup(server.Close)
+
+				client, provider := newProviderOperationClient(t, providerCase, server.URL)
+				logger, logPath := attachProviderOperationLogger(t, client)
+				defer func() { _ = logger.Close() }()
+
+				count, callErr := client.CountInputTokens(context.Background(), llm.Request{
+					Provider: provider, Model: "test-model", Messages: []llm.Message{llm.User("count this")},
+				})
+				if callErr == nil {
+					t.Fatalf("CountInputTokens = %+v, nil error; want response failure", count)
+				}
+
+				attempt, settlement := oneProviderOperationAttempt(t, logPath)
+				loggedBody, err := apilog.DecodeBody(attempt.Response.Body)
+				if err != nil {
+					t.Fatalf("DecodeBody(response): %v", err)
+				}
+				if !bytes.Equal(loggedBody, responseCase.body) {
+					t.Fatalf("logged response body = %q, want exact partial wire body %q", loggedBody, responseCase.body)
+				}
+				if attempt.Outcome != apilog.AttemptDecodeFail || settlement.Outcome != apilog.AttemptDecodeFail {
+					t.Fatalf("attempt/settlement outcomes = %q/%q, want response_decoding_failure", attempt.Outcome, settlement.Outcome)
+				}
+			})
+		}
+	}
+}
+
+func TestClientProviderOperationCallerOwnsSettlement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"model"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, provider := newProviderOperationClient(t, modelListProviderOperations[3], server.URL)
+	logger, logPath := attachProviderOperationLogger(t, client)
+	defer func() { _ = logger.Close() }()
+	group := llm.NewAPIAttemptGroup("ag_caller_owned_provider_operation")
+	ctx := llm.WithAPIAttemptGroup(context.Background(), group)
+
+	if _, err := client.ListModels(ctx, provider); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	records := readAPILogRecords(t, logPath)
+	if len(records) != 1 {
+		t.Fatalf("records before caller settlement = %d, want one attempt", len(records))
+	}
+	group.SettleResult(ctx, nil)
+	records = readAPILogRecords(t, logPath)
+	if len(records) != 2 {
+		t.Fatalf("records after caller settlement = %d, want attempt plus one settlement", len(records))
+	}
+	settlement := records[1].(apilog.APIAttemptGroupSettlement)
+	if settlement.AttemptGroupID != group.ID || settlement.FinalAttemptCount != 1 {
+		t.Fatalf("settlement = %+v, want caller group %q with one attempt", settlement, group.ID)
+	}
+}
+
+func TestClientAnthropicModelListPaginationSharesOneSettlement(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.URL.Query().Get("after_id") == "first" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"second"}],"has_more":false}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"first"}],"has_more":true,"last_id":"first"}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, provider := newProviderOperationClient(t, modelListProviderOperations[1], server.URL)
+	logger, logPath := attachProviderOperationLogger(t, client)
+	defer func() { _ = logger.Close() }()
+	models, err := client.ListModels(context.Background(), provider)
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if requests != 2 || len(models) != 2 {
+		t.Fatalf("requests/models = %d/%d, want 2/2", requests, len(models))
+	}
+	records := readAPILogRecords(t, logPath)
+	if len(records) != 3 {
+		t.Fatalf("canonical records = %d, want two attempts and one settlement", len(records))
+	}
+	first := records[0].(apilog.APIAttemptRecord)
+	second := records[1].(apilog.APIAttemptRecord)
+	settlement := records[2].(apilog.APIAttemptGroupSettlement)
+	if first.AttemptGroupID != second.AttemptGroupID || second.AttemptIndex != 2 || settlement.FinalAttemptID != second.AttemptID || settlement.FinalAttemptCount != 2 {
+		t.Fatalf("attempts/settlement = %+v / %+v / %+v", first, second, settlement)
+	}
+}
+
+func TestClientModelListRedirectRecordsEachHTTPAttempt(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/models" {
+			http.Redirect(w, request, "/redirected-models", http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":[{"id":"model"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client, provider := newProviderOperationClient(t, modelListProviderOperations[3], server.URL)
+	logger, logPath := attachProviderOperationLogger(t, client)
+	defer func() { _ = logger.Close() }()
+	if _, err := client.ListModels(context.Background(), provider); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	records := readAPILogRecords(t, logPath)
+	if len(records) != 3 {
+		t.Fatalf("canonical records = %d, want redirect attempt, final attempt, and settlement", len(records))
+	}
+	first := records[0].(apilog.APIAttemptRecord)
+	second := records[1].(apilog.APIAttemptRecord)
+	settlement := records[2].(apilog.APIAttemptGroupSettlement)
+	if !strings.HasSuffix(first.Request.Endpoint, "/models") || !strings.HasSuffix(second.Request.Endpoint, "/redirected-models") {
+		t.Fatalf("redirect endpoints = %q then %q", first.Request.Endpoint, second.Request.Endpoint)
+	}
+	if settlement.FinalAttemptID != second.AttemptID || settlement.FinalAttemptCount != 2 {
+		t.Fatalf("settlement = %+v, want redirected call to settle after two attempts", settlement)
+	}
+}
+
+func newProviderOperationClient(t *testing.T, test providerOperationCase, baseURL string) (*llm.Client, string) {
+	t.Helper()
+	provider := "provider-operation-" + strings.ReplaceAll(test.name, " ", "-")
+	client, err := llm.NewFromProviders(providercfg.Config{
+		Default: provider,
+		Instances: []providercfg.InstanceConfig{{
+			Name: provider, Type: test.providerType, APIStyle: test.apiStyle,
+			BaseURL: baseURL, APIKey: "provider-secret",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewFromProviders: %v", err)
+	}
+	return client, provider
+}
+
+func attachProviderOperationLogger(t *testing.T, client *llm.Client) (*llm.APILogger, string) {
+	t.Helper()
+	logPath := filepath.Join(t.TempDir(), "api.jsonl")
+	logger, err := llm.NewAPILogger(logPath)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	client.Use(logger)
+	return logger, logPath
+}
+
+func oneProviderOperationAttempt(t *testing.T, logPath string) (apilog.APIAttemptRecord, apilog.APIAttemptGroupSettlement) {
+	t.Helper()
+	records := readAPILogRecords(t, logPath)
+	if len(records) != 2 {
+		t.Fatalf("canonical records = %d, want one attempt and one settlement", len(records))
+	}
+	attempt, ok := records[0].(apilog.APIAttemptRecord)
+	if !ok {
+		t.Fatalf("first canonical record = %T, want APIAttemptRecord", records[0])
+	}
+	if attempt.Response == nil {
+		t.Fatal("canonical attempt response is nil")
+	}
+	settlement, ok := records[1].(apilog.APIAttemptGroupSettlement)
+	if !ok {
+		t.Fatalf("second canonical record = %T, want APIAttemptGroupSettlement", records[1])
+	}
+	return attempt, settlement
 }
 
 func countInputTokens(ctx context.Context, client *llm.Client, provider string) error {

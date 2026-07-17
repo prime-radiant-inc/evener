@@ -290,15 +290,23 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	rawBytes, _ := io.ReadAll(resp.Body)
+	rawBytes, readErr := io.ReadAll(resp.Body)
 	var raw map[string]any
-	_ = json.Unmarshal(rawBytes, &raw)
+	decodeErr := json.Unmarshal(rawBytes, &raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.count_tokens failed: " + strings.TrimSpace(string(rawBytes))
 		returnedErr := llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr
+	}
+	if readErr != nil {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: readErr}, llm.APITimeoutNone, readErr, nil)
+		return llm.InputTokenCount{}, readErr
+	}
+	if decodeErr != nil {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: decodeErr}, llm.APITimeoutNone, decodeErr, nil)
+		return llm.InputTokenCount{}, decodeErr
 	}
 
 	tokens := intFromAny(raw["input_tokens"])
