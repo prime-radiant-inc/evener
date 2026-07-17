@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -754,6 +755,46 @@ func TestSessionAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
 
 	assertPathMode(t, path, 0o600)
 	assertCanonicalAttemptIDs(t, path, first.AttemptID, second.AttemptID)
+}
+
+func TestRecoverCanonicalAPILogTailSyncsTruncation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	first := standaloneCanonicalAttempt("ag_recovery_sync", 1)
+	writeCanonicalAttempt(t, path, first)
+	complete, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read complete API log: %v", err)
+	}
+	appendAPILogCrashTail(t, path, []byte(`{"kind":"api_attempt"`))
+
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open API log: %v", err)
+	}
+	defer file.Close()
+
+	oldSync := apiLogFileSync
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+	syncCalls := 0
+	apiLogFileSync = func(file *os.File) error {
+		syncCalls++
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		if info.Size() != int64(len(complete)) {
+			return fmt.Errorf("sync observed API-log size %d, want recovered size %d", info.Size(), len(complete))
+		}
+		return oldSync(file)
+	}
+
+	if err := recoverCanonicalAPILogTail(file, canonicalAPILogMaxLineBytes); err != nil {
+		t.Fatalf("recover partial API-log tail: %v", err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("recovery sync calls = %d, want 1", syncCalls)
+	}
+	assertCanonicalAttemptIDs(t, path, first.AttemptID)
 }
 
 func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {

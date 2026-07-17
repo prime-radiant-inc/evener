@@ -170,7 +170,7 @@ func recoverCanonicalAPILogTail(file *os.File, maxLineBytes int) error {
 	if err := file.Truncate(completeOffset); err != nil {
 		return fmt.Errorf("truncate partial API-log tail at offset %d: %w", completeOffset, err)
 	}
-	if err := file.Sync(); err != nil {
+	if err := apiLogFileSync(file); err != nil {
 		return fmt.Errorf("sync recovered API log: %w", err)
 	}
 	return nil

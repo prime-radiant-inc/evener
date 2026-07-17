@@ -37,11 +37,21 @@ type blockingReadCloser struct {
 }
 
 type cancellationOrderingSink struct {
-	mu                sync.Mutex
-	attempts          []apilog.APIAttemptRecord
-	appendEntered     chan struct{}
-	releaseAppend     chan struct{}
-	settlementEntered chan struct{}
+	mu                      sync.Mutex
+	attempts                []apilog.APIAttemptRecord
+	nextOrdering            int
+	attemptAppendCompleted  int
+	terminalEventReceived   int
+	settlementAppendEntered int
+	appendEntered           chan struct{}
+	releaseAppend           chan struct{}
+	settlementEntered       chan struct{}
+}
+
+type cancellationOrderingSnapshot struct {
+	attemptAppendCompleted  int
+	terminalEventReceived   int
+	settlementAppendEntered int
 }
 
 func (s *cancellationOrderingSink) AppendAttempt(_ context.Context, record apilog.APIAttemptRecord) error {
@@ -49,11 +59,17 @@ func (s *cancellationOrderingSink) AppendAttempt(_ context.Context, record apilo
 	<-s.releaseAppend
 	s.mu.Lock()
 	s.attempts = append(s.attempts, record)
+	s.nextOrdering++
+	s.attemptAppendCompleted = s.nextOrdering
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *cancellationOrderingSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
+	s.mu.Lock()
+	s.nextOrdering++
+	s.settlementAppendEntered = s.nextOrdering
+	s.mu.Unlock()
 	close(s.settlementEntered)
 	return nil
 }
@@ -62,6 +78,29 @@ func (s *cancellationOrderingSink) snapshot() []apilog.APIAttemptRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
+}
+func (s *cancellationOrderingSink) recordTerminalEventReceived() {
+	s.mu.Lock()
+	s.nextOrdering++
+	s.terminalEventReceived = s.nextOrdering
+	s.mu.Unlock()
+}
+
+func (s *cancellationOrderingSink) orderingSnapshot() cancellationOrderingSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cancellationOrderingSnapshot{
+		attemptAppendCompleted:  s.attemptAppendCompleted,
+		terminalEventReceived:   s.terminalEventReceived,
+		settlementAppendEntered: s.settlementAppendEntered,
+	}
+}
+
+func assertOrderingEventBefore(t *testing.T, beforeName string, before int, afterName string, after int) {
+	t.Helper()
+	if before == 0 || after == 0 || before >= after {
+		t.Fatalf("event ordering = %s:%d, %s:%d; want %s before %s", beforeName, before, afterName, after, beforeName, afterName)
+	}
 }
 
 func (r *blockingReadCloser) Read([]byte) (int, error) {
@@ -193,6 +232,7 @@ func TestStreamingHappensBeforeSuccessPublication(t *testing.T) {
 	go func() {
 		for event := range stream.Events() {
 			if event.Type == llm.StreamEventError || event.Type == llm.StreamEventFinish {
+				sink.recordTerminalEventReceived()
 				terminal <- event
 			}
 		}
@@ -203,11 +243,6 @@ func TestStreamingHappensBeforeSuccessPublication(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("successful stream did not reach canonical append")
 	}
-	select {
-	case event := <-terminal:
-		t.Fatalf("terminal event %q was published before canonical append returned", event.Type)
-	case <-time.After(50 * time.Millisecond):
-	}
 	close(sink.releaseAppend)
 	select {
 	case event := <-terminal:
@@ -217,6 +252,8 @@ func TestStreamingHappensBeforeSuccessPublication(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("successful stream did not publish finish after append returned")
 	}
+	ordering := sink.orderingSnapshot()
+	assertOrderingEventBefore(t, "attempt append completed", ordering.attemptAppendCompleted, "terminal event received", ordering.terminalEventReceived)
 	attempts := sink.snapshot()
 	if len(attempts) != 1 || attempts[0].Outcome != apilog.AttemptSuccess {
 		t.Fatalf("canonical attempts = %+v, want one success", attempts)
@@ -339,6 +376,7 @@ func TestStreamingHappensBeforeCancellationAndSettlement(t *testing.T) {
 		defer close(streamClosed)
 		for event := range stream.Events() {
 			if event.Type == llm.StreamEventError || event.Type == llm.StreamEventFinish {
+				sink.recordTerminalEventReceived()
 				terminal <- event
 			}
 		}
@@ -355,17 +393,6 @@ func TestStreamingHappensBeforeCancellationAndSettlement(t *testing.T) {
 		group.Settle(ctx, apilog.AttemptCallerCancel)
 		close(settled)
 	}()
-	select {
-	case event := <-terminal:
-		t.Fatalf("terminal event %q was published before canonical append returned", event.Type)
-	case <-time.After(50 * time.Millisecond):
-	}
-	select {
-	case <-sink.settlementEntered:
-		t.Fatal("group settlement append began before canonical attempt append returned")
-	case <-time.After(50 * time.Millisecond):
-	}
-
 	close(sink.releaseAppend)
 	select {
 	case event := <-terminal:
@@ -390,6 +417,9 @@ func TestStreamingHappensBeforeCancellationAndSettlement(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("cancelled stream did not close")
 	}
+	ordering := sink.orderingSnapshot()
+	assertOrderingEventBefore(t, "attempt append completed", ordering.attemptAppendCompleted, "terminal event received", ordering.terminalEventReceived)
+	assertOrderingEventBefore(t, "attempt append completed", ordering.attemptAppendCompleted, "settlement append entered", ordering.settlementAppendEntered)
 	attempts := sink.snapshot()
 	if len(attempts) != 1 {
 		t.Fatalf("canonical attempts = %d, want 1", len(attempts))
