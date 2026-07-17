@@ -52,7 +52,7 @@ type sandboxLifecycleTrace struct {
 
 func runSandboxLifecycleProgram(t *testing.T, program []byte) sandboxLifecycleTrace {
 	t.Helper()
-	base := t.TempDir()
+	base := realTempDir(t)
 	home := filepath.Join(base, "home")
 	worktree := filepath.Join(home, "worktree")
 	lane := filepath.Join(home, "lane")

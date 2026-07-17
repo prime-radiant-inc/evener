@@ -181,7 +181,7 @@ func pfsAddFocusedSeeds(f *testing.F) {
 
 func pfsNewFixture(t *testing.T, mode sandbox.Mode) (pfsFixture, *LocalExecutionEnvironment) {
 	t.Helper()
-	root := t.TempDir()
+	root := realTempDir(t)
 	fixture := pfsFixture{
 		home:            filepath.Join(root, "home"),
 		worktree:        filepath.Join(root, "home", "project"),

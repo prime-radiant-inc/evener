@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -54,7 +55,7 @@ type gitPathResolutionTrace struct {
 
 func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolutionTrace {
 	t.Helper()
-	base := t.TempDir()
+	base := realTempDir(t)
 	main := filepath.Join(base, "main")
 	worktree := filepath.Join(base, "worktree")
 	subdir := filepath.Join(worktree, "nested", gitPathProgramComponent(program))
@@ -103,6 +104,7 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 	fallbackCalls := []string{}
 	fallbackEnv := &fakeExecEnv{
 		workDir: fallbackRoot,
+		exists:  gitPathProgramExists(filepath.Join(fallbackRoot, ".git")),
 		exec: func(_ context.Context, command string, _ int, cwd string, _ map[string]string) (ExecResult, error) {
 			fallbackCalls = append(fallbackCalls, command+"@"+cwd)
 			switch command {
@@ -145,8 +147,10 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 		t.Fatalf("make submodule fixture: %v", err)
 	}
 	submoduleCalls := []string{}
+	submoduleCommon := filepath.Join(submodule, ".git", "modules", "submodule")
 	submoduleEnv := &fakeExecEnv{
 		workDir: submodule,
+		exists:  gitPathProgramExists(submoduleCommon),
 		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
 			submoduleCalls = append(submoduleCalls, command)
 			switch command {
@@ -219,11 +223,17 @@ func runGitPathResolutionProgram(t *testing.T, program []byte) gitPathResolution
 	}
 	primaryEnv := &fakeExecEnv{
 		workDir: primaryCWD,
+		exists:  gitPathProgramExists(filepath.Join(primaryCandidate, ".git")),
 		exec: func(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
-			if command != "git rev-parse --git-common-dir" {
+			switch command {
+			case "git rev-parse --git-common-dir":
+				return ExecResult{Stdout: filepath.Join(primaryCandidate, ".git")}, nil
+			case "git rev-parse --show-toplevel":
+				return ExecResult{Stdout: primaryCWD}, nil
+			default:
 				t.Fatalf("primary candidate unexpectedly queried %q", command)
+				return ExecResult{}, errors.New("unexpected primary candidate query")
 			}
-			return ExecResult{Stdout: filepath.Join(primaryCandidate, ".git")}, nil
 		},
 	}
 	if got, want := ResolveMainRepoRoot(primaryEnv, primaryCWD), resolveClean(primaryCandidate); got != want {
@@ -310,7 +320,18 @@ func gitPathProgramComponent(program []byte) string {
 	if len(program) == 0 {
 		return "empty"
 	}
-	return "part-" + strings.NewReplacer("/", "_", "\\", "_", "\x00", "_").Replace(string(program[:1]))
+	return "part-" + hex.EncodeToString(program[:1])
+}
+
+func gitPathProgramExists(paths ...string) func(string) bool {
+	return func(path string) bool {
+		for _, candidate := range paths {
+			if path == candidate {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 func gitPathProgramRelative(base, value string) string {
