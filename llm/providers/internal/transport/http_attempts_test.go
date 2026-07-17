@@ -1367,6 +1367,45 @@ func TestDoWithAPIAttemptsWaitsForAsyncRequestTrailerBeforePersistence(t *testin
 	assertDurableAttemptExcludes(t, attempts[0], trailerSecret)
 }
 
+func TestDoWithAPIAttemptsFreezesContextStateWhenCompletionIsQueued(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	sink := &responseAssociationSink{}
+	requestCtx := attemptContext("ag_queued_completion_context", sink)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, "https://provider.test/v1", io.NopCloser(strings.NewReader("request body")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.ContentLength = -1
+
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: &finishRequestOnCloseBody{
+				ReadCloser:  http.NoBody,
+				requestBody: request.Body,
+			},
+		}, nil
+	})}
+	response, attempt, err := DoWithAPIAttempts(parentCtx, client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	if sink.count() != 0 {
+		t.Fatalf("attempt count before request close = %d, want 0", sink.count())
+	}
+
+	cancelParent()
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close response: %v", err)
+	}
+	if got := onlyAttempt(t, sink).Outcome; got != apilog.AttemptSuccess {
+		t.Fatalf("outcome after post-completion cancellation = %q, want %q", got, apilog.AttemptSuccess)
+	}
+}
+
 func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempts(t *testing.T) {
 	const (
 		trailerName   = "X-Gateway-Credential"
@@ -1597,7 +1636,7 @@ func TestDoWithAPIAttemptsAsyncTrailerOnTransportErrorSanitizesRedirectSource(t 
 	}
 }
 
-func TestRedirectCredentialMaterialGrowthIsLinear(t *testing.T) {
+func TestRedirectCredentialMaterialRetainsOnlyUniqueValues(t *testing.T) {
 	roundTripper := &apiAttemptRoundTripper{}
 	roundTripper.mergeCredentialMaterial(llm.NewAPILogCredentialMaterial(
 		[]string{"X-Redirect-Credential"},

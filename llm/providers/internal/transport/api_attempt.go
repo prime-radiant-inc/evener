@@ -66,7 +66,8 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 		if result.FinishedAt.IsZero() {
 			result.FinishedAt = time.Now()
 		}
-		completion := func() { c.completeNow(result, timeoutSource, decodeErr, transportErr) }
+		owner := freezeAPIAttemptContextOwnership(c.owner)
+		completion := func() { c.completeNow(result, owner, timeoutSource, decodeErr, transportErr) }
 		if c.scheduleCompletion != nil {
 			c.scheduleCompletion(completion)
 			return
@@ -75,7 +76,19 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	})
 }
 
-func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
+func freezeAPIAttemptContextOwnership(owner llm.APIAttemptContextOwnership) llm.APIAttemptContextOwnership {
+	// Deferred persistence must classify the provider result using only the
+	// cancellation evidence that existed when Complete was called.
+	if owner.Parent == nil || owner.Parent.Err() == nil {
+		owner.Parent = context.Background()
+	}
+	if owner.Attempt == nil || owner.Attempt.Err() == nil {
+		owner.Attempt = context.Background()
+	}
+	return owner
+}
+
+func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, owner llm.APIAttemptContextOwnership, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	material := llm.APILogCredentialMaterialForRequest(c.request, c.credentialMaterial)
 	c.attempt.MergeCredentialMaterial(material)
 	observedTimeout := false
@@ -93,7 +106,6 @@ func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, timeoutSour
 		result.ResponseBodyInexact = !observation.exact
 		observeTerminalContext(observation)
 	}
-	owner := c.owner
 	owner.TimeoutSource = timeoutSource
 	if owner.TimeoutSource == llm.APITimeoutNone && observedTimeout {
 		owner.TimeoutSource = llm.APITimeoutTransport
