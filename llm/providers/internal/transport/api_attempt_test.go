@@ -620,6 +620,58 @@ func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
 	}
 }
 
+func TestObservedBodyBoundsDurableEvidenceWithoutChangingRead(t *testing.T) {
+	const retainedBytes = 4
+	payload := []byte("provider body")
+	body := newObservedBodyWithLimit(
+		context.Background(),
+		&terminalReadCloser{data: payload, err: io.EOF},
+		int64(len(payload)),
+		retainedBytes,
+	)
+
+	buf := make([]byte, len(payload))
+	n, err := body.Read(buf)
+	if n != len(payload) || !errors.Is(err, io.EOF) {
+		t.Fatalf("Read = %d, %v; want %d, EOF", n, err, len(payload))
+	}
+	if !bytes.Equal(buf, payload) {
+		t.Fatalf("read bytes = %q, want %q", buf, payload)
+	}
+
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_bounded_observation", sink),
+		http.MethodGet,
+		"https://provider.test/v1",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := BeginAPIAttempt(context.Background(), request.Context(), request, attemptMeta(request, nil))
+	attempt.responseBody = body.snapshot
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+
+	recorded := onlyAttempt(t, sink)
+	if recorded.Response == nil {
+		t.Fatal("durable attempt omitted response evidence")
+	}
+	if recorded.Response.Body.Exact {
+		t.Fatal("bounded response evidence was marked exact")
+	}
+	if recorded.Response.Body.CredentialValuesExcluded {
+		t.Fatal("size-bounded response evidence was marked credential-excluded")
+	}
+	got, err := apilog.DecodeBody(recorded.Response.Body)
+	if err != nil {
+		t.Fatalf("decode durable response: %v", err)
+	}
+	if want := payload[:retainedBytes]; !bytes.Equal(got, want) {
+		t.Fatalf("durable response = %q, want retained prefix %q", got, want)
+	}
+}
+
 func TestAPIAttemptConcurrentReadAndCloseSnapshotsPromptlyWithoutExtraOperations(t *testing.T) {
 	body := &concurrentReadCloseBody{
 		data:        []byte("read returns after snapshot"),

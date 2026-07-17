@@ -335,26 +335,38 @@ type bodyObservation struct {
 	timeout bool
 }
 
+// The canonical 128 MiB API-log record can contain both bodies, and JSON may
+// expand one retained byte to six bytes. Two 8 MiB prefixes leave headroom for
+// that expansion and the rest of the attempt metadata.
+const maxObservedBodyBytes = 8 << 20
+
 // observedBody records only bytes returned by application Read calls. EOF or a
 // known content length proves completeness; Close never does.
 type observedBody struct {
 	io.ReadCloser
 
-	mu          sync.Mutex
-	buf         bytes.Buffer
-	exact       bool
-	knownLength int64
-	sawEOF      bool
-	ctx         context.Context
-	timeout     bool
+	mu                sync.Mutex
+	buf               bytes.Buffer
+	retentionLimit    int
+	retentionExceeded bool
+	exact             bool
+	knownLength       int64
+	sawEOF            bool
+	ctx               context.Context
+	timeout           bool
 }
 
 func newObservedBody(ctx context.Context, body io.ReadCloser, contentLength int64) *observedBody {
+	return newObservedBodyWithLimit(ctx, body, contentLength, maxObservedBodyBytes)
+}
+
+func newObservedBodyWithLimit(ctx context.Context, body io.ReadCloser, contentLength int64, retentionLimit int) *observedBody {
 	return &observedBody{
-		ReadCloser:  body,
-		exact:       body == http.NoBody || contentLength == 0,
-		knownLength: contentLength,
-		ctx:         ctx,
+		ReadCloser:     body,
+		retentionLimit: retentionLimit,
+		exact:          body == http.NoBody || contentLength == 0,
+		knownLength:    contentLength,
+		ctx:            ctx,
 	}
 }
 
@@ -369,12 +381,21 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	}
 	b.mu.Lock()
 	if n > 0 {
-		_, _ = b.buf.Write(p[:n])
+		retained := n
+		if remaining := b.retentionLimit - b.buf.Len(); retained > remaining {
+			retained = max(remaining, 0)
+			b.retentionExceeded = true
+		}
+		if retained > 0 {
+			_, _ = b.buf.Write(p[:retained])
+		}
 	}
 	if err == io.EOF {
 		b.sawEOF = true
 	}
-	if b.sawEOF {
+	if b.retentionExceeded {
+		b.exact = false
+	} else if b.sawEOF {
 		b.exact = true
 	} else if b.knownLength >= 0 {
 		b.exact = int64(b.buf.Len()) == b.knownLength && err == nil
