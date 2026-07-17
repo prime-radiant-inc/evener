@@ -343,6 +343,51 @@ func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
 	}
 }
 
+func TestAPIAttemptQueuedCompletionFreezesResponseButKeepsRequestLateBound(t *testing.T) {
+	sink := &responseAssociationSink{}
+	attemptCtx := attemptContext("ag_frozen_response_observation", sink)
+	request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://provider.test/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := BeginAPIAttempt(context.Background(), attemptCtx, request, attemptMeta(request, nil))
+	requestObservation := bodyObservation{}
+	responseObservation := bodyObservation{bytes: []byte("response before Complete")}
+	attempt.requestBody = func() bodyObservation { return requestObservation }
+	attempt.responseBody = func() bodyObservation { return responseObservation }
+	var persist func()
+	attempt.scheduleCompletion = func(completion func()) { persist = completion }
+
+	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
+	if persist == nil {
+		t.Fatal("Complete did not queue persistence")
+	}
+	requestObservation = bodyObservation{bytes: []byte("request after Complete"), exact: true}
+	responseObservation = bodyObservation{
+		bytes:   []byte("response after Complete"),
+		exact:   true,
+		timeout: true,
+	}
+	persist()
+
+	recorded := onlyAttempt(t, sink)
+	if got, err := apilog.DecodeBody(recorded.Request.Body); err != nil || string(got) != "request after Complete" {
+		t.Fatalf("late-bound request body = %q, %v", got, err)
+	}
+	if recorded.Response == nil {
+		t.Fatal("recorded response is nil")
+	}
+	if got, err := apilog.DecodeBody(recorded.Response.Body); err != nil || string(got) != "response before Complete" {
+		t.Fatalf("frozen response body = %q, %v", got, err)
+	}
+	if recorded.Response.Body.Exact {
+		t.Fatal("response exactness changed after Complete")
+	}
+	if got := recorded.Outcome; got != apilog.AttemptSuccess {
+		t.Fatalf("response timeout observed after Complete changed outcome to %q", got)
+	}
+}
+
 func TestAPIAttemptBodyObserversReportOnlyReturnedBytesAndEOFExactness(t *testing.T) {
 	tests := []struct {
 		name      string

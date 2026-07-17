@@ -1480,6 +1480,103 @@ func TestDoWithAPIAttemptsFreezesContextStateWhenCompletionIsQueued(t *testing.T
 	}
 }
 
+func TestDoWithAPIAttemptsFreezesRedirectContextWhenSourceCompletionIsQueued(t *testing.T) {
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_queued_redirect_context", sink),
+		http.MethodGet,
+		"https://provider.test/start",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var finalRequestBody io.ReadCloser
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		transportCalls++
+		switch transportCalls {
+		case 1:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://provider.test/final"}},
+				Body:       http.NoBody,
+			}, nil
+		case 2:
+			finalRequestBody = request.Body
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       http.NoBody,
+			}, nil
+		default:
+			return nil, errors.New("unexpected extra RoundTrip")
+		}
+	})}
+	client.CheckRedirect = func(candidate *http.Request, _ []*http.Request) error {
+		candidate.Method = http.MethodPost
+		candidate.Body = io.NopCloser(strings.NewReader("final request body"))
+		candidate.ContentLength = -1
+		return nil
+	}
+
+	response, attempt, err := DoWithAPIAttempts(parentCtx, client, request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	if got := sink.count(); got != 0 {
+		t.Fatalf("attempt count before final request close = %d, want 0", got)
+	}
+	if finalRequestBody == nil {
+		t.Fatal("final RoundTrip did not retain its request body")
+	}
+
+	cancelParent()
+	if err := finalRequestBody.Close(); err != nil {
+		t.Fatalf("close final request: %v", err)
+	}
+	attempts := sink.snapshot()
+	if len(attempts) != 2 {
+		t.Fatalf("attempt count after final request close = %d, want redirect and final", len(attempts))
+	}
+	if got := attempts[0].Outcome; got != apilog.AttemptProviderReject {
+		t.Fatalf("redirect outcome after post-close cancellation = %q, want %q", got, apilog.AttemptProviderReject)
+	}
+}
+
+func TestRedirectSourceCapturesFinishedAtBeforeDeferredPersistence(t *testing.T) {
+	sink := &responseAssociationSink{}
+	requestCtx := attemptContext("ag_redirect_finished_at", sink)
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := BeginAPIAttempt(context.Background(), requestCtx, request, attemptMeta(request, nil))
+	var pending *pendingAPIAttemptCompletion
+	body := &apiAttemptResponseBody{
+		observedBody: newObservedBody(requestCtx, http.NoBody, 0),
+		attempt:      attempt,
+		statusCode:   http.StatusFound,
+		deferCompletion: func(completion *pendingAPIAttemptCompletion) {
+			pending = completion
+		},
+	}
+	if err := body.Close(); err != nil {
+		t.Fatalf("close redirect source: %v", err)
+	}
+	if pending == nil {
+		t.Fatal("redirect source completion was not deferred")
+	}
+	defer pending.complete()
+	if pending.result.FinishedAt.IsZero() {
+		t.Fatal("redirect source did not capture FinishedAt before deferred persistence")
+	}
+}
+
 func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempts(t *testing.T) {
 	const (
 		trailerName   = "X-Gateway-Credential"

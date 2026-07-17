@@ -57,24 +57,48 @@ func (c *APIAttemptCapture) mergeCredentialMaterial(material llm.APILogCredentia
 	c.attempt.MergeCredentialMaterial(material)
 }
 
-// Complete queues the canonical append until the request body has reached EOF
-// or Close and cannot produce more credential material.
+// Complete freezes provider-result and response evidence, then queues the
+// canonical append until the request body cannot produce more credentials.
 func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	if c == nil {
 		return
 	}
 	c.completeOnce.Do(func() {
-		if result.FinishedAt.IsZero() {
-			result.FinishedAt = time.Now()
-		}
-		owner := freezeAPIAttemptContextOwnership(c.owner)
-		completion := func() { c.completeNow(result, owner, timeoutSource, decodeErr, transportErr) }
-		if c.scheduleCompletion != nil {
-			c.scheduleCompletion(completion)
-			return
-		}
-		completion()
+		result, owner, responseTimedOut := c.captureCompletionEvidence(result)
+		c.scheduleCapturedCompletion(result, owner, responseTimedOut, timeoutSource, decodeErr, transportErr)
 	})
+}
+
+func (c *APIAttemptCapture) captureCompletionEvidence(result llm.APIAttemptResult) (llm.APIAttemptResult, llm.APIAttemptContextOwnership, bool) {
+	if result.FinishedAt.IsZero() {
+		result.FinishedAt = time.Now()
+	}
+	responseTimedOut := false
+	if c.responseBody != nil {
+		observation := c.responseBody()
+		result.ResponseBody = observation.bytes
+		result.ResponseBodyInexact = !observation.exact
+		responseTimedOut = observation.timeout
+	}
+	return result, freezeAPIAttemptContextOwnership(c.owner), responseTimedOut
+}
+
+func (c *APIAttemptCapture) completeWithCapturedEvidence(result llm.APIAttemptResult, owner llm.APIAttemptContextOwnership, responseTimedOut bool, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
+	if c == nil {
+		return
+	}
+	c.completeOnce.Do(func() {
+		c.scheduleCapturedCompletion(result, owner, responseTimedOut, timeoutSource, decodeErr, transportErr)
+	})
+}
+
+func (c *APIAttemptCapture) scheduleCapturedCompletion(result llm.APIAttemptResult, owner llm.APIAttemptContextOwnership, responseTimedOut bool, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
+	completion := func() { c.completeNow(result, owner, responseTimedOut, timeoutSource, decodeErr, transportErr) }
+	if c.scheduleCompletion != nil {
+		c.scheduleCompletion(completion)
+		return
+	}
+	completion()
 }
 
 func freezeAPIAttemptContextOwnership(owner llm.APIAttemptContextOwnership) llm.APIAttemptContextOwnership {
@@ -89,22 +113,16 @@ func freezeAPIAttemptContextOwnership(owner llm.APIAttemptContextOwnership) llm.
 	return owner
 }
 
-func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, owner llm.APIAttemptContextOwnership, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
+func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, owner llm.APIAttemptContextOwnership, responseTimedOut bool, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	material := llm.APILogCredentialMaterialForRequest(c.request, c.credentialMaterial)
 	c.attempt.MergeCredentialMaterial(material)
-	observedTimeout := false
+	observedTimeout := responseTimedOut
 	observeTerminalContext := func(observation bodyObservation) {
 		observedTimeout = observedTimeout || observation.timeout
 	}
 	if c.requestBody != nil {
 		observation := c.requestBody()
 		c.attempt.SetRequestBody(observation.bytes, observation.exact)
-		observeTerminalContext(observation)
-	}
-	if c.responseBody != nil {
-		observation := c.responseBody()
-		result.ResponseBody = observation.bytes
-		result.ResponseBodyInexact = !observation.exact
 		observeTerminalContext(observation)
 	}
 	owner.TimeoutSource = timeoutSource

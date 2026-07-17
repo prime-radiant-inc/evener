@@ -272,16 +272,18 @@ func (t *apiAttemptRoundTripper) mergeRedirectCandidateMaterial(candidate *http.
 }
 
 type pendingAPIAttemptCompletion struct {
-	attempt   *APIAttemptCapture
-	result    llm.APIAttemptResult
-	decodeErr error
+	attempt          *APIAttemptCapture
+	result           llm.APIAttemptResult
+	owner            llm.APIAttemptContextOwnership
+	responseTimedOut bool
+	decodeErr        error
 }
 
 func (p *pendingAPIAttemptCompletion) complete() {
 	if p == nil {
 		return
 	}
-	p.attempt.Complete(p.result, llm.APITimeoutNone, p.decodeErr, nil)
+	p.attempt.completeWithCapturedEvidence(p.result, p.owner, p.responseTimedOut, llm.APITimeoutNone, p.decodeErr, nil)
 }
 
 func (t *apiAttemptRoundTripper) holdPendingRedirect(pending *pendingAPIAttemptCompletion) {
@@ -534,16 +536,15 @@ func (b *apiAttemptResponseBody) completeUnclaimed(closeErr error) {
 	if claimed {
 		return
 	}
-	observation := b.snapshot()
 	pending := &pendingAPIAttemptCompletion{
 		attempt: b.attempt,
 		result: llm.APIAttemptResult{
-			StatusCode:   b.statusCode,
-			ResponseBody: observation.bytes,
-			Err:          closeErr,
+			StatusCode: b.statusCode,
+			Err:        closeErr,
 		},
 		decodeErr: closeErr,
 	}
+	pending.result, pending.owner, pending.responseTimedOut = b.attempt.captureCompletionEvidence(pending.result)
 	if b.deferCompletion != nil {
 		b.deferCompletion(pending)
 	} else {
