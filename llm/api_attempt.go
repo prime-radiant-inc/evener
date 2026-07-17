@@ -2,8 +2,9 @@ package llm
 
 import (
 	"context"
-	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,8 @@ type APILogCredentialMaterial struct {
 	HeaderNames map[string]struct{}
 	QueryNames  map[string]struct{}
 	Values      []string
+	secretNames []string
+	patterns    []string
 }
 
 // APIAttemptMeta carries provider provenance and exact request evidence for one
@@ -232,7 +235,7 @@ func (a *APIAttempt) Complete(result APIAttemptResult) {
 		record := buildAPIAttemptRecord(a.group.ID, a.id, a.index, meta, result)
 		a.group.mu.Lock()
 		if a.index == a.group.finalAttemptCount {
-			a.group.finalOutcome = result.Outcome
+			a.group.finalOutcome = record.Outcome
 		}
 		a.group.mu.Unlock()
 		appendCtx := withAPILogCredentialMaterial(context.WithoutCancel(a.ctx), meta.CredentialMaterial)
@@ -266,11 +269,7 @@ func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
 			outcome = g.finalOutcome
 			g.mu.Unlock()
 			if outcome == "" {
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					outcome = apilog.AttemptCallerCancel
-				} else {
-					outcome = apilog.AttemptTransportFail
-				}
+				outcome = apilog.AttemptTransportFail
 			}
 		}
 	}
@@ -293,15 +292,37 @@ type sanitizedAPILogError struct {
 func (e sanitizedAPILogError) Error() string { return e.text }
 func (e sanitizedAPILogError) Unwrap() error { return e.err }
 
+type sanitizedObservedAPILogError struct {
+	sanitizedAPILogError
+}
+
+func (sanitizedObservedAPILogError) apiLogFailureWasObserved() {}
+
 func sanitizeAPILogError(err error, material APILogCredentialMaterial) error {
 	if err == nil {
 		return nil
 	}
-	sanitized := SanitizeErrorForAPILog(err.Error(), material)
-	if sanitized == err.Error() {
-		return err
+	_, observed := err.(apiLogObservedFailure)
+	rendered := renderAPILogError(err)
+	sanitized := SanitizeErrorForAPILog(rendered, material)
+	if sanitized == "" {
+		sanitized = "API-log failure details omitted"
 	}
-	return sanitizedAPILogError{text: sanitized, err: err}
+	flat := sanitizedAPILogError{text: sanitized, err: err}
+	if observed {
+		return sanitizedObservedAPILogError{sanitizedAPILogError: flat}
+	}
+	return flat
+}
+
+func renderAPILogError(err error) (text string) {
+	text = "error text unavailable"
+	defer func() {
+		if recover() != nil {
+			text = "error text unavailable"
+		}
+	}()
+	return err.Error()
 }
 
 func withAPILogCredentialMaterial(ctx context.Context, material APILogCredentialMaterial) context.Context {
@@ -393,8 +414,10 @@ func (g *APIAttemptGroup) recordFailure(failure APILogFailure) {
 	g.forensicIncomplete = true
 	sink := g.sink
 	g.mu.Unlock()
-	var observed apiLogObservedFailure
-	if failure.Err == nil || errors.As(failure.Err, &observed) {
+	if failure.Err == nil {
+		return
+	}
+	if _, observed := failure.Err.(apiLogObservedFailure); observed {
 		return
 	}
 	if source, ok := sink.(apiLogFailureObserverSource); ok {
@@ -409,6 +432,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 	if latency < 0 {
 		latency = 0
 	}
+	patterns := credentialEvidencePatterns(meta.CredentialMaterial)
 	record := apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
 		SchemaVersion:    1,
@@ -417,51 +441,123 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 		AttemptIndex:     index,
 		Timestamp:        meta.StartedAt.UTC(),
 		LatencyMS:        latency,
-		ProviderInstance: meta.ProviderInstance,
-		RequestModel:     meta.RequestModel,
+		ProviderInstance: omitCredentialString(meta.ProviderInstance, patterns),
+		RequestModel:     omitCredentialString(meta.RequestModel, patterns),
 		Request: apilog.APIAttemptRequest{
-			Method:         meta.Method,
-			Endpoint:       meta.Endpoint,
-			Headers:        cloneHTTPHeader(meta.Headers),
-			Body:           apilog.EncodeBody(meta.RequestBody),
-			Model:          meta.RequestModel,
-			HistoryMode:    string(meta.HistoryMode),
-			EndpointFamily: meta.EndpointFamily,
+			Method:         omitCredentialString(meta.Method, patterns),
+			Endpoint:       omitCredentialString(sanitizeEndpointForAPILog(meta.Endpoint), patterns),
+			Headers:        cloneCredentialFreeHTTPHeader(meta.Headers, patterns),
+			Body:           encodeProviderBody(meta.RequestBody, patterns),
+			Model:          omitCredentialString(meta.RequestModel, patterns),
+			HistoryMode:    omitCredentialString(string(meta.HistoryMode), patterns),
+			EndpointFamily: omitCredentialString(meta.EndpointFamily, patterns),
 		},
-		Outcome:    result.Outcome,
-		ErrorClass: result.ErrorClass,
+		Outcome:    canonicalAPIAttemptOutcome(result),
+		ErrorClass: omitCredentialString(result.ErrorClass, patterns),
 	}
 	if result.Err != nil {
-		record.ErrorMessage = SanitizeErrorForAPILog(result.Err.Error(), meta.CredentialMaterial)
+		record.ErrorMessage = SanitizeErrorForAPILog(renderAPILogError(result.Err), meta.CredentialMaterial)
 	}
 	if result.Response != nil || result.StatusCode != 0 || result.ResponseBody != nil {
 		response := apilog.APIAttemptResponse{
-			StatusCode: result.StatusCode,
-			Body:       apilog.EncodeBody(result.ResponseBody),
+			StatusCode: omitCredentialInt(result.StatusCode, patterns),
+			Body:       encodeProviderBody(result.ResponseBody, patterns),
 		}
 		if result.Response != nil {
-			response.Model = result.Response.Model
-			response.FinishReason = result.Response.Finish.Reason
-			response.TextLength = len(result.Response.Text())
-			response.ToolCallCount = len(result.Response.ToolCalls())
+			response.Model = omitCredentialString(result.Response.Model, patterns)
+			response.FinishReason = omitCredentialString(result.Response.Finish.Reason, patterns)
+			response.TextLength = omitCredentialInt(len(result.Response.Text()), patterns)
+			response.ToolCallCount = omitCredentialInt(len(result.Response.ToolCalls()), patterns)
 			response.Usage = apilog.Usage{
-				InputTokens:      result.Response.Usage.InputTokens,
-				OutputTokens:     result.Response.Usage.OutputTokens,
-				TotalTokens:      result.Response.Usage.TotalTokens,
-				CacheReadTokens:  result.Response.Usage.CacheReadTokens,
-				CacheWriteTokens: result.Response.Usage.CacheWriteTokens,
+				InputTokens:      omitCredentialInt(result.Response.Usage.InputTokens, patterns),
+				OutputTokens:     omitCredentialInt(result.Response.Usage.OutputTokens, patterns),
+				TotalTokens:      omitCredentialInt(result.Response.Usage.TotalTokens, patterns),
+				CacheReadTokens:  omitCredentialIntPointer(result.Response.Usage.CacheReadTokens, patterns),
+				CacheWriteTokens: omitCredentialIntPointer(result.Response.Usage.CacheWriteTokens, patterns),
 			}
 		}
 		record.Response = &response
 	}
-	return record
+	return record.WithForbiddenProviderEvidence(patterns)
 }
 
-func cloneHTTPHeader(header http.Header) map[string][]string {
-	if header == nil {
+func canonicalAPIAttemptOutcome(result APIAttemptResult) apilog.AttemptOutcomeClass {
+	switch result.Outcome {
+	case apilog.AttemptSuccess,
+		apilog.AttemptProviderReject,
+		apilog.AttemptTransportFail,
+		apilog.AttemptProviderTimeout,
+		apilog.AttemptCallerCancel,
+		apilog.AttemptDecodeFail:
+		return result.Outcome
+	default:
+		if result.Err != nil {
+			return apilog.AttemptTransportFail
+		}
+		return apilog.AttemptSuccess
+	}
+}
+
+func omitCredentialString(value string, patterns []string) string {
+	if containsCredentialPattern(value, patterns) {
+		return ""
+	}
+	return value
+}
+
+func omitCredentialInt(value int, patterns []string) int {
+	if containsCredentialPattern(strconv.Itoa(value), patterns) {
+		return 0
+	}
+	return value
+}
+
+func omitCredentialIntPointer(value *int, patterns []string) *int {
+	if value == nil || containsCredentialPattern(strconv.Itoa(*value), patterns) {
 		return nil
 	}
-	return header.Clone()
+	copy := *value
+	return &copy
+}
+
+func encodeProviderBody(body []byte, patterns []string) apilog.EncodedBody {
+	if containsCredentialPattern(string(body), patterns) {
+		return apilog.EncodedBody{CredentialValuesExcluded: true}
+	}
+	return apilog.EncodeBody(body)
+}
+
+func cloneCredentialFreeHTTPHeader(header http.Header, patterns []string) apilog.EncodedHeader {
+	var cloned apilog.EncodedHeader
+	for name, values := range header {
+		if containsCredentialPattern(name, patterns) {
+			continue
+		}
+		credentialBearing := false
+		for _, value := range values {
+			if containsCredentialPattern(value, patterns) {
+				credentialBearing = true
+				break
+			}
+		}
+		if credentialBearing {
+			continue
+		}
+		if cloned == nil {
+			cloned = make(apilog.EncodedHeader)
+		}
+		cloned[name] = append([]string(nil), values...)
+	}
+	return cloned
+}
+
+func containsCredentialPattern(value string, patterns []string) bool {
+	for _, pattern := range patterns {
+		if pattern != "" && strings.Contains(value, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 func apiLogSessionID(ctx context.Context) string {

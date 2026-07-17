@@ -108,6 +108,28 @@ func TestAPIAttemptRecordRoundTripsExactBodies(t *testing.T) {
 	}
 }
 
+func TestMarshalRecordValidatesCanonicalAttemptAndSettlement(t *testing.T) {
+	for _, record := range []APILogRecord{validAPIAttemptRecord(t), validSettlement(t)} {
+		line, err := MarshalRecord(record)
+		if err != nil {
+			t.Fatalf("MarshalRecord(%s): %v", record.RecordKind(), err)
+		}
+		decoded, err := DecodeRecord(line)
+		if err != nil {
+			t.Fatalf("DecodeRecord(MarshalRecord(%s)): %v", record.RecordKind(), err)
+		}
+		if decoded.RecordKind() != record.RecordKind() {
+			t.Fatalf("decoded kind = %q, want %q", decoded.RecordKind(), record.RecordKind())
+		}
+	}
+
+	invalid := validAPIAttemptRecord(t)
+	invalid.Outcome = "future_outcome"
+	if _, err := MarshalRecord(invalid); err == nil {
+		t.Fatal("MarshalRecord() accepted an invalid durable enum")
+	}
+}
+
 func TestSettlementRecordRoundTripsAsDurableInterface(t *testing.T) {
 	want := validSettlement(t)
 	line, err := json.Marshal(want)

@@ -18,6 +18,9 @@ func TestEncodedBodyUTF8ExactRoundTrip(t *testing.T) {
 	if encoded.ByteCount != len(want) {
 		t.Fatalf("ByteCount = %d, want %d", encoded.ByteCount, len(want))
 	}
+	if !encoded.Exact || encoded.CredentialValuesExcluded {
+		t.Fatalf("body truth = (exact=%t, credential_values_excluded=%t), want (true, false)", encoded.Exact, encoded.CredentialValuesExcluded)
+	}
 
 	data, err := json.Marshal(encoded)
 	if err != nil {
@@ -85,5 +88,52 @@ func TestEncodedBodyRejectsInvalidEncodingOrLength(t *testing.T) {
 				t.Fatal("DecodeBody() accepted invalid encoded body")
 			}
 		})
+	}
+}
+
+func TestEncodedBodyDecodeRequiresExplicitTruthFields(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing exact",
+			body: `{"encoding":"utf8","data":"body","byte_count":4,"credential_values_excluded":false}`,
+		},
+		{
+			name: "missing credential exclusion",
+			body: `{"encoding":"utf8","data":"body","byte_count":4,"exact":true}`,
+		},
+		{
+			name: "null exact",
+			body: `{"encoding":"utf8","data":"body","byte_count":4,"exact":null,"credential_values_excluded":false}`,
+		},
+		{
+			name: "unknown field",
+			body: `{"encoding":"utf8","data":"body","byte_count":4,"exact":true,"credential_values_excluded":false,"future":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body EncodedBody
+			if err := json.Unmarshal([]byte(tt.body), &body); err == nil {
+				t.Fatal("json.Unmarshal() accepted a body without the strict truth contract")
+			}
+		})
+	}
+}
+
+func TestEncodedBodyRejectsExactCredentialExcludedContent(t *testing.T) {
+	body := EncodeBody([]byte("credential"))
+	body.CredentialValuesExcluded = true
+	if _, err := DecodeBody(body); err == nil {
+		t.Fatal("DecodeBody() accepted exact credential-excluded content")
+	}
+
+	body = EncodedBody{CredentialValuesExcluded: true}
+	if got, err := DecodeBody(body); err != nil {
+		t.Fatalf("DecodeBody() rejected omitted credential content: %v", err)
+	} else if got != nil {
+		t.Fatalf("DecodeBody() = %v, want nil omitted content", got)
 	}
 }

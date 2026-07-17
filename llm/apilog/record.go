@@ -2,6 +2,8 @@ package apilog
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/identifier"
@@ -25,13 +27,13 @@ const (
 )
 
 type APIAttemptRequest struct {
-	Method         string              `json:"method"`
-	Endpoint       string              `json:"endpoint"`
-	Headers        map[string][]string `json:"headers,omitempty"`
-	Body           EncodedBody         `json:"body"`
-	Model          string              `json:"model,omitempty"`
-	HistoryMode    string              `json:"history_mode,omitempty"`
-	EndpointFamily string              `json:"endpoint_family,omitempty"`
+	Method         string        `json:"method"`
+	Endpoint       string        `json:"endpoint"`
+	Headers        EncodedHeader `json:"headers,omitempty"`
+	Body           EncodedBody   `json:"body"`
+	Model          string        `json:"model,omitempty"`
+	HistoryMode    string        `json:"history_mode,omitempty"`
+	EndpointFamily string        `json:"endpoint_family,omitempty"`
 }
 
 type APIAttemptResponse struct {
@@ -53,20 +55,21 @@ type Usage struct {
 }
 
 type APIAttemptRecord struct {
-	Kind             string              `json:"kind"`
-	SchemaVersion    int                 `json:"schema_version"`
-	AttemptID        string              `json:"attempt_id"`
-	AttemptGroupID   string              `json:"attempt_group_id"`
-	AttemptIndex     int                 `json:"attempt_index"`
-	Timestamp        time.Time           `json:"timestamp"`
-	LatencyMS        int64               `json:"latency_ms"`
-	ProviderInstance string              `json:"provider_instance"`
-	RequestModel     string              `json:"request_model"`
-	Request          APIAttemptRequest   `json:"request"`
-	Response         *APIAttemptResponse `json:"response,omitempty"`
-	Outcome          AttemptOutcomeClass `json:"outcome"`
-	ErrorClass       string              `json:"error_class,omitempty"`
-	ErrorMessage     string              `json:"error_message,omitempty"`
+	Kind              string              `json:"kind"`
+	SchemaVersion     int                 `json:"schema_version"`
+	AttemptID         string              `json:"attempt_id"`
+	AttemptGroupID    string              `json:"attempt_group_id"`
+	AttemptIndex      int                 `json:"attempt_index"`
+	Timestamp         time.Time           `json:"timestamp"`
+	LatencyMS         int64               `json:"latency_ms"`
+	ProviderInstance  string              `json:"provider_instance"`
+	RequestModel      string              `json:"request_model"`
+	Request           APIAttemptRequest   `json:"request"`
+	Response          *APIAttemptResponse `json:"response,omitempty"`
+	Outcome           AttemptOutcomeClass `json:"outcome"`
+	ErrorClass        string              `json:"error_class,omitempty"`
+	ErrorMessage      string              `json:"error_message,omitempty"`
+	forbiddenEvidence []string
 }
 
 type APIAttemptGroupSettlement struct {
@@ -91,6 +94,13 @@ func (APIAttemptRecord) RecordKind() string {
 
 func (APIAttemptGroupSettlement) RecordKind() string {
 	return settlementRecordKind
+}
+
+// WithForbiddenProviderEvidence binds the fixed credential patterns that must
+// be absent from provider-derived fields at the final marshal boundary.
+func (r APIAttemptRecord) WithForbiddenProviderEvidence(patterns []string) APIAttemptRecord {
+	r.forbiddenEvidence = append([]string(nil), patterns...)
+	return r
 }
 
 func (r APIAttemptRecord) validateRecord() error {
@@ -210,4 +220,101 @@ func validAttemptOutcome(outcome AttemptOutcomeClass) bool {
 	default:
 		return false
 	}
+}
+
+func (r APIAttemptRecord) validateProviderEvidence() error {
+	if len(r.forbiddenEvidence) == 0 {
+		return nil
+	}
+	stringsToCheck := []struct {
+		name  string
+		value string
+	}{
+		{name: "provider instance", value: r.ProviderInstance},
+		{name: "request model", value: r.RequestModel},
+		{name: "request method", value: r.Request.Method},
+		{name: "request endpoint", value: r.Request.Endpoint},
+		{name: "request body model", value: r.Request.Model},
+		{name: "request history mode", value: r.Request.HistoryMode},
+		{name: "request endpoint family", value: r.Request.EndpointFamily},
+		{name: "error class", value: r.ErrorClass},
+		{name: "error message", value: r.ErrorMessage},
+	}
+	if r.Response != nil {
+		stringsToCheck = append(stringsToCheck,
+			struct {
+				name  string
+				value string
+			}{name: "response model", value: r.Response.Model},
+			struct {
+				name  string
+				value string
+			}{name: "response finish reason", value: r.Response.FinishReason},
+		)
+	}
+	for _, field := range stringsToCheck {
+		if containsForbiddenEvidence([]byte(field.value), r.forbiddenEvidence) {
+			return fmt.Errorf("%s contains credential material", field.name)
+		}
+	}
+	for name, values := range r.Request.Headers {
+		if containsForbiddenEvidence([]byte(name), r.forbiddenEvidence) {
+			return fmt.Errorf("request header name contains credential material")
+		}
+		for _, value := range values {
+			if containsForbiddenEvidence([]byte(value), r.forbiddenEvidence) {
+				return fmt.Errorf("request header %q contains credential material", name)
+			}
+		}
+	}
+	if body, err := DecodeBody(r.Request.Body); err == nil && containsForbiddenEvidence(body, r.forbiddenEvidence) {
+		return fmt.Errorf("request body contains credential material")
+	}
+	if r.Response == nil {
+		return nil
+	}
+	if body, err := DecodeBody(r.Response.Body); err == nil && containsForbiddenEvidence(body, r.forbiddenEvidence) {
+		return fmt.Errorf("response body contains credential material")
+	}
+	numbers := []struct {
+		name    string
+		value   int
+		present bool
+	}{
+		{name: "response status code", value: r.Response.StatusCode, present: r.Response.StatusCode != 0},
+		{name: "response text length", value: r.Response.TextLength, present: true},
+		{name: "response tool call count", value: r.Response.ToolCallCount, present: true},
+		{name: "input token usage", value: r.Response.Usage.InputTokens, present: r.Response.Usage.InputTokens != 0},
+		{name: "output token usage", value: r.Response.Usage.OutputTokens, present: r.Response.Usage.OutputTokens != 0},
+		{name: "total token usage", value: r.Response.Usage.TotalTokens, present: r.Response.Usage.TotalTokens != 0},
+	}
+	if r.Response.Usage.CacheReadTokens != nil {
+		numbers = append(numbers, struct {
+			name    string
+			value   int
+			present bool
+		}{name: "cache-read token usage", value: *r.Response.Usage.CacheReadTokens, present: true})
+	}
+	if r.Response.Usage.CacheWriteTokens != nil {
+		numbers = append(numbers, struct {
+			name    string
+			value   int
+			present bool
+		}{name: "cache-write token usage", value: *r.Response.Usage.CacheWriteTokens, present: true})
+	}
+	for _, field := range numbers {
+		if field.present && containsForbiddenEvidence([]byte(strconv.Itoa(field.value)), r.forbiddenEvidence) {
+			return fmt.Errorf("%s contains credential material", field.name)
+		}
+	}
+	return nil
+}
+
+func containsForbiddenEvidence(value []byte, patterns []string) bool {
+	for _, pattern := range patterns {
+		if pattern != "" && strings.Contains(string(value), pattern) {
+			return true
+		}
+	}
+	return false
 }

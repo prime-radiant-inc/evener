@@ -147,6 +147,27 @@ func DecodeRecord(line []byte) (APILogRecord, error) {
 	return record, nil
 }
 
+// MarshalRecord validates and encodes one concrete canonical API-log record.
+func MarshalRecord(record APILogRecord) ([]byte, error) {
+	switch typed := record.(type) {
+	case APIAttemptRecord:
+		if err := typed.validateProviderEvidence(); err != nil {
+			return nil, fmt.Errorf("API-log record credential admission failed: %w", err)
+		}
+	case APIAttemptGroupSettlement:
+	default:
+		return nil, fmt.Errorf("unsupported API-log record type %T", record)
+	}
+	if err := record.validateRecord(); err != nil {
+		return nil, fmt.Errorf("invalid %s record: %w", record.RecordKind(), err)
+	}
+	line, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %s record: %w", record.RecordKind(), err)
+	}
+	return line, nil
+}
+
 func decodeStrict(data []byte, dst any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

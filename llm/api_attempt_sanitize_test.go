@@ -36,7 +36,7 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 	)
 
 	endpoint, headers := SanitizeRequestForAPILog(req, material)
-	if endpoint != "https://example.test/v1?keep=visible&ordered=first&ordered=second" {
+	if endpoint != "https://example.test/v1" {
 		t.Fatalf("endpoint = %q", endpoint)
 	}
 	wantHeaders := map[string][]string{
@@ -59,6 +59,9 @@ func TestSanitizeErrorForAPILogRemovesRawAndEscapedCredentials(t *testing.T) {
 	material := NewAPILogCredentialMaterial(nil, nil, secret)
 	text := strings.Join([]string{secret, url.QueryEscape(secret), url.PathEscape(secret)}, " | ")
 	got := SanitizeErrorForAPILog(text, material)
+	if got != "" {
+		t.Fatalf("SanitizeErrorForAPILog() = %q, want whole-field omission", got)
+	}
 	for _, leaked := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("sanitized error contains %q: %q", leaked, got)
@@ -70,8 +73,8 @@ func TestSanitizeErrorForAPILogRemovesCredentialValueBeforeContainedName(t *test
 	const secret = "prefix/token/suffix"
 	material := NewAPILogCredentialMaterial(nil, []string{"token"}, secret)
 	got := SanitizeErrorForAPILog("provider echoed "+secret, material)
-	if strings.Contains(got, "prefix/") || strings.Contains(got, "/suffix") {
-		t.Fatalf("credential value was only partially redacted: %q", got)
+	if got != "" {
+		t.Fatalf("credential-bearing error was not omitted: %q", got)
 	}
 }
 
@@ -107,8 +110,8 @@ func TestBuildAPIAttemptRecordSanitizesPersistedError(t *testing.T) {
 		Outcome:    apilog.AttemptTransportFail,
 		FinishedAt: time.Unix(2, 0),
 	})
-	if strings.Contains(record.ErrorMessage, secret) {
-		t.Fatalf("persisted error contains credential: %q", record.ErrorMessage)
+	if record.ErrorMessage != "" {
+		t.Fatalf("persisted credential-bearing error = %q, want omitted", record.ErrorMessage)
 	}
 }
 
@@ -134,8 +137,8 @@ func TestBuildAPIAttemptRecordSanitizesCredentialNamesButPreservesOrdinaryNames(
 			t.Fatalf("persisted error contains credential name %q: %q", credentialName, record.ErrorMessage)
 		}
 	}
-	if !strings.Contains(record.ErrorMessage, ordinaryHeader) {
-		t.Fatalf("persisted error hid ordinary header name %q: %q", ordinaryHeader, record.ErrorMessage)
+	if record.ErrorMessage != "" {
+		t.Fatalf("credential-bearing error = %q, want whole-field omission", record.ErrorMessage)
 	}
 }
 
@@ -308,8 +311,8 @@ func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryName
 			t.Fatalf("failure warning contains credential name %q: %q", credentialName, got)
 		}
 	}
-	if !strings.Contains(got, ordinaryHeader) {
-		t.Fatalf("failure warning hid ordinary header name %q: %q", ordinaryHeader, got)
+	if strings.Contains(got, ordinaryHeader) {
+		t.Fatalf("credential-bearing warning was partially preserved: %q", got)
 	}
 	if !errors.Is(sink.observed[0].Err, storageErr) {
 		t.Fatalf("sanitized warning lost storage error identity: %v", sink.observed[0].Err)
