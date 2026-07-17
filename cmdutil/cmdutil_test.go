@@ -1,6 +1,7 @@
 package cmdutil
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestResolveSessionMetaRejectsMismatchedIDWithoutMutation(t *testing.T) {
 	if readErr != nil {
 		t.Fatalf("ReadFile: %v", readErr)
 	}
-	if string(got) != string(contents) {
+	if !bytes.Equal(got, contents) {
 		t.Fatalf("failed resolution mutated metadata: got %q want %q", got, contents)
 	}
 }
