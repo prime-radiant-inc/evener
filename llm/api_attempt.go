@@ -527,7 +527,7 @@ func canonicalAPIAttemptOutcome(result APIAttemptResult) apilog.AttemptOutcomeCl
 }
 
 func omitCredentialString(value string, patterns, secretNames []string) string {
-	if containsCredentialEvidenceParts(value, patterns, secretNames) {
+	if containsCredentialDurableStringEvidenceParts(value, patterns, secretNames) {
 		return ""
 	}
 	return value
@@ -554,6 +554,10 @@ func encodeProviderBody(body []byte, inexact bool, patterns, secretNames []strin
 		return apilog.EncodedBody{CredentialValuesExcluded: true}
 	}
 	encoded := apilog.EncodeBody(body)
+	if containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames) ||
+		containsCredentialEvidenceParts(strconv.Itoa(encoded.ByteCount), patterns, secretNames) {
+		return apilog.EncodedBody{CredentialValuesExcluded: true}
+	}
 	encoded.Exact = !inexact
 	return encoded
 }
@@ -561,12 +565,12 @@ func encodeProviderBody(body []byte, inexact bool, patterns, secretNames []strin
 func cloneCredentialFreeHTTPHeader(header http.Header, patterns, secretNames []string) apilog.EncodedHeader {
 	var cloned apilog.EncodedHeader
 	for name, values := range header {
-		if containsCredentialEvidenceParts(name, patterns, secretNames) {
+		if containsCredentialDurableStringEvidenceParts(name, patterns, secretNames) {
 			continue
 		}
 		credentialBearing := false
 		for _, value := range values {
-			if containsCredentialEvidenceParts(value, patterns, secretNames) {
+			if containsCredentialHeaderValueEvidence(value, patterns, secretNames) {
 				credentialBearing = true
 				break
 			}

@@ -255,6 +255,150 @@ func TestAPILoggerRejectsOversizedCanonicalRecordBeforeStorage(t *testing.T) {
 	}
 }
 
+func TestSessionAPILoggerRejectsCredentialCollisionsCreatedByCanonicalEncoding(t *testing.T) {
+	tests := []struct {
+		name   string
+		secret string
+		mutate func(*apilog.APIAttemptRecord)
+	}{
+		{
+			name:   "JSON-escaped provider instance",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.ProviderInstance = "<" },
+		},
+		{
+			name:   "JSON-escaped request model",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.RequestModel = "<" },
+		},
+		{
+			name:   "JSON-escaped request method",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Method = "<" },
+		},
+		{
+			name:   "JSON-escaped request endpoint",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Endpoint = "<" },
+		},
+		{
+			name:   "JSON-escaped body model",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Model = "<" },
+		},
+		{
+			name:   "JSON-escaped history mode",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.HistoryMode = "<" },
+		},
+		{
+			name:   "JSON-escaped endpoint family",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.EndpointFamily = "<" },
+		},
+		{
+			name:   "JSON-escaped header name",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Headers = apilog.EncodedHeader{"<": {"safe"}} },
+		},
+		{
+			name:   "JSON-escaped header value",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Headers = apilog.EncodedHeader{"X-Safe": {"<"}} },
+		},
+		{
+			name:   "JSON-escaped request body data",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Body = apilog.EncodeBody([]byte("<")) },
+		},
+		{
+			name:   "JSON-escaped response body data",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Response.Body = apilog.EncodeBody([]byte("<")) },
+		},
+		{
+			name:   "JSON-escaped response model",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Response.Model = "<" },
+		},
+		{
+			name:   "JSON-escaped finish reason",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.Response.FinishReason = "<" },
+		},
+		{
+			name:   "JSON-escaped error class",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.ErrorClass = "<" },
+		},
+		{
+			name:   "JSON-escaped error message",
+			secret: `\u003c`,
+			mutate: func(record *apilog.APIAttemptRecord) { record.ErrorMessage = "<" },
+		},
+		{
+			name:   "base64 request body data",
+			secret: "/w==",
+			mutate: func(record *apilog.APIAttemptRecord) { record.Request.Body = apilog.EncodeBody([]byte{0xff}) },
+		},
+		{
+			name:   "base64 response body data",
+			secret: "/w==",
+			mutate: func(record *apilog.APIAttemptRecord) { record.Response.Body = apilog.EncodeBody([]byte{0xff}) },
+		},
+		{
+			name:   "base64 header value data",
+			secret: "/w==",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Headers = apilog.EncodedHeader{"X-Safe": {string([]byte{0xff})}}
+			},
+		},
+		{
+			name:   "request body byte count",
+			secret: "17",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Body = apilog.EncodeBody([]byte(strings.Repeat("x", 17)))
+			},
+		},
+		{
+			name:   "response body byte count",
+			secret: "17",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Response.Body = apilog.EncodeBody([]byte(strings.Repeat("x", 17)))
+			},
+		},
+		{
+			name:   "header value byte count",
+			secret: "17",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Headers = apilog.EncodedHeader{"X-Safe": {strings.Repeat("x", 17)}}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			logger, err := NewSessionAPILogger(stateDir)
+			if err != nil {
+				t.Fatalf("NewSessionAPILogger: %v", err)
+			}
+			t.Cleanup(func() { _ = logger.Close() })
+
+			record := validBuiltAPIAttemptRecord(t, NewAPILogCredentialMaterial(nil, nil, tt.secret))
+			tt.mutate(&record)
+			const sessionID = "sess-encoded-admission"
+			if err := logger.AppendAttempt(WithAPILogContext(context.Background(), sessionID), record); err == nil {
+				t.Fatal("AppendAttempt accepted credential material introduced by canonical encoding")
+			}
+			path := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("credential-bearing record reached session storage: %v", err)
+			}
+		})
+	}
+}
+
 func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)

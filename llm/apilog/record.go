@@ -1,6 +1,7 @@
 package apilog
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -257,28 +258,35 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 		)
 	}
 	for _, field := range stringsToCheck {
-		if containsForbiddenEvidence([]byte(field.value), r.forbiddenEvidence, r.forbiddenCredentialNames) {
+		if containsForbiddenDurableString(field.value, r.forbiddenEvidence, r.forbiddenCredentialNames) {
 			return fmt.Errorf("%s contains credential material", field.name)
 		}
 	}
 	for name, values := range r.Request.Headers {
-		if containsForbiddenEvidence([]byte(name), r.forbiddenEvidence, r.forbiddenCredentialNames) {
+		if containsForbiddenDurableString(name, r.forbiddenEvidence, r.forbiddenCredentialNames) {
 			return fmt.Errorf("request header name contains credential material")
 		}
 		for _, value := range values {
 			if containsForbiddenEvidence([]byte(value), r.forbiddenEvidence, r.forbiddenCredentialNames) {
 				return fmt.Errorf("request header %q contains credential material", name)
 			}
+			encoded := EncodeHeaderValue([]byte(value))
+			if containsForbiddenDurableString(encoded.Data, r.forbiddenEvidence, r.forbiddenCredentialNames) {
+				return fmt.Errorf("request header %q encoded data contains credential material", name)
+			}
+			if containsForbiddenInt(encoded.ByteCount, r.forbiddenEvidence, r.forbiddenCredentialNames) {
+				return fmt.Errorf("request header %q byte count contains credential material", name)
+			}
 		}
 	}
-	if body, err := DecodeBody(r.Request.Body); err == nil && containsForbiddenEvidence(body, r.forbiddenEvidence, r.forbiddenCredentialNames) {
-		return fmt.Errorf("request body contains credential material")
+	if err := validateProviderBodyEvidence("request body", r.Request.Body, r.forbiddenEvidence, r.forbiddenCredentialNames); err != nil {
+		return err
 	}
 	if r.Response == nil {
 		return nil
 	}
-	if body, err := DecodeBody(r.Response.Body); err == nil && containsForbiddenEvidence(body, r.forbiddenEvidence, r.forbiddenCredentialNames) {
-		return fmt.Errorf("response body contains credential material")
+	if err := validateProviderBodyEvidence("response body", r.Response.Body, r.forbiddenEvidence, r.forbiddenCredentialNames); err != nil {
+		return err
 	}
 	numbers := []struct {
 		name  string
@@ -294,11 +302,39 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 		{name: "cache-write token usage", value: r.Response.Usage.CacheWriteTokens},
 	}
 	for _, field := range numbers {
-		if field.value != nil && containsForbiddenEvidence([]byte(strconv.Itoa(*field.value)), r.forbiddenEvidence, r.forbiddenCredentialNames) {
+		if field.value != nil && containsForbiddenInt(*field.value, r.forbiddenEvidence, r.forbiddenCredentialNames) {
 			return fmt.Errorf("%s contains credential material", field.name)
 		}
 	}
 	return nil
+}
+
+func validateProviderBodyEvidence(name string, body EncodedBody, patterns, credentialNames []string) error {
+	if decoded, err := DecodeBody(body); err == nil && containsForbiddenEvidence(decoded, patterns, credentialNames) {
+		return fmt.Errorf("%s contains credential material", name)
+	}
+	if containsForbiddenDurableString(body.Data, patterns, credentialNames) {
+		return fmt.Errorf("%s encoded data contains credential material", name)
+	}
+	if !body.CredentialValuesExcluded && containsForbiddenInt(body.ByteCount, patterns, credentialNames) {
+		return fmt.Errorf("%s byte count contains credential material", name)
+	}
+	return nil
+}
+
+func containsForbiddenDurableString(value string, patterns, credentialNames []string) bool {
+	if containsForbiddenEvidence([]byte(value), patterns, credentialNames) {
+		return true
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) < 2 {
+		return false
+	}
+	return containsForbiddenEvidence(encoded[1:len(encoded)-1], patterns, credentialNames)
+}
+
+func containsForbiddenInt(value int, patterns, credentialNames []string) bool {
+	return containsForbiddenEvidence([]byte(strconv.Itoa(value)), patterns, credentialNames)
 }
 
 func containsForbiddenEvidence(value []byte, patterns, credentialNames []string) bool {

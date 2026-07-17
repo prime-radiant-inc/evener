@@ -6,7 +6,10 @@ import (
 	"net/textproto"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
+
+	apilog "primeradiant.com/serf/llm/apilog"
 )
 
 var commonCredentialHeaderNames = map[string]struct{}{
@@ -278,8 +281,9 @@ func canonicalCredentialQueryName(name string) string {
 }
 
 func headerValuesContainCredential(headerValues []string, material APILogCredentialMaterial) bool {
+	patterns := credentialEvidencePatterns(material)
 	for _, headerValue := range headerValues {
-		if containsCredentialEvidence(headerValue, material) {
+		if containsCredentialHeaderValueEvidence(headerValue, patterns, material.secretNames) {
 			return true
 		}
 	}
@@ -287,7 +291,27 @@ func headerValuesContainCredential(headerValues []string, material APILogCredent
 }
 
 func containsCredentialEvidence(text string, material APILogCredentialMaterial) bool {
-	return containsCredentialEvidenceParts(text, credentialEvidencePatterns(material), material.secretNames)
+	return containsCredentialDurableStringEvidenceParts(text, credentialEvidencePatterns(material), material.secretNames)
+}
+
+func containsCredentialHeaderValueEvidence(value string, patterns, secretNames []string) bool {
+	if containsCredentialEvidenceParts(value, patterns, secretNames) {
+		return true
+	}
+	encoded := apilog.EncodeHeaderValue([]byte(value))
+	return containsCredentialDurableStringEvidenceParts(encoded.Data, patterns, secretNames) ||
+		containsCredentialEvidenceParts(strconv.Itoa(encoded.ByteCount), patterns, secretNames)
+}
+
+func containsCredentialDurableStringEvidenceParts(text string, valuePatterns, secretNames []string) bool {
+	if containsCredentialEvidenceParts(text, valuePatterns, secretNames) {
+		return true
+	}
+	encoded, err := json.Marshal(text)
+	if err != nil || len(encoded) < 2 {
+		return false
+	}
+	return containsCredentialEvidenceParts(string(encoded[1:len(encoded)-1]), valuePatterns, secretNames)
 }
 
 func containsCredentialEvidenceParts(text string, valuePatterns, secretNames []string) bool {
