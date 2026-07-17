@@ -18,6 +18,17 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+const (
+	trenderCurrentProject = "project-a-0123456789"
+	trenderOtherProject   = "project-b-0123456789"
+	trenderCurrentSession = "02wMz5TxvEMoJEDTDGOTil"
+	trenderLocalSession   = "02wMz5Txv2enqVTitaig6F"
+	trenderSharedSession  = "02wMz5Txv733WHFsVy66SR"
+	trenderRemoteSession  = "02wMz5Txv5aIxgf9yVdd0N"
+	trenderMissingSession = "02wMz5TxvBRJC3228LTWod"
+	trenderParentSession  = "02wMz5TxvCu3kdckfnw0Gh"
+)
+
 // This file fuzzes four transcript-rendering/lookup seams that unit tests
 // exercise but no fuzz target reaches:
 //
@@ -244,10 +255,7 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 			t.Fatal("rendered markdown is not valid UTF-8")
 		}
 		if opt.fullResultFor != nil {
-			exact := renderExactTurnExpansion(entries, *opt.fullResultFor, opt)
-			if exact != renderExactTurnExpansion(entries, *opt.fullResultFor, opt) || !utf8.ValidString(exact) {
-				t.Fatal("exact turn expansion is not deterministic valid UTF-8")
-			}
+			trenderAssertPagedExpansion(t, header, entries, rangeSpec, opt)
 		}
 
 		switch scenario {
@@ -271,6 +279,80 @@ func FuzzRenderTranscriptProgram(f *testing.F) {
 			}
 		}
 	})
+}
+
+func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "paged.transcript.jsonl")
+	header.SessionID = "paged"
+	w, err := transcript.NewWriter(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := w.Append(entry.Turn); err != nil {
+			_ = w.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := readTranscriptFullWithEntryLines(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := transcriptExpansionJSONL(data, *opt.fullResultFor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const pageBytes = 64
+	firstAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, 0, pageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := firstAny.(readMarkdownEnvelope)
+	if !ok || first.Expansion == nil {
+		t.Fatalf("first expansion page = %#v", firstAny)
+	}
+	firstBytes, err := decodeTranscriptExpansion(first.Expansion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstBytes, want[:len(firstBytes)]) {
+		t.Fatal("first expansion page does not match persisted transcript JSONL")
+	}
+	if first.Expansion.Representation != transcriptV2JSONLRepresentation || first.Expansion.TotalBytes != len(want) {
+		t.Fatalf("first expansion metadata = %#v, want representation %q and %d bytes", first.Expansion, transcriptV2JSONLRepresentation, len(want))
+	}
+	if len(want) <= len(firstBytes) {
+		if first.Continuation != nil {
+			t.Fatalf("complete expansion returned continuation %#v", first.Continuation)
+		}
+		return
+	}
+	if first.Continuation == nil || first.Continuation.OffsetBytes != len(firstBytes) {
+		t.Fatalf("first continuation = %#v, want offset %d", first.Continuation, len(firstBytes))
+	}
+
+	secondAny, err := readMarkdownPage(path, "local:paged", opt.meta, rangeSpec, opt.fullResultFor, first.Continuation.OffsetBytes, pageBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, ok := secondAny.(readMarkdownEnvelope)
+	if !ok || second.Expansion == nil {
+		t.Fatalf("second expansion page = %#v", secondAny)
+	}
+	secondBytes, err := decodeTranscriptExpansion(second.Expansion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := first.Continuation.OffsetBytes
+	if !bytes.Equal(secondBytes, want[start:start+len(secondBytes)]) {
+		t.Fatal("second expansion page does not continue persisted transcript JSONL")
+	}
 }
 
 func trenderScenario(program []byte) byte {
@@ -496,11 +578,15 @@ func trenderUTF8Prefix(value string, maxBytes int) string {
 func FuzzResolveTranscript(f *testing.F) {
 	seeds := []string{
 		"", "current",
-		"local:sess1", "local:sess2", "proj:aaa:sess1", "proj:bbb:sess1",
-		"sess1", "sess2", "missing",
-		"proj:aaa:missing", "local:missing",
+		"local:" + trenderSharedSession, "local:" + trenderLocalSession,
+		"proj:" + trenderCurrentProject + ":" + trenderSharedSession,
+		"proj:" + trenderOtherProject + ":" + trenderSharedSession,
+		trenderSharedSession, trenderLocalSession, trenderMissingSession,
+		"proj:" + trenderCurrentProject + ":" + trenderMissingSession,
+		"local:" + trenderMissingSession,
 		"../etc/passwd", "a/b", `a\b`, "bad token", "..",
-		"proj:onlyone:sess1", "proj::sess1", "proj:aaa:", "local:",
+		"proj:onlyone:" + trenderSharedSession, "proj::" + trenderSharedSession,
+		"proj:" + trenderCurrentProject + ":", "local:",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -508,15 +594,14 @@ func FuzzResolveTranscript(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, selector string) {
 		base := t.TempDir()
-		// Layout: <base>/serf/projects/{aaa,bbb}/sessions/<id>.transcript.jsonl
-		// aaa is the current bucket. sess1 lives in BOTH aaa and bbb (ambiguous by
-		// bare id); sess2 lives only in aaa (unique).
-		currentStateDir := filepath.Join(base, "serf", "projects", "aaa")
-		trender_makeTranscript(t, currentStateDir, "sess1")
-		trender_makeTranscript(t, currentStateDir, "sess2")
-		trender_makeTranscript(t, filepath.Join(base, "serf", "projects", "bbb"), "sess1")
+		// The shared session lives in both valid project buckets (ambiguous by bare
+		// ID); the local session lives only in the current bucket.
+		currentStateDir := filepath.Join(base, "serf", "projects", trenderCurrentProject)
+		trender_makeTranscript(t, currentStateDir, trenderSharedSession)
+		trender_makeTranscript(t, currentStateDir, trenderLocalSession)
+		trender_makeTranscript(t, filepath.Join(base, "serf", "projects", trenderOtherProject), trenderSharedSession)
 
-		path, ref, err := resolveTranscript(selector, currentStateDir, "cursess")
+		path, ref, err := resolveTranscript(selector, currentStateDir, trenderCurrentSession)
 		if err != nil {
 			return // resolution error is a valid outcome; no-panic floor proven
 		}
@@ -541,7 +626,7 @@ func trender_makeTranscript(t *testing.T, bucketDir, sessionID string) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatalf("mkdir sessions: %v", err)
 	}
-	if err := os.WriteFile(p, []byte(`{"kind":"header","session_id":"`+sessionID+`"}`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(p, []byte(`{"kind":"header","format_version":2,"session_id":"`+sessionID+`"}`+"\n"), 0o644); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
 }

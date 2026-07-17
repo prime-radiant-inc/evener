@@ -162,8 +162,8 @@ func tdrpRun(t *testing.T, program []byte) tdrpTrace {
 func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agenttest.DenyEnv, string, string, string, string) {
 	t.Helper()
 	root := t.TempDir()
-	currentDir := filepath.Join(root, "serf", "projects", "bucketcurrent")
-	siblingDir := filepath.Join(root, "serf", "projects", "bucketother")
+	currentDir := filepath.Join(root, "serf", "projects", trenderCurrentProject)
+	siblingDir := filepath.Join(root, "serf", "projects", trenderOtherProject)
 	for _, dir := range []string{currentDir, siblingDir} {
 		if err := os.MkdirAll(filepath.Join(dir, sessionsSubdir), 0o755); err != nil {
 			t.Fatalf("make transcript bucket %q: %v", dir, err)
@@ -171,10 +171,10 @@ func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agent
 	}
 
 	const (
-		currentID = "CURRENT01"
-		parentID  = "PARENT001"
-		childID   = "CHILD0001"
-		otherID   = "OTHER0001"
+		currentID = trenderCurrentSession
+		parentID  = trenderParentSession
+		childID   = trenderLocalSession
+		otherID   = trenderRemoteSession
 	)
 	token := r.token()
 	contentNeedle := "content-" + r.token()
@@ -196,7 +196,7 @@ func tdrpFixture(t *testing.T, r *tdrpReader) (*toolDeps, *tool.Registry, *agent
 			t.Fatalf("register transcript tool %q: %v", registered.Definition.Name, err)
 		}
 	}
-	return deps, reg, &agenttest.DenyEnv{WorkDir: root}, encodeRef("", currentID), encodeRef("bucketother", otherID), encodeRef("", parentID), contentNeedle
+	return deps, reg, &agenttest.DenyEnv{WorkDir: root}, encodeRef("", currentID), encodeRef(trenderOtherProject, otherID), encodeRef("", parentID), contentNeedle
 }
 
 var tdrpTime = time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -233,7 +233,7 @@ func tdrpWriteSession(t *testing.T, bucket string, spec tdrpSessionSpec) {
 	if err != nil {
 		t.Fatalf("open transcript tail %q: %v", spec.id, err)
 	}
-	if _, err := f.WriteString("{not-json}\n"); err != nil {
+	if _, err := f.WriteString("{not-json"); err != nil {
 		_ = f.Close()
 		t.Fatalf("write transcript tail %q: %v", spec.id, err)
 	}

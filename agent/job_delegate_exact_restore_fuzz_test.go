@@ -67,7 +67,7 @@ func jdExactAssessmentFailures(t *testing.T) {
 	})
 
 	for _, tc := range []struct{ name, body, want string }{
-		{"transcript-mismatch", `{"kind":"header","session_id":"other"}` + "\n", notResumableTranscriptSessionMismatch},
+		{"transcript-mismatch", `{"kind":"header","format_version":2,"session_id":"other"}` + "\n", notResumableTranscriptSessionMismatch},
 		{"transcript-corrupt", "not-json\n", notResumableCorruptChildTranscript},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -35,11 +35,11 @@ func trteReadFailures(t *testing.T) {
 		read func(string) error
 	}{
 		{name: "lenient-header", read: func(path string) error { _, _, _, err := readTranscript(path); return err }},
-		{name: "lenient-body", body: `{"kind":"header"}` + "\n", read: func(path string) error { _, _, _, err := readTranscript(path); return err }},
+		{name: "lenient-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, _, _, err := readTranscript(path); return err }},
 		{name: "full-header", read: func(path string) error { _, err := readTranscriptFull(path); return err }},
-		{name: "full-body", body: `{"kind":"header"}` + "\n", read: func(path string) error { _, err := readTranscriptFull(path); return err }},
+		{name: "full-body", body: `{"kind":"header","format_version":2}` + "\n", read: func(path string) error { _, err := readTranscriptFull(path); return err }},
 		{name: "strict-header", read: func(path string) error { _, err := readStrictChildTranscript(path, "child", 64); return err }},
-		{name: "strict-body", body: `{"kind":"header","session_id":"child"}` + "\n", read: func(path string) error { _, err := readStrictChildTranscript(path, "child", 64); return err }},
+		{name: "strict-body", body: `{"kind":"header","format_version":2,"session_id":"child"}` + "\n", read: func(path string) error { _, err := readStrictChildTranscript(path, "child", 64); return err }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			openTranscriptFile = func(string) (io.ReadCloser, error) {
@@ -54,7 +54,7 @@ func trteReadFailures(t *testing.T) {
 
 	root := t.TempDir()
 	path := filepath.Join(root, "window.jsonl")
-	body := `{"kind":"header","session_id":"child"}` + "\n" +
+	body := `{"kind":"header","format_version":2,"session_id":"child"}` + "\n" +
 		`{"kind":"entry","turn":{"kind":"USER_INPUT"}}` + "\n" +
 		`{"kind":"entry","turn":{"kind":"ASSISTANT"}}` + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

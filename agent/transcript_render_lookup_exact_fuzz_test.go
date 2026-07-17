@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 		header, entries, rangeSpec, opt := trender_program([]byte{scenario}, payload)
 		_, _ = renderTranscript(header, entries, rangeSpec, opt)
 		if opt.fullResultFor != nil {
-			_ = renderExactTurnExpansion(entries, *opt.fullResultFor, opt)
+			trenderAssertPagedExpansion(t, header, entries, rangeSpec, opt)
 		}
 	}
 	for _, tc := range []struct{ name, args string }{
@@ -50,7 +51,7 @@ func rleRenderEdges(t *testing.T, payload string) {
 	} {
 		_ = toolInputSummary(tc.name, []byte(tc.args))
 	}
-	tccRenderContracts(t)
+	rleRenderContracts(t)
 	optWithConfig := renderOpts{}
 	optWithConfig.meta.Config.ResultToolName = "reply"
 	_ = effectiveResultToolName(optWithConfig)
@@ -128,16 +129,177 @@ func rleRenderEdges(t *testing.T, payload string) {
 
 func rleLookupEdges(t *testing.T) {
 	t.Helper()
-	tccLookupContracts(t)
+	rleLookupContracts(t)
 	base := t.TempDir()
-	current := filepath.Join(base, "serf", "projects", "aaa")
-	trender_makeTranscript(t, current, "here")
-	_, _, _ = resolveTranscript("local:", current, "cur")
+	current := filepath.Join(base, "serf", "projects", trenderCurrentProject)
+	trender_makeTranscript(t, current, trenderCurrentSession)
+	_, _, _ = resolveTranscript("local:", current, trenderCurrentSession)
 
 	oldGlob := transcriptBucketGlob
 	transcriptBucketGlob = func(string) ([]string, error) { return nil, errors.New("glob") }
-	_, _, _ = resolveTranscript("missing", current, "cur")
+	_, _, _ = resolveTranscript(trenderMissingSession, current, trenderCurrentSession)
 	transcriptBucketGlob = oldGlob
 	t.Cleanup(func() { transcriptBucketGlob = oldGlob })
-	_, _, _, _ = parentBucketAndID("local:", current, "cur")
+	_, _, _, _ = parentBucketAndID("local:", current, trenderCurrentSession)
+}
+
+func rleRenderContracts(t *testing.T) {
+	t.Helper()
+	for _, spec := range []string{"", "1", "1-2", "last:2", "start:2", "0", "2-1", "bad", "1-2-3"} {
+		_, _, _ = parseRangeErr(spec, 3)
+		_, _ = parseRange(spec, 3)
+	}
+	for _, value := range []any{"text", true, false, float64(2), 2.5, json.Number("7"), nil, []any{1}, map[string]any{"x": 1}} {
+		_ = scalarString(value)
+	}
+	for _, raw := range []json.RawMessage{nil, json.RawMessage("{"), json.RawMessage(`{"purpose":false}`), json.RawMessage(`{"intent":"why"}`), json.RawMessage(`{"description":"what"}`)} {
+		_ = toolPurpose(raw)
+		_ = parseArgs(raw)
+	}
+	_ = pathSegment("")
+	_ = pathSegment("agent")
+	_ = quoteIfSet("")
+	_ = quoteIfSet("x")
+	_ = hostOf("")
+	_ = hostOf("not a url")
+	_ = hostOf("https://example.test/path")
+	_ = truncRunes("short", 20)
+	_ = truncRunes("longer", 3)
+
+	for _, raw := range []string{"", "text", "1", "{", `{"x":1}`, `[1,true]`, `{"x":1} trailing`} {
+		_, _ = prettyJSON(raw)
+		_ = hasNonJobResultKeys(raw)
+		_ = jobResultMetadata(raw)
+	}
+
+	var b strings.Builder
+	writeResultToolMessage(&b, &llm.ToolCallData{Arguments: json.RawMessage(`{"message":"done"}`)})
+	writeResultToolMessage(&b, &llm.ToolCallData{Arguments: json.RawMessage(`{"other":1}`)})
+	writeResultToolMessage(&b, &llm.ToolCallData{Arguments: json.RawMessage("{")})
+	writeToolResultBody(&b, "delegate", nil, false)
+	writeToolResultBody(&b, "shell", &llm.ToolResultData{Content: map[string]any{"ok": true}}, false)
+	writeFencedBody(&b, strings.Repeat("line\n", 35), false)
+	writeFencedBody(&b, "```nested```", true)
+	writeCompactNote(&b, "Summary", schema.Turn{}, false)
+	writeCompactNote(&b, "Summary", schema.Turn{Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentText, Text: strings.Repeat("x", 140)}}}}, false)
+
+	for _, content := range []string{"", "# Header", "# Header\n\nBody"} {
+		_ = spliceAfterHeader(content, "\nmarker\n")
+		_, _ = applyHardCap(content)
+	}
+	_ = spliceWindowLine("# Transcript\n\nbody", readMeta{})
+	_ = spliceWindowLine("# Transcript\n\nbody", readMeta{TurnsRendered: 1, TurnsTotal: 3, FirstRendered: 1, LastRendered: 1})
+	_ = spliceRangeWarning("# Transcript\n\nbody", "bad range")
+
+	entries := []transcript.Entry{
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "shell"}}}}}},
+		{Kind: "entry", Turn: schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "shell", Content: "ok"}}}}}},
+	}
+	for _, pin := range []int{-1, 0, 1, 2, 9} {
+		_, _, _ = resolvePinnedSpan(entries, pin)
+		if pin >= 0 && pin < len(entries) {
+			_, _ = owningAssistantSeq(entries, pin)
+		}
+	}
+	_, _ = resultSeqForCall(entries, "missing")
+	_, _ = callOwnerSeq(entries, "missing")
+
+	if tools := transcriptTools(nil); len(tools) != 1 {
+		t.Fatalf("transcriptTools(nil) = %d tools", len(tools))
+	}
+	if _, err := readJobTranscript(nil, "job:x", "", ""); err == nil {
+		t.Fatal("readJobTranscript accepted nil dependencies")
+	}
+	if got := renderShellJobTranscript(nil, "", 0, 0); !strings.Contains(got, "# Shell Job") {
+		t.Fatalf("nil shell job render = %q", got)
+	}
+	if got := renderShellJobTranscript(nil, "partial", 10, 3); !strings.Contains(got, "dropped_bytes: 3") {
+		t.Fatalf("dropped shell job render = %q", got)
+	}
+}
+
+func rleLookupContracts(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	current := filepath.Join(root, "serf", "projects", trenderCurrentProject)
+	other := filepath.Join(root, "serf", "projects", trenderOtherProject)
+	trender_makeTranscript(t, current, trenderCurrentSession)
+	trender_makeTranscript(t, current, trenderLocalSession)
+	trender_makeTranscript(t, current, trenderSharedSession)
+	trender_makeTranscript(t, other, trenderRemoteSession)
+	trender_makeTranscript(t, other, trenderSharedSession)
+	if err := os.WriteFile(filepath.Join(root, "serf", "projects", "not-a-dir"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		selector string
+		wantErr  bool
+	}{
+		{"", false}, {"current", false}, {"local:" + trenderLocalSession, false},
+		{"proj:" + trenderOtherProject + ":" + trenderRemoteSession, false}, {"local:" + trenderMissingSession, true},
+		{"proj:" + trenderOtherProject + ":" + trenderMissingSession, true}, {trenderLocalSession, false}, {trenderRemoteSession, false},
+		{trenderSharedSession, true}, {trenderMissingSession, true}, {"../bad", true}, {"bad token", true},
+	}
+	for _, tc := range cases {
+		_, _, err := resolveTranscript(tc.selector, current, trenderCurrentSession)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("resolveTranscript(%q) err=%v wantErr=%v", tc.selector, err, tc.wantErr)
+		}
+	}
+
+	deps := &toolDeps{stateDir: current, sessionID: trenderCurrentSession, currentMeta: func() schema.SessionMeta { return schema.SessionMeta{ID: trenderCurrentSession, Name: "live"} }}
+	if meta := resolvedSessionMeta(deps, transcriptPath(current, trenderCurrentSession), encodeRef("", trenderCurrentSession)); meta.Name != "live" {
+		t.Fatalf("live resolved metadata = %#v", meta)
+	}
+	if meta := resolvedSessionMeta(deps, transcriptPath(current, trenderMissingSession), encodeRef("", trenderMissingSession)); meta.ID != trenderMissingSession {
+		t.Fatalf("fallback resolved metadata = %#v", meta)
+	}
+	for _, format := range []string{"", formatMarkdown, formatOutline, formatJSONL} {
+		if _, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": format}); err != nil {
+			t.Fatalf("execReadSessionTranscript(%q): %v", format, err)
+		}
+	}
+	if _, err := execReadSessionTranscript(deps, map[string]any{"transcript_ref": encodeRef("", trenderCurrentSession), "format": "future"}); err == nil {
+		t.Fatal("execReadSessionTranscript accepted unknown format")
+	}
+
+	flat := filepath.Join(root, "flat")
+	if _, _, err := resolveTranscript("proj:"+trenderOtherProject+":"+trenderRemoteSession, flat, trenderCurrentSession); err == nil {
+		t.Fatal("project ref resolved from flat state dir")
+	}
+	if got := stateHomeFor(current); got != root {
+		t.Fatalf("stateHomeFor = %q, want %q", got, root)
+	}
+	for _, malformed := range []string{flat, filepath.Join(root, "other", "projects", "x")} {
+		if stateHomeFor(malformed) != "" {
+			t.Fatalf("stateHomeFor(%q) should be empty", malformed)
+		}
+	}
+	buckets, err := enumerateBuckets(root)
+	if err != nil || len(buckets) != 2 {
+		t.Fatalf("enumerateBuckets = %v, %v", buckets, err)
+	}
+	if _, err := enumerateBuckets("["); err == nil {
+		t.Fatal("enumerateBuckets accepted malformed glob root")
+	}
+
+	for _, tc := range []struct {
+		selector string
+		flat     bool
+		wantErr  bool
+	}{
+		{"", false, false}, {"current", false, false}, {"local:" + trenderParentSession, false, false},
+		{"proj:" + trenderOtherProject + ":" + trenderParentSession, false, false}, {trenderParentSession, false, false},
+		{"bad token", false, true}, {"proj:" + trenderOtherProject + ":" + trenderParentSession, true, true},
+	} {
+		dir := current
+		if tc.flat {
+			dir = flat
+		}
+		_, _, _, err := parentBucketAndID(tc.selector, dir, trenderCurrentSession)
+		if (err != nil) != tc.wantErr {
+			t.Fatalf("parentBucketAndID(%q) err=%v wantErr=%v", tc.selector, err, tc.wantErr)
+		}
+	}
 }

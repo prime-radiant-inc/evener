@@ -522,20 +522,6 @@ func renderOutOfRangePin(entries []transcript.Entry, renderedStart, renderedEnd 
 	return b.String()
 }
 
-// renderExactTurnExpansion renders the minimal semantic span named by a turn
-// expansion. The caller byte-pages this exact evidence when it is too large for
-// the ordinary bounded transcript content.
-func renderExactTurnExpansion(entries []transcript.Entry, pin int, opt renderOpts) string {
-	firstSeq, lastSeq, ok := resolvePinnedSpan(entries, pin)
-	if !ok {
-		return ""
-	}
-	opt.fullResultFor = &firstSeq
-	var b strings.Builder
-	writeEntriesBody(&b, entries[firstSeq:lastSeq+1], firstSeq, opt)
-	return b.String()
-}
-
 // resolvePinnedSpan resolves every semantic turn to the minimal contiguous span
 // needed for exact rendering. Assistant turns and their paired TOOL_RESULTS use
 // the owning assistant/result span. Every other turn, including orphan tool
