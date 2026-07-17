@@ -2,7 +2,8 @@
 
 **What this covers**: the serf doctoring system end-to-end. (a) The
 `serf-doctor` forensic tools — `locate`, `watches`, `transcript --count`,
-`tree` — read settled on-disk state (transcript / meta / jobs.jsonl) through
+`apilog`, `tree` — read settled on-disk state (transcript / private API log /
+meta / jobs.jsonl) through
 serf's own folds and types, and report the numbers a hand-parser got wrong:
 distinct deliveries after coalescing collapse, the watch self-loop verdict from
 the provenance `Chain` (not the always-present `WatchKeys` stamp), and the
@@ -33,10 +34,11 @@ serf-doctor locate $SID
 ```
 
 Assert the output names: `transcript:` = `<bucket>/sessions/$SID.transcript.jsonl`,
-`meta:` = `<bucket>/sessions/$SID.meta.json`, and **`jobs:` =
+`api log:` = `<bucket>/sessions/$SID.api.jsonl`, `meta:` =
+`<bucket>/sessions/$SID.meta.json`, and **`jobs:` =
 `<bucket>/sessions/$SID/jobs.jsonl`** (the per-session SUBDIR form — NOT a flat
 `$SID.jobs.jsonl`). `--json` emits `{transcript_ref, transcript_path, meta_path,
-jobs_path, project_id}`.
+jobs_path, api_log_path, project_id}`.
 
 ### 2 — watches collapses coalescing and reads the self-loop verdict
 
@@ -68,7 +70,19 @@ Assert `communicate` reports the real structural call count and `delegate_send`
 reports **`0 calls`**. If assistant prose mentions `delegate_send`, the doctor
 reports that separately as text rather than treating it as an invocation.
 
-### 4 — tree links parent ↔ delegate/observer across buckets
+### 4 — apilog preserves provider outcome and separate error evidence
+
+```
+serf-doctor apilog $SID --errors
+serf-doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, outcome, error, final_attempt_count}'
+```
+
+Assert the human table has distinct `outcome` and `error` columns: `outcome`
+retains the exact provider attempt class while `error` is bounded, single-line
+evidence. The JSON projection retains `attempt_id`, `attempt_group_id`, `outcome`,
+`error`, and settlement-derived `final_attempt_count`; it never prints bodies.
+
+### 5 — tree links parent ↔ delegate/observer across buckets
 
 ```
 serf-doctor tree $SID --observers
@@ -79,7 +93,7 @@ Assert the caller session roots a tree with its delegate child (`delegate <SID>
 `observer <SID>` edge — children resolved by their transcript ref so a
 cross-project child still links.
 
-### 5 — the doctor agent diagnoses a HEALTHY session (zero findings)
+### 6 — the doctor agent diagnoses a HEALTHY session (zero findings)
 
 ```
 PATH="$PWD:$PATH" ./serf --model kimi/kimi-for-coding --agent doctor \
@@ -96,7 +110,7 @@ doctoring-serf`, `shell` calls to `serf-doctor watches/transcript`, and a final
 distinct-delivery count and `self_loop: none`. The doctor must NOT emit a
 finding for the expected coalescing (that is visibility, not a violation).
 
-### 6 — the doctor agent emits ONE finding on a BROKEN session
+### 7 — the doctor agent emits ONE finding on a BROKEN session
 
 Synthesize a self-loop in a scratch state dir (a `watch_send_delivered` whose
 provenance `Chain` carries a prior hop of the same `watch_id` with a different

@@ -272,6 +272,43 @@ func requireAPILogTableRow(t *testing.T, output, wantAttemptID, wantMarker strin
 	}
 }
 
+func requireAPILogTableColumn(t *testing.T, output, attemptID, column, want string) {
+	t.Helper()
+	lines := strings.Split(output, "\n")
+	var header, row string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "attempt_id ") {
+			header = line
+		}
+		if strings.HasPrefix(line, attemptID+" ") {
+			row = line
+		}
+	}
+	if header == "" || row == "" {
+		t.Fatalf("API-log table missing header or row for %s:\n%s", attemptID, output)
+	}
+	start := strings.Index(header, column)
+	if start < 0 {
+		t.Fatalf("API-log table has no %q column:\n%s", column, output)
+	}
+	end := len(row)
+	for _, field := range strings.Fields(header) {
+		position := strings.Index(header, field)
+		if position > start && position < end {
+			end = position
+		}
+	}
+	if start >= len(row) {
+		t.Fatalf("API-log row ends before %q column:\n%s", column, output)
+	}
+	if end > len(row) {
+		end = len(row)
+	}
+	if got := strings.TrimSpace(row[start:end]); got != want {
+		t.Fatalf("API-log %s column = %q, want %q:\n%s", column, got, want, output)
+	}
+}
+
 // treeGrandchildSID is the delegate two hops below the root in
 // fixtureWithTreeData; it is only reachable when the depth limit allows a
 // second expansion hop.
@@ -376,7 +413,7 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--empty", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		requireAPILogTableRow(t, out.String(), emptyAPIAttemptID, "(empty)")
+		requireAPILogTableColumn(t, out.String(), emptyAPIAttemptID, "empty", "true")
 	})
 
 	t.Run("errors", func(t *testing.T) {
@@ -384,7 +421,8 @@ func TestRun_APILogFlags(t *testing.T) {
 		if code := run([]string{"apilog", "--state-dir", base, "--errors", sid}, &out, &errb); code != 0 {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
-		requireAPILogTableRow(t, out.String(), errorAPIAttemptID, "ERROR:")
+		requireAPILogTableColumn(t, out.String(), errorAPIAttemptID, "outcome", string(apilog.AttemptProviderTimeout))
+		requireAPILogTableColumn(t, out.String(), errorAPIAttemptID, "error", "ERROR:")
 	})
 
 	t.Run("cache-spikes", func(t *testing.T) {

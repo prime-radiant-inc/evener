@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"unicode"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
@@ -242,15 +243,9 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 		fmt.Fprintln(&b, "(no calls match)")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-16s %-24s %-19s %8s %8s %8s %9s %6s %5s\n",
-		"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "settlement", "final_attempt_count", "latency", "in_tok", "out_tok", "uncached", "txt", "tools")
+	fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-25s %-7s %-24s %-19s %8s %8s %8s %9s %6s %-5s %s\n",
+		"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "empty", "settlement", "final_attempt_count", "latency", "in_tok", "out_tok", "uncached", "txt", "tools", "error")
 	for _, c := range r.Calls {
-		outcome := string(c.Outcome)
-		if c.Error != "" {
-			outcome = "ERROR: " + oneLine(c.Error)
-		} else if c.Empty {
-			outcome += " (empty)"
-		}
 		settlement := c.SettlementState
 		if c.Final {
 			settlement += " final"
@@ -259,10 +254,31 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 		if c.FinalAttemptCount != nil {
 			finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
 		}
-		fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-16s %-24s %-19s %7dms %8d %8d %9d %6d %5d\n",
+		fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %-7t %-24s %-19s %7dms %8d %8d %9d %6d %-5d %s\n",
 			truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
-			truncate(c.Model, 18), truncate(outcome, 16), truncate(settlement, 24), finalAttemptCount, c.LatencyMs,
-			c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls)
+			truncate(c.Model, 18), c.Outcome, c.Empty, truncate(settlement, 24), finalAttemptCount, c.LatencyMs,
+			c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls, humanAPILogError(c.Error))
 	}
 	return b.String()
+}
+
+func humanAPILogError(message string) string {
+	message = strings.Map(func(r rune) rune {
+		if r == '\x1b' {
+			return -1
+		}
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, message)
+	message = strings.Join(strings.Fields(message), " ")
+	if message == "" {
+		return "-"
+	}
+	runes := []rune(message)
+	if len(runes) > 48 {
+		return string(runes[:48]) + "…"
+	}
+	return message
 }

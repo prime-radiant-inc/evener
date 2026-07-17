@@ -1,6 +1,7 @@
 // Command serf-doctor is the read-only forensic data plane of serf's doctoring
 // system: a thin main over the agent/doctor package. It resolves a session
-// selector and inspects settled on-disk state — transcript, meta, jobs.jsonl —
+// selector and inspects settled on-disk state — transcript, private API log,
+// meta, and jobs.jsonl —
 // with the same folds and types the serf runtime uses, so a schema change either
 // flows through automatically or fails to compile.
 //

@@ -273,6 +273,37 @@ func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
 	}
 }
 
+func TestRenderAPILogKeepsOutcomeAndSanitizesErrorInSeparateColumns(t *testing.T) {
+	attemptID := identifier.MustNewAPIAttemptID()
+	result := APILogResult{
+		SessionID: sidA,
+		Calls: []APICallRow{{
+			AttemptID:        attemptID,
+			AttemptGroupID:   "ag_error_columns",
+			AttemptIndex:     1,
+			ProviderInstance: "openai-primary",
+			Model:            "gpt-5.2-codex",
+			Outcome:          apilog.AttemptProviderTimeout,
+			Error:            "first line\nsecond\tline\x1b" + strings.Repeat("x", 80),
+			SettlementState:  SettlementUnsettled,
+		}},
+	}
+
+	out := RenderAPILog(result, APILogOpts{})
+	if got := apilogHumanColumn(t, out, attemptID, "outcome"); got != string(apilog.AttemptProviderTimeout) {
+		t.Fatalf("outcome column = %q, want exact class %q\n%s", got, apilog.AttemptProviderTimeout, out)
+	}
+	errorText := apilogHumanColumn(t, out, attemptID, "error")
+	if !strings.HasPrefix(errorText, "first line second line") || !strings.HasSuffix(errorText, "…") {
+		t.Fatalf("error column = %q, want one-line truncated evidence\n%s", errorText, out)
+	}
+	for _, unsafe := range []string{"\n", "\r", "\t", "\x1b"} {
+		if strings.Contains(errorText, unsafe) {
+			t.Fatalf("error column contains control %q: %q", unsafe, errorText)
+		}
+	}
+}
+
 func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
 	t.Helper()
 	lines := strings.Split(output, "\n")
@@ -295,7 +326,7 @@ func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
 	if start < 0 {
 		t.Fatalf("API-log table has no %s column:\n%s", column, output)
 	}
-	end := len(header)
+	end := len(row)
 	for _, field := range strings.Fields(header) {
 		fieldStart := strings.Index(header, field)
 		if fieldStart > start && fieldStart < end {
