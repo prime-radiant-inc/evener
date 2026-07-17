@@ -19,6 +19,8 @@ import (
 	"primeradiant.com/serf/llm/apilog"
 )
 
+const doctorFilesystemAbsentSID = "02wLIRxqmq3AUo6vl2OW3A"
+
 // FuzzDoctorFilesystemProgram drives the doctor package through its real
 // on-disk data plane. Each case creates a temp XDG-state home with transcripts,
 // metadata, and jobs.jsonl records written through the production writers; it
@@ -88,12 +90,12 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	token := doctorFilesystemProgramToken(raw)
 	fixture := doctorFilesystemProgramFixture{
 		base:        base,
-		rootSID:     "doctor_root",
-		childSID:    "doctor_child",
-		grandSID:    "doctor_grand",
-		observerSID: "doctor_observer",
-		noJobsSID:   "doctor_no_jobs",
-		duplicateID: "doctor_duplicate",
+		rootSID:     "02wMz5TxuyedWwYBSOAa00",
+		childSID:    "02wMz5TxuyedWwYBSOAa01",
+		grandSID:    "02wMz5TxuyedWwYBSOAa02",
+		observerSID: "02wLIRxqmq3AUo6vl2OW37",
+		noJobsSID:   "02wLIRxqmq3AUo6vl2OW38",
+		duplicateID: "02wLIRxqmq3AUo6vl2OW39",
 		rootBucket:  rootBucket,
 		childBucket: childBucket,
 	}
@@ -130,7 +132,7 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 	}
 	writeRichSession(t, rootBucket, fixture.rootSID, rootTurns, apiRecords, schema.SessionMeta{
 		Config:     schema.ConfigSnapshot{ResultToolName: resultTool},
-		ObservedBy: []string{fixture.observerSID, "doctor_missing_observer"},
+		ObservedBy: []string{fixture.observerSID, doctorFilesystemAbsentSID},
 	})
 	writeRichSession(t, childBucket, fixture.childSID, []schema.Turn{
 		schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{assistantText("child " + token)}}),
@@ -156,7 +158,7 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 			ChildSessionID: fixture.childSID, TranscriptRef: "proj:" + hash2 + ":" + fixture.childSID, AgentType: "researcher", Generation: "g1",
 		}},
 		{Kind: jobstore.EventJobStarted, JobID: "job-child", DelegateID: "child"},
-		{Kind: jobstore.EventDelegateCreated, DelegateID: "missing", Delegate: &jobstore.DelegateEvent{ChildSessionID: "doctor_missing", AgentType: "missing"}},
+		{Kind: jobstore.EventDelegateCreated, DelegateID: "missing", Delegate: &jobstore.DelegateEvent{ChildSessionID: doctorFilesystemAbsentSID, AgentType: "missing"}},
 		{Kind: jobstore.EventDelegateCreated, DelegateID: "empty", Delegate: &jobstore.DelegateEvent{}},
 		{Kind: jobstore.EventWatchRegistered, WatchID: "watch_a", Watch: &jobstore.WatchEvent{
 			Generation: "wg1", OwnerSessionID: fixture.observerSID, VisibleSessionID: fixture.rootSID,
@@ -185,10 +187,10 @@ func newDoctorFilesystemProgramFixture(t *testing.T, raw []byte) doctorFilesyste
 		t.Fatalf("create unreadable jobs fixture: %v", err)
 	}
 	fixture.overrideBase = t.TempDir()
-	fixture.overrideSID = "doctor_override"
+	fixture.overrideSID = "02wMz5Txv47YP64RR3B9YJ"
 	writeSession(t, fixture.overrideBase, fixture.overrideSID)
 	fixture.directBase = t.TempDir()
-	fixture.directHash = "direct_hash"
+	fixture.directHash = "Project-direct-0123456789"
 	writeSession(t, filepath.Join(fixture.directBase, "serf", "projects", fixture.directHash), fixture.rootSID)
 	return fixture
 }
@@ -212,10 +214,10 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if _, err := Locate(fixture.base, fixture.duplicateID); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous Locate error = %v", err)
 	}
-	if _, err := Locate(fixture.base, "local:doctor_absent"); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := Locate(fixture.base, "local:"+doctorFilesystemAbsentSID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing Locate error = %v", err)
 	}
-	if _, err := Locate(fixture.base, "proj:doctor_absent:"+fixture.rootSID); err == nil || !strings.Contains(err.Error(), "not found") {
+	if _, err := Locate(fixture.base, "proj:Project-abs-0123456789:"+fixture.rootSID); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("missing bucket Locate error = %v", err)
 	}
 	for _, selector := range []string{"", "current", "../escape", "local:../escape", "proj:bad", "proj::sid"} {
@@ -295,7 +297,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	}
 	openDoctorTranscriptFile = originalOpen
 	blankLine := filepath.Join(fixture.base, "blank-line.jsonl")
-	if err := os.WriteFile(blankLine, []byte("\n{\"kind\":\"header\"}\n"), 0o644); err != nil {
+	if err := os.WriteFile(blankLine, []byte("\n{\"kind\":\"header\",\"format_version\":2,\"session_id\":\""+fixture.rootSID+"\"}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := loadTranscript(blankLine); err != nil {
@@ -335,7 +337,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if trace.Counts[0].Calls != 1 || trace.Counts[1].Calls != 1 || trace.Counts[2].Calls != 0 || trace.Counts[2].MentionsAssistantText == 0 {
 		t.Fatalf("Count results = %#v", trace.Counts)
 	}
-	if _, err := Count(fixture.base, "local:doctor_absent", "read_file"); err == nil {
+	if _, err := Count(fixture.base, "local:"+doctorFilesystemAbsentSID, "read_file"); err == nil {
 		t.Fatal("Count missing selector unexpectedly succeeded")
 	}
 
@@ -356,7 +358,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if len(trace.Transcripts[0].Turns) != 3 || !trace.Transcripts[0].Turns[1].ToolCalls[1].IsResult || len(trace.Transcripts[0].Turns[2].ToolResults) != 2 {
 		t.Fatalf("Transcript summaries = %#v", trace.Transcripts[0])
 	}
-	if _, err := Transcript(fixture.base, "local:doctor_absent", TranscriptOpts{}); err == nil {
+	if _, err := Transcript(fixture.base, "local:"+doctorFilesystemAbsentSID, TranscriptOpts{}); err == nil {
 		t.Fatal("Transcript missing selector unexpectedly succeeded")
 	}
 	if got := toolResultContentText(math.Inf(1)); got != "+Inf" {
@@ -393,7 +395,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if trace.APILogs[0].Totals.Calls != 4 || trace.APILogs[1].Totals.Empties != 1 || len(trace.APILogs[2].Calls) != 1 || len(trace.APILogs[3].Calls) != 1 {
 		t.Fatalf("APILog reports = %#v", trace.APILogs)
 	}
-	if _, err := APILog(fixture.base, "local:doctor_absent", APILogOpts{}); err == nil {
+	if _, err := APILog(fixture.base, "local:"+doctorFilesystemAbsentSID, APILogOpts{}); err == nil {
 		t.Fatal("APILog missing selector unexpectedly succeeded")
 	}
 
@@ -439,7 +441,7 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	if err != nil || !strings.Contains(noJobsTree.Note, "jobs unreadable") {
 		t.Fatalf("Tree unreadable jobs = %#v, %v", noJobsTree, err)
 	}
-	if _, err := Tree(fixture.base, "local:doctor_absent", TreeOpts{}); err == nil {
+	if _, err := Tree(fixture.base, "local:"+doctorFilesystemAbsentSID, TreeOpts{}); err == nil {
 		t.Fatal("Tree missing selector unexpectedly succeeded")
 	}
 	return trace

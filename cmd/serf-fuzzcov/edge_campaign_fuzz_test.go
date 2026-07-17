@@ -187,11 +187,15 @@ func fuzzCoverageRunCLIFixture(t *testing.T, dir string, stdout, stderr *os.File
 		t.Fatal(err)
 	}
 	unionManifest := filepath.Join(dir, "union-manifest")
+	unionFloors := filepath.Join(dir, "union-floors")
 	unionText := ".\t.\tFuzzZero\t.\t\t" + profileZero + "\n.\t.\tFuzzOne\t.\t\t" + profile + "\n"
 	if err := os.WriteFile(unionManifest, []byte(unionText), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, err := runCLI([]string{"-manifest=" + unionManifest, "-repo-root=" + dir, "-modules=.", "-floors=" + floors, "-ignore=" + ignore}, stdout, stderr); err != nil || code != 0 {
+	if err := os.WriteFile(unionFloors, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := runCLI([]string{"-manifest=" + unionManifest, "-repo-root=" + dir, "-modules=.", "-floors=" + unionFloors, "-ignore=" + ignore}, stdout, stderr); err != nil || code != 0 {
 		t.Fatalf("union runCLI = %d, %v", code, err)
 	}
 	for _, badArgs := range [][]string{

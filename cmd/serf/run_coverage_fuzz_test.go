@@ -193,7 +193,7 @@ func FuzzRunCoverage(f *testing.F) {
 			oldRestore := runRestoreSession
 			t.Cleanup(func() { runRestoreSession = oldRestore })
 			dir := t.TempDir()
-			meta := schema.SessionMeta{ID: "resume-id", ProfileID: "openai", Model: "gpt-old", UpdatedAt: time.Unix(2, 0), TurnCount: 3}
+			meta := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", ProfileID: "openai", Model: "gpt-old", UpdatedAt: time.Unix(2, 0), TurnCount: 3}
 			if err := schema.SaveSessionMeta(dir, meta); err != nil {
 				t.Fatal(err)
 			}

@@ -124,14 +124,14 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = runCatalog([]string{"--model", "bad"})
 		_, _ = catalogTools("bad")
 		oldStdout := os.Stdout
-		full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
+		readOnlyStdout, err := os.Open(os.DevNull)
 		if err != nil {
 			t.Fatal(err)
 		}
-		os.Stdout = full
+		os.Stdout = readOnlyStdout
 		_ = runCatalog([]string{"--model", "openai/gpt-5.4-mini", "--json"})
 		os.Stdout = oldStdout
-		_ = full.Close()
+		_ = readOnlyStdout.Close()
 		tmpFile := filepath.Join(t.TempDir(), "tmp-file")
 		mustWrite(t, tmpFile, "x")
 		t.Setenv("TMPDIR", tmpFile)
@@ -278,14 +278,13 @@ func FuzzFluencyCoverage(f *testing.F) {
 			t.Fatal(err)
 		}
 		_ = writeProbeResult(resultDir, probeResult{Probe: "p", Repetition: 1})
-		fullDir := t.TempDir()
-		if err := os.Symlink("/dev/full", filepath.Join(fullDir, "results.jsonl")); err != nil {
-			t.Fatal(err)
-		}
-		_ = writeProbeResult(fullDir, probeResult{Probe: "p", Repetition: 1})
 		runnerMarshalProbeResult = func(probeResult, string, string) ([]byte, error) { return nil, errors.New("marshal") }
 		_ = writeProbeResult(t.TempDir(), probeResult{Probe: "p", Repetition: 1})
 		runnerMarshalProbeResult = oldMarshalProbe
+		runnerOpenResultAppend = func(string, int, os.FileMode) (resultAppendFile, error) {
+			return coverageAppendFile{writeErr: errors.New("write")}, nil
+		}
+		_ = writeProbeResult(t.TempDir(), probeResult{Probe: "p", Repetition: 1})
 		runnerOpenResultAppend = func(string, int, os.FileMode) (resultAppendFile, error) {
 			return coverageAppendFile{writeErr: errors.New("write"), closeErr: errors.New("close")}, nil
 		}
@@ -407,7 +406,9 @@ func FuzzFluencyCoverage(f *testing.F) {
 		_ = runLiveProbe(context.Background(), runConfig{model: "missing/m", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", fastCheapModel: "missing/cheap", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "invalid"}, probeFile{}, &liveRes, &liveOut, &liveErr)
-		runnerAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) { return nil, errors.New("attach") }
+		runnerAttachAPILogger = func(*llm.Client, string, io.Writer, ...string) (func() error, error) {
+			return nil, errors.New("attach")
+		}
 		_ = runLiveProbe(context.Background(), runConfig{model: "openai/m", reasoningEffort: "low"}, probeFile{}, &liveRes, &liveOut, &liveErr)
 		runnerAttachAPILogger = oldAttach
 		canceled, cancelLive := context.WithCancel(context.Background())

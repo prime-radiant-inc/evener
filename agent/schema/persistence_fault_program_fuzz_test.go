@@ -20,7 +20,7 @@ func FuzzSchemaPersistenceFaultProgram(f *testing.F) {
 	f.Add(uint8(1))
 
 	f.Fuzz(func(t *testing.T, variant uint8) {
-		id := []string{"alpha", "beta"}[int(variant)%2]
+		id := []string{"02wMz5TxuyedWwYBSOAa00", "02wMz5TxuyedWwYBSOAa01"}[int(variant)%2]
 		meta := SessionMeta{
 			ID:        id,
 			Name:      "session",

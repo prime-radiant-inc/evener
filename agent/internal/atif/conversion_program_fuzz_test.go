@@ -217,10 +217,15 @@ func atifProgramAssertTrajectory(t *testing.T, redacted, rawLocal Trajectory, re
 	if first.Message == "" || first.ReasoningContent != "reason one\nreason two" || len(first.ToolCalls) != 2 || first.Observation == nil || len(first.Observation.Results) != 1 {
 		t.Fatalf("rich assistant step = %+v", first)
 	}
-	if first.Extra["response_id"] != responseID || first.Extra["previous_response_id"] != responseID || first.Extra["conversation_id_unavailable"] != true {
+	if first.Extra["response_id"] != responseID || first.Extra["response_id_hash"] != "present-hash" {
 		t.Fatalf("raw-local response handles = %#v", first.Extra)
 	}
-	if first.Extra["request_history_mode"] != string(llm.HistoryModeResponsesDelta) || first.Extra["tool_errors"].(map[string]bool)["tool-valid"] != true || first.Extra["tool_durations_ms"].(map[string]int64)["tool-valid"] != int64(usage) {
+	for _, apiOnlyKey := range []string{"previous_response_id", "conversation_id_unavailable", "request_history_mode"} {
+		if _, present := first.Extra[apiOnlyKey]; present {
+			t.Fatalf("semantic ATIF retained API-log-only %q metadata: %#v", apiOnlyKey, first.Extra)
+		}
+	}
+	if first.Extra["response_request_fingerprint"] != "response-fingerprint" || first.Extra["tool_errors"].(map[string]bool)["tool-valid"] != true || first.Extra["tool_durations_ms"].(map[string]int64)["tool-valid"] != int64(usage) {
 		t.Fatalf("rich assistant metadata = %#v", first.Extra)
 	}
 	if _, exposed := redacted.Steps[1].Extra["response_id"]; exposed {
@@ -228,11 +233,11 @@ func atifProgramAssertTrajectory(t *testing.T, redacted, rawLocal Trajectory, re
 	}
 
 	second := rawLocal.Steps[2]
-	if second.Extra["previous_response_id_unavailable"] != true || second.Extra["request_history_mode"] != string(llm.HistoryModeFullHistoryFallback) {
-		t.Fatalf("unavailable response metadata = %#v", second.Extra)
+	if second.Extra["response_id"] != "other-response" || second.Extra["response_id_hash"] != "other-hash" {
+		t.Fatalf("second response metadata = %#v", second.Extra)
 	}
-	if rawLocal.Steps[3].Extra["request_history_mode"] != string(llm.HistoryModeResponsesDelta) {
-		t.Fatalf("history-only metadata = %#v", rawLocal.Steps[3].Extra)
+	if _, present := rawLocal.Steps[3].Extra["response_id"]; present {
+		t.Fatalf("metadata-free response retained an ID: %#v", rawLocal.Steps[3].Extra)
 	}
 
 	orphan := rawLocal.Steps[len(rawLocal.Steps)-2]
