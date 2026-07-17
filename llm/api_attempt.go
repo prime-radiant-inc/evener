@@ -198,6 +198,7 @@ func BeginAPIAttempt(ctx context.Context, meta APIAttemptMeta) *APIAttempt {
 	}
 	group.bindSinkLocked(state)
 	group.credentialMaterial = mergeAPILogCredentialMaterial(group.credentialMaterial, meta.CredentialMaterial)
+	meta.CredentialMaterial = group.credentialMaterial
 	if group.sink == nil {
 		group.mu.Unlock()
 		return &APIAttempt{}

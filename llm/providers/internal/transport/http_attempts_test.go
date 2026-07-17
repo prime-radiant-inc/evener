@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -210,6 +212,115 @@ func TestDoWithAPIAttemptsRedirectCloseDoesNotReadBody(t *testing.T) {
 	}
 	if len(redirectBytes) != 0 {
 		t.Fatalf("redirect evidence contains %d unread bytes", len(redirectBytes))
+	}
+}
+
+func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing.T) {
+	const (
+		sessionID        = "sess-redirect-credentials"
+		credentialHeader = "X-Redirect-Credential"
+		secret           = "hop-two-secret"
+	)
+	stateDir := t.TempDir()
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	group := llm.NewAPIAttemptGroup("ag_redirect_credentials")
+	ctx := llm.WithAPILogContext(context.Background(), sessionID)
+	ctx = llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(ctx, group), logger)
+
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		transportCalls++
+		location := ""
+		switch transportCalls {
+		case 1:
+			location = "https://provider.test/credential"
+		case 2:
+			location = "https://provider.test/echo"
+		}
+		if location != "" {
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{location}},
+				Body:       http.NoBody,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+		}, nil
+	})}
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		switch len(via) {
+		case 1:
+			request.Header.Set(credentialHeader, secret)
+		case 2:
+			request.Header.Del(credentialHeader)
+			request.Header.Set("X-Echo", secret)
+		}
+		return nil
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{credentialHeader},
+				nil,
+			),
+		}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if transportCalls != 3 {
+		t.Fatalf("RoundTrip calls = %d, want 3", transportCalls)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	group.Settle(ctx, apilog.AttemptSuccess)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close logger: %v", err)
+	}
+
+	file, err := os.Open(filepath.Join(stateDir, "sessions", sessionID+".api.jsonl"))
+	if err != nil {
+		t.Fatalf("open API log: %v", err)
+	}
+	defer file.Close()
+	decoder := apilog.NewDecoder(file, 1<<20)
+	var attempts []apilog.APIAttemptRecord
+	for {
+		record, err := decoder.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("decode API log: %v", err)
+		}
+		if attempt, ok := record.(apilog.APIAttemptRecord); ok {
+			attempts = append(attempts, attempt)
+		}
+	}
+	if len(attempts) != 3 {
+		t.Fatalf("durable attempts = %d, want 3", len(attempts))
+	}
+	third := attempts[2]
+	if _, ok := third.Request.Headers["X-Echo"]; ok {
+		t.Fatalf("third durable request retained prior-hop credential echo: %+v", third.Request.Headers)
+	}
+	encoded, err := apilog.MarshalRecord(third)
+	if err != nil {
+		t.Fatalf("marshal third durable attempt: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(secret)) {
+		t.Fatalf("third durable attempt contains prior-hop credential %q", secret)
 	}
 }
 
