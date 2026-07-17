@@ -298,7 +298,7 @@ func TestClientProviderOperationFailurePreservesErrorAndSettlement(t *testing.T)
 	}
 }
 
-func TestClientModelListDecodeFailurePreservesExactResponse(t *testing.T) {
+func TestClientModelListDecodeFailurePreservesObservedResponse(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	responseBody := append([]byte("!malformed-model-list\n"), bytes.Repeat([]byte("unread-tail-"), 1024)...)
 
@@ -323,8 +323,11 @@ func TestClientModelListDecodeFailurePreservesExactResponse(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DecodeBody(response): %v", err)
 			}
-			if !bytes.Equal(loggedBody, responseBody) {
-				t.Fatalf("logged response bytes = %d, want all %d wire bytes", len(loggedBody), len(responseBody))
+			if len(loggedBody) == 0 || len(loggedBody) >= len(responseBody) || !bytes.Equal(loggedBody, responseBody[:len(loggedBody)]) {
+				t.Fatalf("logged response bytes = %d, want the observed prefix of %d wire bytes", len(loggedBody), len(responseBody))
+			}
+			if attempt.Response.Body.Exact {
+				t.Fatal("partially observed response body marked exact")
 			}
 			if attempt.Outcome != apilog.AttemptDecodeFail || settlement.Outcome != apilog.AttemptDecodeFail {
 				t.Fatalf("attempt/settlement outcomes = %q/%q, want response_decoding_failure", attempt.Outcome, settlement.Outcome)

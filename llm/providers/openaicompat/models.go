@@ -3,9 +3,7 @@ package openaicompat
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 
@@ -44,9 +42,8 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
 		returnedErr := fmt.Errorf("list models: HTTP %d", resp.StatusCode)
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: body, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return nil, returnedErr
 	}
 
@@ -61,14 +58,9 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		} `json:"data"`
 	}
 	decodeErr := json.NewDecoder(resp.Body).Decode(&result)
-	_, readErr := io.Copy(io.Discard, resp.Body)
-	responseErr := decodeErr
-	if readErr != nil {
-		responseErr = errors.Join(responseErr, readErr)
-	}
-	if responseErr != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: responseErr}, llm.APITimeoutNone, responseErr, nil)
-		return nil, responseErr
+	if decodeErr != nil {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: decodeErr}, llm.APITimeoutNone, decodeErr, nil)
+		return nil, decodeErr
 	}
 	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode}, llm.APITimeoutNone, nil, nil)
 

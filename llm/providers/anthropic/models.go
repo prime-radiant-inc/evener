@@ -3,9 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -49,9 +47,8 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
 			returnedErr := fmt.Errorf("list models: HTTP %d", resp.StatusCode)
-			attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: body, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+			attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 			_ = resp.Body.Close()
 			return nil, returnedErr
 		}
@@ -65,15 +62,10 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			LastID  string `json:"last_id"`
 		}
 		decodeErr := json.NewDecoder(resp.Body).Decode(&page)
-		_, readErr := io.Copy(io.Discard, resp.Body)
-		responseErr := decodeErr
-		if readErr != nil {
-			responseErr = errors.Join(responseErr, readErr)
-		}
-		if responseErr != nil {
-			attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: responseErr}, llm.APITimeoutNone, responseErr, nil)
+		if decodeErr != nil {
+			attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: decodeErr}, llm.APITimeoutNone, decodeErr, nil)
 			_ = resp.Body.Close()
-			return nil, responseErr
+			return nil, decodeErr
 		}
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode}, llm.APITimeoutNone, nil, nil)
 		_ = resp.Body.Close()
