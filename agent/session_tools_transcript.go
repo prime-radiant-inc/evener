@@ -194,11 +194,7 @@ func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptA
 
 	explicitSource := parsed.Source != ""
 	if parsed.Source == "" {
-		if parsed.AttemptID != "" {
-			parsed.Source = apiLogSource
-		} else {
-			parsed.Source = transcriptSource
-		}
+		parsed.Source = transcriptSource
 	}
 	if parsed.Source != transcriptSource && parsed.Source != apiLogSource {
 		return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: source %q is not supported: use transcript or api_log", parsed.Source)

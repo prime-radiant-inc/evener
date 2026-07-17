@@ -1991,7 +1991,7 @@ func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTrans
 		{name: "max without expansion", args: map[string]any{"max_bytes": float64(1)}, want: "invalid_request: max_bytes"},
 		{name: "API expand turn", args: map[string]any{"source": "api_log", "expand_turn": float64(1)}, want: "invalid_request: expand_turn"},
 		{name: "transcript attempt", args: map[string]any{"source": "transcript", "attempt_id": "att_explicit"}, want: "invalid_request: attempt_id"},
-		{name: "attempt range", args: map[string]any{"attempt_id": "att_explicit", "range": "0-1"}, want: "invalid_request: range"},
+		{name: "attempt range", args: map[string]any{"source": apiLogSource, "attempt_id": "att_explicit", "range": "0-1"}, want: "invalid_request: range"},
 		{name: "negative expand turn", args: map[string]any{"expand_turn": float64(-1)}, want: "invalid_request: expand_turn"},
 		{name: "negative offset", args: map[string]any{"expand_turn": float64(1), "offset_bytes": float64(-1)}, want: "invalid_request: offset_bytes"},
 		{name: "zero max", args: map[string]any{"expand_turn": float64(1), "max_bytes": float64(0)}, want: "invalid_request: max_bytes"},
@@ -2257,6 +2257,7 @@ func TestReadSessionTranscriptAPILogProjectsStoredBodyTruth(t *testing.T) {
 				}
 
 				expansionResult := executeReadSessionTranscript(t, deps, map[string]any{
+					"source":     apiLogSource,
 					"attempt_id": attempt.AttemptID,
 					"body":       bodyName,
 				})
@@ -2333,6 +2334,31 @@ func TestReadSessionTranscriptDefaultSourcesNeverOpenAPILog(t *testing.T) {
 	}
 	if openCount != 0 {
 		t.Fatalf("default transcript reads opened API log %d times", openCount)
+	}
+}
+
+func TestReadSessionTranscriptAttemptRequiresExplicitAPILogSource(t *testing.T) {
+	dir := newBucket(t)
+	const sessionID = "02wMz5Txv47YP64RR3B9YK"
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	attempt := testAPIAttemptRecord("ag_explicit_source", 1, nil, nil)
+	writeTestAPILog(t, dir, sessionID, attempt)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	originalOpen := openAPILogFile
+	openCount := 0
+	openAPILogFile = func(path string) (io.ReadCloser, error) {
+		openCount++
+		return originalOpen(path)
+	}
+	t.Cleanup(func() { openAPILogFile = originalOpen })
+
+	_, err := execReadSessionTranscript(deps, map[string]any{"attempt_id": attempt.AttemptID})
+	if err == nil || err.Error() != "invalid_request: attempt_id requires source=api_log" {
+		t.Fatalf("attempt without explicit API-log source error = %v", err)
+	}
+	if openCount != 0 {
+		t.Fatalf("attempt without explicit API-log source opened API log %d times", openCount)
 	}
 }
 
@@ -2487,6 +2513,7 @@ func readExpandedAPIBody(t *testing.T, deps *toolDeps, attemptID, body string, m
 	offset := 0
 	for {
 		result := executeReadSessionTranscript(t, deps, map[string]any{
+			"source":       apiLogSource,
 			"attempt_id":   attemptID,
 			"body":         body,
 			"offset_bytes": float64(offset),
@@ -2543,7 +2570,7 @@ func TestReadSessionTranscriptAttemptExpansionPagesExactBodies(t *testing.T) {
 	writeTestAPILog(t, dir, sessionID, attempt)
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 
-	metadata := marshalRead(t, deps, map[string]any{"attempt_id": attempt.AttemptID})
+	metadata := marshalRead(t, deps, map[string]any{"source": apiLogSource, "attempt_id": attempt.AttemptID})
 	if strings.Contains(string(metadata), `"data"`) {
 		t.Fatalf("attempt metadata leaked body data: %s", metadata)
 	}
@@ -2598,7 +2625,7 @@ func TestReadSessionTranscriptAttemptExpansionIncludesExactHeadersAndSettlement(
 		}
 	}
 
-	result := executeReadSessionTranscript(t, deps, map[string]any{"attempt_id": attempt.AttemptID})
+	result := executeReadSessionTranscript(t, deps, map[string]any{"source": apiLogSource, "attempt_id": attempt.AttemptID})
 	if result.IsError {
 		t.Fatalf("attempt metadata: %s", result.Output)
 	}
@@ -2704,6 +2731,7 @@ func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *tes
 			t.Fatal("bounded API body expansion did not converge")
 		}
 		result := executeReadSessionTranscript(t, deps, map[string]any{
+			"source":       apiLogSource,
 			"attempt_id":   attempt.AttemptID,
 			"body":         "request",
 			"offset_bytes": float64(offset),
@@ -2778,6 +2806,7 @@ func TestReadSessionTranscriptAttemptExpansionResponseAndOffsetEdges(t *testing.
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 
 	absent := executeReadSessionTranscript(t, deps, map[string]any{
+		"source":     apiLogSource,
 		"attempt_id": missingResponse.AttemptID,
 		"body":       "response",
 	})
@@ -2786,6 +2815,7 @@ func TestReadSessionTranscriptAttemptExpansionResponseAndOffsetEdges(t *testing.
 	}
 
 	atEnd := executeReadSessionTranscript(t, deps, map[string]any{
+		"source":       apiLogSource,
 		"attempt_id":   request.AttemptID,
 		"body":         "request",
 		"offset_bytes": float64(3),
@@ -2807,6 +2837,7 @@ func TestReadSessionTranscriptAttemptExpansionResponseAndOffsetEdges(t *testing.
 	}
 
 	pastEnd := executeReadSessionTranscript(t, deps, map[string]any{
+		"source":       apiLogSource,
 		"attempt_id":   request.AttemptID,
 		"body":         "request",
 		"offset_bytes": float64(4),

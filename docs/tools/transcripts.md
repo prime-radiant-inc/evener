@@ -127,7 +127,7 @@ Views one session at one of three verbosities, selected by `format`.
 | `format` | transcript | `outline` \| `markdown` (default) \| `jsonl` |
 | `range` | transcript/API summary | turn or API-record window; defaults to last 40 turns or last 20 API records |
 | `expand_turn` | transcript markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
-| `attempt_id` | API log | one explicit attempt; implies `source=api_log` |
+| `attempt_id` | API log | one explicit attempt; requires `source=api_log` |
 | `body` | API attempt | `request`, `response`, or deterministic encoded `request_headers` JSON; requires `attempt_id` |
 | `offset_bytes` | expansion | continuation byte offset |
 | `max_bytes` | expansion | defaults to 16 KiB; hard maximum 64 KiB |
