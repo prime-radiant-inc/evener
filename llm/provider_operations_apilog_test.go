@@ -142,7 +142,7 @@ func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 			ctx := context.Background()
 			if i != 0 {
 				sessionID = "session-provider-operation"
-				ctx = llm.WithAPILogContext(ctx, sessionID, 0)
+				ctx = llm.WithAPILogContext(ctx, sessionID)
 			}
 			if err := test.call(ctx, client, provider); err != nil {
 				t.Fatalf("provider call: %v", err)
