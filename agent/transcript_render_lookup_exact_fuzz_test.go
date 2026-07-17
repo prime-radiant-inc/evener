@@ -20,11 +20,10 @@ import (
 // arbitrary transcript bytes cannot reliably construct.
 func FuzzTranscriptRenderLookupExact(f *testing.F) {
 	f.Add([]byte("seed"))
+	f.Add([]byte(strings.Repeat("a", 31) + "€"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		payload := strings.ToValidUTF8(string(data), "?")
-		if len(payload) > 32 {
-			payload = payload[:32]
-		}
+		payload = trenderUTF8Prefix(payload, 32)
 		rleRenderEdges(t, payload)
 		rleLookupEdges(t)
 	})
@@ -123,11 +122,18 @@ func rleRenderEdges(t *testing.T, payload string) {
 	}
 
 	root := t.TempDir()
-	for name, body := range map[string]string{
-		"empty":       "",
-		"long-header": strings.Repeat("x", transcriptJSONLMaxLineBytes+1),
-		"long-body":   `{"kind":"header","format_version":2,"session_id":"long-body"}` + "\n" + strings.Repeat("x", transcriptJSONLMaxLineBytes+1),
-	} {
+	entryLine := func(seq int, text string) string {
+		encoded, err := json.Marshal(transcript.Entry{
+			Kind: "entry",
+			Seq:  seq,
+			Turn: schema.NewTurn(schema.TurnUserInput, llm.User(text)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(encoded)
+	}
+	for name, body := range map[string]string{"empty": ""} {
 		path := filepath.Join(root, name)
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)
@@ -136,20 +142,30 @@ func rleRenderEdges(t *testing.T, payload string) {
 			t.Fatalf("rawLinesForRange accepted %s fixture", name)
 		}
 	}
+	incompleteBodyPath := filepath.Join(root, "incomplete-body")
+	incompleteBody := `{"kind":"header","format_version":2,"session_id":"` + trenderCurrentSession + `"}` + "\n{not-json"
+	if err := os.WriteFile(incompleteBodyPath, []byte(incompleteBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	incompleteContent, incompleteLines, incompleteSkipped, incompleteTruncated, err := rawLinesForRange(incompleteBodyPath, 0, 1)
+	if err != nil || incompleteLines != 1 || incompleteSkipped != 1 || incompleteTruncated || !strings.Contains(incompleteContent, `"session_id":"`+trenderCurrentSession+`"`) {
+		t.Fatalf("unterminated body = lines %d skipped %d truncated %v err %v", incompleteLines, incompleteSkipped, incompleteTruncated, err)
+	}
 	largePath := filepath.Join(root, "large")
 	largeLine := strings.Repeat("x", hardCapChars)
-	if err := os.WriteFile(largePath, []byte("{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"large\"}\n{\"kind\":\"entry\",\"x\":\""+largeLine+"\"}\n"), 0o600); err != nil {
+	largeBody := `{"kind":"header","format_version":2,"session_id":"` + trenderLocalSession + `"}` + "\n" + entryLine(0, largeLine) + "\n"
+	if err := os.WriteFile(largePath, []byte(largeBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	largeContent, largeLines, largeSkipped, largeTruncated, err := rawLinesForRange(largePath, 0, 0)
-	if err != nil || !largeTruncated || largeLines != 1 || largeSkipped != 0 || !strings.Contains(largeContent, `"session_id":"large"`) {
+	if err != nil || !largeTruncated || largeLines != 1 || largeSkipped != 0 || !strings.Contains(largeContent, `"session_id":"`+trenderLocalSession+`"`) {
 		t.Fatalf("large raw range = lines %d skipped %d truncated %v err %v", largeLines, largeSkipped, largeTruncated, err)
 	}
 	if _, _, _, _, err := rawLinesForRange(filepath.Join(root, "missing"), 0, 0); err == nil {
 		t.Fatal("rawLinesForRange accepted a missing transcript")
 	}
 	unsupportedPath := filepath.Join(root, "unsupported-mixed")
-	unsupported := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"mixed\"}\n{\"kind\":\"entry\"}\n{\"kind\":\"api_call\"}\n"
+	unsupported := `{"kind":"header","format_version":2,"session_id":"` + trenderSharedSession + `"}` + "\n" + entryLine(0, "semantic") + "\n{\"kind\":\"api_call\"}\n"
 	if err := os.WriteFile(unsupportedPath, []byte(unsupported), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +173,9 @@ func rleRenderEdges(t *testing.T, payload string) {
 		t.Fatal("rawLinesForRange accepted an API-call record in semantic JSONL")
 	}
 	capPath := filepath.Join(root, "cap")
-	capBody := "{\"kind\":\"header\",\"format_version\":2,\"session_id\":\"cap\"}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("x", hardCapChars-100) + "\"}\n{\"kind\":\"entry\",\"x\":\"" + strings.Repeat("y", 200) + "\"}\n"
+	capBody := `{"kind":"header","format_version":2,"session_id":"` + trenderRemoteSession + `"}` + "\n" +
+		entryLine(0, strings.Repeat("x", hardCapChars-1000)) + "\n" +
+		entryLine(1, strings.Repeat("y", 2000)) + "\n"
 	if err := os.WriteFile(capPath, []byte(capBody), 0o600); err != nil {
 		t.Fatal(err)
 	}

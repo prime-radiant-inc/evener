@@ -305,7 +305,7 @@ func TestTrenderExpansionOracleDistinguishesNeighboringRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	records := bytes.SplitAfter(persisted, []byte{'\n'})
-	wrongSpan := append(bytes.Clone(records[1]), records[2]...)
+	wrongSpan := append(bytes.Clone(records[2]), records[3]...)
 	const verifiedPageBytes = 2 * 64
 	wantPrefix := want[:min(len(want), verifiedPageBytes)]
 	wrongPrefix := wrongSpan[:min(len(wrongSpan), verifiedPageBytes)]
@@ -356,10 +356,7 @@ func trenderExpectedPairedExpansionJSONL(t *testing.T, path string, entries []tr
 	if len(records) != len(entries)+2 || len(records[len(records)-1]) != 0 {
 		t.Fatalf("persisted records = %d with trailing bytes %d, want header + %d newline-terminated entries", len(records)-1, len(records[len(records)-1]), len(entries))
 	}
-	if pin == 0 {
-		return append(bytes.Clone(records[1]), records[2]...)
-	}
-	return bytes.Clone(records[2])
+	return append(bytes.Clone(records[1]), records[2]...)
 }
 
 func trenderAssertPagedExpansion(t *testing.T, header transcript.Header, entries []transcript.Entry, rangeSpec string, opt renderOpts) {
