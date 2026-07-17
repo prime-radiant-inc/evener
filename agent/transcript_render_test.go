@@ -359,6 +359,26 @@ func TestRawLinesForRangeReturnsOnlySemanticV2Records(t *testing.T) {
 	}
 }
 
+func TestRawLinesForRangeUsesFirstNonEmptyHeader(t *testing.T) {
+	header := `{"kind":"header","format_version":2,"session_id":"leading-blank"}`
+	entry := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`
+	path := filepath.Join(t.TempDir(), "leading-blank.transcript.jsonl")
+	if err := os.WriteFile(path, []byte("\n \r\n"+header+"\n"+entry+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	content, lineCount, skipped, truncated, err := rawLinesForRange(path, 0, 0)
+	if err != nil {
+		t.Fatalf("rawLinesForRange: %v", err)
+	}
+	if content != header+"\n"+entry+"\n" {
+		t.Fatalf("content = %q, want canonical header and entry", content)
+	}
+	if lineCount != 2 || skipped != 0 || truncated {
+		t.Fatalf("lines/skipped/truncated = %d/%d/%v, want 2/0/false", lineCount, skipped, truncated)
+	}
+}
+
 func TestRawLinesForRangeSkipsUnterminatedFinalRecord(t *testing.T) {
 	header := `{"kind":"header","format_version":2,"session_id":"tail-test"}`
 	complete := `{"kind":"entry","seq":0,"turn":{"kind":"user_input"}}`

@@ -540,6 +540,13 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 			t.Errorf("unexpected format value %q", f)
 		}
 	}
+
+	expandDescription := rp["expand_turn"].(map[string]any)["description"].(string)
+	for _, contract := range []string{"any semantic Turn N", "byte-paged", "transcript_v2_jsonl"} {
+		if !strings.Contains(expandDescription, contract) {
+			t.Errorf("expand_turn description = %q, want public contract %q", expandDescription, contract)
+		}
+	}
 }
 
 // TestDefManageWorktreeShape asserts the manage_worktree tool definition

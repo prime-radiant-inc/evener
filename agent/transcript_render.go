@@ -329,16 +329,23 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 
 	reader := bufio.NewReaderSize(f, 64*1024)
 
-	// First line must be the header; always include it.
-	headerBytes, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
+	// The first non-empty complete line is the header. This matches every v2
+	// semantic reader and keeps accepted leading blanks out of returned JSONL.
+	var headerLine string
+	for headerLine == "" {
+		headerBytes, readErr := readStrictTranscriptLine(reader, transcriptJSONLMaxLineBytes)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", 0, 0, false, fmt.Errorf("reading transcript header: %w", readErr)
+		}
+		if errors.Is(readErr, io.EOF) {
+			return "", 0, 0, false, errors.New("transcript file is empty: no header")
+		}
+		headerLine = strings.TrimSuffix(string(headerBytes), "\n")
+		headerLine = strings.TrimSuffix(headerLine, "\r")
+		if strings.TrimSpace(headerLine) == "" {
+			headerLine = ""
+		}
 	}
-	if errors.Is(readErr, io.EOF) {
-		return "", 0, 0, false, errors.New("transcript file is empty: no header")
-	}
-	headerLine := strings.TrimSuffix(string(headerBytes), "\n")
-	headerLine = strings.TrimSuffix(headerLine, "\r")
 	var header transcript.Header
 	if err := json.Unmarshal([]byte(headerLine), &header); err != nil {
 		return "", 0, 0, false, fmt.Errorf("parse transcript header: %w", err)

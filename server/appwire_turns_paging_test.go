@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -700,5 +701,25 @@ func TestValidatedTranscriptPathReadsOnlyLeadingHeader(t *testing.T) {
 	largeAllocs := testing.AllocsPerRun(3, func() { _ = validatedTranscriptPath("th_1", large) })
 	if largeAllocs > smallAllocs+10 {
 		t.Fatalf("large no-api_call identity validation inspected historical entries: allocations large=%.0f small=%.0f", largeAllocs, smallAllocs)
+	}
+}
+
+func TestValidatedTranscriptPathUsesFirstNonEmptyHeaderIdentity(t *testing.T) {
+	write := func(sessionID string) string {
+		path := filepath.Join(t.TempDir(), sessionID+".transcript.jsonl")
+		body := "\n \r\n" + fmt.Sprintf(`{"kind":"header","format_version":2,"session_id":%q}`, sessionID) + "\n"
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	matching := write("th_1")
+	if got := validatedTranscriptPath("th_1", matching); got != matching {
+		t.Fatalf("matching leading-blank transcript path = %q, want %q", got, matching)
+	}
+	mismatched := write("th_other")
+	if got := validatedTranscriptPath("th_1", mismatched); got != "" {
+		t.Fatalf("mismatched leading-blank transcript path = %q, want rejection", got)
 	}
 }

@@ -218,14 +218,18 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	if !scanner.Scan() {
-		return transcript.Header{}
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var header transcript.Header
+		if json.Unmarshal([]byte(line), &header) != nil || header.Kind != "header" {
+			return transcript.Header{}
+		}
+		return header
 	}
-	var header transcript.Header
-	if json.Unmarshal(scanner.Bytes(), &header) != nil || header.Kind != "header" {
-		return transcript.Header{}
-	}
-	return header
+	return transcript.Header{}
 }
 
 func (s *Server) transcriptPath() string {

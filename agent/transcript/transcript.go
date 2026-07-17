@@ -25,8 +25,10 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
+// FormatVersion is the only transcript format this package writes or accepts.
 const FormatVersion = 2
 
+// ErrUnsupportedFormat marks transcripts that are not semantic-only format v2.
 var ErrUnsupportedFormat = errors.New("unsupported transcript format")
 
 // Header is the first line of a transcript JSONL file.

@@ -126,7 +126,7 @@ Views one session at one of three verbosities, selected by `format`.
 | `source` | all | `transcript` (default) or explicit private `api_log` |
 | `format` | transcript | `outline` \| `markdown` (default) \| `jsonl` |
 | `range` | transcript/API summary | turn or API-record window; defaults to last 40 turns or last 20 API records |
-| `expand_turn` | transcript markdown | a `Turn N` whose exact result evidence to expand |
+| `expand_turn` | transcript markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
 | `attempt_id` | API log | one explicit attempt; implies `source=api_log` |
 | `body` | API attempt | `request` or `response`; requires `attempt_id` |
 | `offset_bytes` | expansion | continuation byte offset |
@@ -267,10 +267,13 @@ render layers two bounds under a final cap:
 `meta` reports the bounds honestly: `turns_rendered + elided_turns == turns_total` for the
 contiguous in-range window.
 
-**`expand_turn`** names a `Turn N` whose tool results render **in full** — exempt from the
-per-result clamp and the conversation budget (but not the 200k hard cap). It is how you see
-one big result whole without dropping to `jsonl`. If the named turn falls outside the
-rendered range, it is appended as a labeled supplemental section naming its real Turn number.
+**`expand_turn`** accepts any semantic `Turn N`. The markdown view keeps bounded human
+evidence, while the `expansion` field returns byte-paged exact `transcript_v2_jsonl`: one
+entry for an ordinary user, steering, summary, checkpoint, model-switch, or orphan-result
+turn; or the minimal assistant/tool-result span needed to preserve call/result ownership.
+Use the returned `offset_bytes` continuation until all exact bytes are read. If the named
+turn falls outside the rendered range, bounded markdown also appends a labeled supplemental
+section naming its real Turn number.
 
 ## The navigation loop
 
@@ -280,7 +283,7 @@ rendered range, it is appended as a labeled supplemental section naming its real
 3. **Map** — `read_session_transcript({transcript_ref, format:"outline"})` for the shape and
    the turn numbers worth reading.
 4. **Detail** — `read_session_transcript({transcript_ref, range})` for a span;
-   `{…, expand_turn: N}` for one big result whole.
+   `{…, expand_turn: N}` for byte-paged exact evidence from any semantic turn.
 5. **Descend** — `find_session_transcripts({children_of: transcript_ref})` to enumerate what
    a session spawned, then audit each child the same way.
 

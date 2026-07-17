@@ -633,7 +633,7 @@ func DefReadSessionTranscript() llm.ToolDefinition {
 				"source":         map[string]any{"type": "string", "enum": []string{"transcript", "api_log"}, "description": "transcript (default) or explicit private api_log access."},
 				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "Transcript only: outline = per-turn map; markdown (default) = condensed conversation; jsonl = bounded semantic transcript-v2 records."},
 				"range":          map[string]any{"type": "string", "description": "0-based turn or API-record window: \"12-40\" | \"last:40\" | \"start:40\". Defaults to last 40 transcript turns or last 20 API records."},
-				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Transcript markdown only: a Turn number whose exact result evidence to expand."},
+				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Transcript markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
 				"attempt_id":     map[string]any{"type": "string", "description": "Explicit API attempt to inspect; implies source=api_log."},
 				"body":           map[string]any{"type": "string", "enum": []string{"request", "response"}, "description": "Exact API body to expand; requires attempt_id."},
 				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Expansion byte offset from a continuation handle."},
