@@ -1,6 +1,9 @@
 package llm
 
-import "net/url"
+import (
+	"net/http"
+	"net/url"
+)
 
 // SanitizeEndpointURL retains only non-credential URL components suitable for
 // durable endpoint provenance. Invalid endpoint text has no durable value.
@@ -15,4 +18,14 @@ func SanitizeEndpointURL(endpoint string) string {
 		Path:    parsed.Path,
 		RawPath: parsed.RawPath,
 	}).String()
+}
+
+// FinalResponseEndpointURL returns the endpoint that produced an HTTP response.
+// Synthetic responses without request provenance fall back to the constructed
+// request endpoint.
+func FinalResponseEndpointURL(resp *http.Response, fallback string) string {
+	if resp != nil && resp.Request != nil && resp.Request.URL != nil {
+		return SanitizeEndpointURL(resp.Request.URL.String())
+	}
+	return SanitizeEndpointURL(fallback)
 }

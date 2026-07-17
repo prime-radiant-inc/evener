@@ -216,7 +216,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 	r := fromAnthropicResponse(raw, req.Model)
-	llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages", a.apiLogCredentialMaterial(nil))
+	llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.BaseURL+"/v1/messages"), a.apiLogCredentialMaterial(nil))
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	return r, nil
 }
@@ -772,7 +772,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 				if refusalWarn != nil {
 					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
-				llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages", a.apiLogCredentialMaterial(nil))
+				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, a.BaseURL+"/v1/messages"), a.apiLogCredentialMaterial(nil))
 				if len(r.ToolCalls()) > 0 {
 					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
 				}

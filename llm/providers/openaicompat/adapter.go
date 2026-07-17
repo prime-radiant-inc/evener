@@ -274,7 +274,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 		wire.decodeErr = err
 		return resp, err
 	}
-	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions", a.apiLogCredentialMaterial(nil))
+	llm.StampEndpointURL(&resp, wire.endpoint, a.apiLogCredentialMaterial(nil))
 	resp.RateLimit = llm.ParseRateLimitHeaders(wire.headers)
 	return resp, nil
 }
@@ -577,7 +577,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						finalResp.Usage.ReasoningTokensEstimated = &e
 					}
 				}
-				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions", a.apiLogCredentialMaterial(nil))
+				llm.StampEndpointURL(finalResp, llm.FinalResponseEndpointURL(resp, a.BaseURL+"/chat/completions"), a.apiLogCredentialMaterial(nil))
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,
@@ -713,6 +713,7 @@ type chatHTTPResult struct {
 	rawRespBody  []byte
 	status       int
 	headers      http.Header
+	endpoint     string
 	attempt      *transport.APIAttemptCapture
 	decodeErr    error
 	transportErr error
@@ -750,6 +751,7 @@ func (a *Adapter) doHTTP(parentCtx, ctx context.Context, req llm.Request, body m
 	defer resp.Body.Close() //nolint:errcheck
 	wire.status = resp.StatusCode
 	wire.headers = resp.Header
+	wire.endpoint = llm.FinalResponseEndpointURL(resp, a.BaseURL+"/chat/completions")
 
 	b, err := io.ReadAll(resp.Body)
 	wire.rawRespBody = b
