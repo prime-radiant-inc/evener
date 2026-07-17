@@ -136,11 +136,15 @@ func FuzzRunCoverage(f *testing.F) {
 			runLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 				return client, scriptedProviderConfig("openai"), true, nil
 			}
-			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) { return nil, errors.New("log") }
+			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+				return nil, nil, errors.New("log")
+			}
 			if err := run(context.Background(), base(t)); err == nil {
 				t.Fatal("want logger error")
 			}
-			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) { return func() error { return nil }, nil }
+			runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+				return func(string) error { return nil }, func() error { return nil }, nil
+			}
 			cfg := base(t)
 			cfg.outputSchema = "{"
 			if err := run(context.Background(), cfg); err == nil {

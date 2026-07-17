@@ -1054,13 +1054,14 @@ func (s *Session) restoreTerminalDelegateChildClaimed(rec *jobstore.JobRecord, c
 		return nil, err
 	}
 	restoreCfg := RestoreSessionConfig{
-		StateDir:       s.stateDir,
-		ResolveProfile: s.resolveProfile,
-		ModelFallbacks: append([]string(nil), s.cfg.ModelFallbacks...),
-		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
-		LLMSleep:       s.cfg.LLMSleep,
-		clock:          s.clock,
-		testOnly:       s.cfg.testOnly,
+		StateDir:                s.stateDir,
+		ResolveProfile:          s.resolveProfile,
+		AcquireSessionOwnership: s.cfg.AcquireSessionOwnership,
+		ModelFallbacks:          append([]string(nil), s.cfg.ModelFallbacks...),
+		LLMRetryPolicy:          s.cfg.LLMRetryPolicy,
+		LLMSleep:                s.cfg.LLMSleep,
+		clock:                   s.clock,
+		testOnly:                s.cfg.testOnly,
 		spawn: spawnConfig{
 			parentSessionID:         desc.ParentSessionID,
 			parentToolCallID:        desc.OriginToolCallID,

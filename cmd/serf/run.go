@@ -83,12 +83,7 @@ var (
 		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
 		return err
 	}
-	runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
-		return cmdutil.AttachAPILogger(client, stateDir, warnings)
-	}
-	runAttachResumedAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer, sessionID string) (func() error, error) {
-		return cmdutil.AttachAPILogger(client, stateDir, warnings, sessionID)
-	}
+	runAttachAPILogger  = cmdutil.AttachSessionAPILogger
 	runNewSession       = agent.NewSession
 	runRestoreSession   = agent.RestoreSessionFromMetaWithConfig
 	runProvisionSandbox = provisionSandbox
@@ -193,16 +188,16 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	var closeAPILog func() error
-	if meta != nil {
-		closeAPILog, err = runAttachResumedAPILogger(client, stateDir, cfg.stderr, meta.ID)
-	} else {
-		closeAPILog, err = runAttachAPILogger(client, stateDir, cfg.stderr)
-	}
+	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
 	if err != nil {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
+	if meta != nil {
+		if err := reserveSession(meta.ID); err != nil {
+			return err
+		}
+	}
 
 	profile, err := buildInitialProfile(provCfg, modelRef, cfg.outputSchema)
 	if err != nil {
@@ -220,6 +215,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ShareTasksWithChildren:      cfg.shareTaskStore,
 		ResultToolName:              cfg.resultToolName,
 		StateDir:                    stateDir,
+		AcquireSessionOwnership:     reserveSession,
 		Project:                     project,
 		SystemPromptFile:            cfg.systemPrompt,
 		SystemPromptAppend:          cfg.systemPromptAppend,
@@ -260,6 +256,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			StateDir:                    stateDir,
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
+			AcquireSessionOwnership:     reserveSession,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 		})
 		if err != nil {

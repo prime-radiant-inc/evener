@@ -52,7 +52,7 @@ var serveLoadClient = cmdutil.LoadClient
 var serveAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
 	return cmdutil.AttachAPILogger(client, stateDir, warnings)
 }
-var serveAttachSessionAPILogger = cmdutil.AttachAPILogger
+var serveAttachSessionAPILogger = cmdutil.AttachSessionAPILogger
 
 type serveServer interface {
 	http.Handler
@@ -103,7 +103,7 @@ type serveDeps struct {
 	seedMarketplaces func() error
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
-	attachAPILogger  func(*llm.Client, string, io.Writer, ...string) (func() error, error)
+	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
 	buildProfile     func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
@@ -330,16 +330,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return err
 	}
 	defer closeClient() //nolint:errcheck
-	var closeAPILog func() error
-	if resuming {
-		closeAPILog, err = deps.attachAPILogger(client, sd, os.Stderr, resumedMeta.ID)
-	} else {
-		closeAPILog, err = deps.attachAPILogger(client, sd, os.Stderr)
-	}
+	reserveSession, closeAPILog, err := deps.attachAPILogger(client, sd, os.Stderr)
 	if err != nil {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
+	if resuming {
+		if err := reserveSession(resumedMeta.ID); err != nil {
+			return err
+		}
+	}
 	profile, err := deps.buildProfile(provCfg, modelRef, *outputSchema)
 	if err != nil {
 		return err
@@ -354,6 +354,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ShareTasksWithChildren:      *shareTaskStore,
 		ResultToolName:              *resultToolName,
 		StateDir:                    sd,
+		AcquireSessionOwnership:     reserveSession,
 		Project:                     project,
 		SystemPromptFile:            *systemPrompt,
 		SystemPromptAppend:          []string(systemPromptAppend),
@@ -397,6 +398,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			StateDir:                    sd,
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
+			AcquireSessionOwnership:     reserveSession,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})

@@ -29,7 +29,9 @@ func TestRunPassesCanonicalProjectAndActiveWorkingDirToSession(t *testing.T) {
 	})
 	runEnsureUserConfigDirs = func() error { return nil }
 	runSeedMarketplaces = func() error { return nil }
-	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func() error, error) { return func() error { return nil }, nil }
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(string) error { return nil }, func() error { return nil }, nil
+	}
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: []func(llm.Request) llm.Response{}})
 	var gotCfg agent.SessionConfig
 	var gotCWD string

@@ -15,19 +15,28 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 	if len(resumedSessionID) > 1 {
 		return nil, errors.New("attach API logger accepts at most one resumed session ID")
 	}
-	apiLog, err := llm.NewSessionAPILogger(stateDir)
+	reserveSession, closeLog, err := AttachSessionAPILogger(client, stateDir, warnings)
 	if err != nil {
-		return nil, fmt.Errorf("initialize canonical API log: %w", err)
+		return nil, err
 	}
 	if len(resumedSessionID) == 1 {
 		sessionID := resumedSessionID[0]
-		if err := apiLog.ReserveSession(sessionID); err != nil {
-			_ = apiLog.Close()
-			if errors.Is(err, llm.ErrAPILogTargetLocked) {
-				return nil, fmt.Errorf("session %s is already running; send work to the live session or fork it: %w", sessionID, err)
-			}
-			return nil, fmt.Errorf("reserve canonical API log for resumed session %s: %w", sessionID, err)
+		if err := reserveSession(sessionID); err != nil {
+			_ = closeLog()
+			return nil, err
 		}
+	}
+	return closeLog, nil
+}
+
+// AttachSessionAPILogger installs the standard Serf API logger and returns the
+// ownership boundary that fresh-session creation must call as soon as it mints
+// an ID. Reserving before session persistence prevents a concurrent resume
+// from acquiring the same session while its original process is still idle.
+func AttachSessionAPILogger(client *llm.Client, stateDir string, warnings io.Writer) (func(string) error, func() error, error) {
+	apiLog, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initialize canonical API log: %w", err)
 	}
 
 	if warnings != nil {
@@ -37,5 +46,14 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 		})
 	}
 	client.Use(apiLog)
-	return apiLog.Close, nil
+	reserveSession := func(sessionID string) error {
+		if err := apiLog.ReserveSession(sessionID); err != nil {
+			if errors.Is(err, llm.ErrAPILogTargetLocked) {
+				return fmt.Errorf("session %s is already running; send work to the live session or fork it: %w", sessionID, err)
+			}
+			return fmt.Errorf("reserve canonical API log for session %s: %w", sessionID, err)
+		}
+		return nil
+	}
+	return reserveSession, apiLog.Close, nil
 }

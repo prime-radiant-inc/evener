@@ -128,6 +128,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("generate session ID: %w", err)
 	}
+	if cfg.AcquireSessionOwnership != nil {
+		if err := cfg.AcquireSessionOwnership(sessionID); err != nil {
+			return nil, fmt.Errorf("acquire session ownership: %w", err)
+		}
+	}
 	s := &Session{
 		id:                            sessionID,
 		cfg:                           cfg,
@@ -310,6 +315,7 @@ type RestoreSessionConfig struct {
 	StateDir                    string
 	Project                     identifier.Project
 	ResolveProfile              func(ref string) (*provider.Profile, error)
+	AcquireSessionOwnership     func(sessionID string) error
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	LLMRetryPolicy              *llm.RetryPolicy
@@ -338,6 +344,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
+	cfg.AcquireSessionOwnership = restoreCfg.AcquireSessionOwnership
 	if restoreCfg.spawn.parentSessionID != "" {
 		cfg.spawn = restoreCfg.spawn
 	}

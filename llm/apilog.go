@@ -130,8 +130,8 @@ func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 	return f, nil
 }
 
-// ReserveSession eagerly acquires ownership of a known resumed session's API
-// log. Fresh sessions remain lazy and open their unique target on first append.
+// ReserveSession eagerly acquires ownership of a session's API log before its
+// persisted state becomes discoverable or a resumed session is restored.
 func (l *APILogger) ReserveSession(sessionID string) error {
 	if err := l.admitCanonicalAppend(); err != nil {
 		return err
