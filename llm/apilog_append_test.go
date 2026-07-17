@@ -573,6 +573,9 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 		t.Run(tt.name+"/single-file", func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "api.jsonl")
 			tt.body(t, path)
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatalf("chmod invalid log: %v", err)
+			}
 			before, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("read invalid log: %v", err)
@@ -588,6 +591,7 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 			if !bytes.Equal(after, before) {
 				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
+			assertPathMode(t, path, 0o644)
 		})
 
 		t.Run(tt.name+"/per-session", func(t *testing.T) {
@@ -598,6 +602,9 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 				t.Fatalf("mkdir sessions: %v", err)
 			}
 			tt.body(t, path)
+			if err := os.Chmod(path, 0o644); err != nil {
+				t.Fatalf("chmod invalid log: %v", err)
+			}
 			before, err := os.ReadFile(path)
 			if err != nil {
 				t.Fatalf("read invalid log: %v", err)
@@ -620,6 +627,7 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 			if !bytes.Equal(after, before) {
 				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
+			assertPathMode(t, path, 0o644)
 		})
 	}
 }

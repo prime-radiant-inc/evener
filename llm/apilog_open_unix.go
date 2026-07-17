@@ -38,10 +38,10 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 		}
 		return closeOnError(fmt.Errorf("lock API-log target %q: %w", path, err))
 	}
-	if err := file.Chmod(0o600); err != nil {
+	if err := recoverCanonicalAPILogTail(file, canonicalAPILogMaxLineBytes); err != nil {
 		return closeOnError(err)
 	}
-	if err := recoverCanonicalAPILogTail(file, canonicalAPILogMaxLineBytes); err != nil {
+	if err := file.Chmod(0o600); err != nil {
 		return closeOnError(err)
 	}
 	return file, nil
