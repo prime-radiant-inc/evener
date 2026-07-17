@@ -2,11 +2,9 @@ package llm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -32,7 +30,7 @@ func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 	return v, ok
 }
 
-var apiLogJSONMarshal = json.Marshal
+var apiLogMarshalRecord = apilog.MarshalRecord
 var apiLogOpenFile = openPrivateAPILogFile
 var apiLogFileWrite = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
@@ -46,12 +44,18 @@ var ErrAPILogTargetLocked = errors.New("API log target is already running")
 const canonicalAPILogMaxLineBytes = 128 << 20
 
 type observedAPILogError struct {
-	err error
+	text string
 }
 
-func (e observedAPILogError) Error() string           { return e.err.Error() }
-func (e observedAPILogError) Unwrap() error           { return e.err }
+func (e observedAPILogError) Error() string           { return e.text }
 func (observedAPILogError) apiLogFailureWasObserved() {}
+
+func markAPILogErrorObserved(err error) error {
+	if err == nil {
+		return nil
+	}
+	return observedAPILogError{text: renderAPILogError(err)}
+}
 
 // APILogger persists canonical transport attempts and logical-call settlements.
 // NewAPILogger writes one file; NewSessionAPILogger routes by session id.
@@ -137,7 +141,7 @@ func (l *APILogger) ReserveSession(sessionID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.quarantineErr != nil {
-		return observedAPILogError{err: l.quarantineErr}
+		return markAPILogErrorObserved(l.quarantineErr)
 	}
 	if l.sessionsDir == "" {
 		return errors.New("API logger does not route session files")
@@ -335,10 +339,10 @@ func (l *APILogger) observeClosedAppend(ctx context.Context, failure APILogFailu
 		return failure.Err
 	}
 	l.observeAPILogFailure(failure)
-	return observedAPILogError{err: failure.Err}
+	return markAPILogErrorObserved(failure.Err)
 }
 
-func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failure APILogFailure) error {
+func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.APILogRecord, failure APILogFailure) error {
 	if err := l.admitCanonicalAppend(); err != nil {
 		return err
 	}
@@ -350,7 +354,7 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	}()
 	defer l.canonicalAppends.Done()
 
-	data, err := apiLogJSONMarshal(record)
+	data, err := apiLogMarshalRecord(record)
 	if err != nil {
 		return fmt.Errorf("marshal API-log record: %w", err)
 	}
@@ -358,7 +362,7 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	if l.quarantineErr != nil {
 		err := l.quarantineErr
 		l.mu.Unlock()
-		return observedAPILogError{err: err}
+		return markAPILogErrorObserved(err)
 	}
 	f := l.file
 	if l.sessionsDir != "" {
@@ -399,7 +403,7 @@ func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure
 	l.quarantineErr = err
 	failure.Err = err
 	l.mu.Unlock()
-	return observedAPILogError{err: err}, failure
+	return markAPILogErrorObserved(err), failure
 }
 
 func (l *APILogger) admitCanonicalAppend() error {
@@ -446,18 +450,10 @@ func StampEndpointURL(resp *Response, endpoint string) {
 	if resp == nil || endpoint == "" {
 		return
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" {
+	endpoint = SanitizeEndpointURL(endpoint)
+	if endpoint == "" {
 		return
 	}
-	endpoint = (&url.URL{
-		Scheme:   parsed.Scheme,
-		Host:     parsed.Host,
-		Path:     parsed.Path,
-		RawPath:  parsed.RawPath,
-		RawQuery: "",
-		Fragment: "",
-	}).String()
 	if resp.Raw == nil {
 		resp.Raw = map[string]any{}
 	}

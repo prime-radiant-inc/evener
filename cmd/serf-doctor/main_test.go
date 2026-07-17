@@ -208,6 +208,8 @@ func fixtureWithAPILogData(t *testing.T) (base, sid string) {
 	return base, sid
 }
 
+func commandIntPointer(value int) *int { return &value }
+
 func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency int64, input, output, cacheRead, textLength, toolCalls int) apilog.APIAttemptRecord {
 	attempt := apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
@@ -231,16 +233,16 @@ func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency in
 	}
 	if outcome == apilog.AttemptSuccess {
 		attempt.Response = &apilog.APIAttemptResponse{
-			StatusCode:    200,
+			StatusCode:    commandIntPointer(200),
 			Body:          apilog.EncodeBody([]byte("{}")),
 			Model:         "gpt-test",
 			FinishReason:  "stop",
-			TextLength:    textLength,
-			ToolCallCount: toolCalls,
+			TextLength:    commandIntPointer(textLength),
+			ToolCallCount: commandIntPointer(toolCalls),
 			Usage: apilog.Usage{
-				InputTokens:     input,
-				OutputTokens:    output,
-				TotalTokens:     input + output,
+				InputTokens:     commandIntPointer(input),
+				OutputTokens:    commandIntPointer(output),
+				TotalTokens:     commandIntPointer(input + output),
 				CacheReadTokens: &cacheRead,
 			},
 		}

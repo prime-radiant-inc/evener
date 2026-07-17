@@ -38,16 +38,16 @@ func doctorAttempt(group string, index int, outcome apilog.AttemptOutcomeClass, 
 	}
 	if outcome == apilog.AttemptSuccess {
 		attempt.Response = &apilog.APIAttemptResponse{
-			StatusCode:    200,
+			StatusCode:    intp(200),
 			Body:          apilog.EncodeBody([]byte("{}")),
 			Model:         "gpt-5.2-codex",
 			FinishReason:  "stop",
-			TextLength:    text,
-			ToolCallCount: tools,
+			TextLength:    intp(text),
+			ToolCallCount: intp(tools),
 			Usage: apilog.Usage{
-				InputTokens:     input,
-				OutputTokens:    output,
-				TotalTokens:     input + output,
+				InputTokens:     intp(input),
+				OutputTokens:    intp(output),
+				TotalTokens:     intp(input + output),
 				CacheReadTokens: intp(cache),
 			},
 		}
@@ -134,6 +134,16 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
 	if err != nil || len(low.Calls) != 3 {
 		t.Fatalf("low spike filter rows = %d, err %v", len(low.Calls), err)
+	}
+}
+
+func TestAPILogOmittedCompactCountsAreNotEmptyEvidence(t *testing.T) {
+	attempt := doctorAttempt("ag_omitted_counts", 1, apilog.AttemptSuccess, 1, 0, 0, 0, 0, 0)
+	attempt.Response.TextLength = nil
+	attempt.Response.ToolCallCount = nil
+	row := rowFromAttempt(attempt)
+	if row.Empty {
+		t.Fatal("successful attempt with omitted compact counts was classified as empty")
 	}
 }
 
@@ -311,7 +321,7 @@ func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T)
 	attempt.ErrorClass = "rate_limit"
 	attempt.ErrorMessage = "provider-body-sentinel: quota detail"
 	attempt.Response = &apilog.APIAttemptResponse{
-		StatusCode: 429,
+		StatusCode: intp(429),
 		Body:       apilog.EncodeBody([]byte("provider-body-sentinel")),
 	}
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})

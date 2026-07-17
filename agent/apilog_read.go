@@ -57,7 +57,7 @@ type apiLogRecordSummary struct {
 	RequestHeaders     apilog.EncodedHeader       `json:"request_headers,omitempty"`
 	RequestHeadersInfo *apiLogHeaderEvidence      `json:"request_headers_evidence,omitempty"`
 	RequestBody        *apiLogBodyEvidence        `json:"request_body,omitempty"`
-	StatusCode         int                        `json:"status_code,omitempty"`
+	StatusCode         *int                       `json:"status_code,omitempty"`
 	ResponseModel      string                     `json:"response_model,omitempty"`
 	FinishReason       string                     `json:"finish_reason,omitempty"`
 	Usage              *apilog.Usage              `json:"usage,omitempty"`

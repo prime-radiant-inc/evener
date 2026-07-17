@@ -49,11 +49,12 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	}
 	if c.requestBody != nil {
 		observation := c.requestBody()
-		c.attempt.SetRequestBody(observation.bytes)
+		c.attempt.SetRequestBody(observation.bytes, observation.exact)
 	}
 	if c.responseBody != nil {
 		observation := c.responseBody()
 		result.ResponseBody = observation.bytes
+		result.ResponseBodyInexact = !observation.exact
 	}
 	owner := c.owner
 	owner.TimeoutSource = llm.APITimeoutSourceForAttempt(

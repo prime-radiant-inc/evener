@@ -206,13 +206,10 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_sync_warning_sanitize")),
 		logger,
 	)
-	BeginAPIAttempt(ctx, APIAttemptMeta{
-		StartedAt:          time.Now(),
-		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
-	}).Complete(APIAttemptResult{
-		Outcome:    apilog.AttemptSuccess,
-		FinishedAt: time.Now(),
-	})
+	startedAt := time.Now()
+	meta := testAPIAttemptMeta(startedAt)
+	meta.CredentialMaterial = NewAPILogCredentialMaterial(nil, nil, secret)
+	BeginAPIAttempt(ctx, meta).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
 
 	if len(observed) != 1 {
 		t.Fatalf("sync failure observer calls = %d, want exactly 1: %+v", len(observed), observed)
@@ -225,9 +222,7 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 	}
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); !errors.Is(err, syncErr) {
-		t.Fatalf("Close error = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.Close(), syncErr)
 }
 
 func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnce(t *testing.T) {
@@ -249,13 +244,9 @@ func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnc
 	group := NewAPIAttemptGroup("ag_settlement_sync_warning_sanitize")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), logger)
 	startedAt := time.Now()
-	BeginAPIAttempt(ctx, APIAttemptMeta{
-		StartedAt:          startedAt,
-		CredentialMaterial: NewAPILogCredentialMaterial(nil, nil, secret),
-	}).Complete(APIAttemptResult{
-		Outcome:    apilog.AttemptSuccess,
-		FinishedAt: startedAt.Add(time.Millisecond),
-	})
+	meta := testAPIAttemptMeta(startedAt)
+	meta.CredentialMaterial = NewAPILogCredentialMaterial(nil, nil, secret)
+	BeginAPIAttempt(ctx, meta).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
 	apiLogFileSync = func(*os.File) error { return syncErr }
 	group.Settle(ctx, apilog.AttemptSuccess)
 
@@ -273,9 +264,7 @@ func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnc
 	}
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); !errors.Is(err, syncErr) {
-		t.Fatalf("Close error = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.Close(), syncErr)
 }
 
 func TestAPIAttemptAppendWarningSanitizesCredentialNamesButPreservesOrdinaryNames(t *testing.T) {
@@ -339,7 +328,7 @@ func TestAPILogErrorSanitizationDetachesOriginalErrorBehavior(t *testing.T) {
 		t.Fatalf("sanitized error recovered raw object: %#v", recovered)
 	}
 
-	observed := sanitizeAPILogError(observedAPILogError{err: raw}, NewAPILogCredentialMaterial(nil, nil, secret))
+	observed := sanitizeAPILogError(observedAPILogError{text: raw.Error()}, NewAPILogCredentialMaterial(nil, nil, secret))
 	if _, ok := observed.(apiLogObservedFailure); !ok {
 		t.Fatalf("sanitized observed error lost marker: %T", observed)
 	}
@@ -364,7 +353,7 @@ func (e *recoverableAPILogError) Unwrap() error { return e.cause }
 func TestAPIAttemptAppendWarningSanitizationPreservesObservedMarker(t *testing.T) {
 	const credentialHeader = "X-Private-Observed-Sentinel"
 	sink := &credentialFailureSink{
-		err: observedAPILogError{err: errors.New("sync failed for " + credentialHeader)},
+		err: observedAPILogError{text: "sync failed for " + credentialHeader},
 	}
 	ctx := WithAPIAttemptSink(
 		WithAPIAttemptGroup(context.Background(), NewAPIAttemptGroup("ag_warning_observed_marker")),

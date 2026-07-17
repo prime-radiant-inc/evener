@@ -65,10 +65,12 @@ func FuzzCanonicalAPILoggerAppendPrograms(f *testing.F) {
 				_ = file.Close()
 			}
 		case 1:
-			oldMarshal := apiLogJSONMarshal
-			apiLogJSONMarshal = func(any) ([]byte, error) { return nil, errors.New("scripted marshal failure") }
+			oldMarshal := apiLogMarshalRecord
+			apiLogMarshalRecord = func(apilog.APILogRecord) ([]byte, error) {
+				return nil, errors.New("scripted marshal failure")
+			}
 			err := logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_fuzz_marshal", 1))
-			apiLogJSONMarshal = oldMarshal
+			apiLogMarshalRecord = oldMarshal
 			if err == nil {
 				t.Fatal("marshal failure was accepted")
 			}

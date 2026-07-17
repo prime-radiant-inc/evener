@@ -262,16 +262,28 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 		ErrorClass:       attempt.ErrorClass,
 	}
 	if attempt.Response != nil {
-		row.StatusCode = attempt.Response.StatusCode
+		if attempt.Response.StatusCode != nil {
+			row.StatusCode = *attempt.Response.StatusCode
+		}
 		row.FinishReason = attempt.Response.FinishReason
-		row.TextLength = attempt.Response.TextLength
-		row.ToolCalls = attempt.Response.ToolCallCount
-		row.InputTokens = attempt.Response.Usage.InputTokens
-		row.OutputTokens = attempt.Response.Usage.OutputTokens
+		if attempt.Response.TextLength != nil {
+			row.TextLength = *attempt.Response.TextLength
+		}
+		if attempt.Response.ToolCallCount != nil {
+			row.ToolCalls = *attempt.Response.ToolCallCount
+		}
+		if attempt.Response.Usage.InputTokens != nil {
+			row.InputTokens = *attempt.Response.Usage.InputTokens
+		}
+		if attempt.Response.Usage.OutputTokens != nil {
+			row.OutputTokens = *attempt.Response.Usage.OutputTokens
+		}
 		if attempt.Response.Usage.CacheReadTokens != nil {
 			row.CacheRead = *attempt.Response.Usage.CacheReadTokens
 		}
-		row.Empty = attempt.Outcome == apilog.AttemptSuccess && row.TextLength == 0 && row.ToolCalls == 0
+		row.Empty = attempt.Outcome == apilog.AttemptSuccess &&
+			attempt.Response.TextLength != nil && row.TextLength == 0 &&
+			attempt.Response.ToolCallCount != nil && row.ToolCalls == 0
 	}
 	// llm.Usage.InputTokens is already normalized to uncached input by the
 	// provider adapter. CacheRead is reported separately and must not be

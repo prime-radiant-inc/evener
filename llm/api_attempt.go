@@ -38,8 +38,8 @@ type APILogCredentialMaterial struct {
 	patterns    []string
 }
 
-// APIAttemptMeta carries provider provenance and exact request evidence for one
-// transport attempt.
+// APIAttemptMeta carries provider provenance and observed request evidence for
+// one transport attempt.
 type APIAttemptMeta struct {
 	ProviderInstance   string
 	RequestModel       string
@@ -49,20 +49,22 @@ type APIAttemptMeta struct {
 	Endpoint           string
 	Headers            http.Header
 	RequestBody        []byte
+	RequestBodyInexact bool
 	StartedAt          time.Time
 	CredentialMaterial APILogCredentialMaterial
 }
 
-// APIAttemptResult carries exact response evidence and the adapter-owned result
-// classification for one transport attempt.
+// APIAttemptResult carries observed response evidence and the adapter-owned
+// result classification for one transport attempt.
 type APIAttemptResult struct {
-	StatusCode   int
-	ResponseBody []byte
-	Response     *Response
-	Outcome      apilog.AttemptOutcomeClass
-	ErrorClass   string
-	Err          error
-	FinishedAt   time.Time
+	StatusCode          int
+	ResponseBody        []byte
+	ResponseBodyInexact bool
+	Response            *Response
+	Outcome             apilog.AttemptOutcomeClass
+	ErrorClass          string
+	Err                 error
+	FinishedAt          time.Time
 }
 
 type apiAttemptGroupContextKey struct{}
@@ -149,14 +151,15 @@ func (a *APIAttempt) Active() bool {
 	return a != nil && a.group != nil && a.sink != nil
 }
 
-// SetRequestBody supplies exact bytes observed at an HTTP transport boundary.
-// It is used only when a request body cannot be cloned before RoundTrip.
-func (a *APIAttempt) SetRequestBody(body []byte) {
+// SetRequestBody supplies bytes observed at an HTTP transport boundary. It is
+// used only when a request body cannot be cloned before RoundTrip.
+func (a *APIAttempt) SetRequestBody(body []byte, exact bool) {
 	if !a.Active() {
 		return
 	}
 	a.mu.Lock()
 	a.meta.RequestBody = append([]byte(nil), body...)
+	a.meta.RequestBodyInexact = !exact
 	a.mu.Unlock()
 }
 
@@ -445,7 +448,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 			Method:         omitCredentialString(meta.Method, patterns, secretNames),
 			Endpoint:       omitCredentialString(sanitizeEndpointForAPILog(meta.Endpoint), patterns, secretNames),
 			Headers:        cloneCredentialFreeHTTPHeader(meta.Headers, patterns, secretNames),
-			Body:           encodeProviderBody(meta.RequestBody, patterns, secretNames),
+			Body:           encodeProviderBody(meta.RequestBody, meta.RequestBodyInexact, patterns, secretNames),
 			Model:          omitCredentialString(meta.RequestModel, patterns, secretNames),
 			HistoryMode:    omitCredentialString(string(meta.HistoryMode), patterns, secretNames),
 			EndpointFamily: omitCredentialString(meta.EndpointFamily, patterns, secretNames),
@@ -459,7 +462,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 	if result.Response != nil || result.StatusCode != 0 || result.ResponseBody != nil {
 		response := apilog.APIAttemptResponse{
 			StatusCode: omitCredentialInt(result.StatusCode, result.StatusCode != 0, patterns, secretNames),
-			Body:       encodeProviderBody(result.ResponseBody, patterns, secretNames),
+			Body:       encodeProviderBody(result.ResponseBody, result.ResponseBodyInexact, patterns, secretNames),
 		}
 		if result.Response != nil {
 			response.Model = omitCredentialString(result.Response.Model, patterns, secretNames)
@@ -519,11 +522,13 @@ func omitCredentialIntPointer(value *int, patterns, secretNames []string) *int {
 	return &copy
 }
 
-func encodeProviderBody(body []byte, patterns, secretNames []string) apilog.EncodedBody {
+func encodeProviderBody(body []byte, inexact bool, patterns, secretNames []string) apilog.EncodedBody {
 	if containsCredentialEvidenceParts(string(body), patterns, secretNames) {
 		return apilog.EncodedBody{CredentialValuesExcluded: true}
 	}
-	return apilog.EncodeBody(body)
+	encoded := apilog.EncodeBody(body)
+	encoded.Exact = !inexact
+	return encoded
 }
 
 func cloneCredentialFreeHTTPHeader(header http.Header, patterns, secretNames []string) apilog.EncodedHeader {

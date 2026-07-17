@@ -157,6 +157,46 @@ func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
 	}
 }
 
+func TestAPILoggerRejectsInvalidCanonicalRecordBeforeWrite(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+
+	oldWrite := apiLogFileWrite
+	oldSync := apiLogFileSync
+	t.Cleanup(func() {
+		apiLogFileWrite = oldWrite
+		apiLogFileSync = oldSync
+	})
+	writes := 0
+	syncs := 0
+	apiLogFileWrite = func(file *os.File, data []byte) (int, error) {
+		writes++
+		return oldWrite(file, data)
+	}
+	apiLogFileSync = func(file *os.File) error {
+		syncs++
+		return oldSync(file)
+	}
+
+	record := standaloneCanonicalAttempt("ag_invalid_record", 1)
+	record.Outcome = apilog.AttemptOutcomeClass("invented")
+	ctx := WithAPILogContext(context.Background(), "sess-invalid-record")
+	if err := logger.AppendAttempt(ctx, record); err == nil {
+		t.Fatal("AppendAttempt accepted an invalid canonical outcome")
+	}
+	if writes != 0 || syncs != 0 {
+		t.Fatalf("invalid record reached storage: writes=%d syncs=%d", writes, syncs)
+	}
+	path := filepath.Join(stateDir, "sessions", "sess-invalid-record.api.jsonl")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("invalid record opened a session leaf: %v", err)
+	}
+}
+
 func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)
@@ -257,22 +297,16 @@ func TestAPILoggerCanonicalShortWriteIsSticky(t *testing.T) {
 	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
 
 	first := standaloneCanonicalAttempt("ag_short_write", 1)
-	if err := logger.AppendAttempt(context.Background(), first); !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("short AppendAttempt error = %v, want io.ErrShortWrite", err)
-	}
+	assertDetachedAPILogError(t, logger.AppendAttempt(context.Background(), first), io.ErrShortWrite)
 	apiLogFileWrite = oldWrite
-	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_short_write", 1)); !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("AppendAttempt after short write = %v, want sticky io.ErrShortWrite", err)
-	}
+	assertDetachedAPILogError(t, logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_short_write", 1)), io.ErrShortWrite)
 	if writeCount != 1 || syncCount != 0 {
 		t.Fatalf("filesystem calls after short write = writes:%d syncs:%d, want 1 and 0", writeCount, syncCount)
 	}
 	if len(failures) != 1 {
 		t.Fatalf("short-write observations = %d, want 1: %+v", len(failures), failures)
 	}
-	if err := logger.Close(); !errors.Is(err, io.ErrShortWrite) {
-		t.Fatalf("Close error = %v, want sticky io.ErrShortWrite", err)
-	}
+	assertDetachedAPILogError(t, logger.Close(), io.ErrShortWrite)
 }
 
 func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
@@ -294,22 +328,16 @@ func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
 	var failures []APILogFailure
 	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
 
-	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_write_failure", 1)); !errors.Is(err, writeErr) {
-		t.Fatalf("AppendAttempt error = %v, want %v", err, writeErr)
-	}
+	assertDetachedAPILogError(t, logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_write_failure", 1)), writeErr)
 	apiLogFileWrite = oldWrite
-	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_write_failure", 1)); !errors.Is(err, writeErr) {
-		t.Fatalf("AppendAttempt after write failure = %v, want sticky %v", err, writeErr)
-	}
+	assertDetachedAPILogError(t, logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_write_failure", 1)), writeErr)
 	if writeCount != 1 {
 		t.Fatalf("write calls after quarantine = %d, want 1", writeCount)
 	}
 	if len(failures) != 1 {
 		t.Fatalf("write-failure observations = %d, want 1: %+v", len(failures), failures)
 	}
-	if err := logger.Close(); !errors.Is(err, writeErr) {
-		t.Fatalf("Close error = %v, want sticky %v", err, writeErr)
-	}
+	assertDetachedAPILogError(t, logger.Close(), writeErr)
 }
 
 func TestSessionAPILoggerReserveExistingRouteHonorsStickyQuarantineWithoutOpening(t *testing.T) {
@@ -331,9 +359,7 @@ func TestSessionAPILoggerReserveExistingRouteHonorsStickyQuarantineWithoutOpenin
 		return oldOpen(path)
 	}
 	t.Cleanup(func() { apiLogOpenFile = oldOpen })
-	if err := logger.ReserveSession(sessionID); !errors.Is(err, syncErr) {
-		t.Fatalf("ReserveSession existing route = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.ReserveSession(sessionID), syncErr)
 	if openCalls != 0 {
 		t.Fatalf("ReserveSession existing route opened %d files after quarantine", openCalls)
 	}
@@ -355,9 +381,7 @@ func TestSessionAPILoggerReserveNewRouteHonorsStickyQuarantineWithoutOpening(t *
 		return nil, errors.New("unexpected open after quarantine")
 	}
 	t.Cleanup(func() { apiLogOpenFile = oldOpen })
-	if err := logger.ReserveSession("sess-new-route"); !errors.Is(err, syncErr) {
-		t.Fatalf("ReserveSession new route = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.ReserveSession("sess-new-route"), syncErr)
 	if openCalls != 0 {
 		t.Fatalf("ReserveSession new route opened %d files after quarantine", openCalls)
 	}
@@ -381,21 +405,15 @@ func TestAPILoggerFailureObserverCanCloseSynchronously(t *testing.T) {
 		observerCloseErr = logger.Close()
 	})
 	appendErr := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_observer_close", 1))
-	if !errors.Is(appendErr, syncErr) {
-		t.Fatalf("AppendAttempt = %v, want %v", appendErr, syncErr)
-	}
+	assertDetachedAPILogError(t, appendErr, syncErr)
 	if observerCalls != 1 {
 		t.Fatalf("observer calls = %d, want 1", observerCalls)
 	}
-	if !errors.Is(observerCloseErr, syncErr) {
-		t.Fatalf("observer Close = %v, want sticky %v", observerCloseErr, syncErr)
-	}
+	assertDetachedAPILogError(t, observerCloseErr, syncErr)
 	if err := logger.ReserveSession("late-session"); !errors.Is(err, errAPILoggerClosed) {
 		t.Fatalf("ReserveSession after observer Close = %v, want logger closed", err)
 	}
-	if err := logger.Close(); !errors.Is(err, syncErr) {
-		t.Fatalf("repeated Close = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.Close(), syncErr)
 }
 
 func quarantineSessionLogger(t *testing.T, logger *APILogger, sessionID string) error {
@@ -405,19 +423,32 @@ func quarantineSessionLogger(t *testing.T, logger *APILogger, sessionID string) 
 	apiLogFileSync = func(*os.File) error { return syncErr }
 	t.Cleanup(func() { apiLogFileSync = oldSync })
 	err := logger.AppendAttempt(WithAPILogContext(context.Background(), sessionID), standaloneCanonicalAttempt("ag_quarantine_reserve", 1))
-	if !errors.Is(err, syncErr) {
-		t.Fatalf("AppendAttempt = %v, want %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, err, syncErr)
 	apiLogFileSync = oldSync
 	return syncErr
 }
 
 func assertStickyClose(t *testing.T, logger *APILogger, stickyErr error) {
 	t.Helper()
+	var firstText string
 	for call := 1; call <= 2; call++ {
-		if err := logger.Close(); !errors.Is(err, stickyErr) {
-			t.Fatalf("Close call %d = %v, want sticky %v", call, err, stickyErr)
+		err := logger.Close()
+		assertDetachedAPILogError(t, err, stickyErr)
+		if call == 1 {
+			firstText = err.Error()
+		} else if err.Error() != firstText {
+			t.Fatalf("Close call %d = %q, want sticky %q", call, err, firstText)
 		}
+	}
+}
+
+func assertDetachedAPILogError(t *testing.T, got, raw error) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("API-log operation succeeded; want detached failure for %v", raw)
+	}
+	if errors.Is(got, raw) || errors.Unwrap(got) != nil {
+		t.Fatalf("API-log failure retained raw error graph: %v", got)
 	}
 }
 
@@ -741,9 +772,7 @@ func TestAPILoggerCanonicalSyncFailureQuarantinesAllSessionRoutes(t *testing.T) 
 	completeCanonicalGroup(t, logger, "sess-b", "ag_session_b_sync", time.Unix(1_700_000_001, 0).UTC())
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); !errors.Is(err, syncErr) {
-		t.Fatalf("Close = %v, want sticky %v", err, syncErr)
-	}
+	assertDetachedAPILogError(t, logger.Close(), syncErr)
 	if len(failures) != 1 {
 		t.Fatalf("sync failure observer calls = %d, want one session A failure: %+v", len(failures), failures)
 	}

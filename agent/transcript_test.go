@@ -2011,6 +2011,8 @@ func TestReadSessionTranscriptRejectsInvalidSourceCombinationsBeforeOpeningTrans
 	}
 }
 
+func testAPILogInt(value int) *int { return &value }
+
 func testAPIAttemptRecord(groupID string, index int, request, response []byte) apilog.APIAttemptRecord {
 	return apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
@@ -2030,7 +2032,7 @@ func testAPIAttemptRecord(groupID string, index int, request, response []byte) a
 			HistoryMode: "messages",
 		},
 		Response: &apilog.APIAttemptResponse{
-			StatusCode: 200,
+			StatusCode: testAPILogInt(200),
 			Body:       apilog.EncodeBody(response),
 			Model:      "gpt-test-result",
 		},
@@ -2135,6 +2137,47 @@ func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T
 	responseBody := attemptSummary["response_body"].(map[string]any)
 	if responseBody["encoding"] != "base64" || responseBody["byte_count"] != float64(attempt.Response.Body.ByteCount) {
 		t.Errorf("response body evidence = %#v", responseBody)
+	}
+}
+
+func TestReadSessionTranscriptAPILogPreservesNumericEvidencePresence(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+
+	present := testAPIAttemptRecord("ag_numeric_present", 1, nil, nil)
+	present.Response.StatusCode = testAPILogInt(0)
+	present.Response.Usage = apilog.Usage{
+		InputTokens:  testAPILogInt(0),
+		OutputTokens: testAPILogInt(0),
+		TotalTokens:  testAPILogInt(0),
+	}
+	absent := testAPIAttemptRecord("ag_numeric_absent", 1, nil, nil)
+	absent.Response.StatusCode = nil
+	absent.Response.Usage = apilog.Usage{}
+	writeTestAPILog(t, dir, sessionID, present, absent)
+
+	envelope := decodeReadEnvelope(t, marshalRead(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{
+		"source": apiLogSource,
+	}))
+	records := envelope["records"].([]any)
+	presentSummary := records[0].(map[string]any)
+	if value, ok := presentSummary["status_code"]; !ok || value != float64(0) {
+		t.Fatalf("present zero status = %#v, present %v", value, ok)
+	}
+	presentUsage := presentSummary["usage"].(map[string]any)
+	for _, name := range []string{"input_tokens", "output_tokens", "total_tokens"} {
+		if value, ok := presentUsage[name]; !ok || value != float64(0) {
+			t.Fatalf("present zero %s = %#v, present %v", name, value, ok)
+		}
+	}
+	absentSummary := records[1].(map[string]any)
+	if _, ok := absentSummary["status_code"]; ok {
+		t.Fatalf("absent status was projected as %#v", absentSummary["status_code"])
+	}
+	absentUsage := absentSummary["usage"].(map[string]any)
+	if len(absentUsage) != 0 {
+		t.Fatalf("absent usage projected numeric evidence: %#v", absentUsage)
 	}
 }
 

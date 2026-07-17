@@ -40,7 +40,7 @@ func canonicalAPIAttemptLineFor(t *testing.T, provider, endpointFamily string, o
 			Body:           apilog.EncodeBody([]byte("{}")),
 		},
 		Response: &apilog.APIAttemptResponse{
-			StatusCode: statusCode,
+			StatusCode: &statusCode,
 			Body:       apilog.EncodeBody(body),
 		},
 		Outcome: outcome,

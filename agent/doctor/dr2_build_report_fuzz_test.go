@@ -421,15 +421,20 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 		attempt.ErrorMessage = "boom"
 	}
 	if r.doctor_bool() {
+		statusCode := 200
+		textLength := r.doctor_int(500)
+		toolCallCount := r.doctor_int(5)
+		inputTokens := r.doctor_int(100000)
+		outputTokens := r.doctor_int(1000)
 		resp := &apilog.APIAttemptResponse{
-			StatusCode:    200,
+			StatusCode:    &statusCode,
 			Body:          apilog.EncodeBody([]byte("{}")),
 			FinishReason:  dr2_maybeStr(r, "stop"),
-			TextLength:    r.doctor_int(500),
-			ToolCallCount: r.doctor_int(5),
+			TextLength:    &textLength,
+			ToolCallCount: &toolCallCount,
 			Usage: apilog.Usage{
-				InputTokens:  r.doctor_int(100000),
-				OutputTokens: r.doctor_int(1000),
+				InputTokens:  &inputTokens,
+				OutputTokens: &outputTokens,
 			},
 		}
 		if r.doctor_bool() {

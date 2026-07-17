@@ -151,6 +151,16 @@ func TestAPIAttemptCompleteDoesNotDrainOrCloseResponseBody(t *testing.T) {
 	if got := string(reporter.observedBytes()); got != "observed-" {
 		t.Fatalf("observed response = %q, want only adapter bytes", got)
 	}
+	recorded := onlyAttempt(t, sink)
+	if recorded.Response == nil {
+		t.Fatal("durable attempt omitted the observed response")
+	}
+	if recorded.Response.Body.Exact {
+		t.Fatal("durable partial response was marked exact")
+	}
+	if got, err := apilog.DecodeBody(recorded.Response.Body); err != nil || string(got) != "observed-" {
+		t.Fatalf("durable observed response = %q, %v; want %q, nil", got, err, "observed-")
+	}
 }
 
 func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
@@ -211,6 +221,13 @@ func TestAPIAttemptCompleteDoesNotWaitForUnconsumedRequestBody(t *testing.T) {
 	}
 	if got := observedRequestBody.observedBytes(); len(got) != 0 {
 		t.Fatalf("unconsumed request recorded %d bytes", len(got))
+	}
+	recorded := onlyAttempt(t, sink)
+	if recorded.Request.Body.Exact {
+		t.Fatal("durable unconsumed request was marked exact")
+	}
+	if got, err := apilog.DecodeBody(recorded.Request.Body); err != nil || len(got) != 0 {
+		t.Fatalf("durable unconsumed request = %q, %v; want empty, nil", got, err)
 	}
 }
 
@@ -373,6 +390,13 @@ func TestAPIAttemptKnownContentLengthIsExactWithoutEOF(t *testing.T) {
 		t.Fatal("known-length response remained inexact after all bytes were observed without EOF")
 	}
 	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	recorded := onlyAttempt(t, sink)
+	if !recorded.Request.Body.Exact {
+		t.Fatal("durable known-length request was marked inexact")
+	}
+	if recorded.Response == nil || !recorded.Response.Body.Exact {
+		t.Fatal("durable known-length response was marked inexact")
+	}
 }
 
 func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
