@@ -66,7 +66,7 @@ func writeSession(t *testing.T, stateDir, id, wd string) {
 		t.Fatal(err)
 	}
 	sess := filepath.Join(stateDir, "sessions")
-	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
 		if err := os.WriteFile(filepath.Join(sess, id+suffix), []byte("x\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -88,6 +88,19 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	sessionsDir := filepath.Join(stateDir, "sessions")
+	otherSessionArtifact := filepath.Join(sessionsDir, projectDeleteCanonicalSessionIDs[1]+".api.jsonl")
+	prefixCollision := filepath.Join(sessionsDir, webTestSessionID+"-notes.txt")
+	unrelatedArtifact := filepath.Join(sessionsDir, "operator-notes.txt")
+	for _, path := range []string{otherSessionArtifact, prefixCollision, unrelatedArtifact} {
+		if err := os.WriteFile(path, []byte("keep\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prefixedDirectory := filepath.Join(sessionsDir, webTestSessionID+".directory")
+	if err := os.Mkdir(prefixedDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	dbPath := filepath.Join(root, "index.db")
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	_ = past.Rebuild()
@@ -112,7 +125,7 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if len(resp.Deleted) != 1 {
 		t.Fatalf("want 1 deleted ref, got %+v", resp)
 	}
-	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".api-raw.jsonl"} {
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
 		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); !os.IsNotExist(err) {
 			t.Fatalf("%s should be removed", suffix)
 		}
@@ -120,9 +133,29 @@ func TestProjectDeleteRemovesFilesAndScrubs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); !os.IsNotExist(err) {
 		t.Fatal("per-session dir should be removed")
 	}
+	for _, path := range []string{otherSessionArtifact, prefixCollision, unrelatedArtifact, prefixedDirectory} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("unrelated path %s was touched: %v", path, err)
+		}
+	}
 	d, _ := archive.Decisions()
 	if _, present := d[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}]; present {
 		t.Fatalf("session archive row should be scrubbed: %v", d)
+	}
+}
+
+func TestRemoveFlatProjectSessionArtifactsRejectsInvalidSessionID(t *testing.T) {
+	sessionsDir := t.TempDir()
+	artifact := filepath.Join(sessionsDir, "invalid.future-artifact")
+	if err := os.WriteFile(artifact, []byte("keep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeFlatProjectSessionArtifacts(sessionsDir, "invalid"); err == nil {
+		t.Fatal("invalid session ID must be rejected")
+	}
+	if _, err := os.Stat(artifact); err != nil {
+		t.Fatalf("invalid session ID removed an artifact: %v", err)
 	}
 }
 
@@ -289,6 +322,54 @@ func TestProjectDeleteRefusesWhenLive(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); os.IsNotExist(err) {
 		t.Fatal("nothing should be removed when refused")
+	}
+}
+
+func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+
+	checks := 0
+	oldProjectSessionLive := projectSessionLive
+	projectSessionLive = func(*hubcore.Roster, string) bool {
+		checks++
+		return checks > 1
+	}
+	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
+		t.Fatalf("session that became live must only be skipped: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
+		t.Fatalf("live session artifact was removed: %v", err)
 	}
 }
 

@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -130,19 +132,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		sess := filepath.Join(e.StateDir, "sessions")
-		var removeErr error
-		for _, p := range []string{
-			filepath.Join(sess, e.ID+".meta.json"),
-			filepath.Join(sess, e.ID+".transcript.jsonl"),
-			filepath.Join(sess, e.ID+".log.jsonl"),
-			filepath.Join(sess, e.ID+".api.jsonl"),
-			filepath.Join(sess, e.ID+".api-raw.jsonl"),
-		} {
-			if err := removeProjectSessionFile(p); err != nil && !os.IsNotExist(err) {
-				removeErr = err
-				break
-			}
-		}
+		removeErr := removeFlatProjectSessionArtifacts(sess, e.ID)
 		if removeErr != nil {
 			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: removeErr.Error()})
 			continue
@@ -171,6 +161,29 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		s.cfg.PokeAttention()
 	}
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
+}
+
+func removeFlatProjectSessionArtifacts(sessionsDir, sessionID string) error {
+	if err := identifier.ValidateSessionID(sessionID); err != nil {
+		return fmt.Errorf("invalid session ID: %w", err)
+	}
+	entries, err := os.ReadDir(sessionsDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read sessions directory: %w", err)
+	}
+	prefix := sessionID + "."
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		if err := removeProjectSessionFile(filepath.Join(sessionsDir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func appendProjectDeleteLiveSkip(skipped []projectDeleteSkip, id string) []projectDeleteSkip {
