@@ -93,6 +93,9 @@ func TestSessionAPILoggerCanonicalPermissionsAndRouting(t *testing.T) {
 		if err := os.Mkdir(sessionsDir, 0o755); err != nil {
 			t.Fatalf("mkdir sessions: %v", err)
 		}
+		if err := os.Chmod(sessionsDir, 0o755); err != nil {
+			t.Fatalf("chmod sessions: %v", err)
+		}
 		path := filepath.Join(sessionsDir, "sess-repair.api.jsonl")
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
 			t.Fatalf("create permissive API file: %v", err)
