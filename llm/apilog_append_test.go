@@ -312,6 +312,115 @@ func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
 	}
 }
 
+func TestSessionAPILoggerReserveExistingRouteHonorsStickyQuarantineWithoutOpening(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	const sessionID = "sess-existing-route"
+	if err := logger.ReserveSession(sessionID); err != nil {
+		t.Fatalf("ReserveSession: %v", err)
+	}
+	syncErr := quarantineSessionLogger(t, logger, sessionID)
+
+	oldOpen := apiLogOpenFile
+	openCalls := 0
+	apiLogOpenFile = func(path string) (*os.File, error) {
+		openCalls++
+		return oldOpen(path)
+	}
+	t.Cleanup(func() { apiLogOpenFile = oldOpen })
+	if err := logger.ReserveSession(sessionID); !errors.Is(err, syncErr) {
+		t.Fatalf("ReserveSession existing route = %v, want sticky %v", err, syncErr)
+	}
+	if openCalls != 0 {
+		t.Fatalf("ReserveSession existing route opened %d files after quarantine", openCalls)
+	}
+	assertStickyClose(t, logger, syncErr)
+}
+
+func TestSessionAPILoggerReserveNewRouteHonorsStickyQuarantineWithoutOpening(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	syncErr := quarantineSessionLogger(t, logger, "sess-failed-route")
+
+	oldOpen := apiLogOpenFile
+	openCalls := 0
+	apiLogOpenFile = func(string) (*os.File, error) {
+		openCalls++
+		return nil, errors.New("unexpected open after quarantine")
+	}
+	t.Cleanup(func() { apiLogOpenFile = oldOpen })
+	if err := logger.ReserveSession("sess-new-route"); !errors.Is(err, syncErr) {
+		t.Fatalf("ReserveSession new route = %v, want sticky %v", err, syncErr)
+	}
+	if openCalls != 0 {
+		t.Fatalf("ReserveSession new route opened %d files after quarantine", openCalls)
+	}
+	assertStickyClose(t, logger, syncErr)
+}
+
+func TestAPILoggerFailureObserverCanCloseSynchronously(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	syncErr := errors.New("observer close sync failure")
+	oldSync := apiLogFileSync
+	apiLogFileSync = func(*os.File) error { return syncErr }
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+
+	observerCalls := 0
+	var observerCloseErr error
+	logger.SetFailureObserver(func(APILogFailure) {
+		observerCalls++
+		observerCloseErr = logger.Close()
+	})
+	appendErr := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_observer_close", 1))
+	if !errors.Is(appendErr, syncErr) {
+		t.Fatalf("AppendAttempt = %v, want %v", appendErr, syncErr)
+	}
+	if observerCalls != 1 {
+		t.Fatalf("observer calls = %d, want 1", observerCalls)
+	}
+	if !errors.Is(observerCloseErr, syncErr) {
+		t.Fatalf("observer Close = %v, want sticky %v", observerCloseErr, syncErr)
+	}
+	if err := logger.ReserveSession("late-session"); !errors.Is(err, errAPILoggerClosed) {
+		t.Fatalf("ReserveSession after observer Close = %v, want logger closed", err)
+	}
+	if err := logger.Close(); !errors.Is(err, syncErr) {
+		t.Fatalf("repeated Close = %v, want sticky %v", err, syncErr)
+	}
+}
+
+func quarantineSessionLogger(t *testing.T, logger *APILogger, sessionID string) error {
+	t.Helper()
+	syncErr := errors.New("session logger sync failure")
+	oldSync := apiLogFileSync
+	apiLogFileSync = func(*os.File) error { return syncErr }
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+	err := logger.AppendAttempt(WithAPILogContext(context.Background(), sessionID), standaloneCanonicalAttempt("ag_quarantine_reserve", 1))
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("AppendAttempt = %v, want %v", err, syncErr)
+	}
+	apiLogFileSync = oldSync
+	return syncErr
+}
+
+func assertStickyClose(t *testing.T, logger *APILogger, stickyErr error) {
+	t.Helper()
+	for call := 1; call <= 2; call++ {
+		if err := logger.Close(); !errors.Is(err, stickyErr) {
+			t.Fatalf("Close call %d = %v, want sticky %v", call, err, stickyErr)
+		}
+	}
+}
+
 func TestAPILoggerFailureDoesNotChangeProviderResult(t *testing.T) {
 	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {

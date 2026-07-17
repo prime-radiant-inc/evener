@@ -33,6 +33,7 @@ func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 }
 
 var apiLogJSONMarshal = json.Marshal
+var apiLogOpenFile = openPrivateAPILogFile
 var apiLogFileWrite = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
 var apiLogFileClose = func(f *os.File) error { return f.Close() }
@@ -116,7 +117,7 @@ func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 		}
 		return f, nil
 	}
-	f, err := openPrivateAPILogFile(filepath.Join(l.sessionsDir, base+".api.jsonl"))
+	f, err := apiLogOpenFile(filepath.Join(l.sessionsDir, base+".api.jsonl"))
 	if err != nil {
 		l.sessionFiles[base] = nil
 		return nil, err
@@ -135,6 +136,9 @@ func (l *APILogger) ReserveSession(sessionID string) error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.quarantineErr != nil {
+		return observedAPILogError{err: l.quarantineErr}
+	}
 	if l.sessionsDir == "" {
 		return errors.New("API logger does not route session files")
 	}
@@ -338,6 +342,12 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	if err := l.admitCanonicalAppend(); err != nil {
 		return err
 	}
+	var observation *APILogFailure
+	defer func() {
+		if observation != nil {
+			l.observeAPILogFailure(*observation)
+		}
+	}()
 	defer l.canonicalAppends.Done()
 
 	data, err := apiLogJSONMarshal(record)
@@ -365,26 +375,31 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 	line := append(data, '\n')
 	written, writeErr := apiLogFileWrite(f, line)
 	if writeErr != nil {
-		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: %w", writeErr))
+		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: %w", writeErr))
+		observation = &observedFailure
+		return appendErr
 	}
 	if written != len(line) {
-		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: wrote %d of %d bytes: %w", written, len(line), io.ErrShortWrite))
+		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: wrote %d of %d bytes: %w", written, len(line), io.ErrShortWrite))
+		observation = &observedFailure
+		return appendErr
 	}
 	if err := apiLogFileSync(f); err != nil {
-		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
+		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
+		observation = &observedFailure
+		return appendErr
 	}
 	l.mu.Unlock()
 	return nil
 }
 
-func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure APILogFailure, err error) error {
+func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure APILogFailure, err error) (error, APILogFailure) {
 	credentialMaterial, _ := apiLogCredentialMaterialFromContext(ctx)
 	err = sanitizeAPILogError(err, credentialMaterial)
 	l.quarantineErr = err
 	failure.Err = err
 	l.mu.Unlock()
-	l.observeAPILogFailure(failure)
-	return observedAPILogError{err: err}
+	return observedAPILogError{err: err}, failure
 }
 
 func (l *APILogger) admitCanonicalAppend() error {
