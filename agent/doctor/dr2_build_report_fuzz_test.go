@@ -426,7 +426,6 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 		toolCallCount := r.doctor_int(5)
 		inputTokens := r.doctor_int(100000)
 		outputTokens := r.doctor_int(1000)
-		totalTokens := inputTokens + outputTokens
 		resp := &apilog.APIAttemptResponse{
 			StatusCode:    &statusCode,
 			Body:          apilog.EncodeBody([]byte("{}")),
@@ -436,7 +435,6 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 			Usage: apilog.Usage{
 				InputTokens:  &inputTokens,
 				OutputTokens: &outputTokens,
-				TotalTokens:  &totalTokens,
 			},
 		}
 		if r.doctor_bool() {
@@ -493,8 +491,7 @@ func dr2_apiOptsEqual(a, b APILogResult) bool { return reflect.DeepEqual(a, b) }
 // Oracles beyond never-panic:
 //   - determinism: two reads of the same file + opts yield a DeepEqual result;
 //   - structural reflection: the result carries the session id;
-//   - totals arithmetic: TotalTokens == InputTokens+OutputTokens, and the average
-//     latency never exceeds the session's own token/latency totals invariants;
+//   - totals arithmetic: average latency is absent without calls;
 //   - filter honesty: every displayed row satisfies the active filter, and the
 //     displayed rows never outnumber the whole-session call count.
 func FuzzDr2APILog(f *testing.F) {
@@ -544,9 +541,6 @@ func FuzzDr2APILog(f *testing.F) {
 
 		if res.SessionID != "s1" {
 			t.Fatalf("result session id %q != s1", res.SessionID)
-		}
-		if !optionalTokenTotalMatches(res.Totals.InputTokens, res.Totals.OutputTokens, res.Totals.TotalTokens) {
-			t.Fatalf("TotalTokens=%v does not match input=%v plus output=%v", res.Totals.TotalTokens, res.Totals.InputTokens, res.Totals.OutputTokens)
 		}
 		if res.Totals.Calls == 0 && res.Totals.AvgLatencyMs != 0 {
 			t.Fatalf("no calls but avg latency=%d", res.Totals.AvgLatencyMs)

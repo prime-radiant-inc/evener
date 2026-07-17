@@ -382,7 +382,9 @@ func runDoctorFilesystemProgram(t *testing.T, fixture doctorFilesystemProgramFix
 	for _, opts := range apiOpts {
 		result, err := APILog(fixture.base, fixture.rootSID, opts)
 		if err != nil || result.SessionID != fixture.rootSID ||
-			!optionalTokenTotalMatches(result.Totals.InputTokens, result.Totals.OutputTokens, result.Totals.TotalTokens) {
+			!hasIntValue(result.Totals.InputTokens, 71000) ||
+			!hasIntValue(result.Totals.OutputTokens, 700) ||
+			!hasIntValue(result.Totals.TotalTokens, 71700) {
 			t.Fatalf("APILog(%#v) = %#v, %v", opts, result, err)
 		}
 		trace.APILogs = append(trace.APILogs, result)

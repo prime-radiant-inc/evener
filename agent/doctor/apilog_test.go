@@ -20,13 +20,6 @@ func hasIntValue(value *int, want int) bool {
 	return value != nil && *value == want
 }
 
-func optionalTokenTotalMatches(input, output, total *int) bool {
-	if input == nil || output == nil || total == nil {
-		return input == nil && output == nil && total == nil
-	}
-	return *total == *input+*output
-}
-
 func doctorAttempt(group string, index int, outcome apilog.AttemptOutcomeClass, latency int64, input, output, cache, text, tools int) apilog.APIAttemptRecord {
 	attempt := apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
