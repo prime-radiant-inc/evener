@@ -1121,13 +1121,14 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 	prompt := noteElicitationPrompt + "\n\n--- CONVERSATION SO FAR ---\n" + renderHistoryForElicit(history, noteElicitChars)
 	var resp llm.Response
 	var lastErr error
+	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
 	for _, route := range routes {
 		req := llm.Request{
 			Model:    route.model,
 			Provider: route.provider,
 			Messages: []llm.Message{llm.User(prompt)},
 		}
-		resp, lastErr = cm.client.Complete(ctx, req)
+		resp, lastErr = cm.client.Complete(callCtx, req)
 		if lastErr == nil {
 			break
 		}
@@ -1135,6 +1136,7 @@ func (cm *Manager) ElicitNote(ctx context.Context, history []schema.Turn) (strin
 			break
 		}
 	}
+	attemptGroupScope.SettleResult(lastErr)
 	if lastErr != nil {
 		return "", lastErr
 	}
@@ -1301,13 +1303,14 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	}
 	var resp llm.Response
 	var lastErr error
+	callCtx, attemptGroupScope := llm.BeginAPIAttemptGroupScope(ctx)
 	for _, route := range routes {
 		req := llm.Request{
 			Model:    route.model,
 			Provider: route.provider,
 			Messages: []llm.Message{llm.User(prompt)},
 		}
-		resp, lastErr = cm.client.Complete(ctx, req)
+		resp, lastErr = cm.client.Complete(callCtx, req)
 		if lastErr == nil {
 			break
 		}
@@ -1315,6 +1318,7 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 			break
 		}
 	}
+	attemptGroupScope.SettleResult(lastErr)
 	if lastErr != nil {
 		return nil, lastErr
 	}
