@@ -3,14 +3,12 @@ package transport
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
@@ -32,77 +30,14 @@ func (*responseAssociationSink) AppendSettlement(context.Context, apilog.APIAtte
 	return nil
 }
 
-func (s *responseAssociationSink) count() int {
+func (s *responseAssociationSink) snapshot() []apilog.APIAttemptRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.attempts)
+	return append([]apilog.APIAttemptRecord(nil), s.attempts...)
 }
 
-func TestAPIAttemptRedirectCredentialsSanitizeFinalTransportError(t *testing.T) {
-	const (
-		querySecret  = "redirect-query-credential-sentinel"
-		headerSecret = "redirect-header-credential-sentinel"
-	)
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_redirect_credentials")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	transportCalls := 0
-	client := &http.Client{
-		Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
-			transportCalls++
-			if transportCalls == 1 {
-				return &http.Response{
-					StatusCode: http.StatusFound,
-					Header:     http.Header{"Location": []string{"https://provider.test/final"}},
-					Body:       http.NoBody,
-				}, nil
-			}
-			return nil, errors.New("transport failed for " + request.URL.String() + " with " + request.Header.Get("Authorization"))
-		}),
-		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-			query := request.URL.Query()
-			query.Set("access_token", querySecret)
-			request.URL.RawQuery = query.Encode()
-			request.Header.Set("Authorization", "Bearer "+headerSecret)
-			return nil
-		},
-	}
-
-	_, attempt, transportErr := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
-	if transportErr == nil {
-		t.Fatal("redirect final request unexpectedly succeeded")
-	}
-	if attempt == nil {
-		t.Fatal("redirect final transport failure did not retain its canonical attempt")
-	}
-	attempt.Complete(llm.APIAttemptResult{Err: transportErr}, llm.APITimeoutNone, nil, transportErr)
-
-	sink.mu.Lock()
-	attempts := append([]apilog.APIAttemptRecord(nil), sink.attempts...)
-	sink.mu.Unlock()
-	if len(attempts) != 2 {
-		t.Fatalf("canonical attempts = %d, want redirect and final transport failure", len(attempts))
-	}
-	encoded, err := json.Marshal(attempts[1])
-	if err != nil {
-		t.Fatalf("marshal final attempt: %v", err)
-	}
-	for _, secret := range []string{querySecret, headerSecret} {
-		if bytes.Contains(encoded, []byte(secret)) {
-			t.Fatalf("final redirect attempt contains credential sentinel %q: %s", secret, encoded)
-		}
-	}
-	if attempts[1].Outcome != apilog.AttemptTransportFail {
-		t.Fatalf("final redirect outcome = %q, want transport_failure", attempts[1].Outcome)
-	}
+func (s *responseAssociationSink) count() int {
+	return len(s.snapshot())
 }
 
 type responseAssociationRoundTripper func(*http.Request) (*http.Response, error)
@@ -111,961 +46,252 @@ func (f responseAssociationRoundTripper) RoundTrip(request *http.Request) (*http
 	return f(request)
 }
 
-type concurrentCloseResponseBody struct {
-	readEntered chan struct{}
-	releaseRead chan struct{}
-	closed      chan struct{}
-	readOnce    sync.Once
-	closeOnce   sync.Once
-}
-
-type readAfterCloseRequestBody struct {
-	data          []byte
-	readEntered   chan struct{}
-	releaseRead   chan struct{}
-	readCompleted chan struct{}
-	readOnce      sync.Once
-	closeOnce     sync.Once
-}
-
-func (b *readAfterCloseRequestBody) Read(p []byte) (int, error) {
-	b.readOnce.Do(func() { close(b.readEntered) })
-	<-b.releaseRead
-	n := copy(p, b.data)
-	b.closeOnce.Do(func() { close(b.readCompleted) })
-	return n, io.EOF
-}
-
-func (*readAfterCloseRequestBody) Close() error { return nil }
-
-type responseCloseActionBody struct {
-	io.Reader
-	closeAction func()
-	closed      chan struct{}
-	closeOnce   sync.Once
-}
-
-type claimedReadAfterCloseBody struct {
-	data          []byte
-	readErr       error
-	readEntered   chan struct{}
-	closeReturned chan struct{}
-	appendEntered <-chan struct{}
-	readDone      chan struct{}
-	closeErr      error
-	wrapper       *apiAttemptResponseBody
-	readOnce      sync.Once
-	closeOnce     sync.Once
-}
-
-func (b *claimedReadAfterCloseBody) Read(p []byte) (int, error) {
-	b.readOnce.Do(func() { close(b.readEntered) })
-	<-b.closeReturned
-	b.wrapper.mu.Lock()
-	closing := b.wrapper.closing
-	b.wrapper.mu.Unlock()
-	if !closing {
-		<-b.appendEntered
-	}
-	n := copy(p, b.data)
-	close(b.readDone)
-	return n, b.readErr
-}
-
-func (b *claimedReadAfterCloseBody) Close() error {
-	b.closeOnce.Do(func() { close(b.closeReturned) })
-	return b.closeErr
-}
-
-type waitForReadAttemptSink struct {
-	mu            sync.Mutex
-	attempts      []apilog.APIAttemptRecord
-	appendEntered chan struct{}
-	readDone      <-chan struct{}
-}
-
-func (s *waitForReadAttemptSink) AppendAttempt(_ context.Context, attempt apilog.APIAttemptRecord) error {
-	close(s.appendEntered)
-	<-s.readDone
-	s.mu.Lock()
-	s.attempts = append(s.attempts, attempt)
-	s.mu.Unlock()
-	return nil
-}
-
-func (*waitForReadAttemptSink) AppendSettlement(context.Context, apilog.APIAttemptGroupSettlement) error {
-	return nil
-}
-
-type countedCloseBody struct {
-	io.Reader
-	mu         sync.Mutex
-	closeCount int
-	firstErr   error
-	nextErr    error
-}
-
-func (b *countedCloseBody) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.closeCount++
-	if b.closeCount == 1 {
-		return b.firstErr
-	}
-	return b.nextErr
-}
-
-func (b *countedCloseBody) count() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.closeCount
-}
-
-type redirectAdmittedReadBody struct {
-	data              []byte
-	readErr           error
-	closeErr          error
-	readEntered       chan struct{}
-	closeStarted      chan struct{}
-	concurrentEntered <-chan struct{}
-	readOnce          sync.Once
-	closeOnce         sync.Once
-	mu                sync.Mutex
-	closeCount        int
-}
-
-func (b *redirectAdmittedReadBody) Read(p []byte) (int, error) {
-	b.releaseReadAdmission()
-	<-b.closeStarted
-	<-b.concurrentEntered
-	return copy(p, b.data), b.readErr
-}
-
-func (b *redirectAdmittedReadBody) releaseReadAdmission() {
-	b.readOnce.Do(func() { close(b.readEntered) })
-}
-
-func (b *redirectAdmittedReadBody) Close() error {
-	b.mu.Lock()
-	b.closeCount++
-	b.mu.Unlock()
-	b.releaseClose()
-	return b.closeErr
-}
-
-func (b *redirectAdmittedReadBody) releaseClose() {
-	b.closeOnce.Do(func() { close(b.closeStarted) })
-}
-
-func (b *redirectAdmittedReadBody) count() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.closeCount
-}
-
-func (b *responseCloseActionBody) Close() error {
-	b.closeOnce.Do(func() {
-		if b.closeAction != nil {
-			b.closeAction()
-		}
-		close(b.closed)
-	})
-	return nil
-}
-
-func (b *concurrentCloseResponseBody) Read(p []byte) (int, error) {
-	b.readOnce.Do(func() { close(b.readEntered) })
-	select {
-	case <-b.releaseRead:
-		return copy(p, "complete-response-body"), io.EOF
-	case <-b.closed:
-		return 0, errors.New("response body closed during drain")
-	}
-}
-
-func (b *concurrentCloseResponseBody) Close() error {
-	b.closeOnce.Do(func() { close(b.closed) })
-	return nil
-}
-
-func TestAPIAttemptResponseAssociationReleasesOnClaimAndUnclaimedCloseExactlyOnce(t *testing.T) {
-	for _, testCase := range []struct {
-		name  string
-		claim bool
-	}{
-		{name: "final response claim", claim: true},
-		{name: "unclaimed redirect close"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			sink := &responseAssociationSink{}
-			ctx := llm.WithAPIAttemptSink(
-				llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_response_association")),
-				sink,
-			)
-			request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			roundTripper := &apiAttemptRoundTripper{
-				base: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-					return &http.Response{
-						StatusCode: http.StatusOK,
-						Header:     make(http.Header),
-						Body:       io.NopCloser(strings.NewReader("response-body")),
-					}, nil
-				}),
-				parentCtx: context.Background(),
-				build: func(*http.Request, []byte) llm.APIAttemptMeta {
-					return llm.APIAttemptMeta{ProviderInstance: "test"}
-				},
-			}
-			response, err := roundTripper.RoundTrip(request)
-			if err != nil {
-				t.Fatalf("RoundTrip: %v", err)
-			}
-			roundTripper.mu.Lock()
-			associated := len(roundTripper.responses)
-			roundTripper.mu.Unlock()
-			if associated != 1 {
-				t.Fatalf("response associations after RoundTrip = %d, want 1", associated)
-			}
-
-			if testCase.claim {
-				attempt := roundTripper.claimResponse(response)
-				if attempt == nil {
-					t.Fatal("final response association did not return its attempt")
-				}
-				_, _ = io.ReadAll(response.Body)
-				attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-			} else {
-				_, _ = io.ReadAll(response.Body)
-				if got := sink.count(); got != 0 {
-					t.Fatalf("unclaimed response completed before Close: %d", got)
-				}
-			}
-			if err := response.Body.Close(); err != nil {
-				t.Fatalf("Close: %v", err)
-			}
-			if err := response.Body.Close(); err != nil {
-				t.Fatalf("second Close: %v", err)
-			}
-			roundTripper.mu.Lock()
-			associated = len(roundTripper.responses)
-			roundTripper.mu.Unlock()
-			if associated != 0 {
-				t.Fatalf("response associations after ownership end = %d, want 0", associated)
-			}
-			if got := sink.count(); got != 1 {
-				t.Fatalf("attempt completions = %d, want exactly 1", got)
-			}
-		})
-	}
-}
-
-func TestAPIAttemptRedirectCloseUnblocksAdmittedCheckRedirectRead(t *testing.T) {
-	readErr := errors.New("redirect admitted read sentinel")
-	closeErr := errors.New("redirect underlying close sentinel")
-	concurrentEntered := make(chan struct{})
-	var concurrentOnce sync.Once
-	releaseConcurrent := func() {
-		concurrentOnce.Do(func() { close(concurrentEntered) })
-	}
-	body := &redirectAdmittedReadBody{
-		data:              []byte("redirect bytes consumed by CheckRedirect"),
-		readErr:           readErr,
-		closeErr:          closeErr,
-		readEntered:       make(chan struct{}),
-		closeStarted:      make(chan struct{}),
-		concurrentEntered: concurrentEntered,
-	}
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_redirect_admitted_read")),
+func attemptContext(groupID string, sink llm.APIAttemptSink) context.Context {
+	return llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
 		sink,
 	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var firstResponse *http.Response
-	var secondHopSawAppend bool
-	baseCalls := 0
-	roundTripper := &apiAttemptRoundTripper{
-		base: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
-			baseCalls++
-			if baseCalls == 1 {
-				return &http.Response{
-					StatusCode:    http.StatusFound,
-					Header:        http.Header{"Location": []string{"/next"}},
-					Body:          body,
-					ContentLength: 2<<10 + 1,
-				}, nil
-			}
-			secondHopSawAppend = sink.count() == 1
-			return &http.Response{
-				StatusCode: http.StatusOK,
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader("final response")),
-			}, nil
-		}),
-		parentCtx: context.Background(),
-		build: func(*http.Request, []byte) llm.APIAttemptMeta {
-			return llm.APIAttemptMeta{ProviderInstance: "test"}
-		},
-	}
-
-	type readResult struct {
-		body []byte
-		err  error
-	}
-	checkRedirectRead := make(chan readResult, 1)
-	concurrentClose := make(chan error, 1)
-	readResponseReady := make(chan *http.Response, 1)
-	closeResponseReady := make(chan *http.Response, 1)
-	var responseReadyOnce sync.Once
-	releaseResponses := func(response *http.Response) {
-		responseReadyOnce.Do(func() {
-			readResponseReady <- response
-			closeResponseReady <- response
-		})
-	}
-	client := &http.Client{
-		Transport: roundTripper,
-		CheckRedirect: func(request *http.Request, _ []*http.Request) error {
-			firstResponse = request.Response
-			wrappedBody, ok := firstResponse.Body.(*apiAttemptResponseBody)
-			if !ok {
-				return errors.New("redirect response did not retain canonical attempt body")
-			}
-			wrappedBody.mu.Lock()
-			wrappedBody.waitForClose = func(done <-chan struct{}) {
-				releaseConcurrent()
-				<-done
-			}
-			wrappedBody.mu.Unlock()
-			releaseResponses(firstResponse)
-			<-body.readEntered
-			return nil
-		},
-	}
-
-	type clientResult struct {
-		response *http.Response
-		err      error
-	}
-	clientDone := make(chan clientResult, 1)
-	var workers sync.WaitGroup
-	workers.Add(3)
-	defer func() {
-		releaseResponses(nil)
-		body.releaseReadAdmission()
-		body.releaseClose()
-		releaseConcurrent()
-		workers.Wait()
-	}()
-	go func() {
-		defer workers.Done()
-		response := <-readResponseReady
-		if response == nil {
-			return
-		}
-		buf := make([]byte, len(body.data))
-		n, readResponseErr := response.Body.Read(buf)
-		checkRedirectRead <- readResult{body: buf[:n], err: readResponseErr}
-	}()
-	go func() {
-		defer workers.Done()
-		response := <-closeResponseReady
-		if response == nil {
-			return
-		}
-		<-body.closeStarted
-		concurrentClose <- response.Body.Close()
-	}()
-	go func() {
-		defer workers.Done()
-		response, clientErr := client.Do(request)
-		clientDone <- clientResult{response: response, err: clientErr}
-	}()
-	proofDeadline := time.NewTimer(5 * time.Second)
-	defer proofDeadline.Stop()
-	var response *http.Response
-	select {
-	case result := <-clientDone:
-		response = result.response
-		if result.err != nil {
-			t.Fatalf("client.Do: %v", result.err)
-		}
-	case <-proofDeadline.C:
-		t.Fatal("client.Do deadlocked closing a redirect response with an admitted CheckRedirect read")
-	}
-	if !secondHopSawAppend {
-		t.Fatal("second redirect hop began before the unclaimed attempt append")
-	}
-	if got := sink.count(); got != 1 {
-		t.Fatalf("attempts appended before client return = %d, want 1 redirect attempt", got)
-	}
-	var read readResult
-	select {
-	case read = <-checkRedirectRead:
-	case <-proofDeadline.C:
-		t.Fatal("admitted CheckRedirect read did not return after client.Do")
-	}
-	if !bytes.Equal(read.body, body.data) {
-		t.Fatalf("CheckRedirect read = %q, want %q", read.body, body.data)
-	}
-	if read.err != readErr {
-		t.Fatalf("CheckRedirect read error = %v, want %v", read.err, readErr)
-	}
-	var concurrentCloseErr error
-	select {
-	case concurrentCloseErr = <-concurrentClose:
-	case <-proofDeadline.C:
-		t.Fatal("concurrent Close did not receive the owning Close result")
-	}
-	if got := concurrentCloseErr; got != closeErr {
-		t.Fatalf("concurrent Close error = %v, want cached %v", got, closeErr)
-	}
-	if got := body.count(); got != 1 {
-		t.Fatalf("underlying Close count = %d, want exactly 1", got)
-	}
-
-	sink.mu.Lock()
-	redirectAttempt := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(redirectAttempt.Response.Body)
-	if err != nil {
-		t.Fatalf("decode redirect response body: %v", err)
-	}
-	if !bytes.Equal(recordedBody, body.data) {
-		t.Fatalf("recorded redirect body = %q, want admitted bytes %q", recordedBody, body.data)
-	}
-	if redirectAttempt.Outcome != apilog.AttemptProviderReject {
-		t.Fatalf("redirect outcome = %q, want %q", redirectAttempt.Outcome, apilog.AttemptProviderReject)
-	}
-	if want := readErr.Error() + "\n" + closeErr.Error(); redirectAttempt.ErrorMessage != want {
-		t.Fatalf("redirect error = %q, want %q", redirectAttempt.ErrorMessage, want)
-	}
-	roundTripper.mu.Lock()
-	_, firstStillAssociated := roundTripper.responses[firstResponse]
-	roundTripper.mu.Unlock()
-	if firstStillAssociated {
-		t.Fatal("redirect response association was not released")
-	}
-
-	finalAttempt := roundTripper.claimResponse(response)
-	if finalAttempt == nil {
-		t.Fatal("final response did not retain its canonical attempt")
-	}
-	_, _ = io.ReadAll(response.Body)
-	finalAttempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-	if err := response.Body.Close(); err != nil {
-		t.Fatalf("close final response: %v", err)
-	}
-	roundTripper.mu.Lock()
-	remainingAssociations := len(roundTripper.responses)
-	roundTripper.mu.Unlock()
-	if remainingAssociations != 0 {
-		t.Fatalf("response associations after final cleanup = %d, want 0", remainingAssociations)
-	}
 }
 
-func TestAPIAttemptRequestSnapshotWaitsForAsynchronousTransportBodyClose(t *testing.T) {
-	requestBody := []byte("actual-asynchronously-consumed-request-body")
-	allowRead := make(chan struct{})
-	readFinished := make(chan struct{})
-	allowClose := make(chan struct{})
-	defer func() {
-		select {
-		case <-allowRead:
-		default:
-			close(allowRead)
-		}
-		select {
-		case <-allowClose:
-		default:
-			close(allowClose)
-		}
-	}()
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_async_request_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/request", bytes.NewReader(requestBody))
-	if err != nil {
-		t.Fatal(err)
+func attemptMeta(*http.Request, []byte) llm.APIAttemptMeta {
+	return llm.APIAttemptMeta{ProviderInstance: "test", RequestModel: "test-model"}
+}
+
+func onlyAttempt(t *testing.T, sink *responseAssociationSink) apilog.APIAttemptRecord {
+	t.Helper()
+	attempts := sink.snapshot()
+	if len(attempts) != 1 {
+		t.Fatalf("attempt count = %d, want 1", len(attempts))
 	}
+	return attempts[0]
+}
+
+func TestDoWithAPIAttemptsRecordsOneAttemptPerRoundTrip(t *testing.T) {
+	const (
+		requestBytes  = "request bytes read by transport"
+		responseBytes = "response bytes read by adapter"
+	)
+	transportCalls := 0
+	var requestObservation bodyObservationReporter
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
-		go func() {
-			<-allowRead
-			_, _ = io.ReadAll(request.Body)
-			close(readFinished)
-			<-allowClose
-			_ = request.Body.Close()
-		}()
+		transportCalls++
+		var ok bool
+		requestObservation, ok = request.Body.(bodyObservationReporter)
+		if !ok {
+			t.Fatalf("request body %T does not report observed bytes", request.Body)
+		}
+		got, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatalf("transport read request: %v", err)
+		}
+		if string(got) != requestBytes {
+			t.Fatalf("transport request = %q, want %q", got, requestBytes)
+		}
+		if err := request.Body.Close(); err != nil {
+			t.Fatalf("transport close request: %v", err)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader("response-body")),
+			Body:       io.NopCloser(strings.NewReader(responseBytes)),
 		}, nil
 	})}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
-	if err != nil {
-		t.Fatalf("DoWithAPIAttempts: %v", err)
-	}
-	defer response.Body.Close() //nolint:errcheck
-	if attempt == nil {
-		t.Fatal("final response did not claim canonical attempt")
-	}
-	completionDone := make(chan struct{})
-	go func() {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-		close(completionDone)
-	}()
-	select {
-	case <-completionDone:
-		t.Fatal("canonical completion returned before asynchronous request read began")
-	default:
-	}
-	close(allowRead)
-	<-readFinished
-	select {
-	case <-completionDone:
-		t.Fatal("canonical completion returned before transport closed request body")
-	default:
-	}
-	close(allowClose)
-	<-completionDone
-
-	if got := sink.count(); got != 1 {
-		t.Fatalf("canonical attempts = %d, want 1", got)
-	}
-	sink.mu.Lock()
-	recorded := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(recorded.Request.Body)
-	if err != nil {
-		t.Fatalf("decode request body: %v", err)
-	}
-	if !bytes.Equal(recordedBody, requestBody) {
-		t.Fatalf("recorded request body = %q, want actual consumed bytes %q", recordedBody, requestBody)
-	}
-}
-
-func TestAPIAttemptRequestBodyRejectsReadAfterTerminalClose(t *testing.T) {
-	request, err := http.NewRequest(http.MethodPost, "https://provider.test/request", strings.NewReader("unread-body"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := captureRequestBody(request)
-	if snapshot == nil {
-		t.Fatal("captureRequestBody returned no snapshot")
-	}
-	if err := request.Body.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := request.Body.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-	if _, err := request.Body.Read(make([]byte, 1)); !errors.Is(err, http.ErrBodyReadAfterClose) {
-		t.Fatalf("Read after terminal Close error = %v, want %v", err, http.ErrBodyReadAfterClose)
-	}
-	if got := snapshot(); len(got) != 0 {
-		t.Fatalf("snapshot after unread terminal Close = %q, want empty", got)
-	}
-}
-
-func TestAPIAttemptRequestSnapshotWaitsForReadThatOutlivesClose(t *testing.T) {
-	requestBody := &readAfterCloseRequestBody{
-		data:          []byte("final-bytes-returned-after-close"),
-		readEntered:   make(chan struct{}),
-		releaseRead:   make(chan struct{}),
-		readCompleted: make(chan struct{}),
-	}
 	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_read_after_close")),
-		sink,
+	request, err := http.NewRequestWithContext(
+		attemptContext("ag_one_round_trip", sink),
+		http.MethodPost,
+		"https://provider.test/v1",
+		io.NopCloser(strings.NewReader(requestBytes)),
 	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/request", requestBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	responseBody := &responseCloseActionBody{
-		Reader:      strings.NewReader("response"),
-		closed:      make(chan struct{}),
-		closeAction: func() { close(requestBody.releaseRead) },
-	}
-	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
-		go func() { _, _ = io.ReadAll(request.Body) }()
-		<-requestBody.readEntered
-		if err := request.Body.Close(); err != nil {
-			return nil, err
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responseBody}, nil
-	})}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
 	if err != nil {
 		t.Fatalf("DoWithAPIAttempts: %v", err)
 	}
-	if attempt == nil {
-		t.Fatal("final response did not claim canonical attempt")
+	gotResponse, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("adapter read response: %v", err)
 	}
-	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-	_ = response.Body.Close()
-	<-requestBody.readCompleted
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
 
-	if got := sink.count(); got != 1 {
-		t.Fatalf("canonical attempts = %d, want 1", got)
+	if transportCalls != 1 {
+		t.Fatalf("RoundTrip calls = %d, want 1", transportCalls)
 	}
-	sink.mu.Lock()
-	recorded := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(recorded.Request.Body)
+	if !requestObservation.observedExactly() {
+		t.Fatal("request observation is inexact after transport reached EOF")
+	}
+	if got := string(requestObservation.observedBytes()); got != requestBytes {
+		t.Fatalf("observed request = %q, want %q", got, requestBytes)
+	}
+	if string(gotResponse) != responseBytes {
+		t.Fatalf("adapter response = %q, want %q", gotResponse, responseBytes)
+	}
+	record := onlyAttempt(t, sink)
+	recordedRequest, err := apilog.DecodeBody(record.Request.Body)
 	if err != nil {
 		t.Fatalf("decode request body: %v", err)
 	}
-	if got, want := string(recordedBody), string(requestBody.data); got != want {
-		t.Fatalf("recorded request body = %q, want bytes returned by in-flight Read %q", got, want)
+	if string(recordedRequest) != requestBytes {
+		t.Fatalf("recorded request = %q, want %q", recordedRequest, requestBytes)
 	}
-}
-
-func TestAPIAttemptStreamingTransportClosesVisibleResponseBeforeRequestSnapshot(t *testing.T) {
-	requestBytes := []byte("streaming-request-body")
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_deferred_stream_request_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/stream", bytes.NewReader(requestBytes))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var transportRequestBody io.ReadCloser
-	responseBody := &responseCloseActionBody{Reader: strings.NewReader("data: done\n\n"), closed: make(chan struct{})}
-	client := &http.Client{
-		Timeout: time.Hour,
-		Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
-			transportRequestBody = request.Body
-			if _, err := io.ReadAll(request.Body); err != nil {
-				return nil, err
-			}
-			responseBody.closeAction = func() { _ = transportRequestBody.Close() }
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: responseBody}, nil
-		}),
-	}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
-	if err != nil {
-		t.Fatalf("DoWithAPIAttempts: %v", err)
-	}
-	if attempt == nil {
-		t.Fatal("final response did not claim canonical attempt")
-	}
-	originalSnapshot := attempt.requestBody
-	snapshotEntered := make(chan struct{})
-	releaseSnapshot := make(chan struct{})
-	attempt.requestBody = func() []byte {
-		close(snapshotEntered)
-		<-releaseSnapshot
-		return originalSnapshot()
-	}
-	completionDone := make(chan struct{})
-	go func() {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-		close(completionDone)
-	}()
-	<-snapshotEntered
-	closedBeforeSnapshot := false
-	select {
-	case <-responseBody.closed:
-		closedBeforeSnapshot = true
-	default:
-	}
-	_ = response.Body.Close()
-	close(releaseSnapshot)
-	<-completionDone
-	if !closedBeforeSnapshot {
-		t.Fatal("visible final response body was not closed before request snapshot")
-	}
-	if got := sink.count(); got != 1 {
-		t.Fatalf("canonical attempts = %d, want 1", got)
-	}
-	sink.mu.Lock()
-	recorded := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(recorded.Request.Body)
-	if err != nil {
-		t.Fatalf("decode request body: %v", err)
-	}
-	if !bytes.Equal(recordedBody, requestBytes) {
-		t.Fatalf("recorded request body = %q, want %q", recordedBody, requestBytes)
-	}
-}
-
-func TestAPIAttemptClaimedCloseWaitsForAdmittedResponseReadBeforeSnapshot(t *testing.T) {
-	readDone := make(chan struct{})
-	sink := &waitForReadAttemptSink{
-		appendEntered: make(chan struct{}),
-		readDone:      readDone,
-	}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_claimed_read_after_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/stream", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readErr := errors.New("final admitted read error")
-	closeErr := errors.New("visible response close error")
-	body := &claimedReadAfterCloseBody{
-		data:          []byte("final-response-bytes"),
-		readErr:       readErr,
-		readEntered:   make(chan struct{}),
-		closeReturned: make(chan struct{}),
-		appendEntered: sink.appendEntered,
-		readDone:      readDone,
-		closeErr:      closeErr,
-	}
-	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
-	})}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
-	if err != nil {
-		t.Fatalf("DoWithAPIAttempts: %v", err)
-	}
-	if attempt == nil {
-		t.Fatal("final response did not claim canonical attempt")
-	}
-	sharedBody, ok := response.Body.(*apiAttemptSharedResponseBody)
-	if !ok {
-		t.Fatalf("response body = %T, want shared final body", response.Body)
-	}
-	wrapper, ok := sharedBody.ReadCloser.(*apiAttemptResponseBody)
-	if !ok {
-		t.Fatalf("shared body inner = %T, want canonical attempt body", sharedBody.ReadCloser)
-	}
-	body.wrapper = wrapper
-	readResult := make(chan error, 1)
-	go func() {
-		_, readResultErr := response.Body.Read(make([]byte, len(body.data)))
-		readResult <- readResultErr
-	}()
-	<-body.readEntered
-	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, readErr, nil)
-	if err := <-readResult; !errors.Is(err, readErr) {
-		t.Fatalf("response Read error = %v, want %v", err, readErr)
-	}
-	sink.mu.Lock()
-	if len(sink.attempts) != 1 {
-		sink.mu.Unlock()
-		t.Fatalf("canonical attempts = %d, want 1", len(sink.attempts))
-	}
-	recorded := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(recorded.Response.Body)
+	recordedResponse, err := apilog.DecodeBody(record.Response.Body)
 	if err != nil {
 		t.Fatalf("decode response body: %v", err)
 	}
-	if !bytes.Equal(recordedBody, body.data) {
-		t.Fatalf("recorded response body = %q, want final admitted bytes %q", recordedBody, body.data)
-	}
-	if recorded.Outcome != apilog.AttemptDecodeFail {
-		t.Fatalf("admitted response read outcome = %q, want %q", recorded.Outcome, apilog.AttemptDecodeFail)
+	if string(recordedResponse) != responseBytes {
+		t.Fatalf("recorded response = %q, want %q", recordedResponse, responseBytes)
 	}
 }
 
-func TestAPIAttemptFinalVisibleBodySharesOneIdempotentClose(t *testing.T) {
-	firstCloseErr := errors.New("first visible close sentinel")
-	duplicateCloseErr := errors.New("duplicate underlying close")
-	underlying := &countedCloseBody{
-		Reader:   strings.NewReader("response"),
-		firstErr: firstCloseErr,
-		nextErr:  duplicateCloseErr,
-	}
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_shared_final_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &http.Client{
-		Timeout: time.Hour,
-		Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
-		}),
-	}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
-	if err != nil {
-		t.Fatalf("DoWithAPIAttempts: %v", err)
-	}
-	if attempt == nil || attempt.responseClose == nil {
-		t.Fatal("final response did not bind canonical close ownership")
-	}
-	firstErr := attempt.responseClose()
-	secondErr := response.Body.Close()
-	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-	thirdErr := response.Body.Close()
-	for i, closeResult := range []error{firstErr, secondErr, thirdErr} {
-		if closeResult != firstCloseErr {
-			t.Fatalf("Close result %d = %v, want identical sentinel %v", i+1, closeResult, firstCloseErr)
-		}
-	}
-	if got := underlying.count(); got != 1 {
-		t.Fatalf("underlying Close count = %d, want exactly 1", got)
-	}
-}
-
-func TestAPIAttemptClaimedResponseRejectsReadAfterTerminalClose(t *testing.T) {
-	underlying := &countedCloseBody{Reader: strings.NewReader("unread-response")}
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_response_read_after_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestDoWithAPIAttemptsRedirectCloseDoesNotReadBody(t *testing.T) {
+	redirectBody := &observingReadCloser{reader: strings.NewReader(strings.Repeat("r", 3<<10))}
+	baseCalls := 0
+	var redirectObservation bodyObservationReporter
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
+		baseCalls++
+		if baseCalls == 1 {
+			return &http.Response{
+				StatusCode:    http.StatusFound,
+				Header:        http.Header{"Location": []string{"https://provider.test/final"}},
+				Body:          redirectBody,
+				ContentLength: 3 << 10,
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("final")),
+		}, nil
 	})}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
+	client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+		var ok bool
+		redirectObservation, ok = request.Response.Body.(bodyObservationReporter)
+		if !ok {
+			return errors.New("redirect response does not report observations")
+		}
+		return nil
+	}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(attemptContext("ag_redirect", sink), http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
 	if err != nil {
 		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read final response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+	reads, closes := redirectBody.counts()
+	if reads != 0 {
+		t.Fatalf("instrumentation read redirect body %d times, want 0", reads)
+	}
+	if closes != 1 {
+		t.Fatalf("HTTP client redirect closes = %d, want 1 pass-through close", closes)
+	}
+	if redirectObservation == nil {
+		t.Fatal("redirect response observation was not captured")
+	}
+	if redirectObservation.observedExactly() {
+		t.Fatal("unread redirect response was marked exact after Close")
+	}
+	attempts := sink.snapshot()
+	if len(attempts) != 2 {
+		t.Fatalf("attempt count = %d, want redirect and final", len(attempts))
+	}
+	redirectBytes, err := apilog.DecodeBody(attempts[0].Response.Body)
+	if err != nil {
+		t.Fatalf("decode redirect body: %v", err)
+	}
+	if len(redirectBytes) != 0 {
+		t.Fatalf("redirect evidence contains %d unread bytes", len(redirectBytes))
+	}
+}
+
+func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
+	sink := &responseAssociationSink{}
+	ctx := attemptContext("ag_explicit_retries", sink)
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		transportCalls++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+		}, nil
+	})}
+	for i := 0; i < 2; i++ {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/v1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+		attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	}
+	if transportCalls != 2 {
+		t.Fatalf("RoundTrip calls = %d, want 2", transportCalls)
+	}
+	attempts := sink.snapshot()
+	if len(attempts) != 2 {
+		t.Fatalf("attempt records = %d, want 2", len(attempts))
+	}
+	if attempts[0].AttemptIndex != 1 || attempts[1].AttemptIndex != 2 {
+		t.Fatalf("attempt indexes = %d, %d; want 1, 2", attempts[0].AttemptIndex, attempts[1].AttemptIndex)
+	}
+}
+
+func TestDoWithAPIAttemptsTransportErrorRetainsOneAttempt(t *testing.T) {
+	transportErr := errors.New("transport failed")
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, transportErr
+	})}
+	sink := &responseAssociationSink{}
+	request, err := http.NewRequestWithContext(attemptContext("ag_transport_error", sink), http.MethodGet, "https://provider.test/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("DoWithAPIAttempts error = %v, want %v", err, transportErr)
 	}
 	if attempt == nil {
-		t.Fatal("final response did not claim canonical attempt")
+		t.Fatal("transport failure lost its attempt")
 	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	attempt.Complete(llm.APIAttemptResult{Err: err}, llm.APITimeoutNone, nil, transportErr)
+	record := onlyAttempt(t, sink)
+	if record.Outcome != apilog.AttemptTransportFail {
+		t.Fatalf("outcome = %q, want transport_failure", record.Outcome)
 	}
-	if _, err := response.Body.Read(make([]byte, 1)); !errors.Is(err, http.ErrBodyReadAfterClose) {
-		t.Fatalf("Read after terminal Close error = %v, want %v", err, http.ErrBodyReadAfterClose)
-	}
-	attempt.Complete(llm.APIAttemptResult{StatusCode: http.StatusOK}, llm.APITimeoutNone, nil, nil)
-	if got := underlying.count(); got != 1 {
-		t.Fatalf("underlying Close count = %d, want 1", got)
+	if record.Response != nil {
+		t.Fatalf("transport failure invented response: %#v", record.Response)
 	}
 }
 
-func TestAPIAttemptInactiveFinalBodyRemainsUnwrapped(t *testing.T) {
-	underlying := &countedCloseBody{Reader: strings.NewReader("response")}
-	request, err := http.NewRequest(http.MethodGet, "https://provider.test/request", nil)
+func TestDoWithAPIAttemptsInactiveRequestRemainsUnwrapped(t *testing.T) {
+	body := io.NopCloser(bytes.NewReader([]byte("response")))
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: body}, nil
+	})}
+	request, err := http.NewRequest(http.MethodGet, "https://provider.test/v1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: underlying}, nil
-	})}
-	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
-		return llm.APIAttemptMeta{ProviderInstance: "test"}
-	})
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
 	if err != nil {
 		t.Fatalf("DoWithAPIAttempts: %v", err)
 	}
 	if attempt != nil {
-		t.Fatal("inactive call returned canonical attempt")
+		t.Fatalf("inactive request returned attempt %#v", attempt)
 	}
-	if response.Body != underlying {
-		t.Fatalf("inactive response body = %T/%p, want original %T/%p", response.Body, response.Body, underlying, underlying)
-	}
-}
-
-func TestAPIAttemptConcurrentResponseCloseCompletesOnlyAfterOwningDrain(t *testing.T) {
-	body := &concurrentCloseResponseBody{
-		readEntered: make(chan struct{}),
-		releaseRead: make(chan struct{}),
-		closed:      make(chan struct{}),
-	}
-	sink := &responseAssociationSink{}
-	ctx := llm.WithAPIAttemptSink(
-		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_concurrent_response_close")),
-		sink,
-	)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/request", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roundTripper := &apiAttemptRoundTripper{
-		base: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
-			return &http.Response{StatusCode: http.StatusFound, Header: make(http.Header), Body: body}, nil
-		}),
-		parentCtx: context.Background(),
-		build: func(*http.Request, []byte) llm.APIAttemptMeta {
-			return llm.APIAttemptMeta{ProviderInstance: "test"}
-		},
-	}
-	response, err := roundTripper.RoundTrip(request)
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	wrappedBody, ok := response.Body.(*apiAttemptResponseBody)
-	if !ok {
-		t.Fatalf("response body = %T, want canonical attempt body", response.Body)
-	}
-	waiterEntered := make(chan struct{})
-	wrappedBody.mu.Lock()
-	wrappedBody.waitForClose = func(done <-chan struct{}) {
-		close(waiterEntered)
-		<-done
-	}
-	wrappedBody.mu.Unlock()
-	firstCloseDone := make(chan error, 1)
-	go func() { firstCloseDone <- response.Body.Close() }()
-	<-body.readEntered
-	secondCloseDone := make(chan error, 1)
-	go func() { secondCloseDone <- response.Body.Close() }()
-	<-waiterEntered
-	select {
-	case <-body.closed:
-		t.Fatal("concurrent Close reached the underlying body while the owning drain was active")
-	default:
-	}
-	if got := sink.count(); got != 0 {
-		t.Fatalf("concurrent non-owning Close completed attempt before drain: %d", got)
-	}
-	close(body.releaseRead)
-	if err := <-firstCloseDone; err != nil {
-		t.Fatalf("owning Close: %v", err)
-	}
-	if err := <-secondCloseDone; err != nil {
-		t.Fatalf("concurrent Close: %v", err)
-	}
-	if got := sink.count(); got != 1 {
-		t.Fatalf("attempt completions = %d, want exactly 1", got)
-	}
-	sink.mu.Lock()
-	recorded := sink.attempts[0]
-	sink.mu.Unlock()
-	recordedBody, err := apilog.DecodeBody(recorded.Response.Body)
-	if err != nil {
-		t.Fatalf("decode response body: %v", err)
-	}
-	if got, want := string(recordedBody), "complete-response-body"; got != want {
-		t.Fatalf("recorded response body = %q, want %q", got, want)
-	}
-	roundTripper.mu.Lock()
-	associated := len(roundTripper.responses)
-	roundTripper.mu.Unlock()
-	if associated != 0 {
-		t.Fatalf("response associations after concurrent Close = %d, want 0", associated)
+	if response.Body != body {
+		t.Fatalf("inactive response body was wrapped: %T", response.Body)
 	}
 }

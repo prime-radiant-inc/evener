@@ -2,10 +2,7 @@ package transport
 
 import (
 	"context"
-	"errors"
-	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -15,34 +12,28 @@ import (
 // It is inert unless the supplied context contains an explicitly attached
 // attempt group and sink.
 type APIAttemptCapture struct {
-	attempt            *llm.APIAttempt
-	owner              llm.APIAttemptContextOwnership
-	credentialMaterial llm.APILogCredentialMaterial
-	requestBody        func() []byte
-	requestMeta        func()
-	responseBody       func() []byte
-	responseDrain      func()
-	responseClose      func() error
-	closeOnce          sync.Once
+	attempt      *llm.APIAttempt
+	owner        llm.APIAttemptContextOwnership
+	requestBody  func() bodyObservation
+	responseBody func() bodyObservation
 }
 
-// Active reports whether exact response bytes need to be retained for this
+// Active reports whether observed response bytes need to be retained for this
 // explicitly attached canonical attempt.
 func (c *APIAttemptCapture) Active() bool {
 	return c != nil && c.attempt.Active()
 }
 
 // BeginAPIAttempt snapshots the credential-free request immediately before its
-// RoundTrip. The caller supplies semantic provenance and exact body
-// bytes in meta; this function owns final method, endpoint, headers, and time.
+// RoundTrip. The caller supplies semantic provenance; this function owns final
+// method, endpoint, headers, and time.
 func BeginAPIAttempt(parentCtx, attemptCtx context.Context, request *http.Request, meta llm.APIAttemptMeta) *APIAttemptCapture {
 	meta.CredentialMaterial = llm.APILogCredentialMaterialForRequest(request, meta.CredentialMaterial)
 	meta.Method = request.Method
 	meta.Endpoint, meta.Headers = llm.SanitizeRequestForAPILog(request, meta.CredentialMaterial)
 	meta.StartedAt = time.Now()
 	return &APIAttemptCapture{
-		attempt:            llm.BeginAPIAttempt(attemptCtx, meta),
-		credentialMaterial: meta.CredentialMaterial,
+		attempt: llm.BeginAPIAttempt(attemptCtx, meta),
 		owner: llm.APIAttemptContextOwnership{
 			Parent:  parentCtx,
 			Attempt: attemptCtx,
@@ -56,20 +47,13 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	if c == nil {
 		return
 	}
-	if shouldDrainResponseForDecodeFailure(decodeErr, timeoutSource, transportErr) && c.responseDrain != nil {
-		c.responseDrain()
-	}
-	if c.responseClose != nil {
-		c.closeOnce.Do(func() { _ = c.responseClose() })
-	}
 	if c.requestBody != nil {
-		c.attempt.SetRequestBody(c.requestBody())
-	}
-	if c.requestMeta != nil {
-		c.requestMeta()
+		observation := c.requestBody()
+		c.attempt.SetRequestBody(observation.bytes)
 	}
 	if c.responseBody != nil {
-		result.ResponseBody = c.responseBody()
+		observation := c.responseBody()
+		result.ResponseBody = observation.bytes
 	}
 	owner := c.owner
 	owner.TimeoutSource = llm.APITimeoutSourceForAttempt(
@@ -88,20 +72,4 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 		result.FinishedAt = time.Now()
 	}
 	c.attempt.Complete(result)
-}
-
-func shouldDrainResponseForDecodeFailure(decodeErr error, timeoutSource llm.APITimeoutSource, transportErr error) bool {
-	return decodeErr != nil &&
-		transportErr == nil &&
-		timeoutSource == llm.APITimeoutNone &&
-		!errors.Is(decodeErr, context.Canceled) &&
-		!errors.Is(decodeErr, context.DeadlineExceeded) &&
-		!errors.Is(decodeErr, llm.ErrSSEReadTimeout)
-}
-
-func (c *APIAttemptCapture) bindResponseBody(body io.Closer) {
-	if c == nil || body == nil {
-		return
-	}
-	c.responseClose = body.Close
 }
