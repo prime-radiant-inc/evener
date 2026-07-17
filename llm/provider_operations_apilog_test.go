@@ -336,16 +336,17 @@ func TestClientModelListDecodeFailurePreservesObservedResponse(t *testing.T) {
 	}
 }
 
-func TestClientTokenCountResponseFailuresAreNotExactCounts(t *testing.T) {
+func TestClientTokenCountDecodeConditionsPreserveResultsAndForensicFailures(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	responses := []struct {
 		name          string
 		body          []byte
 		truncateAfter bool
+		wantTokens    int
 	}{
 		{name: "malformed JSON", body: []byte("not-json")},
-		{name: "response read error", body: []byte(`{"input_tokens":17,"totalTokens":17,"data":{"total_tokens":17}}`), truncateAfter: true},
+		{name: "response read error", body: []byte(`{"input_tokens":17,"totalTokens":17,"data":{"total_tokens":17}}`), truncateAfter: true, wantTokens: 17},
 	}
 
 	for _, providerCase := range tokenCountProviderOperations {
@@ -367,8 +368,11 @@ func TestClientTokenCountResponseFailuresAreNotExactCounts(t *testing.T) {
 				count, callErr := client.CountInputTokens(context.Background(), llm.Request{
 					Provider: provider, Model: "test-model", Messages: []llm.Message{llm.User("count this")},
 				})
-				if callErr == nil {
-					t.Fatalf("CountInputTokens = %+v, nil error; want response failure", count)
+				if callErr != nil {
+					t.Fatalf("CountInputTokens returned merge-base-compatible response condition: %v", callErr)
+				}
+				if count.Tokens != responseCase.wantTokens || !count.Exact || count.Source != llm.TokenCountSourceProvider {
+					t.Fatalf("CountInputTokens = %+v, want %d exact provider tokens", count, responseCase.wantTokens)
 				}
 
 				attempt, settlement := oneProviderOperationAttempt(t, logPath)
@@ -379,8 +383,11 @@ func TestClientTokenCountResponseFailuresAreNotExactCounts(t *testing.T) {
 				if !bytes.Equal(loggedBody, responseCase.body) {
 					t.Fatalf("logged response body = %q, want exact partial wire body %q", loggedBody, responseCase.body)
 				}
-				if attempt.Outcome != apilog.AttemptDecodeFail || settlement.Outcome != apilog.AttemptDecodeFail {
-					t.Fatalf("attempt/settlement outcomes = %q/%q, want response_decoding_failure", attempt.Outcome, settlement.Outcome)
+				if attempt.Response.Body.Exact == responseCase.truncateAfter {
+					t.Fatalf("logged response exact = %t, truncateAfter = %t", attempt.Response.Body.Exact, responseCase.truncateAfter)
+				}
+				if attempt.Outcome != apilog.AttemptDecodeFail || attempt.ErrorMessage == "" || settlement.Outcome != apilog.AttemptSuccess {
+					t.Fatalf("attempt/settlement = %+v/%+v, want observed decode failure and successful public result", attempt, settlement)
 				}
 			})
 		}
