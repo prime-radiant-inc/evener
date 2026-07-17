@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/providerfwd"
+	"primeradiant.com/serf/llm/providers/internal/transport"
 	"primeradiant.com/serf/llm/providers/kimicoding"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -103,6 +104,7 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		return llm.InputTokenCount{}, err
 	}
 
+	parentCtx := ctx
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
@@ -123,9 +125,20 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	}
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "kimi_estimate_token_count",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
-		return llm.InputTokenCount{}, llm.WrapContextError(providerName, err)
+		returnedErr := llm.WrapContextError(providerName, err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, llm.APITimeoutSourceForTransport(parentCtx, ctx, err), nil, err)
+		return llm.InputTokenCount{}, returnedErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -137,10 +150,13 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "estimate-token-count failed: " + strings.TrimSpace(string(rawBytes))
-		return llm.InputTokenCount{}, llm.ErrorFromHTTPStatus(providerName, resp.StatusCode, msg, raw, ra)
+		returnedErr := llm.ErrorFromHTTPStatus(providerName, resp.StatusCode, msg, raw, ra)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+		return llm.InputTokenCount{}, returnedErr
 	}
 
 	data, _ := raw["data"].(map[string]any)
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes}, llm.APITimeoutNone, nil, nil)
 	return llm.InputTokenCount{
 		Tokens:   llm.IntFromAny(data["total_tokens"]),
 		Exact:    true,
@@ -149,6 +165,22 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		Model:    req.Model,
 		Raw:      raw,
 	}, nil
+}
+
+func (a *adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
+	headerNames := []string{"Authorization"}
+	values := []string{a.APIKey}
+	for name, value := range a.CredentialHeaders {
+		headerNames = append(headerNames, name)
+		values = append(values, value)
+	}
+	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
+		values = append(values, httpReq.URL.User.Username())
+		if password, ok := httpReq.URL.User.Password(); ok {
+			values = append(values, password)
+		}
+	}
+	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
 }
 
 func stripKimiTokenCountOutputFields(body map[string]any) {

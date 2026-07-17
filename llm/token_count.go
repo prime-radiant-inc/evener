@@ -110,7 +110,9 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	req.Provider = prov
 
 	if counter, ok := adapter.(InputTokenCounter); ok {
+		ctx, operation := c.beginProviderOperation(ctx)
 		out, err := counter.CountInputTokens(ctx, req)
+		operation.settle(ctx, err)
 		if err != nil {
 			if errors.Is(err, ErrInputTokenCountUnsupported) {
 				out := EstimateInputTokens(req)

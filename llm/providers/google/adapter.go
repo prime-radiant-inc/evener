@@ -269,6 +269,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		return llm.InputTokenCount{}, err
 	}
 
+	parentCtx := ctx
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
@@ -288,9 +289,20 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	a.setJSONHeaders(httpReq)
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "google_count_tokens",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
-		return llm.InputTokenCount{}, llm.WrapContextError("google", err)
+		returnedErr := llm.WrapContextError("google", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, llm.APITimeoutSourceForTransport(parentCtx, ctx, err), nil, err)
+		return llm.InputTokenCount{}, returnedErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -301,10 +313,13 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "countTokens failed: " + strings.TrimSpace(string(rawBytes))
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
-		return llm.InputTokenCount{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
+		returnedErr := classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+		return llm.InputTokenCount{}, returnedErr
 	}
 
 	tokens := tokenCountInt(raw["totalTokens"])
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes}, llm.APITimeoutNone, nil, nil)
 	return llm.InputTokenCount{
 		Tokens:   tokens,
 		Exact:    true,

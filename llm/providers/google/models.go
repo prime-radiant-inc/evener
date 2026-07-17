@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
 func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
@@ -32,14 +34,26 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	}
 	a.setConfiguredHeaders(httpReq)
 
-	resp, err := a.Client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(ctx, a.Client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.Name(),
+			RequestModel:       "*",
+			EndpointFamily:     "google_models",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
+		attempt.Complete(llm.APIAttemptResult{Err: err}, llm.APITimeoutSourceForTransport(ctx, ctx, err), nil, err)
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		returnedErr := fmt.Errorf("list models: HTTP %d", resp.StatusCode)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: body, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+		return nil, returnedErr
 	}
 
 	var result struct {
@@ -50,8 +64,11 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		} `json:"models"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, Err: err}, llm.APITimeoutNone, err, nil)
 		return nil, err
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode}, llm.APITimeoutNone, nil, nil)
 
 	var models []llm.ModelInfo
 	for _, m := range result.Models {

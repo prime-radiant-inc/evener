@@ -261,6 +261,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		return llm.InputTokenCount{}, err
 	}
 
+	parentCtx := ctx
 	ctx, adapterCancel := llm.ApplyAdapterTimeout(ctx, req.AdapterTimeout, false)
 	defer adapterCancel()
 
@@ -272,9 +273,20 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	a.setAnthropicHeaders(httpReq, req.ProviderOptions)
 
 	client := llm.ClientWithAdapterTimeout(a.Client, req.AdapterTimeout)
-	resp, err := client.Do(httpReq)
+	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, httpReq, func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance:   a.apiLogProviderInstance(),
+			RequestModel:       req.Model,
+			HistoryMode:        req.HistoryMode,
+			EndpointFamily:     "anthropic_count_tokens",
+			RequestBody:        requestBody,
+			CredentialMaterial: a.apiLogCredentialMaterial(wireRequest),
+		}
+	})
 	if err != nil {
-		return llm.InputTokenCount{}, llm.WrapContextError("anthropic", err)
+		returnedErr := llm.WrapContextError("anthropic", err)
+		attempt.Complete(llm.APIAttemptResult{Err: returnedErr}, llm.APITimeoutSourceForTransport(parentCtx, ctx, err), nil, err)
+		return llm.InputTokenCount{}, returnedErr
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -284,10 +296,13 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		msg := "messages.count_tokens failed: " + strings.TrimSpace(string(rawBytes))
-		return llm.InputTokenCount{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
+		returnedErr := llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
+		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
+		return llm.InputTokenCount{}, returnedErr
 	}
 
 	tokens := intFromAny(raw["input_tokens"])
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes}, llm.APITimeoutNone, nil, nil)
 	return llm.InputTokenCount{
 		Tokens:   tokens,
 		Exact:    true,
