@@ -151,6 +151,18 @@ func (a *APIAttempt) Active() bool {
 	return a != nil && a.group != nil && a.sink != nil
 }
 
+// CredentialMaterial snapshots the group-enriched credential material bound
+// to this attempt. Transports use it to discover values from request fields
+// whose credential names were learned by an earlier attempt in the group.
+func (a *APIAttempt) CredentialMaterial() APILogCredentialMaterial {
+	if !a.Active() {
+		return APILogCredentialMaterial{}
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return mergeAPILogCredentialMaterial(APILogCredentialMaterial{}, a.meta.CredentialMaterial)
+}
+
 // SetRequestBody supplies bytes observed at an HTTP transport boundary. It is
 // used only when a request body cannot be cloned before RoundTrip.
 func (a *APIAttempt) SetRequestBody(body []byte, exact bool) {

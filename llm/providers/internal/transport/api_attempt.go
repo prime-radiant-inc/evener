@@ -38,10 +38,11 @@ func BeginAPIAttempt(parentCtx, attemptCtx context.Context, request *http.Reques
 	meta.Method = request.Method
 	meta.Endpoint, meta.Headers = llm.SanitizeRequestForAPILog(request, meta.CredentialMaterial)
 	meta.StartedAt = time.Now()
+	attempt := llm.BeginAPIAttempt(attemptCtx, meta)
 	return &APIAttemptCapture{
-		attempt:            llm.BeginAPIAttempt(attemptCtx, meta),
+		attempt:            attempt,
 		request:            request,
-		credentialMaterial: meta.CredentialMaterial,
+		credentialMaterial: attempt.CredentialMaterial(),
 		owner: llm.APIAttemptContextOwnership{
 			Parent:  parentCtx,
 			Attempt: attemptCtx,

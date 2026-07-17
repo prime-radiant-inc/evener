@@ -415,6 +415,80 @@ func TestDoWithAPIAttemptsRedirectCredentialMaterialRemainsCumulative(t *testing
 	}
 }
 
+func TestDoWithAPIAttemptsSharedGroupLearnsEachCallsCredentialValue(t *testing.T) {
+	const (
+		credentialHeader = "X-Shared-Credential"
+		firstSecret      = "first-call-secret"
+		secondSecret     = "second-call-secret"
+	)
+	ctx, group, path := durableAttemptContext(t, "sess-shared-group-credentials", "ag_shared_group_credentials")
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := "first response"
+		status := http.StatusOK
+		if request.URL.Path == "/second" {
+			body = secondSecret
+			status = http.StatusBadRequest
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(body)),
+		}, nil
+	})}
+
+	run := func(endpoint, secret string, build APIAttemptMetaBuilder, resultErr error) {
+		t.Helper()
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/"+endpoint, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set(credentialHeader, secret)
+		response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, build)
+		if err != nil {
+			t.Fatalf("DoWithAPIAttempts(%s): %v", endpoint, err)
+		}
+		if _, err := io.ReadAll(response.Body); err != nil {
+			t.Fatalf("read %s response: %v", endpoint, err)
+		}
+		if err := response.Body.Close(); err != nil {
+			t.Fatalf("close %s response: %v", endpoint, err)
+		}
+		attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode, Err: resultErr}, llm.APITimeoutNone, nil, nil)
+	}
+
+	run("first", firstSecret, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{credentialHeader},
+				nil,
+			),
+		}
+	}, nil)
+	run("second", secondSecret, attemptMeta, errors.New("provider echoed "+secondSecret))
+	group.Settle(ctx, apilog.AttemptProviderReject)
+
+	attempts := readDurableAttempts(t, path)
+	if len(attempts) != 2 {
+		t.Fatalf("durable attempts = %d, want 2", len(attempts))
+	}
+	second := attempts[1]
+	if second.Response == nil || !second.Response.Body.CredentialValuesExcluded {
+		t.Fatalf("second response body = %+v, want new shared-group credential value excluded", second.Response)
+	}
+	if strings.Contains(second.ErrorMessage, secondSecret) {
+		t.Fatalf("second error retained new shared-group credential value: %q", second.ErrorMessage)
+	}
+	encoded, err := apilog.MarshalRecord(second)
+	if err != nil {
+		t.Fatalf("marshal second durable attempt: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(secondSecret)) {
+		t.Fatalf("second durable attempt retained new shared-group credential value %q", secondSecret)
+	}
+}
+
 func TestDoWithAPIAttemptsRecordsEffectiveRedirectHost(t *testing.T) {
 	tests := []struct {
 		name             string
