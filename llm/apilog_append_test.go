@@ -848,7 +848,7 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 			if !bytes.Equal(after, before) {
 				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
-			assertPathMode(t, path, 0o644)
+			assertPathMode(t, path, 0o600)
 		})
 
 		t.Run(tt.name+"/per-session", func(t *testing.T) {
@@ -884,7 +884,7 @@ func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
 			if !bytes.Equal(after, before) {
 				t.Fatalf("rejected log bytes changed:\n before: %q\n  after: %q", before, after)
 			}
-			assertPathMode(t, path, 0o644)
+			assertPathMode(t, path, 0o600)
 		})
 	}
 }
