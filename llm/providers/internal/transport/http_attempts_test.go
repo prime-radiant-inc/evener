@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
@@ -1283,6 +1284,118 @@ func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
 	if attempts[0].AttemptIndex != 1 || attempts[1].AttemptIndex != 2 {
 		t.Fatalf("attempt indexes = %d, %d; want 1, 2", attempts[0].AttemptIndex, attempts[1].AttemptIndex)
 	}
+}
+
+func TestDoWithAPIAttemptsWaitsForPriorCallCredentialScope(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			trailerName   = "X-Gateway-Credential"
+			trailerSecret = "prior-call-trailer-secret-sentinel"
+		)
+		sink := &responseAssociationSink{}
+		ctx := attemptContext("ag_cross_call_credential_scope", sink)
+		releaseFirstRequest := make(chan struct{})
+		secondRoundTripStarted := make(chan struct{}, 1)
+		client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/first":
+				go func(body io.ReadCloser) {
+					<-releaseFirstRequest
+					_, _ = io.ReadAll(body)
+					_ = body.Close()
+				}(request.Body)
+				return &http.Response{
+					StatusCode: http.StatusBadGateway,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("first exposed " + trailerSecret)),
+				}, nil
+			case "/second":
+				secondRoundTripStarted <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("second exposed " + trailerSecret)),
+				}, nil
+			default:
+				return nil, errors.New("unexpected request path")
+			}
+		})}
+		build := func(*http.Request, []byte) llm.APIAttemptMeta {
+			return llm.APIAttemptMeta{
+				ProviderInstance: "test",
+				RequestModel:     "test-model",
+				CredentialMaterial: llm.NewAPILogCredentialMaterial(
+					[]string{trailerName},
+					nil,
+				),
+			}
+		}
+
+		firstRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://provider.test/first", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstRequest.Trailer = http.Header{trailerName: nil}
+		firstRequest.Body = &credentialTrailerBody{
+			request: firstRequest,
+			reader:  bytes.NewReader([]byte("first request body")),
+			name:    trailerName,
+			value:   trailerSecret,
+		}
+		firstRequest.ContentLength = -1
+		firstResponse, firstAttempt, err := DoWithAPIAttempts(context.Background(), client, firstRequest, build)
+		if err != nil {
+			t.Fatalf("first DoWithAPIAttempts: %v", err)
+		}
+		if _, err := io.ReadAll(firstResponse.Body); err != nil {
+			t.Fatalf("read first response: %v", err)
+		}
+		firstAttempt.Complete(llm.APIAttemptResult{StatusCode: firstResponse.StatusCode}, llm.APITimeoutNone, nil, nil)
+
+		secondDone := make(chan error, 1)
+		go func() {
+			secondRequest, requestErr := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/second", nil)
+			if requestErr != nil {
+				secondDone <- requestErr
+				return
+			}
+			secondResponse, secondAttempt, requestErr := DoWithAPIAttempts(context.Background(), client, secondRequest, build)
+			if requestErr == nil {
+				_, requestErr = io.ReadAll(secondResponse.Body)
+				secondAttempt.Complete(llm.APIAttemptResult{StatusCode: secondResponse.StatusCode}, llm.APITimeoutNone, nil, nil)
+			}
+			secondDone <- requestErr
+		}()
+
+		synctest.Wait()
+		select {
+		case <-secondRoundTripStarted:
+			t.Error("second RoundTrip started before the first call's request credential scope was durable")
+		default:
+		}
+		close(releaseFirstRequest)
+		synctest.Wait()
+		if err := <-secondDone; err != nil {
+			t.Fatalf("second DoWithAPIAttempts: %v", err)
+		}
+
+		attempts := sink.snapshot()
+		if len(attempts) != 2 {
+			t.Fatalf("attempt records = %d, want 2", len(attempts))
+		}
+		for i, attempt := range attempts {
+			if attempt.AttemptIndex != i+1 {
+				t.Fatalf("attempt %d index = %d, want %d", i+1, attempt.AttemptIndex, i+1)
+			}
+			encoded, err := apilog.MarshalRecord(attempt)
+			if err != nil {
+				t.Fatalf("marshal attempt %d: %v", i+1, err)
+			}
+			if bytes.Contains(encoded, []byte(trailerSecret)) {
+				t.Fatalf("attempt %d retained prior-call credential %q", i+1, trailerSecret)
+			}
+		}
+	})
 }
 
 func TestDoWithAPIAttemptsTransportErrorRetainsOneAttempt(t *testing.T) {

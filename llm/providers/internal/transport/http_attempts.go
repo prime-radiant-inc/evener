@@ -24,6 +24,7 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 		response, err := client.Do(request)
 		return response, nil, err
 	}
+	llm.WaitForPriorAPIAttempts(request.Context())
 
 	base := client.Transport
 	if base == nil {

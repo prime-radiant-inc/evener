@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -33,6 +35,12 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 	if request.Body != nil {
 		defer request.Body.Close() //nolint:errcheck // Test transport honors the RoundTripper request-body contract.
 	}
+	return f(request)
+}
+
+type deferredRequestRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f deferredRequestRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
 
@@ -269,6 +277,99 @@ func TestCompleteFallbackWaitsForResponsesAttemptAppend(t *testing.T) {
 		attempts[0].Outcome != apilog.AttemptProviderReject || attempts[1].Outcome != apilog.AttemptSuccess {
 		t.Fatalf("fallback attempt sequence = %+v", attempts)
 	}
+}
+
+func TestCompleteFallbackWaitsForResponsesRequestCredentialScope(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const (
+			trailerName   = "X-Gateway-Credential"
+			trailerSecret = "responses-fallback-trailer-secret-sentinel"
+		)
+		releaseResponsesRequest := make(chan struct{})
+		chatStarted := make(chan struct{}, 1)
+		client := &http.Client{Transport: deferredRequestRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/v1/responses":
+				request.Trailer = http.Header{trailerName: nil}
+				go func(body io.ReadCloser) {
+					<-releaseResponsesRequest
+					request.Trailer.Set(trailerName, trailerSecret)
+					_, _ = io.ReadAll(body)
+					_ = body.Close()
+				}(request.Body)
+				return &http.Response{
+					StatusCode: http.StatusNotFound,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"` + trailerSecret + `"}}`)),
+				}, nil
+			case "/v1/chat/completions":
+				chatStarted <- struct{}{}
+				_, _ = io.ReadAll(request.Body)
+				_ = request.Body.Close()
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+						`data: {"id":"chatcmpl-1","model":"gpt-test","choices":[{"index":0,"delta":{"role":"assistant","content":"` + trailerSecret + `"},"finish_reason":"stop"}]}`,
+						``,
+						`data: [DONE]`,
+						``,
+						``,
+					}, "\n"))),
+				}, nil
+			default:
+				return nil, errors.New("unexpected request path")
+			}
+		})}
+		adapter := &Adapter{
+			APIKey:            "test-key",
+			BaseURL:           "https://provider.test",
+			Client:            client,
+			CredentialHeaders: map[string]string{trailerName: "configured-placeholder"},
+		}
+		sink := &wireCaptureSink{}
+		ctx := llm.WithAPIAttemptSink(
+			llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_openai_fallback_credential_scope")),
+			sink,
+		)
+		type completeResult struct {
+			response llm.Response
+			err      error
+		}
+		done := make(chan completeResult, 1)
+		go func() {
+			response, err := adapter.Complete(ctx, llm.Request{Model: "gpt-test", Messages: []llm.Message{llm.User("hello")}})
+			done <- completeResult{response: response, err: err}
+		}()
+
+		synctest.Wait()
+		select {
+		case <-chatStarted:
+			t.Error("Chat fallback started before the Responses request credential scope was durable")
+		default:
+		}
+		close(releaseResponsesRequest)
+		synctest.Wait()
+		result := <-done
+		if result.err != nil || result.response.Text() != trailerSecret {
+			t.Fatalf("fallback result = %q, %v", result.response.Text(), result.err)
+		}
+		if len(sink.attempts) != 2 {
+			t.Fatalf("canonical attempts = %d, want 2", len(sink.attempts))
+		}
+		for i, attempt := range sink.attempts {
+			if attempt.AttemptIndex != i+1 {
+				t.Fatalf("attempt %d index = %d, want %d", i+1, attempt.AttemptIndex, i+1)
+			}
+			encoded, err := apilog.MarshalRecord(attempt)
+			if err != nil {
+				t.Fatalf("marshal attempt %d: %v", i+1, err)
+			}
+			if bytes.Contains(encoded, []byte(trailerSecret)) {
+				t.Fatalf("attempt %d retained Responses credential %q", i+1, trailerSecret)
+			}
+		}
+	})
 }
 
 func TestStreamFallbackWaitsForResponsesAttemptAppend(t *testing.T) {

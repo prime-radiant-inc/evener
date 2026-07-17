@@ -310,6 +310,14 @@ func apiAttemptGroupFromContext(ctx context.Context) *APIAttemptGroup {
 	return group
 }
 
+// WaitForPriorAPIAttempts waits for attempts already started in the context's
+// logical group to finish durable persistence.
+func WaitForPriorAPIAttempts(ctx context.Context) {
+	if group := apiAttemptGroupFromContext(ctx); group != nil {
+		group.pendingAttempts.Wait()
+	}
+}
+
 type sanitizedAPILogError struct {
 	text string
 }
