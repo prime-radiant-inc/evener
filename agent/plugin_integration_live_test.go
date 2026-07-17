@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -32,12 +31,7 @@ func buildLiveTestPlugin(t *testing.T) string {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
 
-	// Find the real path to the MCP server script.
-	_, thisFile, _, _ := runtime.Caller(0)
-	mcpServerPath := filepath.Join(filepath.Dir(thisFile), "testdata", "mcp_server.py")
-	if _, err := os.Stat(mcpServerPath); err != nil {
-		t.Fatalf("mcp_server.py not found at %s", mcpServerPath)
-	}
+	mcpServerPath := intg_buildMCPServer(t)
 
 	// .claude-plugin/plugin.json
 	mkdir(t, dir, ".claude-plugin")
@@ -144,8 +138,7 @@ echo '{"decision":"approve"}'
 	mcpJSON := fmt.Sprintf(`{
 		"mcpServers": {
 			"test-echo": {
-				"command": "python3",
-				"args": [%q]
+				"command": %q
 			}
 		}
 	}`, mcpServerPath)
@@ -252,7 +245,7 @@ func TestLive_PluginLoad_AllComponents(t *testing.T) {
 	if lp.MCPConfigs[0].Name != "plugin_live-test_test-echo" {
 		t.Errorf("MCP name = %q", lp.MCPConfigs[0].Name)
 	}
-	if lp.MCPConfigs[0].Command != "python3" {
+	if lp.MCPConfigs[0].Command != intg_buildMCPServer(t) {
 		t.Errorf("MCP command = %q", lp.MCPConfigs[0].Command)
 	}
 
@@ -317,7 +310,7 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 		}
 		t.Fatalf("echo tool not found in MCP tools: %v", names)
 	}
-	if echoDef.Description != "Echoes back the input message" {
+	if echoDef.Description != "Echoes the input message back to the caller" {
 		t.Errorf("echo description = %q", echoDef.Description)
 	}
 
