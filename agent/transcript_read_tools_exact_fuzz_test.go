@@ -60,7 +60,7 @@ func trteReadFailures(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
-	if _, err := readMarkdown(path, "local:child", schema.SessionMeta{ID: "child"}, "0-0", nil); err != nil {
+	if _, err := readMarkdownPage(path, "local:child", schema.SessionMeta{ID: "child"}, "0-0", nil, 0, 0); err != nil {
 		t.Fatalf("read partial markdown: %v", err)
 	}
 
