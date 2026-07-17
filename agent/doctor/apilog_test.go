@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
 )
 
@@ -306,6 +307,33 @@ func TestAPILogContinuationCountsByEndpointFamily(t *testing.T) {
 	got := res.Totals.ContinuationByEndpointFamily["openai_public"]
 	if got.ResponsesDelta != 1 || got.FullHistory != 1 || got.FullHistoryFallback != 1 {
 		t.Fatalf("openai_public counts = %+v", got)
+	}
+}
+
+func TestAPILogContinuationEndpointFamiliesAreBounded(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	records := make([]apilog.APILogRecord, 0, doctorAPILogMaxEndpointFamilies*2)
+	for i := 0; i < doctorAPILogMaxEndpointFamilies*2; i++ {
+		attempt := doctorAttempt(fmt.Sprintf("ag_family_%03d", i), 1, apilog.AttemptSuccess, 1, 1, 0, 0, 1, 0)
+		attempt.Request.EndpointFamily = fmt.Sprintf("family_%03d", i)
+		attempt.Request.HistoryMode = string(llm.HistoryModeResponsesDelta)
+		records = append(records, attempt)
+	}
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+
+	result, err := APILog(base, sidA, APILogOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := result.Totals.ContinuationByEndpointFamily
+	if len(got) != doctorAPILogMaxEndpointFamilies {
+		t.Fatalf("continuation endpoint families = %d, want bounded %d", len(got), doctorAPILogMaxEndpointFamilies)
+	}
+	overflow := got[doctorAPILogOtherEndpointFamily]
+	wantOverflow := doctorAPILogMaxEndpointFamilies + 1
+	if overflow.ResponsesDelta != wantOverflow {
+		t.Fatalf("overflow responses_delta = %d, want %d", overflow.ResponsesDelta, wantOverflow)
 	}
 }
 

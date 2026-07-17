@@ -29,6 +29,8 @@ const defaultSpikeThreshold = 50000
 const doctorAPILogMaxLineBytes = 128 << 20
 const doctorAPILogMaxCalls = 100
 const doctorAPILogMaxSettlements = 100
+const doctorAPILogMaxEndpointFamilies = 16
+const doctorAPILogOtherEndpointFamily = "other"
 
 const (
 	SettlementSettled             = "settled"
@@ -303,6 +305,9 @@ func recordContinuationHistoryMode(totals *APILogTotals, endpointFamily string, 
 	if counts == nil {
 		counts = map[string]ContinuationHistoryModeCounts{}
 		totals.ContinuationByEndpointFamily = counts
+	}
+	if _, exists := counts[endpointFamily]; !exists && len(counts) >= doctorAPILogMaxEndpointFamilies-1 {
+		endpointFamily = doctorAPILogOtherEndpointFamily
 	}
 	next := counts[endpointFamily]
 	switch mode {
