@@ -12,18 +12,20 @@ type wireRequestMetadata struct {
 	mu      sync.Mutex
 	current http.Header
 	last    http.Header
-	written chan struct{}
-	once    sync.Once
+
+	traceObserved bool
+	finished      bool
 }
 
 func newWireRequestMetadata(request *http.Request) *wireRequestMetadata {
-	return &wireRequestMetadata{request: request, written: make(chan struct{})}
+	return &wireRequestMetadata{request: request}
 }
 
 func (m *wireRequestMetadata) trace(request *http.Request) *http.Request {
 	trace := &httptrace.ClientTrace{
 		WroteHeaderField: func(name string, values []string) {
 			m.mu.Lock()
+			m.traceObserved = true
 			if m.current == nil {
 				m.current = make(http.Header)
 			}
@@ -32,32 +34,41 @@ func (m *wireRequestMetadata) trace(request *http.Request) *http.Request {
 		},
 		WroteHeaders: func() {
 			m.mu.Lock()
+			m.traceObserved = true
 			m.last = m.current.Clone()
 			m.mu.Unlock()
 		},
 		WroteRequest: func(httptrace.WroteRequestInfo) {
 			m.mu.Lock()
+			m.traceObserved = true
 			m.last = m.current.Clone()
 			for name, values := range m.request.Trailer {
 				m.last[name] = append([]string(nil), values...)
 			}
 			m.current = nil
 			m.mu.Unlock()
-			m.once.Do(func() { close(m.written) })
 		},
 	}
 	return request.WithContext(httptrace.WithClientTrace(request.Context(), trace))
 }
 
-func (m *wireRequestMetadata) snapshot() (http.Header, bool) {
-	m.mu.Lock()
-	hasWrittenHeaders := len(m.last) > 0
-	m.mu.Unlock()
-	if !hasWrittenHeaders {
-		return nil, false
-	}
-	<-m.written
+func (m *wireRequestMetadata) finishRoundTrip(transportErr error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.current) > 0 {
+		m.last = m.current.Clone()
+	}
+	if !m.traceObserved && transportErr == nil {
+		m.last = m.request.Header.Clone()
+	}
+	m.finished = true
+}
+
+func (m *wireRequestMetadata) snapshot() (http.Header, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.finished {
+		return nil, false
+	}
 	return m.last.Clone(), true
 }

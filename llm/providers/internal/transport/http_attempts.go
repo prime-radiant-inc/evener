@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"strings"
 	"sync"
@@ -79,12 +80,13 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		}
 		materialRequest := request.Clone(request.Context())
 		materialRequest.Header = headers
-		material := llm.APILogCredentialMaterialForRequest(materialRequest, meta.CredentialMaterial)
+		material := llm.APILogCredentialMaterialForRequest(materialRequest, attempt.credentialMaterial)
 		endpoint, sanitizedHeaders := llm.SanitizeRequestForAPILog(materialRequest, material)
 		attempt.attempt.SetWireRequestMetadata(request.Method, endpoint, http.Header(sanitizedHeaders), material)
 	}
 
 	response, err := t.base.RoundTrip(request)
+	written.finishRoundTrip(err)
 	if err != nil {
 		t.mu.Lock()
 		t.transportFailure = attempt
@@ -107,7 +109,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	attempt.responseBody = body.snapshot
 	response.Body = body
 	if decodeGzip && strings.EqualFold(response.Header.Get("Content-Encoding"), "gzip") {
-		response.Body = &standardGzipResponseBody{body: body}
+		response.Body = newStandardGzipResponseBody(body, response.ProtoMajor)
 		response.Header.Del("Content-Encoding")
 		response.Header.Del("Content-Length")
 		response.ContentLength = -1
@@ -123,10 +125,26 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 }
 
 type standardGzipResponseBody struct {
-	body io.ReadCloser
-	mu   sync.Mutex
-	zr   *gzip.Reader
-	err  error
+	body              io.ReadCloser
+	readClosedErr     error
+	concurrentReadErr error
+	mu                sync.Mutex
+	zr                *gzip.Reader
+	err               error
+}
+
+func newStandardGzipResponseBody(body io.ReadCloser, protocolMajor int) *standardGzipResponseBody {
+	readClosedErr := errHTTP1ReadClosedGzipResponse
+	concurrentReadErr := errHTTP1ConcurrentGzipRead
+	if protocolMajor >= 2 {
+		readClosedErr = fs.ErrClosed
+		concurrentReadErr = errHTTP2ConcurrentGzipRead
+	}
+	return &standardGzipResponseBody{
+		body:              body,
+		readClosedErr:     readClosedErr,
+		concurrentReadErr: concurrentReadErr,
+	}
 }
 
 func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
@@ -140,18 +158,23 @@ func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
 
 func (b *standardGzipResponseBody) Close() error {
 	b.mu.Lock()
+	readInProgress := errors.Is(b.err, b.concurrentReadErr)
 	if b.err == nil && b.zr != nil {
 		_ = b.zr.Close()
 		b.zr = nil
 	}
-	b.err = errReadClosedGzipResponse
+	b.err = b.readClosedErr
 	b.mu.Unlock()
+	if !readInProgress {
+		_, _ = io.Copy(io.Discard, b.body)
+	}
 	return b.body.Close()
 }
 
 var (
-	errReadClosedGzipResponse = errors.New("http: read on closed response body")
-	errConcurrentGzipRead     = errors.New("http: concurrent read on response body")
+	errHTTP1ReadClosedGzipResponse = errors.New("http: read on closed response body")
+	errHTTP1ConcurrentGzipRead     = errors.New("http: concurrent read on response body")
+	errHTTP2ConcurrentGzipRead     = errors.New("http2: concurrent read on response body")
 )
 
 func (b *standardGzipResponseBody) acquire() (*gzip.Reader, error) {
@@ -168,14 +191,14 @@ func (b *standardGzipResponseBody) acquire() (*gzip.Reader, error) {
 	}
 	zr := b.zr
 	b.zr = nil
-	b.err = errConcurrentGzipRead
+	b.err = b.concurrentReadErr
 	return zr, nil
 }
 
 func (b *standardGzipResponseBody) release(zr *gzip.Reader) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if errors.Is(b.err, errConcurrentGzipRead) {
+	if errors.Is(b.err, b.concurrentReadErr) {
 		b.zr = zr
 		b.err = nil
 		return
