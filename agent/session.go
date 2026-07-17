@@ -944,11 +944,19 @@ func (s *Session) extractOriginalPrompt() string {
 }
 
 func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
-	t := schema.NewTurn(kind, m)
+	s.appendTurnWithTranscriptMessage(kind, m, m)
+}
+
+// appendTurnWithTranscriptMessage keeps the live model context and the durable
+// semantic transcript distinct when a tool exposes explicitly private evidence.
+func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) {
+	t := schema.NewTurn(kind, live)
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
-	if err := s.transcript.Append(t); err != nil {
+	persistedTurn := t
+	persistedTurn.Message = persisted
+	if err := s.transcript.Append(persistedTurn); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }

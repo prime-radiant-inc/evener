@@ -85,13 +85,118 @@ type readMarkdownMeta struct {
 const formatMarkdown = "markdown"
 
 const (
-	transcriptSource                = "transcript"
-	apiLogSource                    = "api_log"
-	maxExpansionBytes               = 64 << 10
-	transcriptExpansionReadHint     = "use expand_turn and its continuation for exact bytes"
-	jobTranscriptTruncationNotice   = "additional output is not available from this transcript view"
-	transcriptV2JSONLRepresentation = "transcript_v2_jsonl"
+	transcriptSource                    = "transcript"
+	apiLogSource                        = "api_log"
+	apiLogTranscriptPlaceholderMaxBytes = 1024
+	maxExpansionBytes                   = 64 << 10
+	transcriptExpansionReadHint         = "use expand_turn and its continuation for exact bytes"
+	jobTranscriptTruncationNotice       = "additional output is not available from this transcript view"
+	transcriptV2JSONLRepresentation     = "transcript_v2_jsonl"
 )
+
+type apiLogTranscriptPlaceholder struct {
+	Source                 string                      `json:"source"`
+	PrivateEvidenceOmitted bool                        `json:"private_evidence_omitted"`
+	ReRead                 apiLogTranscriptReadHandle  `json:"re_read"`
+	Continuation           *apiLogTranscriptReadHandle `json:"continuation,omitempty"`
+}
+
+type apiLogTranscriptReadHandle struct {
+	Tool          string `json:"tool"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
+	Source        string `json:"source"`
+	AttemptID     string `json:"attempt_id,omitempty"`
+	Body          string `json:"body,omitempty"`
+	OffsetBytes   int    `json:"offset_bytes,omitempty"`
+}
+
+type apiLogTranscriptResultIdentity struct {
+	TranscriptRef string `json:"transcript_ref"`
+	Source        string `json:"source"`
+	Attempt       struct {
+		AttemptID string `json:"attempt_id"`
+	} `json:"attempt"`
+	Body *struct {
+		Body        string `json:"body"`
+		OffsetBytes int    `json:"offset_bytes"`
+	} `json:"body"`
+	Continuation *apiLogBodyContinuation `json:"continuation"`
+}
+
+// projectToolResultsForTranscript replaces only explicit private API-log reads
+// with a bounded re-read handle. The live history retains the complete output.
+func projectToolResultsForTranscript(calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) []llm.ContentPart {
+	var projected []llm.ContentPart
+	for i := range parts {
+		if i >= len(calls) || i >= len(results) {
+			continue
+		}
+		placeholder, ok := apiLogResultTranscriptPlaceholder(calls[i], results[i])
+		if !ok || parts[i].ToolResult == nil {
+			continue
+		}
+		if projected == nil {
+			projected = append([]llm.ContentPart(nil), parts...)
+		}
+		toolResult := *parts[i].ToolResult
+		toolResult.Content = placeholder
+		projected[i].ToolResult = &toolResult
+	}
+	if projected == nil {
+		return parts
+	}
+	return projected
+}
+
+func apiLogResultTranscriptPlaceholder(call llm.ToolCallData, result tool.ExecResult) (string, bool) {
+	if call.Name != "read_session_transcript" && result.ToolName != "read_session_transcript" {
+		return "", false
+	}
+
+	var resultIdentity apiLogTranscriptResultIdentity
+	resultIsAPILog := json.Unmarshal([]byte(result.Output), &resultIdentity) == nil && resultIdentity.Source == apiLogSource
+	var args map[string]any
+	_ = json.Unmarshal(call.Arguments, &args)
+	callIsAPILog := stringArg(args, "source") == apiLogSource || strings.TrimSpace(stringArg(args, "attempt_id")) != ""
+	if !resultIsAPILog && !callIsAPILog {
+		return "", false
+	}
+	if !resultIsAPILog {
+		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
+	}
+
+	reRead := apiLogTranscriptReadHandle{
+		Tool:          "read_session_transcript",
+		TranscriptRef: resultIdentity.TranscriptRef,
+		Source:        apiLogSource,
+		AttemptID:     resultIdentity.Attempt.AttemptID,
+	}
+	if resultIdentity.Body != nil {
+		reRead.Body = resultIdentity.Body.Body
+		reRead.OffsetBytes = resultIdentity.Body.OffsetBytes
+	}
+	placeholder := apiLogTranscriptPlaceholder{
+		Source:                 apiLogSource,
+		PrivateEvidenceOmitted: true,
+		ReRead:                 reRead,
+	}
+	if resultIsAPILog && resultIdentity.Continuation != nil {
+		continuation := apiLogTranscriptReadHandle{
+			Tool:          "read_session_transcript",
+			TranscriptRef: resultIdentity.TranscriptRef,
+			Source:        apiLogSource,
+			AttemptID:     resultIdentity.Continuation.AttemptID,
+			Body:          resultIdentity.Continuation.Body,
+			OffsetBytes:   resultIdentity.Continuation.OffsetBytes,
+		}
+		placeholder.Continuation = &continuation
+	}
+	encoded, err := json.Marshal(placeholder)
+	if err != nil || len(encoded) > apiLogTranscriptPlaceholderMaxBytes {
+		return `{"source":"api_log","private_evidence_omitted":true,"re_read":{"tool":"read_session_transcript","source":"api_log"}}`, true
+	}
+	return string(encoded), true
+}
 
 type readSessionTranscriptArgs struct {
 	TranscriptRef string

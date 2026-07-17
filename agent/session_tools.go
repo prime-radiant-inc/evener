@@ -633,7 +633,12 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+		persistedParts := projectToolResultsForTranscript(calls, results, parts)
+		s.appendTurnWithTranscriptMessage(
+			schema.TurnToolResults,
+			llm.Message{Role: llm.RoleTool, Content: parts},
+			llm.Message{Role: llm.RoleTool, Content: persistedParts},
+		)
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()
