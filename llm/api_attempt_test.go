@@ -170,6 +170,59 @@ func TestBuildAPIAttemptRecordOmitsCustomCredentialNamesCaseInsensitively(t *tes
 	}
 }
 
+func TestBuildAPIAttemptRecordOmitsEncodedCustomCredentialNamesCaseInsensitively(t *testing.T) {
+	const literalValue = "CaseSensitiveCredentialValue"
+	material := NewAPILogCredentialMaterial(nil, []string{
+		"private/name",
+		"private query",
+		"private path",
+		`private"json`,
+	}, literalValue)
+	startedAt := time.Unix(27, 0).UTC()
+	record := buildAPIAttemptRecord("ag_casefold_encoded_names", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+		ProviderInstance: "provider",
+		RequestModel:     "model",
+		Method:           http.MethodPost,
+		Endpoint:         "https://provider.test/v1/responses",
+		Headers: http.Header{
+			"X-Ordinary": {"echo PrIvAtE+qUeRy"},
+		},
+		RequestBody:        []byte("echo PrIvAtE%20pAtH"),
+		StartedAt:          startedAt,
+		CredentialMaterial: material,
+	}, APIAttemptResult{
+		StatusCode:   http.StatusBadRequest,
+		ResponseBody: []byte("casesensitivecredentialvalue"),
+		Response: &Response{
+			Model:   "echo PrIvAtE%2FnAmE",
+			Message: Assistant("safe"),
+			Finish:  FinishReason{Reason: `echo PrIvAtE\"JsOn`},
+		},
+		Outcome:    apilog.AttemptProviderReject,
+		ErrorClass: `echo PrIvAtE\"JsOn`,
+		Err:        errors.New("echo PrIvAtE%2FnAmE"),
+		FinishedAt: startedAt.Add(time.Millisecond),
+	})
+
+	assertCredentialExcludedBody(t, record.Request.Body)
+	if len(record.Request.Headers) != 0 {
+		t.Fatalf("encoded credential name survived in header evidence: %#v", record.Request.Headers)
+	}
+	if record.Response.Model != "" || record.Response.FinishReason != "" || record.ErrorClass != "" || record.ErrorMessage != "" {
+		t.Fatalf("encoded credential names survived: response=%+v error=(%q, %q)", record.Response, record.ErrorClass, record.ErrorMessage)
+	}
+	responseBody, err := apilog.DecodeBody(record.Response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(responseBody); got != "casesensitivecredentialvalue" {
+		t.Fatalf("literal-sensitive credential value changed case-insensitive evidence %q", got)
+	}
+	if _, err := apilog.MarshalRecord(record); err != nil {
+		t.Fatalf("MarshalRecord(): %v", err)
+	}
+}
+
 func TestMarshalRecordRejectsMixedCaseCustomCredentialNameInsertedAfterBuild(t *testing.T) {
 	material := NewAPILogCredentialMaterial([]string{"X-Custom-Credential-Name"}, []string{"private_query_name"})
 	for _, tt := range []struct {
@@ -209,6 +262,61 @@ func TestMarshalRecordRejectsMixedCaseCustomCredentialNameInsertedAfterBuild(t *
 			}
 		})
 	}
+}
+
+func TestMarshalRecordRejectsEncodedMixedCaseCustomCredentialNamesInsertedAfterBuild(t *testing.T) {
+	const literalValue = "CaseSensitiveCredentialValue"
+	material := NewAPILogCredentialMaterial(nil, []string{
+		"private/name",
+		"private query",
+		"private path",
+		`private"json`,
+	}, literalValue)
+	for _, tt := range []struct {
+		name   string
+		mutate func(*apilog.APIAttemptRecord)
+	}{
+		{
+			name: "query-escaped name",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Headers = apilog.EncodedHeader{"X-Ordinary": {"PrIvAtE+qUeRy"}}
+			},
+		},
+		{
+			name: "path-escaped name",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Request.Body = apilog.EncodeBody([]byte("PrIvAtE%20pAtH"))
+			},
+		},
+		{
+			name: "encoded slash name",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.Response.Model = "PrIvAtE%2FnAmE"
+			},
+		},
+		{
+			name: "JSON-content-escaped name",
+			mutate: func(record *apilog.APIAttemptRecord) {
+				record.ErrorMessage = `PrIvAtE\"JsOn`
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			record := validBuiltAPIAttemptRecord(t, material)
+			tt.mutate(&record)
+			if _, err := apilog.MarshalRecord(record); err == nil {
+				t.Fatal("MarshalRecord() accepted encoded mixed-case custom credential name")
+			}
+		})
+	}
+
+	t.Run("credential value remains literal-case-sensitive", func(t *testing.T) {
+		record := validBuiltAPIAttemptRecord(t, material)
+		record.Response.Body = apilog.EncodeBody([]byte("casesensitivecredentialvalue"))
+		if _, err := apilog.MarshalRecord(record); err != nil {
+			t.Fatalf("MarshalRecord() rejected case-distinct credential value: %v", err)
+		}
+	})
 }
 
 func TestMarshalRecordIgnoresCredentialOverlapWithClosedStructuralFields(t *testing.T) {

@@ -69,11 +69,11 @@ func NewAPILogCredentialMaterial(headerNames, queryNames []string, values ...str
 		seenValues[value] = struct{}{}
 		material.Values = append(material.Values, value)
 	}
-	material.secretNames = make([]string, 0, len(secretNames))
+	rawSecretNames := make([]string, 0, len(secretNames))
 	for name := range secretNames {
-		material.secretNames = append(material.secretNames, name)
+		rawSecretNames = append(rawSecretNames, name)
 	}
-	sort.Strings(material.secretNames)
+	material.secretNames = caseFoldedCredentialNameVariants(rawSecretNames)
 	material.patterns = credentialValueVariants(material.Values)
 	return material
 }
@@ -312,6 +312,21 @@ func containsCredentialEvidenceParts(text string, valuePatterns, secretNames []s
 		}
 	}
 	return false
+}
+
+func caseFoldedCredentialNameVariants(names []string) []string {
+	variants := credentialValueVariants(names)
+	seen := make(map[string]struct{}, len(variants))
+	caseFolded := make([]string, 0, len(variants))
+	for _, variant := range variants {
+		variant = strings.ToLower(variant)
+		if _, duplicate := seen[variant]; duplicate {
+			continue
+		}
+		seen[variant] = struct{}{}
+		caseFolded = append(caseFolded, variant)
+	}
+	return caseFolded
 }
 
 func credentialEvidencePatterns(material APILogCredentialMaterial) []string {
