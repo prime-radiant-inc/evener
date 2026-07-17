@@ -40,11 +40,23 @@ function assert(cond, msg) {
   };
   dom.window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
 
+  const inlineInput = dom.window.document.getElementById("inline-dir");
+  const activeInlineInputListeners = new Set();
+  const originalInlineAdd = inlineInput.addEventListener.bind(inlineInput);
+  const originalInlineRemove = inlineInput.removeEventListener.bind(inlineInput);
+  inlineInput.addEventListener = function(type, listener, options) {
+    if (type === "input") activeInlineInputListeners.add(listener);
+    return originalInlineAdd(type, listener, options);
+  };
+  inlineInput.removeEventListener = function(type, listener, options) {
+    if (type === "input") activeInlineInputListeners.delete(listener);
+    return originalInlineRemove(type, listener, options);
+  };
+
   dom.window.eval(dirPickerSrc);
   dom.window.eval(settingsPickersSrc);
   dom.window.document.dispatchEvent(new dom.window.Event("DOMContentLoaded", { bubbles: true }));
 
-  const inlineInput = dom.window.document.getElementById("inline-dir");
   assert(!inlineInput.hasAttribute("list"), "inline dir input should not receive a datalist list attribute");
   assert(dom.window.document.querySelectorAll("datalist").length === 0,
     "settings dir inputs should not create datalist elements");
@@ -70,18 +82,25 @@ function assert(cond, msg) {
   assert(picker, "typing in inline input should open shared directory suggestions");
   assert(!picker.querySelector(".chip-picker-search"),
     "inline input suggestions should not create a secondary search input");
-  assert(calls[0] === "/typed/", "inline browser should list children of current input value, got " + calls[0]);
+  assert(calls[0] === "/typed", "inline browser should search using the final path component, got " + calls[0]);
+  const listenerCount = activeInlineInputListeners.size;
+  inlineInput.value = "/typed-a";
+  inlineInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 180));
+  assert(activeInlineInputListeners.size === listenerCount,
+    "replacing inline suggestions should not accumulate input listeners");
+  picker = dom.window.document.querySelector(".chip-picker-dir");
   inlineInputEvents = 0;
   inlineChangeEvents = 0;
 
   picker.querySelector(".chip-picker-dir-row").click();
   await new Promise((r) => setTimeout(r, 0));
-  assert(inlineInput.value === "/typed/accepted", "clicking inline directory row should browse into that directory");
+  assert(inlineInput.value === "/typed-a/accepted/", "clicking inline directory row should browse into that directory");
   assert(inlineInputEvents === 0, "browsing inline directory rows should not dispatch input events");
   assert(inlineChangeEvents === 0, "browsing inline directory rows should not dispatch change events");
   assert(dom.window.document.querySelector(".chip-picker-dir"), "inline picker should stay open after browsing a row");
   picker.querySelector(".chip-picker-dir-use").click();
-  assert(inlineInput.value === "/typed/accepted", "accept control should keep browsed path in inline input");
+  assert(inlineInput.value === "/typed-a/accepted", "accept control should keep browsed path in inline input");
   assert(inlineInputEvents === 1, "accepting inline directory should dispatch one input event");
   assert(inlineChangeEvents === 1, "accepting inline directory should dispatch one change event");
   assert(!dom.window.document.querySelector(".chip-picker-dir"), "inline picker should close after accepting current directory");

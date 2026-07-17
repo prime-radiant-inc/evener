@@ -112,9 +112,7 @@ func checkCompleteDirs(t *testing.T) {
 		}
 	})
 
-	t.Run("limit greater than 30 is capped", func(t *testing.T) {
-		// Create more than 30 uniquely-named dirs so the cap is the only
-		// thing that can hold the result count down to 30.
+	t.Run("default returns all directories and explicit limit is honored", func(t *testing.T) {
 		bigHome := t.TempDir()
 		t.Setenv("HOME", bigHome)
 		for i := 0; i < 40; i++ {
@@ -122,12 +120,30 @@ func checkCompleteDirs(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/", Limit: 100})
+		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(resp.Data) != 30 {
-			t.Fatalf("expected exactly 30 entries (capped), got %d", len(resp.Data))
+		if len(resp.Data) != 40 {
+			t.Fatalf("expected all 40 entries, got %d", len(resp.Data))
+		}
+
+		limited, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/", Limit: 7})
+		if err != nil {
+			t.Fatalf("unexpected limited error: %v", err)
+		}
+		if len(limited.Data) != 7 {
+			t.Fatalf("expected explicit limit of 7 entries, got %d", len(limited.Data))
+		}
+	})
+
+	t.Run("final component fuzzy matches", func(t *testing.T) {
+		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: filepath.Join(home, "lph")})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(resp.Data) != 1 || filepath.Base(resp.Data[0]) != "Alpha" {
+			t.Fatalf("expected fuzzy match [Alpha], got %v", resp.Data)
 		}
 	})
 

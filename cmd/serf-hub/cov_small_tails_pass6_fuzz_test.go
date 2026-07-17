@@ -168,7 +168,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		for i := 0; i < 32; i++ {
 			_ = os.Mkdir(filepath.Join(root, string(rune('a'+i))), 0o755)
 		}
-		call(web.handleApiDirs, http.MethodGet, "/api/dirs?prefix="+root+"/", "")
 		oldGit := gitCommand
 		calls := 0
 		gitCommand = func(context.Context, string, ...string) *exec.Cmd {

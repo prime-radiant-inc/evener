@@ -261,7 +261,6 @@ func FuzzExactTails(f *testing.F) {
 		_ = appendProjectDeleteLiveSkip(nil, "id")
 		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
 		t.Setenv(envvars.Home.Name, "")
-		liveWeb.handleApiDirs(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/dirs", nil))
 		writeJSON(httptest.NewRecorder(), make(chan int))
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 		partialReq := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)

@@ -4520,56 +4520,6 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	}
 }
 
-// TestWeb_ApiDirs_ReturnsMatchingDirs verifies that /api/dirs?prefix= returns a
-// JSON object with a results array of directories.
-func TestWeb_ApiDirs_ReturnsMatchingDirs(t *testing.T) {
-	// Use os.TempDir() as a known directory with children.
-	parent := t.TempDir()
-	childA := filepath.Join(parent, "aardvark")
-	childB := filepath.Join(parent, "zebra")
-	for _, d := range []string{childA, childB} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/dirs?prefix="+parent+"/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	rawResults, ok := resp["results"]
-	if !ok {
-		t.Fatal("response missing 'results' key")
-	}
-	results, ok := rawResults.([]any)
-	if !ok {
-		t.Fatalf("results is not an array: %T", rawResults)
-	}
-	if len(results) < 2 {
-		t.Errorf("expected at least 2 results, got %d", len(results))
-	}
-	// Verify the results include "aardvark".
-	found := false
-	for _, r := range results {
-		m, _ := r.(map[string]any)
-		if m["name"] == "aardvark" {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("results missing 'aardvark' directory")
-	}
-}
-
 // TestWeb_ApiDirCreate covers POST /api/dirs/create, used by the spawn flow to
 // create a proposed working directory that does not exist yet.
 func TestWeb_ApiDirCreate(t *testing.T) {
@@ -4642,44 +4592,6 @@ func TestWeb_ApiDirCreate(t *testing.T) {
 			t.Errorf("expected 405 for GET, got %d", rec.Code)
 		}
 	})
-}
-
-// TestWeb_ApiDirs_FiltersByBasename verifies that /api/dirs?prefix=<dir>/prefix
-// filters to only directories whose name starts with the given prefix.
-func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
-	parent := t.TempDir()
-	for _, name := range []string{"apple", "apricot", "banana"} {
-		if err := os.MkdirAll(filepath.Join(parent, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	prefix := parent + "/ap"
-	req := httptest.NewRequest(http.MethodGet, "/api/dirs?prefix="+prefix, nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	var resp struct {
-		Results []struct {
-			Name string `json:"name"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	for _, r := range resp.Results {
-		if !strings.HasPrefix(r.Name, "ap") {
-			t.Errorf("result %q does not start with 'ap'", r.Name)
-		}
-	}
-	if len(resp.Results) != 2 {
-		t.Errorf("expected 2 results (apple, apricot), got %d", len(resp.Results))
-	}
 }
 
 // TestWeb_Settings_Providers_RendersSerfLaunchContract checks that

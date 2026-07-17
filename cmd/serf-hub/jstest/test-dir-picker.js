@@ -38,6 +38,13 @@ function deferred() {
           ],
         });
       }
+      if (prefix === "/tmp/sr") {
+        return Promise.resolve({
+          results: [
+            { path: "/tmp/src", is_git: false },
+          ],
+        });
+      }
       return Promise.resolve({
         results: [
           { path: "/tmp/project", is_git: true },
@@ -81,13 +88,27 @@ function deferred() {
 
   picker.querySelector('[data-dir-path="/tmp/project"]').click();
   await new Promise((r) => setTimeout(r, 0));
-  assert(input.value === "/tmp/project", "clicking a directory row should browse into that directory");
+  assert(input.value === "/tmp/project/", "clicking a directory row should browse into that directory");
   assert(calls.includes("/tmp/project/"), "browsing into a directory should list that directory's children");
   assert(accepted.length === 0, "clicking a directory row should not accept the path");
 
   picker.querySelector(".chip-picker-dir-parent").click();
   await new Promise((r) => setTimeout(r, 0));
-  assert(input.value === "/tmp", "clicking the parent row should browse up");
+  assert(input.value === "/tmp/", "clicking the parent row should browse up");
+
+  input.value = "/tmp/sr";
+  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 170));
+  await new Promise((r) => setTimeout(r, 0));
+  assert(input.value === "/tmp/sr", "typing a final path component should not rewrite the input");
+  assert(calls.includes("/tmp/sr"), "the final path component should be sent as a directory search");
+  assert(picker.querySelector('[data-dir-path="/tmp/src"] .chip-picker-dir-name').textContent === "src",
+    "directory search results should remain browsable");
+
+  input.value = "/tmp/";
+  input.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 170));
+  assert(input.value === "/tmp/", "typing a trailing slash should preserve it");
 
   picker.querySelector('[data-dir-path="/tmp/project"]').click();
   await new Promise((r) => setTimeout(r, 0));
@@ -130,7 +151,7 @@ function deferred() {
   const raceNew = deferred();
   dom.window.SerfAppwire.completeDirs = (prefix) => {
     if (prefix === "/race/old/") return raceOld.promise;
-    if (prefix === "/race/new/") return raceNew.promise;
+    if (prefix === "/race/new") return raceNew.promise;
     return Promise.resolve({ results: [] });
   };
   dom.window.SerfDirPicker.open({

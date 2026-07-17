@@ -218,6 +218,7 @@
       placeholder: input.placeholder || "/path/to/repo",
       minWidth: "360px",
       inlineInput: opts.inline ? input : null,
+      searchOnOpen: !!opts.inline,
       onAccept(value) { writeDirInput(input, value); },
     });
   }

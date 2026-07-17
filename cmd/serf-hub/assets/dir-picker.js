@@ -37,17 +37,16 @@
   }
 
   function completeDirs(prefix) {
-    if (global.SerfAppwire && typeof global.SerfAppwire.completeDirs === "function") {
-      return global.SerfAppwire.completeDirs(prefix);
-    }
-    return fetch("/api/dirs?prefix=" + encodeURIComponent(prefix || ""), {
-      credentials: "same-origin",
-    }).then((r) => r.json());
+    return global.SerfAppwire.completeDirs(prefix);
   }
 
   function removeExisting() {
     const existing = document.querySelector(".chip-picker");
     if (existing) {
+      if (typeof existing.__serfDirPickerClose === "function") {
+        existing.__serfDirPickerClose();
+        return;
+      }
       if (typeof existing.__serfDirPickerCleanup === "function") {
         existing.__serfDirPickerCleanup();
       }
@@ -126,7 +125,8 @@
 
     const inlineInput = options.inlineInput || null;
     const input = inlineInput || document.createElement("input");
-    let currentDir = trimTrailingSlash(options.currentValue || input.value || "");
+    const initialValue = String(options.currentValue || input.value || "");
+    let currentDir = trimTrailingSlash(initialValue);
     if (!inlineInput) {
       input.className = "chip-picker-search";
       input.placeholder = options.placeholder || "/path/to/repo";
@@ -162,6 +162,9 @@
       if (typeof picker.__serfDirPickerCleanup === "function") {
         picker.__serfDirPickerCleanup();
       }
+      input.removeEventListener("input", onInput);
+      input.removeEventListener("keydown", onKeydown);
+      picker.__serfDirPickerClose = null;
       picker.remove();
     }
 
@@ -178,8 +181,14 @@
 
     function browseTo(path) {
       currentDir = trimTrailingSlash(path);
-      setInputValue(currentDir);
-      fetchDirs(currentDir);
+      setInputValue(withTrailingSlash(currentDir));
+      fetchDirs(withTrailingSlash(currentDir));
+    }
+
+    function searchFromInput(value) {
+      const query = String(value || "");
+      currentDir = query.endsWith("/") ? trimTrailingSlash(query) : parentDir(query);
+      fetchDirs(query);
     }
 
     function appendParentRow() {
@@ -215,9 +224,9 @@
       results.appendChild(el);
     }
 
-    function fetchDirs(dir) {
+    function fetchDirs(prefix) {
       const currentRequestID = ++requestID;
-      const dirsPromise = completeDirs(withTrailingSlash(dir));
+      const dirsPromise = completeDirs(prefix);
       dirsPromise.then((data) => {
         if (currentRequestID !== requestID || !picker.parentNode) return;
         results.innerHTML = "";
@@ -234,16 +243,17 @@
       }).catch(() => {});
     }
 
-    useButton.addEventListener("click", () => accept(input.value || currentDir));
+    useButton.addEventListener("click", () => accept(trimTrailingSlash(input.value || currentDir)));
 
-    input.addEventListener("input", () => {
+    function onInput() {
       if (timer) clearTimeout(timer);
-      timer = setTimeout(() => browseTo(input.value), 150);
-    });
+      const query = input.value;
+      timer = setTimeout(() => searchFromInput(query), 150);
+    }
 
     // Enter commits the typed literal so manual paths stay available; clicks in
     // the list are reserved for browsing.
-    input.addEventListener("keydown", (e) => {
+    function onKeydown(e) {
       if (e.key === "Enter") {
         e.preventDefault();
         accept(input.value);
@@ -251,7 +261,11 @@
         e.preventDefault();
         close();
       }
-    });
+    }
+
+    input.addEventListener("input", onInput);
+    input.addEventListener("keydown", onKeydown);
+    picker.__serfDirPickerClose = close;
 
     anchor.parentNode.style.position = "relative";
     anchor.parentNode.appendChild(picker);
@@ -260,8 +274,12 @@
     if (options.minWidth) picker.style.minWidth = options.minWidth;
 
     if (!inlineInput) input.focus();
-    setInputValue(currentDir);
-    fetchDirs(currentDir);
+    setInputValue(initialValue || currentDir);
+    if (options.searchOnOpen) {
+      searchFromInput(initialValue);
+    } else {
+      fetchDirs(withTrailingSlash(currentDir));
+    }
     dismissOnOutsideClick(picker, close, [anchor, inlineInput]);
     return picker;
   }

@@ -88,7 +88,7 @@ if command -v curl >/dev/null 2>&1; then
 		# wait up to ~5s for the listener line.
 		for _ in $(seq 1 50); do grep -q 'listening on' "$workdir/hub.log" 2>/dev/null && break; sleep 0.1; done
 		base="http://127.0.0.1:$port"
-		for route in / /api/health /api/dirs /api/models /api/tree "/api/search?q=x" \
+		for route in / /api/health /api/models /api/tree "/api/search?q=x" \
 			/api/spawn-schema /credentials /auth /assets/style.css /assets/renderer.js \
 			/api/sessions/nonexistent /doc/file /nonexistent-route; do
 			curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true

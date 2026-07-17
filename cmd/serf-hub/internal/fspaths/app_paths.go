@@ -44,29 +44,73 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	if err != nil {
 		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}
-	limit := params.Limit
-	if limit <= 0 || limit > 30 {
-		limit = 30
+	type match struct {
+		path  string
+		score int
 	}
-	results := make([]string, 0, limit)
+	matches := make([]match, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		name := entry.Name()
-		if strings.HasPrefix(name, ".") && filter == "" {
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(filter, ".") {
 			continue
 		}
-		if filter != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(filter)) {
+		score, matched := directoryMatchScore(filter, name)
+		if !matched {
 			continue
 		}
-		results = append(results, filepath.Join(listDir, name))
-		if len(results) >= limit {
-			break
+		matches = append(matches, match{path: filepath.Join(listDir, name), score: score})
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score < matches[j].score
+		}
+		return matches[i].path < matches[j].path
+	})
+	if params.Limit > 0 && len(matches) > params.Limit {
+		matches = matches[:params.Limit]
+	}
+	results := make([]string, len(matches))
+	for i := range matches {
+		results[i] = matches[i].path
+	}
+	return appwire.DirsCompleteResponse{Data: results}, nil
+}
+
+func directoryMatchScore(query, name string) (int, bool) {
+	query = strings.ToLower(query)
+	name = strings.ToLower(name)
+	if query == "" || name == query {
+		return 0, true
+	}
+	if strings.HasPrefix(name, query) {
+		return 1, true
+	}
+	if index := strings.Index(name, query); index >= 0 {
+		return 10 + index, true
+	}
+
+	queryRunes := []rune(query)
+	matched := 0
+	first := -1
+	last := -1
+	for index, char := range []rune(name) {
+		if char != queryRunes[matched] {
+			continue
+		}
+		if first < 0 {
+			first = index
+		}
+		last = index
+		matched++
+		if matched == len(queryRunes) {
+			gaps := last - first + 1 - len(queryRunes)
+			return 100 + first + gaps, true
 		}
 	}
-	sort.Strings(results)
-	return appwire.DirsCompleteResponse{Data: results}, nil
+	return 0, false
 }
 
 func ValidateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateResponse {

@@ -403,7 +403,7 @@ Riskiest assumptions to validate early:
 - URL: primary pane keeps the URL; side pane is ephemeral.
 
 **Phase 2 — richer documents**
-- `/doc/file` route + path sanitization (mirror the `/api/dirs` sanitizer — `web_api.go`); for
+- `/doc/file` route + path sanitization (reuse `internal/fspaths` path containment); for
   remote sources, a `serf/file/read`-style RPC over appwire (the missing piece called out above).
 - Markdown file pane via `marked.parse`; optional syntax highlighting (net-new; none today).
 - Optional: modifier-click an `sb-row` to open any session beside the current — `sidebar.html`.
