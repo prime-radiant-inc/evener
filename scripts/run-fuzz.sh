@@ -163,7 +163,6 @@ TARGETS=(
 	"native:agent:./execenv:FuzzProcessRuntimeProgram::"
 	"native:agent:./execenv:FuzzGitPathResolutionProgram::"
 	"native:agent:./execenv:FuzzSandboxLifecycleProgram::"
-	"native:agent:./execenv:FuzzSecurePathEdgeContractProgram::"
 	"native:agent:./execenv:FuzzLocalEdgeContractProgram::"
 	"native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local.go;securepath.go"
 	"native:agent:./sandbox:FuzzReRoot::"
@@ -197,7 +196,6 @@ TARGETS=(
 	"native:.:./cmd/serf-hub/internal/codexlaunch:FuzzCodexLaunchBehaviorProgram::"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzBuildTree::tree.go#BuildTreeAt"
 	"native:.:./cmd/serf-hub/internal/hubcore:FuzzHubcoreScenarios::"
-	"native:.:./internal/gitpath:FuzzParseGitdirPointer::gitpath.go#ParseGitdirPointer"
 	"native:.:./internal/plugins:FuzzSourceUnmarshalJSON::source.go#UnmarshalJSON"
 	"native:.:./internal/plugins:FuzzDetectNPMBinServer::manifest_fallback.go#detectNPMBinServer"
 	# Lane A3 (root module: CLI/TUI glue)
@@ -228,6 +226,8 @@ TARGETS=(
 	"native:fuzz:./promoter:FuzzGoTestEmission::emit_go.go"
 	"native:fuzz:./promoter:FuzzPromoterOutcomes::promoter.go"
 	"native:fuzz:./promoter:FuzzPersistPaths::persist.go"
+	"native:identifier:.:FuzzProjectIDFormat::project.go#projectID"
+	"native:identifier:.:FuzzUUIDBase62RoundTrip::uuid.go"
 	"native:fuzz:./schemagen:FuzzSchemaGeneration::schemagen.go;source.go;schema.go"
 	"native:fuzz:./typegen:FuzzRegistrySemanticRoundTrip::registry.go;typegen.go"
 	"native:agent:.:FuzzSubagentPolicyProgram::subagents.go"
@@ -606,7 +606,6 @@ TARGETS=(
 	"native:.:./internal/bundled:FuzzPackageUnion::"
 	"native:.:./internal/credentials:FuzzPackageUnion::"
 	"native:.:./internal/diagnostic:FuzzPackageUnion::"
-	"native:.:./internal/gitpath:FuzzPackageUnion::"
 	"native:.:./internal/plugins:FuzzPackageUnion::"
 	"native:.:./internal/selfupdate:FuzzPackageUnion::"
 	"native:.:./cmdutil:FuzzCmdutilCoverage::"
@@ -742,6 +741,13 @@ TARGETS=(
 	"native:.:./cmd/serf:FuzzServeSeedCoverage::"
 	"native:.:./cmd/serf:FuzzUpgradeErrorSeedCoverage::"
 )
+
+# The fd-anchored secure-path target exercises Linux-only primitives. Keep it
+# in Linux manifests and campaigns without making macOS registry checks report
+# a live target as stale.
+if [ "$(go env GOOS)" = "linux" ]; then
+	TARGETS+=("native:agent:./execenv:FuzzSecurePathEdgeContractProgram::")
+fi
 
 duration="60s"
 declare -a only=()
