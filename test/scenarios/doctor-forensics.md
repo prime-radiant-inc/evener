@@ -70,21 +70,21 @@ Assert `communicate` reports the real structural call count and `delegate_send`
 reports **`0 calls`**. If assistant prose mentions `delegate_send`, the doctor
 reports that separately as text rather than treating it as an invocation.
 
-### 4 — apilog preserves provider outcome and separate error evidence
+### 4 — apilog preserves structured failure and settlement evidence without bodies
 
 ```
-serf-doctor apilog $SID
 serf-doctor apilog $SID --errors
-serf-doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, outcome, error, final_attempt_count}'
+serf-doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, status_code, error_class, outcome, final_attempt_count}'
+serf-doctor apilog $SID --json | jq '.settlements | {total, truncated, records: [.records[] | {attempt_group_id, final_attempt_id, final_attempt_count, outcome, forensic_incomplete}]}'
 ```
 
-Assert the **unfiltered** human table has distinct `outcome` and `error` columns:
-`outcome` retains the exact provider attempt class while `error` is bounded,
-single-line evidence. `--errors` may legitimately report no matching attempts
-for a healthy session; if it returns rows, each row must be an error attempt.
-The unfiltered JSON projection retains `attempt_id`, `attempt_group_id`,
-`outcome`, `error`, and settlement-derived `final_attempt_count`; it never prints
-bodies.
+Assert the human table has distinct `status`, `error_class`, and `outcome`
+columns. The JSON call projection retains `attempt_id`, `attempt_group_id`,
+`status_code`, `error_class`, `outcome`, and settlement-derived
+`final_attempt_count`; neither human nor JSON output prints provider body-derived
+`error_message` text. The bounded `settlements.records` collection remains present
+under call filters, exposes `forensic_incomplete`, and can represent a
+`final_attempt_count: 0` settlement without fabricating a provider call row.
 
 ### 5 — tree links parent ↔ delegate/observer across buckets
 

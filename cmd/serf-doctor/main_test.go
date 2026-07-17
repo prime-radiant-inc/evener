@@ -246,7 +246,7 @@ func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency in
 		}
 	} else {
 		attempt.ErrorClass = "timeout"
-		attempt.ErrorMessage = "ERROR:"
+		attempt.ErrorMessage = "provider-body-sentinel: quota detail"
 	}
 	return attempt
 }
@@ -380,6 +380,12 @@ func TestRun_APILogHuman(t *testing.T) {
 	if !strings.Contains(outStr, "calls=4") {
 		t.Errorf("apilog output missing totals; got:\n%s", outStr)
 	}
+	if !strings.Contains(outStr, "settlements=4/4") {
+		t.Errorf("apilog output missing settlement truth; got:\n%s", outStr)
+	}
+	if strings.Contains(outStr, "provider-body-sentinel") || strings.Contains(outStr, "quota detail") {
+		t.Errorf("apilog human output exposed provider body-derived error text:\n%s", outStr)
+	}
 }
 
 func TestRun_APILogJSON(t *testing.T) {
@@ -390,7 +396,20 @@ func TestRun_APILogJSON(t *testing.T) {
 	}
 	var res struct {
 		SessionID string `json:"session_id"`
-		Totals    struct {
+		Calls     []struct {
+			Outcome    apilog.AttemptOutcomeClass `json:"outcome"`
+			ErrorClass string                     `json:"error_class"`
+			StatusCode int                        `json:"status_code"`
+		} `json:"calls"`
+		Settlements struct {
+			Total     int  `json:"total"`
+			Truncated bool `json:"truncated"`
+			Records   []struct {
+				AttemptGroupID     string `json:"attempt_group_id"`
+				ForensicIncomplete bool   `json:"forensic_incomplete"`
+			} `json:"records"`
+		} `json:"settlements"`
+		Totals struct {
 			Calls int `json:"calls"`
 		} `json:"totals"`
 	}
@@ -402,6 +421,12 @@ func TestRun_APILogJSON(t *testing.T) {
 	}
 	if res.Totals.Calls != 4 {
 		t.Errorf("totals.calls = %d, want 4", res.Totals.Calls)
+	}
+	if res.Settlements.Total != 4 || res.Settlements.Truncated || len(res.Settlements.Records) != 4 {
+		t.Errorf("settlements = %+v, want four complete records", res.Settlements)
+	}
+	if strings.Contains(out.String(), "provider-body-sentinel") || strings.Contains(out.String(), "quota detail") {
+		t.Errorf("apilog JSON exposed provider body-derived error text:\n%s", out.String())
 	}
 }
 
@@ -422,7 +447,10 @@ func TestRun_APILogFlags(t *testing.T) {
 			t.Fatalf("exit %d, stderr=%s", code, errb.String())
 		}
 		requireAPILogTableColumn(t, out.String(), errorAPIAttemptID, "outcome", string(apilog.AttemptProviderTimeout))
-		requireAPILogTableColumn(t, out.String(), errorAPIAttemptID, "error", "ERROR:")
+		requireAPILogTableColumn(t, out.String(), errorAPIAttemptID, "error_class", "timeout")
+		if strings.Contains(out.String(), "provider-body-sentinel") || strings.Contains(out.String(), "quota detail") {
+			t.Fatalf("--errors output exposed provider body-derived error text:\n%s", out.String())
+		}
 	})
 
 	t.Run("cache-spikes", func(t *testing.T) {

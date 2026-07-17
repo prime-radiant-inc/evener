@@ -311,11 +311,12 @@ func doctor_buildAPILogResult(r *doctor_reader) (APILogResult, APILogOpts) {
 			TextLength:       r.doctor_int(200),
 			ToolCalls:        r.doctor_int(10),
 			Empty:            r.doctor_bool(),
-			Error:            r.doctor_str(),
+			ErrorClass:       r.doctor_str(),
+			StatusCode:       r.doctor_int(600),
 			Final:            r.doctor_bool(),
 			SettlementState:  r.doctor_str(),
 		}
-		if row.Error == "" {
+		if row.ErrorClass == "" {
 			row.Outcome = apilog.AttemptSuccess
 		} else {
 			row.Outcome = apilog.AttemptTransportFail

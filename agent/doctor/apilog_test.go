@@ -1,6 +1,8 @@
 package doctor
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -273,7 +275,7 @@ func TestRenderAPILogSummaryAndIdentity(t *testing.T) {
 	}
 }
 
-func TestRenderAPILogKeepsOutcomeAndSanitizesErrorInSeparateColumns(t *testing.T) {
+func TestRenderAPILogKeepsStructuredFailureColumnsSeparate(t *testing.T) {
 	attemptID := identifier.MustNewAPIAttemptID()
 	result := APILogResult{
 		SessionID: sidA,
@@ -284,7 +286,8 @@ func TestRenderAPILogKeepsOutcomeAndSanitizesErrorInSeparateColumns(t *testing.T
 			ProviderInstance: "openai-primary",
 			Model:            "gpt-5.2-codex",
 			Outcome:          apilog.AttemptProviderTimeout,
-			Error:            "first line\nsecond\tline\x1b" + strings.Repeat("x", 80),
+			StatusCode:       504,
+			ErrorClass:       "provider_timeout",
 			SettlementState:  SettlementUnsettled,
 		}},
 	}
@@ -293,13 +296,113 @@ func TestRenderAPILogKeepsOutcomeAndSanitizesErrorInSeparateColumns(t *testing.T
 	if got := apilogHumanColumn(t, out, attemptID, "outcome"); got != string(apilog.AttemptProviderTimeout) {
 		t.Fatalf("outcome column = %q, want exact class %q\n%s", got, apilog.AttemptProviderTimeout, out)
 	}
-	errorText := apilogHumanColumn(t, out, attemptID, "error")
-	if !strings.HasPrefix(errorText, "first line second line") || !strings.HasSuffix(errorText, "…") {
-		t.Fatalf("error column = %q, want one-line truncated evidence\n%s", errorText, out)
+	if got := apilogHumanColumn(t, out, attemptID, "status"); got != "504" {
+		t.Fatalf("status column = %q, want 504\n%s", got, out)
 	}
-	for _, unsafe := range []string{"\n", "\r", "\t", "\x1b"} {
-		if strings.Contains(errorText, unsafe) {
-			t.Fatalf("error column contains control %q: %q", unsafe, errorText)
+	if got := apilogHumanColumn(t, out, attemptID, "error_class"); got != "provider_timeout" {
+		t.Fatalf("error_class column = %q, want provider_timeout\n%s", got, out)
+	}
+}
+
+func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	attempt := doctorAttempt("ag_structured_failure", 1, apilog.AttemptProviderReject, 25, 0, 0, 0, 0, 0)
+	attempt.ErrorClass = "rate_limit"
+	attempt.ErrorMessage = "provider-body-sentinel: quota detail"
+	attempt.Response = &apilog.APIAttemptResponse{
+		StatusCode: 429,
+		Body:       apilog.EncodeBody([]byte("provider-body-sentinel")),
+	}
+	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
+
+	result, err := APILog(base, sidA, APILogOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(result.Calls))
+	}
+	row := result.Calls[0]
+	if row.StatusCode != 429 || row.ErrorClass != "rate_limit" || row.Outcome != apilog.AttemptProviderReject {
+		t.Fatalf("structured failure = status %d class %q outcome %q", row.StatusCode, row.ErrorClass, row.Outcome)
+	}
+	jsonResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	humanResult := RenderAPILog(result, APILogOpts{})
+	for name, output := range map[string]string{"json": string(jsonResult), "human": humanResult} {
+		if strings.Contains(output, "provider-body-sentinel") || strings.Contains(output, "quota detail") {
+			t.Fatalf("%s doctor output exposed provider body-derived error text: %s", name, output)
+		}
+	}
+	if got := apilogHumanColumn(t, humanResult, attempt.AttemptID, "status"); got != "429" {
+		t.Fatalf("status column = %q, want 429\n%s", got, humanResult)
+	}
+	if got := apilogHumanColumn(t, humanResult, attempt.AttemptID, "error_class"); got != "rate_limit" {
+		t.Fatalf("error_class column = %q, want rate_limit\n%s", got, humanResult)
+	}
+}
+
+func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	const fillerSettlements = 103
+	records := make([]apilog.APILogRecord, 0, fillerSettlements+3)
+	for i := 0; i < fillerSettlements; i++ {
+		records = append(records, apilog.APIAttemptGroupSettlement{
+			Kind:              "attempt_group_settlement",
+			SchemaVersion:     1,
+			AttemptGroupID:    fmt.Sprintf("ag_filler_%03d", i),
+			FinalAttemptCount: 0,
+			Outcome:           apilog.AttemptCallerCancel,
+			SettledAt:         time.Date(2026, 7, 15, 13, 0, i, 0, time.UTC),
+		})
+	}
+	filteredAttempt := doctorAttempt("ag_filtered_success", 1, apilog.AttemptSuccess, 1, 1, 1, 0, 1, 0)
+	filteredSettlement := doctorSettlement(filteredAttempt, 1)
+	filteredSettlement.ForensicIncomplete = true
+	zeroAttemptSettlement := apilog.APIAttemptGroupSettlement{
+		Kind:               "attempt_group_settlement",
+		SchemaVersion:      1,
+		AttemptGroupID:     "ag_zero_attempt",
+		FinalAttemptCount:  0,
+		Outcome:            apilog.AttemptCallerCancel,
+		ForensicIncomplete: true,
+		SettledAt:          time.Date(2026, 7, 15, 14, 0, 0, 0, time.UTC),
+	}
+	records = append(records, filteredAttempt, filteredSettlement, zeroAttemptSettlement)
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+
+	result, err := APILog(base, sidA, APILogOpts{ErrorsOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Calls) != 0 {
+		t.Fatalf("errors filter retained success calls: %+v", result.Calls)
+	}
+	if result.Settlements.Total != fillerSettlements+2 || !result.Settlements.Truncated || len(result.Settlements.Records) != 100 {
+		t.Fatalf("bounded settlements = %+v", result.Settlements)
+	}
+	wanted := map[string]bool{"ag_filtered_success": false, "ag_zero_attempt": false}
+	for _, settlement := range result.Settlements.Records {
+		if _, ok := wanted[settlement.AttemptGroupID]; ok {
+			wanted[settlement.AttemptGroupID] = settlement.ForensicIncomplete
+		}
+		if settlement.AttemptGroupID == "ag_zero_attempt" && (settlement.FinalAttemptID != "" || settlement.FinalAttemptCount != 0) {
+			t.Fatalf("zero-attempt settlement fabricated provider identity: %+v", settlement)
+		}
+	}
+	for group, foundIncomplete := range wanted {
+		if !foundIncomplete {
+			t.Errorf("filtered settlement integrity evidence missing for %s", group)
+		}
+	}
+	human := RenderAPILog(result, APILogOpts{ErrorsOnly: true})
+	for _, group := range []string{"ag_filtered_success", "ag_zero_attempt"} {
+		if !strings.Contains(human, group) {
+			t.Errorf("filtered human output erased settlement %s:\n%s", group, human)
 		}
 	}
 }

@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
-	"unicode"
+	"time"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/apilog"
@@ -26,6 +26,7 @@ type APILogOpts struct {
 
 const defaultSpikeThreshold = 50000
 const doctorAPILogMaxLineBytes = 128 << 20
+const doctorAPILogMaxSettlements = 100
 
 const (
 	SettlementSettled             = "settled"
@@ -35,25 +36,45 @@ const (
 
 // APICallRow is one canonical provider attempt's metrics and durable identity.
 type APICallRow struct {
-	AttemptID         string                     `json:"attempt_id"`
-	AttemptGroupID    string                     `json:"attempt_group_id"`
-	AttemptIndex      int                        `json:"attempt_index"`
-	ProviderInstance  string                     `json:"provider_instance"`
-	Model             string                     `json:"model"`
-	LatencyMs         int64                      `json:"latency_ms"`
-	InputTokens       int                        `json:"input_tokens"`
-	OutputTokens      int                        `json:"output_tokens"`
-	CacheRead         int                        `json:"cache_read_tokens"`
-	UncachedInput     int                        `json:"uncached_input_tokens"`
-	FinishReason      string                     `json:"finish_reason,omitempty"`
-	TextLength        int                        `json:"text_length"`
-	ToolCalls         int                        `json:"tool_call_count"`
-	Empty             bool                       `json:"empty"`
-	Outcome           apilog.AttemptOutcomeClass `json:"outcome"`
-	Error             string                     `json:"error,omitempty"`
-	Final             bool                       `json:"final"`
-	SettlementState   string                     `json:"settlement_state"`
-	FinalAttemptCount *int                       `json:"final_attempt_count,omitempty"`
+	AttemptID          string                     `json:"attempt_id"`
+	AttemptGroupID     string                     `json:"attempt_group_id"`
+	AttemptIndex       int                        `json:"attempt_index"`
+	ProviderInstance   string                     `json:"provider_instance"`
+	Model              string                     `json:"model"`
+	LatencyMs          int64                      `json:"latency_ms"`
+	InputTokens        int                        `json:"input_tokens"`
+	OutputTokens       int                        `json:"output_tokens"`
+	CacheRead          int                        `json:"cache_read_tokens"`
+	UncachedInput      int                        `json:"uncached_input_tokens"`
+	FinishReason       string                     `json:"finish_reason,omitempty"`
+	TextLength         int                        `json:"text_length"`
+	ToolCalls          int                        `json:"tool_call_count"`
+	Empty              bool                       `json:"empty"`
+	Outcome            apilog.AttemptOutcomeClass `json:"outcome"`
+	StatusCode         int                        `json:"status_code,omitempty"`
+	ErrorClass         string                     `json:"error_class,omitempty"`
+	Final              bool                       `json:"final"`
+	SettlementState    string                     `json:"settlement_state"`
+	FinalAttemptCount  *int                       `json:"final_attempt_count,omitempty"`
+	ForensicIncomplete bool                       `json:"forensic_incomplete"`
+}
+
+// APIGroupSettlementRow is one outer model-call settlement. It remains
+// independent of provider-attempt filters so zero-attempt and incomplete
+// groups stay observable without fabricating a call row.
+type APIGroupSettlementRow struct {
+	AttemptGroupID     string                     `json:"attempt_group_id"`
+	FinalAttemptID     string                     `json:"final_attempt_id"`
+	FinalAttemptCount  int                        `json:"final_attempt_count"`
+	Outcome            apilog.AttemptOutcomeClass `json:"outcome"`
+	ForensicIncomplete bool                       `json:"forensic_incomplete"`
+	SettledAt          time.Time                  `json:"settled_at"`
+}
+
+type APIGroupSettlements struct {
+	Records   []APIGroupSettlementRow `json:"records"`
+	Total     int                     `json:"total"`
+	Truncated bool                    `json:"truncated"`
 }
 
 // APILogTotals aggregates every attempt in the session, regardless of row filter.
@@ -76,9 +97,10 @@ type ContinuationHistoryModeCounts struct {
 }
 
 type APILogResult struct {
-	SessionID string       `json:"session_id"`
-	Calls     []APICallRow `json:"calls"`
-	Totals    APILogTotals `json:"totals"`
+	SessionID   string              `json:"session_id"`
+	Calls       []APICallRow        `json:"calls"`
+	Settlements APIGroupSettlements `json:"settlements"`
+	Totals      APILogTotals        `json:"totals"`
 }
 
 // APILog decodes the private canonical API log and owns only its diagnostic
@@ -97,6 +119,7 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 	res := APILogResult{SessionID: paths.SessionID}
 	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
 	settlements := map[string]apilog.APIAttemptGroupSettlement{}
+	var retainedSettlements apiGroupSettlementRetention
 	partialTail := false
 	var latencySum int64
 	for {
@@ -129,8 +152,10 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 			recordContinuationHistoryMode(&res.Totals, record.Request.EndpointFamily, llm.HistoryMode(record.Request.HistoryMode))
 		case apilog.APIAttemptGroupSettlement:
 			settlements[record.AttemptGroupID] = record
+			retainedSettlements.add(record)
 		}
 	}
+	res.Settlements = retainedSettlements.result()
 	res.Totals.TotalTokens = res.Totals.InputTokens + res.Totals.OutputTokens
 	if res.Totals.Calls > 0 {
 		res.Totals.AvgLatencyMs = latencySum / int64(res.Totals.Calls)
@@ -148,6 +173,7 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 			row.FinalAttemptCount = &count
 			row.Final = row.AttemptID == settlement.FinalAttemptID
 			row.SettlementState = SettlementSettled
+			row.ForensicIncomplete = settlement.ForensicIncomplete
 		} else if partialTail {
 			row.SettlementState = SettlementUnknownOutsideRange
 		} else {
@@ -159,6 +185,45 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 	}
 	res.Calls = filtered
 	return res, nil
+}
+
+type apiGroupSettlementRetention struct {
+	records []APIGroupSettlementRow
+	total   int
+	next    int
+}
+
+func (r *apiGroupSettlementRetention) add(settlement apilog.APIAttemptGroupSettlement) {
+	row := APIGroupSettlementRow{
+		AttemptGroupID:     settlement.AttemptGroupID,
+		FinalAttemptID:     settlement.FinalAttemptID,
+		FinalAttemptCount:  settlement.FinalAttemptCount,
+		Outcome:            settlement.Outcome,
+		ForensicIncomplete: settlement.ForensicIncomplete,
+		SettledAt:          settlement.SettledAt,
+	}
+	r.total++
+	if len(r.records) < doctorAPILogMaxSettlements {
+		r.records = append(r.records, row)
+		return
+	}
+	r.records[r.next] = row
+	r.next = (r.next + 1) % doctorAPILogMaxSettlements
+}
+
+func (r *apiGroupSettlementRetention) result() APIGroupSettlements {
+	records := append([]APIGroupSettlementRow(nil), r.records...)
+	if len(records) == doctorAPILogMaxSettlements && r.next > 0 {
+		ordered := make([]APIGroupSettlementRow, 0, doctorAPILogMaxSettlements)
+		ordered = append(ordered, records[r.next:]...)
+		ordered = append(ordered, records[:r.next]...)
+		records = ordered
+	}
+	return APIGroupSettlements{
+		Records:   records,
+		Total:     r.total,
+		Truncated: r.total > len(records),
+	}
 }
 
 func recordContinuationHistoryMode(totals *APILogTotals, endpointFamily string, mode llm.HistoryMode) {
@@ -194,12 +259,10 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 		Model:            attempt.RequestModel,
 		LatencyMs:        attempt.LatencyMS,
 		Outcome:          attempt.Outcome,
-		Error:            attempt.ErrorMessage,
-	}
-	if row.Error == "" && row.Outcome != apilog.AttemptSuccess {
-		row.Error = string(row.Outcome)
+		ErrorClass:       attempt.ErrorClass,
 	}
 	if attempt.Response != nil {
+		row.StatusCode = attempt.Response.StatusCode
 		row.FinishReason = attempt.Response.FinishReason
 		row.TextLength = attempt.Response.TextLength
 		row.ToolCalls = attempt.Response.ToolCallCount
@@ -241,44 +304,51 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 	}
 	if len(r.Calls) == 0 {
 		fmt.Fprintln(&b, "(no calls match)")
+	} else {
+		fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-25s %6s %-24s %-7s %-24s %-19s %-19s %8s %8s %8s %9s %6s %-5s\n",
+			"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "status", "error_class", "empty", "settlement", "final_attempt_count", "forensic_incomplete", "latency", "in_tok", "out_tok", "uncached", "txt", "tools")
+		for _, c := range r.Calls {
+			settlement := c.SettlementState
+			if c.Final {
+				settlement += " final"
+			}
+			finalAttemptCount := "-"
+			if c.FinalAttemptCount != nil {
+				finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
+			}
+			status := "-"
+			if c.StatusCode != 0 {
+				status = fmt.Sprintf("%d", c.StatusCode)
+			}
+			errorClass := c.ErrorClass
+			if errorClass == "" {
+				errorClass = "-"
+			}
+			fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %6s %-24s %-7t %-24s %-19s %-19t %7dms %8d %8d %9d %6d %-5d\n",
+				truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
+				truncate(c.Model, 18), c.Outcome, status, truncate(errorClass, 24), c.Empty, truncate(settlement, 24), finalAttemptCount,
+				c.ForensicIncomplete, c.LatencyMs, c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls)
+		}
+	}
+	fmt.Fprintf(&b, "settlements=%d/%d", len(r.Settlements.Records), r.Settlements.Total)
+	if r.Settlements.Truncated {
+		fmt.Fprint(&b, " (latest; truncated)")
+	}
+	fmt.Fprintln(&b)
+	if len(r.Settlements.Records) == 0 {
+		fmt.Fprintln(&b, "(no settlements)")
 		return b.String()
 	}
-	fmt.Fprintf(&b, "%-26s %-26s %-8s %-18s %-18s %-25s %-7s %-24s %-19s %8s %8s %8s %9s %6s %-5s %s\n",
-		"attempt_id", "attempt_group_id", "index", "provider", "model", "outcome", "empty", "settlement", "final_attempt_count", "latency", "in_tok", "out_tok", "uncached", "txt", "tools", "error")
-	for _, c := range r.Calls {
-		settlement := c.SettlementState
-		if c.Final {
-			settlement += " final"
+	fmt.Fprintf(&b, "%-26s %-26s %-19s %-25s %-19s %s\n",
+		"attempt_group_id", "final_attempt_id", "final_attempt_count", "outcome", "forensic_incomplete", "settled_at")
+	for _, settlement := range r.Settlements.Records {
+		finalAttemptID := settlement.FinalAttemptID
+		if finalAttemptID == "" {
+			finalAttemptID = "-"
 		}
-		finalAttemptCount := "-"
-		if c.FinalAttemptCount != nil {
-			finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
-		}
-		fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %-7t %-24s %-19s %7dms %8d %8d %9d %6d %-5d %s\n",
-			truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
-			truncate(c.Model, 18), c.Outcome, c.Empty, truncate(settlement, 24), finalAttemptCount, c.LatencyMs,
-			c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls, humanAPILogError(c.Error))
+		fmt.Fprintf(&b, "%-26s %-26s %-19d %-25s %-19t %s\n",
+			truncate(settlement.AttemptGroupID, 26), truncate(finalAttemptID, 26), settlement.FinalAttemptCount,
+			settlement.Outcome, settlement.ForensicIncomplete, settlement.SettledAt.Format(time.RFC3339Nano))
 	}
 	return b.String()
-}
-
-func humanAPILogError(message string) string {
-	message = strings.Map(func(r rune) rune {
-		if r == '\x1b' {
-			return -1
-		}
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, message)
-	message = strings.Join(strings.Fields(message), " ")
-	if message == "" {
-		return "-"
-	}
-	runes := []rune(message)
-	if len(runes) > 48 {
-		return string(runes[:48]) + "…"
-	}
-	return message
 }
