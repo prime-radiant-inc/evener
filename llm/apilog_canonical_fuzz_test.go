@@ -24,13 +24,13 @@ func FuzzCanonicalAPILoggerAppendPrograms(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx := WithAPILogContext(context.Background(), "safe-session", 1)
+		ctx := WithAPILogContext(context.Background(), "safe-session")
 		switch mode % 4 {
 		case 0:
 			contexts := []context.Context{
 				ctx,
-				WithAPILogContext(context.Background(), "other-session", 1),
-				WithAPILogContext(context.Background(), string(data)+"/unsafe", 1),
+				WithAPILogContext(context.Background(), "other-session"),
+				WithAPILogContext(context.Background(), string(data)+"/unsafe"),
 				context.Background(),
 			}
 			var wg sync.WaitGroup

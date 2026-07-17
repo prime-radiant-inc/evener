@@ -121,7 +121,7 @@ func TestSession_OpenAIResponsesContinuationPhase12PublicLiveProof(t *testing.T)
 	shadowReq.Store = &store
 	shadowReq.ContinuationDiagnostic = "phase12_full_history_shadow"
 	shadowSessionID := "phase12-shadow-" + runID
-	if _, err := client.Complete(llm.WithAPILogContext(ctx, shadowSessionID, 1), shadowReq); err != nil {
+	if _, err := client.Complete(llm.WithAPILogContext(ctx, shadowSessionID), shadowReq); err != nil {
 		t.Fatalf("full-history shadow request: %v", err)
 	}
 

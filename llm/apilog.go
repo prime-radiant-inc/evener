@@ -1,10 +1,13 @@
 package llm
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,7 +24,8 @@ type APILogContext struct {
 	SessionID string
 }
 
-func WithAPILogContext(ctx context.Context, sessionID string, _ int) context.Context {
+// WithAPILogContext attributes canonical API-log records to sessionID.
+func WithAPILogContext(ctx context.Context, sessionID string) context.Context {
 	return context.WithValue(ctx, apiLogKey{}, APILogContext{SessionID: sessionID})
 }
 
@@ -35,6 +39,8 @@ var apiLogFileSync = func(f *os.File) error { return f.Sync() }
 var apiLogFileClose = func(f *os.File) error { return f.Close() }
 
 var errAPILoggerClosed = errors.New("API logger is closed")
+
+const canonicalAPILogMaxLineBytes = 128 << 20
 
 type observedAPILogError struct {
 	err error
@@ -73,6 +79,7 @@ type APILogger struct {
 	nextPendingID    uint64
 }
 
+// NewAPILogger opens one private canonical API-log file for durable appends.
 func NewAPILogger(path string) (*APILogger, error) {
 	if err := ensurePrivateAPILogDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -89,6 +96,8 @@ func NewAPILogger(path string) (*APILogger, error) {
 	}, nil
 }
 
+// NewSessionAPILogger routes private canonical API-log appends by session ID
+// beneath the state's sessions directory.
 func NewSessionAPILogger(stateDir string) (*APILogger, error) {
 	sessionsDir := filepath.Join(stateDir, "sessions")
 	if err := ensurePrivateAPILogDirectory(sessionsDir); err != nil {
@@ -144,7 +153,7 @@ func ensurePrivateAPILogDirectory(path string) error {
 }
 
 func openPrivateAPILogFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -152,7 +161,75 @@ func openPrivateAPILogFile(path string) (*os.File, error) {
 		_ = f.Close()
 		return nil, err
 	}
+	if err := recoverCanonicalAPILogTail(f, canonicalAPILogMaxLineBytes); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 	return f, nil
+}
+
+func recoverCanonicalAPILogTail(file *os.File, maxLineBytes int) error {
+	if maxLineBytes <= 0 {
+		return fmt.Errorf("recover API log: maximum line bytes must be positive")
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek API log for recovery: %w", err)
+	}
+
+	reader := bufio.NewReader(file)
+	var (
+		line           []byte
+		lineNumber     = 1
+		lineOffset     int64
+		completeOffset int64
+		offset         int64
+		tooLong        bool
+	)
+	for {
+		fragment, readErr := reader.ReadSlice('\n')
+		offset += int64(len(fragment))
+		content := fragment
+		if len(content) > 0 && content[len(content)-1] == '\n' {
+			content = content[:len(content)-1]
+		}
+		if !tooLong {
+			if len(line)+len(content) > maxLineBytes {
+				tooLong = true
+			} else {
+				line = append(line, content...)
+			}
+		}
+
+		switch readErr {
+		case nil:
+			if tooLong {
+				return fmt.Errorf("recover API log line %d at offset %d exceeds %d bytes", lineNumber, lineOffset, maxLineBytes)
+			}
+			if _, err := apilog.DecodeRecord(line); err != nil {
+				return fmt.Errorf("recover API log line %d at offset %d: %w", lineNumber, lineOffset, err)
+			}
+			completeOffset = offset
+			line = line[:0]
+			tooLong = false
+			lineNumber++
+			lineOffset = offset
+		case bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(line) == 0 && !tooLong && offset == completeOffset {
+				return nil
+			}
+			if err := file.Truncate(completeOffset); err != nil {
+				return fmt.Errorf("truncate partial API-log tail at offset %d: %w", completeOffset, err)
+			}
+			if err := file.Sync(); err != nil {
+				return fmt.Errorf("sync recovered API log: %w", err)
+			}
+			return nil
+		default:
+			return fmt.Errorf("read API log line %d at offset %d for recovery: %w", lineNumber, lineOffset, readErr)
+		}
+	}
 }
 
 // WrapComplete binds the canonical sink and owns settlement only when the
@@ -266,6 +343,7 @@ func (s *apiAttemptSettlementStream) Close() error {
 	return err
 }
 
+// AppendAttempt durably appends one canonical provider-attempt record.
 func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
 	failure := APILogFailure{
 		Operation: "append_attempt", SessionID: apiLogSessionID(ctx),
@@ -278,6 +356,7 @@ func (l *APILogger) AppendAttempt(ctx context.Context, rec apilog.APIAttemptReco
 	return nil
 }
 
+// AppendSettlement durably appends the final outcome for one attempt group.
 func (l *APILogger) AppendSettlement(ctx context.Context, rec apilog.APIAttemptGroupSettlement) error {
 	failure := APILogFailure{
 		Operation: "append_settlement", SessionID: apiLogSessionID(ctx), AttemptGroupID: rec.AttemptGroupID,
@@ -289,6 +368,7 @@ func (l *APILogger) AppendSettlement(ctx context.Context, rec apilog.APIAttemptG
 	return nil
 }
 
+// SetFailureObserver installs the callback for API-log storage failures.
 func (l *APILogger) SetFailureObserver(observer func(APILogFailure)) {
 	l.failureMu.Lock()
 	l.failureObserver = observer
@@ -418,6 +498,8 @@ func (l *APILogger) takeCanonicalSyncFailuresLocked(file *os.File, err error) []
 	return failures
 }
 
+// Close stops new appends, waits for admitted appends, syncs dirty records,
+// and closes every canonical API-log file owned by the logger.
 func (l *APILogger) Close() error {
 	l.canonicalAdmissionMu.Lock()
 	l.canonicalClosing = true
@@ -460,11 +542,23 @@ func (l *APILogger) Close() error {
 	return firstErr
 }
 
-// StampEndpointURL records a sanitized dialed endpoint on a response.
+// StampEndpointURL records a credential-free dialed endpoint on a response.
 func StampEndpointURL(resp *Response, endpoint string) {
 	if resp == nil || endpoint == "" {
 		return
 	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Opaque != "" {
+		return
+	}
+	endpoint = (&url.URL{
+		Scheme:   parsed.Scheme,
+		Host:     parsed.Host,
+		Path:     parsed.Path,
+		RawPath:  parsed.RawPath,
+		RawQuery: "",
+		Fragment: "",
+	}).String()
 	if resp.Raw == nil {
 		resp.Raw = map[string]any{}
 	}

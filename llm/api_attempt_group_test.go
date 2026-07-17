@@ -384,7 +384,7 @@ func TestClientSessionGroupSettlesFailuresBeforeProviderMiddleware(t *testing.T)
 				suffix := strings.ReplaceAll(tt.name, " ", "-") + "-" + operation
 				sessionID := "sess-preflight-" + suffix
 				group := NewAPIAttemptGroup("ag_preflight_" + strings.ReplaceAll(suffix, "-", "_"))
-				ctx := WithAPILogContext(context.Background(), sessionID, 1)
+				ctx := WithAPILogContext(context.Background(), sessionID)
 				ctx = WithAPIAttemptGroup(ctx, group)
 				var callErr error
 				if operation == "complete" {
@@ -538,7 +538,7 @@ func TestAPILogStorageFailurePreservesProviderResultAndMarksSettlement(t *testin
 		failures = append(failures, failure)
 	}
 	group := NewAPIAttemptGroup("ag_storage_failure")
-	ctx := WithAPILogContext(context.Background(), "sess-storage", 1)
+	ctx := WithAPILogContext(context.Background(), "sess-storage")
 	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), sink)
 	providerErr := errors.New("provider rejection")
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
@@ -582,7 +582,7 @@ func TestAPIAttemptSettlementFailureObservedExactlyOnce(t *testing.T) {
 		failures = append(failures, failure)
 	}
 	group := NewAPIAttemptGroup("ag_settlement_failure")
-	ctx := WithAPILogContext(context.Background(), "sess-settlement", 1)
+	ctx := WithAPILogContext(context.Background(), "sess-settlement")
 	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), sink)
 	group.Settle(ctx, apilog.AttemptCallerCancel)
 	group.Settle(ctx, apilog.AttemptSuccess)
@@ -609,7 +609,7 @@ func TestAPILoggerCanonicalCrashWindowLeavesDecodableUnsettledAttempt(t *testing
 		t.Fatalf("NewSessionAPILogger: %v", err)
 	}
 	group := NewAPIAttemptGroup("ag_crash_window")
-	ctx := WithAPILogContext(context.Background(), "sess-crash", 1)
+	ctx := WithAPILogContext(context.Background(), "sess-crash")
 	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))

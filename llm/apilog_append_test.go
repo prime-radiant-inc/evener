@@ -119,10 +119,10 @@ func TestSessionAPILoggerCanonicalRoutesPerSession(t *testing.T) {
 	}
 	first := standaloneCanonicalAttempt("ag_session_a", 1)
 	second := standaloneCanonicalAttempt("ag_session_b", 1)
-	if err := logger.AppendAttempt(WithAPILogContext(context.Background(), "sess-a", 1), first); err != nil {
+	if err := logger.AppendAttempt(WithAPILogContext(context.Background(), "sess-a"), first); err != nil {
 		t.Fatalf("append session A: %v", err)
 	}
-	if err := logger.AppendAttempt(WithAPILogContext(context.Background(), "sess-b", 1), second); err != nil {
+	if err := logger.AppendAttempt(WithAPILogContext(context.Background(), "sess-b"), second); err != nil {
 		t.Fatalf("append session B: %v", err)
 	}
 	if err := logger.Close(); err != nil {
@@ -141,7 +141,7 @@ func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
 	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_unattributed", 1)); err != nil {
 		t.Fatalf("append missing session: %v", err)
 	}
-	unsafeCtx := WithAPILogContext(context.Background(), "../evil", 1)
+	unsafeCtx := WithAPILogContext(context.Background(), "../evil")
 	if err := logger.AppendAttempt(unsafeCtx, standaloneCanonicalAttempt("ag_unsafe", 1)); err != nil {
 		t.Fatalf("append unsafe session: %v", err)
 	}
@@ -232,9 +232,173 @@ func TestAPILoggerCanonicalPeriodicSync(t *testing.T) {
 func TestStampEndpointURL(t *testing.T) {
 	StampEndpointURL(nil, "https://example.invalid/api")
 	resp := &Response{Raw: map[string]any{"other": 1}}
-	StampEndpointURL(resp, "https://example.invalid/api")
+	StampEndpointURL(resp, "https://endpoint-user:endpoint-password@example.invalid/api?endpoint_token=endpoint-query#endpoint-fragment")
 	if resp.Raw["endpoint_url"] != "https://example.invalid/api" || resp.Raw["other"] != 1 {
 		t.Fatalf("stamped response raw metadata = %+v", resp.Raw)
+	}
+
+	invalid := &Response{}
+	StampEndpointURL(invalid, "://not-a-valid-endpoint?endpoint_token=secret")
+	if _, ok := invalid.Raw["endpoint_url"]; ok {
+		t.Fatalf("invalid endpoint persisted in response metadata: %+v", invalid.Raw)
+	}
+}
+
+func TestWithAPILogContextAttributesSession(t *testing.T) {
+	ctx := WithAPILogContext(context.Background(), "sess-context")
+	got, ok := getAPILogContext(ctx)
+	if !ok || got.SessionID != "sess-context" {
+		t.Fatalf("API log context = (%+v, %t), want session attribution", got, ok)
+	}
+}
+
+func TestAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	first := standaloneCanonicalAttempt("ag_reopen_first", 1)
+	writeCanonicalAttempt(t, path, first)
+	appendAPILogCrashTail(t, path, []byte(`{"kind":"api_attempt","request":{"body":"partial`))
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod permissive crash log: %v", err)
+	}
+
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger after partial tail: %v", err)
+	}
+	second := standaloneCanonicalAttempt("ag_reopen_second", 1)
+	if err := logger.AppendAttempt(context.Background(), second); err != nil {
+		t.Fatalf("AppendAttempt after partial tail: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	assertPathMode(t, path, 0o600)
+	assertCanonicalAttemptIDs(t, path, first.AttemptID, second.AttemptID)
+}
+
+func TestSessionAPILoggerReopenRecoversPartialTailBeforeAppend(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := "sess-reopen"
+	path := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+	if err := os.Mkdir(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	first := standaloneCanonicalAttempt("ag_session_reopen_first", 1)
+	writeCanonicalAttempt(t, path, first)
+	appendAPILogCrashTail(t, path, []byte(`{"kind":"attempt_group_settlement"`))
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("chmod permissive crash log: %v", err)
+	}
+
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	second := standaloneCanonicalAttempt("ag_session_reopen_second", 1)
+	ctx := WithAPILogContext(context.Background(), sessionID)
+	if err := logger.AppendAttempt(ctx, second); err != nil {
+		t.Fatalf("AppendAttempt after partial tail: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	assertPathMode(t, path, 0o600)
+	assertCanonicalAttemptIDs(t, path, first.AttemptID, second.AttemptID)
+}
+
+func TestAPILoggerReopenFailsClosedOnInvalidCompleteLine(t *testing.T) {
+	tests := []struct {
+		name string
+		body func(t *testing.T, path string)
+	}{
+		{
+			name: "corrupt",
+			body: func(t *testing.T, path string) {
+				t.Helper()
+				writeCanonicalAttempt(t, path, standaloneCanonicalAttempt("ag_valid_prefix", 1))
+				appendAPILogCrashTail(t, path, []byte("{broken}\n"))
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/single-file", func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "api.jsonl")
+			tt.body(t, path)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat invalid log: %v", err)
+			}
+			if logger, err := NewAPILogger(path); err == nil {
+				_ = logger.Close()
+				t.Fatal("NewAPILogger accepted an invalid complete line")
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat rejected log: %v", err)
+			}
+			if after.Size() != before.Size() {
+				t.Fatalf("rejected log size = %d, want unchanged %d", after.Size(), before.Size())
+			}
+		})
+
+		t.Run(tt.name+"/per-session", func(t *testing.T) {
+			stateDir := t.TempDir()
+			sessionID := "sess-invalid"
+			path := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+			if err := os.Mkdir(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("mkdir sessions: %v", err)
+			}
+			tt.body(t, path)
+			before, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat invalid log: %v", err)
+			}
+			logger, err := NewSessionAPILogger(stateDir)
+			if err != nil {
+				t.Fatalf("NewSessionAPILogger: %v", err)
+			}
+			ctx := WithAPILogContext(context.Background(), sessionID)
+			if err := logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_rejected", 1)); err == nil {
+				t.Fatal("AppendAttempt accepted an invalid complete line")
+			}
+			if err := logger.Close(); err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			after, err := os.Stat(path)
+			if err != nil {
+				t.Fatalf("stat rejected log: %v", err)
+			}
+			if after.Size() != before.Size() {
+				t.Fatalf("rejected log size = %d, want unchanged %d", after.Size(), before.Size())
+			}
+		})
+	}
+}
+
+func TestRecoverCanonicalAPILogTailFailsClosedOnOversizedCompleteLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	const maxLineBytes = 64
+	data := append([]byte(strings.Repeat("x", maxLineBytes+1)), '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write oversized API log: %v", err)
+	}
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open oversized API log: %v", err)
+	}
+	defer file.Close()
+	if err := recoverCanonicalAPILogTail(file, maxLineBytes); err == nil {
+		t.Fatal("recovery accepted an oversized complete line")
+	}
+	info, err := file.Stat()
+	if err != nil {
+		t.Fatalf("stat oversized API log: %v", err)
+	}
+	if info.Size() != int64(len(data)) {
+		t.Fatalf("rejected API log size = %d, want unchanged %d", info.Size(), len(data))
 	}
 }
 
@@ -385,7 +549,7 @@ func TestAPILoggerCloseObservesPendingCanonicalSyncFailureIdentity(t *testing.T)
 	var failures []APILogFailure
 	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
 	group := NewAPIAttemptGroup("ag_close_sync")
-	ctx := WithAPILogContext(context.Background(), "sess-close-sync", 1)
+	ctx := WithAPILogContext(context.Background(), "sess-close-sync")
 	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
@@ -522,10 +686,62 @@ func canonicalRecordCount(t *testing.T, path string) int {
 	}
 }
 
+func writeCanonicalAttempt(t *testing.T, path string, attempt apilog.APIAttemptRecord) {
+	t.Helper()
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	if err := logger.AppendAttempt(context.Background(), attempt); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func appendAPILogCrashTail(t *testing.T, path string, tail []byte) {
+	t.Helper()
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("open API log for crash tail: %v", err)
+	}
+	if _, err := file.Write(tail); err != nil {
+		_ = file.Close()
+		t.Fatalf("append API-log crash tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close API log crash tail: %v", err)
+	}
+}
+
+func assertCanonicalAttemptIDs(t *testing.T, path string, want ...string) {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open canonical API log: %v", err)
+	}
+	defer file.Close()
+	decoder := apilog.NewDecoder(file, 128<<20)
+	for index, wantID := range want {
+		record, err := decoder.Next()
+		if err != nil {
+			t.Fatalf("decode canonical API log record %d: %v", index+1, err)
+		}
+		attempt, ok := record.(apilog.APIAttemptRecord)
+		if !ok || attempt.AttemptID != wantID {
+			t.Fatalf("canonical API log record %d = %+v, want attempt %q", index+1, record, wantID)
+		}
+	}
+	if record, err := decoder.Next(); record != nil || !errors.Is(err, io.EOF) {
+		t.Fatalf("canonical API log tail = (%T, %v), want clean EOF", record, err)
+	}
+}
+
 func completeCanonicalGroup(t *testing.T, logger *APILogger, sessionID, groupID string, startedAt time.Time) {
 	t.Helper()
 	group := NewAPIAttemptGroup(groupID)
-	ctx := WithAPILogContext(context.Background(), sessionID, 1)
+	ctx := WithAPILogContext(context.Background(), sessionID)
 	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
 	group.Settle(ctx, apilog.AttemptSuccess)
@@ -533,7 +749,7 @@ func completeCanonicalGroup(t *testing.T, logger *APILogger, sessionID, groupID 
 
 func appendCanonicalTestRecords(t *testing.T, logger *APILogger, sessionID string) {
 	t.Helper()
-	ctx := WithAPILogContext(context.Background(), sessionID, 1)
+	ctx := WithAPILogContext(context.Background(), sessionID)
 	attempt := standaloneCanonicalAttempt("ag_permissions", 1)
 	if err := logger.AppendAttempt(ctx, attempt); err != nil {
 		t.Fatalf("AppendAttempt: %v", err)

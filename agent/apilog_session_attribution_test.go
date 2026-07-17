@@ -70,7 +70,7 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
 	}))
 
-	ctx := llm.WithAPILogContext(context.Background(), s.ID(), 0)
+	ctx := llm.WithAPILogContext(context.Background(), s.ID())
 	_, _, attempt, callErr := s.callModelWithFallback(ctx, NewOpenAIProfile("model-a"), llm.Request{
 		Provider: "openai",
 		Model:    "model-a",

@@ -477,7 +477,7 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newServeLLMClient: %v", err)
 	}
-	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "serve-session", 4), llm.Request{
+	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "serve-session"), llm.Request{
 		Provider: "openai",
 		Model:    "gpt-test",
 		Messages: []llm.Message{llm.User("hi")},

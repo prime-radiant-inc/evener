@@ -50,7 +50,7 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 		t.Fatalf("AttachAPILogger: %v", err)
 	}
 
-	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "sess-1", 7), llm.Request{
+	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "sess-1"), llm.Request{
 		Provider: "test",
 		Model:    "m",
 		Messages: []llm.Message{llm.User("hi")},

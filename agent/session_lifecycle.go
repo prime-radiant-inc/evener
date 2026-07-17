@@ -527,7 +527,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	// (web fetch summaries, naming, in-turn compaction) attribute to this
 	// session in the per-session API log. callModelWithFallback layers its
 	// per-attempt metadata on top before provider dispatch.
-	ctx = llm.WithAPILogContext(ctx, s.id, 0)
+	ctx = llm.WithAPILogContext(ctx, s.id)
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
