@@ -679,17 +679,28 @@ func TestAPILoggerFailureDoesNotChangeProviderResult(t *testing.T) {
 }
 
 func TestStampEndpointURL(t *testing.T) {
-	StampEndpointURL(nil, "https://example.invalid/api")
+	StampEndpointURL(nil, "https://example.invalid/api", APILogCredentialMaterial{})
 	resp := &Response{Raw: map[string]any{"other": 1}}
-	StampEndpointURL(resp, "https://endpoint-user:endpoint-password@example.invalid/api?endpoint_token=endpoint-query#endpoint-fragment")
+	StampEndpointURL(resp, "https://endpoint-user:endpoint-password@example.invalid/api?endpoint_token=endpoint-query#endpoint-fragment", APILogCredentialMaterial{})
 	if resp.Raw["endpoint_url"] != "https://example.invalid/api" || resp.Raw["other"] != 1 {
 		t.Fatalf("stamped response raw metadata = %+v", resp.Raw)
 	}
 
 	invalid := &Response{}
-	StampEndpointURL(invalid, "://not-a-valid-endpoint?endpoint_token=secret")
+	StampEndpointURL(invalid, "://not-a-valid-endpoint?endpoint_token=secret", APILogCredentialMaterial{})
 	if _, ok := invalid.Raw["endpoint_url"]; ok {
 		t.Fatalf("invalid endpoint persisted in response metadata: %+v", invalid.Raw)
+	}
+
+	const credential = "endpoint-path-credential-sentinel"
+	credentialBearing := &Response{}
+	StampEndpointURL(
+		credentialBearing,
+		"https://example.invalid/"+credential+"/responses",
+		NewAPILogCredentialMaterial(nil, nil, credential),
+	)
+	if _, ok := credentialBearing.Raw["endpoint_url"]; ok {
+		t.Fatalf("credential-bearing endpoint persisted in response metadata: %+v", credentialBearing.Raw)
 	}
 }
 

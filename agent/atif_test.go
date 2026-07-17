@@ -2,17 +2,112 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/atif"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/openaicompat"
 )
+
+func TestSession_ExcludesConfiguredCredentialFromResponseEndpointArtifacts(t *testing.T) {
+	const credential = "endpoint-path-credential-sentinel"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/"+credential+"/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id":"chatcmpl-endpoint-material",
+			"model":"test-model",
+			"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{
+				"id":"communicate-endpoint-material",
+				"type":"function",
+				"function":{"name":"communicate","arguments":"{\"message\":\"done\",\"end_turn\":true,\"output\":{\"message\":\"\",\"data\":{},\"artifacts\":[]}}"}
+			}]},"finish_reason":"tool_calls"}],
+			"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}
+		}`))
+	}))
+	t.Cleanup(server.Close)
+
+	adapter := openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:    "credential-path-provider",
+		BaseURL: server.URL + "/" + credential,
+		APIKey:  credential,
+	})
+	adapter.Client = server.Client()
+	client := llm.NewClient()
+	client.Register(completeOnlyEndpointAdapter{ProviderAdapter: adapter})
+
+	stateDir := t.TempDir()
+	sess, err := NewSession(
+		client,
+		testOpenAICompatProfile("credential-path-provider", "test-model", 100_000),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{StateDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	muteNoteElicitation(sess)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if output, err := sess.ProcessInput(ctx, "reply once", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	} else if output != "done" {
+		t.Fatalf("ProcessInput output = %q, want done", output)
+	}
+	sess.Close()
+
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	transcriptBytes, err := os.ReadFile(transcriptPath)
+	if err != nil {
+		t.Fatalf("ReadFile transcript: %v", err)
+	}
+	assertEndpointSentinelsAbsent(t, "transcript", transcriptBytes, credential)
+	_, entries, _, err := readTranscript(transcriptPath)
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	for i, entry := range entries {
+		if entry.Turn.ResponseEndpoint != "" {
+			t.Fatalf("transcript entry %d response_endpoint = %q, want omitted", i, entry.Turn.ResponseEndpoint)
+		}
+	}
+
+	outputPath := filepath.Join(stateDir, "trajectory.json")
+	if err := exportATIF(transcriptPath, outputPath, ""); err != nil {
+		t.Fatalf("exportATIF: %v", err)
+	}
+	atifBytes, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("ReadFile ATIF: %v", err)
+	}
+	assertEndpointSentinelsAbsent(t, "ATIF", atifBytes, credential)
+	for i, step := range readExportedATIF(t, outputPath).Steps {
+		if endpoint, ok := step.Extra["response_endpoint"]; ok {
+			t.Fatalf("ATIF step %d response_endpoint = %#v, want omitted", i, endpoint)
+		}
+	}
+}
+
+type completeOnlyEndpointAdapter struct {
+	llm.ProviderAdapter
+}
+
+func (completeOnlyEndpointAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
 
 func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	dir := t.TempDir()
@@ -28,7 +123,7 @@ func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	wantEndpoint := "https://provider.test/v1/responses"
 
 	resp := llm.Response{Message: llm.Assistant("done")}
-	llm.StampEndpointURL(&resp, credentialEndpoint)
+	llm.StampEndpointURL(&resp, credentialEndpoint, llm.APILogCredentialMaterial{})
 	if got, _ := resp.Raw["endpoint_url"].(string); got != wantEndpoint {
 		t.Fatalf("response endpoint metadata = %q, want %q", got, wantEndpoint)
 	}

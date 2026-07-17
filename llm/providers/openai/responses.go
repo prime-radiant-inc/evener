@@ -567,7 +567,7 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			}
 			r := fromResponses(rawResp, req.Model)
 			a.stampResponseIDHash(&r)
-			llm.StampEndpointURL(&r, a.responsesURL())
+			llm.StampEndpointURL(&r, a.responsesURL(), a.apiLogCredentialMaterial(nil))
 			// Ensure text segment is closed.
 			if textStarted {
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})

@@ -650,7 +650,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 
 	r := fromResponses(raw, req.Model)
 	a.stampResponseIDHash(&r)
-	llm.StampEndpointURL(&r, a.responsesURL())
+	llm.StampEndpointURL(&r, a.responsesURL(), a.apiLogCredentialMaterial(nil))
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	return r, nil
 }

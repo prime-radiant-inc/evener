@@ -181,7 +181,7 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 				if usage != nil {
 					finalResp.Usage = *usage
 				}
-				llm.StampEndpointURL(finalResp, a.chatCompletionsURL())
+				llm.StampEndpointURL(finalResp, a.chatCompletionsURL(), a.apiLogCredentialMaterial(nil))
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,

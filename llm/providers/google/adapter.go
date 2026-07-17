@@ -224,7 +224,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
 	r := fromGeminiResponse(raw, req.Model)
-	llm.StampEndpointURL(&r, endpoint)
+	llm.StampEndpointURL(&r, endpoint, a.apiLogCredentialMaterial(nil))
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	return r, nil
 }
@@ -605,7 +605,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 							Usage:    usage,
 							Raw:      raw,
 						}
-						llm.StampEndpointURL(&r, endpoint)
+						llm.StampEndpointURL(&r, endpoint, a.apiLogCredentialMaterial(nil))
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
 						}

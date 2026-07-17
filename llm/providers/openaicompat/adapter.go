@@ -274,7 +274,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 		wire.decodeErr = err
 		return resp, err
 	}
-	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions")
+	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions", a.apiLogCredentialMaterial(nil))
 	resp.RateLimit = llm.ParseRateLimitHeaders(wire.headers)
 	return resp, nil
 }
@@ -577,7 +577,7 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 						finalResp.Usage.ReasoningTokensEstimated = &e
 					}
 				}
-				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
+				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions", a.apiLogCredentialMaterial(nil))
 				event := llm.StreamEvent{
 					Type:         llm.StreamEventFinish,
 					FinishReason: &finish,

@@ -450,12 +450,12 @@ func (l *APILogger) Close() error {
 }
 
 // StampEndpointURL records a credential-free dialed endpoint on a response.
-func StampEndpointURL(resp *Response, endpoint string) {
+func StampEndpointURL(resp *Response, endpoint string, material APILogCredentialMaterial) {
 	if resp == nil || endpoint == "" {
 		return
 	}
 	endpoint = SanitizeEndpointURL(endpoint)
-	if endpoint == "" {
+	if endpoint == "" || containsCredentialEvidence(endpoint, material) {
 		return
 	}
 	if resp.Raw == nil {
