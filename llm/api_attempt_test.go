@@ -437,6 +437,30 @@ func TestBuildAPIAttemptRecordRendersErrorsOnceAndContainsPanic(t *testing.T) {
 	}
 }
 
+func TestBuildAPIAttemptRecordReplacesOversizedErrorText(t *testing.T) {
+	const (
+		maxErrorTextBytes = 64 << 10
+		omittedErrorText  = "API-log error details omitted because they exceed the size limit"
+	)
+	rawText := strings.Repeat("s", maxErrorTextBytes+1)
+	err := &countingAPILogError{text: rawText}
+
+	record := builtAPIAttemptRecordWithError(t, err)
+
+	if err.calls != 1 {
+		t.Fatalf("Error() calls = %d, want 1", err.calls)
+	}
+	if record.ErrorMessage != omittedErrorText {
+		t.Fatalf("error message bytes = %d, want generic omission text", len(record.ErrorMessage))
+	}
+	if strings.Contains(record.ErrorMessage, rawText[:32]) {
+		t.Fatal("oversized error prefix survived in durable evidence")
+	}
+	if _, err := apilog.MarshalRecord(record); err != nil {
+		t.Fatalf("MarshalRecord(): %v", err)
+	}
+}
+
 func TestBuildAPIAttemptRecordClassifiesExplicitAndUnknownResults(t *testing.T) {
 	for _, tt := range []struct {
 		name    string

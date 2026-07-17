@@ -298,6 +298,12 @@ type sanitizedObservedAPILogError struct {
 
 func (sanitizedObservedAPILogError) apiLogFailureWasObserved() {}
 
+const (
+	maxAPILogErrorTextBytes = 64 << 10
+	apiLogErrorTextMissing  = "error text unavailable"
+	apiLogErrorTextTooLarge = "API-log error details omitted because they exceed the size limit"
+)
+
 func sanitizeAPILogError(err error, material APILogCredentialMaterial) error {
 	if err == nil {
 		return nil
@@ -316,13 +322,17 @@ func sanitizeAPILogError(err error, material APILogCredentialMaterial) error {
 }
 
 func renderAPILogError(err error) (text string) {
-	text = "error text unavailable"
+	text = apiLogErrorTextMissing
 	defer func() {
 		if recover() != nil {
-			text = "error text unavailable"
+			text = apiLogErrorTextMissing
 		}
 	}()
-	return err.Error()
+	rendered := err.Error()
+	if len(rendered) > maxAPILogErrorTextBytes {
+		return apiLogErrorTextTooLarge
+	}
+	return rendered
 }
 
 func withAPILogCredentialMaterial(ctx context.Context, material APILogCredentialMaterial) context.Context {
