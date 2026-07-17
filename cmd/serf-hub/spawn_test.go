@@ -1014,6 +1014,62 @@ api_key = "sk-inline-key"
 	}
 }
 
+func TestValidateProviderCredentials_ConfiguredCredentialHeaders(t *testing.T) {
+	tests := []struct {
+		name              string
+		headers           map[string]string
+		credentialHeaders map[string]string
+		wantErr           bool
+	}{
+		{
+			name:              "nonempty credential header",
+			credentialHeaders: map[string]string{"X-Gateway-Key": "configured-secret"},
+		},
+		{
+			name:              "empty credential header",
+			credentialHeaders: map[string]string{"X-Gateway-Key": ""},
+			wantErr:           true,
+		},
+		{
+			name:    "ordinary authorization header",
+			headers: map[string]string{"Authorization": "Bearer configured-secret"},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+			cfg := providercfg.Config{
+				Default: "gateway",
+				Instances: []providercfg.InstanceConfig{
+					{
+						Name:              "gateway",
+						Type:              "anthropic",
+						Headers:           tt.headers,
+						CredentialHeaders: tt.credentialHeaders,
+					},
+				},
+			}
+			data, err := providercfg.Marshal(cfg)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			cfgPath := filepath.Join(t.TempDir(), "providers.toml")
+			if err := os.WriteFile(cfgPath, data, 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			err = validateProviderCredentials("gateway", store, []string{}, cfgPath)
+			if tt.wantErr {
+				assertHubLaunchError(t, err)
+			} else if err != nil {
+				t.Fatalf("validateProviderCredentials: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses
 // verifies that a chat-completions instance with base_url set in providers.toml
 // and no inline api_key passes credential validation. Such instances (e.g.

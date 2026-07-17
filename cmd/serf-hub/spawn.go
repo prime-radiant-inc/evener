@@ -546,6 +546,11 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			if strings.TrimSpace(inst.APIKey) != "" {
 				return nil
 			}
+			for _, value := range inst.CredentialHeaders {
+				if strings.TrimSpace(value) != "" {
+					return nil
+				}
+			}
 			// For openai-type instances, check per-instance OAuth at auth/<name>.json.
 			if inst.Type == "openai" {
 				stateDir := openAIStateDirFromLaunchEnv(env)
