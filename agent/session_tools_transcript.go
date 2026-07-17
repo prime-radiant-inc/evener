@@ -55,12 +55,13 @@ type readMarkdownEnvelope struct {
 }
 
 type transcriptTurnExpansion struct {
-	ExpandTurn    int    `json:"expand_turn"`
-	OffsetBytes   int    `json:"offset_bytes"`
-	BytesReturned int    `json:"bytes_returned"`
-	TotalBytes    int    `json:"total_bytes"`
-	Encoding      string `json:"encoding"`
-	Data          string `json:"data"`
+	ExpandTurn     int    `json:"expand_turn"`
+	OffsetBytes    int    `json:"offset_bytes"`
+	BytesReturned  int    `json:"bytes_returned"`
+	TotalBytes     int    `json:"total_bytes"`
+	Representation string `json:"representation"`
+	Encoding       string `json:"encoding"`
+	Data           string `json:"data"`
 }
 
 type transcriptTurnContinuation struct {
@@ -84,9 +85,12 @@ type readMarkdownMeta struct {
 const formatMarkdown = "markdown"
 
 const (
-	transcriptSource  = "transcript"
-	apiLogSource      = "api_log"
-	maxExpansionBytes = 64 << 10
+	transcriptSource                = "transcript"
+	apiLogSource                    = "api_log"
+	maxExpansionBytes               = 64 << 10
+	transcriptExpansionReadHint     = "use expand_turn and its continuation for exact bytes"
+	jobOutputReadHint               = "use job_read_output for a narrower exact window"
+	transcriptV2JSONLRepresentation = "transcript_v2_jsonl"
 )
 
 type readSessionTranscriptArgs struct {
@@ -293,7 +297,7 @@ func readJobTranscript(deps *toolDeps, ref, rangeArg, format string) (any, error
 			Truncated:     truncated || dropped > 0 || total > int64(len([]byte(content))),
 		},
 	}
-	return boundReadMarkdownEnvelope(envelope)
+	return boundReadMarkdownEnvelopeWithHint(envelope, jobOutputReadHint)
 }
 
 func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dropped int64) string {
@@ -342,8 +346,42 @@ func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, ex
 	return readMarkdownPage(path, ref, meta, rangeArg, expandTurn, 0, 0)
 }
 
+func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
+	if pin < 0 || pin >= len(data.Entries) {
+		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
+	}
+	if len(data.EntryLines) != len(data.Entries) {
+		return nil, errors.New("transcript expansion unavailable: persisted entries are not retained")
+	}
+
+	first, last := pin, pin
+	if data.Entries[pin].Turn.Kind == schema.TurnAssistant {
+		var ok bool
+		first, last, ok = resolvePinnedSpan(data.Entries, pin)
+		if !ok {
+			return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
+		}
+	}
+	total := last - first + 1
+	for _, line := range data.EntryLines[first : last+1] {
+		total += len(line)
+	}
+	exact := make([]byte, 0, total)
+	for _, line := range data.EntryLines[first : last+1] {
+		exact = append(exact, line...)
+		exact = append(exact, '\n')
+	}
+	return exact, nil
+}
+
 func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
-	data, err := readTranscriptFull(path)
+	var data transcriptData
+	var err error
+	if expandTurn == nil {
+		data, err = readTranscriptFull(path)
+	} else {
+		data, err = readTranscriptFullWithEntryLines(path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +395,7 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		effectiveRange = ""
 	}
 
-	var exact string
+	var exact []byte
 	var expansionFirst int
 	if expandTurn != nil {
 		first, _, ok := resolvePinnedSpan(data.Entries, *expandTurn)
@@ -370,7 +408,10 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 	renderOpt := renderOpts{meta: meta, fullResultFor: expandTurn}
 	if expandTurn != nil {
 		renderOpt.fullResultFor = &expansionFirst
-		exact = renderExactTurnExpansion(data.Entries, *expandTurn, renderOpt)
+		exact, err = transcriptExpansionJSONL(data, *expandTurn)
+		if err != nil {
+			return nil, err
+		}
 	}
 	content, rmeta := renderTranscript(data.Header, data.Entries, effectiveRange, renderOpt)
 	var expansion *transcriptTurnExpansion
@@ -382,37 +423,34 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 		if offsetBytes > len(exact) {
 			return nil, fmt.Errorf("invalid_request: offset_bytes %d exceeds expanded turn length %d", offsetBytes, len(exact))
 		}
-		encodedExact, err := json.Marshal(exact)
-		if err != nil {
-			return nil, fmt.Errorf("encode transcript expansion: %w", err)
-		}
-		if offsetBytes > 0 || len(exact) > maxBytes || len(encodedExact) > maxBytes {
+		if offsetBytes > 0 || len(exact) > maxBytes {
 			boundedOpt := renderOpts{meta: meta}
 			boundedOpt.fullResultFor = &expansionFirst
 			boundedOpt.headTailEvidenceFor = &expansionFirst
 			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, boundedOpt)
 			rmeta.Truncated = true
-			end := offsetBytes + maxBytes
-			if end > len(exact) {
-				end = len(exact)
-			}
-			chunk := []byte(exact)[offsetBytes:end]
-			expansion = &transcriptTurnExpansion{
-				ExpandTurn:    *expandTurn,
-				OffsetBytes:   offsetBytes,
-				BytesReturned: len(chunk),
-				TotalBytes:    len(exact),
-			}
-			if utf8.Valid(chunk) {
-				expansion.Encoding = "utf8"
-				expansion.Data = string(chunk)
-			} else {
-				expansion.Encoding = "base64"
-				expansion.Data = base64.StdEncoding.EncodeToString(chunk)
-			}
-			if end < len(exact) {
-				continuation = &transcriptTurnContinuation{ExpandTurn: *expandTurn, OffsetBytes: end}
-			}
+		}
+		end := offsetBytes + maxBytes
+		if end > len(exact) {
+			end = len(exact)
+		}
+		chunk := exact[offsetBytes:end]
+		expansion = &transcriptTurnExpansion{
+			ExpandTurn:     *expandTurn,
+			OffsetBytes:    offsetBytes,
+			BytesReturned:  len(chunk),
+			TotalBytes:     len(exact),
+			Representation: transcriptV2JSONLRepresentation,
+		}
+		if utf8.Valid(chunk) {
+			expansion.Encoding = "utf8"
+			expansion.Data = string(chunk)
+		} else {
+			expansion.Encoding = "base64"
+			expansion.Data = base64.StdEncoding.EncodeToString(chunk)
+		}
+		if end < len(exact) {
+			continuation = &transcriptTurnContinuation{ExpandTurn: *expandTurn, OffsetBytes: end}
 		}
 	}
 
@@ -450,6 +488,10 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 }
 
 func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvelope, error) {
+	return boundReadMarkdownEnvelopeWithHint(envelope, transcriptExpansionReadHint)
+}
+
+func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadHint string) (readMarkdownEnvelope, error) {
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript expansion: %w", err)
@@ -458,7 +500,7 @@ func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvel
 		return envelope, nil
 	}
 	if envelope.Expansion == nil {
-		return boundReadMarkdownContent(envelope, hardCapChars)
+		return boundReadMarkdownContentWithHint(envelope, hardCapChars, exactReadHint)
 	}
 
 	raw, err := decodeTranscriptExpansion(envelope.Expansion)
@@ -466,12 +508,18 @@ func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvel
 		return readMarkdownEnvelope{}, err
 	}
 
-	// Preserve bounded head/tail evidence while reserving serialized room for a
-	// useful exact page. The final prefix calculation uses the actual JSON wire
-	// size, so the registry never has to truncate this envelope.
+	// The caller's max_bytes budget applies to raw expansion bytes. Shrink the
+	// human markdown first so JSON escaping never changes that paging contract.
+	bounded, boundErr := boundReadMarkdownContentWithHint(envelope, hardCapChars, exactReadHint)
+	if boundErr == nil {
+		return bounded, nil
+	}
+
+	// An unusually escape-heavy expansion can exceed the serialized hard cap by
+	// itself. Keep the hard backstop by fitting the largest honest raw prefix.
 	empty := transcriptEnvelopeWithExpansionBytes(envelope, nil)
 	contentTarget := hardCapChars - min(64<<10, hardCapChars/3)
-	empty, err = boundReadMarkdownContent(empty, contentTarget)
+	empty, err = boundReadMarkdownContentWithHint(empty, contentTarget, exactReadHint)
 	if err != nil {
 		return readMarkdownEnvelope{}, err
 	}
@@ -497,6 +545,10 @@ func boundReadMarkdownEnvelope(envelope readMarkdownEnvelope) (readMarkdownEnvel
 }
 
 func boundReadMarkdownContent(envelope readMarkdownEnvelope, maxEncodedBytes int) (readMarkdownEnvelope, error) {
+	return boundReadMarkdownContentWithHint(envelope, maxEncodedBytes, transcriptExpansionReadHint)
+}
+
+func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string) (readMarkdownEnvelope, error) {
 	encoded, err := json.MarshalIndent(envelope, "", "  ")
 	if err != nil {
 		return readMarkdownEnvelope{}, fmt.Errorf("encode transcript envelope: %w", err)
@@ -513,7 +565,7 @@ func boundReadMarkdownContent(envelope readMarkdownEnvelope, maxEncodedBytes int
 			next = keep - 1
 		}
 		keep = next
-		envelope.Content = boundOversizedTurnEvidenceTo(original, keep)
+		envelope.Content = boundOversizedTurnEvidenceWithHint(original, keep, exactReadHint)
 		envelope.Meta.Truncated = true
 		encoded, err = json.MarshalIndent(envelope, "", "  ")
 		if err != nil {

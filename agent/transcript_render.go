@@ -149,6 +149,10 @@ func boundOversizedTurnEvidence(content string) string {
 }
 
 func boundOversizedTurnEvidenceTo(content string, maxChars int) string {
+	return boundOversizedTurnEvidenceWithHint(content, maxChars, transcriptExpansionReadHint)
+}
+
+func boundOversizedTurnEvidenceWithHint(content string, maxChars int, exactReadHint string) string {
 	runes := []rune(content)
 	if len(runes) <= maxChars {
 		return content
@@ -157,7 +161,7 @@ func boundOversizedTurnEvidenceTo(content string, maxChars int) string {
 	var marker string
 	available := 0
 	for {
-		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; use expand_turn and its continuation for exact bytes …_\n\n", removed)
+		marker = fmt.Sprintf("\n\n_… %d characters elided from this oversized turn; %s …_\n\n", removed, exactReadHint)
 		available = maxChars - len([]rune(marker))
 		exactRemoved := len(runes) - available
 		if exactRemoved == removed {

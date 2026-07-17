@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -2837,108 +2838,219 @@ func TestReadSessionTranscriptEscapeHeavyMarkdownStaysValidWithinSerializedBacks
 	}
 }
 
-func TestReadSessionTranscriptEverySemanticTurnHasExactExpansion(t *testing.T) {
-	makeTextTurn := func(kind schema.TurnKind, payload string) schema.Turn {
-		role := llm.RoleUser
-		if kind == schema.TurnAssistant || kind == schema.TurnSummary {
-			role = llm.RoleAssistant
+func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	fixed := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	turn := func(kind schema.TurnKind, message llm.Message) schema.Turn {
+		return schema.Turn{Kind: kind, Message: message, Timestamp: fixed}
+	}
+	turns := []schema.Turn{
+		turn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind:     llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{ID: "duplicate", Name: "inspect", Arguments: json.RawMessage(`{"path":"/tmp/a"}`)},
+		}}}),
+		turn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "duplicate", Name: "inspect", Content: map[string]any{"paired": true}}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "duplicate", Name: "inspect", Content: "duplicate-id-result"}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{Name: "inspect", Content: "empty-id-result", ToolState: json.RawMessage(`{"state":"empty"}`)}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "orphan", Name: "inspect", Content: "orphan-result", ImageData: []byte{0, 1, 2}, ImageMediaType: "image/png"}},
+		}}),
+		turn(schema.TurnUserInput, llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: "user image"},
+			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0, 255, 1, 254}, MediaType: "image/png", Detail: "high"}},
+		}}),
+		turn(schema.TurnTool, llm.ToolResultNamed("legacy", "legacy_tool", map[string]any{"legacy": true}, false)),
+		turn(schema.TurnSteering, llm.User("steering")),
+		turn(schema.TurnSystem, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "system"}}}),
+		turn(schema.TurnCheckpoint, llm.User("checkpoint")),
+		turn(schema.TurnSummary, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "summary"}}}),
+		turn(schema.TurnModelSwitch, llm.User("model switch")),
+	}
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, semanticTurn := range turns {
+		if err := w.Append(semanticTurn); err != nil {
+			_ = w.Close()
+			t.Fatal(err)
 		}
-		return schema.NewTurn(kind, llm.Message{Role: role, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: payload}}})
 	}
-	tests := []struct {
-		name string
-		turn func(string) schema.Turn
-	}{
-		{name: "user", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnUserInput, payload) }},
-		{name: "steering", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnSteering, payload) }},
-		{name: "checkpoint", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnCheckpoint, payload) }},
-		{name: "summary", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnSummary, payload) }},
-		{name: "model switch", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnModelSwitch, payload) }},
-		{name: "assistant", turn: func(payload string) schema.Turn { return makeTextTurn(schema.TurnAssistant, payload) }},
-		{name: "orphan tool result", turn: func(payload string) schema.Turn {
-			return schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
-				Kind: llm.ContentToolResult,
-				ToolResult: &llm.ToolResultData{
-					ToolCallID: "orphan-expansion",
-					Name:       "shell",
-					Content:    payload,
-				},
-			}}})
-		}},
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: fixed})
+
+	lines := readTranscriptLines(t, path)[1:]
+	expectedEntries := make([]transcript.Entry, len(lines))
+	for i, line := range lines {
+		if err := json.Unmarshal([]byte(line), &expectedEntries[i]); err != nil {
+			t.Fatalf("decode persisted entry %d: %v", i, err)
+		}
+	}
+	type expectedSpan struct {
+		first int
+		last  int
+	}
+	expectedSpans := map[int]expectedSpan{0: {first: 0, last: 2}, 1: {first: 1, last: 2}}
+	for i := 2; i < len(expectedEntries); i++ {
+		expectedSpans[i] = expectedSpan{first: i, last: i + 1}
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := newBucket(t)
-			sessionID := identifier.MustNewSessionID()
-			path := transcriptPath(dir, sessionID)
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			prefix := strings.ReplaceAll(tc.name, " ", "-")
-			head := prefix + "-exact-head"
-			middle := prefix + "-exact-middle"
-			tail := prefix + "-exact-tail"
-			payload := head + strings.Repeat("h", 35_000) + middle + strings.Repeat("t", 35_000) + tail
-			w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := w.Append(tc.turn(payload)); err != nil {
-				_ = w.Close()
-				t.Fatal(err)
-			}
-			if err := w.Close(); err != nil {
-				t.Fatal(err)
-			}
-			saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
-			deps := &toolDeps{stateDir: dir, sessionID: sessionID}
-
-			var exact []byte
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+	for selector, span := range expectedSpans {
+		selector, span := selector, span
+		t.Run(fmt.Sprintf("turn_%d_%s", selector, turns[selector].Kind), func(t *testing.T) {
+			var recovered []byte
 			offset := 0
-			for page := 0; page < 4; page++ {
+			for page := 0; page < 100; page++ {
 				result := executeReadSessionTranscript(t, deps, map[string]any{
-					"expand_turn":  float64(0),
+					"expand_turn":  float64(selector),
 					"offset_bytes": float64(offset),
-					"max_bytes":    float64(maxExpansionBytes),
+					"max_bytes":    float64(37),
 				})
 				if result.IsError {
 					t.Fatalf("expand semantic turn: %s", result.Output)
 				}
-				var envelope map[string]any
+				var envelope struct {
+					Expansion struct {
+						transcriptTurnExpansion
+						Representation string `json:"representation"`
+					} `json:"expansion"`
+					Continuation *transcriptTurnContinuation `json:"continuation"`
+				}
 				if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
 					t.Fatalf("decode expansion envelope: %v", err)
 				}
-				expansion, ok := envelope["expansion"].(map[string]any)
-				if !ok {
-					t.Fatalf("semantic turn omitted exact expansion: %#v", envelope)
+				if envelope.Expansion.Representation != transcriptV2JSONLRepresentation {
+					t.Fatalf("expansion representation = %q", envelope.Expansion.Representation)
 				}
-				data, _ := expansion["data"].(string)
-				if expansion["encoding"] == "base64" {
-					decoded, err := base64.StdEncoding.DecodeString(data)
-					if err != nil {
-						t.Fatalf("decode expansion data: %v", err)
-					}
-					exact = append(exact, decoded...)
-				} else {
-					exact = append(exact, data...)
+				chunk, err := decodeTranscriptExpansion(&envelope.Expansion.transcriptTurnExpansion)
+				if err != nil {
+					t.Fatal(err)
 				}
-				continuation, ok := envelope["continuation"].(map[string]any)
-				if !ok {
+				recovered = append(recovered, chunk...)
+				if envelope.Continuation == nil {
 					break
 				}
-				next := int(continuation["offset_bytes"].(float64))
-				if next <= offset {
-					t.Fatalf("continuation did not advance: %d -> %d", offset, next)
+				if envelope.Continuation.OffsetBytes <= offset {
+					t.Fatalf("continuation did not advance: %d -> %d", offset, envelope.Continuation.OffsetBytes)
 				}
-				offset = next
+				offset = envelope.Continuation.OffsetBytes
 			}
-			for _, sentinel := range []string{head, middle, tail} {
-				if !bytes.Contains(exact, []byte(sentinel)) {
-					t.Errorf("exact expansion omitted %q", sentinel)
+
+			var got []transcript.Entry
+			scanner := bufio.NewScanner(bytes.NewReader(recovered))
+			for scanner.Scan() {
+				var entry transcript.Entry
+				if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+					t.Fatalf("expanded JSONL is not a transcript entry: %v", err)
 				}
+				got = append(got, entry)
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatal(err)
+			}
+			wantRaw := []byte(strings.Join(lines[span.first:span.last], "\n") + "\n")
+			if !bytes.Equal(recovered, wantRaw) {
+				t.Fatalf("expanded JSONL differs from persisted entries for turn %d", selector)
+			}
+			want := expectedEntries[span.first:span.last]
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(want)
+			if !bytes.Equal(gotJSON, wantJSON) {
+				t.Fatalf("expanded entries = %s, want %s", gotJSON, wantJSON)
 			}
 		})
+	}
+}
+
+func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("\x00", 512)))); err != nil {
+		_ = w.Close()
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+	rawBytes := len(readTranscriptLines(t, path)[1]) + 1
+
+	result := executeReadSessionTranscript(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{
+		"expand_turn": float64(0),
+		"max_bytes":   float64(rawBytes + 1),
+	})
+	if result.IsError {
+		t.Fatalf("expand semantic turn: %s", result.Output)
+	}
+	var envelope struct {
+		Expansion    transcriptTurnExpansion     `json:"expansion"`
+		Continuation *transcriptTurnContinuation `json:"continuation"`
+	}
+	if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Expansion.TotalBytes != rawBytes || envelope.Expansion.BytesReturned != rawBytes {
+		t.Fatalf("raw expansion bytes = %d/%d, want %d/%d", envelope.Expansion.BytesReturned, envelope.Expansion.TotalBytes, rawBytes, rawBytes)
+	}
+	if envelope.Continuation != nil {
+		t.Fatalf("outer JSON escaping incorrectly paged raw expansion: %+v", envelope.Continuation)
+	}
+}
+
+func TestReadJobTranscriptBoundMarkerUsesJobReadOutput(t *testing.T) {
+	jm, err := newJobManagerNoSync(t.TempDir(), "session", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = jm.store.Close() })
+	const jobID = "large-job"
+	started := time.Date(2026, 7, 16, 12, 0, 0, 0, time.UTC)
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	output, err := jobstore.OpenOutputNoSync(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := output.Append(bytes.Repeat([]byte{0}, hardCapChars+1)); err != nil {
+		_ = output.Close()
+		t.Fatal(err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := jm.appendEvent(jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		OwnerSessionID: jm.sessionID, VisibleToSession: jm.sessionID, StartedAt: &started, OutputPath: outputPath,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := readJobTranscript(&toolDeps{jobManager: jm}, "job:"+jobID, "", formatMarkdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := result.(readMarkdownEnvelope)
+	if strings.Contains(envelope.Content, "expand_turn") {
+		t.Fatal("job transcript recommends unsupported expand_turn")
+	}
+	if !strings.Contains(envelope.Content, "job_read_output") {
+		t.Fatal("job transcript omitted supported exact-read hint")
+	}
+	encoded, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > hardCapChars {
+		t.Fatalf("serialized job transcript = %d bytes, exceeds %d", len(encoded), hardCapChars)
 	}
 }
 

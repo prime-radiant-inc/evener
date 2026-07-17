@@ -23,15 +23,16 @@ var openTranscriptFile = func(path string) (io.ReadCloser, error) {
 // final line is skipped; corrupt complete lines and unsupported record kinds
 // reject the whole file.
 func readTranscript(path string) (transcript.Header, []transcript.Entry, int, error) {
-	data, err := readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, nil)
+	data, err := readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, false, nil)
 	return data.Header, data.Entries, data.Skipped, err
 }
 
 // transcriptData holds all parsed content from a transcript JSONL file.
 type transcriptData struct {
-	Header  transcript.Header
-	Entries []transcript.Entry
-	Skipped int
+	Header     transcript.Header
+	Entries    []transcript.Entry
+	EntryLines [][]byte
+	Skipped    int
 }
 
 var (
@@ -41,7 +42,11 @@ var (
 
 // readTranscriptFull reads the full semantic transcript-v2 file.
 func readTranscriptFull(path string) (transcriptData, error) {
-	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, nil)
+	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, false, nil)
+}
+
+func readTranscriptFullWithEntryLines(path string) (transcriptData, error) {
+	return readSemanticTranscript(path, transcriptJSONLMaxLineBytes, true, true, nil)
 }
 
 func readStrictChildTranscript(path, expectedSessionID string, maxLineBytes int) (transcriptData, error) {
@@ -54,7 +59,7 @@ func validateStrictChildTranscript(path, expectedSessionID string, maxLineBytes 
 }
 
 func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retainLines bool, maxLineBytes int) (transcriptData, error) {
-	data, err := readSemanticTranscript(path, maxLineBytes, retainLines, errStrictChildTranscriptCorrupt)
+	data, err := readSemanticTranscript(path, maxLineBytes, retainLines, false, errStrictChildTranscriptCorrupt)
 	if err != nil {
 		return transcriptData{}, err
 	}
@@ -64,7 +69,7 @@ func readStrictChildTranscriptWithOptions(path, expectedSessionID string, retain
 	return data, nil
 }
 
-func readSemanticTranscript(path string, maxLineBytes int, retainEntries bool, corruptSentinel error) (transcriptData, error) {
+func readSemanticTranscript(path string, maxLineBytes int, retainEntries, retainEntryLines bool, corruptSentinel error) (transcriptData, error) {
 	f, err := openTranscriptFile(path)
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
@@ -122,6 +127,9 @@ func readSemanticTranscript(path string, maxLineBytes int, retainEntries bool, c
 		}
 		if retainEntries {
 			data.Entries = append(data.Entries, entry)
+		}
+		if retainEntryLines {
+			data.EntryLines = append(data.EntryLines, bytes.Clone(line))
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
