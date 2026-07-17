@@ -233,8 +233,9 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   `search-finds-content-across-sessions.md`).
 - `transcript-read-outline-range-expand-turn.md` — the read ladder:
   outline maps the shape, a `range` taken from the outline reads a span,
-  `expand_turn` opens one truncated result whole; asserts the outline's
-  Turn numbers are exactly what `range`/`expand_turn` accept (one
+  `expand_turn` returns byte-paged exact transcript-v2 JSONL (16 KiB default,
+  64 KiB hard maximum); the small 1..200 fixture fits one default page. Asserts
+  the outline's Turn numbers are exactly what `range`/`expand_turn` accept (one
   numbering, no translation).
 - `transcript-multi-session-create-find-read.md` — THE headline:
   Session B discovers Session A by content (`find({query})`), gets A's

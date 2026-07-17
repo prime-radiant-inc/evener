@@ -73,14 +73,18 @@ reports that separately as text rather than treating it as an invocation.
 ### 4 — apilog preserves provider outcome and separate error evidence
 
 ```
+serf-doctor apilog $SID
 serf-doctor apilog $SID --errors
 serf-doctor apilog $SID --json | jq '.calls[] | {attempt_id, attempt_group_id, outcome, error, final_attempt_count}'
 ```
 
-Assert the human table has distinct `outcome` and `error` columns: `outcome`
-retains the exact provider attempt class while `error` is bounded, single-line
-evidence. The JSON projection retains `attempt_id`, `attempt_group_id`, `outcome`,
-`error`, and settlement-derived `final_attempt_count`; it never prints bodies.
+Assert the **unfiltered** human table has distinct `outcome` and `error` columns:
+`outcome` retains the exact provider attempt class while `error` is bounded,
+single-line evidence. `--errors` may legitimately report no matching attempts
+for a healthy session; if it returns rows, each row must be an error attempt.
+The unfiltered JSON projection retains `attempt_id`, `attempt_group_id`,
+`outcome`, `error`, and settlement-derived `final_attempt_count`; it never prints
+bodies.
 
 ### 5 — tree links parent ↔ delegate/observer across buckets
 

@@ -1,4 +1,4 @@
-# transcript-read-outline-range-expand-turn: outline maps the shape, range reads a span, expand_turn opens one result
+# transcript-read-outline-range-expand-turn: outline maps the shape, range reads a span, expand_turn pages exact evidence
 
 **What this covers**: the three-rung `read_session_transcript` ladder and
 the single-turn-numbering invariant (`docs/tools/transcripts.md`,
@@ -6,7 +6,9 @@ the single-turn-numbering invariant (`docs/tools/transcripts.md`,
 several turns and at least one large tool result. A later run maps it
 with `format:"outline"`, reads a Turn **range** taken straight from the
 outline, then `expand_turn`s a Turn whose result was truncated in the
-condensed view. The load-bearing assertion: **the Turn numbers the
+condensed view. `expand_turn` returns exact `transcript_v2_jsonl` in byte pages
+(16 KiB by default, 64 KiB maximum); this scenario's small 1..200 fixture must
+fit in one default page. The load-bearing assertion: **the Turn numbers the
 outline prints are exactly the numbers `range` and `expand_turn` accept**
 — no second index, no translation.
 
@@ -42,7 +44,7 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
    in one run:
    ```bash
    /tmp/serf --model oai-work/gpt-5.5 --dir "$proj" \
-     "Find the earlier session in this project that ran a script printing the numbers 1 to 200 (use find_session_transcripts). Then: (1) call read_session_transcript on it with format outline and report the Turn number of the line that ran count.py and whether that line is marked [truncated]; (2) call read_session_transcript again with a range that spans a few turns around that Turn (e.g. if the outline shows it at Turn 6, use range '4-8') and confirm those turns render; (3) call read_session_transcript once more with expand_turn set to that same Turn number and report whether the count.py result now shows the full 1..200 output instead of a truncated card. Quote the Turn numbers you used at each step."
+     "Find the earlier session in this project that ran a script printing the numbers 1 to 200 (use find_session_transcripts) and retain its transcript_ref. Then: (1) call read_session_transcript on it with format outline and report the Turn number of the line that ran count.py and whether that line is marked [truncated]; (2) call read_session_transcript again with a range that spans a few turns around that Turn (e.g. if the outline shows it at Turn 6, use range '4-8') and confirm those turns render; (3) call read_session_transcript once more with expand_turn set to that same Turn number and report expansion.representation, bytes_returned, total_bytes, and whether a continuation was returned. Confirm the exact expansion contains the full 1..200 output. This small fixture must fit in the default 16 KiB page, so report a failure if bytes_returned differs from total_bytes or a continuation is present. Quote the Turn numbers you used at each step."
    ```
 
 ## Expected
@@ -55,9 +57,10 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
     the `[truncated]` marker (the wide result was width-clamped).
   - A range read whose window is the turns it asked for, taken from the
     outline's numbering — the same N falls inside it.
-  - An `expand_turn:N` read in which the count.py result renders **in
-    full** (the 1..200 lines), un-truncated — `expand_turn` is exempt
-    from the per-result clamp and the conversation budget.
+  - An `expand_turn:N` read whose `expansion.representation` is
+    `transcript_v2_jsonl` and whose exact data contains the **full** 1..200
+    output. This small fixture fits in one default 16 KiB page:
+    `bytes_returned == total_bytes` and no continuation is present.
   - The Turn number used for `range` and `expand_turn` is the SAME number
     the outline printed. No remapping step is described.
 - Falsification:
@@ -67,9 +70,12 @@ outline prints are exactly the numbers `range` and `expand_turn` accept**
   - The count.py line is NOT marked `[truncated]` in the outline yet its
     result is too wide to fit the clamp → the outline/clamp markers are
     out of sync.
-  - `expand_turn:N` still shows a truncated card (the full 1..200 output
-    never appears) → `expand_turn` isn't exempting the result from the
-    clamp/budget.
+  - `expand_turn:N` omits the exact expansion or its exact data lacks the full
+    1..200 output → the byte-paged evidence does not preserve the selected
+    turn/result span.
+  - The small fixture requires a second page, returns more than the 16 KiB
+    default, or returns a continuation despite `bytes_returned == total_bytes`
+    → the paging contract regressed.
   - A range read returns turns outside the requested window, or the
     window is silently shifted with no marker → range honesty regressed.
 
@@ -91,11 +97,15 @@ rm -rf "$proj"
   dumping all of it. This scenario uses a small session so a default
   outline shows everything; the range step is exercised on the markdown
   read.
-- `expand_turn` is **markdown-only** and names exactly one Turn. If the
-  named Turn falls outside the rendered range, it is appended as a
-  labeled supplemental section naming its real Turn number — still
-  addressed by the same number. Don't treat an out-of-range expand as a
-  failure; it's a documented affordance.
+- `expand_turn` is **markdown-only** and names exactly one Turn. Its exact
+  `transcript_v2_jsonl` expansion defaults to 16 KiB per page and accepts at
+  most 64 KiB. Larger evidence must be continued with the same
+  `transcript_ref`, `expand_turn`, and returned `offset_bytes`; this deliberately
+  small fixture must not need that continuation. If the named Turn falls
+  outside the rendered range, bounded markdown appends a labeled supplemental
+  section naming its real Turn number — still addressed by the same number.
+  Don't treat an out-of-range expand as a failure; it's a documented
+  affordance.
 - The model decides how many tool calls to make; the exact Turn number
   for count.py will vary run to run. That's WHY B reads the outline first
   and uses the number it sees, rather than a hard-coded Turn — which is
