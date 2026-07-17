@@ -59,13 +59,19 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 
 	response, err := t.base.RoundTrip(request)
 	if err != nil {
-		t.mu.Lock()
-		t.transportFailure = attempt
-		t.mu.Unlock()
+		t.retainTransportFailure(attempt)
 		return response, err
+	}
+	if response == nil {
+		t.retainTransportFailure(attempt)
+		return nil, nil
 	}
 	responseBody := response.Body
 	if responseBody == nil {
+		if response.ContentLength > 0 && request.Method != http.MethodHead {
+			t.retainTransportFailure(attempt)
+			return response, nil
+		}
 		responseBody = http.NoBody
 	}
 	body := &apiAttemptResponseBody{
@@ -84,6 +90,12 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	t.responses[response] = body
 	t.mu.Unlock()
 	return response, nil
+}
+
+func (t *apiAttemptRoundTripper) retainTransportFailure(attempt *APIAttemptCapture) {
+	t.mu.Lock()
+	t.transportFailure = attempt
+	t.mu.Unlock()
 }
 
 func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {

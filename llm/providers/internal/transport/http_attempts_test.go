@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -527,6 +528,141 @@ func TestDoWithAPIAttemptsLearnsCredentialTrailerMutatedBeforeTransportError(t *
 	record := onlyAttempt(t, sink)
 	if record.ErrorMessage != "" {
 		t.Fatalf("credential-bearing transport error persisted as %q", record.ErrorMessage)
+	}
+}
+
+func TestDoWithAPIAttemptsNilResponsePreservesHTTPClientError(t *testing.T) {
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, nil
+	})}
+	inactive := runHTTPClientAttempt(t, client, http.MethodGet, false)
+	active := runHTTPClientAttempt(t, client, http.MethodGet, true)
+	assertMatchingHTTPClientErrors(t, inactive.err, active.err)
+	if inactive.response != nil || inactive.attempt != nil {
+		t.Fatalf("inactive result = response:%#v attempt:%#v, want nil response and attempt", inactive.response, inactive.attempt)
+	}
+	if active.response != nil {
+		t.Fatalf("active response = %#v, want nil", active.response)
+	}
+	if active.attempt == nil {
+		t.Fatal("active nil-response error lost its attempt")
+	}
+	active.attempt.Complete(llm.APIAttemptResult{Err: active.err}, llm.APITimeoutNone, nil, active.err)
+	if got := onlyAttempt(t, active.sink).Outcome; got != apilog.AttemptTransportFail {
+		t.Fatalf("active nil-response outcome = %q, want transport_failure", got)
+	}
+}
+
+func TestDoWithAPIAttemptsNilBodyWithPositiveLengthPreservesHTTPClientError(t *testing.T) {
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusOK,
+			Header:        make(http.Header),
+			ContentLength: 1,
+		}, nil
+	})}
+	inactive := runHTTPClientAttempt(t, client, http.MethodGet, false)
+	active := runHTTPClientAttempt(t, client, http.MethodGet, true)
+	assertMatchingHTTPClientErrors(t, inactive.err, active.err)
+	if inactive.response != nil || inactive.attempt != nil {
+		t.Fatalf("inactive result = response:%#v attempt:%#v, want nil response and attempt", inactive.response, inactive.attempt)
+	}
+	if active.response != nil {
+		t.Fatalf("active response = %#v, want nil", active.response)
+	}
+	if active.attempt == nil {
+		t.Fatal("active nil-body error lost its attempt")
+	}
+	active.attempt.Complete(llm.APIAttemptResult{Err: active.err}, llm.APITimeoutNone, nil, active.err)
+	if got := onlyAttempt(t, active.sink).Outcome; got != apilog.AttemptTransportFail {
+		t.Fatalf("active nil-body outcome = %q, want transport_failure", got)
+	}
+}
+
+type httpClientAttemptResult struct {
+	response *http.Response
+	attempt  *APIAttemptCapture
+	err      error
+	sink     *responseAssociationSink
+}
+
+func runHTTPClientAttempt(t *testing.T, client *http.Client, method string, active bool) httpClientAttemptResult {
+	t.Helper()
+	ctx := context.Background()
+	sink := &responseAssociationSink{}
+	if active {
+		ctx = attemptContext("ag_http_client_parity", sink)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, "https://provider.test/v1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+	return httpClientAttemptResult{response: response, attempt: attempt, err: err, sink: sink}
+}
+
+func assertMatchingHTTPClientErrors(t *testing.T, inactiveErr, activeErr error) {
+	t.Helper()
+	if inactiveErr == nil || activeErr == nil {
+		t.Fatalf("HTTP client errors = inactive:%v active:%v, want both requests rejected", inactiveErr, activeErr)
+	}
+	var inactiveURL, activeURL *url.Error
+	if !errors.As(inactiveErr, &inactiveURL) || !errors.As(activeErr, &activeURL) {
+		t.Fatalf("HTTP client errors = inactive:%T active:%T, want wrapped client errors", inactiveErr, activeErr)
+	}
+	if inactiveURL.Op != activeURL.Op || inactiveURL.URL != activeURL.URL {
+		t.Fatalf("HTTP client context = inactive:%s %s active:%s %s, want parity", inactiveURL.Op, inactiveURL.URL, activeURL.Op, activeURL.URL)
+	}
+	if inactiveURL.Err == nil || activeURL.Err == nil {
+		t.Fatalf("HTTP client errors = inactive:%v active:%v, want concrete client causes", inactiveErr, activeErr)
+	}
+}
+
+func TestDoWithAPIAttemptsNormalizesNilBodyWhenHTTPClientPermitsIt(t *testing.T) {
+	testCases := []struct {
+		name          string
+		method        string
+		contentLength int64
+	}{
+		{name: "head with positive length", method: http.MethodHead, contentLength: 1},
+		{name: "get with zero length", method: http.MethodGet, contentLength: 0},
+		{name: "get with unknown length", method: http.MethodGet, contentLength: -1},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode:    http.StatusOK,
+					Header:        make(http.Header),
+					ContentLength: testCase.contentLength,
+				}, nil
+			})}
+			inactive := runHTTPClientAttempt(t, client, testCase.method, false)
+			active := runHTTPClientAttempt(t, client, testCase.method, true)
+			if inactive.err != nil || active.err != nil {
+				t.Fatalf("HTTP client errors = inactive:%v active:%v, want both requests accepted", inactive.err, active.err)
+			}
+			if inactive.attempt != nil {
+				t.Fatalf("inactive request returned attempt %#v", inactive.attempt)
+			}
+			assertEmptyResponseBody(t, inactive.response)
+			assertEmptyResponseBody(t, active.response)
+			if active.attempt == nil {
+				t.Fatal("active request lost its attempt")
+			}
+			active.attempt.Complete(llm.APIAttemptResult{StatusCode: active.response.StatusCode}, llm.APITimeoutNone, nil, nil)
+			if got := onlyAttempt(t, active.sink).Outcome; got != apilog.AttemptSuccess {
+				t.Fatalf("active outcome = %q, want success", got)
+			}
+		})
+	}
+}
+
+func assertEmptyResponseBody(t *testing.T, response *http.Response) {
+	t.Helper()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || len(body) != 0 {
+		t.Fatalf("response body = %q, %v; want empty body", body, err)
 	}
 }
 
