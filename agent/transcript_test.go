@@ -2894,7 +2894,9 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 		first int
 		last  int
 	}
-	expectedSpans := map[int]expectedSpan{0: {first: 0, last: 2}, 1: {first: 1, last: 2}}
+	// Selecting either side of an owned assistant/results pair expands the same
+	// exact persisted span.
+	expectedSpans := map[int]expectedSpan{0: {first: 0, last: 2}, 1: {first: 0, last: 2}}
 	for i := 2; i < len(expectedEntries); i++ {
 		expectedSpans[i] = expectedSpan{first: i, last: i + 1}
 	}
@@ -3160,5 +3162,31 @@ func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
 	}
 	if hint := readMetaMap(t, env)["hint"].(string); !strings.Contains(hint, "semantic") || !strings.Contains(hint, "API") {
 		t.Fatalf("JSONL hint = %q", hint)
+	}
+}
+
+func TestReadSessionTranscriptJSONLRejectsHeaderLargerThanHardOutputCap(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID:  sessionID,
+		Model:      "test-model",
+		WorkingDir: strings.Repeat("w", hardCapChars+1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+
+	result := executeReadSessionTranscript(t, &toolDeps{stateDir: dir, sessionID: sessionID}, map[string]any{"format": "jsonl"})
+	if !result.IsError {
+		t.Fatalf("oversized JSONL header succeeded with %d output bytes", len(result.Output))
+	}
+	if len(result.Output) > 1024 || !strings.Contains(result.Output, "transcript header exceeds") {
+		t.Fatalf("oversized JSONL header error is not bounded and clear: len=%d output=%q", len(result.Output), result.Output)
 	}
 }

@@ -354,13 +354,9 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 		return nil, errors.New("transcript expansion unavailable: persisted entries are not retained")
 	}
 
-	first, last := pin, pin
-	if data.Entries[pin].Turn.Kind == schema.TurnAssistant {
-		var ok bool
-		first, last, ok = resolvePinnedSpan(data.Entries, pin)
-		if !ok {
-			return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
-		}
+	first, last, ok := resolvePinnedSpan(data.Entries, pin)
+	if !ok {
+		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
 	}
 	total := last - first + 1
 	for _, line := range data.EntryLines[first : last+1] {

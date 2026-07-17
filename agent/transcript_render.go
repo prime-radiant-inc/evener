@@ -359,6 +359,9 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 		}
 		headerLine = string(encodedHeader)
 	}
+	if len([]rune(headerLine))+1 > hardCapChars {
+		return "", 0, 0, false, fmt.Errorf("semantic transcript header exceeds %d-character output limit", hardCapChars)
+	}
 
 	// Walk remaining lines.
 	// entryPos tracks how many "entry" lines we've seen (the derived seq).
