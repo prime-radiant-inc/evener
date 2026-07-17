@@ -289,10 +289,10 @@ func doctor_buildAPILogResult(r *doctor_reader) (APILogResult, APILogOpts) {
 		Calls:           r.doctor_int(50),
 		Empties:         r.doctor_int(50),
 		Errors:          r.doctor_int(50),
-		InputTokens:     r.doctor_int(200),
-		OutputTokens:    r.doctor_int(200),
-		CacheReadTokens: r.doctor_int(200),
-		TotalTokens:     r.doctor_int(200),
+		InputTokens:     intp(r.doctor_int(200)),
+		OutputTokens:    intp(r.doctor_int(200)),
+		CacheReadTokens: intp(r.doctor_int(200)),
+		TotalTokens:     intp(r.doctor_int(200)),
 		AvgLatencyMs:    int64(r.doctor_int(200)),
 	}
 	for i, n := 0, r.doctor_int(6); i < n; i++ {
@@ -303,16 +303,16 @@ func doctor_buildAPILogResult(r *doctor_reader) (APILogResult, APILogOpts) {
 			ProviderInstance: r.doctor_str(),
 			Model:            r.doctor_str(),
 			LatencyMs:        int64(r.doctor_int(200)),
-			InputTokens:      r.doctor_int(200),
-			OutputTokens:     r.doctor_int(200),
-			CacheRead:        r.doctor_int(200),
-			UncachedInput:    r.doctor_int(200),
+			InputTokens:      intp(r.doctor_int(200)),
+			OutputTokens:     intp(r.doctor_int(200)),
+			CacheRead:        intp(r.doctor_int(200)),
+			UncachedInput:    intp(r.doctor_int(200)),
 			FinishReason:     r.doctor_str(),
-			TextLength:       r.doctor_int(200),
-			ToolCalls:        r.doctor_int(10),
+			TextLength:       intp(r.doctor_int(200)),
+			ToolCalls:        intp(r.doctor_int(10)),
 			Empty:            r.doctor_bool(),
 			ErrorClass:       r.doctor_str(),
-			StatusCode:       r.doctor_int(600),
+			StatusCode:       intp(r.doctor_int(600)),
 			Final:            r.doctor_bool(),
 			SettlementState:  r.doctor_str(),
 		}
@@ -323,6 +323,7 @@ func doctor_buildAPILogResult(r *doctor_reader) (APILogResult, APILogOpts) {
 		}
 		res.Calls = append(res.Calls, row)
 	}
+	res.MatchingCalls = len(res.Calls)
 	opts := APILogOpts{
 		EmptyOnly:      r.doctor_bool(),
 		ErrorsOnly:     r.doctor_bool(),

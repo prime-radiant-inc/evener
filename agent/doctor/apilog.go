@@ -26,6 +26,7 @@ type APILogOpts struct {
 
 const defaultSpikeThreshold = 50000
 const doctorAPILogMaxLineBytes = 128 << 20
+const doctorAPILogMaxCalls = 100
 const doctorAPILogMaxSettlements = 100
 
 const (
@@ -42,16 +43,16 @@ type APICallRow struct {
 	ProviderInstance   string                     `json:"provider_instance"`
 	Model              string                     `json:"model"`
 	LatencyMs          int64                      `json:"latency_ms"`
-	InputTokens        int                        `json:"input_tokens"`
-	OutputTokens       int                        `json:"output_tokens"`
-	CacheRead          int                        `json:"cache_read_tokens"`
-	UncachedInput      int                        `json:"uncached_input_tokens"`
+	InputTokens        *int                       `json:"input_tokens,omitempty"`
+	OutputTokens       *int                       `json:"output_tokens,omitempty"`
+	CacheRead          *int                       `json:"cache_read_tokens,omitempty"`
+	UncachedInput      *int                       `json:"uncached_input_tokens,omitempty"`
 	FinishReason       string                     `json:"finish_reason,omitempty"`
-	TextLength         int                        `json:"text_length"`
-	ToolCalls          int                        `json:"tool_call_count"`
+	TextLength         *int                       `json:"text_length,omitempty"`
+	ToolCalls          *int                       `json:"tool_call_count,omitempty"`
 	Empty              bool                       `json:"empty"`
 	Outcome            apilog.AttemptOutcomeClass `json:"outcome"`
-	StatusCode         int                        `json:"status_code,omitempty"`
+	StatusCode         *int                       `json:"status_code,omitempty"`
 	ErrorClass         string                     `json:"error_class,omitempty"`
 	Final              bool                       `json:"final"`
 	SettlementState    string                     `json:"settlement_state"`
@@ -77,15 +78,17 @@ type APIGroupSettlements struct {
 	Truncated bool                    `json:"truncated"`
 }
 
-// APILogTotals aggregates every attempt in the session, regardless of row filter.
+// APILogTotals aggregates available evidence from every attempt in the session,
+// regardless of row filter. Optional totals remain absent when the log contains
+// no corresponding provider evidence.
 type APILogTotals struct {
 	Calls                        int                                      `json:"calls"`
 	Empties                      int                                      `json:"empties"`
 	Errors                       int                                      `json:"errors"`
-	InputTokens                  int                                      `json:"input_tokens"`
-	OutputTokens                 int                                      `json:"output_tokens"`
-	CacheReadTokens              int                                      `json:"cache_read_tokens"`
-	TotalTokens                  int                                      `json:"total_tokens"`
+	InputTokens                  *int                                     `json:"input_tokens,omitempty"`
+	OutputTokens                 *int                                     `json:"output_tokens,omitempty"`
+	CacheReadTokens              *int                                     `json:"cache_read_tokens,omitempty"`
+	TotalTokens                  *int                                     `json:"total_tokens,omitempty"`
 	AvgLatencyMs                 int64                                    `json:"avg_latency_ms"`
 	ContinuationByEndpointFamily map[string]ContinuationHistoryModeCounts `json:"continuation_by_endpoint_family,omitempty"`
 }
@@ -97,10 +100,12 @@ type ContinuationHistoryModeCounts struct {
 }
 
 type APILogResult struct {
-	SessionID   string              `json:"session_id"`
-	Calls       []APICallRow        `json:"calls"`
-	Settlements APIGroupSettlements `json:"settlements"`
-	Totals      APILogTotals        `json:"totals"`
+	SessionID      string              `json:"session_id"`
+	Calls          []APICallRow        `json:"calls"`
+	MatchingCalls  int                 `json:"matching_calls"`
+	CallsTruncated bool                `json:"calls_truncated"`
+	Settlements    APIGroupSettlements `json:"settlements"`
+	Totals         APILogTotals        `json:"totals"`
 }
 
 // APILog decodes the private canonical API log and owns only its diagnostic
@@ -118,10 +123,15 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 
 	res := APILogResult{SessionID: paths.SessionID}
 	decoder := apilog.NewDecoder(f, doctorAPILogMaxLineBytes)
-	settlements := map[string]apilog.APIAttemptGroupSettlement{}
+	threshold := opts.SpikeThreshold
+	if threshold <= 0 {
+		threshold = defaultSpikeThreshold
+	}
+	var retainedCalls apiCallRetention
 	var retainedSettlements apiGroupSettlementRetention
 	partialTail := false
 	var latencySum int64
+	var inputTokens, outputTokens, cacheReadTokens, totalTokens optionalIntSum
 	for {
 		record, decodeErr := decoder.Next()
 		if errors.Is(decodeErr, io.EOF) {
@@ -137,11 +147,13 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 		switch record := record.(type) {
 		case apilog.APIAttemptRecord:
 			row := rowFromAttempt(record)
-			res.Calls = append(res.Calls, row)
 			res.Totals.Calls++
-			res.Totals.InputTokens += row.InputTokens
-			res.Totals.OutputTokens += row.OutputTokens
-			res.Totals.CacheReadTokens += row.CacheRead
+			inputTokens.add(row.InputTokens)
+			outputTokens.add(row.OutputTokens)
+			cacheReadTokens.add(row.CacheRead)
+			if record.Response != nil {
+				totalTokens.add(record.Response.Usage.TotalTokens)
+			}
 			latencySum += row.LatencyMs
 			if row.Outcome != apilog.AttemptSuccess {
 				res.Totals.Errors++
@@ -150,41 +162,96 @@ func APILog(stateBase, selector string, opts APILogOpts) (APILogResult, error) {
 				res.Totals.Empties++
 			}
 			recordContinuationHistoryMode(&res.Totals, record.Request.EndpointFamily, llm.HistoryMode(record.Request.HistoryMode))
+			if rowMatchesFilter(row, opts, threshold) {
+				retainedCalls.add(row)
+			}
 		case apilog.APIAttemptGroupSettlement:
-			settlements[record.AttemptGroupID] = record
+			retainedCalls.settle(record)
 			retainedSettlements.add(record)
 		}
 	}
+	res.Calls, res.MatchingCalls, res.CallsTruncated = retainedCalls.result(partialTail)
 	res.Settlements = retainedSettlements.result()
-	res.Totals.TotalTokens = res.Totals.InputTokens + res.Totals.OutputTokens
+	res.Totals.InputTokens = inputTokens.result()
+	res.Totals.OutputTokens = outputTokens.result()
+	res.Totals.CacheReadTokens = cacheReadTokens.result()
+	res.Totals.TotalTokens = totalTokens.result()
 	if res.Totals.Calls > 0 {
 		res.Totals.AvgLatencyMs = latencySum / int64(res.Totals.Calls)
 	}
-
-	threshold := opts.SpikeThreshold
-	if threshold <= 0 {
-		threshold = defaultSpikeThreshold
-	}
-	filtered := res.Calls[:0]
-	for i := range res.Calls {
-		row := &res.Calls[i]
-		if settlement, ok := settlements[row.AttemptGroupID]; ok {
-			count := settlement.FinalAttemptCount
-			row.FinalAttemptCount = &count
-			row.Final = row.AttemptID == settlement.FinalAttemptID
-			row.SettlementState = SettlementSettled
-			row.ForensicIncomplete = settlement.ForensicIncomplete
-		} else if partialTail {
-			row.SettlementState = SettlementUnknownOutsideRange
-		} else {
-			row.SettlementState = SettlementUnsettled
-		}
-		if rowMatchesFilter(*row, opts, threshold) {
-			filtered = append(filtered, *row)
-		}
-	}
-	res.Calls = filtered
 	return res, nil
+}
+
+type optionalIntSum struct {
+	total int
+	seen  bool
+}
+
+func (s *optionalIntSum) add(value *int) {
+	if value == nil {
+		return
+	}
+	s.total += *value
+	s.seen = true
+}
+
+func (s optionalIntSum) result() *int {
+	if !s.seen {
+		return nil
+	}
+	value := s.total
+	return &value
+}
+
+type apiCallRetention struct {
+	records []APICallRow
+	total   int
+	next    int
+}
+
+func (r *apiCallRetention) add(row APICallRow) {
+	r.total++
+	if len(r.records) < doctorAPILogMaxCalls {
+		r.records = append(r.records, row)
+		return
+	}
+	r.records[r.next] = row
+	r.next = (r.next + 1) % doctorAPILogMaxCalls
+}
+
+func (r *apiCallRetention) settle(settlement apilog.APIAttemptGroupSettlement) {
+	for i := range r.records {
+		row := &r.records[i]
+		if row.AttemptGroupID != settlement.AttemptGroupID {
+			continue
+		}
+		count := settlement.FinalAttemptCount
+		row.FinalAttemptCount = &count
+		row.Final = row.AttemptID == settlement.FinalAttemptID
+		row.SettlementState = SettlementSettled
+		row.ForensicIncomplete = settlement.ForensicIncomplete
+	}
+}
+
+func (r *apiCallRetention) result(partialTail bool) ([]APICallRow, int, bool) {
+	records := append([]APICallRow(nil), r.records...)
+	if len(records) == doctorAPILogMaxCalls && r.next > 0 {
+		ordered := make([]APICallRow, 0, doctorAPILogMaxCalls)
+		ordered = append(ordered, records[r.next:]...)
+		ordered = append(ordered, records[:r.next]...)
+		records = ordered
+	}
+	for i := range records {
+		if records[i].SettlementState != "" {
+			continue
+		}
+		if partialTail {
+			records[i].SettlementState = SettlementUnknownOutsideRange
+		} else {
+			records[i].SettlementState = SettlementUnsettled
+		}
+	}
+	return records, r.total, r.total > len(records)
 }
 
 type apiGroupSettlementRetention struct {
@@ -262,28 +329,16 @@ func rowFromAttempt(attempt apilog.APIAttemptRecord) APICallRow {
 		ErrorClass:       attempt.ErrorClass,
 	}
 	if attempt.Response != nil {
-		if attempt.Response.StatusCode != nil {
-			row.StatusCode = *attempt.Response.StatusCode
-		}
+		row.StatusCode = attempt.Response.StatusCode
 		row.FinishReason = attempt.Response.FinishReason
-		if attempt.Response.TextLength != nil {
-			row.TextLength = *attempt.Response.TextLength
-		}
-		if attempt.Response.ToolCallCount != nil {
-			row.ToolCalls = *attempt.Response.ToolCallCount
-		}
-		if attempt.Response.Usage.InputTokens != nil {
-			row.InputTokens = *attempt.Response.Usage.InputTokens
-		}
-		if attempt.Response.Usage.OutputTokens != nil {
-			row.OutputTokens = *attempt.Response.Usage.OutputTokens
-		}
-		if attempt.Response.Usage.CacheReadTokens != nil {
-			row.CacheRead = *attempt.Response.Usage.CacheReadTokens
-		}
+		row.TextLength = attempt.Response.TextLength
+		row.ToolCalls = attempt.Response.ToolCallCount
+		row.InputTokens = attempt.Response.Usage.InputTokens
+		row.OutputTokens = attempt.Response.Usage.OutputTokens
+		row.CacheRead = attempt.Response.Usage.CacheReadTokens
 		row.Empty = attempt.Outcome == apilog.AttemptSuccess &&
-			attempt.Response.TextLength != nil && row.TextLength == 0 &&
-			attempt.Response.ToolCallCount != nil && row.ToolCalls == 0
+			row.TextLength != nil && *row.TextLength == 0 &&
+			row.ToolCalls != nil && *row.ToolCalls == 0
 	}
 	// llm.Usage.InputTokens is already normalized to uncached input by the
 	// provider adapter. CacheRead is reported separately and must not be
@@ -299,7 +354,7 @@ func rowMatchesFilter(row APICallRow, opts APILogOpts, threshold int) bool {
 	if opts.ErrorsOnly && row.Outcome == apilog.AttemptSuccess {
 		return false
 	}
-	if opts.CacheSpikes && row.UncachedInput < threshold {
+	if opts.CacheSpikes && (row.UncachedInput == nil || *row.UncachedInput < threshold) {
 		return false
 	}
 	return true
@@ -309,8 +364,9 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 	var b strings.Builder
 	t := r.Totals
 	fmt.Fprintf(&b, "session %s\n", r.SessionID)
-	fmt.Fprintf(&b, "calls=%d empties=%d errors=%d  tokens in=%d out=%d cache_read=%d total=%d  avg_latency=%dms\n",
-		t.Calls, t.Empties, t.Errors, t.InputTokens, t.OutputTokens, t.CacheReadTokens, t.TotalTokens, t.AvgLatencyMs)
+	fmt.Fprintf(&b, "calls=%d empties=%d errors=%d  tokens in=%s out=%s cache_read=%s total=%s  avg_latency=%dms\n",
+		t.Calls, t.Empties, t.Errors, optionalIntString(t.InputTokens), optionalIntString(t.OutputTokens),
+		optionalIntString(t.CacheReadTokens), optionalIntString(t.TotalTokens), t.AvgLatencyMs)
 	if opts.SummaryOnly {
 		return b.String()
 	}
@@ -328,20 +384,23 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 			if c.FinalAttemptCount != nil {
 				finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
 			}
-			status := "-"
-			if c.StatusCode != 0 {
-				status = fmt.Sprintf("%d", c.StatusCode)
-			}
+			status := optionalIntString(c.StatusCode)
 			errorClass := c.ErrorClass
 			if errorClass == "" {
 				errorClass = "-"
 			}
-			fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %6s %-24s %-7t %-24s %-19s %-19t %7dms %8d %8d %9d %6d %-5d\n",
+			fmt.Fprintf(&b, "%-26s %-26s %-8d %-18s %-18s %-25s %6s %-24s %-7t %-24s %-19s %-19t %7dms %8s %8s %9s %6s %-5s\n",
 				truncate(c.AttemptID, 26), truncate(c.AttemptGroupID, 26), c.AttemptIndex, truncate(c.ProviderInstance, 18),
 				truncate(c.Model, 18), c.Outcome, status, truncate(errorClass, 24), c.Empty, truncate(settlement, 24), finalAttemptCount,
-				c.ForensicIncomplete, c.LatencyMs, c.InputTokens, c.OutputTokens, c.UncachedInput, c.TextLength, c.ToolCalls)
+				c.ForensicIncomplete, c.LatencyMs, optionalIntString(c.InputTokens), optionalIntString(c.OutputTokens),
+				optionalIntString(c.UncachedInput), optionalIntString(c.TextLength), optionalIntString(c.ToolCalls))
 		}
 	}
+	fmt.Fprintf(&b, "call_rows=%d/%d", len(r.Calls), r.MatchingCalls)
+	if r.CallsTruncated {
+		fmt.Fprint(&b, " (latest; truncated)")
+	}
+	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "settlements=%d/%d", len(r.Settlements.Records), r.Settlements.Total)
 	if r.Settlements.Truncated {
 		fmt.Fprint(&b, " (latest; truncated)")
@@ -363,4 +422,11 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 			settlement.Outcome, settlement.ForensicIncomplete, settlement.SettledAt.Format(time.RFC3339Nano))
 	}
 	return b.String()
+}
+
+func optionalIntString(value *int) string {
+	if value == nil {
+		return "-"
+	}
+	return fmt.Sprintf("%d", *value)
 }

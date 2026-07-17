@@ -16,6 +16,17 @@ import (
 
 func intp(n int) *int { return &n }
 
+func hasIntValue(value *int, want int) bool {
+	return value != nil && *value == want
+}
+
+func optionalTokenTotalMatches(input, output, total *int) bool {
+	if input == nil || output == nil || total == nil {
+		return input == nil && output == nil && total == nil
+	}
+	return *total == *input+*output
+}
+
 func doctorAttempt(group string, index int, outcome apilog.AttemptOutcomeClass, latency int64, input, output, cache, text, tools int) apilog.APIAttemptRecord {
 	attempt := apilog.APIAttemptRecord{
 		Kind:             "api_attempt",
@@ -99,7 +110,8 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 	if tot.Calls != 4 || tot.Empties != 1 || tot.Errors != 1 {
 		t.Fatalf("calls/empties/errors = %d/%d/%d, want 4/1/1", tot.Calls, tot.Empties, tot.Errors)
 	}
-	if tot.InputTokens != 81000 || tot.OutputTokens != 700 || tot.CacheReadTokens != 21000 || tot.TotalTokens != 81700 {
+	if !hasIntValue(tot.InputTokens, 81000) || !hasIntValue(tot.OutputTokens, 700) ||
+		!hasIntValue(tot.CacheReadTokens, 21000) || !hasIntValue(tot.TotalTokens, 81700) {
 		t.Fatalf("token totals = %+v", tot)
 	}
 	if tot.AvgLatencyMs != 1262 {
@@ -128,7 +140,7 @@ func TestAPILogCanonicalTotalsFiltersAndSettlementIdentity(t *testing.T) {
 		t.Fatalf("error filter = %+v, err %v", failures.Calls, err)
 	}
 	spikes, err := APILog(base, sid, APILogOpts{CacheSpikes: true})
-	if err != nil || len(spikes.Calls) != 1 || spikes.Calls[0].UncachedInput != 60000 {
+	if err != nil || len(spikes.Calls) != 1 || !hasIntValue(spikes.Calls[0].UncachedInput, 60000) {
 		t.Fatalf("spike filter = %+v, err %v", spikes.Calls, err)
 	}
 	low, err := APILog(base, sid, APILogOpts{CacheSpikes: true, SpikeThreshold: 500})
@@ -147,6 +159,123 @@ func TestAPILogOmittedCompactCountsAreNotEmptyEvidence(t *testing.T) {
 	}
 }
 
+func TestAPILogPreservesOptionalNumericPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		present bool
+	}{
+		{name: "omitted"},
+		{name: "explicit zero", present: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			bucket := stateHomeBucket(base, hash1)
+			attempt := doctorAttempt("ag_numeric_presence", 1, apilog.AttemptSuccess, 1, 0, 0, 0, 0, 0)
+			if tc.present {
+				attempt.Response.StatusCode = intp(0)
+			} else {
+				attempt.Response.StatusCode = nil
+				attempt.Response.TextLength = nil
+				attempt.Response.ToolCallCount = nil
+				attempt.Response.Usage = apilog.Usage{}
+			}
+			writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt}, schema.SessionMeta{})
+
+			result, err := APILog(base, sidA, APILogOpts{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document struct {
+				Calls  []map[string]json.RawMessage `json:"calls"`
+				Totals map[string]json.RawMessage   `json:"totals"`
+			}
+			if err := json.Unmarshal(encoded, &document); err != nil {
+				t.Fatal(err)
+			}
+			if len(document.Calls) != 1 {
+				t.Fatalf("JSON calls = %d, want 1", len(document.Calls))
+			}
+			for _, field := range []string{
+				"status_code", "input_tokens", "output_tokens", "cache_read_tokens",
+				"uncached_input_tokens", "text_length", "tool_call_count",
+			} {
+				_, got := document.Calls[0][field]
+				if got != tc.present {
+					t.Errorf("call field %q present = %v, want %v: %s", field, got, tc.present, encoded)
+				}
+			}
+			for _, field := range []string{"input_tokens", "output_tokens", "cache_read_tokens", "total_tokens"} {
+				_, got := document.Totals[field]
+				if got != tc.present {
+					t.Errorf("totals field %q present = %v, want %v: %s", field, got, tc.present, encoded)
+				}
+			}
+
+			human := RenderAPILog(result, APILogOpts{})
+			want := "-"
+			if tc.present {
+				want = "0"
+			}
+			for _, column := range []string{"status", "in_tok", "out_tok", "uncached", "txt", "tools"} {
+				if got := apilogHumanColumn(t, human, attempt.AttemptID, column); got != want {
+					t.Errorf("human %s = %q, want %q\n%s", column, got, want, human)
+				}
+			}
+			wantSummary := "tokens in=- out=- cache_read=- total=-"
+			if tc.present {
+				wantSummary = "tokens in=0 out=0 cache_read=0 total=0"
+			}
+			if !strings.Contains(human, wantSummary) {
+				t.Errorf("human totals lost numeric presence; want %q\n%s", wantSummary, human)
+			}
+		})
+	}
+}
+
+func TestAPILogRetainsLatestBoundedCallRowsAndScansAllTotals(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	const maxCallRows = 100
+	const callCount = maxCallRows + 3
+	records := make([]apilog.APILogRecord, 0, callCount)
+	for i := 0; i < callCount; i++ {
+		records = append(records, doctorAttempt(fmt.Sprintf("ag_call_%03d", i), 1, apilog.AttemptSuccess, 1, 1, 2, 0, 1, 0))
+	}
+	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
+
+	result, err := APILog(base, sidA, APILogOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Calls) != maxCallRows {
+		t.Fatalf("retained calls = %d, want %d", len(result.Calls), maxCallRows)
+	}
+	if result.Calls[0].AttemptGroupID != "ag_call_003" || result.Calls[len(result.Calls)-1].AttemptGroupID != "ag_call_102" {
+		t.Fatalf("retained call range = %q..%q, want latest 100", result.Calls[0].AttemptGroupID, result.Calls[len(result.Calls)-1].AttemptGroupID)
+	}
+	if result.Totals.Calls != callCount {
+		t.Fatalf("totals.calls = %d, want all %d scanned calls", result.Totals.Calls, callCount)
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	if string(document["matching_calls"]) != "103" || string(document["calls_truncated"]) != "true" {
+		t.Fatalf("bounded call metadata missing from %s", encoded)
+	}
+	if human := RenderAPILog(result, APILogOpts{}); !strings.Contains(human, "call_rows=100/103 (latest; truncated)") {
+		t.Fatalf("human output omits bounded call evidence:\n%s", human)
+	}
+}
+
 func TestAPILogCacheSpikesUseNormalizedUncachedInput(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
@@ -160,8 +289,8 @@ func TestAPILogCacheSpikesUseNormalizedUncachedInput(t *testing.T) {
 	if len(res.Calls) != 1 {
 		t.Fatalf("cache spike rows = %d, want 1: InputTokens is already normalized uncached input", len(res.Calls))
 	}
-	if got := res.Calls[0].UncachedInput; got != 100 {
-		t.Fatalf("uncached_input_tokens = %d, want normalized input_tokens 100", got)
+	if got := res.Calls[0].UncachedInput; !hasIntValue(got, 100) {
+		t.Fatalf("uncached_input_tokens = %v, want normalized input_tokens 100", got)
 	}
 }
 
@@ -296,7 +425,7 @@ func TestRenderAPILogKeepsStructuredFailureColumnsSeparate(t *testing.T) {
 			ProviderInstance: "openai-primary",
 			Model:            "gpt-5.2-codex",
 			Outcome:          apilog.AttemptProviderTimeout,
-			StatusCode:       504,
+			StatusCode:       intp(504),
 			ErrorClass:       "provider_timeout",
 			SettlementState:  SettlementUnsettled,
 		}},
@@ -334,8 +463,8 @@ func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T)
 		t.Fatalf("calls = %d, want 1", len(result.Calls))
 	}
 	row := result.Calls[0]
-	if row.StatusCode != 429 || row.ErrorClass != "rate_limit" || row.Outcome != apilog.AttemptProviderReject {
-		t.Fatalf("structured failure = status %d class %q outcome %q", row.StatusCode, row.ErrorClass, row.Outcome)
+	if !hasIntValue(row.StatusCode, 429) || row.ErrorClass != "rate_limit" || row.Outcome != apilog.AttemptProviderReject {
+		t.Fatalf("structured failure = status %v class %q outcome %q", row.StatusCode, row.ErrorClass, row.Outcome)
 	}
 	jsonResult, err := json.Marshal(result)
 	if err != nil {

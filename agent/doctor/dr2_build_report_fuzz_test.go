@@ -543,8 +543,8 @@ func FuzzDr2APILog(f *testing.F) {
 		if res.SessionID != "s1" {
 			t.Fatalf("result session id %q != s1", res.SessionID)
 		}
-		if want := res.Totals.InputTokens + res.Totals.OutputTokens; res.Totals.TotalTokens != want {
-			t.Fatalf("TotalTokens=%d != in+out=%d", res.Totals.TotalTokens, want)
+		if !optionalTokenTotalMatches(res.Totals.InputTokens, res.Totals.OutputTokens, res.Totals.TotalTokens) {
+			t.Fatalf("TotalTokens=%v does not match input=%v plus output=%v", res.Totals.TotalTokens, res.Totals.InputTokens, res.Totals.OutputTokens)
 		}
 		if res.Totals.Calls == 0 && res.Totals.AvgLatencyMs != 0 {
 			t.Fatalf("no calls but avg latency=%d", res.Totals.AvgLatencyMs)
@@ -561,8 +561,9 @@ func FuzzDr2APILog(f *testing.F) {
 			if !rowMatchesFilter(row, opts, threshold) {
 				t.Fatalf("displayed row fails the active filter: %+v opts=%+v", row, opts)
 			}
-			if row.UncachedInput != row.InputTokens {
-				t.Fatalf("row uncached=%d != normalized input=%d", row.UncachedInput, row.InputTokens)
+			if (row.UncachedInput == nil) != (row.InputTokens == nil) ||
+				row.UncachedInput != nil && *row.UncachedInput != *row.InputTokens {
+				t.Fatalf("row uncached=%v != normalized input=%v", row.UncachedInput, row.InputTokens)
 			}
 		}
 	})
