@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -136,8 +137,8 @@ func apiLogPathForTranscript(path string) string {
 	return strings.TrimSuffix(path, ".transcript.jsonl") + ".api.jsonl"
 }
 
-func readAPILogSummary(path, ref, rangeArg string) (any, error) {
-	retained, totalRecords, partialTail, err := decodeAPILogSummaries(path, rangeArg)
+func readAPILogSummary(ctx context.Context, path, ref, rangeArg string) (any, error) {
+	retained, totalRecords, partialTail, err := decodeAPILogSummaries(ctx, path, rangeArg)
 	if err != nil {
 		return nil, err
 	}
@@ -187,8 +188,8 @@ func readAPILogSummary(path, ref, rangeArg string) (any, error) {
 	}
 }
 
-func readAPILogAttempt(path, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {
-	attempt, summary, partialTail, settlement, err := findAPILogAttempt(path, attemptID)
+func readAPILogAttempt(ctx context.Context, path, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {
+	attempt, summary, partialTail, settlement, err := findAPILogAttempt(ctx, path, attemptID)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +249,7 @@ func readAPILogAttempt(path, ref, attemptID, body string, offsetBytes, maxBytes 
 	if maxBytes == 0 {
 		maxBytes = defaultExpansionBytes
 	}
-	if err := fitAPILogBodyPage(&envelope, encodedBody, decodedBody, body, attemptID, offsetBytes, maxBytes); err != nil {
+	if err := fitAPILogBodyPage(&envelope, headerBytes, encodedBody, decodedBody, body, attemptID, offsetBytes, maxBytes); err != nil {
 		return nil, err
 	}
 	return envelope, nil
@@ -301,9 +302,21 @@ func boundAPILogRequestHeaders(envelope *apiLogAttemptEnvelope, headerBytes []by
 	return validateAPILogAttemptEnvelopeSize(*envelope)
 }
 
-func fitAPILogBodyPage(envelope *apiLogAttemptEnvelope, encodedBody apilog.EncodedBody, decodedBody []byte, body, attemptID string, offsetBytes, maxBytes int) error {
+func fitAPILogBodyPage(envelope *apiLogAttemptEnvelope, headerBytes []byte, encodedBody apilog.EncodedBody, decodedBody []byte, body, attemptID string, offsetBytes, maxBytes int) error {
 	end := min(offsetBytes+maxBytes, len(decodedBody))
 	for {
+		if end == offsetBytes && end < len(decodedBody) {
+			if envelope.Attempt.RequestHeaders != nil {
+				envelope.Body = nil
+				envelope.Continuation = nil
+				if err := boundAPILogRequestHeaders(envelope, headerBytes, true); err != nil {
+					return err
+				}
+				end = min(offsetBytes+maxBytes, len(decodedBody))
+				continue
+			}
+			return fmt.Errorf("API attempt metadata leaves no room for body paging within %d-byte output limit", maxAPILogOutputBytes)
+		}
 		chunk := decodedBody[offsetBytes:end]
 		expansion := &apiLogBodyExpansion{
 			Body:                     body,
@@ -364,19 +377,37 @@ func (l *apiLogAttemptSettlementLookup) consider(settlement apilog.APIAttemptGro
 	l.settlement = &settlementCopy
 }
 
-func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
+type apiLogContextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r apiLogContextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func findAPILogAttempt(ctx context.Context, path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
+	if err := ctx.Err(); err != nil {
+		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, err
+	}
 	f, err := openAPILogFile(path)
 	if err != nil {
 		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("open API log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	decoder := apilog.NewDecoder(f, maxAPILogLineBytes)
+	decoder := apilog.NewDecoder(apiLogContextReader{ctx: ctx, reader: f}, maxAPILogLineBytes)
 	var found *apilog.APIAttemptRecord
 	var summary apiLogRecordSummary
 	var settlementLookup apiLogAttemptSettlementLookup
 	partialTail := false
 	for recordNumber := 0; ; recordNumber++ {
+		if err := ctx.Err(); err != nil {
+			return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, err
+		}
 		record, decodeErr := decoder.Next()
 		switch {
 		case errors.Is(decodeErr, io.EOF):
@@ -492,16 +523,22 @@ func (r *apiLogSummaryRetention) result() []apiLogRecordSummary {
 	return result
 }
 
-func decodeAPILogSummaries(path, rangeArg string) ([]apiLogRecordSummary, int, bool, error) {
+func decodeAPILogSummaries(ctx context.Context, path, rangeArg string) ([]apiLogRecordSummary, int, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, 0, false, err
+	}
 	f, err := openAPILogFile(path)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("open API log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
-	decoder := apilog.NewDecoder(f, maxAPILogLineBytes)
+	decoder := apilog.NewDecoder(apiLogContextReader{ctx: ctx, reader: f}, maxAPILogLineBytes)
 	retention := newAPILogSummaryRetention(rangeArg)
 	for recordNumber := 0; ; recordNumber++ {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, false, err
+		}
 		record, err := decoder.Next()
 		switch {
 		case errors.Is(err, io.EOF):

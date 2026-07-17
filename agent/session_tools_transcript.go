@@ -224,8 +224,7 @@ func readSessionTranscriptTool(deps *toolDeps) tool.RegisteredTool {
 	return tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefReadSessionTranscript(), ReadOnly: true},
 		Exec: func(ctx context.Context, _ execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
-			return execReadSessionTranscript(deps, args)
+			return execReadSessionTranscriptWithContext(ctx, deps, args)
 		},
 	}
 }
@@ -248,6 +247,10 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 // execReadSessionTranscript validates the source-specific arguments before it
 // resolves or opens either transcript artifact.
 func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error) {
+	return execReadSessionTranscriptWithContext(context.Background(), deps, args)
+}
+
+func execReadSessionTranscriptWithContext(ctx context.Context, deps *toolDeps, args map[string]any) (any, error) {
 	parsed, err := parseReadSessionTranscriptArgs(args)
 	if err != nil {
 		return nil, err
@@ -258,9 +261,9 @@ func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error)
 			return nil, err
 		}
 		if parsed.AttemptID != "" {
-			return readAPILogAttempt(apiLogPathForTranscript(path), ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
+			return readAPILogAttempt(ctx, apiLogPathForTranscript(path), ref, parsed.AttemptID, parsed.Body, parsed.OffsetBytes, parsed.MaxBytes)
 		}
-		return readAPILogSummary(apiLogPathForTranscript(path), ref, parsed.Range)
+		return readAPILogSummary(ctx, apiLogPathForTranscript(path), ref, parsed.Range)
 	}
 
 	path, ref, err := resolveTranscript(parsed.TranscriptRef, deps.stateDir, deps.sessionID)

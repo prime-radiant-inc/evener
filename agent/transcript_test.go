@@ -2309,6 +2309,75 @@ func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
 	}
 }
 
+type cancelingAPILogReadCloser struct {
+	io.ReadCloser
+	cancel    context.CancelFunc
+	cancelOne sync.Once
+	bytesRead int
+}
+
+func (r *cancelingAPILogReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	r.bytesRead += n
+	if n > 0 {
+		r.cancelOne.Do(r.cancel)
+	}
+	return n, err
+}
+
+func TestReadSessionTranscriptAPILogScansHonorCancellation(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	records := make([]apilog.APILogRecord, 0, 200)
+	for i := 0; i < cap(records); i++ {
+		records = append(records, testAPIAttemptRecord(fmt.Sprintf("ag_cancel_%03d", i), 1, []byte("request"), nil))
+	}
+	firstAttemptID := records[0].(apilog.APIAttemptRecord).AttemptID
+	path := writeTestAPILog(t, dir, sessionID, records...)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat API log: %v", err)
+	}
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+	originalOpen := openAPILogFile
+	t.Cleanup(func() { openAPILogFile = originalOpen })
+
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "summary", args: map[string]any{"source": apiLogSource, "range": "0-0"}},
+		{name: "attempt", args: map[string]any{"source": apiLogSource, "attempt_id": firstAttemptID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var reader *cancelingAPILogReadCloser
+			openAPILogFile = func(path string) (io.ReadCloser, error) {
+				f, err := os.Open(path)
+				if err != nil {
+					return nil, err
+				}
+				reader = &cancelingAPILogReadCloser{ReadCloser: f, cancel: cancel}
+				return reader, nil
+			}
+
+			_, err := readSessionTranscriptTool(deps).Exec(ctx, nil, tc.args)
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("API-log %s error = %v, want context.Canceled", tc.name, err)
+			}
+			bytesRead := 0
+			if reader != nil {
+				bytesRead = reader.bytesRead
+			}
+			if bytesRead <= 0 || int64(bytesRead) >= info.Size() {
+				t.Fatalf("API-log %s read %d of %d bytes before cancellation", tc.name, bytesRead, info.Size())
+			}
+		})
+	}
+}
+
 func TestReadSessionTranscriptDefaultSourcesNeverOpenAPILog(t *testing.T) {
 	dir := newBucket(t)
 	const sessionID = "02wMz5Txv47YP64RR3B9YJ"
@@ -2466,7 +2535,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 	}
 	path := writeTestAPILog(t, dir, sessionID, records...)
 
-	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(path, "last:100")
+	summaries, totalRecords, partialTail, err := decodeAPILogSummaries(context.Background(), path, "last:100")
 	if err != nil {
 		t.Fatalf("decode API-log summaries: %v", err)
 	}
@@ -2491,7 +2560,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 		{rangeArg: "500-600", wantCount: 1, wantFirst: 249, last: 249},
 	} {
 		t.Run(tc.rangeArg, func(t *testing.T) {
-			value, err := readAPILogSummary(path, "local:test", tc.rangeArg)
+			value, err := readAPILogSummary(context.Background(), path, "local:test", tc.rangeArg)
 			if err != nil {
 				t.Fatalf("read API-log range %q: %v", tc.rangeArg, err)
 			}
@@ -2791,6 +2860,37 @@ func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *tes
 		if len(encoded) > maxAPILogOutputBytes {
 			t.Fatalf("request header expansion page = %d bytes, exceeds %d", len(encoded), maxAPILogOutputBytes)
 		}
+	}
+}
+
+func TestReadAPILogAttemptBodyPageMakesProgressWhenInlineHeadersConsumePage(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	body := []byte(strings.Repeat("body", 512))
+	attempt := testAPIAttemptRecord("ag_body_page_progress", 1, body, nil)
+	attempt.Response = nil
+	attempt.Outcome = apilog.AttemptTransportFail
+	attempt.Request.Headers = apilog.EncodedHeader{
+		"X-Near-Limit": {strings.Repeat("h", 64_290)},
+	}
+	path := writeTestAPILog(t, dir, sessionID, attempt)
+
+	value, err := readAPILogAttempt(context.Background(), path, "local:test", attempt.AttemptID, "request", 0, 1024)
+	if err != nil {
+		t.Fatalf("read API-log request body page: %v", err)
+	}
+	envelope := value.(apiLogAttemptEnvelope)
+	if envelope.Attempt.RequestHeaders != nil || envelope.Attempt.RequestHeadersInfo == nil {
+		t.Fatalf("request headers = %#v, evidence = %#v; want paged headers", envelope.Attempt.RequestHeaders, envelope.Attempt.RequestHeadersInfo)
+	}
+	if envelope.Body == nil || envelope.Body.BytesReturned <= 0 {
+		t.Fatalf("body page = %#v, want positive bytes_returned", envelope.Body)
+	}
+	if envelope.Continuation == nil || envelope.Continuation.OffsetBytes <= 0 {
+		t.Fatalf("continuation = %#v, want offset_bytes after 0", envelope.Continuation)
+	}
+	if err := validateAPILogAttemptEnvelopeSize(envelope); err != nil {
+		t.Fatalf("body page size: %v", err)
 	}
 }
 
