@@ -1,5 +1,9 @@
 # Transcript/API Log Transport Corrections Implementation Plan
 
+**Status:** Superseded by
+`docs/superpowers/specs/2026-07-17-project-2-yagni-landing-design.md`. This plan
+is historical review evidence and must not be executed or resliced.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Each task requires a fresh implementer and a fresh independent reviewer.
 
 **Goal:** Correct the remaining Project 2 transport, provider, credential-validation, and endpoint-provenance defects without widening transcript/API-log ownership or changing retry/fallback policy.
