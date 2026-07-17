@@ -197,6 +197,64 @@ func TestAPILoggerRejectsInvalidCanonicalRecordBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestAPILoggerRejectsOversizedCanonicalRecordBeforeStorage(t *testing.T) {
+	stateDir := t.TempDir()
+	logger, err := NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = logger.Close() })
+
+	oldOpen := apiLogOpenFile
+	oldWrite := apiLogFileWrite
+	oldSync := apiLogFileSync
+	t.Cleanup(func() {
+		apiLogOpenFile = oldOpen
+		apiLogFileWrite = oldWrite
+		apiLogFileSync = oldSync
+	})
+	opens := 0
+	writes := 0
+	syncs := 0
+	apiLogOpenFile = func(string) (*os.File, error) {
+		opens++
+		return nil, errors.New("unexpected open for oversized record")
+	}
+	apiLogFileWrite = func(*os.File, []byte) (int, error) {
+		writes++
+		return 0, errors.New("unexpected write for oversized record")
+	}
+	apiLogFileSync = func(*os.File) error {
+		syncs++
+		return errors.New("unexpected sync for oversized record")
+	}
+
+	record := standaloneCanonicalAttempt("ag_oversized_record", 1)
+	record.ErrorMessage = strings.Repeat("x", canonicalAPILogMaxLineBytes)
+	ctx := WithAPILogContext(context.Background(), "sess-oversized-record")
+	err = logger.AppendAttempt(ctx, record)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("AppendAttempt error = %v, want canonical record size error", err)
+	}
+	if opens != 0 || writes != 0 || syncs != 0 {
+		t.Fatalf("oversized record reached storage: opens=%d writes=%d syncs=%d", opens, writes, syncs)
+	}
+	path := filepath.Join(stateDir, "sessions", "sess-oversized-record.api.jsonl")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized record opened a session leaf: %v", err)
+	}
+
+	apiLogOpenFile = oldOpen
+	apiLogFileWrite = oldWrite
+	apiLogFileSync = oldSync
+	if err := logger.AppendAttempt(ctx, standaloneCanonicalAttempt("ag_after_oversized_record", 1)); err != nil {
+		t.Fatalf("valid append after oversized record: %v", err)
+	}
+	if got := canonicalRecordCount(t, path); got != 1 {
+		t.Fatalf("record count after oversized rejection = %d, want 1", got)
+	}
+}
+
 func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "api.jsonl")
 	logger, err := NewAPILogger(path)

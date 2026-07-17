@@ -358,6 +358,9 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.API
 	if err != nil {
 		return fmt.Errorf("marshal API-log record: %w", err)
 	}
+	if len(data) > canonicalAPILogMaxLineBytes {
+		return fmt.Errorf("canonical API-log record exceeds %d bytes", canonicalAPILogMaxLineBytes)
+	}
 	l.mu.Lock()
 	if l.quarantineErr != nil {
 		err := l.quarantineErr
