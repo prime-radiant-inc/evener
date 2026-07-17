@@ -696,6 +696,7 @@ decorator evidence inexact without adding compatibility aliases."
 
 **Files:**
 
+- Modify: `llm/providers/internal/transport/http_attempts.go`
 - Modify: `llm/providers/internal/transport/response_compression.go`
 - Test: `llm/providers/internal/transport/wire_fidelity_test.go`
 
@@ -760,7 +761,8 @@ The reviewer must trace every blocking call and confirm no state mutex is held o
 
 ```bash
 git status --short
-git add llm/providers/internal/transport/response_compression.go \
+git add llm/providers/internal/transport/http_attempts.go \
+  llm/providers/internal/transport/response_compression.go \
   llm/providers/internal/transport/wire_fidelity_test.go
 git commit -m "fix: synchronize gzip response close state
 
