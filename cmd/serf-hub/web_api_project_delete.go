@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/llm"
 )
 
 type projectDeleteSkip struct {
@@ -123,10 +125,27 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	deleted := []string{}
 	skipped := []projectDeleteSkip{}
 	for _, e := range entries {
-		// TOCTOU re-check via the probe-resolved Roster.Find (round-2 A9): a
-		// genuine resume between entry and removal aborts this session.
+		owner, err := llm.NewSessionAPILogger(e.StateDir)
+		if err == nil {
+			err = owner.ReserveSession(e.ID)
+		}
+		if err != nil {
+			if owner != nil {
+				_ = owner.Close()
+			}
+			if errors.Is(err, llm.ErrAPILogTargetLocked) {
+				skipped = appendProjectDeleteLiveSkip(skipped, e.ID)
+			} else {
+				skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: err.Error()})
+			}
+			continue
+		}
+
+		// Hold the same target-file ownership lock used by resume across the
+		// final liveness decision and removal.
 		if s.cfg.Roster != nil {
 			if projectSessionLive(s.cfg.Roster, e.ID) {
+				_ = owner.Close()
 				skipped = appendProjectDeleteLiveSkip(skipped, e.ID)
 				continue
 			}
@@ -134,6 +153,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		sess := filepath.Join(e.StateDir, "sessions")
 		removeErr := removeFlatProjectSessionArtifacts(sess, e.ID)
 		if removeErr != nil {
+			_ = owner.Close()
 			skipped = append(skipped, projectDeleteSkip{ID: e.ID, Reason: removeErr.Error()})
 			continue
 		}
@@ -144,6 +164,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		if s.cfg.Favorite != nil {
 			_ = s.cfg.Favorite.Delete("session", e.ID)
 		}
+		_ = owner.Close()
 		deleted = append(deleted, e.ID)
 	}
 

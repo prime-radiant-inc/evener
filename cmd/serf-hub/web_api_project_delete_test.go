@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/llm"
 )
 
 const webTestSessionID = "02wMz5Txv1C3Hut0M8GCeB"
@@ -67,7 +68,11 @@ func writeSession(t *testing.T, stateDir, id, wd string) {
 	}
 	sess := filepath.Join(stateDir, "sessions")
 	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
-		if err := os.WriteFile(filepath.Join(sess, id+suffix), []byte("x\n"), 0o644); err != nil {
+		contents := []byte("x\n")
+		if suffix == ".api.jsonl" {
+			contents = nil
+		}
+		if err := os.WriteFile(filepath.Join(sess, id+suffix), contents, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -370,6 +375,71 @@ func TestProjectDeleteSkipsSessionThatBecomesLive(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); err != nil {
 		t.Fatalf("live session artifact was removed: %v", err)
+	}
+}
+
+func TestProjectDeleteDoesNotUnlinkSessionReservedAfterLivenessProbe(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+
+	resumeLogger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() { _ = resumeLogger.Close() })
+	var reserveErr error
+	checks := 0
+	oldProjectSessionLive := projectSessionLive
+	projectSessionLive = func(*hubcore.Roster, string) bool {
+		checks++
+		if checks == 1 {
+			reserveErr = resumeLogger.ReserveSession(webTestSessionID)
+		}
+		return false
+	}
+	t.Cleanup(func() { projectSessionLive = oldProjectSessionLive })
+
+	body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body))
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if reserveErr != nil {
+		t.Fatalf("resume reservation: %v", reserveErr)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Deleted []string            `json:"deleted"`
+		Skipped []projectDeleteSkip `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
+		t.Fatalf("reserved session must only be skipped: %+v", resp)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".log.jsonl", ".api.jsonl", ".future-artifact"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); err != nil {
+			t.Fatalf("reserved session artifact %s was removed: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID)); err != nil {
+		t.Fatalf("reserved per-session directory was removed: %v", err)
 	}
 }
 
