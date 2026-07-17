@@ -426,6 +426,7 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 		toolCallCount := r.doctor_int(5)
 		inputTokens := r.doctor_int(100000)
 		outputTokens := r.doctor_int(1000)
+		totalTokens := inputTokens + outputTokens
 		resp := &apilog.APIAttemptResponse{
 			StatusCode:    &statusCode,
 			Body:          apilog.EncodeBody([]byte("{}")),
@@ -435,6 +436,7 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 			Usage: apilog.Usage{
 				InputTokens:  &inputTokens,
 				OutputTokens: &outputTokens,
+				TotalTokens:  &totalTokens,
 			},
 		}
 		if r.doctor_bool() {
