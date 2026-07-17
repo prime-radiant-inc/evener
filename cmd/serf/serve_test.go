@@ -543,14 +543,14 @@ func TestRunServeClearReleasesOldSessionAPILogRoute(t *testing.T) {
 		return client, cfg, true, func() error { return nil }, nil
 	}
 	var logger *llm.APILogger
-	deps.attachAPILogger = func(client *llm.Client, stateDir string, _ io.Writer, _ ...string) (func() error, error) {
+	deps.attachAPILogger = func(client *llm.Client, stateDir string, _ io.Writer) (func(string) error, func() error, error) {
 		var err error
 		logger, err = llm.NewSessionAPILogger(stateDir)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		client.Use(logger)
-		return logger.Close, nil
+		return logger.ReserveSession, logger.Close, nil
 	}
 
 	runDir := t.TempDir()
