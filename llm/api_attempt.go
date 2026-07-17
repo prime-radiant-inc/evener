@@ -292,19 +292,15 @@ func (g *APIAttemptGroup) SettleResult(ctx context.Context, err error) {
 		return
 	}
 	outcome := apilog.AttemptSuccess
+	useFinalAttemptOutcome := false
 	if err != nil {
 		if ctx != nil && ctx.Err() != nil {
 			outcome = apilog.AttemptCallerCancel
 		} else {
-			g.mu.Lock()
-			outcome = g.finalOutcome
-			g.mu.Unlock()
-			if outcome == "" {
-				outcome = apilog.AttemptTransportFail
-			}
+			useFinalAttemptOutcome = true
 		}
 	}
-	g.Settle(ctx, outcome)
+	g.settle(ctx, outcome, useFinalAttemptOutcome)
 }
 
 func apiAttemptGroupFromContext(ctx context.Context) *APIAttemptGroup {
@@ -397,6 +393,10 @@ func mergeAPILogCredentialMaterial(left, right APILogCredentialMaterial) APILogC
 }
 
 func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutcomeClass) {
+	g.settle(ctx, outcome, false)
+}
+
+func (g *APIAttemptGroup) settle(ctx context.Context, outcome apilog.AttemptOutcomeClass, useFinalAttemptOutcome bool) {
 	if g == nil {
 		return
 	}
@@ -413,6 +413,12 @@ func (g *APIAttemptGroup) Settle(ctx context.Context, outcome apilog.AttemptOutc
 	g.pendingAttempts.Wait()
 
 	g.mu.Lock()
+	if useFinalAttemptOutcome {
+		outcome = g.finalOutcome
+		if outcome == "" {
+			outcome = apilog.AttemptTransportFail
+		}
+	}
 	settlement := apilog.APIAttemptGroupSettlement{
 		Kind:               "attempt_group_settlement",
 		SchemaVersion:      1,

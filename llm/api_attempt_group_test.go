@@ -32,6 +32,21 @@ type recordingAPIAttemptSink struct {
 	attemptEnterOnce   sync.Once
 }
 
+type settlementEntryContext struct {
+	context.Context
+	entered chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (c *settlementEntryContext) Value(key any) any {
+	if _, ok := key.(apiAttemptSinkContextKey); ok {
+		c.once.Do(func() { close(c.entered) })
+		<-c.release
+	}
+	return c.Context.Value(key)
+}
+
 func (s *recordingAPIAttemptSink) AppendAttempt(ctx context.Context, rec apilog.APIAttemptRecord) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,6 +216,41 @@ func TestAPIAttemptGroupSettlementOutcomeMatchesFinalAttemptAfterOutOfOrderCompl
 	}
 	if settlement.Outcome != apilog.AttemptProviderReject {
 		t.Fatalf("settlement outcome = %q, want final attempt outcome %q", settlement.Outcome, apilog.AttemptProviderReject)
+	}
+}
+
+func TestAPIAttemptGroupSettlementWaitsForQueuedFinalOutcome(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_queued_final_outcome")
+	parent, cancel := context.WithCancel(context.Background())
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(parent, group), sink)
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	finalErr := errors.New("final attempt rejected")
+	attempt := BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt))
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	settleCtx := &settlementEntryContext{Context: ctx, entered: entered, release: release}
+	settled := make(chan struct{})
+	go func() {
+		group.SettleResult(settleCtx, finalErr)
+		close(settled)
+	}()
+	<-entered
+
+	// Cancellation after SettleResult was invoked must not replace the final
+	// provider outcome that becomes available while settlement is pending.
+	cancel()
+	attempt.Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptProviderReject, finalErr))
+	close(release)
+	<-settled
+
+	_, settlements, _ := sink.snapshot()
+	if len(settlements) != 1 {
+		t.Fatalf("settlements = %d, want 1", len(settlements))
+	}
+	if settlements[0].Outcome != apilog.AttemptProviderReject {
+		t.Fatalf("settlement outcome = %q, want queued final outcome %q", settlements[0].Outcome, apilog.AttemptProviderReject)
 	}
 }
 

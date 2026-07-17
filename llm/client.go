@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"primeradiant.com/serf/identifier"
-	apilog "primeradiant.com/serf/llm/apilog"
 )
 
 // ProviderAdapter is the interface a single LLM provider backend implements.
@@ -245,29 +243,8 @@ func (c *Client) bindAPIAttemptSinkBeforeDispatch(ctx context.Context) context.C
 // operations that do not pass through completion middleware, such as model
 // listing and exact input-token counting.
 type providerOperation struct {
-	group        *APIAttemptGroup
-	attemptCount atomic.Int64
-	ownsGroup    bool
-}
-
-// providerOperationSink observes whether the adapter actually reached HTTP
-// while forwarding persistence and failure observation to the attached sink.
-// This lets unsupported and local-only operations remain record-free.
-type providerOperationSink struct {
-	APIAttemptSink
-	attemptCount *atomic.Int64
-}
-
-func (s *providerOperationSink) AppendAttempt(ctx context.Context, record apilog.APIAttemptRecord) error {
-	s.attemptCount.Add(1)
-	return s.APIAttemptSink.AppendAttempt(ctx, record)
-}
-
-func (s *providerOperationSink) apiLogFailureObserver() func(APILogFailure) {
-	if source, ok := s.APIAttemptSink.(apiLogFailureObserverSource); ok {
-		return source.apiLogFailureObserver()
-	}
-	return nil
+	group     *APIAttemptGroup
+	ownsGroup bool
 }
 
 func (c *Client) beginProviderOperation(ctx context.Context) (context.Context, *providerOperation) {
@@ -292,7 +269,6 @@ func (c *Client) beginProviderOperation(ctx context.Context) (context.Context, *
 	if operation.group == nil {
 		operation.group = NewAPIAttemptGroup(identifier.MustNewAgentCallID())
 		operation.ownsGroup = true
-		sink = &providerOperationSink{APIAttemptSink: sink, attemptCount: &operation.attemptCount}
 	}
 	ctx = WithAPIAttemptGroup(ctx, operation.group)
 	ctx = WithAPIAttemptSink(ctx, sink)
@@ -300,7 +276,13 @@ func (c *Client) beginProviderOperation(ctx context.Context) (context.Context, *
 }
 
 func (o *providerOperation) settle(ctx context.Context, err error) {
-	if o == nil || !o.ownsGroup || o.attemptCount.Load() == 0 {
+	if o == nil || !o.ownsGroup {
+		return
+	}
+	o.group.mu.Lock()
+	hasBegunAttempt := o.group.finalAttemptCount != 0
+	o.group.mu.Unlock()
+	if !hasBegunAttempt {
 		return
 	}
 	o.group.SettleResult(ctx, err)
