@@ -421,6 +421,41 @@ func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
 	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
 }
 
+func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
+	data := []byte("known body")
+	body := newObservedBody(&terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)))
+	buf := make([]byte, len(data))
+	n, err := body.Read(buf)
+	if n != len(data) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Read = %d, %v; want %d, context canceled", n, err, len(data))
+	}
+	observation := body.snapshot()
+	if observation.exact {
+		t.Fatal("known-length body became exact from a read that returned cancellation")
+	}
+	if !bytes.Equal(observation.bytes, data) {
+		t.Fatalf("observed bytes = %q, want %q", observation.bytes, data)
+	}
+}
+
+func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
+	data := []byte("known body plus overrun")
+	knownLength := int64(len("known body"))
+	body := newObservedBody(&terminalReadCloser{data: data}, knownLength)
+	buf := make([]byte, len(data))
+	n, err := body.Read(buf)
+	if n != len(data) || err != nil {
+		t.Fatalf("Read = %d, %v; want %d, nil", n, err, len(data))
+	}
+	observation := body.snapshot()
+	if observation.exact {
+		t.Fatalf("body became exact after observing %d bytes for known length %d", len(observation.bytes), knownLength)
+	}
+	if !bytes.Equal(observation.bytes, data) {
+		t.Fatalf("observed bytes = %q, want %q", observation.bytes, data)
+	}
+}
+
 func TestAPIAttemptConcurrentReadAndCloseSnapshotsPromptlyWithoutExtraOperations(t *testing.T) {
 	body := &concurrentReadCloseBody{
 		data:        []byte("read returns after snapshot"),

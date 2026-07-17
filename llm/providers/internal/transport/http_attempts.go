@@ -129,6 +129,7 @@ type observedBody struct {
 	buf         bytes.Buffer
 	exact       bool
 	knownLength int64
+	sawEOF      bool
 }
 
 func newObservedBody(body io.ReadCloser, contentLength int64) *observedBody {
@@ -145,8 +146,13 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	if n > 0 {
 		_, _ = b.buf.Write(p[:n])
 	}
-	if err == io.EOF || (b.knownLength >= 0 && int64(b.buf.Len()) >= b.knownLength) {
-		b.exact = true
+	if err == io.EOF {
+		b.sawEOF = true
+	}
+	if b.knownLength >= 0 {
+		b.exact = int64(b.buf.Len()) == b.knownLength && (err == nil || b.sawEOF)
+	} else {
+		b.exact = b.sawEOF
 	}
 	b.mu.Unlock()
 	return n, err
