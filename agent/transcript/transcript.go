@@ -121,7 +121,7 @@ func DecodeEntry(line []byte) (Entry, error) {
 		Kind string `json:"kind"`
 	}
 	if err := json.Unmarshal(line, &boundary); err != nil {
-		return Entry{}, fmt.Errorf("%w: %v", ErrInvalidRecordBoundary, err)
+		return Entry{}, fmt.Errorf("%w: %w", ErrInvalidRecordBoundary, err)
 	}
 	if err := ValidateRecordKind(boundary.Kind); err != nil {
 		return Entry{}, err
