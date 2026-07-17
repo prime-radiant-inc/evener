@@ -124,23 +124,63 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 
 type standardGzipResponseBody struct {
 	body io.ReadCloser
-	once sync.Once
+	mu   sync.Mutex
 	zr   *gzip.Reader
 	err  error
 }
 
 func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
-	b.once.Do(func() {
-		b.zr, b.err = gzip.NewReader(b.body)
-	})
-	if b.err != nil {
-		return 0, b.err
+	zr, err := b.acquire()
+	if err != nil {
+		return 0, err
 	}
-	return b.zr.Read(p)
+	defer b.release(zr)
+	return zr.Read(p)
 }
 
 func (b *standardGzipResponseBody) Close() error {
+	b.mu.Lock()
+	if b.err == nil && b.zr != nil {
+		_ = b.zr.Close()
+		b.zr = nil
+	}
+	b.err = errReadClosedGzipResponse
+	b.mu.Unlock()
 	return b.body.Close()
+}
+
+var (
+	errReadClosedGzipResponse = errors.New("http: read on closed response body")
+	errConcurrentGzipRead     = errors.New("http: concurrent read on response body")
+)
+
+func (b *standardGzipResponseBody) acquire() (*gzip.Reader, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err != nil {
+		return nil, b.err
+	}
+	if b.zr == nil {
+		b.zr, b.err = gzip.NewReader(b.body)
+		if b.err != nil {
+			return nil, b.err
+		}
+	}
+	zr := b.zr
+	b.zr = nil
+	b.err = errConcurrentGzipRead
+	return zr, nil
+}
+
+func (b *standardGzipResponseBody) release(zr *gzip.Reader) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.err == errConcurrentGzipRead {
+		b.zr = zr
+		b.err = nil
+		return
+	}
+	_ = zr.Close()
 }
 
 func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {

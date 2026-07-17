@@ -281,6 +281,50 @@ func TestDoWithAPIAttemptsPreservesStandardTransportConnectionReuse(t *testing.T
 	}
 }
 
+func TestDoWithAPIAttemptsPreservesGzipReadAfterCloseSemantics(t *testing.T) {
+	providerBody := []byte(strings.Repeat("provider-response-", 256))
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(providerBody); err != nil {
+		t.Fatalf("gzip provider body: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	t.Cleanup(server.Close)
+
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_gzip_read_after_close")),
+		sink,
+	)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	first := make([]byte, 1)
+	if n, err := response.Body.Read(first); n != 1 || err != nil {
+		t.Fatalf("first decoded read = %d, %v; want one byte", n, err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close decoded response: %v", err)
+	}
+	if n, err := response.Body.Read(make([]byte, 1)); n != 0 || err == nil {
+		t.Fatalf("read after decoded response close = %d, %v; want zero bytes and an error", n, err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+}
+
 func onlyAttempt(t *testing.T, sink *responseAssociationSink) apilog.APIAttemptRecord {
 	t.Helper()
 	sink.mu.Lock()
