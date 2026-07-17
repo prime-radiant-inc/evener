@@ -2608,6 +2608,38 @@ func TestReadSessionTranscriptAttemptExpansionIncludesExactHeadersAndSettlement(
 	}
 }
 
+func TestAPILogAttemptSettlementLookupLongLogRetainsOnlyMatchingSettlement(t *testing.T) {
+	const targetGroupID = "ag_target_settlement"
+	lookup := apiLogAttemptSettlementLookup{}
+
+	for i := 0; i < 10_000; i++ {
+		lookup.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: fmt.Sprintf("ag_before_%05d", i)})
+	}
+	if lookup.settlement != nil {
+		t.Fatalf("lookup retained an unrelated settlement before the target attempt: %#v", lookup.settlement)
+	}
+
+	lookup.selectAttemptGroup(targetGroupID)
+	for i := 0; i < 10_000; i++ {
+		lookup.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: fmt.Sprintf("ag_after_%05d", i)})
+	}
+	if lookup.settlement != nil {
+		t.Fatalf("lookup retained an unrelated settlement after the target attempt: %#v", lookup.settlement)
+	}
+
+	want := apilog.APIAttemptGroupSettlement{
+		AttemptGroupID:    targetGroupID,
+		FinalAttemptID:    identifier.MustNewAPIAttemptID(),
+		FinalAttemptCount: 3,
+		Outcome:           apilog.AttemptSuccess,
+	}
+	lookup.consider(want)
+	lookup.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: "ag_later_unrelated"})
+	if lookup.settlement == nil || *lookup.settlement != want {
+		t.Fatalf("retained settlement = %#v, want matching settlement %#v", lookup.settlement, want)
+	}
+}
+
 func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *testing.T) {
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()

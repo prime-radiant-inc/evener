@@ -528,6 +528,13 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 		if !reflect.DeepEqual(bodyEnum, []string{"request", "response", "request_headers"}) {
 			t.Errorf("body enum = %v, want request|response|request_headers", bodyEnum)
 		}
+		bodyDescription, _ := body["description"].(string)
+		if !strings.Contains(bodyDescription, "Stored API request or response body") {
+			t.Errorf("body description = %q, want truthful stored-body wording", bodyDescription)
+		}
+		if strings.Contains(bodyDescription, "Exact API") {
+			t.Errorf("body description = %q, must not promise exact bodies", bodyDescription)
+		}
 	}
 	// format enum is exactly outline|markdown|jsonl.
 	formatEnum := rp["format"].(map[string]any)["enum"].([]string)

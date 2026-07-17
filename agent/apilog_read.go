@@ -345,6 +345,25 @@ func fitAPILogBodyPage(envelope *apiLogAttemptEnvelope, encodedBody apilog.Encod
 	}
 }
 
+type apiLogAttemptSettlementLookup struct {
+	attemptGroupID string
+	settlement     *apilog.APIAttemptGroupSettlement
+}
+
+func (l *apiLogAttemptSettlementLookup) selectAttemptGroup(attemptGroupID string) {
+	// A canonical settlement follows every attempt in its group, so a
+	// settlement decoded before the selected attempt cannot belong to it.
+	l.attemptGroupID = attemptGroupID
+}
+
+func (l *apiLogAttemptSettlementLookup) consider(settlement apilog.APIAttemptGroupSettlement) {
+	if l.attemptGroupID == "" || settlement.AttemptGroupID != l.attemptGroupID {
+		return
+	}
+	copy := settlement
+	l.settlement = &copy
+}
+
 func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
 	f, err := openAPILogFile(path)
 	if err != nil {
@@ -355,7 +374,7 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 	decoder := apilog.NewDecoder(f, maxAPILogLineBytes)
 	var found *apilog.APIAttemptRecord
 	var summary apiLogRecordSummary
-	settlements := make(map[string]apilog.APIAttemptGroupSettlement)
+	var settlementLookup apiLogAttemptSettlementLookup
 	partialTail := false
 	for recordNumber := 0; ; recordNumber++ {
 		record, decodeErr := decoder.Next()
@@ -364,21 +383,13 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 			if found == nil {
 				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("API attempt %q not found", attemptID)
 			}
-			settlement, ok := settlements[found.AttemptGroupID]
-			if !ok {
-				return *found, summary, false, nil, nil
-			}
-			return *found, summary, false, &settlement, nil
+			return *found, summary, false, settlementLookup.settlement, nil
 		case errors.Is(decodeErr, apilog.ErrPartialTail):
 			partialTail = true
 			if found == nil {
 				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, true, nil, fmt.Errorf("API attempt %q not found before partial API-log tail", attemptID)
 			}
-			settlement, ok := settlements[found.AttemptGroupID]
-			if !ok {
-				return *found, summary, partialTail, nil, nil
-			}
-			return *found, summary, partialTail, &settlement, nil
+			return *found, summary, partialTail, settlementLookup.settlement, nil
 		case decodeErr != nil:
 			return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("read API log: %w", decodeErr)
 		}
@@ -387,13 +398,14 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 			if typed.AttemptID == attemptID {
 				copy := typed
 				found = &copy
+				settlementLookup.selectAttemptGroup(typed.AttemptGroupID)
 				summary, err = summarizeAPILogRecord(recordNumber, typed)
 				if err != nil {
 					return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, err
 				}
 			}
 		case apilog.APIAttemptGroupSettlement:
-			settlements[typed.AttemptGroupID] = typed
+			settlementLookup.consider(typed)
 		}
 	}
 }
