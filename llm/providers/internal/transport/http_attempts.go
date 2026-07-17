@@ -175,7 +175,7 @@ func (b *standardGzipResponseBody) acquire() (*gzip.Reader, error) {
 func (b *standardGzipResponseBody) release(zr *gzip.Reader) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.err == errConcurrentGzipRead {
+	if errors.Is(b.err, errConcurrentGzipRead) {
 		b.zr = zr
 		b.err = nil
 		return
