@@ -164,7 +164,6 @@ TARGETS=(
 	"native:agent:./execenv:FuzzGitPathResolutionProgram::"
 	"native:agent:./execenv:FuzzSandboxLifecycleProgram::"
 	"native:agent:./execenv:FuzzLocalEdgeContractProgram::"
-	"native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local.go;securepath.go"
 	"native:agent:./sandbox:FuzzReRoot::"
 	"native:agent:./sandbox:FuzzResolve::"
 	"native:agent:./sandbox:FuzzSeatbeltPolicyNoInterpolation::"
@@ -747,6 +746,7 @@ TARGETS=(
 # a live target as stale.
 if [ "$(go env GOOS)" = "linux" ]; then
 	TARGETS+=("native:agent:./execenv:FuzzSecurePathEdgeContractProgram::")
+	TARGETS+=("native:agent:./execenv:FuzzRuntimeBoundaryEdges::command_runtime.go;local.go;securepath.go")
 fi
 
 duration="60s"
