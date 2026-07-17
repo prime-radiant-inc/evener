@@ -128,7 +128,7 @@ Views one session at one of three verbosities, selected by `format`.
 | `range` | transcript/API summary | turn or API-record window; defaults to last 40 turns or last 20 API records |
 | `expand_turn` | transcript markdown | any semantic `Turn N`; returns byte-paged exact `transcript_v2_jsonl` for that turn or its assistant/result span |
 | `attempt_id` | API log | one explicit attempt; implies `source=api_log` |
-| `body` | API attempt | `request` or `response`; requires `attempt_id` |
+| `body` | API attempt | `request`, `response`, or deterministic encoded `request_headers` JSON; requires `attempt_id` |
 | `offset_bytes` | expansion | continuation byte offset |
 | `max_bytes` | expansion | defaults to 16 KiB; hard maximum 64 KiB |
 
@@ -234,10 +234,15 @@ unsettled.
 
 The default API-log read returns at most the last 20 records (100 maximum and 64 KiB
 serialized output). Summaries include attempt/group identity, endpoint, outcome, timing,
-usage, and body encoding/byte counts, but not body data. Every result states
-`credential_values_excluded:true`. Exact request or response bytes require `attempt_id`
-plus `body`; expansions are byte-paged with a continuation handle. Transcript reads never
-open this file.
+usage, and each body's encoding, byte count, `exact`, and
+`credential_values_excluded` truth, but not body data or headers. Every result states
+`credential_values_excluded:true`. An explicit `attempt_id` includes the sanitized
+request-header map with each ordered value represented as exact UTF-8 or base64 when it
+fits the bounded envelope. Otherwise it returns byte-count evidence and a
+`body=request_headers` continuation; that selector pages deterministic encoded JSON
+without changing value order. Explicit request or response expansion likewise preserves
+the selected stored body's `exact` and `credential_values_excluded` truth and pages its
+available bytes with a continuation handle. Transcript reads never open this file.
 
 ## Truncation and size budgets (markdown)
 

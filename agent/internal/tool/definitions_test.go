@@ -525,8 +525,8 @@ func TestTranscriptToolDefinitions(t *testing.T) {
 	}
 	if body, ok := rp["body"].(map[string]any); ok {
 		bodyEnum, _ := body["enum"].([]string)
-		if !reflect.DeepEqual(bodyEnum, []string{"request", "response"}) {
-			t.Errorf("body enum = %v, want request|response", bodyEnum)
+		if !reflect.DeepEqual(bodyEnum, []string{"request", "response", "request_headers"}) {
+			t.Errorf("body enum = %v, want request|response|request_headers", bodyEnum)
 		}
 	}
 	// format enum is exactly outline|markdown|jsonl.

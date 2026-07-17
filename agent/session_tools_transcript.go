@@ -244,8 +244,8 @@ func parseReadSessionTranscriptArgs(args map[string]any) (readSessionTranscriptA
 		if parsed.AttemptID == "" {
 			return readSessionTranscriptArgs{}, errors.New("invalid_request: body requires attempt_id")
 		}
-		if parsed.Body != "request" && parsed.Body != "response" {
-			return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: body %q is not supported: use request or response", parsed.Body)
+		if parsed.Body != "request" && parsed.Body != "response" && parsed.Body != "request_headers" {
+			return readSessionTranscriptArgs{}, fmt.Errorf("invalid_request: body %q is not supported: use request, response, or request_headers", parsed.Body)
 		}
 	}
 	expanding := parsed.ExpandTurn != nil || parsed.Body != ""

@@ -2138,6 +2138,104 @@ func TestReadSessionTranscriptAPILogSourceSummarizesWithoutBodyData(t *testing.T
 	}
 }
 
+func TestReadSessionTranscriptAPILogProjectsStoredBodyTruth(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+
+	tests := []struct {
+		name                    string
+		request                 apilog.EncodedBody
+		response                apilog.EncodedBody
+		wantExact               bool
+		wantCredentialsExcluded bool
+	}{
+		{
+			name:      "exact",
+			request:   apilog.EncodeBody([]byte("exact request")),
+			response:  apilog.EncodeBody([]byte("exact response")),
+			wantExact: true,
+		},
+		{
+			name:      "transport inexact",
+			request:   apilog.EncodeBody([]byte("partial request")),
+			response:  apilog.EncodeBody([]byte("partial response")),
+			wantExact: false,
+		},
+		{
+			name: "credential omitted",
+			request: apilog.EncodedBody{
+				Exact:                    false,
+				CredentialValuesExcluded: true,
+			},
+			response: apilog.EncodedBody{
+				Exact:                    false,
+				CredentialValuesExcluded: true,
+			},
+			wantExact:               false,
+			wantCredentialsExcluded: true,
+		},
+	}
+	records := make([]apilog.APILogRecord, 0, len(tests))
+	for i := range tests {
+		if tests[i].name == "transport inexact" {
+			tests[i].request.Exact = false
+			tests[i].response.Exact = false
+		}
+		attempt := testAPIAttemptRecord("ag_body_truth_"+strings.ReplaceAll(tests[i].name, " ", "_"), 1, nil, nil)
+		attempt.Request.Body = tests[i].request
+		attempt.Response.Body = tests[i].response
+		records = append(records, attempt)
+	}
+	writeTestAPILog(t, dir, sessionID, records...)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	summaryResult := executeReadSessionTranscript(t, deps, map[string]any{"source": apiLogSource})
+	if summaryResult.IsError {
+		t.Fatalf("API-log summary: %s", summaryResult.Output)
+	}
+	var summaryEnvelope map[string]any
+	if err := json.Unmarshal([]byte(summaryResult.Output), &summaryEnvelope); err != nil {
+		t.Fatalf("decode API-log summary: %v", err)
+	}
+	summaries := summaryEnvelope["records"].([]any)
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := records[i].(apilog.APIAttemptRecord)
+			summary := summaries[i].(map[string]any)
+			for _, bodyName := range []string{"request", "response"} {
+				bodySummary := summary[bodyName+"_body"].(map[string]any)
+				if got := bodySummary["exact"]; got != tt.wantExact {
+					t.Errorf("%s summary exact = %#v, want %t", bodyName, got, tt.wantExact)
+				}
+				if got := bodySummary["credential_values_excluded"]; got != tt.wantCredentialsExcluded {
+					t.Errorf("%s summary credential_values_excluded = %#v, want %t", bodyName, got, tt.wantCredentialsExcluded)
+				}
+
+				expansionResult := executeReadSessionTranscript(t, deps, map[string]any{
+					"attempt_id": attempt.AttemptID,
+					"body":       bodyName,
+				})
+				if expansionResult.IsError {
+					t.Fatalf("%s expansion: %s", bodyName, expansionResult.Output)
+				}
+				var expansionEnvelope map[string]any
+				if err := json.Unmarshal([]byte(expansionResult.Output), &expansionEnvelope); err != nil {
+					t.Fatalf("decode %s expansion: %v", bodyName, err)
+				}
+				expansion := expansionEnvelope["body"].(map[string]any)
+				if got := expansion["exact"]; got != tt.wantExact {
+					t.Errorf("%s expansion exact = %#v, want %t", bodyName, got, tt.wantExact)
+				}
+				if got := expansion["credential_values_excluded"]; got != tt.wantCredentialsExcluded {
+					t.Errorf("%s expansion credential_values_excluded = %#v, want %t", bodyName, got, tt.wantCredentialsExcluded)
+				}
+			}
+		})
+	}
+}
+
 func TestReadSessionTranscriptAPILogSourceErrorsAreClear(t *testing.T) {
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
@@ -2345,12 +2443,19 @@ func readExpandedAPIBody(t *testing.T, deps *toolDeps, attemptID, body string, m
 	var pages []map[string]any
 	offset := 0
 	for {
-		env := decodeReadEnvelope(t, marshalRead(t, deps, map[string]any{
+		result := executeReadSessionTranscript(t, deps, map[string]any{
 			"attempt_id":   attemptID,
 			"body":         body,
 			"offset_bytes": float64(offset),
 			"max_bytes":    float64(maxBytes),
-		}))
+		})
+		if result.IsError {
+			t.Fatalf("expand API %s: %s", body, result.Output)
+		}
+		var env map[string]any
+		if err := json.Unmarshal([]byte(result.Output), &env); err != nil {
+			t.Fatalf("decode API %s expansion: %v", body, err)
+		}
 		pages = append(pages, env)
 		if env["source"] != apiLogSource || env["credential_values_excluded"] != true {
 			t.Fatalf("API body envelope identity = %#v", env)
@@ -2414,6 +2519,175 @@ func TestReadSessionTranscriptAttemptExpansionPagesExactBodies(t *testing.T) {
 	}
 	if len(responsePages) < 2 || responsePages[0]["body"].(map[string]any)["encoding"] != "base64" {
 		t.Fatalf("response pages = %#v", responsePages)
+	}
+}
+
+func TestReadSessionTranscriptAttemptExpansionIncludesExactHeadersAndSettlement(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	binaryHeaderValue := string([]byte{'a', 0xff, 0x00, 'b'})
+	attempt := testAPIAttemptRecord("ag_attempt_metadata", 2, []byte(`{"request":true}`), []byte(`{"response":true}`))
+	attempt.Request.Headers = apilog.EncodedHeader{
+		"X-Trace-Order": {"first", binaryHeaderValue, "third"},
+		"X-Visible":     {"visible-value"},
+	}
+	settlement := apilog.APIAttemptGroupSettlement{
+		Kind:               "attempt_group_settlement",
+		SchemaVersion:      1,
+		AttemptGroupID:     attempt.AttemptGroupID,
+		FinalAttemptID:     attempt.AttemptID,
+		FinalAttemptCount:  2,
+		Outcome:            apilog.AttemptProviderReject,
+		ForensicIncomplete: true,
+		SettledAt:          attempt.Timestamp.Add(time.Second),
+	}
+	writeTestAPILog(t, dir, sessionID, attempt, settlement)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	summaryResult := executeReadSessionTranscript(t, deps, map[string]any{"source": apiLogSource})
+	if summaryResult.IsError {
+		t.Fatalf("ordinary API summary: %s", summaryResult.Output)
+	}
+	for _, forbidden := range []string{"request_headers", "X-Trace-Order", "visible-value"} {
+		if strings.Contains(summaryResult.Output, forbidden) {
+			t.Fatalf("ordinary API summary exposed attempt header %q: %s", forbidden, summaryResult.Output)
+		}
+	}
+
+	result := executeReadSessionTranscript(t, deps, map[string]any{"attempt_id": attempt.AttemptID})
+	if result.IsError {
+		t.Fatalf("attempt metadata: %s", result.Output)
+	}
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+		t.Fatalf("decode attempt metadata: %v", err)
+	}
+	attemptMetadata := envelope["attempt"].(map[string]any)
+	headers, ok := attemptMetadata["request_headers"].(map[string]any)
+	if !ok {
+		t.Fatalf("attempt metadata request_headers = %#v, want exact encoded header map", attemptMetadata["request_headers"])
+	}
+	ordered := headers["X-Trace-Order"].([]any)
+	if len(ordered) != 3 {
+		t.Fatalf("X-Trace-Order values = %#v, want three exact values", ordered)
+	}
+	for i, want := range []struct {
+		encoding string
+		data     string
+		bytes    int
+	}{
+		{encoding: "utf8", data: "first", bytes: len("first")},
+		{encoding: "base64", data: base64.StdEncoding.EncodeToString([]byte(binaryHeaderValue)), bytes: len(binaryHeaderValue)},
+		{encoding: "utf8", data: "third", bytes: len("third")},
+	} {
+		got := ordered[i].(map[string]any)
+		if got["encoding"] != want.encoding || got["data"] != want.data || got["byte_count"] != float64(want.bytes) {
+			t.Errorf("X-Trace-Order value %d = %#v, want encoding=%s data=%q byte_count=%d", i, got, want.encoding, want.data, want.bytes)
+		}
+	}
+	visible := headers["X-Visible"].([]any)
+	if len(visible) != 1 || visible[0].(map[string]any)["data"] != "visible-value" {
+		t.Fatalf("X-Visible values = %#v", visible)
+	}
+
+	settlementMetadata, ok := envelope["settlement"].(map[string]any)
+	if !ok {
+		t.Fatalf("attempt settlement = %#v, want full matching settlement", envelope["settlement"])
+	}
+	for key, want := range map[string]any{
+		"attempt_group_id":    attempt.AttemptGroupID,
+		"final_attempt_id":    attempt.AttemptID,
+		"final_attempt_count": float64(2),
+		"outcome":             string(apilog.AttemptProviderReject),
+		"forensic_incomplete": true,
+	} {
+		if got := settlementMetadata[key]; got != want {
+			t.Errorf("settlement %s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestReadSessionTranscriptAttemptExpansionBoundsHeaderAndBodyEnvelope(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
+	body := []byte(strings.Repeat("body-byte-", maxExpansionBytes/len("body-byte-")))
+	attempt := testAPIAttemptRecord("ag_bounded_attempt", 1, body, nil)
+	attempt.Response = nil
+	attempt.Outcome = apilog.AttemptTransportFail
+	attempt.Request.Headers = apilog.EncodedHeader{
+		"X-Large-Exact": {strings.Repeat("header-value-", 6000)},
+	}
+	writeTestAPILog(t, dir, sessionID, attempt)
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+
+	var joined []byte
+	offset := 0
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("bounded API body expansion did not converge")
+		}
+		result := executeReadSessionTranscript(t, deps, map[string]any{
+			"attempt_id":   attempt.AttemptID,
+			"body":         "request",
+			"offset_bytes": float64(offset),
+			"max_bytes":    float64(maxExpansionBytes),
+		})
+		if result.IsError {
+			t.Fatalf("bounded attempt expansion: %s", result.Output)
+		}
+		if got := len([]byte(result.Output)); got > maxAPILogOutputBytes {
+			t.Fatalf("attempt expansion output = %d bytes, exceeds %d", got, maxAPILogOutputBytes)
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal([]byte(result.Output), &envelope); err != nil {
+			t.Fatalf("decode bounded attempt expansion: %v", err)
+		}
+		attemptMetadata := envelope["attempt"].(map[string]any)
+		if _, inline := attemptMetadata["request_headers"]; inline {
+			t.Fatalf("oversized request headers were inlined: %#v", attemptMetadata["request_headers"])
+		}
+		evidence := attemptMetadata["request_headers_evidence"].(map[string]any)
+		if evidence["encoding"] != "utf8" || evidence["complete"] != false {
+			t.Fatalf("request header evidence = %#v", evidence)
+		}
+		headerContinuation := evidence["continuation"].(map[string]any)
+		if headerContinuation["attempt_id"] != attempt.AttemptID || headerContinuation["body"] != "request_headers" || headerContinuation["offset_bytes"] != float64(0) {
+			t.Fatalf("request header continuation = %#v", headerContinuation)
+		}
+		chunk := envelope["body"].(map[string]any)
+		joined = append(joined, []byte(chunk["data"].(string))...)
+		continuation, ok := envelope["continuation"].(map[string]any)
+		if !ok {
+			break
+		}
+		next := int(continuation["offset_bytes"].(float64))
+		if next <= offset {
+			t.Fatalf("continuation offset = %d after %d", next, offset)
+		}
+		offset = next
+	}
+	if !bytes.Equal(joined, body) {
+		t.Fatalf("bounded body expansion joined %d bytes, want %d", len(joined), len(body))
+	}
+
+	headerJSON, err := json.Marshal(attempt.Request.Headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotHeaders, headerPages := readExpandedAPIBody(t, deps, attempt.AttemptID, "request_headers", maxExpansionBytes)
+	if !bytes.Equal(gotHeaders, headerJSON) {
+		t.Fatalf("request header expansion = %q, want deterministic JSON %q", gotHeaders, headerJSON)
+	}
+	for _, page := range headerPages {
+		encoded, err := json.MarshalIndent(page, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(encoded) > maxAPILogOutputBytes {
+			t.Fatalf("request header expansion page = %d bytes, exceeds %d", len(encoded), maxAPILogOutputBytes)
+		}
 	}
 }
 

@@ -35,8 +35,10 @@ var openAPILogFile = func(path string) (io.ReadCloser, error) {
 }
 
 type apiLogBodyEvidence struct {
-	Encoding  apilog.BodyEncoding `json:"encoding"`
-	ByteCount int                 `json:"byte_count"`
+	Encoding                 apilog.BodyEncoding `json:"encoding"`
+	ByteCount                int                 `json:"byte_count"`
+	Exact                    bool                `json:"exact"`
+	CredentialValuesExcluded bool                `json:"credential_values_excluded"`
 }
 
 type apiLogRecordSummary struct {
@@ -52,6 +54,8 @@ type apiLogRecordSummary struct {
 	HistoryMode        string                     `json:"history_mode,omitempty"`
 	Method             string                     `json:"method,omitempty"`
 	Endpoint           string                     `json:"endpoint,omitempty"`
+	RequestHeaders     apilog.EncodedHeader       `json:"request_headers,omitempty"`
+	RequestHeadersInfo *apiLogHeaderEvidence      `json:"request_headers_evidence,omitempty"`
 	RequestBody        *apiLogBodyEvidence        `json:"request_body,omitempty"`
 	StatusCode         int                        `json:"status_code,omitempty"`
 	ResponseModel      string                     `json:"response_model,omitempty"`
@@ -90,17 +94,36 @@ type apiLogAttemptEnvelope struct {
 	Source                   string                  `json:"source"`
 	CredentialValuesExcluded bool                    `json:"credential_values_excluded"`
 	Attempt                  apiLogRecordSummary     `json:"attempt"`
+	Settlement               *apiLogSettlement       `json:"settlement,omitempty"`
 	Body                     *apiLogBodyExpansion    `json:"body,omitempty"`
 	Continuation             *apiLogBodyContinuation `json:"continuation,omitempty"`
 }
 
+type apiLogSettlement struct {
+	AttemptGroupID     string                     `json:"attempt_group_id"`
+	FinalAttemptID     string                     `json:"final_attempt_id"`
+	FinalAttemptCount  int                        `json:"final_attempt_count"`
+	Outcome            apilog.AttemptOutcomeClass `json:"outcome"`
+	ForensicIncomplete bool                       `json:"forensic_incomplete"`
+	SettledAt          time.Time                  `json:"settled_at"`
+}
+
+type apiLogHeaderEvidence struct {
+	Encoding     apilog.BodyEncoding    `json:"encoding"`
+	ByteCount    int                    `json:"byte_count"`
+	Complete     bool                   `json:"complete"`
+	Continuation apiLogBodyContinuation `json:"continuation"`
+}
+
 type apiLogBodyExpansion struct {
-	Body          string              `json:"body"`
-	OffsetBytes   int                 `json:"offset_bytes"`
-	BytesReturned int                 `json:"bytes_returned"`
-	TotalBytes    int                 `json:"total_bytes"`
-	Encoding      apilog.BodyEncoding `json:"encoding"`
-	Data          string              `json:"data"`
+	Body                     string              `json:"body"`
+	OffsetBytes              int                 `json:"offset_bytes"`
+	BytesReturned            int                 `json:"bytes_returned"`
+	TotalBytes               int                 `json:"total_bytes"`
+	Encoding                 apilog.BodyEncoding `json:"encoding"`
+	Data                     string              `json:"data"`
+	Exact                    bool                `json:"exact"`
+	CredentialValuesExcluded bool                `json:"credential_values_excluded"`
 }
 
 type apiLogBodyContinuation struct {
@@ -165,12 +188,17 @@ func readAPILogSummary(path, ref, rangeArg string) (any, error) {
 }
 
 func readAPILogAttempt(path, ref, attemptID, body string, offsetBytes, maxBytes int) (any, error) {
-	attempt, summary, partialTail, settled, err := findAPILogAttempt(path, attemptID)
+	attempt, summary, partialTail, settlement, err := findAPILogAttempt(path, attemptID)
 	if err != nil {
 		return nil, err
 	}
+	summary.RequestHeaders = cloneAPILogHeaders(attempt.Request.Headers)
+	headerBytes, err := json.Marshal(summary.RequestHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("encode request headers for attempt %q: %w", attemptID, err)
+	}
 	switch {
-	case settled:
+	case settlement != nil:
 		summary.SettlementState = apiLogSettled
 	case partialTail:
 		summary.SettlementState = apiLogUnknownOutsideRange
@@ -183,12 +211,28 @@ func readAPILogAttempt(path, ref, attemptID, body string, offsetBytes, maxBytes 
 		CredentialValuesExcluded: true,
 		Attempt:                  summary,
 	}
+	if settlement != nil {
+		envelope.Settlement = &apiLogSettlement{
+			AttemptGroupID:     settlement.AttemptGroupID,
+			FinalAttemptID:     settlement.FinalAttemptID,
+			FinalAttemptCount:  settlement.FinalAttemptCount,
+			Outcome:            settlement.Outcome,
+			ForensicIncomplete: settlement.ForensicIncomplete,
+			SettledAt:          settlement.SettledAt,
+		}
+	}
+	if err := boundAPILogRequestHeaders(&envelope, headerBytes, body == "request_headers"); err != nil {
+		return nil, err
+	}
 	if body == "" {
 		return envelope, nil
 	}
 
 	encodedBody := attempt.Request.Body
-	if body == "response" {
+	switch body {
+	case "request_headers":
+		encodedBody = apilog.EncodeBody(headerBytes)
+	case "response":
 		if attempt.Response == nil {
 			return nil, errors.New("invalid_request: attempt has no response body")
 		}
@@ -204,59 +248,139 @@ func readAPILogAttempt(path, ref, attemptID, body string, offsetBytes, maxBytes 
 	if maxBytes == 0 {
 		maxBytes = defaultExpansionBytes
 	}
-	end := offsetBytes + maxBytes
-	if end > len(decodedBody) {
-		end = len(decodedBody)
-	}
-	chunk := decodedBody[offsetBytes:end]
-	expansion := &apiLogBodyExpansion{
-		Body:          body,
-		OffsetBytes:   offsetBytes,
-		BytesReturned: len(chunk),
-		TotalBytes:    len(decodedBody),
-	}
-	if utf8.Valid(chunk) {
-		expansion.Encoding = apilog.BodyUTF8
-		expansion.Data = string(chunk)
-	} else {
-		expansion.Encoding = apilog.BodyBase64
-		expansion.Data = base64.StdEncoding.EncodeToString(chunk)
-	}
-	envelope.Body = expansion
-	if end < len(decodedBody) {
-		envelope.Continuation = &apiLogBodyContinuation{AttemptID: attemptID, Body: body, OffsetBytes: end}
+	if err := fitAPILogBodyPage(&envelope, encodedBody, decodedBody, body, attemptID, offsetBytes, maxBytes); err != nil {
+		return nil, err
 	}
 	return envelope, nil
 }
 
-func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, bool, error) {
+func cloneAPILogHeaders(headers apilog.EncodedHeader) apilog.EncodedHeader {
+	if len(headers) == 0 {
+		return nil
+	}
+	cloned := make(apilog.EncodedHeader, len(headers))
+	for name, values := range headers {
+		cloned[name] = append([]string(nil), values...)
+	}
+	return cloned
+}
+
+func validateAPILogAttemptEnvelopeSize(envelope apiLogAttemptEnvelope) error {
+	encoded, err := json.MarshalIndent(envelope, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode API attempt expansion: %w", err)
+	}
+	if len(encoded) > maxAPILogOutputBytes {
+		return fmt.Errorf("API attempt metadata exceeds %d-byte output limit", maxAPILogOutputBytes)
+	}
+	return nil
+}
+
+func boundAPILogRequestHeaders(envelope *apiLogAttemptEnvelope, headerBytes []byte, forcePaging bool) error {
+	if !forcePaging {
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode API attempt expansion: %w", err)
+		}
+		if len(encoded) <= maxAPILogOutputBytes {
+			return nil
+		}
+	}
+
+	envelope.Attempt.RequestHeaders = nil
+	envelope.Attempt.RequestHeadersInfo = &apiLogHeaderEvidence{
+		Encoding:  apilog.BodyUTF8,
+		ByteCount: len(headerBytes),
+		Complete:  false,
+		Continuation: apiLogBodyContinuation{
+			AttemptID:   envelope.Attempt.AttemptID,
+			Body:        "request_headers",
+			OffsetBytes: 0,
+		},
+	}
+	return validateAPILogAttemptEnvelopeSize(*envelope)
+}
+
+func fitAPILogBodyPage(envelope *apiLogAttemptEnvelope, encodedBody apilog.EncodedBody, decodedBody []byte, body, attemptID string, offsetBytes, maxBytes int) error {
+	end := min(offsetBytes+maxBytes, len(decodedBody))
+	for {
+		chunk := decodedBody[offsetBytes:end]
+		expansion := &apiLogBodyExpansion{
+			Body:                     body,
+			OffsetBytes:              offsetBytes,
+			BytesReturned:            len(chunk),
+			TotalBytes:               len(decodedBody),
+			Exact:                    encodedBody.Exact,
+			CredentialValuesExcluded: encodedBody.CredentialValuesExcluded,
+		}
+		if utf8.Valid(chunk) {
+			expansion.Encoding = apilog.BodyUTF8
+			expansion.Data = string(chunk)
+		} else {
+			expansion.Encoding = apilog.BodyBase64
+			expansion.Data = base64.StdEncoding.EncodeToString(chunk)
+		}
+		envelope.Body = expansion
+		envelope.Continuation = nil
+		if end < len(decodedBody) {
+			envelope.Continuation = &apiLogBodyContinuation{AttemptID: attemptID, Body: body, OffsetBytes: end}
+		}
+
+		encoded, err := json.MarshalIndent(envelope, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode API attempt expansion: %w", err)
+		}
+		if len(encoded) <= maxAPILogOutputBytes {
+			return nil
+		}
+		byteCount := end - offsetBytes
+		if byteCount == 0 {
+			return fmt.Errorf("API attempt metadata exceeds %d-byte output limit", maxAPILogOutputBytes)
+		}
+		nextByteCount := byteCount * maxAPILogOutputBytes / len(encoded)
+		if nextByteCount >= byteCount {
+			nextByteCount = byteCount - 1
+		}
+		end = offsetBytes + max(nextByteCount, 0)
+	}
+}
+
+func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
 	f, err := openAPILogFile(path)
 	if err != nil {
-		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, false, fmt.Errorf("open API log: %w", err)
+		return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("open API log: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	decoder := apilog.NewDecoder(f, maxAPILogLineBytes)
 	var found *apilog.APIAttemptRecord
 	var summary apiLogRecordSummary
-	settledGroups := make(map[string]bool)
+	settlements := make(map[string]apilog.APIAttemptGroupSettlement)
 	partialTail := false
 	for recordNumber := 0; ; recordNumber++ {
 		record, decodeErr := decoder.Next()
 		switch {
 		case errors.Is(decodeErr, io.EOF):
 			if found == nil {
-				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, false, fmt.Errorf("API attempt %q not found", attemptID)
+				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("API attempt %q not found", attemptID)
 			}
-			return *found, summary, false, settledGroups[found.AttemptGroupID], nil
+			settlement, ok := settlements[found.AttemptGroupID]
+			if !ok {
+				return *found, summary, false, nil, nil
+			}
+			return *found, summary, false, &settlement, nil
 		case errors.Is(decodeErr, apilog.ErrPartialTail):
 			partialTail = true
 			if found == nil {
-				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, true, false, fmt.Errorf("API attempt %q not found before partial API-log tail", attemptID)
+				return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, true, nil, fmt.Errorf("API attempt %q not found before partial API-log tail", attemptID)
 			}
-			return *found, summary, partialTail, settledGroups[found.AttemptGroupID], nil
+			settlement, ok := settlements[found.AttemptGroupID]
+			if !ok {
+				return *found, summary, partialTail, nil, nil
+			}
+			return *found, summary, partialTail, &settlement, nil
 		case decodeErr != nil:
-			return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, false, fmt.Errorf("read API log: %w", decodeErr)
+			return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, fmt.Errorf("read API log: %w", decodeErr)
 		}
 		switch typed := record.(type) {
 		case apilog.APIAttemptRecord:
@@ -265,11 +389,11 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 				found = &copy
 				summary, err = summarizeAPILogRecord(recordNumber, typed)
 				if err != nil {
-					return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, false, err
+					return apilog.APIAttemptRecord{}, apiLogRecordSummary{}, false, nil, err
 				}
 			}
 		case apilog.APIAttemptGroupSettlement:
-			settledGroups[typed.AttemptGroupID] = true
+			settlements[typed.AttemptGroupID] = typed
 		}
 	}
 }
@@ -396,7 +520,12 @@ func summarizeAPILogRecord(recordNumber int, record apilog.APILogRecord) (apiLog
 		summary.HistoryMode, summary.MetadataTruncated = boundedAPILogMetadata(typed.Request.HistoryMode, summary.MetadataTruncated)
 		summary.Method, summary.MetadataTruncated = boundedAPILogMetadata(typed.Request.Method, summary.MetadataTruncated)
 		summary.Endpoint, summary.MetadataTruncated = boundedAPILogMetadata(typed.Request.Endpoint, summary.MetadataTruncated)
-		summary.RequestBody = &apiLogBodyEvidence{Encoding: typed.Request.Body.Encoding, ByteCount: typed.Request.Body.ByteCount}
+		summary.RequestBody = &apiLogBodyEvidence{
+			Encoding:                 typed.Request.Body.Encoding,
+			ByteCount:                typed.Request.Body.ByteCount,
+			Exact:                    typed.Request.Body.Exact,
+			CredentialValuesExcluded: typed.Request.Body.CredentialValuesExcluded,
+		}
 		summary.Outcome = typed.Outcome
 		summary.ErrorClass, summary.MetadataTruncated = boundedAPILogMetadata(typed.ErrorClass, summary.MetadataTruncated)
 		if typed.Response != nil {
@@ -404,7 +533,12 @@ func summarizeAPILogRecord(recordNumber int, record apilog.APILogRecord) (apiLog
 			summary.ResponseModel, summary.MetadataTruncated = boundedAPILogMetadata(typed.Response.Model, summary.MetadataTruncated)
 			summary.FinishReason, summary.MetadataTruncated = boundedAPILogMetadata(typed.Response.FinishReason, summary.MetadataTruncated)
 			summary.Usage = &typed.Response.Usage
-			summary.ResponseBody = &apiLogBodyEvidence{Encoding: typed.Response.Body.Encoding, ByteCount: typed.Response.Body.ByteCount}
+			summary.ResponseBody = &apiLogBodyEvidence{
+				Encoding:                 typed.Response.Body.Encoding,
+				ByteCount:                typed.Response.Body.ByteCount,
+				Exact:                    typed.Response.Body.Exact,
+				CredentialValuesExcluded: typed.Response.Body.CredentialValuesExcluded,
+			}
 		}
 	case apilog.APIAttemptGroupSettlement:
 		summary.AttemptGroupID = typed.AttemptGroupID
