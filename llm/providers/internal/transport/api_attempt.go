@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // APIAttemptCapture owns one canonical record for one actual HTTP request.
@@ -53,30 +54,63 @@ func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource 
 	}
 	material := llm.APILogCredentialMaterialForRequest(c.request, c.credentialMaterial)
 	c.attempt.MergeCredentialMaterial(material)
+	observedTimeout := false
+	observeTerminalContext := func(observation bodyObservation) {
+		observedTimeout = observedTimeout || observation.timeout
+	}
 	if c.requestBody != nil {
 		observation := c.requestBody()
 		c.attempt.SetRequestBody(observation.bytes, observation.exact)
+		observeTerminalContext(observation)
 	}
 	if c.responseBody != nil {
 		observation := c.responseBody()
 		result.ResponseBody = observation.bytes
 		result.ResponseBodyInexact = !observation.exact
+		observeTerminalContext(observation)
 	}
 	owner := c.owner
-	owner.TimeoutSource = llm.APITimeoutSourceForAttempt(
-		owner.Parent,
-		owner.Attempt,
-		timeoutSource,
-		result.Err,
-		decodeErr,
-		transportErr,
-	)
-	result.Outcome = llm.ClassifyAPIAttemptOutcome(owner, result.StatusCode, decodeErr, transportErr)
-	if result.Err != nil {
-		result.ErrorClass = llm.Kind(result.Err).String()
+	owner.TimeoutSource = timeoutSource
+	if owner.TimeoutSource == llm.APITimeoutNone && observedTimeout {
+		owner.TimeoutSource = llm.APITimeoutTransport
+	}
+	if result.Outcome == "" {
+		result.Outcome = llm.ClassifyAPIAttemptOutcome(owner, result.StatusCode, result.Err, decodeErr, transportErr)
+	}
+	if result.Err != nil && result.ErrorClass == "" {
+		result.ErrorClass = explicitAPIAttemptErrorClass(result.Outcome, result.StatusCode)
 	}
 	if result.FinishedAt.IsZero() {
 		result.FinishedAt = time.Now()
 	}
 	c.attempt.Complete(result)
+}
+
+func explicitAPIAttemptErrorClass(outcome apilog.AttemptOutcomeClass, statusCode int) string {
+	if outcome == apilog.AttemptProviderTimeout {
+		return llm.KindTimeout.String()
+	}
+	if outcome != apilog.AttemptProviderReject {
+		return llm.KindUnknown.String()
+	}
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return llm.KindInvalidRequest.String()
+	case http.StatusUnauthorized:
+		return llm.KindAuthentication.String()
+	case http.StatusForbidden:
+		return llm.KindAccessDenied.String()
+	case http.StatusNotFound:
+		return llm.KindNotFound.String()
+	case http.StatusRequestTimeout:
+		return llm.KindTimeout.String()
+	case http.StatusRequestEntityTooLarge:
+		return llm.KindContextLength.String()
+	case http.StatusTooManyRequests:
+		return llm.KindRateLimit.String()
+	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return llm.KindServer.String()
+	default:
+		return llm.KindUnknown.String()
+	}
 }

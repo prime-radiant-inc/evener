@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
 	"primeradiant.com/serf/llm/providers/internal/transport"
 )
@@ -613,13 +613,15 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	if finished {
 		decodeErr = nil
 	}
-	timeoutSource := llm.APITimeoutNone
-	if errors.Is(parseErr, llm.ErrSSEReadTimeout) {
-		timeoutSource = llm.APITimeoutSSERead
+	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
+	outcome := apilog.AttemptOutcomeClass("")
+	if !finished && sctx.Err() == context.Canceled {
+		outcome = apilog.AttemptCallerCancel
 	}
 	attempt.Complete(llm.APIAttemptResult{
 		StatusCode: resp.StatusCode,
 		Response:   response,
+		Outcome:    outcome,
 		Err:        terminalErr,
 	}, timeoutSource, decodeErr, nil)
 	if finalEvent != nil {

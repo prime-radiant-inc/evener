@@ -8,10 +8,10 @@ package transport
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/apilog"
 )
 
 // StreamRunner decodes a provider SSE response into stream events. It invokes
@@ -74,13 +74,15 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	if *r.Finished {
 		attemptDecodeErr = nil
 	}
-	timeoutSource := llm.APITimeoutNone
-	if errors.Is(parseErr, llm.ErrSSEReadTimeout) {
-		timeoutSource = llm.APITimeoutSSERead
+	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
+	outcome := apilog.AttemptOutcomeClass("")
+	if !*r.Finished && ctx.Err() == context.Canceled {
+		outcome = apilog.AttemptCallerCancel
 	}
 	r.Attempt.Complete(llm.APIAttemptResult{
 		StatusCode: r.StatusCode,
 		Response:   response,
+		Outcome:    outcome,
 		Err:        terminalErr,
 	}, timeoutSource, attemptDecodeErr, nil)
 	if terminalEvent != nil {

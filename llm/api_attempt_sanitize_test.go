@@ -421,7 +421,7 @@ func TestClassifyAPIAttemptOutcomeTimeoutOwnership(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyAPIAttemptOutcome(tc.owner, 0, tc.decodeErr, tc.transportErr); got != apilog.AttemptCallerCancel {
+			if got := ClassifyAPIAttemptOutcome(tc.owner, 0, nil, tc.decodeErr, tc.transportErr); got != apilog.AttemptCallerCancel {
 				t.Fatalf("outcome = %q, want %q", got, apilog.AttemptCallerCancel)
 			}
 		})
@@ -450,7 +450,7 @@ func TestClassifyAPIAttemptOutcomeTimeoutOwnership(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyAPIAttemptOutcome(tc.owner, 0, tc.decodeErr, tc.transportErr); got != apilog.AttemptProviderTimeout {
+			if got := ClassifyAPIAttemptOutcome(tc.owner, 0, nil, tc.decodeErr, tc.transportErr); got != apilog.AttemptProviderTimeout {
 				t.Fatalf("outcome = %q, want %q", got, apilog.AttemptProviderTimeout)
 			}
 		})
@@ -472,7 +472,7 @@ func TestClassifyAPIAttemptOutcomeNonTimeouts(t *testing.T) {
 		{name: "success", status: http.StatusOK, want: apilog.AttemptSuccess},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyAPIAttemptOutcome(owner, tc.status, tc.decodeErr, tc.transportErr); got != tc.want {
+			if got := ClassifyAPIAttemptOutcome(owner, tc.status, nil, tc.decodeErr, tc.transportErr); got != tc.want {
 				t.Fatalf("outcome = %q, want %q", got, tc.want)
 			}
 		})
@@ -499,7 +499,7 @@ func TestClassifyAPIAttemptOutcomeDoesNotInferCallerCancellationFromSyntheticEvi
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, testCase.decodeErr, testCase.transportErr); got != testCase.want {
+			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, nil, testCase.decodeErr, testCase.transportErr); got != testCase.want {
 				t.Fatalf("live-attempt outcome = %q, want %q", got, testCase.want)
 			}
 		})

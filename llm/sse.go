@@ -14,6 +14,27 @@ import (
 // ErrSSEReadTimeout identifies a provider-owned timeout between stream reads.
 var ErrSSEReadTimeout = errors.New("stream read timeout")
 
+type sseReadTimeoutError struct {
+	timeout time.Duration
+}
+
+func (e *sseReadTimeoutError) Error() string {
+	return fmt.Sprintf("%s: no data received for %v", ErrSSEReadTimeout, e.timeout)
+}
+
+func (*sseReadTimeoutError) Is(target error) bool {
+	return target == ErrSSEReadTimeout
+}
+
+// APITimeoutSourceForSSE identifies only the timeout emitted by Serf's own SSE
+// timer. Provider and body errors are opaque transport/decode evidence.
+func APITimeoutSourceForSSE(err error) APITimeoutSource {
+	if _, ok := err.(*sseReadTimeoutError); ok {
+		return APITimeoutSSERead
+	}
+	return APITimeoutNone
+}
+
 // SSEEvent is a single Server-Sent Event parsed from a stream, holding the
 // event name and its raw data bytes.
 type SSEEvent struct {
@@ -164,7 +185,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 			}
 
 		case <-timer.C:
-			return fmt.Errorf("%w: no data received for %v", ErrSSEReadTimeout, timeout)
+			return &sseReadTimeoutError{timeout: timeout}
 
 		case <-ctx.Done():
 			return ctx.Err()

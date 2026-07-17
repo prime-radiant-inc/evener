@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -69,12 +70,86 @@ type controlledDeadlineContext struct {
 	done <-chan struct{}
 }
 
+type timeoutClassificationProbeError struct {
+	inspections int
+}
+
+func (*timeoutClassificationProbeError) Error() string { return "opaque transport failure" }
+
+func (e *timeoutClassificationProbeError) Unwrap() error {
+	e.inspections++
+	return context.DeadlineExceeded
+}
+
+func (e *timeoutClassificationProbeError) Is(error) bool {
+	e.inspections++
+	return false
+}
+
+func (e *timeoutClassificationProbeError) As(any) bool {
+	e.inspections++
+	return false
+}
+
+func (e *timeoutClassificationProbeError) Timeout() bool {
+	e.inspections++
+	return true
+}
+
+func (*timeoutClassificationProbeError) Temporary() bool { return false }
+
+func TestAPITimeoutSourceForTransportDoesNotInspectOpaqueErrors(t *testing.T) {
+	providerErr := &timeoutClassificationProbeError{}
+	if got := APITimeoutSourceForTransport(context.Background(), context.Background(), providerErr); got != APITimeoutNone {
+		t.Fatalf("timeout source = %q, want no inference for an opaque transport error", got)
+	}
+	if providerErr.inspections != 0 {
+		t.Fatalf("timeout classification invoked %d behavior-bearing error methods, want 0", providerErr.inspections)
+	}
+}
+
+func TestAPITimeoutSourceForTransportRecognizesOwnedResponseHeaderTimeout(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+
+	client := ClientWithAdapterTimeout(server.Client(), &AdapterTimeout{Request: 10 * time.Millisecond})
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, transportErr := client.Do(request)
+	if transportErr == nil {
+		t.Fatal("Do error = nil, want response-header timeout")
+	}
+	directCause := transportErr
+	if urlErr, ok := transportErr.(*url.Error); ok {
+		directCause = urlErr.Err
+	}
+	if got := APITimeoutSourceForTransport(context.Background(), request.Context(), transportErr); got != APITimeoutResponseHeader {
+		t.Fatalf("timeout source = %q, want %q (error %T, direct cause %T)", got, APITimeoutResponseHeader, transportErr, directCause)
+	}
+}
+
+func TestAPITimeoutSourceForSSEDoesNotInspectOpaqueErrors(t *testing.T) {
+	providerErr := &timeoutClassificationProbeError{}
+	if got := APITimeoutSourceForSSE(providerErr); got != APITimeoutNone {
+		t.Fatalf("timeout source = %q, want no inference for an opaque SSE error", got)
+	}
+	if providerErr.inspections != 0 {
+		t.Fatalf("SSE timeout classification invoked %d behavior-bearing error methods, want 0", providerErr.inspections)
+	}
+}
+
 func TestAPITimeoutClassificationRequiresCausalTimeoutEvidence(t *testing.T) {
 	for _, testCase := range []struct {
 		name      string
 		evidence  error
 		want      apilog.AttemptOutcomeClass
-		classify  func(context.Context, error) APITimeoutSource
 		decodeErr error
 		transport error
 	}{
@@ -83,18 +158,12 @@ func TestAPITimeoutClassificationRequiresCausalTimeoutEvidence(t *testing.T) {
 			evidence:  errors.New("malformed JSON"),
 			want:      apilog.AttemptDecodeFail,
 			decodeErr: errors.New("malformed JSON"),
-			classify: func(attempt context.Context, evidence error) APITimeoutSource {
-				return APITimeoutSourceForAttempt(context.Background(), attempt, APITimeoutNone, evidence)
-			},
 		},
 		{
 			name:      "generic transport failure completed before later attempt deadline",
 			evidence:  errors.New("connection reset"),
 			want:      apilog.AttemptTransportFail,
 			transport: errors.New("connection reset"),
-			classify: func(attempt context.Context, evidence error) APITimeoutSource {
-				return APITimeoutSourceForTransport(context.Background(), attempt, evidence)
-			},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -104,13 +173,16 @@ func TestAPITimeoutClassificationRequiresCausalTimeoutEvidence(t *testing.T) {
 				t.Fatal("attempt context expired before non-timeout evidence was observed")
 			}
 			close(expired)
-			timeoutSource := testCase.classify(attempt, testCase.evidence)
+			timeoutSource := APITimeoutNone
+			if testCase.transport != nil {
+				timeoutSource = APITimeoutSourceForTransport(context.Background(), attempt, testCase.evidence)
+			}
 			owner := APIAttemptContextOwnership{
 				Parent:        context.Background(),
 				Attempt:       attempt,
 				TimeoutSource: timeoutSource,
 			}
-			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, testCase.decodeErr, testCase.transport); got != testCase.want {
+			if got := ClassifyAPIAttemptOutcome(owner, http.StatusOK, nil, testCase.decodeErr, testCase.transport); got != testCase.want {
 				t.Fatalf("outcome after delayed context expiry = %q (source %q), want %q", got, timeoutSource, testCase.want)
 			}
 		})

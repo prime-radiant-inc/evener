@@ -63,6 +63,112 @@ func (r *terminalReadCloser) Read(p []byte) (int, error) {
 
 func (*terminalReadCloser) Close() error { return nil }
 
+type hostileErrorCalls struct {
+	error   int
+	inspect int
+}
+
+type hostileUnwrapError struct{ calls *hostileErrorCalls }
+
+func (e hostileUnwrapError) Error() string {
+	e.calls.error++
+	return "hostile transport failure"
+}
+
+func (e hostileUnwrapError) Unwrap() error {
+	e.calls.inspect++
+	panic("attempt classification called Unwrap")
+}
+
+type hostileIsError struct{ calls *hostileErrorCalls }
+
+func (e hostileIsError) Error() string {
+	e.calls.error++
+	return "hostile transport failure"
+}
+
+func (e hostileIsError) Is(error) bool {
+	e.calls.inspect++
+	panic("attempt classification called Is")
+}
+
+type hostileAsError struct{ calls *hostileErrorCalls }
+
+func (e hostileAsError) Error() string {
+	e.calls.error++
+	return "hostile transport failure"
+}
+
+func (e hostileAsError) As(any) bool {
+	e.calls.inspect++
+	panic("attempt classification called As")
+}
+
+type hostileTimeoutError struct{ calls *hostileErrorCalls }
+
+func (e hostileTimeoutError) Error() string {
+	e.calls.error++
+	return "hostile transport failure"
+}
+
+func (e hostileTimeoutError) Timeout() bool {
+	e.calls.inspect++
+	panic("attempt classification called Timeout")
+}
+
+func (hostileTimeoutError) Temporary() bool { return false }
+
+func TestAPIAttemptCompleteDoesNotInspectUntrustedErrorBehavior(t *testing.T) {
+	tests := []struct {
+		name string
+		err  func(*hostileErrorCalls) error
+	}{
+		{name: "Unwrap", err: func(calls *hostileErrorCalls) error { return hostileUnwrapError{calls: calls} }},
+		{name: "Is", err: func(calls *hostileErrorCalls) error { return hostileIsError{calls: calls} }},
+		{name: "As", err: func(calls *hostileErrorCalls) error { return hostileAsError{calls: calls} }},
+		{name: "Timeout", err: func(calls *hostileErrorCalls) error { return hostileTimeoutError{calls: calls} }},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			calls := &hostileErrorCalls{}
+			providerErr := testCase.err(calls)
+			sink := &responseAssociationSink{}
+			attemptCtx, cancelAttempt := context.WithCancel(attemptContext("ag_hostile_error_"+testCase.name, sink))
+			request, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, "https://provider.test/v1", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempt := BeginAPIAttempt(context.Background(), attemptCtx, request, attemptMeta(request, nil))
+			cancelAttempt()
+
+			var panicValue any
+			func() {
+				defer func() { panicValue = recover() }()
+				attempt.Complete(llm.APIAttemptResult{Err: providerErr}, llm.APITimeoutNone, nil, providerErr)
+			}()
+			if panicValue != nil {
+				t.Fatalf("Complete panicked while classifying an untrusted error: %v", panicValue)
+			}
+			if calls.inspect != 0 {
+				t.Fatalf("classification invoked %d behavior-bearing error methods, want 0", calls.inspect)
+			}
+			if calls.error != 1 {
+				t.Fatalf("Error calls = %d, want one inert rendering", calls.error)
+			}
+			recorded := onlyAttempt(t, sink)
+			if recorded.Outcome != apilog.AttemptTransportFail {
+				t.Fatalf("unknown error outcome = %q, want %q", recorded.Outcome, apilog.AttemptTransportFail)
+			}
+			if recorded.ErrorClass != llm.KindUnknown.String() {
+				t.Fatalf("unknown error class = %q, want %q", recorded.ErrorClass, llm.KindUnknown)
+			}
+			if recorded.ErrorMessage != "hostile transport failure" {
+				t.Fatalf("error message = %q, want one inert rendering", recorded.ErrorMessage)
+			}
+		})
+	}
+}
+
 type concurrentReadCloseBody struct {
 	data        []byte
 	readStarted chan struct{}
@@ -447,7 +553,7 @@ func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
 
 func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
 	data := []byte("known body")
-	body := newObservedBody(&terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)))
+	body := newObservedBody(&terminalReadCloser{data: data, err: context.Canceled}, int64(len(data)), context.Background())
 	buf := make([]byte, len(data))
 	n, err := body.Read(buf)
 	if n != len(data) || !errors.Is(err, context.Canceled) {
@@ -465,7 +571,7 @@ func TestObservedBodyKnownLengthCancellationIsInexact(t *testing.T) {
 func TestObservedBodyKnownLengthOverrunIsInexact(t *testing.T) {
 	data := []byte("known body plus overrun")
 	knownLength := int64(len("known body"))
-	body := newObservedBody(&terminalReadCloser{data: data}, knownLength)
+	body := newObservedBody(&terminalReadCloser{data: data}, knownLength, context.Background())
 	buf := make([]byte, len(data))
 	n, err := body.Read(buf)
 	if n != len(data) || err != nil {
@@ -491,7 +597,7 @@ func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {
-			body := newObservedBody(&terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength)
+			body := newObservedBody(&terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength, context.Background())
 			buf := make([]byte, len(testCase.data))
 			n, err := body.Read(buf)
 			if n != len(testCase.data) || !errors.Is(err, io.EOF) {

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/llm"
 )
@@ -75,7 +76,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 		responseBody = http.NoBody
 	}
 	body := &apiAttemptResponseBody{
-		observedBody: newObservedBody(responseBody, response.ContentLength),
+		observedBody: newObservedBody(responseBody, response.ContentLength, request.Context()),
 		attempt:      attempt,
 		statusCode:   response.StatusCode,
 	}
@@ -128,8 +129,9 @@ func (t *apiAttemptRoundTripper) releaseResponse(response *http.Response, body *
 }
 
 type bodyObservation struct {
-	bytes []byte
-	exact bool
+	bytes   []byte
+	exact   bool
+	timeout bool
 }
 
 // observedBody records only bytes returned by application Read calls. EOF or a
@@ -142,18 +144,28 @@ type observedBody struct {
 	exact       bool
 	knownLength int64
 	sawEOF      bool
+	ctx         context.Context
+	timeout     bool
 }
 
-func newObservedBody(body io.ReadCloser, contentLength int64) *observedBody {
+func newObservedBody(body io.ReadCloser, contentLength int64, ctx context.Context) *observedBody {
 	return &observedBody{
 		ReadCloser:  body,
 		exact:       body == http.NoBody || contentLength == 0,
 		knownLength: contentLength,
+		ctx:         ctx,
 	}
 }
 
 func (b *observedBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
+	timeout := false
+	if err != nil && err != io.EOF && b.ctx != nil {
+		timeout = b.ctx.Err() == context.DeadlineExceeded
+		if deadline, ok := b.ctx.Deadline(); ok {
+			timeout = timeout || !time.Now().Before(deadline)
+		}
+	}
 	b.mu.Lock()
 	if n > 0 {
 		_, _ = b.buf.Write(p[:n])
@@ -168,6 +180,9 @@ func (b *observedBody) Read(p []byte) (int, error) {
 	} else {
 		b.exact = false
 	}
+	if timeout {
+		b.timeout = true
+	}
 	b.mu.Unlock()
 	return n, err
 }
@@ -180,8 +195,9 @@ func (b *observedBody) snapshot() bodyObservation {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return bodyObservation{
-		bytes: append([]byte(nil), b.buf.Bytes()...),
-		exact: b.exact,
+		bytes:   append([]byte(nil), b.buf.Bytes()...),
+		exact:   b.exact,
+		timeout: b.timeout,
 	}
 }
 
@@ -206,7 +222,7 @@ func captureRequestBody(request *http.Request) func() bodyObservation {
 	if contentLength == 0 {
 		contentLength = -1
 	}
-	body := &apiAttemptRequestBody{observedBody: newObservedBody(request.Body, contentLength)}
+	body := &apiAttemptRequestBody{observedBody: newObservedBody(request.Body, contentLength, request.Context())}
 	request.Body = body
 	return body.snapshot
 }

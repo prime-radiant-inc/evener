@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"net/url"
 	"sync/atomic"
+	"time"
 
 	apilog "primeradiant.com/serf/llm/apilog"
 )
@@ -42,61 +44,31 @@ func APITimeoutSourceForTransport(parent, attempt context.Context, transportErr 
 	if transportErr == nil || (parent != nil && parent.Err() != nil) {
 		return APITimeoutNone
 	}
-	var responseHeaderTimeout *responseHeaderTimeoutError
-	if errors.As(transportErr, &responseHeaderTimeout) {
-		return APITimeoutResponseHeader
-	}
-	if !errorIsTimeout(transportErr) {
-		return APITimeoutNone
-	}
-	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
-		return APITimeoutAdapter
-	}
-	return APITimeoutTransport
-}
-
-// APITimeoutSourceForAttempt resolves timeout ownership from errors actually
-// observed while sending or consuming one response. It does not infer a
-// timeout merely because a policy or deadline was configured.
-func APITimeoutSourceForAttempt(parent, attempt context.Context, current APITimeoutSource, evidence ...error) APITimeoutSource {
-	if current != APITimeoutNone || (parent != nil && parent.Err() != nil) {
-		return current
-	}
-	hasTimeoutEvidence := false
-	for _, err := range evidence {
-		if errorIsTimeout(err) {
-			hasTimeoutEvidence = true
-			break
+	if attempt != nil && attempt.Err() == context.DeadlineExceeded {
+		if deadline, ok := attempt.Deadline(); ok && !time.Now().Before(deadline) {
+			return APITimeoutAdapter
 		}
 	}
-	if !hasTimeoutEvidence {
-		return APITimeoutNone
+	transportCause := transportErr
+	if urlErr, ok := transportErr.(*url.Error); ok {
+		transportCause = urlErr.Err
 	}
-	if attempt != nil && errors.Is(attempt.Err(), context.DeadlineExceeded) {
-		return APITimeoutAdapter
+	if _, ok := transportCause.(*responseHeaderTimeoutError); ok {
+		return APITimeoutResponseHeader
 	}
-	return APITimeoutTransport
-}
-
-func errorIsTimeout(err error) bool {
-	if err == nil {
-		return false
+	if netErr, ok := transportCause.(*net.OpError); ok {
+		transportCause = netErr.Err
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
+	if transportCause == context.DeadlineExceeded {
+		return APITimeoutTransport
 	}
-	var timeout net.Error
-	return errors.As(err, &timeout) && timeout.Timeout()
+	return APITimeoutNone
 }
 
 // ClassifyAPIAttemptOutcome records attempt evidence without changing the
 // provider's existing error or retryability decisions.
-func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int, decodeErr, transportErr error) apilog.AttemptOutcomeClass {
+func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int, resultErr, decodeErr, transportErr error) apilog.AttemptOutcomeClass {
 	if owner.Parent != nil && owner.Parent.Err() != nil {
-		return apilog.AttemptCallerCancel
-	}
-	if owner.Attempt != nil && errors.Is(owner.Attempt.Err(), context.Canceled) &&
-		(errorIsCancellation(decodeErr) || errorIsCancellation(transportErr)) {
 		return apilog.AttemptCallerCancel
 	}
 	if attemptOwnedTimeout(owner, decodeErr, transportErr) {
@@ -105,23 +77,22 @@ func ClassifyAPIAttemptOutcome(owner APIAttemptContextOwnership, statusCode int,
 	if transportErr != nil {
 		return apilog.AttemptTransportFail
 	}
-	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+	if statusCode != 0 && (statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices) {
 		return apilog.AttemptProviderReject
 	}
 	if decodeErr != nil {
 		return apilog.AttemptDecodeFail
 	}
+	if resultErr != nil {
+		return apilog.AttemptTransportFail
+	}
 	return apilog.AttemptSuccess
-}
-
-func errorIsCancellation(err error) bool {
-	return err != nil && errors.Is(err, context.Canceled)
 }
 
 func attemptOwnedTimeout(owner APIAttemptContextOwnership, decodeErr, transportErr error) bool {
 	switch owner.TimeoutSource {
 	case APITimeoutAdapter:
-		return owner.Attempt != nil && errors.Is(owner.Attempt.Err(), context.DeadlineExceeded)
+		return owner.Attempt != nil && owner.Attempt.Err() == context.DeadlineExceeded
 	case APITimeoutResponseHeader:
 		return transportErr != nil
 	case APITimeoutSSERead:
