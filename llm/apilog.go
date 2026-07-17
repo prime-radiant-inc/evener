@@ -377,22 +377,23 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.API
 	}
 	if f == nil {
 		l.mu.Unlock()
-		return fmt.Errorf("API logger has no destination")
+		return errors.New("API logger has no destination")
 	}
-	line := append(data, '\n')
+	line := append([]byte(nil), data...)
+	line = append(line, '\n')
 	written, writeErr := apiLogFileWrite(f, line)
 	if writeErr != nil {
-		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: %w", writeErr))
+		observedFailure, appendErr := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: %w", writeErr))
 		observation = &observedFailure
 		return appendErr
 	}
 	if written != len(line) {
-		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: wrote %d of %d bytes: %w", written, len(line), io.ErrShortWrite))
+		observedFailure, appendErr := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: wrote %d of %d bytes: %w", written, len(line), io.ErrShortWrite))
 		observation = &observedFailure
 		return appendErr
 	}
 	if err := apiLogFileSync(f); err != nil {
-		appendErr, observedFailure := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
+		observedFailure, appendErr := l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
 		observation = &observedFailure
 		return appendErr
 	}
@@ -400,13 +401,13 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record apilog.API
 	return nil
 }
 
-func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure APILogFailure, err error) (error, APILogFailure) {
+func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure APILogFailure, err error) (APILogFailure, error) {
 	credentialMaterial, _ := apiLogCredentialMaterialFromContext(ctx)
 	err = sanitizeAPILogError(err, credentialMaterial)
 	l.quarantineErr = err
 	failure.Err = err
 	l.mu.Unlock()
-	return markAPILogErrorObserved(err), failure
+	return failure, markAPILogErrorObserved(err)
 }
 
 func (l *APILogger) admitCanonicalAppend() error {

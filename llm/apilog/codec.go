@@ -59,7 +59,7 @@ func (d *Decoder) Next() (APILogRecord, error) {
 
 func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 	if d.maxLineBytes <= 0 {
-		return nil, false, false, fmt.Errorf("maximum line bytes must be positive")
+		return nil, false, false, errors.New("maximum line bytes must be positive")
 	}
 	for {
 		fragment, readErr := d.reader.ReadSlice('\n')
@@ -76,12 +76,12 @@ func (d *Decoder) readLine() (line []byte, complete, tooLong bool, err error) {
 			}
 		}
 
-		switch readErr {
-		case nil:
+		switch {
+		case readErr == nil:
 			return line, true, tooLong, nil
-		case bufio.ErrBufferFull:
+		case errors.Is(readErr, bufio.ErrBufferFull):
 			continue
-		case io.EOF:
+		case errors.Is(readErr, io.EOF):
 			return line, false, tooLong, nil
 		default:
 			return nil, false, tooLong, readErr
@@ -115,7 +115,7 @@ func ScanRecovery(r io.ReadSeeker, maxLineBytes int) (lastCompleteOffset int64, 
 
 func DecodeRecord(line []byte) (APILogRecord, error) {
 	if !utf8.Valid(line) {
-		return nil, fmt.Errorf("API-log record is not valid UTF-8")
+		return nil, errors.New("API-log record is not valid UTF-8")
 	}
 	var kind struct {
 		Kind string `json:"kind"`
@@ -176,7 +176,7 @@ func decodeStrict(data []byte, dst any) error {
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return fmt.Errorf("multiple JSON values")
+			return errors.New("multiple JSON values")
 		}
 		return err
 	}

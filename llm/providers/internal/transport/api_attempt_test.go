@@ -494,7 +494,7 @@ func TestObservedBodyEOFIsExactDespiteMismatchedKnownLength(t *testing.T) {
 			body := newObservedBody(&terminalReadCloser{data: testCase.data, err: io.EOF}, testCase.knownLength)
 			buf := make([]byte, len(testCase.data))
 			n, err := body.Read(buf)
-			if n != len(testCase.data) || err != io.EOF {
+			if n != len(testCase.data) || !errors.Is(err, io.EOF) {
 				t.Fatalf("Read = %d, %v; want %d, EOF", n, err, len(testCase.data))
 			}
 			observation := body.snapshot()

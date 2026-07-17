@@ -551,7 +551,7 @@ func TestAPILogStorageFailurePreservesProviderResultAndMarksSettlement(t *testin
 		return resp, providerErr
 	}
 	gotResp, gotErr := callProvider()
-	if gotResp.ID != "provider-response-identity" || gotErr != providerErr {
+	if gotResp.ID != "provider-response-identity" || !errors.Is(gotErr, providerErr) {
 		t.Fatalf("provider result changed by storage failure: (%+v, %v)", gotResp, gotErr)
 	}
 	group.Settle(ctx, apilog.AttemptProviderReject)

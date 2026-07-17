@@ -3,6 +3,7 @@ package apilog
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 )
@@ -27,13 +28,13 @@ func EncodeHeaderValue(data []byte) EncodedHeaderValue {
 
 func DecodeHeaderValue(value EncodedHeaderValue) ([]byte, error) {
 	if value.ByteCount < 0 {
-		return nil, fmt.Errorf("encoded header value byte count must be non-negative")
+		return nil, errors.New("encoded header value byte count must be non-negative")
 	}
 	var data []byte
 	switch value.Encoding {
 	case BodyUTF8:
 		if !utf8.ValidString(value.Data) {
-			return nil, fmt.Errorf("encoded UTF-8 header value contains invalid UTF-8")
+			return nil, errors.New("encoded UTF-8 header value contains invalid UTF-8")
 		}
 		data = []byte(value.Data)
 	case BodyBase64:

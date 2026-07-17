@@ -126,7 +126,6 @@ func (s *blockingRedirectSink) snapshot() []apilog.APIAttemptRecord {
 
 func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T) {
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			secondStarted := make(chan struct{})
@@ -253,7 +252,6 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 
 func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing.T) {
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -316,7 +314,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 			if len(requests) != 2 {
 				t.Fatalf("actual requests = %d, want 2", len(requests))
 			}
-			_ = <-requests
+			<-requests
 			secondRequest := <-requests
 			if got := secondRequest.header.Get("Cookie"); got != "redirect_cookie=present" {
 				t.Fatalf("redirect cookie = %q, want cookie from original client jar", got)
@@ -330,9 +328,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
 	for _, provider := range redirectProviders() {
-		provider := provider
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
-			status := status
 			t.Run(provider.name+"/"+http.StatusText(status), func(t *testing.T) {
 				requests := make(chan redirectRequest, 2)
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -414,7 +410,6 @@ func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testi
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
 	}
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			secondStarted := make(chan struct{})
@@ -477,7 +472,7 @@ func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testi
 			}
 
 			firstRequest := <-requests
-			_ = <-requests
+			<-requests
 			attempts := sink.snapshot()
 			if len(attempts) != 2 {
 				t.Fatalf("canonical attempts = %d, want 2", len(attempts))
@@ -490,7 +485,6 @@ func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testi
 func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 	const responseBody = `{"error":{"message":"redirect response"}}`
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -543,7 +537,6 @@ func TestCoreCompleteWireCapturePreservesErrUseLastResponse(t *testing.T) {
 
 func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *testing.T) {
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -611,7 +604,6 @@ func TestCoreCompleteWireCaptureRecordsRedirectThenFinalTransportFailure(t *test
 
 func TestCoreCompleteWireCaptureRecordsRejectedRedirectWithoutInventingHop(t *testing.T) {
 	for _, provider := range redirectProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			requests := make(chan redirectRequest, 2)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

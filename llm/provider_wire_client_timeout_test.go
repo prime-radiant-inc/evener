@@ -213,7 +213,6 @@ func (s *lockedAttemptSink) snapshot() []apilog.APIAttemptRecord {
 
 func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			body := &streamCloseResponseBody{
 				readEntered: make(chan struct{}),
@@ -275,7 +274,6 @@ func TestCoreStreamCloseRecordsCallerCancellationBeforeCloseReturns(t *testing.T
 
 func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		for _, streaming := range []bool{false, true} {
 			name := "complete"
 			if streaming {
@@ -337,7 +335,6 @@ func TestCoreActiveFinalBodyClosesUnderlyingExactlyOnce(t *testing.T) {
 
 func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		for _, testCase := range []struct {
 			name        string
 			body        string
@@ -349,7 +346,6 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 			{name: "malformed 2xx", body: `{"broken"`, wantOutcome: apilog.AttemptDecodeFail},
 			{name: "body read timeout", blockBody: true, wantOutcome: apilog.AttemptProviderTimeout},
 		} {
-			testCase := testCase
 			t.Run(provider.name+"/"+testCase.name, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
@@ -403,7 +399,6 @@ func TestCoreCompleteWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t
 
 func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		for _, testCase := range []struct {
 			name        string
 			body        string
@@ -415,7 +410,6 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 			{name: "malformed 2xx", body: provider.streamPrefix + "data: not-json\n\n", wantOutcome: apilog.AttemptDecodeFail},
 			{name: "SSE body read timeout", blockBody: true, wantOutcome: apilog.AttemptProviderTimeout},
 		} {
-			testCase := testCase
 			t.Run(provider.name+"/"+testCase.name, func(t *testing.T) {
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.Header().Set("Content-Type", "text/event-stream")
@@ -486,7 +480,6 @@ func TestCoreStreamWireCaptureWithClientTimeoutRetainsFinalSemanticOwnership(t *
 
 func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -519,7 +512,6 @@ func TestCoreCompleteWireCaptureClassifiesAdapterRequestBodyDeadline(t *testing.
 
 func TestCoreCompleteWireCaptureClassifiesAdapterConnectDeadline(t *testing.T) {
 	for _, provider := range timeoutProviders() {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			dialStarted := make(chan struct{})
 			var startOnce sync.Once

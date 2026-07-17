@@ -2,6 +2,7 @@ package apilog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -117,28 +118,28 @@ func (r APIAttemptRecord) validateRecord() error {
 		return fmt.Errorf("invalid attempt ID: %w", err)
 	}
 	if r.AttemptGroupID == "" {
-		return fmt.Errorf("attempt group ID is required")
+		return errors.New("attempt group ID is required")
 	}
 	if r.AttemptIndex < 1 {
-		return fmt.Errorf("attempt index must be at least 1")
+		return errors.New("attempt index must be at least 1")
 	}
 	if r.Timestamp.IsZero() {
-		return fmt.Errorf("timestamp is required")
+		return errors.New("timestamp is required")
 	}
 	if r.LatencyMS < 0 {
-		return fmt.Errorf("latency must be non-negative")
+		return errors.New("latency must be non-negative")
 	}
 	if r.ProviderInstance == "" {
-		return fmt.Errorf("provider instance is required")
+		return errors.New("provider instance is required")
 	}
 	if r.RequestModel == "" {
-		return fmt.Errorf("request model is required")
+		return errors.New("request model is required")
 	}
 	if r.Request.Method == "" {
-		return fmt.Errorf("request method is required")
+		return errors.New("request method is required")
 	}
 	if r.Request.Endpoint == "" {
-		return fmt.Errorf("request endpoint is required")
+		return errors.New("request endpoint is required")
 	}
 	if _, err := DecodeBody(r.Request.Body); err != nil {
 		return fmt.Errorf("invalid request body: %w", err)
@@ -147,7 +148,7 @@ func (r APIAttemptRecord) validateRecord() error {
 		return fmt.Errorf("unknown attempt outcome %q", r.Outcome)
 	}
 	if r.Outcome == AttemptSuccess && r.Response == nil {
-		return fmt.Errorf("successful attempt requires a response")
+		return errors.New("successful attempt requires a response")
 	}
 	if r.Response != nil {
 		if err := r.Response.validate(); err != nil {
@@ -165,13 +166,13 @@ func (r APIAttemptGroupSettlement) validateRecord() error {
 		return fmt.Errorf("schema version must be %d", recordSchemaVersion)
 	}
 	if r.AttemptGroupID == "" {
-		return fmt.Errorf("attempt group ID is required")
+		return errors.New("attempt group ID is required")
 	}
 	if r.FinalAttemptCount < 0 {
-		return fmt.Errorf("final attempt count must be non-negative")
+		return errors.New("final attempt count must be non-negative")
 	}
 	if r.FinalAttemptCount == 0 && r.FinalAttemptID != "" {
-		return fmt.Errorf("zero-attempt settlement cannot name a final attempt")
+		return errors.New("zero-attempt settlement cannot name a final attempt")
 	}
 	if r.FinalAttemptCount > 0 {
 		if err := identifier.ValidateAPIAttemptID(r.FinalAttemptID); err != nil {
@@ -182,17 +183,17 @@ func (r APIAttemptGroupSettlement) validateRecord() error {
 		return fmt.Errorf("unknown attempt outcome %q", r.Outcome)
 	}
 	if r.SettledAt.IsZero() {
-		return fmt.Errorf("settled timestamp is required")
+		return errors.New("settled timestamp is required")
 	}
 	return nil
 }
 
 func (r APIAttemptResponse) validate() error {
 	if r.StatusCode != nil && *r.StatusCode < 0 {
-		return fmt.Errorf("response status code must be non-negative")
+		return errors.New("response status code must be non-negative")
 	}
 	if r.TextLength != nil && *r.TextLength < 0 || r.ToolCallCount != nil && *r.ToolCallCount < 0 {
-		return fmt.Errorf("response compact counts must be non-negative")
+		return errors.New("response compact counts must be non-negative")
 	}
 	if _, err := DecodeBody(r.Body); err != nil {
 		return fmt.Errorf("invalid response body: %w", err)
@@ -207,13 +208,13 @@ func (u Usage) validate() error {
 	if u.InputTokens != nil && *u.InputTokens < 0 ||
 		u.OutputTokens != nil && *u.OutputTokens < 0 ||
 		u.TotalTokens != nil && *u.TotalTokens < 0 {
-		return fmt.Errorf("token usage must be non-negative")
+		return errors.New("token usage must be non-negative")
 	}
 	if u.CacheReadTokens != nil && *u.CacheReadTokens < 0 {
-		return fmt.Errorf("cache-read token usage must be non-negative")
+		return errors.New("cache-read token usage must be non-negative")
 	}
 	if u.CacheWriteTokens != nil && *u.CacheWriteTokens < 0 {
-		return fmt.Errorf("cache-write token usage must be non-negative")
+		return errors.New("cache-write token usage must be non-negative")
 	}
 	return nil
 }
@@ -264,7 +265,7 @@ func (r APIAttemptRecord) validateProviderEvidence() error {
 	}
 	for name, values := range r.Request.Headers {
 		if containsForbiddenDurableString(name, r.forbiddenEvidence, r.forbiddenCredentialNames) {
-			return fmt.Errorf("request header name contains credential material")
+			return errors.New("request header name contains credential material")
 		}
 		for _, value := range values {
 			if containsForbiddenEvidence([]byte(value), r.forbiddenEvidence, r.forbiddenCredentialNames) {

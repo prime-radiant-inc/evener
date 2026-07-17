@@ -124,7 +124,6 @@ func TestDefaultNameOpenAICompatibleWrapperFactoriesPreserveWireCaptureProvenanc
 	t.Cleanup(server.Close)
 
 	for _, providerType := range []string{"glm", "kimi", "ollama", "openrouter"} {
-		providerType := providerType
 		t.Run(providerType, func(t *testing.T) {
 			client, err := llm.NewFromProviders(providercfg.Config{
 				Instances: []providercfg.InstanceConfig{{

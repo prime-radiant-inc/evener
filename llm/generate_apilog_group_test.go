@@ -23,14 +23,14 @@ type logicalGroupScriptedAdapter struct {
 func (*logicalGroupScriptedAdapter) Name() string { return "scripted" }
 
 func (a *logicalGroupScriptedAdapter) Complete(ctx context.Context, req Request) (Response, error) {
-	resp, err, startedAt := a.next(req)
+	resp, startedAt, err := a.next(req)
 	attempt := BeginAPIAttempt(ctx, logicalGroupAttemptMeta(req, startedAt))
 	attempt.Complete(logicalGroupAttemptResult(resp, err, startedAt))
 	return resp, err
 }
 
 func (a *logicalGroupScriptedAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
-	resp, err, startedAt := a.next(req)
+	resp, startedAt, err := a.next(req)
 	attempt := BeginAPIAttempt(ctx, logicalGroupAttemptMeta(req, startedAt))
 	attempt.Complete(logicalGroupAttemptResult(resp, err, startedAt))
 	if err != nil {
@@ -49,7 +49,7 @@ func (a *logicalGroupScriptedAdapter) Stream(ctx context.Context, req Request) (
 	return stream, nil
 }
 
-func (a *logicalGroupScriptedAdapter) next(req Request) (Response, error, time.Time) {
+func (a *logicalGroupScriptedAdapter) next(req Request) (Response, time.Time, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	index := a.calls
@@ -64,7 +64,7 @@ func (a *logicalGroupScriptedAdapter) next(req Request) (Response, error, time.T
 		Message:  Assistant("ok"),
 		Finish:   FinishReason{Reason: FinishReasonStop},
 	}
-	return resp, err, time.Unix(1_700_000_000+int64(index), 0).UTC()
+	return resp, time.Unix(1_700_000_000+int64(index), 0).UTC(), err
 }
 
 func logicalGroupAttemptMeta(req Request, startedAt time.Time) APIAttemptMeta {
@@ -123,7 +123,7 @@ func TestGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 			if tt.succeedLast && gotErr != nil {
 				t.Fatalf("Generate error = %v, want nil", gotErr)
 			}
-			if !tt.succeedLast && gotErr != lastErr {
+			if !tt.succeedLast && !errors.Is(gotErr, lastErr) {
 				t.Fatalf("Generate error = %v, want final provider error %v", gotErr, lastErr)
 			}
 			if err := logger.Close(); err != nil {
@@ -164,7 +164,7 @@ func TestStreamGenerateOwnsOneLogicalAttemptGroupAcrossRetries(t *testing.T) {
 			if tt.succeedLast && gotErr != nil {
 				t.Fatalf("StreamGenerate response error = %v, want nil", gotErr)
 			}
-			if !tt.succeedLast && gotErr != lastErr {
+			if !tt.succeedLast && !errors.Is(gotErr, lastErr) {
 				t.Fatalf("StreamGenerate response error = %v, want final provider error %v", gotErr, lastErr)
 			}
 			if err := logger.Close(); err != nil {

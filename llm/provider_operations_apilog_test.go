@@ -174,7 +174,7 @@ func TestClientProviderOperationsWriteCanonicalAPILog(t *testing.T) {
 			if err != nil {
 				t.Fatalf("DecodeBody(request): %v", err)
 			}
-			if string(requestBody) != string(wireRequestBody) {
+			if !bytes.Equal(requestBody, wireRequestBody) {
 				t.Errorf("logged request body = %q, wire request body = %q", requestBody, wireRequestBody)
 			}
 			if attempt.Response == nil {

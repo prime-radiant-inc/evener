@@ -73,17 +73,15 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 	}
 
 	for _, provider := range providers {
-		provider := provider
 		t.Run(provider.name, func(t *testing.T) {
 			for _, testCase := range responseCases {
-				testCase := testCase
 				t.Run(testCase.name, func(t *testing.T) {
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						w.WriteHeader(testCase.status)
 						_, _ = w.Write(testCase.body)
 					}))
 					t.Cleanup(server.Close)
-					assertCompleteOutcome(t, provider.new(server.URL, server.Client()), context.Background(), nil, testCase.outcome, testCase.body)
+					assertCompleteOutcome(context.Background(), t, provider.new(server.URL, server.Client()), nil, testCase.outcome, testCase.body)
 				})
 			}
 
@@ -93,7 +91,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 				client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 					return nil, request.Context().Err()
 				})}
-				assertCompleteOutcome(t, provider.new("https://provider.test", client), ctx, nil, apilog.AttemptCallerCancel, nil)
+				assertCompleteOutcome(ctx, t, provider.new("https://provider.test", client), nil, apilog.AttemptCallerCancel, nil)
 			})
 
 			t.Run("provider timeout", func(t *testing.T) {
@@ -102,7 +100,7 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 					return nil, request.Context().Err()
 				})}
 				timeout := &llm.AdapterTimeout{Request: time.Millisecond}
-				assertCompleteOutcome(t, provider.new("https://provider.test", client), context.Background(), timeout, apilog.AttemptProviderTimeout, nil)
+				assertCompleteOutcome(context.Background(), t, provider.new("https://provider.test", client), timeout, apilog.AttemptProviderTimeout, nil)
 			})
 
 			t.Run("response header timeout", func(t *testing.T) {
@@ -114,14 +112,14 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 				t.Cleanup(server.Close)
 				t.Cleanup(func() { close(release) })
 				timeout := &llm.AdapterTimeout{Request: 10 * time.Millisecond}
-				assertCompleteOutcome(t, provider.new(server.URL, server.Client()), context.Background(), timeout, apilog.AttemptProviderTimeout, nil)
+				assertCompleteOutcome(context.Background(), t, provider.new(server.URL, server.Client()), timeout, apilog.AttemptProviderTimeout, nil)
 			})
 
 			t.Run("transport failure", func(t *testing.T) {
 				client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 					return nil, errors.New("round trip failed")
 				})}
-				assertCompleteOutcome(t, provider.new("https://provider.test", client), context.Background(), nil, apilog.AttemptTransportFail, nil)
+				assertCompleteOutcome(context.Background(), t, provider.new("https://provider.test", client), nil, apilog.AttemptTransportFail, nil)
 			})
 
 			t.Run("configured request budget does not relabel generic transport failure", func(t *testing.T) {
@@ -129,13 +127,13 @@ func TestCoreCompleteWireCaptureOutcomes(t *testing.T) {
 					return nil, errors.New("round trip failed")
 				})}
 				timeout := &llm.AdapterTimeout{Request: time.Second}
-				assertCompleteOutcome(t, provider.new("https://provider.test", client), context.Background(), timeout, apilog.AttemptTransportFail, nil)
+				assertCompleteOutcome(context.Background(), t, provider.new("https://provider.test", client), timeout, apilog.AttemptTransportFail, nil)
 			})
 		})
 	}
 }
 
-func assertCompleteOutcome(t *testing.T, adapter llm.ProviderAdapter, ctx context.Context, timeout *llm.AdapterTimeout, want apilog.AttemptOutcomeClass, wantResponseBody []byte) {
+func assertCompleteOutcome(ctx context.Context, t *testing.T, adapter llm.ProviderAdapter, timeout *llm.AdapterTimeout, want apilog.AttemptOutcomeClass, wantResponseBody []byte) {
 	t.Helper()
 	sink := &outcomeSink{}
 	ctx = llm.WithAPIAttemptSink(

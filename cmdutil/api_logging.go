@@ -32,8 +32,8 @@ func AttachAPILogger(client *llm.Client, stateDir string, warnings io.Writer, re
 
 	if warnings != nil {
 		apiLog.SetFailureObserver(func(failure llm.APILogFailure) {
-			fmt.Fprintf(warnings, "warning: canonical API log %s failed (session=%s group=%s attempt=%s): %v\n",
-				failure.Operation, failure.SessionID, failure.AttemptGroupID, failure.AttemptID, failure.Err) //nolint:errcheck
+			_, _ = fmt.Fprintf(warnings, "warning: canonical API log %s failed (session=%s group=%s attempt=%s): %v\n",
+				failure.Operation, failure.SessionID, failure.AttemptGroupID, failure.AttemptID, failure.Err)
 		})
 	}
 	client.Use(apiLog)

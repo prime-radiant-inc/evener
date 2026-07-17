@@ -2,6 +2,7 @@ package apilog
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 )
@@ -35,23 +36,23 @@ func EncodeBody(data []byte) EncodedBody {
 
 func DecodeBody(body EncodedBody) ([]byte, error) {
 	if body.Exact && body.CredentialValuesExcluded {
-		return nil, fmt.Errorf("encoded body cannot be exact when credential values were excluded")
+		return nil, errors.New("encoded body cannot be exact when credential values were excluded")
 	}
 	if body.CredentialValuesExcluded {
 		if body.Encoding != "" || body.Data != "" || body.ByteCount != 0 {
-			return nil, fmt.Errorf("credential-excluded body must not retain content")
+			return nil, errors.New("credential-excluded body must not retain content")
 		}
 		return nil, nil
 	}
 	if body.ByteCount < 0 {
-		return nil, fmt.Errorf("encoded body byte count must be non-negative")
+		return nil, errors.New("encoded body byte count must be non-negative")
 	}
 
 	var data []byte
 	switch body.Encoding {
 	case BodyUTF8:
 		if !utf8.ValidString(body.Data) {
-			return nil, fmt.Errorf("encoded UTF-8 body contains invalid UTF-8")
+			return nil, errors.New("encoded UTF-8 body contains invalid UTF-8")
 		}
 		data = []byte(body.Data)
 	case BodyBase64:
@@ -82,10 +83,10 @@ func (body *EncodedBody) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if decoded.Exact == nil {
-		return fmt.Errorf("encoded body exact truth field is required")
+		return errors.New("encoded body exact truth field is required")
 	}
 	if decoded.CredentialValuesExcluded == nil {
-		return fmt.Errorf("encoded body credential_values_excluded truth field is required")
+		return errors.New("encoded body credential_values_excluded truth field is required")
 	}
 	*body = EncodedBody{
 		Encoding:                 decoded.Encoding,

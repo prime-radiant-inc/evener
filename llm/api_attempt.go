@@ -537,16 +537,16 @@ func omitCredentialInt(value int, present bool, patterns, secretNames []string) 
 	if !present || containsCredentialEvidenceParts(strconv.Itoa(value), patterns, secretNames) {
 		return nil
 	}
-	copy := value
-	return &copy
+	valueCopy := value
+	return &valueCopy
 }
 
 func omitCredentialIntPointer(value *int, patterns, secretNames []string) *int {
 	if value == nil || containsCredentialEvidenceParts(strconv.Itoa(*value), patterns, secretNames) {
 		return nil
 	}
-	copy := *value
-	return &copy
+	valueCopy := *value
+	return &valueCopy
 }
 
 func encodeProviderBody(body []byte, inexact bool, patterns, secretNames []string) apilog.EncodedBody {
