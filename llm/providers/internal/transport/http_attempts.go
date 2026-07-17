@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"sync"
@@ -29,14 +30,16 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 		base = http.DefaultTransport
 	}
 	roundTripper := &apiAttemptRoundTripper{
-		base:      base,
-		parentCtx: parentCtx,
-		build:     build,
+		base:         base,
+		parentCtx:    parentCtx,
+		build:        build,
+		hasCookieJar: client.Jar != nil,
 	}
 	clientCopy := *client
 	clientCopy.Transport = roundTripper
+	clientCopy.CheckRedirect = roundTripper.observeRedirectCandidates(client.CheckRedirect)
 	response, err := clientCopy.Do(request)
-	roundTripper.flushPendingRedirect(llm.APILogCredentialMaterial{})
+	roundTripper.flushPendingRedirects()
 	if err != nil {
 		return response, roundTripper.takeTransportFailure(), err
 	}
@@ -44,14 +47,17 @@ func DoWithAPIAttempts(parentCtx context.Context, client *http.Client, request *
 }
 
 type apiAttemptRoundTripper struct {
-	base      http.RoundTripper
-	parentCtx context.Context
-	build     APIAttemptMetaBuilder
+	base         http.RoundTripper
+	parentCtx    context.Context
+	build        APIAttemptMetaBuilder
+	hasCookieJar bool
 
-	mu               sync.Mutex
-	transportFailure *APIAttemptCapture
-	pendingRedirect  *pendingAPIAttemptCompletion
-	responses        map[*http.Response]*apiAttemptResponseBody
+	mu                  sync.Mutex
+	transportFailure    *APIAttemptCapture
+	pendingRedirects    []*pendingAPIAttemptCompletion
+	attempts            []*APIAttemptCapture
+	credentialMaterials []llm.APILogCredentialMaterial
+	responses           map[*http.Response]*apiAttemptResponseBody
 }
 
 func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -59,7 +65,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	meta := t.build(request, nil)
 	attempt := BeginAPIAttempt(t.parentCtx, request.Context(), request, meta)
 	attempt.requestBody = requestBodySnapshot
-	t.flushPendingRedirect(attempt.credentialMaterial)
+	t.registerAttempt(attempt)
 
 	response, err := t.base.RoundTrip(request)
 	if err != nil {
@@ -94,6 +100,7 @@ func (t *apiAttemptRoundTripper) RoundTrip(request *http.Request) (*http.Respons
 	}
 	t.responses[response] = body
 	t.mu.Unlock()
+	t.mergeResponseCookieMaterial(response)
 	return response, nil
 }
 
@@ -103,34 +110,99 @@ func (t *apiAttemptRoundTripper) retainTransportFailure(attempt *APIAttemptCaptu
 	t.mu.Unlock()
 }
 
+func (t *apiAttemptRoundTripper) registerAttempt(attempt *APIAttemptCapture) {
+	t.mu.Lock()
+	priorMaterials := append([]llm.APILogCredentialMaterial(nil), t.credentialMaterials...)
+	t.attempts = append(t.attempts, attempt)
+	t.mu.Unlock()
+	for _, material := range priorMaterials {
+		attempt.mergeCredentialMaterial(material)
+	}
+	t.mergeCredentialMaterial(attempt.credentialMaterial)
+}
+
+func (t *apiAttemptRoundTripper) mergeCredentialMaterial(material llm.APILogCredentialMaterial) {
+	if len(material.HeaderNames) == 0 && len(material.QueryNames) == 0 && len(material.Values) == 0 {
+		return
+	}
+	t.mu.Lock()
+	t.credentialMaterials = append(t.credentialMaterials, material)
+	attempts := append([]*APIAttemptCapture(nil), t.attempts...)
+	t.mu.Unlock()
+	for _, attempt := range attempts {
+		attempt.mergeCredentialMaterial(material)
+	}
+}
+
+func (t *apiAttemptRoundTripper) mergeResponseCookieMaterial(response *http.Response) {
+	if !t.hasCookieJar || response == nil {
+		return
+	}
+	var values []string
+	for _, cookie := range response.Cookies() {
+		if cookie != nil && cookie.Value != "" {
+			values = append(values, cookie.Value)
+		}
+	}
+	t.mergeCredentialMaterial(llm.NewAPILogCredentialMaterial(nil, nil, values...))
+}
+
+// observeRedirectCandidates preserves the copied client's redirect policy while
+// exposing the final candidate after the policy has applied any mutations.
+func (t *apiAttemptRoundTripper) observeRedirectCandidates(policy func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	return func(candidate *http.Request, via []*http.Request) error {
+		var err error
+		if policy != nil {
+			err = policy(candidate, via)
+		} else if len(via) >= 10 {
+			// Match net/http's default policy for the otherwise nil hook.
+			err = errors.New("stopped after 10 redirects")
+		}
+		t.mergeRedirectCandidateMaterial(candidate)
+		return err
+	}
+}
+
+func (t *apiAttemptRoundTripper) mergeRedirectCandidateMaterial(candidate *http.Request) {
+	if candidate == nil {
+		return
+	}
+	t.mu.Lock()
+	configuredMaterials := append([]llm.APILogCredentialMaterial(nil), t.credentialMaterials...)
+	t.mu.Unlock()
+	t.mergeCredentialMaterial(llm.APILogCredentialMaterialForRequest(candidate, llm.APILogCredentialMaterial{}))
+	for _, configured := range configuredMaterials {
+		t.mergeCredentialMaterial(llm.APILogCredentialMaterialForRequest(candidate, configured))
+	}
+}
+
 type pendingAPIAttemptCompletion struct {
 	attempt   *APIAttemptCapture
 	result    llm.APIAttemptResult
 	decodeErr error
 }
 
-func (p *pendingAPIAttemptCompletion) complete(material llm.APILogCredentialMaterial) {
+func (p *pendingAPIAttemptCompletion) complete() {
 	if p == nil {
 		return
 	}
-	p.attempt.mergeCredentialMaterial(material)
 	p.attempt.Complete(p.result, llm.APITimeoutNone, p.decodeErr, nil)
 }
 
 func (t *apiAttemptRoundTripper) holdPendingRedirect(pending *pendingAPIAttemptCompletion) {
 	t.mu.Lock()
-	previous := t.pendingRedirect
-	t.pendingRedirect = pending
+	t.pendingRedirects = append(t.pendingRedirects, pending)
 	t.mu.Unlock()
-	previous.complete(llm.APILogCredentialMaterial{})
 }
 
-func (t *apiAttemptRoundTripper) flushPendingRedirect(material llm.APILogCredentialMaterial) {
+func (t *apiAttemptRoundTripper) flushPendingRedirects() {
 	t.mu.Lock()
-	pending := t.pendingRedirect
-	t.pendingRedirect = nil
+	pending := t.pendingRedirects
+	t.pendingRedirects = nil
 	t.mu.Unlock()
-	pending.complete(material)
+	for _, completion := range pending {
+		completion.complete()
+	}
 }
 
 func (t *apiAttemptRoundTripper) takeTransportFailure() *APIAttemptCapture {
@@ -271,12 +343,13 @@ type apiAttemptResponseBody struct {
 	claimed         bool
 	associationDone func()
 	deferCompletion func(*pendingAPIAttemptCompletion)
+	completionOnce  sync.Once
 	doneOnce        sync.Once
 }
 
 func (b *apiAttemptResponseBody) Close() error {
 	closeErr := b.observedBody.Close()
-	b.completeUnclaimed(closeErr)
+	b.completionOnce.Do(func() { b.completeUnclaimed(closeErr) })
 	return closeErr
 }
 
@@ -313,7 +386,7 @@ func (b *apiAttemptResponseBody) completeUnclaimed(closeErr error) {
 	if b.deferCompletion != nil {
 		b.deferCompletion(pending)
 	} else {
-		pending.complete(llm.APILogCredentialMaterial{})
+		pending.complete()
 	}
 	b.finishAssociation()
 }

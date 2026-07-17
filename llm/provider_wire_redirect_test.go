@@ -198,8 +198,8 @@ func TestCoreCompleteWireCaptureRecordsAcceptedRedirectHopsExactly(t *testing.T)
 			}
 			select {
 			case <-secondStarted:
-				t.Fatal("redirect target started before first hop append returned")
 			default:
+				t.Fatal("first redirect source appended before the redirect chain exposed later credentials")
 			}
 			sink.release()
 			select {
@@ -404,7 +404,7 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 	}
 }
 
-func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testing.T) {
+func TestCoreCompleteWireCaptureDefersUnreadLargeRedirectUntilChainReturns(t *testing.T) {
 	largeRedirectBody := bytes.Repeat([]byte("redirect-evidence-"), 512)
 	if len(largeRedirectBody) <= 2<<10 {
 		t.Fatalf("test body = %d bytes, want larger than net/http redirect slurp limit", len(largeRedirectBody))
@@ -458,8 +458,8 @@ func TestCoreCompleteWireCaptureAppendsUnreadLargeRedirectBeforeNextHop(t *testi
 			}
 			select {
 			case <-secondStarted:
-				t.Fatal("second hop started before unread redirect attempt append returned")
 			default:
+				t.Fatal("unread redirect source appended before the redirect chain returned")
 			}
 			sink.release()
 			select {

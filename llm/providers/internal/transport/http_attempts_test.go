@@ -11,8 +11,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -86,6 +88,63 @@ func onlyAttempt(t *testing.T, sink *responseAssociationSink) apilog.APIAttemptR
 		t.Fatalf("attempt count = %d, want 1", len(attempts))
 	}
 	return attempts[0]
+}
+
+func durableAttemptContext(t *testing.T, sessionID, groupID string) (context.Context, *llm.APIAttemptGroup, string) {
+	t.Helper()
+	stateDir := t.TempDir()
+	logger, err := llm.NewSessionAPILogger(stateDir)
+	if err != nil {
+		t.Fatalf("NewSessionAPILogger: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := logger.Close(); err != nil {
+			t.Errorf("close API logger: %v", err)
+		}
+	})
+	group := llm.NewAPIAttemptGroup(groupID)
+	ctx := llm.WithAPILogContext(context.Background(), sessionID)
+	ctx = llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(ctx, group), logger)
+	return ctx, group, filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+}
+
+func readDurableAttempts(t *testing.T, path string) []apilog.APIAttemptRecord {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("open API log: %v", err)
+	}
+	defer file.Close()
+	decoder := apilog.NewDecoder(file, 1<<20)
+	var attempts []apilog.APIAttemptRecord
+	for {
+		record, err := decoder.Next()
+		if err == io.EOF {
+			return attempts
+		}
+		if err != nil {
+			t.Fatalf("decode API log: %v", err)
+		}
+		if attempt, ok := record.(apilog.APIAttemptRecord); ok {
+			attempts = append(attempts, attempt)
+		}
+	}
+}
+
+func assertDurableAttemptExcludes(t *testing.T, attempt apilog.APIAttemptRecord, secrets ...string) {
+	t.Helper()
+	if attempt.Response == nil || !attempt.Response.Body.CredentialValuesExcluded {
+		t.Fatalf("response body = %+v, want credential exclusion", attempt.Response)
+	}
+	encoded, err := apilog.MarshalRecord(attempt)
+	if err != nil {
+		t.Fatalf("marshal durable attempt: %v", err)
+	}
+	for _, secret := range secrets {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("durable attempt persisted candidate credential %q", secret)
+		}
+	}
 }
 
 func TestDoWithAPIAttemptsRecordsOneAttemptPerRoundTrip(t *testing.T) {
@@ -683,6 +742,361 @@ func TestDoWithAPIAttemptsFlushesRedirectSourceWhenNoNextRoundTripOccurs(t *test
 			}
 		})
 	}
+}
+
+func TestDoWithAPIAttemptsRejectedRedirectCandidateSanitizesDurableSource(t *testing.T) {
+	const (
+		locationSecret = "candidate-location-secret"
+		headerSecret   = "candidate-header-secret"
+		userinfoSecret = "candidate-userinfo-secret"
+		cookieSecret   = "candidate-cookie-secret"
+		jarSecret      = "jar-only-secret"
+		credentialName = "X-Candidate-Credential"
+	)
+	tests := []struct {
+		name     string
+		decision error
+	}{
+		{name: "redirect rejected", decision: errors.New("candidate rejected")},
+		{name: "use last response", decision: http.ErrUseLastResponse},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var requestCount atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if requestCount.Add(1) != 1 {
+					t.Errorf("rejected candidate reached server: %s", request.URL)
+					return
+				}
+				http.SetCookie(w, &http.Cookie{Name: "jar_candidate", Value: jarSecret, Path: "/"})
+				w.Header().Set("Location", "/candidate?access_token="+url.QueryEscape(locationSecret))
+				w.WriteHeader(http.StatusFound)
+				_, _ = w.Write([]byte(strings.Join([]string{
+					locationSecret,
+					headerSecret,
+					userinfoSecret,
+					cookieSecret,
+				}, " ")))
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatalf("create cookie jar: %v", err)
+			}
+			client.Jar = jar
+			client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+				if _, err := request.Cookie("jar_candidate"); !errors.Is(err, http.ErrNoCookie) {
+					t.Fatalf("cookie jar populated rejected candidate before RoundTrip: %v", err)
+				}
+				request.Header.Set(credentialName, headerSecret)
+				request.Header.Set("Cookie", "candidate="+cookieSecret)
+				request.URL.User = url.UserPassword("candidate-user", userinfoSecret)
+				return testCase.decision
+			}
+			ctx, group, logPath := durableAttemptContext(
+				t,
+				"sess-rejected-candidate-"+strconv.Itoa(len(testCase.name)),
+				"ag_rejected_candidate_"+strconv.Itoa(len(testCase.name)),
+			)
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/start", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+				return llm.APIAttemptMeta{
+					ProviderInstance: "test",
+					RequestModel:     "test-model",
+					CredentialMaterial: llm.NewAPILogCredentialMaterial(
+						[]string{credentialName},
+						nil,
+					),
+				}
+			})
+			if testCase.decision == http.ErrUseLastResponse {
+				if err != nil {
+					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
+				}
+				if attempt == nil {
+					t.Fatal("ErrUseLastResponse lost the source attempt")
+				}
+				if _, err := io.ReadAll(response.Body); err != nil {
+					t.Fatalf("read last response: %v", err)
+				}
+				attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+			} else {
+				if !errors.Is(err, testCase.decision) {
+					t.Fatalf("rejected redirect error = %v, want %v", err, testCase.decision)
+				}
+				if attempt != nil {
+					t.Fatalf("rejected redirect returned attempt %#v", attempt)
+				}
+			}
+			if got := requestCount.Load(); got != 1 {
+				t.Fatalf("server requests = %d, want source only", got)
+			}
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			storedJarSecret := false
+			for _, cookie := range client.Jar.Cookies(serverURL) {
+				storedJarSecret = storedJarSecret || cookie.Name == "jar_candidate" && cookie.Value == jarSecret
+			}
+			if !storedJarSecret {
+				t.Fatal("test did not establish that the response cookie reached the jar")
+			}
+			group.Settle(ctx, apilog.AttemptProviderReject)
+			attempts := readDurableAttempts(t, logPath)
+			if len(attempts) != 1 {
+				t.Fatalf("durable attempts = %d, want one source", len(attempts))
+			}
+			assertDurableAttemptExcludes(
+				t,
+				attempts[0],
+				locationSecret,
+				headerSecret,
+				userinfoSecret,
+				cookieSecret,
+			)
+		})
+	}
+}
+
+func TestDoWithAPIAttemptsDefaultRedirectRejectionSanitizesLocationCredential(t *testing.T) {
+	const secret = "default-policy-location-secret"
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		count := requestCount.Add(1)
+		location := "/hop/" + strconv.Itoa(int(count))
+		body := "ordinary redirect"
+		if count == 10 {
+			location = "/rejected?access_token=" + url.QueryEscape(secret)
+			body = secret
+		}
+		w.Header().Set("Location", location)
+		w.WriteHeader(http.StatusFound)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, group, logPath := durableAttemptContext(t, "sess-default-rejection", "ag_default_rejection")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, attemptMeta)
+	if err == nil || !strings.Contains(err.Error(), "stopped after 10 redirects") {
+		t.Fatalf("default redirect error = %v, want ten-redirect rejection", err)
+	}
+	if attempt != nil {
+		t.Fatalf("default redirect rejection returned attempt %#v", attempt)
+	}
+	if got := requestCount.Load(); got != 10 {
+		t.Fatalf("server requests = %d, want 10", got)
+	}
+	group.Settle(ctx, apilog.AttemptProviderReject)
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 10 {
+		t.Fatalf("durable attempts = %d, want 10 actual RoundTrips", len(attempts))
+	}
+	assertDurableAttemptExcludes(t, attempts[len(attempts)-1], secret)
+}
+
+func TestDoWithAPIAttemptsRejectedRedirectSanitizesRealJarCookieFromSource(t *testing.T) {
+	const secret = "rejected-source-cookie-secret"
+	tests := []struct {
+		name     string
+		decision error
+	}{
+		{name: "redirect rejected", decision: errors.New("jar candidate rejected")},
+		{name: "use last response", decision: http.ErrUseLastResponse},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				http.SetCookie(w, &http.Cookie{Name: "session", Value: secret, Path: "/"})
+				w.Header().Set("Location", "/candidate")
+				w.WriteHeader(http.StatusFound)
+				_, _ = w.Write([]byte(secret))
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatalf("create cookie jar: %v", err)
+			}
+			client.Jar = jar
+			client.CheckRedirect = func(request *http.Request, _ []*http.Request) error {
+				if _, err := request.Cookie("session"); !errors.Is(err, http.ErrNoCookie) {
+					t.Fatalf("jar cookie reached rejected candidate before RoundTrip: %v", err)
+				}
+				return testCase.decision
+			}
+			ctx, group, logPath := durableAttemptContext(
+				t,
+				"sess-rejected-jar-"+strconv.Itoa(len(testCase.name)),
+				"ag_rejected_jar_"+strconv.Itoa(len(testCase.name)),
+			)
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/start", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+			if testCase.decision == http.ErrUseLastResponse {
+				if err != nil {
+					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
+				}
+				if _, err := io.ReadAll(response.Body); err != nil {
+					t.Fatalf("read last response: %v", err)
+				}
+				attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+			} else if !errors.Is(err, testCase.decision) {
+				t.Fatalf("rejected redirect error = %v, want %v", err, testCase.decision)
+			}
+			group.Settle(ctx, apilog.AttemptProviderReject)
+			attempts := readDurableAttempts(t, logPath)
+			if len(attempts) != 1 {
+				t.Fatalf("durable attempts = %d, want source only", len(attempts))
+			}
+			assertDurableAttemptExcludes(t, attempts[0], secret)
+		})
+	}
+}
+
+func TestDoWithAPIAttemptsFutureRedirectCredentialSanitizesEveryEarlierSource(t *testing.T) {
+	const secret = "third-hop-future-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/start":
+			w.Header().Set("Location", "/second")
+			w.WriteHeader(http.StatusFound)
+			_, _ = w.Write([]byte(secret))
+		case "/second":
+			w.Header().Set("Location", "/final?access_token="+url.QueryEscape(secret))
+			w.WriteHeader(http.StatusFound)
+			_, _ = w.Write([]byte("second redirect"))
+		case "/final":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("final response"))
+		default:
+			t.Errorf("unexpected request path %q", request.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	ctx, group, logPath := durableAttemptContext(t, "sess-future-redirect", "ag_future_redirect")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), request, attemptMeta)
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read final response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	group.Settle(ctx, apilog.AttemptSuccess)
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 3 {
+		t.Fatalf("durable attempts = %d, want three actual RoundTrips", len(attempts))
+	}
+	assertDurableAttemptExcludes(t, attempts[0], secret)
+}
+
+type closeSequenceBody struct {
+	reader io.Reader
+	errors []error
+
+	mu         sync.Mutex
+	closeCount int
+}
+
+func (b *closeSequenceBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+
+func (b *closeSequenceBody) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	index := b.closeCount
+	b.closeCount++
+	if index < len(b.errors) {
+		return b.errors[index]
+	}
+	return nil
+}
+
+func (b *closeSequenceBody) closes() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closeCount
+}
+
+func TestDoWithAPIAttemptsRedirectHookDoubleCloseDefersSourceOnce(t *testing.T) {
+	const (
+		secret         = "double-close-candidate-secret"
+		credentialName = "X-Double-Close-Credential"
+	)
+	firstCloseErr := errors.New("first close sentinel")
+	secondCloseErr := errors.New("second close sentinel")
+	body := &closeSequenceBody{
+		reader: strings.NewReader(secret),
+		errors: []error{firstCloseErr, secondCloseErr},
+	}
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode:    http.StatusFound,
+			Header:        http.Header{"Location": []string{"https://provider.test/candidate"}},
+			Body:          body,
+			ContentLength: int64(len(secret)),
+		}, nil
+	})}
+	client.CheckRedirect = func(candidate *http.Request, _ []*http.Request) error {
+		if _, err := io.ReadAll(candidate.Response.Body); err != nil {
+			t.Fatalf("read source body in redirect hook: %v", err)
+		}
+		candidate.Header.Set(credentialName, secret)
+		if err := candidate.Response.Body.Close(); !errors.Is(err, firstCloseErr) {
+			t.Fatalf("first source Close = %v, want %v", err, firstCloseErr)
+		}
+		if err := candidate.Response.Body.Close(); !errors.Is(err, secondCloseErr) {
+			t.Fatalf("second source Close = %v, want %v", err, secondCloseErr)
+		}
+		return errors.New("reject after double close")
+	}
+	ctx, group, logPath := durableAttemptContext(t, "sess-double-close", "ag_double_close")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{credentialName},
+				nil,
+			),
+		}
+	})
+	if err == nil {
+		t.Fatal("double-close redirect unexpectedly succeeded")
+	}
+	if attempt != nil {
+		t.Fatalf("double-close redirect returned attempt %#v", attempt)
+	}
+	if got := body.closes(); got != 3 {
+		t.Fatalf("underlying closes = %d, want two hook closes plus net/http close", got)
+	}
+	group.Settle(ctx, apilog.AttemptProviderReject)
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 1 {
+		t.Fatalf("durable attempts = %d, want one source", len(attempts))
+	}
+	assertDurableAttemptExcludes(t, attempts[0], secret)
 }
 
 func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
