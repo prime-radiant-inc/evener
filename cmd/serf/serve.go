@@ -49,7 +49,10 @@ import (
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
 var serveLoadClient = cmdutil.LoadClient
-var serveAttachAPILogger = cmdutil.AttachAPILogger
+var serveAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
+	return cmdutil.AttachAPILogger(client, stateDir, warnings)
+}
+var serveAttachSessionAPILogger = cmdutil.AttachAPILogger
 
 type serveServer interface {
 	http.Handler
@@ -100,6 +103,7 @@ type serveDeps struct {
 	seedMarketplaces func() error
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
+	attachAPILogger  func(*llm.Client, string, io.Writer, ...string) (func() error, error)
 	buildProfile     func(providercfg.Config, cmdutil.ModelRef, string) (*provider.Profile, error)
 	applyCheap       func(*provider.Profile, string, *llm.Client) (*provider.Profile, error)
 	newSession       func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, agent.SessionConfig) (*agent.Session, error)
@@ -133,8 +137,9 @@ func defaultServeDeps() serveDeps {
 		newFlagSet: flag.NewFlagSet,
 		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
 		seedMarketplaces: func() error { _, err := plugins.NewManager("").SeedDefaultMarketplaces(); return err },
-		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newServeLLMClient,
-		buildProfile: buildInitialProfile, applyCheap: applyFastCheapModel,
+		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
+		attachAPILogger: serveAttachSessionAPILogger,
+		buildProfile:    buildInitialProfile, applyCheap: applyFastCheapModel,
 		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
 		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
 			var lc net.ListenConfig
@@ -155,15 +160,31 @@ func defaultServeDeps() serveDeps {
 }
 
 func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
+	client, cfg, hasConfig, closeClient, err := newUnloggedServeLLMClient(stateDir, warnings)
+	if err != nil {
+		return nil, providercfg.Config{}, false, nil, err
+	}
+	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
+	if err != nil {
+		_ = closeClient()
+		return nil, providercfg.Config{}, false, nil, err
+	}
+	return client, cfg, hasConfig, func() error {
+		apiLogErr := closeAPILog()
+		clientErr := closeClient()
+		if apiLogErr != nil {
+			return apiLogErr
+		}
+		return clientErr
+	}, nil
+}
+
+func newUnloggedServeLLMClient(stateDir string, _ io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
 	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
 		return nil, providercfg.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
 	}
-	closeAPILog, err := serveAttachAPILogger(client, stateDir, warnings)
-	if err != nil {
-		return nil, providercfg.Config{}, false, nil, err
-	}
-	return client, cfg, hasConfig, closeAPILog, nil
+	return client, cfg, hasConfig, func() error { return nil }, nil
 }
 
 func runServe(args []string) error {
@@ -304,7 +325,17 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 
 	// Create LLM client and session.
-	client, provCfg, hasProvConfig, closeAPILog, err := deps.newClient(sd, os.Stderr)
+	client, provCfg, hasProvConfig, closeClient, err := deps.newClient(sd, os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer closeClient() //nolint:errcheck
+	var closeAPILog func() error
+	if resuming {
+		closeAPILog, err = deps.attachAPILogger(client, sd, os.Stderr, resumedMeta.ID)
+	} else {
+		closeAPILog, err = deps.attachAPILogger(client, sd, os.Stderr)
+	}
 	if err != nil {
 		return err
 	}

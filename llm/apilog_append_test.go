@@ -157,77 +157,182 @@ func TestSessionAPILoggerCanonicalRoutesUnattributed(t *testing.T) {
 	}
 }
 
-func TestAPILoggerCanonicalPeriodicSync(t *testing.T) {
-	t.Run("interval retains dirty records until close", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "api.jsonl")
-		logger, err := NewAPILogger(path)
-		if err != nil {
-			t.Fatalf("NewAPILogger: %v", err)
+func TestAPILoggerCanonicalSyncsEveryAppendBeforeSuccess(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "api.jsonl")
+	logger, err := NewAPILogger(path)
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldSync := apiLogFileSync
+	t.Cleanup(func() { apiLogFileSync = oldSync })
+	syncCount := 0
+	apiLogFileSync = func(file *os.File) error {
+		syncCount++
+		return oldSync(file)
+	}
+	for index := 1; index <= 2; index++ {
+		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_sync_each", index)); err != nil {
+			t.Fatalf("AppendAttempt %d: %v", index, err)
 		}
-		logger.SyncInterval = time.Hour
-		for index := 1; index <= 5; index++ {
-			if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_periodic", index)); err != nil {
-				t.Fatalf("AppendAttempt %d: %v", index, err)
-			}
+		if syncCount != index {
+			t.Fatalf("sync calls after append %d = %d, want %d", index, syncCount, index)
 		}
-		logger.mu.Lock()
-		dirty := len(logger.dirty)
-		logger.mu.Unlock()
-		if dirty != 1 {
-			t.Fatalf("dirty files = %d, want 1", dirty)
-		}
-		if err := logger.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		if got := canonicalRecordCount(t, path); got != 5 {
-			t.Fatalf("record count after close = %d, want 5", got)
-		}
-	})
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if syncCount != 2 {
+		t.Fatalf("Close added a deferred sync: got %d total calls, want 2", syncCount)
+	}
+	if got := canonicalRecordCount(t, path); got != 2 {
+		t.Fatalf("record count after close = %d, want 2", got)
+	}
+}
 
-	t.Run("zero interval syncs every append", func(t *testing.T) {
-		logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
-		if err != nil {
-			t.Fatalf("NewAPILogger: %v", err)
-		}
-		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_immediate", 1)); err != nil {
-			t.Fatalf("AppendAttempt: %v", err)
-		}
-		logger.mu.Lock()
-		dirty := len(logger.dirty)
-		logger.mu.Unlock()
-		if dirty != 0 {
-			t.Fatalf("dirty files = %d, want 0", dirty)
-		}
-		if err := logger.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
+func TestAPILoggerCanonicalAppendUsesOneNewlineTerminatedWrite(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldWrite := apiLogFileWrite
+	oldSync := apiLogFileSync
+	t.Cleanup(func() {
+		apiLogFileWrite = oldWrite
+		apiLogFileSync = oldSync
 	})
+	var writes [][]byte
+	apiLogFileWrite = func(file *os.File, data []byte) (int, error) {
+		writes = append(writes, append([]byte(nil), data...))
+		return oldWrite(file, data)
+	}
+	syncCount := 0
+	apiLogFileSync = func(file *os.File) error {
+		syncCount++
+		return oldSync(file)
+	}
 
-	t.Run("expired interval syncs pending records", func(t *testing.T) {
-		logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
-		if err != nil {
-			t.Fatalf("NewAPILogger: %v", err)
-		}
-		logger.SyncInterval = time.Hour
-		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_expired", 1)); err != nil {
-			t.Fatalf("first AppendAttempt: %v", err)
-		}
-		logger.mu.Lock()
-		logger.lastSync = time.Now().Add(-2 * time.Hour)
-		logger.mu.Unlock()
-		if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_expired", 2)); err != nil {
-			t.Fatalf("second AppendAttempt: %v", err)
-		}
-		logger.mu.Lock()
-		dirty := len(logger.dirty)
-		logger.mu.Unlock()
-		if dirty != 0 {
-			t.Fatalf("dirty files = %d, want 0", dirty)
-		}
-		if err := logger.Close(); err != nil {
-			t.Fatalf("Close: %v", err)
-		}
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_one_write", 1)); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
+	}
+	if len(writes) != 1 {
+		t.Fatalf("write calls = %d, want exactly 1", len(writes))
+	}
+	if !bytes.HasSuffix(writes[0], []byte{'\n'}) || bytes.Count(writes[0], []byte{'\n'}) != 1 {
+		t.Fatalf("append bytes are not one newline-terminated record: %q", writes[0])
+	}
+	if _, err := apilog.DecodeRecord(bytes.TrimSuffix(writes[0], []byte{'\n'})); err != nil {
+		t.Fatalf("written record is not canonical: %v", err)
+	}
+	if syncCount != 1 {
+		t.Fatalf("sync calls = %d, want 1", syncCount)
+	}
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAPILoggerCanonicalShortWriteIsSticky(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldWrite := apiLogFileWrite
+	oldSync := apiLogFileSync
+	t.Cleanup(func() {
+		apiLogFileWrite = oldWrite
+		apiLogFileSync = oldSync
+		_ = logger.Close()
 	})
+	writeCount := 0
+	apiLogFileWrite = func(_ *os.File, data []byte) (int, error) {
+		writeCount++
+		return len(data) - 1, nil
+	}
+	syncCount := 0
+	apiLogFileSync = func(*os.File) error {
+		syncCount++
+		return nil
+	}
+	var failures []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
+
+	first := standaloneCanonicalAttempt("ag_short_write", 1)
+	if err := logger.AppendAttempt(context.Background(), first); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short AppendAttempt error = %v, want io.ErrShortWrite", err)
+	}
+	apiLogFileWrite = oldWrite
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_short_write", 1)); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("AppendAttempt after short write = %v, want sticky io.ErrShortWrite", err)
+	}
+	if writeCount != 1 || syncCount != 0 {
+		t.Fatalf("filesystem calls after short write = writes:%d syncs:%d, want 1 and 0", writeCount, syncCount)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("short-write observations = %d, want 1: %+v", len(failures), failures)
+	}
+	if err := logger.Close(); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("Close error = %v, want sticky io.ErrShortWrite", err)
+	}
+}
+
+func TestAPILoggerCanonicalWriteFailureIsSticky(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldWrite := apiLogFileWrite
+	t.Cleanup(func() {
+		apiLogFileWrite = oldWrite
+		_ = logger.Close()
+	})
+	writeErr := errors.New("write failed")
+	writeCount := 0
+	apiLogFileWrite = func(*os.File, []byte) (int, error) {
+		writeCount++
+		return 0, writeErr
+	}
+	var failures []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
+
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_write_failure", 1)); !errors.Is(err, writeErr) {
+		t.Fatalf("AppendAttempt error = %v, want %v", err, writeErr)
+	}
+	apiLogFileWrite = oldWrite
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_after_write_failure", 1)); !errors.Is(err, writeErr) {
+		t.Fatalf("AppendAttempt after write failure = %v, want sticky %v", err, writeErr)
+	}
+	if writeCount != 1 {
+		t.Fatalf("write calls after quarantine = %d, want 1", writeCount)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("write-failure observations = %d, want 1: %+v", len(failures), failures)
+	}
+	if err := logger.Close(); !errors.Is(err, writeErr) {
+		t.Fatalf("Close error = %v, want sticky %v", err, writeErr)
+	}
+}
+
+func TestAPILoggerFailureDoesNotChangeProviderResult(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
+	if err != nil {
+		t.Fatalf("NewAPILogger: %v", err)
+	}
+	oldSync := apiLogFileSync
+	syncErr := errors.New("sync failed")
+	apiLogFileSync = func(*os.File) error { return syncErr }
+	t.Cleanup(func() {
+		apiLogFileSync = oldSync
+		_ = logger.Close()
+	})
+	want := Response{ID: "provider-response", Message: Assistant("provider result")}
+	startedAt := time.Unix(1_700_000_000, 0).UTC()
+	got, gotErr := logger.WrapComplete(func(ctx context.Context, _ Request) (Response, error) {
+		BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
+		return want, nil
+	})(context.Background(), Request{})
+	if gotErr != nil || got.ID != want.ID || got.Text() != want.Text() {
+		t.Fatalf("provider result after logging failure = (%+v, %v), want (%+v, nil)", got, gotErr, want)
+	}
 }
 
 func TestStampEndpointURL(t *testing.T) {
@@ -467,36 +572,50 @@ func TestAPILoggerCanonicalSyncFailureObserved(t *testing.T) {
 	oldSync := apiLogFileSync
 	apiLogFileSync = func(*os.File) error { return syncErr }
 	t.Cleanup(func() { apiLogFileSync = oldSync })
-	failures := make(chan APILogFailure, 1)
-	logger.SetFailureObserver(func(failure APILogFailure) { failures <- failure })
+	var failures []APILogFailure
+	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
 	group := NewAPIAttemptGroup("ag_sync_failure")
 	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), logger)
 	startedAt := time.Unix(1_700_000_000, 0).UTC()
 	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
-	select {
-	case failure := <-failures:
-		if failure.Operation != "append_attempt" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
-			t.Fatalf("sync failure = %+v", failure)
-		}
-		if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
-			t.Fatalf("sync failure retained raw error graph: %+v", failure)
-		}
-	default:
-		t.Fatal("sync failure was not reported")
+	if len(failures) != 1 {
+		t.Fatalf("sync failure observations = %d, want 1: %+v", len(failures), failures)
 	}
+	failure := failures[0]
+	if failure.Operation != "append_attempt" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
+		t.Fatalf("sync failure = %+v", failure)
+	}
+	if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
+		t.Fatalf("sync failure retained raw error graph: %+v", failure)
+	}
+
 	apiLogFileSync = oldSync
-	if err := logger.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	second := standaloneCanonicalAttempt("ag_after_sync_failure", 1)
+	secondErr := logger.AppendAttempt(context.Background(), second)
+	if secondErr == nil {
+		t.Fatal("AppendAttempt after sync failure succeeded")
+	}
+	if errors.Is(secondErr, syncErr) || errors.Unwrap(secondErr) != nil {
+		t.Fatalf("sticky append retained raw error graph: %v", secondErr)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("sticky failure produced duplicate observations: %+v", failures)
+	}
+	closeErr := logger.Close()
+	if closeErr == nil {
+		t.Fatal("Close after sync failure succeeded")
+	}
+	if errors.Is(closeErr, syncErr) || errors.Unwrap(closeErr) != nil {
+		t.Fatalf("sticky Close retained raw error graph: %v", closeErr)
 	}
 }
 
-func TestAPILoggerCanonicalSyncFailureOwnedByAffectedSessionGroup(t *testing.T) {
+func TestAPILoggerCanonicalSyncFailureQuarantinesAllSessionRoutes(t *testing.T) {
 	stateDir := t.TempDir()
 	logger, err := NewSessionAPILogger(stateDir)
 	if err != nil {
 		t.Fatalf("NewSessionAPILogger: %v", err)
 	}
-	logger.SyncInterval = time.Hour
 	var failures []APILogFailure
 	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
 	syncErr := errors.New("session A sync failed")
@@ -510,17 +629,14 @@ func TestAPILoggerCanonicalSyncFailureOwnedByAffectedSessionGroup(t *testing.T) 
 	t.Cleanup(func() { apiLogFileSync = oldSync })
 
 	completeCanonicalGroup(t, logger, "sess-a", "ag_session_a_sync", time.Unix(1_700_000_000, 0).UTC())
-	logger.mu.Lock()
-	logger.lastSync = time.Now().Add(-2 * time.Hour)
-	logger.mu.Unlock()
 	completeCanonicalGroup(t, logger, "sess-b", "ag_session_b_sync", time.Unix(1_700_000_001, 0).UTC())
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := logger.Close(); !errors.Is(err, syncErr) {
+		t.Fatalf("Close = %v, want sticky %v", err, syncErr)
 	}
-	if len(failures) != 2 {
-		t.Fatalf("sync failure observer calls = %d, want attempt and settlement for session A: %+v", len(failures), failures)
+	if len(failures) != 1 {
+		t.Fatalf("sync failure observer calls = %d, want one session A failure: %+v", len(failures), failures)
 	}
 	for _, failure := range failures {
 		if failure.SessionID != "sess-a" || failure.AttemptGroupID != "ag_session_a_sync" {
@@ -533,56 +649,34 @@ func TestAPILoggerCanonicalSyncFailureOwnedByAffectedSessionGroup(t *testing.T) 
 	if failures[0].Operation != "append_attempt" || failures[0].AttemptID == "" {
 		t.Fatalf("attempt sync failure identity = %+v", failures[0])
 	}
-	if failures[1].Operation != "append_settlement" || failures[1].AttemptID != "" {
-		t.Fatalf("settlement sync failure identity = %+v", failures[1])
-	}
-
-	settlementA := readOnlyCanonicalSettlement(t, filepath.Join(stateDir, "sessions", "sess-a.api.jsonl"))
-	if settlementA.ForensicIncomplete {
-		t.Fatalf("session A append-only settlement was rewritten: %+v", settlementA)
-	}
-	settlementB := readOnlyCanonicalSettlement(t, filepath.Join(stateDir, "sessions", "sess-b.api.jsonl"))
-	if settlementB.ForensicIncomplete {
-		t.Fatalf("session B settlement = %+v, want complete forensics", settlementB)
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", "sess-b.api.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("quarantined logger accessed session B target: %v", err)
 	}
 }
 
-func TestAPILoggerCloseObservesPendingCanonicalSyncFailureIdentity(t *testing.T) {
-	stateDir := t.TempDir()
-	logger, err := NewSessionAPILogger(stateDir)
+func TestAPILoggerCloseDoesNotResyncAcceptedRecords(t *testing.T) {
+	logger, err := NewAPILogger(filepath.Join(t.TempDir(), "api.jsonl"))
 	if err != nil {
-		t.Fatalf("NewSessionAPILogger: %v", err)
+		t.Fatalf("NewAPILogger: %v", err)
 	}
-	logger.SyncInterval = time.Hour
-	var failures []APILogFailure
-	logger.SetFailureObserver(func(failure APILogFailure) { failures = append(failures, failure) })
-	group := NewAPIAttemptGroup("ag_close_sync")
-	ctx := WithAPILogContext(context.Background(), "sess-close-sync")
-	ctx = WithAPIAttemptSink(WithAPIAttemptGroup(ctx, group), logger)
-	startedAt := time.Unix(1_700_000_000, 0).UTC()
-	BeginAPIAttempt(ctx, testAPIAttemptMeta(startedAt)).Complete(testAPIAttemptResult(startedAt.Add(time.Millisecond), apilog.AttemptSuccess, nil))
-
-	syncErr := errors.New("close sync failed")
 	oldSync := apiLogFileSync
+	syncCount := 0
 	apiLogFileSync = func(file *os.File) error {
-		if strings.HasSuffix(file.Name(), "sess-close-sync.api.jsonl") {
-			return syncErr
-		}
+		syncCount++
 		return oldSync(file)
 	}
 	t.Cleanup(func() { apiLogFileSync = oldSync })
-	if err := logger.Close(); !errors.Is(err, syncErr) {
-		t.Fatalf("Close error = %v, want %v", err, syncErr)
+	if err := logger.AppendAttempt(context.Background(), standaloneCanonicalAttempt("ag_close_no_sync", 1)); err != nil {
+		t.Fatalf("AppendAttempt: %v", err)
 	}
-	if len(failures) != 1 {
-		t.Fatalf("failure observer calls = %d, want 1: %+v", len(failures), failures)
+	if syncCount != 1 {
+		t.Fatalf("sync calls after append = %d, want 1", syncCount)
 	}
-	failure := failures[0]
-	if failure.Operation != "append_attempt" || failure.SessionID != "sess-close-sync" || failure.AttemptGroupID != group.ID || failure.AttemptID == "" {
-		t.Fatalf("close sync failure identity = %+v", failure)
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
-	if errors.Is(failure.Err, syncErr) || errors.Unwrap(failure.Err) != nil {
-		t.Fatalf("close sync failure retained raw error graph: %+v", failure)
+	if syncCount != 1 {
+		t.Fatalf("Close added a sync: got %d total calls, want 1", syncCount)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -15,8 +16,11 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -793,5 +797,77 @@ func TestRunServe_ResumeNonexistent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NONEXISTENT") {
 		t.Fatalf("error = %v, want to mention NONEXISTENT", err)
+	}
+}
+
+func TestServeResumeRunningReservesBeforeRestore(t *testing.T) {
+	adapter := &scriptedProvider{name: "openai"}
+	installServeScriptedProvider(t, adapter)
+	tests := []struct {
+		name string
+		flag func(string) []string
+	}{
+		{name: "resume", flag: func(id string) []string { return []string{"--resume", id} }},
+		{name: "resume-last", flag: func(string) []string { return []string{"--resume-last"} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+			meta := schema.SessionMeta{
+				ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+				CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+			}
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatalf("SaveSessionMeta: %v", err)
+			}
+			sessionsDir := filepath.Join(stateDir, "sessions")
+			transcriptPath := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
+			if err := os.WriteFile(transcriptPath, []byte("transcript sentinel\n"), 0o600); err != nil {
+				t.Fatalf("write transcript sentinel: %v", err)
+			}
+			jobsDir := filepath.Join(sessionsDir, sessionID)
+			if err := os.Mkdir(jobsDir, 0o700); err != nil {
+				t.Fatalf("mkdir jobs: %v", err)
+			}
+			jobsPath := filepath.Join(jobsDir, "jobs.jsonl")
+			if err := os.WriteFile(jobsPath, []byte("jobs sentinel\n"), 0o600); err != nil {
+				t.Fatalf("write jobs sentinel: %v", err)
+			}
+			apiPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")
+			owner, err := llm.NewAPILogger(apiPath)
+			if err != nil {
+				t.Fatalf("NewAPILogger owner: %v", err)
+			}
+			before := readResumeArtifacts(t, stateDir, sessionID, transcriptPath, jobsPath, apiPath)
+
+			restoreCalled := false
+			deps := defaultServeDeps()
+			deps.ensureConfigDirs = func() error { return nil }
+			deps.seedMarketplaces = func() error { return nil }
+			deps.restoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+				restoreCalled = true
+				return nil, errors.New("restore reached")
+			}
+			args := []string{"--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir()}
+			args = append(args, tt.flag(sessionID)...)
+			serveErr := runServeWithDeps(args, deps)
+			if closeErr := owner.Close(); closeErr != nil {
+				t.Fatalf("owner Close: %v", closeErr)
+			}
+			if serveErr == nil || !strings.Contains(serveErr.Error(), "already running") || !strings.Contains(serveErr.Error(), "send work") || !strings.Contains(serveErr.Error(), "fork") {
+				t.Fatalf("serve error = %v, want live-session or fork guidance", serveErr)
+			}
+			if restoreCalled {
+				t.Fatal("RestoreSessionFromMetaWithConfig was called before API-log ownership")
+			}
+			if got := len(adapter.Requests()); got != 0 {
+				t.Fatalf("provider requests = %d, want 0", got)
+			}
+			after := readResumeArtifacts(t, stateDir, sessionID, transcriptPath, jobsPath, apiPath)
+			if !equalResumeArtifacts(before, after) {
+				t.Fatalf("resume lock conflict mutated session artifacts:\n before=%q\n  after=%q", before, after)
+			}
+		})
 	}
 }

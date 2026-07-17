@@ -83,7 +83,12 @@ var (
 		_, err := plugins.NewManager("").SeedDefaultMarketplaces()
 		return err
 	}
-	runAttachAPILogger  = cmdutil.AttachAPILogger
+	runAttachAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer) (func() error, error) {
+		return cmdutil.AttachAPILogger(client, stateDir, warnings)
+	}
+	runAttachResumedAPILogger = func(client *llm.Client, stateDir string, warnings io.Writer, sessionID string) (func() error, error) {
+		return cmdutil.AttachAPILogger(client, stateDir, warnings, sessionID)
+	}
 	runNewSession       = agent.NewSession
 	runRestoreSession   = agent.RestoreSessionFromMetaWithConfig
 	runProvisionSandbox = provisionSandbox
@@ -188,7 +193,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
+	var closeAPILog func() error
+	if meta != nil {
+		closeAPILog, err = runAttachResumedAPILogger(client, stateDir, cfg.stderr, meta.ID)
+	} else {
+		closeAPILog, err = runAttachAPILogger(client, stateDir, cfg.stderr)
+	}
 	if err != nil {
 		return err
 	}

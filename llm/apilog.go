@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"primeradiant.com/serf/identifier"
 	apilog "primeradiant.com/serf/llm/apilog"
@@ -33,10 +33,14 @@ func getAPILogContext(ctx context.Context) (APILogContext, bool) {
 }
 
 var apiLogJSONMarshal = json.Marshal
+var apiLogFileWrite = func(f *os.File, data []byte) (int, error) { return f.Write(data) }
 var apiLogFileSync = func(f *os.File) error { return f.Sync() }
 var apiLogFileClose = func(f *os.File) error { return f.Close() }
 
 var errAPILoggerClosed = errors.New("API logger is closed")
+
+// ErrAPILogTargetLocked reports that another process owns the target API log.
+var ErrAPILogTargetLocked = errors.New("API log target is already running")
 
 const canonicalAPILogMaxLineBytes = 128 << 20
 
@@ -47,12 +51,6 @@ type observedAPILogError struct {
 func (e observedAPILogError) Error() string           { return e.err.Error() }
 func (e observedAPILogError) Unwrap() error           { return e.err }
 func (observedAPILogError) apiLogFailureWasObserved() {}
-
-type pendingAPILogFailure struct {
-	id                 uint64
-	failure            APILogFailure
-	credentialMaterial APILogCredentialMaterial
-}
 
 // APILogger persists canonical transport attempts and logical-call settlements.
 // NewAPILogger writes one file; NewSessionAPILogger routes by session id.
@@ -66,15 +64,9 @@ type APILogger struct {
 	failureMu            sync.RWMutex
 	failureObserver      func(APILogFailure)
 
-	sessionsDir  string
-	sessionFiles map[string]*os.File
-
-	SyncInterval time.Duration
-	dirty        map[*os.File]struct{}
-	lastSync     time.Time
-
-	canonicalPending map[*os.File][]pendingAPILogFailure
-	nextPendingID    uint64
+	sessionsDir   string
+	sessionFiles  map[string]*os.File
+	quarantineErr error
 }
 
 // NewAPILogger opens one private canonical API-log file for durable appends.
@@ -86,12 +78,7 @@ func NewAPILogger(path string) (*APILogger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &APILogger{
-		file:             f,
-		dirty:            map[*os.File]struct{}{},
-		canonicalPending: map[*os.File][]pendingAPILogFailure{},
-		lastSync:         time.Now(),
-	}, nil
+	return &APILogger{file: f}, nil
 }
 
 // NewSessionAPILogger routes private canonical API-log appends by session ID
@@ -102,11 +89,8 @@ func NewSessionAPILogger(stateDir string) (*APILogger, error) {
 		return nil, err
 	}
 	return &APILogger{
-		sessionsDir:      sessionsDir,
-		sessionFiles:     map[string]*os.File{},
-		dirty:            map[*os.File]struct{}{},
-		canonicalPending: map[*os.File][]pendingAPILogFailure{},
-		lastSync:         time.Now(),
+		sessionsDir:  sessionsDir,
+		sessionFiles: map[string]*os.File{},
 	}, nil
 }
 
@@ -141,6 +125,23 @@ func (l *APILogger) sessionFileWithError(sessionID string) (*os.File, error) {
 	return f, nil
 }
 
+// ReserveSession eagerly acquires ownership of a known resumed session's API
+// log. Fresh sessions remain lazy and open their unique target on first append.
+func (l *APILogger) ReserveSession(sessionID string) error {
+	if err := l.admitCanonicalAppend(); err != nil {
+		return err
+	}
+	defer l.canonicalAppends.Done()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.sessionsDir == "" {
+		return errors.New("API logger does not route session files")
+	}
+	_, err := l.sessionFileWithError(sessionID)
+	return err
+}
+
 func ensurePrivateAPILogDirectory(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
@@ -148,22 +149,6 @@ func ensurePrivateAPILogDirectory(path string) error {
 		return err
 	}
 	return os.MkdirAll(path, 0o700)
-}
-
-func openPrivateAPILogFile(path string) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	if err := recoverCanonicalAPILogTail(f, canonicalAPILogMaxLineBytes); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return f, nil
 }
 
 func recoverCanonicalAPILogTail(file *os.File, maxLineBytes int) error {
@@ -360,6 +345,11 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 		return fmt.Errorf("marshal API-log record: %w", err)
 	}
 	l.mu.Lock()
+	if l.quarantineErr != nil {
+		err := l.quarantineErr
+		l.mu.Unlock()
+		return observedAPILogError{err: err}
+	}
 	f := l.file
 	if l.sessionsDir != "" {
 		f, err = l.sessionFileWithError(apiLogSessionID(ctx))
@@ -372,39 +362,29 @@ func (l *APILogger) appendCanonicalRecord(ctx context.Context, record any, failu
 		l.mu.Unlock()
 		return fmt.Errorf("API logger has no destination")
 	}
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		l.mu.Unlock()
-		return fmt.Errorf("append API-log record: %w", err)
+	line := append(data, '\n')
+	written, writeErr := apiLogFileWrite(f, line)
+	if writeErr != nil {
+		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: %w", writeErr))
 	}
-	l.dirty[f] = struct{}{}
-	credentialMaterial, coordinatorManaged := apiLogCredentialMaterialFromContext(ctx)
-	l.nextPendingID++
-	pendingID := l.nextPendingID
-	l.canonicalPending[f] = append(l.canonicalPending[f], pendingAPILogFailure{
-		id:                 pendingID,
-		failure:            failure,
-		credentialMaterial: credentialMaterial,
-	})
-	syncFailures, observations := l.syncDirtyLocked()
-	ownSyncErr := syncFailures[f]
+	if written != len(line) {
+		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("append API-log record: wrote %d of %d bytes: %w", written, len(line), io.ErrShortWrite))
+	}
+	if err := apiLogFileSync(f); err != nil {
+		return l.quarantineCanonicalAppendLocked(ctx, failure, fmt.Errorf("sync API-log record: %w", err))
+	}
 	l.mu.Unlock()
-	ownObserved := false
-	for _, observation := range observations {
-		if observation.id == pendingID && coordinatorManaged {
-			continue
-		}
-		if observation.id == pendingID {
-			ownObserved = true
-		}
-		l.observeAPILogFailure(observation.failure)
-	}
-	if ownSyncErr != nil {
-		if ownObserved {
-			return observedAPILogError{err: ownSyncErr}
-		}
-		return ownSyncErr
-	}
 	return nil
+}
+
+func (l *APILogger) quarantineCanonicalAppendLocked(ctx context.Context, failure APILogFailure, err error) error {
+	credentialMaterial, _ := apiLogCredentialMaterialFromContext(ctx)
+	err = sanitizeAPILogError(err, credentialMaterial)
+	l.quarantineErr = err
+	failure.Err = err
+	l.mu.Unlock()
+	l.observeAPILogFailure(failure)
+	return observedAPILogError{err: err}
 }
 
 func (l *APILogger) admitCanonicalAppend() error {
@@ -417,40 +397,8 @@ func (l *APILogger) admitCanonicalAppend() error {
 	return nil
 }
 
-func (l *APILogger) syncDirtyLocked() (map[*os.File]error, []pendingAPILogFailure) {
-	if l.SyncInterval > 0 && time.Since(l.lastSync) < l.SyncInterval {
-		return nil, nil
-	}
-	var syncFailures map[*os.File]error
-	var observations []pendingAPILogFailure
-	for dirtyFile := range l.dirty {
-		if err := apiLogFileSync(dirtyFile); err != nil {
-			if syncFailures == nil {
-				syncFailures = map[*os.File]error{}
-			}
-			syncErr := fmt.Errorf("sync API-log record: %w", err)
-			syncFailures[dirtyFile] = syncErr
-			observations = append(observations, l.takeCanonicalSyncFailuresLocked(dirtyFile, syncErr)...)
-			continue
-		}
-		delete(l.dirty, dirtyFile)
-		delete(l.canonicalPending, dirtyFile)
-	}
-	l.lastSync = time.Now()
-	return syncFailures, observations
-}
-
-func (l *APILogger) takeCanonicalSyncFailuresLocked(file *os.File, err error) []pendingAPILogFailure {
-	failures := l.canonicalPending[file]
-	delete(l.canonicalPending, file)
-	for i := range failures {
-		failures[i].failure.Err = sanitizeAPILogError(err, failures[i].credentialMaterial)
-	}
-	return failures
-}
-
-// Close stops new appends, waits for admitted appends, syncs dirty records,
-// and closes every canonical API-log file owned by the logger.
+// Close stops new appends, waits for admitted appends, and closes every
+// canonical API-log file owned by the logger.
 func (l *APILogger) Close() error {
 	l.canonicalAdmissionMu.Lock()
 	l.canonicalClosing = true
@@ -458,20 +406,10 @@ func (l *APILogger) Close() error {
 	l.canonicalAppends.Wait()
 
 	l.mu.Lock()
-	var firstErr error
-	var observations []pendingAPILogFailure
+	firstErr := l.quarantineErr
 	closeFile := func(f *os.File) {
 		if f == nil {
 			return
-		}
-		if err := apiLogFileSync(f); err != nil {
-			observations = append(observations, l.takeCanonicalSyncFailuresLocked(f, fmt.Errorf("sync API-log record: %w", err))...)
-			if firstErr == nil {
-				firstErr = err
-			}
-		} else {
-			delete(l.dirty, f)
-			delete(l.canonicalPending, f)
 		}
 		if err := apiLogFileClose(f); err != nil && firstErr == nil {
 			firstErr = err
@@ -483,13 +421,8 @@ func (l *APILogger) Close() error {
 		closeFile(f)
 	}
 	l.sessionFiles = map[string]*os.File{}
-	l.dirty = map[*os.File]struct{}{}
-	l.canonicalPending = map[*os.File][]pendingAPILogFailure{}
 	l.sessionsDir = ""
 	l.mu.Unlock()
-	for _, observation := range observations {
-		l.observeAPILogFailure(observation.failure)
-	}
 	return firstErr
 }
 

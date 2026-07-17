@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
@@ -306,6 +310,108 @@ func TestResumeLast_NoSessions(t *testing.T) {
 	if !strings.Contains(err.Error(), "no saved sessions") {
 		t.Fatalf("expected error about no sessions, got: %v", err)
 	}
+}
+
+func TestRunResumeRunningReservesBeforeRestore(t *testing.T) {
+	adapter := &scriptedProvider{name: "openai"}
+	installRunScriptedProvider(t, adapter)
+	oldRestore := runRestoreSession
+	t.Cleanup(func() { runRestoreSession = oldRestore })
+
+	tests := []struct {
+		name      string
+		configure func(*runConfig, string)
+	}{
+		{name: "resume", configure: func(cfg *runConfig, id string) { cfg.resume = id }},
+		{name: "resume-last", configure: func(cfg *runConfig, _ string) { cfg.resumeLast = true }},
+		{name: "resume-with", configure: func(cfg *runConfig, id string) { cfg.resumeWith = id; cfg.prompt = "continue" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+			meta := schema.SessionMeta{
+				ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+				CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+			}
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatalf("SaveSessionMeta: %v", err)
+			}
+			sessionsDir := filepath.Join(stateDir, "sessions")
+			transcriptPath := filepath.Join(sessionsDir, sessionID+".transcript.jsonl")
+			if err := os.WriteFile(transcriptPath, []byte("transcript sentinel\n"), 0o600); err != nil {
+				t.Fatalf("write transcript sentinel: %v", err)
+			}
+			jobsDir := filepath.Join(sessionsDir, sessionID)
+			if err := os.Mkdir(jobsDir, 0o700); err != nil {
+				t.Fatalf("mkdir jobs: %v", err)
+			}
+			jobsPath := filepath.Join(jobsDir, "jobs.jsonl")
+			if err := os.WriteFile(jobsPath, []byte("jobs sentinel\n"), 0o600); err != nil {
+				t.Fatalf("write jobs sentinel: %v", err)
+			}
+			apiPath := filepath.Join(sessionsDir, sessionID+".api.jsonl")
+			owner, err := llm.NewAPILogger(apiPath)
+			if err != nil {
+				t.Fatalf("NewAPILogger owner: %v", err)
+			}
+			before := readResumeArtifacts(t, stateDir, sessionID, transcriptPath, jobsPath, apiPath)
+
+			restoreCalled := false
+			runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+				restoreCalled = true
+				return nil, errors.New("restore reached")
+			}
+			cfg := runConfig{
+				workDir: stateDir, stateDir: stateDir, noDefaultMarketplaces: true,
+				stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+			}
+			tt.configure(&cfg, sessionID)
+			runErr := run(context.Background(), cfg)
+			if closeErr := owner.Close(); closeErr != nil {
+				t.Fatalf("owner Close: %v", closeErr)
+			}
+			if runErr == nil || !strings.Contains(runErr.Error(), "already running") || !strings.Contains(runErr.Error(), "send work") || !strings.Contains(runErr.Error(), "fork") {
+				t.Fatalf("run error = %v, want live-session or fork guidance", runErr)
+			}
+			if restoreCalled {
+				t.Fatal("RestoreSessionFromMetaWithConfig was called before API-log ownership")
+			}
+			if got := len(adapter.Requests()); got != 0 {
+				t.Fatalf("provider requests = %d, want 0", got)
+			}
+			after := readResumeArtifacts(t, stateDir, sessionID, transcriptPath, jobsPath, apiPath)
+			if !equalResumeArtifacts(before, after) {
+				t.Fatalf("resume lock conflict mutated session artifacts:\n before=%q\n  after=%q", before, after)
+			}
+		})
+	}
+}
+
+func readResumeArtifacts(t *testing.T, stateDir, sessionID string, paths ...string) map[string]string {
+	t.Helper()
+	paths = append(paths, filepath.Join(stateDir, "sessions", sessionID+".meta.json"))
+	artifacts := make(map[string]string, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read resume artifact %s: %v", path, err)
+		}
+		artifacts[path] = string(data)
+	}
+	return artifacts
+}
+
+func equalResumeArtifacts(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for path, content := range left {
+		if right[path] != content {
+			return false
+		}
+	}
+	return true
 }
 
 // --- Drain event tests ---

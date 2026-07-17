@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,10 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AttachAPILogger: %v", err)
 	}
+	apiPath := filepath.Join(dir, "sessions", "sess-1.api.jsonl")
+	if _, err := os.Stat(apiPath); !os.IsNotExist(err) {
+		t.Fatalf("fresh session API log opened before first append: %v", err)
+	}
 
 	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "sess-1"), llm.Request{
 		Provider: "test",
@@ -62,7 +67,6 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 		t.Fatalf("closeLog: %v", err)
 	}
 
-	apiPath := filepath.Join(dir, "sessions", "sess-1.api.jsonl")
 	f, err := os.Open(apiPath)
 	if err != nil {
 		t.Fatalf("open sessions/sess-1.api.jsonl: %v", err)
@@ -91,5 +95,30 @@ func TestAttachAPILoggerWritesAPIJSONL(t *testing.T) {
 	// The project-level api.jsonl is frozen: never written by new sessions.
 	if _, err := os.Stat(filepath.Join(dir, "api.jsonl")); !os.IsNotExist(err) {
 		t.Fatalf("project-level api.jsonl was written (stat err=%v)", err)
+	}
+}
+
+func TestAttachAPILoggerRejectsRunningResumedSession(t *testing.T) {
+	stateDir := t.TempDir()
+	const sessionID = "sess-running"
+	apiPath := filepath.Join(stateDir, "sessions", sessionID+".api.jsonl")
+	owner, err := llm.NewAPILogger(apiPath)
+	if err != nil {
+		t.Fatalf("NewAPILogger owner: %v", err)
+	}
+	defer owner.Close() //nolint:errcheck
+
+	closeLog, err := AttachAPILogger(llm.NewClient(), stateDir, nil, sessionID)
+	if err == nil {
+		_ = closeLog()
+		t.Fatal("AttachAPILogger acquired a running resumed session")
+	}
+	if closeLog != nil {
+		t.Fatal("AttachAPILogger returned a closer after reservation failed")
+	}
+	for _, guidance := range []string{"already running", "send work", "fork"} {
+		if !strings.Contains(err.Error(), guidance) {
+			t.Fatalf("reservation error = %q, want %q guidance", err, guidance)
+		}
 	}
 }

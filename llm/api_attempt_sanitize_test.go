@@ -225,8 +225,8 @@ func TestAPILoggerSyncFailureWarningUsesAttemptCredentialSanitizationExactlyOnce
 	}
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := logger.Close(); !errors.Is(err, syncErr) {
+		t.Fatalf("Close error = %v, want sticky %v", err, syncErr)
 	}
 }
 
@@ -273,8 +273,8 @@ func TestAPILoggerSettlementSyncFailureUsesGroupCredentialSanitizationExactlyOnc
 	}
 
 	apiLogFileSync = oldSync
-	if err := logger.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if err := logger.Close(); !errors.Is(err, syncErr) {
+		t.Fatalf("Close error = %v, want sticky %v", err, syncErr)
 	}
 }
 
