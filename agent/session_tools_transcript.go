@@ -130,6 +130,11 @@ func execReadTranscript(deps *toolDeps, args map[string]any) (any, error) {
 	rangeArg := strings.TrimSpace(stringArg(args, "range"))
 	format := strings.TrimSpace(stringArg(args, "format"))
 	if strings.HasPrefix(selector, "job:") {
+		for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
+			if _, present := args[name]; present {
+				return nil, fmt.Errorf("invalid_request: %s applies only to session transcript refs", name)
+			}
+		}
 		return readJobTranscript(deps, selector, rangeArg, format)
 	}
 	return execReadSessionTranscript(deps, args)

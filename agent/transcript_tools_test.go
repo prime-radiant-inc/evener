@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -48,6 +49,78 @@ func TestReadTranscriptReadsShellJobRef(t *testing.T) {
 	}
 	if !strings.Contains(out.Content, "hello") {
 		t.Fatalf("content missing shell output: %q", out.Content)
+	}
+}
+
+func TestReadTranscriptPublicDefinitionContinuesSessionExpansion(t *testing.T) {
+	dir := newBucket(t)
+	sessionID := identifier.MustNewSessionID()
+	path := transcriptPath(dir, sessionID)
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: sessionID, Model: "test-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(strings.Repeat("expanded", 100)))); err != nil {
+		_ = w.Close()
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	saveFindMeta(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()})
+
+	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
+	registered := readTranscriptTool(deps)
+	properties := registered.Definition.Parameters["properties"].(map[string]any)
+	for _, name := range []string{"offset_bytes", "max_bytes"} {
+		if _, ok := properties[name]; !ok {
+			t.Fatalf("read_transcript public definition is missing %q", name)
+		}
+	}
+
+	first, err := registered.Exec(context.Background(), nil, map[string]any{
+		"transcript_ref": sessionID,
+		"expand_turn":    float64(0),
+		"max_bytes":      float64(32),
+	})
+	if err != nil {
+		t.Fatalf("first read_transcript expansion: %v", err)
+	}
+	firstEnvelope := first.(readMarkdownEnvelope)
+	if firstEnvelope.Continuation == nil || firstEnvelope.Continuation.OffsetBytes != 32 {
+		t.Fatalf("first continuation = %+v, want offset 32", firstEnvelope.Continuation)
+	}
+
+	second, err := registered.Exec(context.Background(), nil, map[string]any{
+		"transcript_ref": sessionID,
+		"expand_turn":    float64(0),
+		"offset_bytes":   float64(firstEnvelope.Continuation.OffsetBytes),
+		"max_bytes":      float64(32),
+	})
+	if err != nil {
+		t.Fatalf("continued read_transcript expansion: %v", err)
+	}
+	secondEnvelope := second.(readMarkdownEnvelope)
+	if secondEnvelope.Expansion == nil || secondEnvelope.Expansion.OffsetBytes != 32 {
+		t.Fatalf("second expansion = %+v, want offset 32", secondEnvelope.Expansion)
+	}
+}
+
+func TestReadTranscriptRejectsSessionPagingArgumentsForJobRefs(t *testing.T) {
+	for _, name := range []string{"range", "expand_turn", "offset_bytes", "max_bytes"} {
+		t.Run(name, func(t *testing.T) {
+			value := any(float64(1))
+			if name == "range" {
+				value = "last:1"
+			}
+			_, err := execReadTranscript(nil, map[string]any{
+				"transcript_ref": "job:job_test",
+				name:             value,
+			})
+			if err == nil || !strings.Contains(err.Error(), "applies only to session transcript refs") {
+				t.Fatalf("job %s error = %v, want session-only argument rejection", name, err)
+			}
+		})
 	}
 }
 

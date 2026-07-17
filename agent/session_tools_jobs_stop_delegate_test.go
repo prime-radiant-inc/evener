@@ -876,7 +876,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefDelegateSend(), "delegate_send", []string{"to", "message"})
 
 	readProps := tooldefs.DefReadTranscript().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"transcript_ref", "format", "range", "expand_turn"} {
+	for _, param := range []string{"transcript_ref", "format", "range", "expand_turn", "offset_bytes", "max_bytes"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("read_transcript missing param %q", param)
 		}

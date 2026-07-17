@@ -765,7 +765,7 @@ func DefReadTranscript() llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_transcript",
-		Description: "Read raw evidence by transcript_ref. Accepts session refs from find_session_transcripts or delegate results, and job:<job_id> refs from job_status/job_list for shell output logs. format=markdown (default) is for comprehension; session refs also support outline and jsonl. Completion is notification-driven; do not poll this waiting for job completion.",
+		Description: "Read raw evidence by transcript_ref. Accepts session refs from find_session_transcripts or delegate results, and job:<job_id> refs from job_status/job_list for shell output logs. format=markdown (default) is for comprehension; session refs also support outline and jsonl. Session markdown can expand any semantic turn as byte-paged exact transcript_v2_jsonl; continue with offset_bytes from the returned handle. Completion is notification-driven; do not poll this waiting for job completion.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
@@ -774,7 +774,9 @@ func DefReadTranscript() llm.ToolDefinition {
 				"transcript_ref": map[string]any{"type": "string", "description": "Opaque session ref, bare session id, current, or job:<job_id>."},
 				"format":         map[string]any{"type": "string", "enum": []string{"outline", "markdown", "jsonl"}, "description": "markdown (default) = readable evidence. Session refs also support outline and jsonl."},
 				"range":          map[string]any{"type": "string", "description": "For session refs, turn-number window: \"12-40\" | \"last:40\" | \"start:40\". Omit for the default last 40."},
-				"expand_turn":    map[string]any{"type": "integer", "description": "For session refs, a Turn number whose tool results to render in full. markdown only."},
+				"expand_turn":    map[string]any{"type": "integer", "minimum": 0, "description": "Session markdown only: any semantic Turn N to expand as byte-paged exact transcript_v2_jsonl. Continue with offset_bytes from the returned handle."},
+				"offset_bytes":   map[string]any{"type": "integer", "minimum": 0, "description": "Session expansion byte offset from a continuation handle."},
+				"max_bytes":      map[string]any{"type": "integer", "minimum": 1, "maximum": 65536, "description": "Maximum session expansion bytes. Defaults to 16 KiB; hard maximum 64 KiB."},
 			},
 		},
 	}
