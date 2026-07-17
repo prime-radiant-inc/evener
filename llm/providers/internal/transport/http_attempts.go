@@ -145,21 +145,31 @@ func (b *standardGzipResponseBody) Read(p []byte) (int, error) {
 	if b.zerr != nil {
 		return 0, b.zerr
 	}
+	if b.http1Closed() {
+		return 0, errHTTP1ReadClosedGzipResponse
+	}
 	if b.zr == nil {
 		b.zr, b.zerr = gzip.NewReader(b.body)
 		if b.zerr != nil {
+			if b.http1Closed() {
+				b.zerr = errHTTP1ReadClosedGzipResponse
+			}
 			return 0, b.zerr
 		}
 	}
-	if b.protocolMajor < 2 {
-		b.mu.Lock()
-		closed := b.closed
-		b.mu.Unlock()
-		if closed {
-			return 0, errHTTP1ReadClosedGzipResponse
-		}
+	if b.http1Closed() {
+		return 0, errHTTP1ReadClosedGzipResponse
 	}
 	return b.zr.Read(p)
+}
+
+func (b *standardGzipResponseBody) http1Closed() bool {
+	if b.protocolMajor >= 2 {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
 }
 
 func (b *standardGzipResponseBody) Close() error {

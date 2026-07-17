@@ -387,6 +387,64 @@ func TestDoWithAPIAttemptsPreservesGzipReadAfterCloseSemantics(t *testing.T) {
 	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
 }
 
+func TestDoWithAPIAttemptsPreservesHTTP1GzipCloseBeforeFirstReadSemantics(t *testing.T) {
+	providerGzip := gzipBytes(t, []byte("provider response"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(providerGzip)
+	}))
+	t.Cleanup(server.Close)
+
+	inactiveRequest, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inactive, err := server.Client().Do(inactiveRequest)
+	if err != nil {
+		t.Fatalf("inactive request: %v", err)
+	}
+	if inactive.ProtoMajor != 1 {
+		t.Fatalf("inactive response protocol = %q, want HTTP/1", inactive.Proto)
+	}
+	if err := inactive.Body.Close(); err != nil {
+		t.Fatalf("close inactive response: %v", err)
+	}
+	_, inactiveErr := inactive.Body.Read(make([]byte, 1))
+	if inactiveErr == nil {
+		t.Fatal("inactive read after close unexpectedly succeeded")
+	}
+
+	sink := &responseAssociationSink{}
+	ctx := llm.WithAPIAttemptSink(
+		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup("ag_http1_close_before_read")),
+		sink,
+	)
+	activeRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, attempt, err := DoWithAPIAttempts(context.Background(), server.Client(), activeRequest, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{ProviderInstance: "test"}
+	})
+	if err != nil {
+		t.Fatalf("active request: %v", err)
+	}
+	if active.ProtoMajor != 1 {
+		t.Fatalf("active response protocol = %q, want HTTP/1", active.Proto)
+	}
+	if err := active.Body.Close(); err != nil {
+		t.Fatalf("close active response: %v", err)
+	}
+	_, activeErr := active.Body.Read(make([]byte, 1))
+	if activeErr == nil {
+		t.Fatal("active read after close unexpectedly succeeded")
+	}
+	if activeErr.Error() != inactiveErr.Error() {
+		t.Fatalf("HTTP/1 close-before-read error drift = inactive:%q active:%q", inactiveErr, activeErr)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: active.StatusCode}, llm.APITimeoutNone, nil, nil)
+}
+
 func TestDoWithAPIAttemptsPreWriteFailureDoesNotInventRequestHeaders(t *testing.T) {
 	transportErr := errors.New("pre-write transport failure")
 	client := &http.Client{Transport: responseAssociationRoundTripper(func(*http.Request) (*http.Response, error) {
