@@ -510,7 +510,7 @@ func TestAPIAttemptKnownZeroContentLengthIsExactWithoutRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requestSnapshot := captureRequestBody(knownZeroRequest)
+	requestSnapshot := captureRequestBody(knownZeroRequest, func() {})
 	requestObservation := requestSnapshot()
 	if !requestObservation.exact {
 		t.Fatal("known-zero request was not exact before a read")

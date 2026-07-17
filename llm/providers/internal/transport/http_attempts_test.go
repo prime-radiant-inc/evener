@@ -70,6 +70,18 @@ func (b *credentialTrailerBody) Read(p []byte) (int, error) {
 
 func (*credentialTrailerBody) Close() error { return nil }
 
+type finishRequestOnCloseBody struct {
+	io.ReadCloser
+	requestBody io.ReadCloser
+}
+
+func (b *finishRequestOnCloseBody) Close() error {
+	_, readErr := io.ReadAll(b.requestBody)
+	requestCloseErr := b.requestBody.Close()
+	responseCloseErr := b.ReadCloser.Close()
+	return errors.Join(readErr, requestCloseErr, responseCloseErr)
+}
+
 func attemptContext(groupID string, sink llm.APIAttemptSink) context.Context {
 	return llm.WithAPIAttemptSink(
 		llm.WithAPIAttemptGroup(context.Background(), llm.NewAPIAttemptGroup(groupID)),
@@ -966,6 +978,71 @@ func TestDoWithAPIAttemptsRejectedRedirectSanitizesRealJarCookieFromSource(t *te
 	}
 }
 
+func TestDoWithAPIAttemptsRejectedRedirectSanitizesDecodedResponseCookie(t *testing.T) {
+	const (
+		encodedSecret = "abc%2Fdef"
+		decodedSecret = "abc/def"
+	)
+	tests := []struct {
+		name     string
+		decision error
+	}{
+		{name: "redirect rejected", decision: errors.New("decoded cookie rejected")},
+		{name: "use last response", decision: http.ErrUseLastResponse},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Set-Cookie", "session="+encodedSecret+"; Path=/")
+				w.Header().Set("Location", "/candidate")
+				w.WriteHeader(http.StatusFound)
+				_, _ = w.Write([]byte(decodedSecret))
+			}))
+			t.Cleanup(server.Close)
+
+			client := server.Client()
+			jar, err := cookiejar.New(nil)
+			if err != nil {
+				t.Fatalf("create cookie jar: %v", err)
+			}
+			client.Jar = jar
+			client.CheckRedirect = func(*http.Request, []*http.Request) error { return testCase.decision }
+			ctx, group, logPath := durableAttemptContext(
+				t,
+				"sess-decoded-cookie-"+strconv.Itoa(len(testCase.name)),
+				"ag_decoded_cookie_"+strconv.Itoa(len(testCase.name)),
+			)
+			request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/start", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, attemptMeta)
+			if testCase.decision == http.ErrUseLastResponse {
+				if err != nil {
+					t.Fatalf("ErrUseLastResponse changed to error: %v", err)
+				}
+				if _, err := io.ReadAll(response.Body); err != nil {
+					t.Fatalf("read last response: %v", err)
+				}
+				attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+			} else {
+				if !errors.Is(err, testCase.decision) {
+					t.Fatalf("rejected redirect error = %v, want %v", err, testCase.decision)
+				}
+				if attempt != nil {
+					t.Fatalf("rejected redirect returned attempt %#v", attempt)
+				}
+			}
+			group.Settle(ctx, apilog.AttemptProviderReject)
+			attempts := readDurableAttempts(t, logPath)
+			if len(attempts) != 1 {
+				t.Fatalf("durable attempts = %d, want one source", len(attempts))
+			}
+			assertDurableAttemptExcludes(t, attempts[0], encodedSecret, decodedSecret)
+		})
+	}
+}
+
 func TestDoWithAPIAttemptsFutureRedirectCredentialSanitizesEveryEarlierSource(t *testing.T) {
 	const secret = "third-hop-future-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -1299,6 +1376,191 @@ func TestDoWithAPIAttemptsRedirectPropagatesDynamicTrailerCredentialToAllAttempt
 	}
 	for _, durable := range attempts {
 		assertDurableAttemptExcludes(t, durable, trailerSecret)
+	}
+}
+
+func TestDoWithAPIAttemptsFinalDynamicTrailerSanitizesEarlierRedirectSource(t *testing.T) {
+	const (
+		trailerName   = "X-Gateway-Credential"
+		trailerSecret = "final-trailer-secret-sentinel"
+	)
+	ctx, group, logPath := durableAttemptContext(t, "sess-final-redirect-trailer", "ag_final_redirect_trailer")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		transportCalls++
+		switch transportCalls {
+		case 1:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://provider.test/final"}},
+				Body:       io.NopCloser(strings.NewReader("source exposed " + trailerSecret)),
+			}, nil
+		case 2:
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: &finishRequestOnCloseBody{
+					ReadCloser:  io.NopCloser(strings.NewReader("final saw " + trailerSecret)),
+					requestBody: request.Body,
+				},
+			}, nil
+		default:
+			return nil, errors.New("unexpected extra RoundTrip")
+		}
+	})}
+	client.CheckRedirect = func(candidate *http.Request, _ []*http.Request) error {
+		candidate.Method = http.MethodPost
+		candidate.Trailer = http.Header{trailerName: nil}
+		candidate.Body = &credentialTrailerBody{
+			request: candidate,
+			reader:  bytes.NewReader([]byte("final request body")),
+			name:    trailerName,
+			value:   trailerSecret,
+		}
+		candidate.ContentLength = -1
+		return nil
+	}
+	response, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+			),
+		}
+	})
+	if err != nil {
+		t.Fatalf("DoWithAPIAttempts: %v", err)
+	}
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatalf("read final response: %v", err)
+	}
+	attempt.Complete(llm.APIAttemptResult{StatusCode: response.StatusCode}, llm.APITimeoutNone, nil, nil)
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close final response: %v", err)
+	}
+	group.Settle(ctx, apilog.AttemptSuccess)
+
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 2 {
+		t.Fatalf("durable attempts = %d, want redirect and final", len(attempts))
+	}
+	for _, durable := range attempts {
+		assertDurableAttemptExcludes(t, durable, trailerSecret)
+	}
+}
+
+func TestDoWithAPIAttemptsAsyncTrailerOnTransportErrorSanitizesRedirectSource(t *testing.T) {
+	const (
+		trailerName   = "X-Gateway-Credential"
+		trailerSecret = "async-error-trailer-secret-sentinel"
+	)
+	transportErr := errors.New("final transport failed")
+	ctx, group, logPath := durableAttemptContext(t, "sess-error-redirect-trailer", "ag_error_redirect_trailer")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/start", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseRequest := make(chan struct{})
+	requestFinished := make(chan error, 1)
+	transportCalls := 0
+	client := &http.Client{Transport: responseAssociationRoundTripper(func(request *http.Request) (*http.Response, error) {
+		transportCalls++
+		switch transportCalls {
+		case 1:
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"https://provider.test/final"}},
+				Body:       io.NopCloser(strings.NewReader("source exposed " + trailerSecret)),
+			}, nil
+		case 2:
+			go func(body io.ReadCloser) {
+				<-releaseRequest
+				_, readErr := io.ReadAll(body)
+				requestFinished <- errors.Join(readErr, body.Close())
+			}(request.Body)
+			return nil, transportErr
+		default:
+			return nil, errors.New("unexpected extra RoundTrip")
+		}
+	})}
+	client.CheckRedirect = func(candidate *http.Request, _ []*http.Request) error {
+		candidate.Method = http.MethodPost
+		candidate.Trailer = http.Header{trailerName: nil}
+		candidate.Body = &credentialTrailerBody{
+			request: candidate,
+			reader:  bytes.NewReader([]byte("final request body")),
+			name:    trailerName,
+			value:   trailerSecret,
+		}
+		candidate.ContentLength = -1
+		return nil
+	}
+	_, attempt, err := DoWithAPIAttempts(context.Background(), client, request, func(*http.Request, []byte) llm.APIAttemptMeta {
+		return llm.APIAttemptMeta{
+			ProviderInstance: "test",
+			RequestModel:     "test-model",
+			CredentialMaterial: llm.NewAPILogCredentialMaterial(
+				[]string{trailerName},
+				nil,
+			),
+		}
+	})
+	if !errors.Is(err, transportErr) {
+		t.Fatalf("DoWithAPIAttempts error = %v, want %v", err, transportErr)
+	}
+	if attempt == nil {
+		t.Fatal("transport error lost final attempt")
+	}
+	attempt.Complete(llm.APIAttemptResult{Err: err}, llm.APITimeoutNone, nil, transportErr)
+	close(releaseRequest)
+	if err := <-requestFinished; err != nil {
+		t.Fatalf("finish request body: %v", err)
+	}
+	group.Settle(ctx, apilog.AttemptTransportFail)
+
+	attempts := readDurableAttempts(t, logPath)
+	if len(attempts) != 2 {
+		t.Fatalf("durable attempts = %d, want redirect and final failure", len(attempts))
+	}
+	for _, durable := range attempts {
+		encoded, err := apilog.MarshalRecord(durable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(encoded, []byte(trailerSecret)) {
+			t.Fatalf("durable attempt persisted asynchronous trailer credential %q", trailerSecret)
+		}
+	}
+}
+
+func TestRedirectCredentialMaterialGrowthIsLinear(t *testing.T) {
+	roundTripper := &apiAttemptRoundTripper{}
+	roundTripper.mergeCredentialMaterial(llm.NewAPILogCredentialMaterial(
+		[]string{"X-Redirect-Credential"},
+		nil,
+		"initial-secret",
+	))
+	const redirects = 20
+	for i := 0; i < redirects; i++ {
+		secret := "redirect-secret-" + strconv.Itoa(i)
+		candidate, err := http.NewRequest(http.MethodGet, "https://provider.test/hop?access_token="+url.QueryEscape(secret), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		candidate.Header.Set("X-Redirect-Credential", secret)
+		roundTripper.mergeRedirectCandidateMaterial(candidate)
+	}
+	roundTripper.mu.Lock()
+	material := roundTripper.credentialMaterial
+	roundTripper.mu.Unlock()
+	if got, want := len(material.Values), redirects+1; got != want {
+		t.Fatalf("credential values after %d redirects = %d, want %d unique values", redirects, got, want)
 	}
 }
 

@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"net/http"
+	"sync"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -19,6 +20,8 @@ type APIAttemptCapture struct {
 	credentialMaterial llm.APILogCredentialMaterial
 	requestBody        func() bodyObservation
 	responseBody       func() bodyObservation
+	completeOnce       sync.Once
+	scheduleCompletion func(func())
 }
 
 // Active reports whether observed response bytes need to be retained for this
@@ -53,12 +56,26 @@ func (c *APIAttemptCapture) mergeCredentialMaterial(material llm.APILogCredentia
 	c.attempt.MergeCredentialMaterial(material)
 }
 
-// Complete appends the attempt synchronously without changing the provider's
-// response, error, or retry classification.
+// Complete appends synchronously unless a redirect chain must wait for its
+// request bodies to finish producing credential material.
 func (c *APIAttemptCapture) Complete(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	if c == nil {
 		return
 	}
+	c.completeOnce.Do(func() {
+		if result.FinishedAt.IsZero() {
+			result.FinishedAt = time.Now()
+		}
+		completion := func() { c.completeNow(result, timeoutSource, decodeErr, transportErr) }
+		if c.scheduleCompletion != nil {
+			c.scheduleCompletion(completion)
+			return
+		}
+		completion()
+	})
+}
+
+func (c *APIAttemptCapture) completeNow(result llm.APIAttemptResult, timeoutSource llm.APITimeoutSource, decodeErr, transportErr error) {
 	material := llm.APILogCredentialMaterialForRequest(c.request, c.credentialMaterial)
 	c.attempt.MergeCredentialMaterial(material)
 	observedTimeout := false
