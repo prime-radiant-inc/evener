@@ -97,7 +97,7 @@ func TestSummarizeWithLLMOwnsOneLogicalAttemptGroupWhenAllRoutesFail(t *testing.
 	}
 
 	_, gotErr := cm.summarizeWithLLM(context.Background(), history, 1)
-	if gotErr != activeErr {
+	if !errors.Is(gotErr, activeErr) {
 		t.Fatalf("summarizeWithLLM error = %v, want final provider error %v", gotErr, activeErr)
 	}
 	if err := logger.Close(); err != nil {

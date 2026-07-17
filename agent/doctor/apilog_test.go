@@ -3,6 +3,7 @@ package doctor
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -456,7 +457,7 @@ func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T)
 		t.Fatalf("calls = %d, want 1", len(result.Calls))
 	}
 	row := result.Calls[0]
-	if !hasIntValue(row.StatusCode, 429) || row.ErrorClass != "rate_limit" || row.Outcome != apilog.AttemptProviderReject {
+	if !hasIntValue(row.StatusCode, http.StatusTooManyRequests) || row.ErrorClass != "rate_limit" || row.Outcome != apilog.AttemptProviderReject {
 		t.Fatalf("structured failure = status %v class %q outcome %q", row.StatusCode, row.ErrorClass, row.Outcome)
 	}
 	jsonResult, err := json.Marshal(result)

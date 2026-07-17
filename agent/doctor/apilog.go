@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -382,7 +383,7 @@ func RenderAPILog(r APILogResult, opts APILogOpts) string {
 			}
 			finalAttemptCount := "-"
 			if c.FinalAttemptCount != nil {
-				finalAttemptCount = fmt.Sprintf("%d", *c.FinalAttemptCount)
+				finalAttemptCount = strconv.Itoa(*c.FinalAttemptCount)
 			}
 			status := optionalIntString(c.StatusCode)
 			errorClass := c.ErrorClass

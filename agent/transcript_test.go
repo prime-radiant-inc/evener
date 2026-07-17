@@ -3283,7 +3283,6 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 
 	deps := &toolDeps{stateDir: dir, sessionID: sessionID}
 	for selector, span := range expectedSpans {
-		selector, span := selector, span
 		t.Run(fmt.Sprintf("turn_%d_%s", selector, turns[selector].Kind), func(t *testing.T) {
 			var recovered []byte
 			offset := 0
@@ -3402,7 +3401,7 @@ func TestReadJobTranscriptBoundMarkerIsNonActionable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := output.Append(bytes.Repeat([]byte{0}, hardCapChars+1)); err != nil {
+	if _, err := output.Append(make([]byte, hardCapChars+1)); err != nil {
 		_ = output.Close()
 		t.Fatal(err)
 	}

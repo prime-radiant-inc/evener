@@ -360,8 +360,8 @@ func (l *apiLogAttemptSettlementLookup) consider(settlement apilog.APIAttemptGro
 	if l.attemptGroupID == "" || settlement.AttemptGroupID != l.attemptGroupID {
 		return
 	}
-	copy := settlement
-	l.settlement = &copy
+	settlementCopy := settlement
+	l.settlement = &settlementCopy
 }
 
 func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogRecordSummary, bool, *apilog.APIAttemptGroupSettlement, error) {
@@ -396,8 +396,8 @@ func findAPILogAttempt(path, attemptID string) (apilog.APIAttemptRecord, apiLogR
 		switch typed := record.(type) {
 		case apilog.APIAttemptRecord:
 			if typed.AttemptID == attemptID {
-				copy := typed
-				found = &copy
+				attemptCopy := typed
+				found = &attemptCopy
 				settlementLookup.selectAttemptGroup(typed.AttemptGroupID)
 				summary, err = summarizeAPILogRecord(recordNumber, typed)
 				if err != nil {
@@ -573,9 +573,9 @@ func boundedAPILogMetadata(value string, alreadyTruncated bool) (string, bool) {
 	if len(value) <= maxAPILogMetadataBytes {
 		return value, alreadyTruncated
 	}
-	for max := maxAPILogMetadataBytes; max > 0; max-- {
-		if value[max]&0xc0 != 0x80 {
-			return value[:max], true
+	for limit := maxAPILogMetadataBytes; limit > 0; limit-- {
+		if value[limit]&0xc0 != 0x80 {
+			return value[:limit], true
 		}
 	}
 	return "", true

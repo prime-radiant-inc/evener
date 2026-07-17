@@ -335,18 +335,6 @@ func renderShellJobTranscript(rec *jobstore.JobRecord, output string, total, dro
 // when a malformed range spec is received.
 const rangeAcceptedGrammar = "N-M | last:N | start:N"
 
-// readMarkdown builds the markdown envelope for the resolved transcript. When
-// rangeArg is non-empty and malformed, it falls back to the smart default range,
-// sets meta.range_warning, and surfaces the warning in the content. Valid ranges
-// (including empty) produce no warning.
-//
-// When turns_rendered < turns_total, a self-announcing window line is spliced
-// after the document header so a default read never silently masquerades as the
-// whole session.
-func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int) (any, error) {
-	return readMarkdownPage(path, ref, meta, rangeArg, expandTurn, 0, 0)
-}
-
 func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	if pin < 0 || pin >= len(data.Entries) {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
@@ -371,6 +359,14 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	return exact, nil
 }
 
+// readMarkdownPage builds the markdown envelope for the resolved transcript.
+// When rangeArg is non-empty and malformed, it falls back to the smart default
+// range, sets meta.range_warning, and surfaces the warning in the content. Valid
+// ranges (including empty) produce no warning.
+//
+// When turns_rendered < turns_total, a self-announcing window line is spliced
+// after the document header so a default read never silently masquerades as the
+// whole session.
 func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string, expandTurn *int, offsetBytes, maxBytes int) (any, error) {
 	var data transcriptData
 	var err error
@@ -539,10 +535,6 @@ func boundReadMarkdownEnvelopeWithHint(envelope readMarkdownEnvelope, exactReadH
 		return candidate, nil
 	}
 	return transcriptEnvelopeWithExpansionBytes(envelope, raw[:best]), nil
-}
-
-func boundReadMarkdownContent(envelope readMarkdownEnvelope, maxEncodedBytes int) (readMarkdownEnvelope, error) {
-	return boundReadMarkdownContentWithHint(envelope, maxEncodedBytes, transcriptExpansionReadHint)
 }
 
 func boundReadMarkdownContentWithHint(envelope readMarkdownEnvelope, maxEncodedBytes int, exactReadHint string) (readMarkdownEnvelope, error) {
