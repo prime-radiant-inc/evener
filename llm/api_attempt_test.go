@@ -109,6 +109,47 @@ func TestBuildAPIAttemptRecordOmitsCredentialBearingProviderEvidence(t *testing.
 	}
 }
 
+func TestBuildAPIAttemptRecordOmitsInvalidAndOpaqueEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "malformed URL", endpoint: "://not-a-valid-endpoint"},
+		{name: "missing host", endpoint: "https:/v1/responses"},
+		{name: "opaque URL", endpoint: "mailto:provider@example.test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			startedAt := time.Unix(25, 0).UTC()
+			record := buildAPIAttemptRecord("ag_endpoint_sanitize", identifier.MustNewAPIAttemptID(), 1, APIAttemptMeta{
+				ProviderInstance: "provider",
+				RequestModel:     "model",
+				Method:           http.MethodPost,
+				Endpoint:         tt.endpoint,
+				RequestBody:      []byte("safe request"),
+				StartedAt:        startedAt,
+			}, APIAttemptResult{
+				StatusCode:   http.StatusOK,
+				ResponseBody: []byte("safe response"),
+				Response: &Response{
+					Model:   "model",
+					Message: Assistant("safe"),
+					Finish:  FinishReason{Reason: FinishReasonStop},
+				},
+				Outcome:    apilog.AttemptSuccess,
+				FinishedAt: startedAt.Add(time.Millisecond),
+			})
+			if record.Request.Endpoint != "" {
+				t.Fatalf("durable endpoint = %q, want invalid provenance omitted", record.Request.Endpoint)
+			}
+			if _, err := apilog.MarshalRecord(record); err == nil {
+				t.Fatal("MarshalRecord() accepted an attempt without valid endpoint provenance")
+			}
+		})
+	}
+}
+
 func TestMarshalRecordRejectsCredentialInsertedAfterRecordBuild(t *testing.T) {
 	const secret = "post-build-credential-sentinel"
 	record := validBuiltAPIAttemptRecord(t, NewAPILogCredentialMaterial(nil, nil, secret))

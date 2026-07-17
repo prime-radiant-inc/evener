@@ -178,7 +178,7 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 	}
 	endpoint := ""
 	if req.URL != nil {
-		endpoint = sanitizeEndpointForAPILog(req.URL.String())
+		endpoint = SanitizeEndpointURL(req.URL.String())
 	}
 
 	var headers map[string][]string
@@ -201,19 +201,6 @@ func SanitizeRequestForAPILog(req *http.Request, material APILogCredentialMateri
 		headers[name] = append([]string(nil), values...)
 	}
 	return endpoint, headers
-}
-
-func sanitizeEndpointForAPILog(endpoint string) string {
-	cleanURL, err := url.Parse(endpoint)
-	if err != nil {
-		return ""
-	}
-	cleanURL.User = nil
-	cleanURL.RawQuery = ""
-	cleanURL.ForceQuery = false
-	cleanURL.Fragment = ""
-	cleanURL.RawFragment = ""
-	return cleanURL.String()
 }
 
 func sanitizeTrailerHeaderValues(values []string, material APILogCredentialMaterial) []string {

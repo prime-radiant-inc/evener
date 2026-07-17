@@ -457,7 +457,7 @@ func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttempt
 		RequestModel:     omitCredentialString(meta.RequestModel, patterns, secretNames),
 		Request: apilog.APIAttemptRequest{
 			Method:         omitCredentialString(meta.Method, patterns, secretNames),
-			Endpoint:       omitCredentialString(sanitizeEndpointForAPILog(meta.Endpoint), patterns, secretNames),
+			Endpoint:       omitCredentialString(SanitizeEndpointURL(meta.Endpoint), patterns, secretNames),
 			Headers:        cloneCredentialFreeHTTPHeader(meta.Headers, patterns, secretNames),
 			Body:           encodeProviderBody(meta.RequestBody, meta.RequestBodyInexact, patterns, secretNames),
 			Model:          omitCredentialString(meta.RequestModel, patterns, secretNames),

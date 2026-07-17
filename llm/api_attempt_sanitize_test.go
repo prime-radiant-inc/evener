@@ -54,6 +54,29 @@ func TestSanitizeRequestForAPILogExcludesCredentialMaterial(t *testing.T) {
 	}
 }
 
+func TestSanitizeRequestForAPILogRejectsInvalidAndOpaqueEndpoints(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+	}{
+		{name: "missing host", endpoint: "https:/v1/responses"},
+		{name: "opaque URL", endpoint: "mailto:provider@example.test"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed, err := url.Parse(tt.endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			endpoint, _ := SanitizeRequestForAPILog(&http.Request{URL: parsed}, APILogCredentialMaterial{})
+			if endpoint != "" {
+				t.Fatalf("endpoint = %q, want invalid provenance omitted", endpoint)
+			}
+		})
+	}
+}
+
 func TestSanitizeErrorForAPILogRemovesRawAndEscapedCredentials(t *testing.T) {
 	secret := "alpha/beta value"
 	material := NewAPILogCredentialMaterial(nil, nil, secret)
