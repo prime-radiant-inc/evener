@@ -71,16 +71,12 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr
 	}
+	observedErr := decodeErr
 	if readErr != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: readErr}, llm.APITimeoutNone, readErr, nil)
-		return llm.InputTokenCount{}, readErr
-	}
-	if decodeErr != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: decodeErr}, llm.APITimeoutNone, decodeErr, nil)
-		return llm.InputTokenCount{}, decodeErr
+		observedErr = readErr
 	}
 
-	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes}, llm.APITimeoutNone, nil, nil)
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: observedErr}, llm.APITimeoutNone, observedErr, nil)
 	return llm.InputTokenCount{
 		Tokens:   llm.IntFromAny(raw["input_tokens"]),
 		Exact:    true,

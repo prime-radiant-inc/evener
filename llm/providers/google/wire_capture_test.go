@@ -96,7 +96,7 @@ func (s *wireCaptureSink) AppendSettlement(_ context.Context, settlement apilog.
 	return nil
 }
 
-func TestCompleteMalformed2xxReturnsDecodeFailureAndSettlesNonSuccess(t *testing.T) {
+func TestCompleteMalformed2xxPreservesProviderResultAndRecordsDecodeFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -109,16 +109,19 @@ func TestCompleteMalformed2xxReturnsDecodeFailureAndSettlesNonSuccess(t *testing
 	group := llm.NewAPIAttemptGroup("ag_google_malformed_2xx")
 	ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(context.Background(), group), sink)
 
-	_, err := adapter.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hello")}})
-	if err == nil {
-		t.Fatal("Complete accepted malformed 2xx response")
+	response, err := adapter.Complete(ctx, llm.Request{Model: "gemini-test", Messages: []llm.Message{llm.User("hello")}})
+	if err != nil {
+		t.Fatalf("Complete returned error for malformed 2xx response: %v", err)
+	}
+	if response.Provider != "google" || response.Model != "gemini-test" || response.Text() != "" {
+		t.Fatalf("Complete response = %+v, want merge-base empty Google response", response)
 	}
 	group.SettleResult(ctx, err)
 	if len(sink.attempts) != 1 || sink.attempts[0].Outcome != apilog.AttemptDecodeFail {
 		t.Fatalf("canonical attempts = %+v, want one response_decoding_failure", sink.attempts)
 	}
-	if len(sink.settlements) != 1 || sink.settlements[0].Outcome != apilog.AttemptDecodeFail {
-		t.Fatalf("canonical settlements = %+v, want one response_decoding_failure", sink.settlements)
+	if len(sink.settlements) != 1 || sink.settlements[0].Outcome != apilog.AttemptSuccess {
+		t.Fatalf("canonical settlements = %+v, want successful public provider result", sink.settlements)
 	}
 }
 

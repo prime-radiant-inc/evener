@@ -171,11 +171,15 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		if resultErr == nil {
 			response = &result
 		}
+		attemptErr := resultErr
+		if attemptErr == nil {
+			attemptErr = decodeErr
+		}
 		attempt.Complete(llm.APIAttemptResult{
 			StatusCode:   statusCode,
 			ResponseBody: responseBody,
 			Response:     response,
-			Err:          resultErr,
+			Err:          attemptErr,
 		}, timeoutSource, decodeErr, transportErr)
 	}()
 
@@ -211,13 +215,6 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
-	if readErr != nil {
-		return llm.Response{}, readErr
-	}
-	if jsonErr != nil {
-		return llm.Response{}, jsonErr
-	}
-
 	r := fromAnthropicResponse(raw, req.Model)
 	llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
@@ -300,17 +297,13 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr
 	}
+	observedErr := decodeErr
 	if readErr != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: readErr}, llm.APITimeoutNone, readErr, nil)
-		return llm.InputTokenCount{}, readErr
-	}
-	if decodeErr != nil {
-		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: decodeErr}, llm.APITimeoutNone, decodeErr, nil)
-		return llm.InputTokenCount{}, decodeErr
+		observedErr = readErr
 	}
 
 	tokens := intFromAny(raw["input_tokens"])
-	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes}, llm.APITimeoutNone, nil, nil)
+	attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: observedErr}, llm.APITimeoutNone, observedErr, nil)
 	return llm.InputTokenCount{
 		Tokens:   tokens,
 		Exact:    true,
