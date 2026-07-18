@@ -872,6 +872,34 @@
       this.liveStream = null;
     },
 
+    // scheduleFrame runs cb on the next animation frame when rAF exists and the
+    // tab is visible; otherwise on a 16ms timer. Plain jsdom has no rAF at all,
+    // and hidden tabs never fire it — never call rAF unguarded.
+    scheduleFrame(cb) {
+      this.cancelFrame();
+      const hidden = typeof document !== "undefined" && document.hidden;
+      if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        this.scheduledFrameRaf = window.requestAnimationFrame(() => {
+          this.scheduledFrameRaf = null;
+          cb();
+        });
+        return;
+      }
+      this.scheduledFrameTimer = setTimeout(() => {
+        this.scheduledFrameTimer = null;
+        cb();
+      }, 16);
+    },
+
+    cancelFrame() {
+      if (this.scheduledFrameRaf != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        try { window.cancelAnimationFrame(this.scheduledFrameRaf); } catch (e) {}
+      }
+      if (this.scheduledFrameTimer != null) clearTimeout(this.scheduledFrameTimer);
+      this.scheduledFrameRaf = null;
+      this.scheduledFrameTimer = null;
+    },
+
     // The visual viewport shrinks when a mobile software keyboard opens. Keep
     // workspace-owned CSS in sync so the composer dock can stay above it. This
     // listener belongs to the currently rendered workspace/session, not the
@@ -883,23 +911,17 @@
       const workspace = document.getElementById("workspace");
       if (!viewport || !workspace || !Number.isFinite(viewport.height)) return;
       const sessionId = this.sessionId;
-      let frame = null;
       const apply = () => {
-        frame = null;
         if (this.sessionId !== sessionId || document.getElementById("workspace") !== workspace) return;
         if (Number.isFinite(viewport.height) && viewport.height > 0) {
           workspace.style.setProperty("--workspace-visible-height", viewport.height + "px");
         }
       };
-      const schedule = () => {
-        if (frame != null) return;
-        frame = window.requestAnimationFrame(apply);
-      };
+      const schedule = () => this.scheduleFrame(apply);
       this.workspaceViewportCleanup = () => {
         viewport.removeEventListener("resize", schedule);
         viewport.removeEventListener("scroll", schedule);
-        if (frame != null) window.cancelAnimationFrame(frame);
-        frame = null;
+        this.cancelFrame();
       };
       viewport.addEventListener("resize", schedule);
       viewport.addEventListener("scroll", schedule);
