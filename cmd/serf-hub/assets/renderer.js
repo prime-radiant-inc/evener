@@ -2462,12 +2462,18 @@
       if (!this.reasoningEl) this.beginReasoning();
       this.reasoningBuf += delta || "";
       const body = this.reasoningEl.querySelector(".think-body");
-      const pv = this.reasoningEl.querySelector(".pv");
-      if (body) body.textContent = this.reasoningBuf;
-      // Teleprompter tail: the trailing fragment of the live reasoning. The
-      // slot is one line tall and the tail reveals right-to-left (CSS), so its
-      // height never changes as tokens arrive.
-      if (pv) pv.textContent = clip(this.reasoningBuf.replace(/\s+/g, " ").trim(), 200);
+      if (body) body.appendChild(document.createTextNode(delta || ""));
+      // The teleprompter tail refreshes once per settle, from a bounded slice.
+      this.reasoningPreviewDirty = true;
+    },
+
+    // updateReasoningPreview refreshes the one-line teleprompter tail. Bounded
+    // to the last 400 chars so a long thought never pays O(buffer) per frame.
+    updateReasoningPreview() {
+      const el = this.reasoningEl;
+      if (!el) return;
+      const pv = el.querySelector(".pv");
+      if (pv) pv.textContent = clip(String(this.reasoningBuf || "").slice(-400).replace(/\s+/g, " ").trim(), 200);
     },
 
     // finalizeReasoning collapses the in-progress thought to a one-line summary
