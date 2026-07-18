@@ -186,8 +186,9 @@
         reject(err);
       }
     });
-    if (ws && ws.readyState === WebSocket.OPEN) return send(ws);
     if (method === METHOD.initialize) return send(ws);
+    if (connecting) return connecting.then(send);
+    if (ws && ws.readyState === WebSocket.OPEN) return send(ws);
     return connect().then(send);
   }
 
