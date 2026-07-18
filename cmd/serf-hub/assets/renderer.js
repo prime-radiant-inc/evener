@@ -1067,27 +1067,34 @@
     },
 
     handleData(kind, data) {
-      this.handle(kind, { data: JSON.stringify(data || {}) });
+      this.handle(kind, { data: data || {} });
     },
 
     handle(kind, ev) {
-      // Every frame from the daemon (incl. reasoning) resets the liveness clock.
-      this.lastFrameAt = Date.now();
       // Buffer only during synchronous initialization. Task descriptions are
       // auxiliary metadata and must never gate transcript replay.
       if (!this.descriptionsReady && this.eventBuffer) {
         this.eventBuffer.push([kind, ev]);
         return;
       }
+      let data = {};
+      try { data = typeof ev.data === "string" ? JSON.parse(ev.data) : (ev.data || {}); } catch (e) {}
       // Measure before the DOM mutation: only stick to the bottom if the reader
       // is already there, so streaming frames don't yank them off history.
-      const stick = this.isNearBottom();
+      const stick = this.suppressScrollSettle ? false : this.isNearBottom();
       // Count rendered transcript entries before the switch so we can tell
       // whether this frame actually appended visible content (suppressed/no-op
       // events leave the count unchanged) — the trigger for the new-content pill.
       const entriesBefore = this.conversation ? this.conversation.children.length : 0;
-      let data = {};
-      try { data = JSON.parse(ev.data); } catch (e) {}
+      this.applyEvent(kind, data);
+      this.settleFrame(stick, entriesBefore);
+    },
+
+    // applyEvent is the event switch proper, split from the sync wrapper so the
+    // frame-batched live path (flush) can apply N events and settle once.
+    applyEvent(kind, data) {
+      // Every frame from the daemon (incl. reasoning) resets the liveness clock.
+      this.lastFrameAt = Date.now();
       switch (kind) {
         case "THREAD_STATUS_CHANGED":
           {
@@ -1421,14 +1428,26 @@
           // to avoid duplicates.
           break;
       }
-      if (stick) {
-        this.scrollToBottom();
-      } else {
-        // Reader is up in history: if this frame rendered new entries, surface
-        // the floating "↓ N new" affordance instead of yanking the viewport.
-        const added = this.conversation ? this.conversation.children.length - entriesBefore : 0;
-        if (added > 0) this.noteNewContent(added);
+    },
+
+    // settleFrame runs the post-mutation work that used to live at the bottom of
+    // handle(): render coalesced assistant/reasoning updates (Tasks 4, 8), count
+    // new entries for the pill, and stick to the bottom when the reader was there.
+    settleFrame(stick, entriesBefore) {
+      if (this.dirtyAssistantMessages && this.dirtyAssistantMessages.size) {
+        for (const m of this.dirtyAssistantMessages) this.renderAssistantMessage(m, m.textBuf);
+        this.dirtyAssistantMessages.clear();
       }
+      if (this.reasoningPreviewDirty) {
+        this.reasoningPreviewDirty = false;
+        this.updateReasoningPreview();
+      }
+      if (!this.conversation) return;
+      // Reader is up in history: if this frame rendered new entries, surface
+      // the floating "↓ N new" affordance instead of yanking the viewport.
+      const added = this.conversation.children.length - entriesBefore;
+      if (added > 0) this.noteNewContent(added);
+      if (stick && !this.suppressScrollSettle) this.scrollToBottom();
     },
 
     // appendContextCompaction renders the context-compaction lifecycle event
