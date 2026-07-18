@@ -360,6 +360,7 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
     ref: "local:01TEST",
     item: { type: "agentMessage", id: "msg_resume" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   await new Promise(r => setTimeout(r, 10));
 
   pass(conv.textContent.includes("resume me"), "expected resumed user message to render without refresh");

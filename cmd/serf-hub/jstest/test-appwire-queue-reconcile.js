@@ -70,6 +70,7 @@ require("./load-renderer").evalRenderer(window);
     threadId: "01TEST",
     queue: { depth: 1, preview: ["queued as string"] },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
 
   assert.equal(pendingQueueList.querySelectorAll(".optimistic-pending").length, 0,
     "string queue previews should reconcile pending queue chips");
@@ -80,6 +81,7 @@ require("./load-renderer").evalRenderer(window);
     threadId: "01TEST",
     item: { type: "userMessage", text: "", images: [{ type: "image", name: "shot.png" }] },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
     "image-only authoritative user items should reconcile pending turn/start chips");
 

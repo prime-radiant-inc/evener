@@ -86,6 +86,7 @@ const { JSDOM } = require("jsdom");
   notify("serf/sandbox/escalation/requested", {
     escalationId: "esc_1", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/hosts",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   const card = window.document.querySelector(".sandbox-escalation");
   assert.ok(card, "escalation card must render");
   assert.ok(/requested by serf/i.test(card.textContent),
@@ -113,6 +114,7 @@ const { JSDOM } = require("jsdom");
   notify("serf/sandbox/escalation/requested", {
     escalationId: "esc_2", mode: "read-only", tool: "write_file", kind: "file_tool", deniedPath: "/etc/passwd",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   const cards = window.document.querySelectorAll(".sandbox-escalation");
   const card2 = cards[cards.length - 1];
   card2.querySelector(".sandbox-escalation-deny").click();
@@ -125,6 +127,7 @@ const { JSDOM } = require("jsdom");
   notify("serf/sandbox/escalation/requested", {
     escalationId: "esc_conflict", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/shadow",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   let allCards = window.document.querySelectorAll(".sandbox-escalation");
   const cardC = allCards[allCards.length - 1];
   cardC.querySelector(".sandbox-escalation-allow").click();
@@ -138,6 +141,7 @@ const { JSDOM } = require("jsdom");
   notify("serf/sandbox/escalation/requested", {
     escalationId: "esc_transport", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/gshadow",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   allCards = window.document.querySelectorAll(".sandbox-escalation");
   const cardT = allCards[allCards.length - 1];
   cardT.querySelector(".sandbox-escalation-allow").click();
@@ -153,6 +157,7 @@ const { JSDOM } = require("jsdom");
   notify("serf/sandbox/escalation/requested", {
     escalationId: "esc_unavailable", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/etc/group",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   allCards = window.document.querySelectorAll(".sandbox-escalation");
   const cardU = allCards[allCards.length - 1];
   cardU.querySelector(".sandbox-escalation-allow").click();

@@ -113,6 +113,7 @@ async function run() {
     turnId: "turn_1",
     item: { type: "userMessage", id: "item_user_1", turnId: "turn_1", text: "ping", status: "completed" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   pass(userMessages().filter((text) => text === "ping").length === 1, "AppWire user-message notification should not duplicate the sent prompt");
 
   notificationHandler("item/started", {
@@ -127,6 +128,7 @@ async function run() {
     itemId: "item_1",
     delta: "hello from live turn",
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   await new Promise((resolve) => setTimeout(resolve, 10));
 
   const assistant = conv.querySelector(".assistant-message");
@@ -137,6 +139,7 @@ async function run() {
     ref: "local:thread-live",
     status: { type: "active" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   await new Promise((resolve) => setTimeout(resolve, 10));
   pass(conv.dataset.state === "active", "active status did not update conversation state");
   pass(window.document.querySelector(".send-btn").getAttribute("data-capability-send") === "false",
@@ -150,6 +153,7 @@ async function run() {
     ref: "local:thread-live",
     turn: { id: "turn_1", status: "inProgress" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   await new Promise((resolve) => setTimeout(resolve, 10));
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable when a turn starts");
 
@@ -158,6 +162,7 @@ async function run() {
     ref: "local:thread-live",
     status: { type: "active" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   await new Promise((resolve) => setTimeout(resolve, 10));
   pass(conv.dataset.state === "active", "active status did not update conversation state");
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "active status should keep interrupt enabled while a turn is active");
@@ -167,6 +172,7 @@ async function run() {
     ref: "local:thread-live",
     turn: { id: "turn_1", status: "completed" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should disable when the active turn completes");
 
   notificationHandler("thread/status/changed", {
@@ -174,6 +180,7 @@ async function run() {
     ref: "local:thread-live",
     status: { type: "idle" },
   });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   pass(conv.dataset.state === "idle", "idle status did not update conversation state");
   pass(window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should disable while idle");
   pass(!window.document.querySelector('[data-action-trigger="shutdown"]').disabled, "shutdown should stay enabled while idle");

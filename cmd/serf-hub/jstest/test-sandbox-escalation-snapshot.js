@@ -61,11 +61,13 @@ const { JSDOM } = require("jsdom");
   // (2) A LIVE notification for the SAME id must NOT double-render (de-dupe).
   assert.ok(notify, "renderer subscribed");
   notify("serf/sandbox/escalation/requested", { escalationId: "esc_snap", mode: "read-only", tool: "read_file", kind: "file_tool", deniedPath: "/snapshot/path" });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   cards = window.document.querySelectorAll(".sandbox-escalation");
   assert.strictEqual(cards.length, 1, "a live notification for an already-snapshotted id must not double-render, got " + cards.length);
 
   // (3) A live notification for a NEW id DOES render a second card.
   notify("serf/sandbox/escalation/requested", { escalationId: "esc_live", mode: "read-only", tool: "write_file", kind: "file_tool", deniedPath: "/live/path" });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
   cards = window.document.querySelectorAll(".sandbox-escalation");
   assert.strictEqual(cards.length, 2, "a new live escalation must render its own card, got " + cards.length);
 

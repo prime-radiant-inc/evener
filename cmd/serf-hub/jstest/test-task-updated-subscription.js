@@ -92,14 +92,16 @@ const { JSDOM } = require("jsdom");
   assert.ok(!intervals.includes(5000),
     "task badge must be event-driven — no 5s poll interval after attach, got intervals " + JSON.stringify(intervals));
 
-  // Assert synchronously, in the same tick as notify(): handleData's
-  // TASKS_CHANGED case updates the badge immediately (synchronously) and
-  // only THEN kicks off the tasks() refetch as a microtask. Our tasks()
-  // stub resolves to [], which (correctly) blanks the badge back to "no
-  // tasks yet" once that microtask runs — awaiting here would race exactly
-  // that harmless-but-overwriting refetch, so the assertion must happen
-  // before it, not after.
+  // Assert synchronously, in the same tick as notify(): TASKS_CHANGED updates
+  // the badge immediately when the frame queue flushes (flush() is a
+  // synchronous drain — live deliveries batch per frame) and only THEN kicks
+  // off the tasks() refetch as a microtask. Our tasks() stub resolves to [],
+  // which (correctly) blanks the badge back to "no tasks yet" once that
+  // microtask runs — awaiting here would race exactly that
+  // harmless-but-overwriting refetch, so the assertion must happen before it,
+  // not after.
   notify("serf/task/updated", { threadId: "01S", total: 3, done: 1 });
+  window.SerfRenderer.flush(); // live deliveries batch per frame; apply them now
 
   const badge = window.document.querySelector(".panel-toggle-badge");
   assert.ok(badge, "task-status badge element must exist");

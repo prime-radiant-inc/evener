@@ -211,6 +211,9 @@
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
       this.eventBuffer = [];             // queued until initialization enables transcript replay
       this.descriptionsReady = false;
+      // Frame batching state for LIVE socket notifications (see flush()).
+      this.frameQueue = [];
+      this.frameGeneration = 0;
       // Description cache is per-session: clear before entering this conversation
       // so a stale id→title mapping from a prior session can't bleed in.
       taskDescriptions.clear();
@@ -278,6 +281,7 @@
       }
 
       this.bindWorkspaceViewport();
+      this.bindVisibilityFlush();
       this.bindInputForm();
       this.bindScrollAffordance();
       this.bindPaneParentLinks();
@@ -671,18 +675,23 @@
       };
       const pendingNotifications = [];
       const deliverNotification = (method, params) => {
-        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
-          this.handleData(kind, data);
+        if (!this.appwireHydrated || this.replayingBufferedNotifications) {
+          for (const [kind, data] of window.SerfAppwire.eventsFromNotification(method, params)) {
+            this.handleData(kind, data);
+          }
+          // Single reconciliation site: after the authoritative reducer
+          // update has applied, give the pending registry a chance to
+          // find a matching placeholder and remove it. The hydration
+          // replay loop below also runs through deliverNotification, so
+          // replayed notifications get exactly one reconcile pass.
+          if (this.pending) {
+            reconcilePendingFromNotification(this.pending, method, params);
+          }
+          return;
         }
-        // Single reconciliation site: after the authoritative reducer
-        // update has applied, give the pending registry a chance to
-        // find a matching placeholder and remove it. The hydration
-        // replay loop below also runs through deliverNotification, so
-        // replayed notifications get exactly one reconcile pass.
-        if (this.pending) {
-          reconcilePendingFromNotification(this.pending, method, params);
-        }
+        this.enqueueLiveNotification(method, params);
       };
+      this.reconcilePending = reconcilePendingFromNotification;
       const notificationMatches = (params) => {
         const ref = params && (params.ref || (params.item && params.item.ref));
         const threadId = params && (params.threadId || (params.item && params.item.threadId));
@@ -838,11 +847,16 @@
           // The stream is live again: a reconnect succeeded, so retire any
           // chrome reconnect banner and re-enable the composer.
           this.clearConnectionBanner();
-          while (pendingNotifications.length > 0) {
-            const [method, params] = pendingNotifications.shift();
-            if (notificationCoveredByHydration(method, params)) continue;
-            const replayParams = notificationForHydrationReplay(method, params);
-            if (notificationMatches(replayParams)) deliverNotification(method, replayParams);
+          this.replayingBufferedNotifications = true;
+          try {
+            while (pendingNotifications.length > 0) {
+              const [method, params] = pendingNotifications.shift();
+              if (notificationCoveredByHydration(method, params)) continue;
+              const replayParams = notificationForHydrationReplay(method, params);
+              if (notificationMatches(replayParams)) deliverNotification(method, replayParams);
+            }
+          } finally {
+            this.replayingBufferedNotifications = false;
           }
         })
         .catch((err) => {
@@ -900,6 +914,66 @@
       this.scheduledFrameTimer = null;
     },
 
+    // Frame batching — LIVE socket events only. Replay paths (initial hydration,
+    // buffered-notification replay, prependOlderTurns) call handleData directly
+    // and never enter this queue.
+    enqueueLiveNotification(method, params) {
+      if (!Array.isArray(this.frameQueue)) { this.frameQueue = []; this.frameGeneration = 0; }
+      this.frameQueue.push({ method, params });
+      this.scheduleFrameFlush();
+    },
+
+    scheduleFrameFlush() {
+      if (this.frameFlushScheduled) return;
+      this.frameFlushScheduled = true;
+      const run = () => {
+        this.frameFlushScheduled = false;
+        this.frameFlushRaf = null;
+        this.frameFlushTimer = null;
+        this.flush();
+      };
+      const hidden = typeof document !== "undefined" && document.hidden;
+      if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        this.frameFlushRaf = window.requestAnimationFrame(run);
+      } else {
+        // Hidden tab (rAF never fires there) or no rAF at all (plain jsdom).
+        // The interval is best-effort — flush always drains the whole queue.
+        this.frameFlushTimer = setTimeout(run, hidden ? 250 : 16);
+      }
+    },
+
+    cancelFrameFlush() {
+      if (this.frameFlushRaf != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+        try { window.cancelAnimationFrame(this.frameFlushRaf); } catch (e) {}
+      }
+      if (this.frameFlushTimer != null) clearTimeout(this.frameFlushTimer);
+      this.frameFlushRaf = null;
+      this.frameFlushTimer = null;
+      this.frameFlushScheduled = false;
+    },
+
+    flush() {
+      this.cancelFrameFlush();
+      const q = this.frameQueue;
+      if (!q || !q.length) return;
+      this.frameQueue = [];
+      const gen = this.frameGeneration;
+      const stick = this.suppressScrollSettle ? false : this.isNearBottom();
+      const entriesBefore = this.conversation ? this.conversation.children.length : 0;
+      for (const item of q) {
+        if (gen !== this.frameGeneration) return; // transcript reset mid-flush
+        for (const [kind, data] of window.SerfAppwire.eventsFromNotification(item.method, item.params)) {
+          this.applyEvent(kind, data);
+        }
+        // Per-notification reconcile, in order, after that notification's
+        // events applied — the invariant from deliverNotification.
+        if (this.pending && this.reconcilePending) {
+          this.reconcilePending(this.pending, item.method, item.params);
+        }
+      }
+      this.settleFrame(stick, entriesBefore);
+    },
+
     // The visual viewport shrinks when a mobile software keyboard opens. Keep
     // workspace-owned CSS in sync so the composer dock can stay above it. This
     // listener belongs to the currently rendered workspace/session, not the
@@ -932,6 +1006,15 @@
       if (!this.workspaceViewportCleanup) return;
       this.workspaceViewportCleanup();
       this.workspaceViewportCleanup = null;
+    },
+
+    // Flush queued live events on ANY visibility transition: a scheduled rAF
+    // never fires once the tab hides, and on return we want the freshest state
+    // painted immediately.
+    bindVisibilityFlush() {
+      if (this.visibilityFlushBound || typeof document === "undefined") return;
+      this.visibilityFlushBound = true;
+      document.addEventListener("visibilitychange", () => this.flush());
     },
 
     scheduleAppwireReconnect() {
@@ -1000,6 +1083,9 @@
 
     resetTranscriptReplay() {
       if (!this.conversation) return;
+      this.cancelFrameFlush();
+      this.frameQueue = [];
+      this.frameGeneration = (this.frameGeneration || 0) + 1;
       this.discardPendingAsk();
       this.conversation.innerHTML = "";
       this.activeMessages.clear();
