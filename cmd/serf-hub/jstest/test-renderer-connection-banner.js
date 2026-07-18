@@ -101,10 +101,31 @@ const transcriptErrors = (w) =>
   pass(!!b2 && /connection lost/i.test(b2.textContent), "the escalated banner reads 'Connection lost'");
   pass(transcriptErrors(w2).length === 0, "a failed reconnect still does not pollute the transcript");
 
+  // ── 4. AppWire application error → exact transcript-unavailable banner ───
+  let applicationReadCalls = 0;
+  const applicationError = new Error("unsupported transcript format: require transcript header with format_version 2");
+  applicationError.code = -32000;
+  const w3 = createWindow({
+    onConnectionLost: () => () => {},
+    onConnectionRestored: () => () => {},
+    readThread: () => {
+      applicationReadCalls++;
+      return Promise.reject(applicationError);
+    },
+  });
+  await wait(600);
+  const b3 = banner(w3);
+  pass(!!b3 && b3.classList.contains("unavailable"), "application failure uses transcript-unavailable chrome");
+  pass(!!b3 && /transcript unavailable/i.test(b3.textContent), "application failure is labeled Transcript unavailable");
+  pass(!!b3 && b3.querySelector(".connection-banner-sub").textContent === applicationError.message, "application failure shows the exact server message");
+  pass(!!b3 && !/connection lost/i.test(b3.textContent), "application failure is not mislabeled as connection loss");
+  pass(applicationReadCalls === 1, "application failure is not retried");
+  pass(transcriptErrors(w3).length === 0, "application failure does not create a transcript turn");
+
   if (failures.length > 0) {
     for (const f of failures) console.log(f);
     process.exit(1);
   }
-  console.log("PASS: transport drop → amber→red chrome banner, no transcript pollution");
+  console.log("PASS: transport and application failures use honest chrome banners without transcript pollution");
   process.exit(0);
 })().catch((err) => { console.error("FAIL: " + (err && err.stack || err)); process.exit(1); });

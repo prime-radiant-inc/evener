@@ -838,10 +838,14 @@
         })
         .catch((err) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          this.clearAppwireStream();
+          if (this.isAppwireApplicationError(err)) {
+            this.showConnectionBanner("unavailable", err && err.message ? err.message : String(err));
+            return;
+          }
           // A connect attempt failed. This is transport, not the agent — keep
           // it out of the transcript and escalate the chrome banner to red
           // "Connection lost", then keep retrying in the background.
-          this.clearAppwireStream();
           this.showConnectionBanner("lost");
           this.scheduleAppwireReconnect();
         });
@@ -907,6 +911,10 @@
       }, 250);
     },
 
+    isAppwireApplicationError(err) {
+      return !!err && Object.prototype.hasOwnProperty.call(err, "code");
+    },
+
     // ── Transport reconnect banner (mockup #15 Alt A, case 1) ────────────────
     // A daemon/appwire drop is Serf losing the agent — Serf's fault, not the
     // agent's — so it must live in the workspace chrome (a docked bar under the
@@ -931,10 +939,16 @@
       return banner;
     },
 
-    showConnectionBanner(level) {
+    showConnectionBanner(level, detail) {
       const banner = this.connectionBannerEl();
-      banner.classList.remove("reconnecting", "lost");
-      if (level === "lost") {
+      banner.classList.remove("reconnecting", "lost", "unavailable");
+      if (level === "unavailable") {
+        banner.classList.add("lost", "unavailable");
+        banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.warning + '</span>' +
+          '<span class="connection-banner-msg">Transcript unavailable</span>' +
+          '<span class="connection-banner-sub"></span>';
+        banner.querySelector(".connection-banner-sub").textContent = detail || "appwire error";
+      } else if (level === "lost") {
         banner.classList.add("lost");
         banner.innerHTML = '<span class="connection-banner-glyph" aria-hidden="true">' + window.SerfIcons.warning + '</span>' +
           '<span class="connection-banner-msg">Connection lost</span>' +
