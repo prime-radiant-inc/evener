@@ -1218,6 +1218,7 @@
           break;
         case "TURN_COMPLETED":
           this.finalizeReasoning();
+          this.finalizeAssistantMessage();
           if (!data.turnId || data.turnId === this.activeTurnId) {
             // THREAD_STATUS_CHANGED("active") starts an asynchronous capability
             // refresh. Once this turn has completed, that old active snapshot
@@ -1487,6 +1488,7 @@
           this.appendSteeringMessage(data.text || imagePlaceholderForCount((data.images || []).length));
           break;
         case "SESSION_END":
+          this.finalizeAssistantMessage();
           // input_complete = clean end-of-turn termination; not user-meaningful.
           // Past replays always end this way and the dim/idle dot already
           // conveys "this conversation is over." Only render for dramatic
@@ -2294,6 +2296,7 @@
       this.removeColdStartSkeleton();
       this.endCheapCluster();
       this.closeSubagentModule();
+      this.lastFinalizedAssistantEl = null;
       const id = "msg-" + Math.random().toString(36).slice(2, 9);
       this.currentMessageId = id;
       const el = document.createElement("div");
@@ -2388,6 +2391,19 @@
       const m = this.activeMessages.get(id);
       const finalText = (data && data.text) || (m && m.textBuf) || "";
       if (!m) {
+        // Idempotence: appwire can emit TURN_COMPLETED (which finalizes) and
+        // then a synthesized ASSISTANT_TEXT_END for the same message in one
+        // notification (codex turn/completed-with-items). Between turns
+        // (activeTurnId cleared) a late END REPLACES the finalized block in
+        // place — it must never append a duplicate.
+        const last = this.lastFinalizedAssistantEl;
+        if (!this.activeTurnId && last && last.isConnected && String(finalText).trim()) {
+          const meta = last.querySelector(".turn-meta");
+          try { last.innerHTML = window.marked.parse(finalText); }
+          catch (e) { last.textContent = finalText; }
+          if (meta) last.appendChild(meta); // re-parse destroyed children; the badge rides back
+          return;
+        }
         this.appendAssistantBlock(finalText);
         return;
       }
