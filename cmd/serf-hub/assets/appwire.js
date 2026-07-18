@@ -57,10 +57,19 @@
   function connect() {
     if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve(ws);
     if (connecting) return connecting;
-    connecting = new Promise((resolve, reject) => {
-      const sock = new WebSocket(rpcURL());
+    let sock;
+    try {
+      sock = new WebSocket(rpcURL());
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    let attempt = null;
+    attempt = new Promise((resolve, reject) => {
       let disconnected = false;
       let initializeFailed = false;
+      const clearAttempt = () => {
+        if (connecting === attempt) connecting = null;
+      };
       const markDisconnected = (err) => {
         if (disconnected) return;
         disconnected = true;
@@ -68,8 +77,11 @@
         notifyConnectionLost(err);
       };
       const rejectPending = (err) => {
-        for (const item of pending.values()) item.reject(err);
-        pending.clear();
+        for (const [id, item] of pending.entries()) {
+          if (item.socket !== sock) continue;
+          item.reject(err);
+          pending.delete(id);
+        }
       };
       ws = sock;
       sock.addEventListener("open", () => {
@@ -83,11 +95,12 @@
             wasDisconnected = false;
             notifyConnectionRestored();
           }
+          clearAttempt();
           resolve(sock);
         }, (err) => {
           initializeFailed = true;
           if (ws === sock) ws = null;
-          connecting = null;
+          clearAttempt();
           rejectPending(err);
           try { sock.close(); } catch (_) {}
           reject(err);
@@ -96,23 +109,29 @@
       sock.addEventListener("message", (event) => handleMessage(event.data));
       sock.addEventListener("error", () => {
         const err = new Error("appwire connection error");
-        if (ws === sock) ws = null;
-        connecting = null;
         rejectPending(err);
+        clearAttempt();
+        if (ws !== sock) {
+          reject(err);
+          return;
+        }
+        ws = null;
         markDisconnected(err);
         reject(err);
       });
       sock.addEventListener("close", () => {
         const err = new Error("appwire connection closed");
+        rejectPending(err);
+        clearAttempt();
         if (ws === sock) {
           ws = null;
-          connecting = null;
-          rejectPending(err);
           if (!initializeFailed) markDisconnected(err);
         }
+        reject(err);
       });
     });
-    return connecting;
+    connecting = attempt;
+    return attempt;
   }
 
   // ensureHeartbeat starts the single shared heartbeat interval lazily on the
@@ -158,12 +177,17 @@
 
   function request(method, params) {
     const id = nextId++;
-    const send = () => new Promise((resolve, reject) => {
-      pending.set(String(id), { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params: params || {} }));
+    const send = (socket) => new Promise((resolve, reject) => {
+      pending.set(String(id), { resolve, reject, socket });
+      try {
+        socket.send(JSON.stringify({ id, method, params: params || {} }));
+      } catch (err) {
+        pending.delete(String(id));
+        reject(err);
+      }
     });
-    if (ws && ws.readyState === WebSocket.OPEN) return send();
-    if (method === METHOD.initialize) return send();
+    if (ws && ws.readyState === WebSocket.OPEN) return send(ws);
+    if (method === METHOD.initialize) return send(ws);
     return connect().then(send);
   }
 
