@@ -2250,11 +2250,16 @@
       return this.normalizedAssistantText(el.textContent);
     },
 
+    markAssistantDirty(m) {
+      if (!this.dirtyAssistantMessages) this.dirtyAssistantMessages = new Set();
+      this.dirtyAssistantMessages.add(m);
+    },
+
     appendAssistantDelta(delta) {
       const m = this.activeMessages.get(this.currentMessageId);
       if (!m) return;
       m.textBuf += delta;
-      this.renderAssistantMessage(m, m.textBuf);
+      this.markAssistantDirty(m);
     },
 
     renderAssistantMessage(m, text) {
@@ -2284,6 +2289,7 @@
       }
       this.activeMessages.delete(id);
       this.currentMessageId = null;
+      if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.delete(m);
       if (!String(finalText || "").trim()) {
         if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
         return;
