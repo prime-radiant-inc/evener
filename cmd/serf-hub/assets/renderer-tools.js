@@ -223,10 +223,19 @@
   }
 
   function readToolBodyDelta(state, out) {
-    setReadOutput(state, clip(out || "", 8000));
+    const b = state.body;
+    if (!b || !b.outputPre) return;
+    if (!b.streaming) { b.streaming = true; if (b.wrap) b.wrap.classList.add("streaming"); }
+    b.outputPre.style.display = "";
+    b.outputPre.textContent = clip(out || "", 8000);
+    b.outputPre.scrollTop = b.outputPre.scrollHeight;
   }
 
   function readToolBodyEnd(state, data, out) {
+    if (state.body) {
+      state.body.streaming = false;
+      if (state.body.wrap) state.body.wrap.classList.remove("streaming");
+    }
     setReadOutput(state, clip(data.error || out || "", 8000));
   }
 
@@ -526,12 +535,19 @@
     },
     body: (args, el) => shellTerminalBody(args, el),
     bodyDelta: (state, out) => {
-      if (state.body && state.body.pre) {
-        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
-      }
+      const b = state.body;
+      if (!b || !b.pre) return;
+      // Stream in place: one <pre>, tail-anchored, height-clamped by CSS. The
+      // fold/binary/error chrome is built once at bodyEnd — never per delta.
+      if (!b.streaming) { b.streaming = true; if (b.wrap) b.wrap.classList.add("streaming"); }
+      b.pre.style.display = "";
+      b.pre.textContent = clip(out, 8000);
+      b.pre.scrollTop = b.pre.scrollHeight;
     },
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
+      state.body.streaming = false;
+      if (state.body.wrap) state.body.wrap.classList.remove("streaming");
       const text = data.error || out || "";
       setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       const st = parseToolState(data.tool_state);

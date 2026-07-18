@@ -2763,6 +2763,13 @@ details.tool-body[open] > summary::before,
   color: var(--text-dim);
 }
 .terminal-footer-bad { color: var(--error); }
+/* Streaming tool output: one clamped, tail-anchored pane until bodyEnd builds
+   the fold chrome. */
+.tool-body.streaming .terminal-output,
+.tool-body.streaming .read-tool-preview {
+  max-height: 16em;
+  overflow-y: auto;
+}
 .cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
