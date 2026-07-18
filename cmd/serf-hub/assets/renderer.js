@@ -2328,6 +2328,12 @@
     lastElementIsAssistantText(text) {
       const last = this.conversation && this.conversation.lastElementChild;
       if (!last || !last.classList || !last.classList.contains("assistant-message")) return false;
+      // While the last message is still streaming, its DOM may hold a raw
+      // markdown tail — compare source against source instead.
+      const m = this.activeMessages.get(this.currentMessageId);
+      if (m && m.el === last) {
+        return this.normalizedAssistantText(m.textBuf) === this.normalizedAssistantText(text);
+      }
       return this.normalizedAssistantText(last.textContent) === this.renderedAssistantText(text);
     },
 
