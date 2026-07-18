@@ -589,6 +589,7 @@
       this.liveStream = {
         close: () => this.clearAppwireStream(),
       };
+      const appwireStream = this.liveStream;
       // Optimistic-rendering registry. SerfAppwire's optimisticCall
       // registers pending entries against this on every turn/start /
       // turn/steer / turn/queue / turn/drainAsSteer; deliverNotification
@@ -827,8 +828,9 @@
             this.eventsContainPrimaryDialogue(hydrationEvents),
             sessionId,
             conversation,
+            appwireStream,
           );
-          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          if (this.liveStream !== appwireStream || this.conversation !== conversation) return;
           // Surface any sandbox escalation blocked on this session (M7 surface-on-
           // entry / reconnect), de-duped against live ones.
           this.surfaceSnapshotEscalations(thread);
@@ -4551,19 +4553,19 @@
       return false;
     },
 
-    async loadOlderTurnsUntilPrimaryDialogue(hasPrimaryDialogue, sessionId, conversation) {
+    async loadOlderTurnsUntilPrimaryDialogue(hasPrimaryDialogue, sessionId, conversation, appwireStream) {
       if (hasPrimaryDialogue || !this.olderTurnsCursor) return;
       if (!window.SerfAppwire || typeof window.SerfAppwire.listTurns !== "function" ||
           typeof window.SerfAppwire.eventsFromTurns !== "function") return;
       this.loadingOlderTurns = true;
       const seenCursors = new Set();
       try {
-        while (this.sessionId === sessionId && this.conversation === conversation && this.olderTurnsCursor) {
+        while (this.liveStream === appwireStream && this.conversation === conversation && this.olderTurnsCursor) {
           const cursor = this.olderTurnsCursor;
           if (seenCursors.has(cursor)) break;
           seenCursors.add(cursor);
           const page = await window.SerfAppwire.listTurns(sessionId, cursor, OLDER_TURN_PAGE);
-          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          if (this.liveStream !== appwireStream || this.conversation !== conversation) return;
           const turns = (page && page.turns) || [];
           const events = Array.from(window.SerfAppwire.eventsFromTurns(turns));
           if (turns.length) this.prependOlderTurns(turns);
@@ -4573,7 +4575,7 @@
       } catch (err) {
         console.error("failed to load earlier transcript dialogue", err);
       } finally {
-        if (this.sessionId === sessionId && this.conversation === conversation) this.loadingOlderTurns = false;
+        if (this.liveStream === appwireStream && this.conversation === conversation) this.loadingOlderTurns = false;
       }
     },
 

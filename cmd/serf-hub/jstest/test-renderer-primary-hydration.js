@@ -59,7 +59,10 @@ async function drainMicrotasks() {
 }
 
 (async () => {
-  const sparse = boot(toolEvents("latest"), [
+  const sparse = boot([
+    ["SESSION_START", { session_id: "canonical-thread", restored: true }],
+    ...toolEvents("latest"),
+  ], [
     {
       turns: [{ id: "older-tools", status: "completed", testEvents: toolEvents("older") }],
       nextCursor: "cursor-more",
