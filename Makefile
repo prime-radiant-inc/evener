@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -18,8 +18,10 @@ SERF_DIST_NAME := serf_$(DIST_GOOS)_$(DIST_GOARCH)
 SERF_DIST_BIN_DIR := $(DIST_DIR)/$(SERF_DIST_NAME)
 SERF_DIST_ARCHIVE := $(DIST_DIR)/$(SERF_DIST_NAME).tar.gz
 
-build:
-	go build -ldflags "$(LDFLAGS)" -o serf ./cmd/serf/
+build: build-runtime
+
+build-runtime:
+	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
 # cache to ensure embedded files (templates, sections, agent .md) are fresh.
@@ -27,8 +29,7 @@ build-linux:
 	go clean -cache -x ./agent/ 2>/dev/null; \
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
-build-hub:
-	go build -o serf-hub ./cmd/serf-hub/
+build-hub: build-runtime
 
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/
@@ -37,7 +38,7 @@ build-tui:
 build-doctor:
 	go build -o serf-doctor ./cmd/serf-doctor/
 
-build-all: build build-hub build-tui build-doctor
+build-all: build-runtime build-tui build-doctor
 
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
