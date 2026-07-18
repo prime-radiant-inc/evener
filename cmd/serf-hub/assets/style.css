@@ -1613,6 +1613,15 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   line-height: var(--leading-normal);
 }
 
+/* Browser-native windowing: off-screen transcript entries skip layout/paint.
+   `auto` reuses each entry's last-rendered size, so scroll geometry is exact
+   for anything rendered once; only never-rendered deep history uses the
+   estimate (prepend corrects it on the next frame). */
+.conversation > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+
 /* Safety net: no machine-text block may force the whole transcript column to
    scroll sideways. Any <pre> in the conversation is capped to its container and
    given its own contained horizontal scroll, so a long unbroken line scrolls

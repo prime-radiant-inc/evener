@@ -4840,6 +4840,15 @@
       while (staging.firstChild) frag.appendChild(staging.firstChild);
       sc.insertBefore(frag, sc.firstChild);
       sc.scrollTop = beforeTop + (sc.scrollHeight - beforeHeight);
+      // Second settle: freshly prepended entries may sit at estimated sizes
+      // (content-visibility). After the browser lays out the near-viewport
+      // ones, correct the residual drift so the reader's anchor holds.
+      const settledHeight = sc.scrollHeight;
+      this.scheduleFrame(() => {
+        if (!sc.isConnected) return;
+        const drift = sc.scrollHeight - settledHeight;
+        if (drift) sc.scrollTop += drift;
+      });
     },
 
     // noteNewContent records that `added` new transcript entries rendered while
