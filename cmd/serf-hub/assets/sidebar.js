@@ -992,8 +992,14 @@
       reconcilePending(tree);
       renderTree(tree);
       // Re-request children for projects the user expanded (served from the memo).
-      model.expanded.forEach(function (key) { refetchProjectChildren(key); });
+      refetchExpandedProjects(tree);
     }).catch(function () {}); // resync failure keeps the last good model rendered
+  }
+  function refetchExpandedProjects(tree) {
+    var projects = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
+    projects.forEach(function (project) {
+      if (model.expanded.has(project.key)) refetchProjectChildren(project.key);
+    });
   }
   function refetchProjectChildren(key) {
     window.fetch("/api/tree/project?key=" + encodeURIComponent(key)).then(function (r) { return r.ok ? r.json() : null; }).then(function (p) {
