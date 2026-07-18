@@ -805,7 +805,7 @@
         });
       }
       window.SerfAppwire.readThread(sessionId, true, true, true, INITIAL_TURN_WINDOW)
-        .then((resp) => {
+        .then(async (resp) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
           if (this.appwireHydrated) this.resetTranscriptReplay();
@@ -819,9 +819,16 @@
             this.setActiveTurnId(window.SerfAppwire.activeTurnIDFromThread(thread));
           }
           hydratedNotificationKeys = hydrationKeysFromThread(thread);
-          for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
+          const hydrationEvents = Array.from(window.SerfAppwire.eventsFromThread(thread));
+          for (const [kind, data] of hydrationEvents) {
             this.handleData(kind, data);
           }
+          await this.loadOlderTurnsUntilPrimaryDialogue(
+            this.eventsContainPrimaryDialogue(hydrationEvents),
+            sessionId,
+            conversation,
+          );
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           // Surface any sandbox escalation blocked on this session (M7 surface-on-
           // entry / reconnect), de-duped against live ones.
           this.surfaceSnapshotEscalations(thread);
@@ -4527,6 +4534,47 @@
       const el = this.conversation;
       if (!el) return false;
       return el.scrollTop < 200;
+    },
+
+    eventsContainPrimaryDialogue(events) {
+      for (const [kind, data] of events || []) {
+        if (kind === "USER_INPUT") return true;
+        if ((kind === "ASSISTANT_TEXT_DELTA" || kind === "ASSISTANT_TEXT_END") &&
+            String((data && (data.delta || data.text)) || "").trim()) return true;
+        if ((kind === "TOOL_CALL_START" || kind === "TOOL_CALL_END") && data && data.tool_name === "communicate") {
+          try {
+            const args = JSON.parse(data.arguments_json || "{}");
+            if (String(args.message || "").trim()) return true;
+          } catch (_) {}
+        }
+      }
+      return false;
+    },
+
+    async loadOlderTurnsUntilPrimaryDialogue(hasPrimaryDialogue, sessionId, conversation) {
+      if (hasPrimaryDialogue || !this.olderTurnsCursor) return;
+      if (!window.SerfAppwire || typeof window.SerfAppwire.listTurns !== "function" ||
+          typeof window.SerfAppwire.eventsFromTurns !== "function") return;
+      this.loadingOlderTurns = true;
+      const seenCursors = new Set();
+      try {
+        while (this.sessionId === sessionId && this.conversation === conversation && this.olderTurnsCursor) {
+          const cursor = this.olderTurnsCursor;
+          if (seenCursors.has(cursor)) break;
+          seenCursors.add(cursor);
+          const page = await window.SerfAppwire.listTurns(sessionId, cursor, OLDER_TURN_PAGE);
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          const turns = (page && page.turns) || [];
+          const events = Array.from(window.SerfAppwire.eventsFromTurns(turns));
+          if (turns.length) this.prependOlderTurns(turns);
+          this.olderTurnsCursor = (page && page.nextCursor) || "";
+          if (this.eventsContainPrimaryDialogue(events)) break;
+        }
+      } catch (err) {
+        console.error("failed to load earlier transcript dialogue", err);
+      } finally {
+        if (this.sessionId === sessionId && this.conversation === conversation) this.loadingOlderTurns = false;
+      }
     },
 
     // maybeLoadOlderTurns pages in the next batch of earlier turns when the
