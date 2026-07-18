@@ -2298,6 +2298,7 @@
       this.currentMessageId = id;
       const el = document.createElement("div");
       el.className = "assistant-message";
+      el.classList.add("streaming");
       el.dataset.turnId = this.activeTurnId || "";
       this.conversation.appendChild(el);
       this.activeMessages.set(id, { el, textBuf: "" });
@@ -2345,7 +2346,24 @@
       const m = this.activeMessages.get(this.currentMessageId);
       if (!m) return;
       m.textBuf += delta;
-      this.markAssistantDirty(m);
+      if (!m.tailEl && m.textBuf.length > 4096) {
+        // Frozen head, raw tail: stop re-parsing a long message per frame. The
+        // DOM parsed so far stays; further deltas stream as plain text and the
+        // whole buffer parses once at finalization. Switches on LENGTH only
+        // (never fence state) and never flips back.
+        this.renderAssistantMessage(m, m.textBuf);
+        const tail = document.createElement("span");
+        tail.className = "streaming-tail";
+        m.el.appendChild(tail);
+        m.tailEl = tail;
+        if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.delete(m);
+        return;
+      }
+      if (m.tailEl) {
+        m.tailEl.appendChild(document.createTextNode(delta));
+      } else {
+        this.markAssistantDirty(m);
+      }
     },
 
     renderAssistantMessage(m, text) {
@@ -2380,7 +2398,9 @@
         if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
         return;
       }
+      m.el.classList.remove("streaming");
       this.renderAssistantMessage(m, finalText);
+      this.lastFinalizedAssistantEl = m.el;
     },
 
     // markAgentQuestion frames an agent message as the blocking "needs-you"

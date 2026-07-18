@@ -2387,6 +2387,19 @@ button.composer-model-value .caret { color: var(--text-dim); }
 .assistant-message:hover .turn-meta,
 .assistant-message:focus-within .turn-meta { opacity: 1; }
 
+/* Frozen-head/raw-tail streaming (long messages): the tail is plain pre-wrap
+   text with the one sanctioned streaming caret; finalization replaces it with
+   parsed markdown. */
+.assistant-message .streaming-tail {
+  display: block;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+.assistant-message.streaming .streaming-tail::after {
+  content: "▍";
+  color: var(--accent);
+}
+
 /* Thinking — the quietest transcript entry (design-system §2.5, §4). A reset
    <button> that, while streaming, occupies a fixed-height reserved slot showing
    a one-line teleprompter tail of the live reasoning (mockup #5 alt A) so the
