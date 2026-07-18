@@ -1217,9 +1217,11 @@
           if (window.htmx) htmx.trigger(document.body, "serf-hub:status-refresh");
           break;
         case "TURN_COMPLETED":
-          this.finalizeReasoning();
-          this.finalizeAssistantMessage();
           if (!data.turnId || data.turnId === this.activeTurnId) {
+            // A stale/late completion for a different turn must NOT finalize
+            // the currently-streaming message — later deltas would be dropped.
+            this.finalizeReasoning();
+            this.finalizeAssistantMessage();
             // THREAD_STATUS_CHANGED("active") starts an asynchronous capability
             // refresh. Once this turn has completed, that old active snapshot
             // must not be allowed to arrive late and put the composer back into

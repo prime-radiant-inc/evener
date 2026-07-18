@@ -39,6 +39,19 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(msgs[0].textContent.includes("completed"), "late END content applied");
   pass(msgs[0].querySelector(".turn-meta"), "turn-meta survives the in-place replace");
   pass(msgs[0].dataset.turnId === "t1", "turn id preserved through replace");
+  // Mismatched completion: TURN_COMPLETED for a DIFFERENT turn must not
+  // finalize the currently-streaming message — later deltas would be dropped.
+  R.handleData("TURN_STARTED", { turnId: "t2" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "streaming" });
+  R.handleData("TURN_COMPLETED", { turnId: "OTHER", turn: { id: "OTHER", durationMs: 500 } });
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: " continues" });
+  msgs = conv.querySelectorAll(".assistant-message");
+  pass(msgs.length === 2, "mismatched completion must not finalize — later delta still lands in the same active message (got " + msgs.length + ")");
+  const live = msgs[msgs.length - 1];
+  pass(live.dataset.turnId === "t2", "live message still belongs to the active turn");
+  pass(live.textContent.includes("streaming continues"), "delta after mismatched completion renders into the active message");
+  pass(!live.querySelector(".turn-meta"), "mismatched completion appends no .turn-meta to the live message");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: finalization is idempotent across TURN_COMPLETED and a late END");
   process.exit(0);
