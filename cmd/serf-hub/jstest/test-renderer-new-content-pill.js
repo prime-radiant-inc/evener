@@ -85,6 +85,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   pass(pillVisible(), "pill reappears on new content after scrolling up again");
   conv.scrollTop = 600; // reader returns to the bottom on their own
   conv.dispatchEvent(new window.Event("scroll"));
+  await new Promise((r) => setTimeout(r, 40)); // scroll handler is rAF-throttled (Task 15)
   pass(!pillVisible(), "scrolling back to the bottom clears the pill");
 
   // Attention-aware: new content under an awaiting state reads "needs you".
@@ -127,6 +128,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   Object.defineProperty(errBelow, "offsetTop", { configurable: true, get: () => 900 });
   Object.defineProperty(errBelow, "offsetHeight", { configurable: true, get: () => 40 });
   conv.appendChild(errBelow);
+  R.errorAnchorCache = null; // manual DOM injection bypasses the TOOL_CALL_END invalidation
   conv.scrollTop = 100; // viewport bottom = 100 + 400 = 500; error at 900 is below
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("ASSISTANT_TEXT_END", { text: "patching" });
@@ -160,6 +162,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   Object.defineProperty(errPri, "offsetTop", { configurable: true, get: () => 900 });
   Object.defineProperty(errPri, "offsetHeight", { configurable: true, get: () => 40 });
   conv.appendChild(errPri); // … AND an error is below
+  R.errorAnchorCache = null; // manual DOM injection bypasses the TOOL_CALL_END invalidation
   conv.scrollTop = 100;
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("ASSISTANT_TEXT_END", { text: "a reply" });
@@ -183,6 +186,7 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   // ── Debounced count settles to one value after a burst ──────────────────
   // Remove the lingering error anchors so this exercises the PLAIN count path.
   conv.querySelectorAll('.tool-call[data-attention="error"]').forEach(n => n.remove());
+  R.errorAnchorCache = null; // manual DOM removal bypasses the TOOL_CALL_END invalidation
   R.scrollToBottom();
   R.updateThreadState("active");
   conv.scrollTop = 100;

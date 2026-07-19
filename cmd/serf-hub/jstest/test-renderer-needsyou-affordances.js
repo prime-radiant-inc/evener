@@ -58,6 +58,7 @@ R.init(conv);
   Object.defineProperty(errBelow, "offsetTop", { configurable: true, get: () => 900 });
   Object.defineProperty(errBelow, "offsetHeight", { configurable: true, get: () => 40 });
   conv.appendChild(errBelow);
+  R.errorAnchorCache = null; // manual DOM injection bypasses the TOOL_CALL_END invalidation
   R.newContentCount = 1;
   R.renderNewContentPill();
   assert.ok(pill.innerHTML.includes("<svg"), "error scroll pill must render an icon, not ✕ (got " + pill.innerHTML + ")");

@@ -1120,6 +1120,7 @@
       this.cheapToolCluster = null;
       this.subagentModule = null;
       this.currentTurnHasAgentWork = false;
+      this.errorAnchorCache = null;
     },
 
     markCurrentTurnAgentWork() {
@@ -1450,6 +1451,7 @@
           this.appendToolDelta(data);
           break;
         case "TOOL_CALL_END":
+          this.errorAnchorCache = null;
           this.markCurrentTurnAgentWork();
           if (this.suppressedToolCalls.has(data.call_id)) {
             this.suppressedToolCalls.delete(data.call_id);
@@ -4664,7 +4666,7 @@
     pickUrgentAnchor() {
       const sc = this.conversation;
       if (!sc) return null;
-      const errors = Array.from(sc.querySelectorAll('.tool-call[data-attention="error"]'));
+      const errors = this.errorAnchors();
       const errBelow = errors.find(el => this.isAnchorBelow(el));
       if (errBelow) return { kind: "error", dir: "down", el: errBelow };
       const errAbove = errors.find(el => this.isAnchorAbove(el));
@@ -4702,22 +4704,44 @@
       if (!el.__serfScrollPillBound) {
         el.__serfScrollPillBound = true;
         el.addEventListener("scroll", () => {
-          if (this.isNearTop()) this.maybeLoadOlderTurns();
-          if (this.isNearBottom()) this.clearNewContentPill();
-          // Re-evaluate the urgent anchor as the reader scrolls, so the arrow
-          // flips (↓→↑) when they pass an error and the label tracks what's
-          // still off-screen — without churning the debounced count.
-          else if (this.newContentCount > 0) this.renderNewContentPill();
-          // The dock tracks whether the question scrolled out of view, so it
-          // appears the moment the ask leaves the viewport and clears when the
-          // reader returns to it.
-          this.renderNeedsYouDock();
+          if (this.scrollAffordanceTick) return;
+          this.scrollAffordanceTick = true;
+          this.scheduleFrame(() => {
+            this.scrollAffordanceTick = false;
+            this.onScrollAffordance();
+          });
         });
       }
       this.clearNewContentPill();
       // Materialize the dock up front so its presence is independent of the
       // first scroll event.
       this.needsYouDockEl();
+    },
+
+    onScrollAffordance() {
+      if (this.isNearTop()) this.maybeLoadOlderTurns();
+      if (this.isNearBottom()) this.clearNewContentPill();
+      // Re-evaluate the urgent anchor as the reader scrolls, so the arrow
+      // flips (↓→↑) when they pass an error and the label tracks what's
+      // still off-screen — without churning the debounced count.
+      else if (this.newContentCount > 0) this.renderNewContentPill();
+      // The dock tracks whether the question scrolled out of view, so it
+      // appears the moment the ask leaves the viewport and clears when the
+      // reader returns to it.
+      this.renderNeedsYouDock();
+    },
+
+    // errorAnchors caches the per-row error anchors between invalidations —
+    // the scroll path re-queries on every frame otherwise. Invalidated on
+    // TOOL_CALL_END (a row's attention state settles), transcript prepend,
+    // and replay reset.
+    errorAnchors() {
+      if (!this.errorAnchorCache) {
+        this.errorAnchorCache = this.conversation
+          ? Array.from(this.conversation.querySelectorAll('.tool-call[data-attention="error"]'))
+          : [];
+      }
+      return this.errorAnchorCache;
     },
 
     newContentPillEl() {
@@ -4860,6 +4884,7 @@
         const drift = sc.scrollHeight - settledHeight;
         if (drift) sc.scrollTop += drift;
       });
+      this.errorAnchorCache = null;
     },
 
     // noteNewContent records that `added` new transcript entries rendered while
