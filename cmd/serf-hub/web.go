@@ -399,7 +399,9 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
 			}
 		}
 	}
-	sort.Slice(sessions, func(i, j int) bool { return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt) })
+	// Stable, matching the web_api_tree.go ordering precedent: equal UpdatedAt
+	// rows keep their tree order instead of shuffling between renders.
+	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt) })
 	if len(sessions) > 8 {
 		sessions = sessions[:8]
 	}
@@ -415,8 +417,18 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
 		})
 	}
 	// Every session archived (or none): the quiet wordmark welcome is honest;
-	// when archived sessions exist the search affordance says so.
-	data.AllArchived = len(data.Rows) == 0 && (len(tree.Projects) > 0 || len(tree.ArchivedProjects) > 0)
+	// when archived sessions exist the search affordance says so. Require an
+	// actual archived session — rows can also be empty for non-archive
+	// reasons (e.g. tiers holding only clusters/subagents), and then the
+	// "search all sessions" label would be a lie.
+	archivedAny := len(tree.ArchivedProjects) > 0
+	for _, p := range tree.Projects {
+		if p.IsArchived || len(p.Archived) > 0 {
+			archivedAny = true
+			break
+		}
+	}
+	data.AllArchived = len(sessions) == 0 && archivedAny
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.workspaceEmptyTmpl.ExecuteTemplate(w, "workspace_empty", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
