@@ -190,6 +190,7 @@
       this.readerScrolledDuringHydration = false;
       this.programmaticScrollDepth = 0;
       this.prependSettleHolds = 0;
+      this.scrollBottomHolds = 0;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
@@ -4885,19 +4886,26 @@
     },
 
     scrollToBottom() {
-      // Depth-counted programmatic scroll: the browser fires the scroll event
-      // ASYNC (a later task at the earliest), so a synchronous marker would
-      // already be cleared by the time the listener runs. Hold the depth until
-      // the next task so the listener never reads this write as reader intent
-      // during hydration (it also guards any future programmatic scroll that
-      // CAN land inside a replay window).
+      // Depth-counted programmatic scroll: a scrollTop write fires its scroll
+      // event ASYNC, in the NEXT frame's scroll steps — which run BEFORE that
+      // frame's rAF callbacks — not in a later task. A synchronous marker
+      // would already be cleared by the time the listener runs, and a
+      // one-task release would land before the frame in which the event
+      // fires, so the depth is held until the next frame instead (it also
+      // guards any future programmatic scroll that CAN land inside a replay
+      // window). Holds accumulate: a rapid burst of scrollToBottom calls
+      // reschedules the keyed release, cancelling the previous pending one,
+      // so the surviving release drains them all (no stuck counter).
       this.programmaticScrollDepth++;
+      this.scrollBottomHolds++;
       try {
         this.conversation.scrollTop = this.conversation.scrollHeight;
       } finally {
-        setTimeout(() => {
-          this.programmaticScrollDepth = Math.max(0, this.programmaticScrollDepth - 1);
-        }, 0);
+        this.scheduleFrame(() => {
+          const holds = this.scrollBottomHolds;
+          this.scrollBottomHolds = 0;
+          this.programmaticScrollDepth = Math.max(0, this.programmaticScrollDepth - holds);
+        }, "scroll-bottom-release");
       }
       // Once parked at the bottom there is no unseen content, so the
       // new-content pill (and its counter) must reset.
@@ -5210,15 +5218,21 @@
       // events ASYNC, after this function returns — a synchronous marker is
       // already cleared by then, and mid-hydration paging
       // (loadOlderTurnsUntilPrimaryDialogue) read those events as reader
-      // intent, wrongly suppressing the hydration-end settle. Hold a depth
-      // count from here until the final settle callback has completed its
-      // correction; the release is deferred one task so the correction's own
-      // async scroll event also lands while depth > 0. A subsequent prepend
-      // re-schedules the keyed "prepend-settle" frame, cancelling the
-      // previous one — its hold is subsumed by the surviving settle, so the
-      // holds pile up and the LAST settle releases them all (no stuck
-      // counter). The catch path releases this prepend's own hold if anything
-      // throws before the settle is scheduled.
+      // intent, wrongly suppressing the hydration-end settle. The
+      // correction's write fires its event in the NEXT frame's scroll steps,
+      // which run BEFORE that frame's rAF callbacks — so a one-task release
+      // lands before the event and is too early. Hold a depth count from
+      // here until one FRAME after the settle callback has completed its
+      // correction, so the correction's own scroll event also lands while
+      // depth > 0. A subsequent prepend re-schedules the keyed
+      // "prepend-settle" frame, cancelling the previous one — its hold is
+      // subsumed by the surviving settle, so the holds pile up and the LAST
+      // settle's release drains them all (no stuck counter). The release
+      // drains the accumulator at run time, so a cancelled
+      // "prepend-settle-release" (a later settle reschedules the key) never
+      // strands depth — the surviving release picks up every hold. The catch
+      // path releases this prepend's own hold if anything throws before the
+      // settle is scheduled.
       this.programmaticScrollDepth++;
       this.prependSettleHolds++;
       try {
@@ -5239,11 +5253,17 @@
               if (drift) sc.scrollTop += drift;
             }
           } finally {
-            const holds = this.prependSettleHolds;
-            this.prependSettleHolds = 0;
-            setTimeout(() => {
+            // Release one FRAME later, not one task: the correction's
+            // scrollTop write fires its scroll event in the next frame's
+            // scroll steps (before that frame's rAF callbacks), so the depth
+            // must still be held when that event lands. Draining the
+            // accumulator here keeps a cancelled release from stranding
+            // depth — the surviving release picks up every hold.
+            this.scheduleFrame(() => {
+              const holds = this.prependSettleHolds;
+              this.prependSettleHolds = 0;
               this.programmaticScrollDepth = Math.max(0, this.programmaticScrollDepth - holds);
-            }, 0);
+            }, "prepend-settle-release");
           }
         }, "prepend-settle");
         this.errorAnchorCache = null;
