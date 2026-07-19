@@ -732,7 +732,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 
 /* Session count on not-yet-hydrated archived stubs (sidebar.js
    setProjectCount): muted, never wraps, empty once sessions are loaded. */
-.project-count { color: var(--ink-4); white-space: nowrap; flex-shrink: 0; }
+.project-count { color: var(--ink-3); white-space: nowrap; flex-shrink: 0; }
 
 /* Per-project collapse: hide the children container. The rollup dot stays
    visible in the header so the collapsed row still communicates urgency. */
@@ -795,7 +795,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
    for the sb-row tap target (the whole row is the link). */
 .project-new-btn.btn-icon,
 .project-gear-btn.btn-icon {
-  color: var(--ink-4);
+  color: var(--ink-3);
   text-decoration: none;
   opacity: 0;
   transition: opacity var(--motion-fast), color var(--motion-fast);
@@ -818,7 +818,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   padding: 0 var(--space-1);
   font-size: var(--text-xs);
   min-height: 0;
-  color: var(--ink-4);
+  color: var(--ink-3);
 }
 .project-chevron.btn-icon:hover {
   background: transparent;
@@ -855,7 +855,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .subagent-parent-crumb { color: var(--accent); text-decoration: none; }
 .subagent-parent-up:hover,
 .subagent-parent-crumb:hover { text-decoration: underline; }
-.subagent-parent-sep { color: var(--ink-4); }
+.subagent-parent-sep { color: var(--ink-3); }
 .subagent-parent-here { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-2); }
 /* Worst-descendant rollup chip on the breadcrumb: a deep ✕ (or an unanswered
    "unknown") surfaces here so it never hides behind a green parent. */
@@ -1204,7 +1204,7 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   border-radius: var(--radius-pill);
 }
 .rollup-badge .rollup-glyph { display: inline-flex; width: 9px; height: 9px; font-size: 9px; }
-.project-rollup .rollup-sep { color: var(--ink-4); font-size: var(--text-2xs); }
+.project-rollup .rollup-sep { color: var(--ink-3); font-size: var(--text-2xs); }
 .rollup-live {
   color: var(--state-working);
   background: color-mix(in srgb, var(--state-working) 14%, transparent);
@@ -1232,7 +1232,7 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
 .cluster-header .cluster-chevron {
   display: inline-block;
   width: 8px;
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-size: var(--text-2xs);
   user-select: none;
   transition: transform var(--motion-fast);
@@ -1361,7 +1361,7 @@ details.session-tier.archived > summary.session-tier-label::before {
   display: inline-block;
   font-family: var(--font-mono);
   font-size: var(--text-2xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   width: 8px;
   flex-shrink: 0;
   transition: transform var(--motion-fast);
@@ -1394,7 +1394,7 @@ details.session-tier.archived .sb-row .title { color: var(--ink-2); }
   display: inline-block;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   width: 10px;
   flex-shrink: 0;
   margin-right: var(--space-1);
@@ -1442,7 +1442,7 @@ details.session-tier.archived .sb-row .title { color: var(--ink-2); }
   /* Suppress .btn base styles that add borders/backgrounds at rest. */
   background: transparent;
   border-color: transparent;
-  color: var(--ink-4);
+  color: var(--ink-3);
   /* Keep tap target but shrink visual footprint on the row. */
   min-width: 0;
   padding: var(--space-1) var(--space-2);
@@ -1466,7 +1466,7 @@ details.session-tier.archived .sb-row .title { color: var(--ink-2); }
    already handled by the .project-header:hover gate; just strip
    the base button chrome so it renders inline like .project-gear-btn. */
 .project-header > .archive-btn.btn-icon {
-  color: var(--ink-4);
+  color: var(--ink-3);
   opacity: 0;
   transition: opacity var(--motion-fast), color var(--motion-fast);
   background: transparent;
@@ -1717,7 +1717,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .ask-questions { display: flex; flex-direction: column; gap: var(--space-5); }
 .ask-question + .ask-question { padding-top: var(--space-4); border-top: 1px solid color-mix(in srgb, var(--state-awaiting) 20%, transparent); }
 .ask-question-head { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-sm); font-weight: 600; color: var(--ink); }
-.ask-question-num { color: var(--ink-4); font-variant-numeric: tabular-nums; }
+.ask-question-num { color: var(--ink-3); font-variant-numeric: tabular-nums; }
 .ask-question-text { margin-top: var(--space-1); font-size: var(--text-base); color: var(--ink); line-height: var(--leading-snug); }
 /* `why` is prose the reader needs to decide (spec §4.2) — not a hairline, so
    it takes --ink-2 (readable AA gray) like .system-line's own quiet
@@ -1832,7 +1832,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .ask-note-toggle {
   font: inherit;
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -2011,7 +2011,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   background: transparent;
   border: 1px solid var(--line);
   border-radius: var(--radius-pill);
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1;
@@ -2099,7 +2099,7 @@ button.composer-model-value {
 }
 button.composer-model-value:hover { background: var(--bg); color: var(--ink); text-decoration: none; }
 button.composer-model-value:focus-visible { background: var(--bg); color: var(--ink); }
-button.composer-model-value .caret { color: var(--ink-4); }
+button.composer-model-value .caret { color: var(--ink-3); }
 .input-card .input-controls {
   padding: var(--space-2) 0 0;
   margin-top: 0;
@@ -2342,7 +2342,7 @@ button.composer-model-value .caret { color: var(--ink-4); }
 .user-image-cell:hover .user-image-thumb { border-color: var(--state-working); }
 .user-image-caption { display: flex; align-items: baseline; gap: var(--space-2); font-size: var(--text-xs); color: var(--ink-2); min-width: 0; }
 .user-image-filename { font-family: var(--font-mono); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.user-image-cap-sep { color: var(--ink-4); }
+.user-image-cap-sep { color: var(--ink-3); }
 .user-image-dims { font-variant-numeric: tabular-nums; flex: none; }
 
 .tool-output-images {
@@ -2390,7 +2390,7 @@ button.composer-model-value .caret { color: var(--ink-4); }
 .assistant-message > ul,
 .assistant-message > ol { margin: 0 0 var(--space-4); padding-left: var(--space-6); }
 .assistant-message li { margin: var(--space-1) 0; }
-.assistant-message li::marker { color: var(--ink-4); }
+.assistant-message li::marker { color: var(--ink-3); }
 /* Inline code = quiet underline, not a filled chip (mockup #4): a chip
    stipples the hero prose like noise. The underline keeps machine text legible
    while letting the prose read as one unbroken line. Relative font-size so it
@@ -2561,7 +2561,7 @@ button.composer-model-value .caret { color: var(--ink-4); }
   line-height: 1;
   font-family: var(--font-mono);
 }
-.tool-call .tool-status-pending { color: var(--ink-4); }
+.tool-call .tool-status-pending { color: var(--ink-3); }
 .tool-call .tool-status-good { color: var(--ink-2); }
 .tool-call .tool-status-bad { color: var(--error); }
 /* Command line (verb · target · result). The PRIMARY line when a call has no
@@ -2650,7 +2650,7 @@ button.composer-model-value .caret { color: var(--ink-4); }
 }
 .tool-call.has-purpose .verb,
 .tool-call.has-purpose .target,
-.tool-call.has-purpose .result-detail { color: var(--ink-4); }
+.tool-call.has-purpose .result-detail { color: var(--ink-3); }
 .tool-call.has-purpose:hover .target,
 .tool-call.has-purpose:focus-within .target { color: var(--ink-2); }
 .tool-call .result { color: var(--ink-2); }
@@ -2794,7 +2794,7 @@ details.tool-body[open] > summary::before,
   margin-top: var(--space-2);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
 }
 .terminal-footer-bad { color: var(--error); }
 /* Streaming tool output: one clamped, tail-anchored pane until bodyEnd builds
@@ -2829,7 +2829,7 @@ details.tool-body[open] > summary::before,
 }
 .task-list-body .task-row { padding: var(--space-1) 0; background: transparent; border: none; font-family: var(--font-mono); font-size: var(--text-sm); display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
 .task-list-body .task-id { color: var(--ink-2); font-family: var(--font-mono); font-size: var(--text-xs); }
-.task-list-body .task-arrow { color: var(--ink-4); }
+.task-list-body .task-arrow { color: var(--ink-3); }
 .task-list-body .task-status-label { color: var(--ink); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-list-body .task-notes { color: var(--ink-2); font-style: italic; font-size: var(--text-xs); }
 .task-list-body .task-type { color: var(--ink-2); font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -2917,7 +2917,7 @@ details.tool-body[open] > summary::before,
 .sub-r .g.done { color: var(--ink-2); }
 .sub-r .g.err  { color: var(--error); }
 /* Terminal-unknown: neutral, NOT alarming, NOT live (mockup #8). */
-.sub-r .g.unk  { color: var(--ink-4); }
+.sub-r .g.unk  { color: var(--ink-3); }
 .sub-r .nm {
   order: 2;
   flex: 1;
@@ -2933,14 +2933,14 @@ details.tool-body[open] > summary::before,
 .sub-r .dur {
   order: 3;
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
   flex: none;
 }
 .sub-r .lk {
   order: 4;
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   flex: none;
   opacity: 0;
   transition: opacity var(--motion-fast);
@@ -2951,7 +2951,7 @@ details.tool-body[open] > summary::before,
   flex: 0 0 100%;
   padding-left: calc(12px + var(--space-3));
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2959,13 +2959,13 @@ details.tool-body[open] > summary::before,
 }
 .sub-r .res:empty { display: none; }
 .sub-r .res .live { color: var(--ink-2); }
-.sub-r .res .steps { color: var(--ink-4); }
-.sub-r .res .age { color: var(--ink-4); }
+.sub-r .res .steps { color: var(--ink-3); }
+.sub-r .res .age { color: var(--ink-3); }
 .sub-r .res .unk { color: var(--ink-2); font-style: italic; }
 .sub-r.res-error .res,
 .sub-r.res-error .res .live { color: var(--error); }
 /* Honest aging: the activity dims when quiet; the clock turns amber when silent. */
-.sub-r.act-quiet .res .live { color: var(--ink-4); }
+.sub-r.act-quiet .res .live { color: var(--ink-3); }
 .sub-r.act-silent .res .age { color: var(--diagnostic-warning); }
 .sub-r:hover .lk,
 .sub-r:focus-visible .lk { opacity: 1; color: var(--accent); }
@@ -2978,7 +2978,7 @@ details.tool-body[open] > summary::before,
   padding: 0;
   font: inherit;
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   cursor: pointer;
 }
 .tie-link:hover,
@@ -3011,7 +3011,7 @@ details.tool-body[open] > summary::before,
   transition: opacity var(--motion-fast), color var(--motion-fast);
   background: transparent;
   border: none;
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-size: var(--text-xs);
   padding: 0 var(--space-1);
   margin-left: var(--space-2);
@@ -3205,7 +3205,7 @@ details.tool-body[open] > summary::before,
   /* A wall-clock stamp is human chrome, not machine text (design-system §2 #6). */
   font-family: var(--font-sans);
   font-size: var(--text-xs);
-  color: var(--ink-4);
+  color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
 .plan-item {
@@ -3236,12 +3236,12 @@ details.tool-body[open] > summary::before,
 .plan-item.current .plan-glyph { color: var(--accent); animation: think-breathe var(--pulse-cycle) infinite; }
 .plan-item.current .plan-step { color: var(--ink); font-weight: 500; }
 /* pending — not started. Dim glyph + tertiary text. */
-.plan-item.pending .plan-glyph { color: var(--ink-4); }
+.plan-item.pending .plan-glyph { color: var(--ink-3); }
 .plan-item.pending .plan-step { color: var(--ink-2); }
 /* cancelled — recedes like done, struck to read as dropped. The step label is
    readable text, so it stays at --ink-2 (AA); line-through carries the
    "dropped" meaning without sub-AA color. The glyph stays --ink-4 (non-text). */
-.plan-item.cancelled .plan-glyph { color: var(--ink-4); }
+.plan-item.cancelled .plan-glyph { color: var(--ink-3); }
 .plan-item.cancelled .plan-step { color: var(--ink-2); text-decoration: line-through; }
 
 /* Context compaction (mockup #17 Alt A): a quiet neutral lifecycle one-liner
@@ -3297,14 +3297,14 @@ details.tool-body[open] > summary::before,
 .notification-card-title { font-weight: 600; color: var(--ink); }
 /* Quiet, plain-language secondary (job kind, failure signal). The rest of the
    machine metadata lives in the raw disclosure, not in bordered chips. */
-.notification-card-sub { color: var(--ink-4); font-size: var(--text-xs); }
+.notification-card-sub { color: var(--ink-3); font-size: var(--text-xs); }
 .notification-card-summary { display: grid; gap: var(--space-2); color: var(--ink-2); line-height: var(--leading-normal); }
 .notification-card-message { overflow-wrap: anywhere; }
 .notification-card-excerpt { white-space: pre-wrap; overflow-wrap: anywhere; }
 /* Structured communicate fields as a tidy two-column definition list: a dim
    sans label and its value (mono only when the value is machine text). */
 .notification-card-facts { display: grid; grid-template-columns: auto 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
-.notification-card-facts dt { color: var(--ink-4); font-size: var(--text-xs); }
+.notification-card-facts dt { color: var(--ink-3); font-size: var(--text-xs); }
 .notification-card-facts dd { margin: 0; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
 .notification-card-facts dd.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 /* Transcript card disclosures put their chevron on the RIGHT — consistent with
@@ -4241,7 +4241,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .tasks-list .task-row-line .plan-step { word-break: break-word; }
 .tasks-list .task-row-details > summary::-webkit-details-marker { display: none; }
 .tasks-list .task-row-details > summary:hover { background: var(--surface); }
-.tasks-list .task-row-chevron { color: var(--ink-4); font-size: var(--text-md); transition: transform var(--motion-fast); transform: rotate(0deg); }
+.tasks-list .task-row-chevron { color: var(--ink-3); font-size: var(--text-md); transition: transform var(--motion-fast); transform: rotate(0deg); }
 .tasks-list .task-row-details[open] > summary > .task-row-chevron { transform: rotate(90deg); }
 .tasks-list .task-detail { margin: 0; padding: var(--space-2) var(--space-4) var(--space-4) var(--space-8); display: grid; grid-template-columns: 80px 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-xs); border-top: 1px dashed var(--line); }
 .tasks-list .task-detail:empty { display: none; border: none; padding: 0; }
@@ -4688,7 +4688,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
   .spawn-row-caret {
     flex: none;
     margin-left: var(--space-2);
-    color: var(--ink-4);
+    color: var(--ink-3);
     font-size: 10px;
   }
   .spawn-row:active:not([disabled]):not(:disabled) { background: var(--surface-2); }
