@@ -112,6 +112,7 @@ no router (reserved).
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `serf/dirs/complete` | hub | `DirsCompleteParams` | `DirsCompleteResponse` | Directory-path autocompletion for a prefix. |
+| `serf/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `serf/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `serf/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a serf binary upgrade. |
@@ -648,6 +649,20 @@ _(no fields)_
 | `plugin` | `string` |  |  |
 | `marketplace` | `string` |  |  |
 | `autoUpgrade` | `bool` |  |  |
+
+
+### `ProjectsRecentParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `limit` | `int` | yes |  |
+
+
+### `ProjectsRecentResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `[]string` |  |  |
 
 
 ### `ReasoningSummaryDeltaParams`
