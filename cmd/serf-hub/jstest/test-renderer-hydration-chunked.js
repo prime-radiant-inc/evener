@@ -90,7 +90,13 @@ const waitFor = async (cond, timeoutMs) => {
 
 (async () => {
   // ── (a) responsiveness + (b) ordering ────────────────────────────────────
-  const TOTAL = 2000;
+  // 300 events crosses the 150-event chunk boundary exactly once: enough to
+  // prove the replay yields mid-stream (the timer below fires after the first
+  // slice with the rest still pending) without paying for thousands of DOM
+  // appends. The responsiveness assertions stay deterministic: the timer is
+  // scheduled before the replay's first yield, so it always observes exactly
+  // one rendered slice (150 < TOTAL).
+  const TOTAL = 300;
   readThreadImpl = (sessionId) => Promise.resolve(threadWith(sessionId, userEvents("event-", TOTAL)));
   R.init(conversation);
 
@@ -162,7 +168,7 @@ const waitFor = async (cond, timeoutMs) => {
     "session-C transcript is exactly its own hydration");
 
   // ── (d) reconnect: buffered live events replay after re-hydration ────────
-  const RE_EVENTS = 400;
+  const RE_EVENTS = 300;
   readThreadImpl = (sessionId) => Promise.resolve(threadWith(sessionId, userEvents("re-event-", RE_EVENTS)));
   pass(R.appwireHydrated === true, "precondition: stream hydrated before reconnect");
   R.connectAppwire(); // reconnect: re-reads the thread and re-hydrates

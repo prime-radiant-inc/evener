@@ -186,6 +186,7 @@
       this.appwireRef = null;
       this.appwireThreadId = null;
       this.appwireHydrated = false;
+      this.hydrationInProgress = false;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
@@ -843,7 +844,20 @@
         .then(async (resp) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
-          if (this.appwireHydrated) this.resetTranscriptReplay();
+          // A reconnect can land DURING a chunked hydration: appwireHydrated is
+          // already false (cleared below at the abandoned replay's start), but
+          // its half-rendered prefix is still in the DOM. Replaying into it
+          // would duplicate that prefix — reset whenever a hydration is in
+          // flight, not only after a completed one.
+          if (this.appwireHydrated || this.hydrationInProgress) this.resetTranscriptReplay();
+          // Marks the whole replay window (initial AND reconnect hydration):
+          // gates the settings-toggle re-render and scroll-triggered older-
+          // turns paging, which must not interleave with the chunked replay.
+          // Cleared on completion and in the catch path — NOT by
+          // resetTranscriptReplay (the superseding hydration owns the flag) and
+          // NOT by the staleness aborts below (the superseding hydration may
+          // already have set it; clearing here would unguard its replay).
+          this.hydrationInProgress = true;
           // The replay below is chunked and yields to the event loop between
           // slices, so the window in which live notifications could interleave
           // into the half-rendered transcript is no longer microscopic. Gate
@@ -910,6 +924,7 @@
             } finally {
               this.replayingBufferedNotifications = false;
             }
+            this.hydrationInProgress = false;
           } finally {
             this.suppressScrollSettle = false;
           }
@@ -917,6 +932,7 @@
         })
         .catch((err) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          this.hydrationInProgress = false;
           this.suppressScrollSettle = false;
           this.clearAppwireStream();
           if (this.isAppwireApplicationError(err)) {
@@ -1220,6 +1236,12 @@
 
     refreshTranscriptStatusVisibility() {
       if (!this.conversation || !this.sessionId) return false;
+      // A chunked hydration is mid-replay: this path resets + re-renders
+      // synchronously + flips appwireHydrated with no chunking, and the
+      // suspended replay would then resume and append its remaining slices a
+      // second time. Defer — the hydration renders the correct state anyway,
+      // and the toggle takes effect on the next natural render.
+      if (this.hydrationInProgress) return false;
       if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function" || typeof window.SerfAppwire.eventsFromThread !== "function") {
         return false;
       }
@@ -5007,6 +5029,11 @@
     // reader scrolls near the top and more history remains. Guarded so
     // overlapping scroll events don't double-fetch.
     maybeLoadOlderTurns() {
+      // Hydration seeds olderTurnsCursor up front but pages it via
+      // loadOlderTurnsUntilPrimaryDialogue only after the chunked replay
+      // drains; a scroll fetch in between races it on the SAME cursor and both
+      // prepend the same page. Hydration owns the cursor while in progress.
+      if (this.hydrationInProgress) return;
       if (this.loadingOlderTurns || !this.olderTurnsCursor) return;
       if (!this.sessionId || !window.SerfAppwire || typeof window.SerfAppwire.listTurns !== "function") return;
       this.loadingOlderTurns = true;
