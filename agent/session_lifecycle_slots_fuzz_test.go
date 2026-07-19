@@ -362,7 +362,7 @@ func lcycDecodeReserve(data []byte) lcycReserveSpec {
 // endedAt per record so the eviction sort is a total order and thus
 // deterministic).
 func lcycBuildManager(spec lcycReserveSpec) *subagentManager {
-	m := newSubagentManager(nil)
+	m := newSubagentManager(nil, 0)
 	m.maxRetainedTerminal = spec.cap
 	base := time.Unix(1000, 0)
 	for i, ss := range spec.subs {

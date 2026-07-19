@@ -527,8 +527,8 @@ func TestJobListIncludeDescendantsHidesChildDelegateHandles(t *testing.T) {
 		t.Fatalf("append legacy child delegate job: %v", err)
 	}
 
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
 
 	out, err := jobListTool(root, decodeJobListArgs(t, `{"include_descendants":true}`), 1<<20)
@@ -634,12 +634,12 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 		t.Fatalf("finalize dead coordinator job: %v", err)
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	dead := &Session{id: "DEAD", jobManager: deadJM, subagents: newSubagentManager(nil)}
+	dead := &Session{id: "DEAD", jobManager: deadJM, subagents: newSubagentManager(nil, 0)}
 
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 	root.subagents.track(&subagent{id: "DEAD", sess: dead, status: SubagentCompleted, closed: true})
 
@@ -732,7 +732,7 @@ func TestJobListIncludeDescendantsWalksLiveTree(t *testing.T) {
 func TestJobListIncludeDescendantsSurfacesOwnStoreError(t *testing.T) {
 	t.Parallel()
 	rootJM := newWalkJobManager(t, "ROOT")
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 
 	// Close the depth-0 (own) store before the call so both paths hit
 	// ErrStoreClosed from the same store.
@@ -792,10 +792,10 @@ func TestJobListIncludeDescendantsProjectsRuntimeLostViaOwner(t *testing.T) {
 	// forwarded one hop up into the coordinator's store.
 	delegRec := workerOwnedRuntimeLostDelegate(t, workerJM, "WORK")
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	// Oracle: projecting against the true owner (worker) clears the parent-linkage

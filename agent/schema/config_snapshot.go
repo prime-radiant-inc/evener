@@ -14,6 +14,8 @@ type ConfigSnapshot struct {
 	DefaultCommandTimeoutMS     int                        `json:"default_command_timeout_ms,omitempty"`    // default shell/exec timeout
 	MaxCommandTimeoutMS         int                        `json:"max_command_timeout_ms,omitempty"`        // ceiling on a requested per-command timeout
 	MaxSubagentDepth            int                        `json:"max_subagent_depth,omitempty"`            // how deeply sub-agents may nest
+	MaxConcurrentDelegateTurns  int                        `json:"max_concurrent_delegate_turns,omitempty"` // tree-wide cap on running delegate turns
+	MaxRetainedTerminal         int                        `json:"max_retained_terminal,omitempty"`         // per-parent cap on retained terminal child records
 	ToolOutputLimits            map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`            // per-tool output truncation overrides
 	UserInstructionOverride     string                     `json:"user_instruction_override,omitempty"`     // text appended at the end of the system prompt
 	AgentName                   string                     `json:"agent_name,omitempty"`                    // persona selected for prompt composition

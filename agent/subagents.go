@@ -735,7 +735,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	}
 	if !ok {
 		subSess.Close()
-		return nil, errTreeAtCapacity
+		return nil, &treeCapacityError{cap: s.treeCounter.cap}
 	}
 
 	now := s.sclock().Now()

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -31,12 +32,11 @@ func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
 }
 
 // TestTreeCounterReserveRelease verifies the atomic check-and-reserve logic:
-// 16 reservations succeed, the 17th fails, releasing one allows another to succeed.
-//
-// Red today: type treeCounter does not exist.
+// 16 reservations succeed at cap 16, the 17th fails, releasing one allows
+// another to succeed.
 func TestTreeCounterReserveRelease(t *testing.T) {
 	t.Parallel()
-	c := newTreeCounter()
+	c := newTreeCounter(16)
 
 	// Reserve up to cap (16) — all must succeed.
 	for i := range 16 {
@@ -302,6 +302,8 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	}
 
 	// Saturate the tree counter directly so the drive cannot claim a slot.
+	// Pin the cap at 16 (the session default is 50).
+	sess.treeCounter = newTreeCounter(16)
 	for i := range 16 {
 		if !sess.treeCounter.reserve() {
 			t.Fatalf("manual saturating reserve %d failed", i+1)
@@ -344,7 +346,9 @@ func TestCounter17thFails(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	sess := newDelegateTestSession(t, c)
 
-	// Saturate the tree counter directly so the next spawn cannot claim a slot.
+	// Pin the cap at 16 (the default is 50) and saturate the tree counter
+	// directly so the next spawn cannot claim a slot.
+	sess.treeCounter = newTreeCounter(16)
 	for i := range 16 {
 		if !sess.treeCounter.reserve() {
 			t.Fatalf("saturating reserve %d failed", i+1)
@@ -359,7 +363,7 @@ func TestCounter17thFails(t *testing.T) {
 	if seventeenth.Err == nil {
 		t.Fatal("17th createDelegate succeeded; want tree_at_capacity error")
 	}
-	wantErr := "tree_at_capacity: 16 delegate jobs running across this session tree. " +
+	wantErr := "tree_at_capacity: 16 delegate turn slots in use across this session tree. " +
 		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
 	if got := seventeenth.Err.Error(); !strings.Contains(got, wantErr) {
 		t.Fatalf("17th error = %q, want it to contain %q", got, wantErr)
@@ -412,7 +416,7 @@ func TestCounterIdleFreesAndRestartRebuild(t *testing.T) {
 
 	// Restart rebuilds the counter from the post-reconciliation state (zero). The
 	// production root mints a fresh counter; model that here.
-	rebuilt := newTreeCounter()
+	rebuilt := newTreeCounter(0)
 	if got := rebuilt.n.Load(); got != 0 {
 		t.Fatalf("rebuilt counter = %d, want 0 (root rebuilds from post-reconciliation state)", got)
 	}
@@ -461,5 +465,31 @@ func TestRestoredRootMintsTreeCounter(t *testing.T) {
 
 	if restored.treeCounter == nil {
 		t.Fatal("restored root treeCounter is nil; expected a minted counter (tree cap inoperative after restart)")
+	}
+}
+
+// TestTreeCounterConfigurableCapAndErrorText pins the configured cap and the
+// formatted capacity error: the text names the live cap, preserves the
+// tree_at_capacity prefix token and trailing-period guidance, and matches the
+// errTreeAtCapacity sentinel via errors.Is.
+func TestTreeCounterConfigurableCapAndErrorText(t *testing.T) {
+	t.Parallel()
+	c := newTreeCounter(3)
+	for i := range 3 {
+		if !c.reserve() {
+			t.Fatalf("reserve %d failed below cap 3", i+1)
+		}
+	}
+	if c.reserve() {
+		t.Fatal("reserve succeeded at cap 3")
+	}
+	err := &treeCapacityError{cap: 3}
+	want := "tree_at_capacity: 3 delegate turn slots in use across this session tree. " +
+		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
+	if err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, errTreeAtCapacity) {
+		t.Fatal("treeCapacityError does not match errTreeAtCapacity via errors.Is")
 	}
 }

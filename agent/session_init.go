@@ -121,7 +121,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	tc := cfg.spawn.treeCounter
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions mint the tree-wide counter; children inherit the pointer.
-		tc = newTreeCounter()
+		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
 	}
 	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
 	// reflects it. prepareSubagentRun threads the pointer to children via
@@ -160,7 +160,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		cancelFunc:                    sessCancel,
 	}
 	s.createdAt = s.sclock().Now().UTC()
-	s.subagents = newSubagentManager(s.emit)
+	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore {
 		newJM = newJobManagerNoSync
@@ -461,7 +461,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	tc := cfg.spawn.treeCounter
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions mint the tree-wide counter; children inherit the pointer.
-		tc = newTreeCounter()
+		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
 	}
 	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
 	// reflects it. prepareSubagentRun threads the pointer to children via
@@ -504,7 +504,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		sessionCtx: sessCtx,
 		cancelFunc: sessCancel,
 	}
-	s.subagents = newSubagentManager(s.emit)
+	s.subagents = newSubagentManager(s.emit, cfg.MaxRetainedTerminal)
 	newJM := newJobManager
 	if cfg.testOnly.noSyncJobStore {
 		newJM = newJobManagerNoSync

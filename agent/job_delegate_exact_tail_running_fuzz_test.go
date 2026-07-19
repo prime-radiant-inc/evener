@@ -40,7 +40,7 @@ func FuzzJobDelegateExactTailRunning(f *testing.F) {
 			requireDelegateTailError(t, res, "target_not_resumable: delegate session")
 		case 3:
 			child := newTestSession(t)
-			s := &Session{subagents: newSubagentManager(nil)}
+			s := &Session{subagents: newSubagentManager(nil, 0)}
 			s.subagents.track(delegateTailSub(child, true))
 			res := s.sendRunningDelegateMessage("job_no_manager", "message", delegateTailRecord("job_no_manager", child.ID()), true, nil)
 			requireDelegateTailError(t, res, jobManagerUnavailableReason)

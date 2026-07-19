@@ -1964,7 +1964,7 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 	} else {
 		slot, ok := s.reserveTreeSlot()
 		if !ok {
-			return nil, errTreeAtCapacity
+			return nil, &treeCapacityError{cap: s.treeCounter.cap}
 		}
 		treeSlot = slot
 	}

@@ -70,7 +70,7 @@ func jdrExerciseSuccessfulChildDrive(t *testing.T) {
 
 	// sessions() retains a real child Session even when its job manager has not
 	// been initialized, covering the defensive drain-report guard.
-	nilJMParent := &Session{subagents: newSubagentManager(nil)}
+	nilJMParent := &Session{subagents: newSubagentManager(nil, 0)}
 	nilJMParent.subagents.track(&subagent{id: "child-no-jm", sess: &Session{id: "child-no-jm"}, closed: true})
 	_, _ = nilJMParent.drainPendingWatchSendsReport(context.Background())
 }
@@ -340,7 +340,7 @@ func jdrExerciseGuardsAndFailures(t *testing.T, s *Session) {
 		t.Fatal("synthetic stopped delegate did not close the child drive gate")
 	}
 	s.driveChildIfNotStopGated(stopped)
-	s.subagents = newSubagentManager(nil)
+	s.subagents = newSubagentManager(nil, 0)
 	s.subagents.track(stopped)
 	s.driveChildrenWithUndeliveredAttention()
 }

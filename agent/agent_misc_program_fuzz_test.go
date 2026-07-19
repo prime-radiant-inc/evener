@@ -148,7 +148,7 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 		t.Fatal("missing live model changed profile")
 	}
 
-	counter := newTreeCounter()
+	counter := newTreeCounter(0)
 	for i := int64(0); i < counter.cap; i++ {
 		if !counter.reserve() {
 			t.Fatalf("reservation %d rejected", i)

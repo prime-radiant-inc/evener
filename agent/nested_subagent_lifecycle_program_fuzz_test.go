@@ -528,7 +528,7 @@ func nslpAddNestedRecord(t *testing.T, root, coordinator, worker *Session, worke
 
 func nslpManagerOwnershipProgram(t *testing.T, childID string) {
 	t.Helper()
-	manager := newSubagentManager(nil)
+	manager := newSubagentManager(nil, 0)
 	first, pending, leader, err := manager.beginReconstruction(childID)
 	if err != nil || first != nil || pending == nil || !leader {
 		t.Fatalf("first reconstruction = (%+v, %p, %v, %v)", first, pending, leader, err)

@@ -2,36 +2,57 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 	"sync/atomic"
 )
 
-// errTreeAtCapacity is returned when a spawn or resume cannot claim a tree-counter
-// slot because the session tree already holds the cap (16) of concurrently running
-// delegate turns (spec §4). The text drops the "you are notified automatically"
-// phrasing — at saturation that is untrue; completions free slots and the caller
-// must retry. The exact text is spec-mandated and asserted by tests, including the
-// trailing period, so ST1005's no-trailing-punctuation rule is suppressed here.
+// defaultMaxConcurrentDelegateTurns is the default tree-wide cap on
+// concurrently running delegate turns (spec §4). Configurable per root session
+// via SessionConfig.MaxConcurrentDelegateTurns.
+const defaultMaxConcurrentDelegateTurns = 50
+
+// errTreeAtCapacity is the sentinel matched by errors.Is when a spawn or
+// resume cannot claim a tree-counter slot. The model-facing text is formatted
+// by treeCapacityError with the live cap; the "tree_at_capacity" prefix token
+// is preserved for matchers, including the trailing period, so ST1005's
+// no-trailing-punctuation rule is suppressed here.
 //
 //nolint:staticcheck // ST1005: model-facing text is spec-pinned, period included.
-var errTreeAtCapacity = errors.New("tree_at_capacity: 16 delegate jobs running across this session tree. " +
-	"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.")
+var errTreeAtCapacity = errors.New("tree_at_capacity")
+
+// treeCapacityError is the formatted spawn/resume failure at tree capacity.
+// It carries the live cap so the error names the configured limit rather than
+// a hardcoded one.
+type treeCapacityError struct{ cap int64 }
+
+func (e *treeCapacityError) Error() string {
+	return fmt.Sprintf("tree_at_capacity: %d delegate turn slots in use across this session tree. "+
+		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.", e.cap)
+}
+
+// Is lets errors.Is(err, errTreeAtCapacity) match the formatted error.
+func (e *treeCapacityError) Is(target error) bool { return target == errTreeAtCapacity }
 
 // treeCounter is a tree-wide running count of active delegate turns. It is
 // created once by the root session and handed down through spawnConfig so
 // every session in the tree shares the same atomic counter.
 //
-// The cap is fixed at 16 (spec §4). reserve/release are called by the paths
-// that create or terminate running delegate turns: the spawn paths
-// (reserveTreeSlot in subagents.go), the drive/delegate path (job_delegate.go),
-// and the finalize/abandon release paths (jobs.go).
+// The cap is configured per root session (default 50, spec §4). reserve/release
+// are called by the paths that create or terminate running delegate turns: the
+// spawn paths (reserveTreeSlot in subagents.go), the drive/delegate path
+// (job_delegate.go), and the finalize/abandon release paths (jobs.go).
 type treeCounter struct {
 	n   atomic.Int64
 	cap int64
 }
 
-// newTreeCounter returns a treeCounter with cap 16.
-func newTreeCounter() *treeCounter {
-	return &treeCounter{cap: 16}
+// newTreeCounter returns a treeCounter with the given cap; cap <= 0 selects
+// the default (defaultMaxConcurrentDelegateTurns).
+func newTreeCounter(cap int64) *treeCounter {
+	if cap <= 0 {
+		cap = defaultMaxConcurrentDelegateTurns
+	}
+	return &treeCounter{cap: cap}
 }
 
 // reserve atomically increments the counter if below cap. Returns true if the

@@ -2029,3 +2029,36 @@ func TestSessionConfigDefaultSubagentDepth(t *testing.T) {
 		t.Fatalf("explicit MaxSubagentDepth = %d, want 5 preserved", explicit.MaxSubagentDepth)
 	}
 }
+
+// TestSessionConfigDelegateTurnKnobsDefaults pins the delegate-turn-limit
+// defaults: the tree-wide concurrent delegate-turn cap defaults to 50 and the
+// per-parent retained-terminal record cap defaults to 2048; explicit values
+// are preserved by applyDefaults.
+func TestSessionConfigDelegateTurnKnobsDefaults(t *testing.T) {
+	t.Parallel()
+	var c SessionConfig
+	c.applyDefaults()
+	if c.MaxConcurrentDelegateTurns != 50 {
+		t.Fatalf("MaxConcurrentDelegateTurns = %d, want 50", c.MaxConcurrentDelegateTurns)
+	}
+	if c.MaxRetainedTerminal != 2048 {
+		t.Fatalf("MaxRetainedTerminal = %d, want 2048", c.MaxRetainedTerminal)
+	}
+
+	explicit := SessionConfig{MaxConcurrentDelegateTurns: 7, MaxRetainedTerminal: 99}
+	explicit.applyDefaults()
+	if explicit.MaxConcurrentDelegateTurns != 7 || explicit.MaxRetainedTerminal != 99 {
+		t.Fatalf("explicit knobs overwritten: %+v", explicit)
+	}
+}
+
+// TestSessionConfigDelegateTurnKnobsSnapshotRoundTrip pins both knobs through
+// the toSnapshot/configFromSnapshot converter pair.
+func TestSessionConfigDelegateTurnKnobsSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	in := SessionConfig{MaxConcurrentDelegateTurns: 7, MaxRetainedTerminal: 99}
+	out := configFromSnapshot(in.toSnapshot())
+	if out.MaxConcurrentDelegateTurns != 7 || out.MaxRetainedTerminal != 99 {
+		t.Fatalf("round trip = %+v, want 7/99", out)
+	}
+}
