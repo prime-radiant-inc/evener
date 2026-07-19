@@ -515,8 +515,7 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   overflow: hidden;
 }
 .workspace-header,
-.conversation,
-.workspace-input {
+.conversation {
   width: min(100%, var(--workspace-content-max-w));
   margin-inline: auto;
 }
@@ -1942,12 +1941,12 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .needs-you-dock[hidden] { display: none; }
 /* ─────────────────────────────────────────────────────────────────────── */
 
-.workspace-input { padding: var(--space-2) var(--space-6) var(--space-2); border-top: 1px solid var(--rule-soft); }
+.workspace-input { padding: var(--space-2) var(--space-6) var(--space-2); border-top: 1px solid var(--rule-soft); background: var(--bg-raised); }
 /* The composer subtree sits inside the [data-composer-surface] wrapper (the
    ask-dock hide/inert boundary). It must be a flex column so child `order`
    rules — the phone's .input-status { order: -1 } status-rail-on-top — keep
    working through the wrapper. */
-.workspace-input > [data-composer-surface] { display: flex; flex-direction: column; min-width: 0; }
+.workspace-input > [data-composer-surface] { display: flex; flex-direction: column; min-width: 0; width: min(100%, var(--measure)); margin-inline: auto; }
 .workspace-input > [data-composer-surface][hidden] { display: none; }
 /* Status rail: the htmx-swapped telemetry strip plus the tasks trigger, side by
    side. Tasks is a session fact — like branch/ctx/quiet — so it reads from the
@@ -2074,7 +2073,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .composer-attachment-error { color: var(--error); font-size: var(--text-xs); padding: var(--space-2) 0; }
 .composer-attachment-error:empty,
 .composer-attachment-error[hidden] { display: none; }
-.message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
+.message-input { width: 100%; min-height: 36px; max-height: min(50vh, 264px); background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
 .composer-model {
   display: flex;
   align-items: center;
@@ -2105,6 +2104,7 @@ button.composer-model-value {
   cursor: pointer;
   color: var(--text-muted);
   padding: var(--space-1) var(--space-2);
+  min-height: 30px;
   border-radius: var(--radius-md);
   transition: background var(--motion-fast), color var(--motion-fast);
 }
@@ -2150,6 +2150,15 @@ button.composer-model-value .caret { color: var(--text-dim); }
   padding-top: var(--space-2);
   margin-top: 0;
   gap: var(--space-2);
+}
+/* Short desktop windows (<640px tall): compact the dock chrome so the
+   transcript keeps the space. Phone has its own rules; this band is
+   desktop-width only. */
+@media (min-width: 768px) and (max-height: 639px) {
+  .workspace-input { padding-block: var(--space-1); }
+  .input-card { padding: var(--space-1) var(--space-3); }
+  .input-card .input-controls { padding-top: var(--space-1); }
+  .message-input { max-height: 96px; }
 }
 .pane-compact .controls-left { gap: var(--space-2); }
 .pane-compact .controls-right {
@@ -4571,7 +4580,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
      .input-controls` padding rule must not restore its own padding. */
   .input-card .input-controls { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--space-2); padding: var(--space-2) calc(env(safe-area-inset-right) + var(--space-4)) var(--space-2) calc(env(safe-area-inset-left) + var(--space-4)); min-width: 0; }
   .controls-left, .controls-right { gap: var(--space-2); flex-wrap: nowrap; flex: none; }
-  .controls-center { flex: 1; min-width: 0; overflow: hidden; }
+  /* Rebalanced action row: attach sits left; the model chip clusters with the
+     action buttons on the right where the thumb is — no dead center gap. */
+  .controls-center { flex: 0 1 auto; min-width: 0; overflow: hidden; margin-left: auto; }
   .composer-model-key { display: none; }
   .composer-model { font-size: var(--text-sm); min-width: 0; }
   .composer-model-value { max-width: 100%; }
