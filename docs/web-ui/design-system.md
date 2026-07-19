@@ -116,8 +116,8 @@ to every descendant) — no per-element JS resize logic.
   `--space-5 16` / `--space-6 24` / `--space-7 32` / `--space-8 48` / `--space-9 64`. Snap to it;
   1px hairlines stay literal.
 - Radius: **two only** — `--radius-md 5px` (rectangles) and `--radius-pill 999px` (chips/dots).
-- Elevation: flat surfaces separated by hairline rules and background steps (`--bg` →
-  `--bg-raised` → `--surface`), not drop shadows; shadows appear only on true overlays
+- Elevation: flat surfaces separated by hairline rules and background steps
+  (`--bg` → `--surface` → `--surface-2`), not drop shadows; shadows appear only on true overlays
   (lightbox, drawers).
 - Motion: three durations on one easing — `--motion-fast 110ms` / `--motion-base 180ms` /
   `--motion-slow 260ms` on `--ease`; `--pulse-cycle` for the one sanctioned breathe. Everything
@@ -135,7 +135,7 @@ reintroduce a per-kind text indent — differentiation is weight/color/size, nev
 
 ALL-CAPS + heavy letter-spacing as a default label treatment; monospace for chrome/labels; the
 imperceptible 5% paper-grain `--noise` texture; the 6-radius spread; `--purple`/`--cyan` as
-ambient hues; `--text-dim`-on-dark for primary navigation (failed contrast).
+ambient hues; dim-ink-on-dark for primary navigation (the old `--text-dim`, failed contrast).
 
 ---
 
@@ -195,23 +195,23 @@ What each element of the two workhorse rows uses. Text column starts at x=0; the
 gutter (`--gutter`) is to its left (§3).
 
 **Tool call row (`.tool-call`)**
-- gutter: `.tool-status` glyph — `…` pending (`--text-dim`), *empty/quiet* when done, `✕`
+- gutter: `.tool-status` glyph — `…` pending (`--ink-3`), *empty/quiet* when done, `✕`
   `--error` on failure. Mono, `--text-xs`.
-- `.tool-intent` (when the agent stated a purpose): sans `--text-base`, `--text` — the primary
+- `.tool-intent` (when the agent stated a purpose): sans `--text-base`, `--ink` — the primary
   line.
 - `.tool-command` = `.verb` + `.target` + `.result-detail`: verb/target mono, result sans.
-  Mono `--text-sm` whether primary (no purpose, target `--text`) or demoted under a purpose
-  (one truncated line, `--text-dim`, same x=0 column, no sub-indent) — dim color, not a
+  Mono `--text-sm` whether primary (no purpose, target `--ink`) or demoted under a purpose
+  (one truncated line, `--ink-3`, same x=0 column, no sub-indent) — dim color, not a
   smaller size, carries the demotion.
-- `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--text-muted`, hover/focus-reveal.
+- `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--ink-2`, hover/focus-reveal.
 - `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
   boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
 
 **Thinking row (`.think`)**
 - gutter: `.think-glyph` ✦ (breathes while streaming).
 - `.think-label` "Thought for Ns" + `.pv` gist: sans `--text-base`, tier-colored
-  (`--text` long / `--text-muted` short), gist italic.
-- `.think-body`: expanded reasoning, `pre-wrap` italic `--text-muted`, text at x=0 with a
+  (`--ink` long / `--ink-2` short), gist italic.
+- `.think-body`: expanded reasoning, `pre-wrap` italic `--ink-2`, text at x=0 with a
   1px rail in the gutter.
 
 ### The notification / job card (worked example)
@@ -251,8 +251,8 @@ Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
 
 Session row anatomy (`.sb-row`, reference — note: the sidebar is under active restyling in a
 parallel 2026-07-11 pass; verify against `style.css` if this drifts): status dot/glyph (blue
-live · amber needs-you · neutral otherwise) · title sans `--text-base` `--text` (muted until
-hover/selected) · right-aligned relative age sans `--text-2xs` `--text-muted` `tabular-nums`
+live · amber needs-you · neutral otherwise) · title sans `--text-base` `--ink` (muted until
+hover/selected) · right-aligned relative age sans `--text-2xs` `--ink-2` `tabular-nums`
 (opacity-swapped for row actions on hover) · subagent children indented, dim, `--text-2xs`
 terminal-state glyph rows folding to "+N subagents".
 
@@ -287,7 +287,7 @@ preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
 
 Top to bottom inside `.workspace-input` (the dock):
 
-- **The dock is the container.** A hairline top rule + a background step (`--bg-raised`)
+- **The dock is the container.** A hairline top rule + a background step (`--surface`)
   separate it from the transcript — that is the composer's ONE containment device
   (principle #3). On **phone** the inner `.input-card` is a transparent, borderless,
   unpadded pass-through: no box, no radius, and **no focus-within outline** — focus reads
@@ -411,7 +411,7 @@ layer above is in place, and the agent-question edge case from §7 has shipped. 
 typography pass landed the one-column marker gutter and hover/focus-revealed timing metadata;
 round 2 (same day) squashed the column to ONE flowing reading size (`--text-base`, prose
 included) with mono `--text-sm` and meta `--text-xs` as the only exceptions, and normalized
-every transcript disclosure to the sidebar chevron idiom — a `›` glyph, `--text-muted`,
+every transcript disclosure to the sidebar chevron idiom — a `›` glyph, `--ink-2`,
 `--text-md`, rotating 90° when open, on a hit target of at least 24px (`.tool-disclosure`,
 `summary` fold markers, and the shared `.fold-chevron` span for text-labelled folds). All
 locked by `cmd/serf-hub/jstest/test-transcript-typography.js`. The rest of §7's deferred list is still
@@ -452,7 +452,7 @@ Textareas that grow with content stay visible without a manual resize handle or 
 The primary action for a mobile form lives in a fixed bottom band:
 
 - Sits on top of `env(safe-area-inset-bottom)`, not floating above it.
-- Background: `--bg-raised`; top border: 1px `--line`.
+- Background: `--surface`; top border: 1px `--line`.
 - Primary button: at least `52px` tall, accent background.
 - Secondary attach/action button: at least `44px` tall.
 - No shadows unless the band is a true overlay.
