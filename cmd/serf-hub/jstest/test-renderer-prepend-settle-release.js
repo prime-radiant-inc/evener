@@ -172,6 +172,64 @@ dispatchScroll();
 pass(R.readerScrolledDuringHydration === true,
   "(d) after the surviving release a scroll event reads as reader intent again");
 
+// ── (e) init() must retire session A's keyed settle/release frames ─────────
+// init() zeroes programmaticScrollDepth/prependSettleHolds, but zeroing alone
+// leaves session A's pending "prepend-settle-release" callback alive: it would
+// fire into session B and drain B's holds, misreading B's correction-window
+// scroll as reader intent. Model keyed cancellation in the stub so init's
+// cancelFrame calls land on the same bookkeeping as the stubbed scheduleFrame.
+R.cancelFrame = (key) => {
+  if (key == null) {
+    for (const entry of pendingFrames.values()) entry.cancelled = true;
+    pendingFrames.clear();
+    return;
+  }
+  const entry = pendingFrames.get(key);
+  if (entry) { entry.cancelled = true; pendingFrames.delete(key); }
+};
+R.hydrationInProgress = true;
+R.prependOlderTurns([{ kind: "NOOP_KIND", text: "e-a" }]);
+pass(runFrame("prepend-settle"), "(e) session A settle ran — its release frame is pending");
+pass(pendingFrames.has("prepend-settle-release"),
+  "(e) session A's release frame is queued behind init");
+flushScrollBottomRelease();
+
+// Session B arrives: htmx swaps in a NEW conversation element (init is
+// idempotent per element, so reusing the old node would no-op).
+const convB = window.document.createElement("div");
+convB.className = "conversation";
+convB.id = "conversation";
+convB.dataset.sessionId = "01TEST";
+convB.dataset.state = "active";
+Object.defineProperty(convB, "scrollHeight", { value: STUB_HEIGHT, configurable: true });
+conv.parentNode.replaceChild(convB, conv);
+R.init(convB);
+pass(R.programmaticScrollDepth === 0 && R.prependSettleHolds === 0,
+  "(e) init zeroed the depth and holds counters");
+pass(!pendingFrames.has("prepend-settle") && !pendingFrames.has("prepend-settle-release"),
+  "(e) init also cancelled session A's keyed prepend-settle frames");
+
+// Session B acquires its own hold, then the browser fires the stale callback.
+R.hydrationInProgress = true;
+R.prependOlderTurns([{ kind: "NOOP_KIND", text: "e-b" }]);
+flushScrollBottomRelease();
+pass(R.prependSettleHolds === 1 && R.programmaticScrollDepth === 1,
+  "(e) session B acquired its own hold (holds=" + R.prependSettleHolds +
+  ", depth=" + R.programmaticScrollDepth + ")");
+const staleFired = runFrame("prepend-settle-release");
+pass(!staleFired, "(e) the stale session-A release callback is inert after init");
+pass(R.prependSettleHolds === 1,
+  "(e) firing the stale callback left B's holds untouched (holds=" + R.prependSettleHolds + ")");
+flushScrollBottomRelease();
+pass(R.programmaticScrollDepth === 1,
+  "(e) firing the stale callback left B's depth untouched (depth=" + R.programmaticScrollDepth + ")");
+// B's own settle/release still drains normally.
+pass(runFrame("prepend-settle"), "(e) B's settle ran");
+pass(runFrame("prepend-settle-release"), "(e) B's release ran");
+pass(R.prependSettleHolds === 0, "(e) B's release drained B's hold");
+flushScrollBottomRelease();
+pass(R.programmaticScrollDepth === 0, "(e) no stranded depth after B's release");
+
 if (failures.length) {
   for (const f of failures) console.log(f);
   process.exit(1);

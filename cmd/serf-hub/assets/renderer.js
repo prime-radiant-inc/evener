@@ -187,9 +187,22 @@
       this.appwireThreadId = null;
       this.appwireHydrated = false;
       this.hydrationInProgress = false;
+      // Session-scoped like hydrationInProgress: a superseded hydration's
+      // finally deliberately does NOT clear this (the successor owns it), so
+      // the session swap must — the flag must never leak into a session whose
+      // hydration never ran (e.g. a non-appwire view would keep suppressing
+      // stick-to-bottom and the new-content pill forever).
+      this.suppressScrollSettle = false;
       this.readerScrolledDuringHydration = false;
       this.programmaticScrollDepth = 0;
       this.prependSettleHolds = 0;
+      // Cancel the previous session's keyed prepend-settle frames too: zeroing
+      // the counters alone leaves a pending "prepend-settle-release" callback
+      // that would fire into THIS session and drain its holds — misreading its
+      // correction-window scroll as reader intent (and stranding its
+      // stick-to-bottom suppression).
+      this.cancelFrame("prepend-settle");
+      this.cancelFrame("prepend-settle-release");
       this.scrollBottomHolds = 0;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
@@ -938,11 +951,26 @@
                 if (notificationMatches(replayParams)) deliverNotification(method, replayParams);
               }
             } finally {
-              this.replayingBufferedNotifications = false;
+              // Ownership-guarded like the outer finally below: the buffered-
+              // replay block is synchronous today (no staleness can develop
+              // between the guard above and here), but if it ever yields, a
+              // superseded replay must not clear the successor's flag.
+              if (this.liveStream === appwireStream) this.replayingBufferedNotifications = false;
             }
-            this.hydrationInProgress = false;
+            // Same audit as the finally below: only the stream owner clears
+            // the shared replay-gate flag (see the comment at its assignment).
+            if (this.liveStream === appwireStream) this.hydrationInProgress = false;
           } finally {
-            this.suppressScrollSettle = false;
+            // Stale-overlap guard: a superseded hydration that returned at one
+            // of the staleness aborts above still runs THIS finally — while
+            // the successor hydration owns the stream and is mid-replay. An
+            // unconditional clear would strip the successor's settle
+            // suppression mid-replay, re-enabling the per-event settle work
+            // (the O(N²) path this flag exists to avoid) and replay-time
+            // scroll/pill side effects for the successor's remaining events.
+            // Only the stream owner clears the flag; the successor clears it
+            // in its own finally.
+            if (this.liveStream === appwireStream) this.suppressScrollSettle = false;
           }
           // Reader scroll intent: a scroll event during the replay means the
           // reader chose their position — the settle must not yank them back
@@ -5297,6 +5325,7 @@
         this.clearNewContentPill();
         return;
       }
+      const wasHidden = pill.hidden;
       pill.hidden = false;
       const urgent = this.pickUrgentAnchor();
       pill.classList.remove("needs-you", "error");
@@ -5314,6 +5343,12 @@
         // burst of appends settles to one number instead of repainting the
         // badge on every frame. Show the last settled value now and schedule a
         // trailing commit of the latest count.
+        // First-paint exception: on the hidden→visible transition the painted
+        // count is still 0 while the live count is already positive — showing
+        // the stale painted value would badge "↓ 0 new" for the whole debounce
+        // window. Seed from the live count on that transition only; repaints
+        // while already visible keep the debounced (anti-jitter) value.
+        if (wasHidden) this.newContentPaintedCount = this.newContentCount;
         pill.textContent = "↓ " + this.newContentPaintedCount + " new";
         this.scheduleNewContentCountPaint();
       }
@@ -5326,6 +5361,12 @@
       if (this.newContentCountTimer) clearTimeout(this.newContentCountTimer);
       this.newContentCountTimer = setTimeout(() => {
         this.newContentCountTimer = null;
+        // Never commit a zero count: a reset that missed the timer cancel must
+        // hide the pill, not badge "↓ 0 new".
+        if (this.newContentCount <= 0) {
+          this.clearNewContentPill();
+          return;
+        }
         this.newContentPaintedCount = this.newContentCount;
         const pill = this.newContentPillEl();
         // Repaint only while still showing the plain count (urgency takes over

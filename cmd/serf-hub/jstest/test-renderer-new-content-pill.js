@@ -204,6 +204,26 @@ const settle = () => new Promise((r) => setTimeout(r, 350));
   const settled = pillEl() && pillEl().textContent;
   pass(/↓ 4 new/.test(settled || ""), "debounced count settles to the final burst total (got " + settled + ")");
 
+  // ── The pill never renders a zero count ──────────────────────────────────
+  // First paint after the pill was hidden: the debounced painted count is
+  // still 0 while the live count is already positive — painting the stale
+  // painted value badges "↓ 0 new" for the whole ~300ms debounce window (a
+  // browser probe caught exactly this). The first paint must seed from the
+  // live count, and the trailing commit must never paint 0 either.
+  R.scrollToBottom(); // clears the pill: count = painted = 0, hidden
+  R.updateThreadState("active");
+  conv.scrollTop = 100;
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_END", { text: "zero-count check" });
+  pass(pillVisible(), "pill is visible for the zero-count check");
+  const firstPaint = pillEl() && pillEl().textContent;
+  pass(!/0 new/.test(firstPaint || ""), "first paint never reads '↓ 0 new' (got " + firstPaint + ")");
+  pass(/↓ [1-9]\d* new/.test(firstPaint || ""), "first paint shows a positive count (got " + firstPaint + ")");
+  await settle(); // let the trailing debounce commit
+  const committed = pillEl() && pillEl().textContent;
+  pass(!/0 new/.test(committed || ""), "trailing commit never reads '↓ 0 new' (got " + committed + ")");
+  pass(/↓ [1-9]\d* new/.test(committed || ""), "trailing commit shows a positive count (got " + committed + ")");
+
   if (failures.length > 0) {
     for (const f of failures) console.log(f);
     process.exit(1);
