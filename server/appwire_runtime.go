@@ -97,6 +97,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
 	appserver.HandleTyped(router, appwire.MethodTurnPromoteQueuedAsSteer, s.handleAppTurnPromoteQueuedAsSteer)
+	appserver.HandleTyped(router, appwire.MethodTurnCancelQueued, s.handleAppTurnCancelQueued)
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
@@ -552,6 +553,38 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 	return appwire.EmptyResponse{}, nil
 }
 
+// handleAppTurnCancelQueued handles turn/cancelQueued (issue #23): removes
+// the queued follow-up at params.Index so it is never consumed, echoing the
+// removed entry's full text and image count. Unlike promote, cancel does
+// NOT require an in-flight turn — a queued entry is cancellable whenever it
+// is still queued, including entries buffered on an idle session. A
+// negative index is an InvalidParams rejection; a closed session is a
+// Conflict. Session-side rejections are all queue-state conflicts — the
+// index fell out of range (the entry was already consumed) or the expected
+// entry id no longer matches because the queue shifted under the client's
+// snapshot (review F1) — so they map to Conflict and the client can re-sync
+// its preview (review F2).
+func (s *Server) handleAppTurnCancelQueued(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	if params.Index < 0 {
+		return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
+	}
+	s.mu.RLock()
+	fn := s.cancelQueuedFunc
+	closed := appStatus(s.status.State, s.processing) == appwire.ThreadStatusClosed
+	s.mu.RUnlock()
+	if closed {
+		return appwire.TurnCancelQueuedResponse{}, appwire.Conflict("session is closed")
+	}
+	if fn == nil {
+		return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("cancel-queued not available")
+	}
+	text, images, err := fn(params.Index, params.ExpectedEntryID)
+	if err != nil {
+		return appwire.TurnCancelQueuedResponse{}, appwire.Conflict(err.Error())
+	}
+	return appwire.TurnCancelQueuedResponse{RemovedText: text, RemovedImages: images}, nil
+}
+
 // handleAppGoalSet handles goal/set. An empty objective clears the goal; both
 // set and clear route through the single goalFunc callback (the callback maps an
 // empty objective to ClearGoal). Started reports whether the goal loop began
@@ -718,6 +751,7 @@ func (s *Server) appThread() appwire.Thread {
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
 	qifn := s.queueIDsFn
+	qtfn := s.queueTextsFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	metafn := s.sessionMetaFn
@@ -761,6 +795,11 @@ func (s *Server) appThread() appwire.Thread {
 	if qifn != nil && queue.Depth > 0 {
 		if ids := qifn(); len(ids) == queue.Depth {
 			queue.IDs = append([]string(nil), ids...)
+		}
+	}
+	if qtfn != nil && queue.Depth > 0 {
+		if texts := qtfn(); len(texts) == queue.Depth {
+			queue.Texts = append([]string(nil), texts...)
 		}
 	}
 	// Fall back to depthFn when preview isn't wired (some tests stub only

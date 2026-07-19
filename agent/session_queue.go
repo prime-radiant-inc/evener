@@ -362,6 +362,48 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 	return nil
 }
 
+// CancelQueued removes the single queued message at index so it is never
+// consumed (issue #23 per-message cancel; also the removal half of the web
+// UI's edit-as-cancel-and-recompose action). Other queued messages stay
+// queued in FIFO order. Unlike PromoteQueuedAsSteer, cancel does NOT
+// require an in-flight turn: a queued entry is cancellable whenever it is
+// still queued, including entries buffered on an idle session. When
+// expectedID is non-empty it must match the id of the entry currently at
+// index — the queue head can be consumed mid-turn, so a bare index captured
+// from an earlier snapshot may otherwise resolve to the wrong message
+// (review F1). On success it returns the removed entry's full untruncated
+// text and image count so the caller can restore the text into a composer
+// (edit) and warn about dropped attachments. It returns an error — leaving
+// the queue untouched — when the session is closed, index is out of range,
+// or the id mismatches, so a failed cancel never silently removes the wrong
+// follow-up.
+func (s *Session) CancelQueued(ctx context.Context, index int, expectedID string) (string, int, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return "", 0, errors.New("cancel: session is closed")
+	}
+	if index < 0 || index >= len(s.inputQueue) {
+		s.mu.Unlock()
+		return "", 0, fmt.Errorf("cancel: queue index %d out of range (depth %d)", index, len(s.inputQueue))
+	}
+	entry := s.inputQueue[index]
+	if expectedID != "" && entry.ID != expectedID {
+		s.mu.Unlock()
+		return "", 0, fmt.Errorf("cancel: queue entry at index %d no longer matches the snapshot (queue changed)", index)
+	}
+	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(events.EventQueueChanged, data)
+	return entry.Text, len(entry.Images), nil
+}
+
 // QueueDepth returns the number of messages currently in the input queue.
 func (s *Session) QueueDepth() int {
 	s.mu.Lock()
@@ -465,6 +507,24 @@ func (s *Session) QueueIDs() []string {
 	return out
 }
 
+// QueueTexts returns the full untruncated text of the queued messages in
+// FIFO order, aligned with QueuePreview and QueueIDs. It backs the edit
+// affordance (issue #23): the client restores the full text into the
+// composer before asking the daemon to remove the entry, so the text is
+// never lost when the removal loses a race against consumption.
+func (s *Session) QueueTexts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.inputQueue) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.inputQueue))
+	for i, entry := range s.inputQueue {
+		out[i] = entry.Text
+	}
+	return out
+}
+
 // queueChangedDataLocked builds a QueueChangedData snapshot from the
 // current inputQueue. The caller must hold s.mu.
 func (s *Session) queueChangedDataLocked() events.QueueChangedData {
@@ -472,9 +532,11 @@ func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 	if len(s.inputQueue) > 0 {
 		data.Preview = make([]string, len(s.inputQueue))
 		data.IDs = make([]string, len(s.inputQueue))
+		data.Texts = make([]string, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
 			data.Preview[i] = queuedEntryPreviewLine(entry)
 			data.IDs[i] = entry.ID
+			data.Texts[i] = entry.Text
 		}
 	}
 	return data

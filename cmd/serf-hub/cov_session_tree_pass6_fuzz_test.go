@@ -33,6 +33,10 @@ func (s *pass6SessionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSt
 func (s *pass6SessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
 	return s.err
 }
+
+func (s *pass6SessionSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
 func (s *pass6SessionSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
 	return s.err
 }

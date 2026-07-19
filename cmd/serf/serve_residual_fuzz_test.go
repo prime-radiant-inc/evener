@@ -41,9 +41,11 @@ type residualServeServer struct {
 	drain              func() error
 	drainInput         func(string, []server.ImageAttachment) error
 	promote            func(int, string) error
+	cancel             func(int, string) (string, int, error)
 	queueDepth         func() int
 	queueIDs           func() []string
 	queuePreview       func() []string
+	queueTexts         func() []string
 	pressure           func() float64
 	contextMetrics     func() server.ContextMetrics
 	workMetrics        func() (int64, *appwire.SerfUsage, int64)
@@ -87,9 +89,13 @@ func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []serv
 func (s *residualServeServer) SetPromoteQueuedAsSteerFunc(f func(int, string) error) {
 	s.promote = f
 }
+func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, int, error)) {
+	s.cancel = f
+}
 func (s *residualServeServer) SetQueueDepthFunc(f func() int)          { s.queueDepth = f }
 func (s *residualServeServer) SetQueuePreviewFunc(f func() []string)   { s.queuePreview = f }
 func (s *residualServeServer) SetQueueIDsFunc(f func() []string)       { s.queueIDs = f }
+func (s *residualServeServer) SetQueueTextsFunc(f func() []string)     { s.queueTexts = f }
 func (s *residualServeServer) SetContextPressureFunc(f func() float64) { s.pressure = f }
 func (s *residualServeServer) SetContextMetricsFunc(f func() server.ContextMetrics) {
 	s.contextMetrics = f

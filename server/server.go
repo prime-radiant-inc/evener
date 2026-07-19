@@ -171,9 +171,11 @@ type Server struct {
 	drainSteerFunc               func() error
 	drainSteerInputFunc          func(string, []ImageAttachment) error
 	promoteSteerFunc             func(int, string) error
+	cancelQueuedFunc             func(int, string) (string, int, error)
 	queueDepthFn                 func() int
 	queueIDsFn                   func() []string
 	queuePreviewFn               func() []string
+	queueTextsFn                 func() []string
 	compactFunc                  func(context.Context) error
 	clearFunc                    func(context.Context) error
 	pressureFn                   func() float64
@@ -421,6 +423,19 @@ func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int, string) error) {
 	s.mu.Unlock()
 }
 
+// SetCancelQueuedFunc sets the function called by appwire
+// turn/cancelQueued (issue #23). The callback should remove the queued
+// message at the given FIFO index so it is never consumed, returning the
+// removed entry's full text and image count. A non-empty expectedID must
+// match the queue-entry id minted at enqueue time so a queue that shifted
+// under the client's snapshot is rejected rather than removing the wrong
+// message (review F1). Unlike promote, no active turn is required.
+func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) {
+	s.mu.Lock()
+	s.cancelQueuedFunc = fn
+	s.mu.Unlock()
+}
+
 // SetQueueDepthFunc sets a callback returning the current queue depth so
 // capability projection can advertise Queue accurately.
 func (s *Server) SetQueueDepthFunc(fn func() int) {
@@ -446,6 +461,17 @@ func (s *Server) SetQueuePreviewFunc(fn func() []string) {
 func (s *Server) SetQueueIDsFunc(fn func() []string) {
 	s.mu.Lock()
 	s.queueIDsFn = fn
+	s.mu.Unlock()
+}
+
+// SetQueueTextsFunc sets a callback returning the full untruncated texts of
+// the queued user messages in FIFO order (aligned with QueuePreview). Used
+// by appwire ReadThread to populate QueueState.Texts so the edit affordance
+// (issue #23) can restore the complete message into the composer before
+// canceling the queued copy.
+func (s *Server) SetQueueTextsFunc(fn func() []string) {
+	s.mu.Lock()
+	s.queueTextsFn = fn
 	s.mu.Unlock()
 }
 

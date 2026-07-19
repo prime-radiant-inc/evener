@@ -384,6 +384,25 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.PromoteQueuedAsSteer(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnCancelQueued, func(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+		if params.Index < 0 {
+			return appwire.TurnCancelQueuedResponse{}, appwire.InvalidParams("index must be >= 0")
+		}
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.TurnCancelQueuedResponse{}, err
+		}
+		// cancelQueued rides on the Queue capability — the same gate as
+		// turn/queue. It must NOT gate on Send: Send is false while a turn
+		// is in flight, which is exactly when the queue preview (and its
+		// cancel/edit buttons) exists (review C1). The daemon checks the
+		// live queue itself and returns Conflict when the index no longer
+		// resolves or the expected id mismatches (review F1).
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
+			return appwire.TurnCancelQueuedResponse{}, err
+		}
+		return source.CancelQueued(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {

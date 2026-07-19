@@ -58,6 +58,10 @@ func (s *exactWebSessionSource) DrainAsSteer(context.Context, appwire.TurnDrainA
 func (s *exactWebSessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
 	return s.err
 }
+
+func (s *exactWebSessionSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
 func (s *exactWebSessionSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) error {
 	return s.err
 }

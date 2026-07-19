@@ -373,6 +373,20 @@ func (c *Client) TurnPromoteQueuedAsSteer(ctx context.Context, params TurnPromot
 	return c.request(ctx, MethodTurnPromoteQueuedAsSteer, params, nil)
 }
 
+// TurnCancelQueued calls turn/cancelQueued (issue #23) to remove the queued
+// message at params.Index so it is never consumed. The response echoes the
+// removed entry's full text and image count. The daemon returns Conflict
+// when the index no longer resolves against the live queue or the expected
+// entry id mismatches (the queue shifted under the client's snapshot,
+// review F1) — unlike promote, no active turn is required.
+func (c *Client) TurnCancelQueued(ctx context.Context, params TurnCancelQueuedParams) (TurnCancelQueuedResponse, error) {
+	var resp TurnCancelQueuedResponse
+	if err := c.request(ctx, MethodTurnCancelQueued, params, &resp); err != nil {
+		return TurnCancelQueuedResponse{}, err
+	}
+	return resp, nil
+}
+
 func pendingTargetRef(ref, threadID string) string {
 	if strings.TrimSpace(ref) != "" {
 		return ref

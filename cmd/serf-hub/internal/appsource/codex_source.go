@@ -359,6 +359,10 @@ func (s *CodexSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQ
 	return appwire.Unavailable("codex source does not support turn/promoteQueuedAsSteer")
 }
 
+func (s *CodexSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("codex source does not support turn/cancelQueued")
+}
+
 func (s *CodexSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
 	return appwire.Unavailable("codex source does not support serf/sandbox/escalation/resolve")
 }

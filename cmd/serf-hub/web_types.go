@@ -273,6 +273,31 @@ type promoteQueuedRequest struct {
 	EntryID string `json:"entryId,omitempty"`
 }
 
+// cancelQueuedRequest is the JSON body for POST /s/<id>/cancel-queued
+// (issue #23). Index selects one entry of the daemon's FIFO input queue —
+// matching the row position in the web queue preview — to remove so it is
+// never consumed. It is also the removal half of the row's edit action
+// (edit = restore the full text into the composer, then cancel the queued
+// copy). EntryID carries the queue-entry id from the client's queue
+// snapshot; the daemon rejects the call (Conflict) when the index no longer
+// resolves or the queue shifted so the id no longer matches the entry at
+// index (review F1).
+type cancelQueuedRequest struct {
+	Index   int    `json:"index"`
+	EntryID string `json:"entryId,omitempty"`
+}
+
+// cancelQueuedResponse is the JSON body returned by POST
+// /s/<id>/cancel-queued on success: an echo of what was removed.
+// RemovedText lets the client verify the removal matched its snapshot;
+// RemovedImages counts attachments that were on the entry and are NOT
+// restored by an edit, so the UI can warn instead of silently dropping
+// them.
+type cancelQueuedResponse struct {
+	RemovedText   string `json:"removedText"`
+	RemovedImages int    `json:"removedImages,omitempty"`
+}
+
 type forkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`

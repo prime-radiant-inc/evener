@@ -639,6 +639,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				Depth:   data.Depth,
 				Preview: append([]string(nil), data.Preview...),
 				IDs:     append([]string(nil), data.IDs...),
+				Texts:   append([]string(nil), data.Texts...),
 			},
 		})}
 	case events.EventTaskUpdated:

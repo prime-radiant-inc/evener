@@ -21,6 +21,7 @@ type Source interface {
 	QueueTurn(context.Context, appwire.TurnQueueParams) error
 	DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error
 	PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error
+	CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error)
 	CompactThread(context.Context, appwire.ThreadCompactStartParams) error
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
 	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error

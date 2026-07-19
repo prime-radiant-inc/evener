@@ -218,6 +218,23 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 	})
 }
 
+func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.TurnCancelQueuedResponse{}, err
+	}
+	var resp appwire.TurnCancelQueuedResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		var cerr error
+		resp, cerr = client.TurnCancelQueued(ctx, params)
+		return cerr
+	})
+	if err != nil {
+		return appwire.TurnCancelQueuedResponse{}, err
+	}
+	return resp, nil
+}
+
 func (s *LocalDaemonSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {

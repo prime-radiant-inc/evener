@@ -106,6 +106,7 @@ no router (reserved).
 | `turn/queue` | both | `TurnQueueParams` | `EmptyResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `EmptyResponse` | Drains the input queue and injects it as a single steering message. |
 | `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `EmptyResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
+| `turn/cancelQueued` | both | `TurnCancelQueuedParams` | `TurnCancelQueuedResponse` | Removes one queued message by index so it is never consumed (cancel; also the removal half of edit-and-recompose). |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
@@ -994,6 +995,23 @@ _(no fields)_
 | `itemId` | `string` |  |  |
 | `callId` | `string` |  |  |
 | `delta` | `string` |  |  |
+
+
+### `TurnCancelQueuedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `index` | `int` |  |  |
+| `expectedEntryId` | `string` | yes |  |
+
+
+### `TurnCancelQueuedResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `removedText` | `string` |  |  |
+| `removedImages` | `int` | yes |  |
 
 
 ### `TurnCompletedParams`
