@@ -2080,6 +2080,41 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   border-color: var(--accent);
   outline: none;
 }
+/* issue #23: per-row edit / cancel affordances, same visual language as
+   qp-promote — subtle until hover/focus, then ink up with the accent. */
+.queue-preview-item .qp-edit,
+.queue-preview-item .qp-cancel {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.queue-preview-item .qp-edit:hover,
+.queue-preview-item .qp-edit:focus-visible,
+.queue-preview-item .qp-cancel:hover,
+.queue-preview-item .qp-cancel:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
+.queue-preview-item .qp-edit:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.queue-preview-item .qp-edit:disabled:hover {
+  color: var(--ink-3);
+  border-color: var(--line);
+}
 
 .input-card { background: color-mix(in srgb, var(--surface) 88%, var(--bg)); border: 0; border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); min-height: 0; transition: outline-color var(--motion-fast), background var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper

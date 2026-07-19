@@ -69,9 +69,11 @@ type serveServer interface {
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
 	SetPromoteQueuedAsSteerFunc(func(int, string) error)
+	SetCancelQueuedFunc(func(int, string) (string, int, error))
 	SetQueueIDsFunc(func() []string)
 	SetQueueDepthFunc(func() int)
 	SetQueuePreviewFunc(func() []string)
+	SetQueueTextsFunc(func() []string)
 	SetContextPressureFunc(func() float64)
 	SetContextMetricsFunc(func() server.ContextMetrics)
 	SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64))
@@ -542,9 +544,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
 		return getSession().PromoteQueuedAsSteer(ctx, index, expectedID)
 	})
+	srv.SetCancelQueuedFunc(func(index int, expectedID string) (string, int, error) {
+		return getSession().CancelQueued(ctx, index, expectedID)
+	})
 	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
 	srv.SetQueueIDsFunc(func() []string { return getSession().QueueIDs() })
+	srv.SetQueueTextsFunc(func() []string { return getSession().QueueTexts() })
 	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
 	srv.SetContextMetricsFunc(func() server.ContextMetrics {
 		metrics := getSession().ContextMetrics()

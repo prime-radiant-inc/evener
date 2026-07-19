@@ -1855,6 +1855,10 @@ func (s *scriptedAppSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPr
 	return appwire.Unavailable("scripted source does not promote queued messages")
 }
 
+func (s *scriptedAppSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("scripted source does not cancel queued messages")
+}
+
 func (s *scriptedAppSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("scripted source does not compact threads")
 }

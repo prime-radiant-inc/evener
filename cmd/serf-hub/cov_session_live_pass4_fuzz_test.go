@@ -34,6 +34,10 @@ func (s *pass4ActionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSte
 func (s *pass4ActionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
 	return s.err
 }
+
+func (s *pass4ActionSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
 func (s *pass4ActionSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
 	return s.err
 }

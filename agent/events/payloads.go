@@ -181,11 +181,16 @@ type SteeringInjectedData struct {
 // the head at index 0 and have been collapsed to a single line. IDs is
 // FIFO-aligned with Preview and carries each entry's stable queue-entry id
 // (minted at enqueue time) so a client can promote a specific entry by
-// identity rather than by bare index (review F1, issue #22).
+// identity rather than by bare index (review F1, issue #22). Texts is
+// FIFO-aligned with Preview and carries each entry's FULL untruncated text
+// so the edit affordance (issue #23) can restore the complete message into
+// the composer — the preview line alone would silently truncate multi-line
+// messages.
 type QueueChangedData struct {
 	Depth   int      `json:"depth"`
 	Preview []string `json:"preview,omitempty"`
 	IDs     []string `json:"ids,omitempty"`
+	Texts   []string `json:"texts,omitempty"`
 }
 
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current

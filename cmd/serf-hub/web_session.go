@@ -346,6 +346,58 @@ func (s *WebServer) handlePromoteQueued(w http.ResponseWriter, r *http.Request, 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleCancelQueued forwards a turn/cancelQueued request (issue #23
+// per-message cancel; also the removal half of the queue-preview row's edit
+// action). The daemon removes the queued follow-up at body.Index so it is
+// never consumed and echoes the removed entry's full text + image count,
+// which the hub passes through so the client can verify the removal matched
+// its snapshot and warn about dropped attachments. Rides on the Send
+// capability — unlike promote, cancel needs no in-flight turn: a queued
+// entry is cancellable whenever it is still queued, including entries
+// buffered on an idle session (where Queue/Steer are false). The daemon
+// returns Conflict when the index no longer resolves or the queue shifted
+// under the client's snapshot (review F1).
+func (s *WebServer) handleCancelQueued(w http.ResponseWriter, r *http.Request, id string) {
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
+	var body cancelQueuedRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Index < 0 {
+		http.Error(w, "index must be >= 0", http.StatusBadRequest)
+		return
+	}
+	if !s.isLive(id) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.ensureSessionActionAvailable(id, "send"); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	removed, err := source.CancelQueued(r.Context(), appwire.TurnCancelQueuedParams{
+		Ref:             ref,
+		Index:           body.Index,
+		ExpectedEntryID: body.EntryID,
+	})
+	if err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cancelQueuedResponse{
+		RemovedText:   removed.RemovedText,
+		RemovedImages: removed.RemovedImages,
+	})
+}
+
 // handleSessionAction forwards imperative actions to a daemon. Interrupt,
 // clear, and shutdown remain live-only; compact can resume a known past
 // session because it is a session-level maintenance action rather than an

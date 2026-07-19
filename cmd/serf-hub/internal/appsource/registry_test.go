@@ -45,6 +45,9 @@ func (f fakeSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams
 func (f fakeSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
 	return nil
 }
+func (f fakeSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
 func (f fakeSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return nil
 }

@@ -1490,7 +1490,7 @@
             this.renderComposerChips();
             // Reset to empty; the next QUEUE_CHANGED event (cold-load or
             // notification) will fill in authoritative state from the wire.
-            this.queueState = { depth: 0, preview: [], ids: [] };
+            this.queueState = { depth: 0, preview: [], ids: [], texts: [] };
             this.renderQueuePreview();
           }
           if (data.capabilities) {
@@ -1515,6 +1515,11 @@
             depth: typeof data.depth === "number" ? data.depth : (Array.isArray(data.preview) ? data.preview.length : 0),
             preview: Array.isArray(data.preview) ? data.preview.slice() : [],
             ids: Array.isArray(data.ids) ? data.ids.slice() : [],
+            // texts is FIFO-aligned with preview and carries each entry's
+            // FULL untruncated text for the edit affordance (issue #23) —
+            // the preview line alone would silently truncate multi-line
+            // messages. Absent on old daemons; edit degrades honestly.
+            texts: Array.isArray(data.texts) ? data.texts.slice() : [],
           };
           this.renderQueuePreview();
           break;
@@ -6550,6 +6555,36 @@
         promoteBtn.textContent = "⇧";
         promoteBtn.addEventListener("click", () => { this.promoteQueuedMessage(idx, entryId); });
         li.appendChild(promoteBtn);
+        // Per-message edit + cancel (issue #23). Edit is
+        // cancel-and-recompose: the full text (queueState.texts, not the
+        // truncated preview line) returns to the composer and the queued
+        // copy is removed. Image-only entries carry no text to recompose,
+        // so their edit button is disabled with an honest hint — cancel
+        // still works for them.
+        const fullText = state.texts && typeof state.texts[idx] === "string" ? state.texts[idx] : null;
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "qp-edit";
+        editBtn.setAttribute("data-edit-index", String(idx));
+        if (fullText !== null && fullText.trim() === "") {
+          editBtn.disabled = true;
+          editBtn.title = "nothing to edit — this queued message is image-only (cancel instead)";
+        } else {
+          editBtn.title = "edit — move this message back into the composer and remove it from the queue";
+        }
+        editBtn.setAttribute("aria-label", "edit queued message " + (idx + 1) + " in the composer");
+        editBtn.textContent = "✎";
+        editBtn.addEventListener("click", () => { this.editQueuedMessage(idx, entryId); });
+        li.appendChild(editBtn);
+        const cancelBtn = document.createElement("button");
+        cancelBtn.type = "button";
+        cancelBtn.className = "qp-cancel";
+        cancelBtn.setAttribute("data-cancel-index", String(idx));
+        cancelBtn.title = "cancel — remove this message from the queue so it is never sent";
+        cancelBtn.setAttribute("aria-label", "cancel queued message " + (idx + 1));
+        cancelBtn.textContent = "✕";
+        cancelBtn.addEventListener("click", () => { this.cancelQueuedMessage(idx, entryId); });
+        li.appendChild(cancelBtn);
         list.appendChild(li);
       });
     },
@@ -6582,6 +6617,87 @@
         }
       } catch (err) {
         this.appendBanner("error", "promote failed: " + err.message, { source: "hub", title: "Hub promote error" });
+      }
+    },
+
+    // removeQueuedEntry is the shared daemon call behind the queue-preview
+    // row's cancel and edit actions (issue #23): turn/cancelQueued with the
+    // review-F1 expected identity. Resolves with { removedText,
+    // removedImages } on success; on failure it appends an error banner
+    // (prefixed with failLabel) and resolves null. There is no local
+    // mirror: a successful removal re-renders from the daemon's
+    // thread/queueChanged.
+    async removeQueuedEntry(idx, entryId, failLabel) {
+      try {
+        if (window.SerfAppwire && typeof window.SerfAppwire.cancelQueued === "function") {
+          return await window.SerfAppwire.cancelQueued(this.sessionId, idx, entryId || "");
+        }
+        const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/cancel-queued", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ index: idx, entryId: entryId || "" }),
+        });
+        if (!resp.ok) {
+          const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+          this.appendBanner("error", failLabel + ": " + detail, { source: "hub", title: "Hub cancel error" });
+          return null;
+        }
+        return await resp.json();
+      } catch (err) {
+        this.appendBanner("error", failLabel + ": " + err.message, { source: "hub", title: "Hub cancel error" });
+        return null;
+      }
+    },
+
+    // cancelQueuedMessage removes one queued follow-up so it is never
+    // consumed (issue #23). On success the daemon's thread/queueChanged
+    // re-renders the preview without the row; on failure (already consumed,
+    // queue shifted under the preview) the row stays and the error banner
+    // says so — nothing is silently removed.
+    async cancelQueuedMessage(idx, entryId) {
+      await this.removeQueuedEntry(idx, entryId, "cancel failed");
+    },
+
+    // restoreTextToComposer puts text back into the composer without
+    // clobbering what the user has already typed there: existing composer
+    // text stays, the restored text is appended after a blank line. The
+    // synthetic input event keeps the sticky draft (SerfDrafts, issue #21)
+    // in sync through the same path as real typing — same pattern as
+    // dropComposedTextIntoComposer.
+    restoreTextToComposer(text) {
+      const ta = document.querySelector("form[data-input-form] .message-input");
+      if (!ta) return;
+      const existing = ta.value;
+      ta.value = existing.trim() === "" ? text : existing.replace(/\s+$/, "") + "\n\n" + text;
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.focus();
+      try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (e) { /* jsdom */ }
+    },
+
+    // editQueuedMessage is cancel-and-recompose (issue #23): the queued
+    // message's FULL text (queueState.texts — never the truncated preview
+    // line) returns to the composer FIRST, then the queued copy is removed.
+    // Text-first ordering is the honest race behavior: if the removal loses
+    // the race (the entry was consumed between the snapshot and the click,
+    // or the queue shifted so the expected id no longer matches), the text
+    // is already safe in the composer and the banner says the queued copy
+    // could not be removed — the user decides whether to delete the
+    // composer text or send it again, and nothing is silently duplicated or
+    // lost. An old daemon that sends no texts makes edit unavailable rather
+    // than restoring a truncated message.
+    async editQueuedMessage(idx, entryId) {
+      const texts = (this.queueState && this.queueState.texts) || [];
+      const text = texts[idx];
+      if (typeof text !== "string") {
+        this.appendBanner("error", "edit is not available for this session (the daemon does not expose the full queued text) — cancel and retype instead", { source: "hub", title: "Hub edit error" });
+        return;
+      }
+      if (text.trim() === "") return; // image-only entry; the row's edit button is disabled
+      this.restoreTextToComposer(text);
+      const removed = await this.removeQueuedEntry(idx, entryId,
+        "edit: your text is in the composer, but the queued copy could not be removed (it was already consumed or the queue changed) — delete the composer text if you don't want to resend it");
+      if (removed && typeof removed.removedImages === "number" && removed.removedImages > 0) {
+        this.appendBanner("warning", "edit: " + removed.removedImages + " image attachment(s) on the queued message were not restored — re-attach them before resending", { source: "hub", title: "Hub edit" });
       }
     },
 

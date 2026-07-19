@@ -26,6 +26,7 @@ const (
 	MethodTurnQueue                 = "turn/queue"
 	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
 	MethodTurnPromoteQueuedAsSteer  = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued          = "turn/cancelQueued"
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadNameSet         = "serf/thread/name/set"
@@ -294,10 +295,17 @@ type SerfUsage struct {
 // the daemon at enqueue time. turn/promoteQueuedAsSteer echoes an id back
 // as expectedEntryId so a queue that shifted under the client's snapshot is
 // rejected instead of promoting the wrong message (review F1, issue #22).
+// Texts is FIFO-aligned with Preview and carries each entry's FULL
+// untruncated text, so the edit affordance (issue #23) can restore the
+// complete message into the composer before turn/cancelQueued removes the
+// entry — the preview line alone would silently truncate multi-line
+// messages. Absent on old daemons; clients must treat a missing Texts as
+// "edit unavailable" rather than falling back to the truncated preview.
 type QueueState struct {
 	Depth   int      `json:"depth,omitempty"`
 	Preview []string `json:"preview,omitempty"`
 	IDs     []string `json:"ids,omitempty"`
+	Texts   []string `json:"texts,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -756,6 +764,36 @@ type TurnPromoteQueuedAsSteerParams struct {
 	Ref             string `json:"ref"`
 	Index           int    `json:"index"`
 	ExpectedEntryID string `json:"expectedEntryId,omitempty"`
+}
+
+// TurnCancelQueuedParams is the wire shape for turn/cancelQueued (issue
+// #23): removes the queued follow-up at Index so it is never consumed. It
+// is also the removal half of the web UI's edit action (edit = restore the
+// full text from QueueState.Texts into the composer, then cancel the queued
+// copy). ExpectedEntryID plays the same review-F1 role as on
+// turn/promoteQueuedAsSteer: when non-empty it must match the id the daemon
+// minted for the entry at Index, so a queue that shifted under the client's
+// snapshot is a Conflict rather than removing the wrong message. Unlike
+// promote, cancel does NOT require an in-flight turn — a queued entry is
+// cancellable whenever it is still queued. The daemon returns Conflict when
+// the index is out of range (e.g. the entry was already consumed) or the
+// expected id no longer matches.
+type TurnCancelQueuedParams struct {
+	Ref             string `json:"ref"`
+	Index           int    `json:"index"`
+	ExpectedEntryID string `json:"expectedEntryId,omitempty"`
+}
+
+// TurnCancelQueuedResponse echoes what turn/cancelQueued removed.
+// RemovedText is the entry's full untruncated text (the client normally
+// already holds it via QueueState.Texts; the echo lets it verify the
+// removal matched its snapshot). RemovedImages counts image attachments
+// that were on the entry and are NOT restored by an edit — the client warns
+// the user to re-attach before resending rather than silently dropping
+// them.
+type TurnCancelQueuedResponse struct {
+	RemovedText   string `json:"removedText"`
+	RemovedImages int    `json:"removedImages,omitempty"`
 }
 
 type ThreadCompactStartParams struct {

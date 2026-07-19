@@ -19,6 +19,7 @@
     turnQueue: "turn/queue",
     turnDrainAsSteer: "turn/drainAsSteer",
     turnPromoteQueuedAsSteer: "turn/promoteQueuedAsSteer",
+    turnCancelQueued: "turn/cancelQueued",
     tasksList: "serf/tasks/list",
     sandboxEscalationResolve: "serf/sandbox/escalation/resolve",
     dirsComplete: "serf/dirs/complete",
@@ -553,6 +554,25 @@
     });
   }
 
+  // cancelQueued removes ONE queued follow-up (by FIFO index, as shown in
+  // the queue preview) so it is never consumed (issue #23). It is also the
+  // removal half of the row's edit action: the renderer restores the full
+  // text (from queueState.texts) into the composer FIRST, then cancels the
+  // queued copy here. The queue-entry id from the client's snapshot rides
+  // along: the daemon rejects with Conflict when the queue shifted under us
+  // (review F1), so a stale row can never remove the wrong message. No
+  // local mirror: the daemon's thread/queueChanged re-renders the preview.
+  // Resolves with { removedText, removedImages } — removedImages > 0 means
+  // attachments were on the entry and are NOT restored by an edit, which
+  // the renderer surfaces as a warning rather than silently dropping them.
+  function cancelQueued(sessionId, index, entryId) {
+    return request(METHOD.turnCancelQueued, {
+      ref: refForSession(sessionId),
+      index,
+      expectedEntryId: entryId || "",
+    });
+  }
+
   function action(sessionId, name, turnId) {
     const ref = refForSession(sessionId);
     if (name === "interrupt") return request(METHOD.turnInterrupt, { ref, expectedTurnId: turnId || "" });
@@ -806,6 +826,7 @@
       depth: typeof queue.depth === "number" ? queue.depth : (Array.isArray(queue.preview) ? queue.preview.length : 0),
       preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
       ids: Array.isArray(queue.ids) ? queue.ids.slice() : [],
+      texts: Array.isArray(queue.texts) ? queue.texts.slice() : [],
     }]);
     events.push.apply(events, eventsFromTurns(thread.turns));
     return events;
@@ -923,6 +944,7 @@
         depth: typeof q.depth === "number" ? q.depth : (Array.isArray(q.preview) ? q.preview.length : 0),
         preview: Array.isArray(q.preview) ? q.preview.slice() : [],
         ids: Array.isArray(q.ids) ? q.ids.slice() : [],
+        texts: Array.isArray(q.texts) ? q.texts.slice() : [],
       }]];
     }
     if (method === "serf/task/updated") {
@@ -1073,6 +1095,7 @@
     queueTurn,
     drainAsSteer,
     promoteQueuedAsSteer,
+    cancelQueued,
     action,
     setModel,
     setReasoningEffort,

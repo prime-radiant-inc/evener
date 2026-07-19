@@ -3610,6 +3610,10 @@ func (s *relayLifecycleSource) PromoteQueuedAsSteer(context.Context, appwire.Tur
 	return appwire.Unavailable("relay lifecycle source does not promote queued messages")
 }
 
+func (s *relayLifecycleSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("relay lifecycle source does not cancel queued messages")
+}
+
 func (s *relayLifecycleSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("relay lifecycle source does not compact threads")
 }
