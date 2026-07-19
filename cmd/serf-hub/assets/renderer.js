@@ -830,37 +830,47 @@
           }
           hydratedNotificationKeys = hydrationKeysFromThread(thread);
           const hydrationEvents = Array.from(window.SerfAppwire.eventsFromThread(thread));
-          for (const [kind, data] of hydrationEvents) {
-            this.handleData(kind, data);
-          }
-          await this.loadOlderTurnsUntilPrimaryDialogue(
-            this.eventsContainPrimaryDialogue(hydrationEvents),
-            sessionId,
-            conversation,
-            appwireStream,
-          );
-          if (this.liveStream !== appwireStream || this.conversation !== conversation) return;
-          // Surface any sandbox escalation blocked on this session (M7 surface-on-
-          // entry / reconnect), de-duped against live ones.
-          this.surfaceSnapshotEscalations(thread);
-          this.appwireHydrated = true;
-          // The stream is live again: a reconnect succeeded, so retire any
-          // chrome reconnect banner and re-enable the composer.
-          this.clearConnectionBanner();
-          this.replayingBufferedNotifications = true;
+          // Per-event stick measurement during the replay loop is the O(N²)
+          // session-open path: suppress it for the whole replay (hydration
+          // events AND buffered notifications) and settle once at the end.
+          this.suppressScrollSettle = true;
           try {
-            while (pendingNotifications.length > 0) {
-              const [method, params] = pendingNotifications.shift();
-              if (notificationCoveredByHydration(method, params)) continue;
-              const replayParams = notificationForHydrationReplay(method, params);
-              if (notificationMatches(replayParams)) deliverNotification(method, replayParams);
+            for (const [kind, data] of hydrationEvents) {
+              this.handleData(kind, data);
+            }
+            await this.loadOlderTurnsUntilPrimaryDialogue(
+              this.eventsContainPrimaryDialogue(hydrationEvents),
+              sessionId,
+              conversation,
+              appwireStream,
+            );
+            if (this.liveStream !== appwireStream || this.conversation !== conversation) return;
+            // Surface any sandbox escalation blocked on this session (M7 surface-on-
+            // entry / reconnect), de-duped against live ones.
+            this.surfaceSnapshotEscalations(thread);
+            this.appwireHydrated = true;
+            // The stream is live again: a reconnect succeeded, so retire any
+            // chrome reconnect banner and re-enable the composer.
+            this.clearConnectionBanner();
+            this.replayingBufferedNotifications = true;
+            try {
+              while (pendingNotifications.length > 0) {
+                const [method, params] = pendingNotifications.shift();
+                if (notificationCoveredByHydration(method, params)) continue;
+                const replayParams = notificationForHydrationReplay(method, params);
+                if (notificationMatches(replayParams)) deliverNotification(method, replayParams);
+              }
+            } finally {
+              this.replayingBufferedNotifications = false;
             }
           } finally {
-            this.replayingBufferedNotifications = false;
+            this.suppressScrollSettle = false;
           }
+          this.scrollToBottom();
         })
         .catch((err) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          this.suppressScrollSettle = false;
           this.clearAppwireStream();
           if (this.isAppwireApplicationError(err)) {
             this.showConnectionBanner("unavailable", err && err.message ? err.message : String(err));
@@ -1084,6 +1094,7 @@
     resetTranscriptReplay() {
       if (!this.conversation) return;
       this.cancelFrameFlush();
+      this.suppressScrollSettle = false;
       this.frameQueue = [];
       this.frameGeneration = (this.frameGeneration || 0) + 1;
       this.discardPendingAsk();
