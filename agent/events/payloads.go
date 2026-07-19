@@ -159,10 +159,21 @@ type SandboxEscalationRequestedData struct {
 	PartiallyRan bool   `json:"partially_ran,omitempty"`
 }
 
+// SteeringSourceUser marks steering that originated from the human user —
+// the UI steer action, or queued user input drained as steering — as opposed
+// to daemon/system-generated nudges (task reminders, loop detection, hook
+// context, job notifications, …). UIs render user-sourced steering as a user
+// message rather than a system steering divider (issue #24).
+const SteeringSourceUser = "user"
+
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
 type SteeringInjectedData struct {
 	Text   string           `json:"text"`
 	Images []UserInputImage `json:"images,omitempty"`
+	// Source carries the steering provenance: SteeringSourceUser for
+	// human-sent steering, empty for daemon/system steering. Optional and
+	// additive; absent means system.
+	Source string `json:"source,omitempty"`
 }
 
 // QueueChangedData carries an authoritative snapshot of the per-session

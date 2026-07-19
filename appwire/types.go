@@ -517,6 +517,10 @@ type ThreadItem struct {
 	CompletedAt          *int64          `json:"completedAt,omitempty"`
 	Raw                  json.RawMessage `json:"raw,omitempty"`
 	EventKind            string          `json:"eventKind,omitempty"`
+	// Source carries item provenance for steering items: "user" for
+	// human-sent steering (rendered as a user message), empty for
+	// daemon/system steering (issue #24).
+	Source string `json:"source,omitempty"`
 }
 
 type OutputImage struct {

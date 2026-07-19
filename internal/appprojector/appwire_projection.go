@@ -538,12 +538,19 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
-		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, map[string]any{
+		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"text":     text,
 			"images":   images,
-		})}
+		}
+		// User-sent steering carries its provenance so the web UI renders it
+		// as a user message rather than a system steering divider (issue #24).
+		// Empty (system) source is omitted from the wire payload.
+		if data.Source != "" {
+			params["source"] = data.Source
+		}
+		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, params)}
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()
 		data := eventData[events.CompactionTurnData](event.Data)

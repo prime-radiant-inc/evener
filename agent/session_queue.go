@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -48,12 +49,19 @@ type steeringMessage struct {
 	Text       string
 	Images     []ImageAttachment
 	Provenance *provenance.Causal
+	// Source marks who sent the steering: events.SteeringSourceUser for
+	// human-sent steering (the UI steer action, or queued user input
+	// drained as steering), empty for daemon/system nudges. Surfaced on the
+	// SteeringInjectedData event and persisted on the transcript turn so
+	// UIs render user steering as a user message (issue #24).
+	Source string
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
 	return events.SteeringInjectedData{
 		Text:   msg.Text,
 		Images: userInputImagesFromAttachments(msg.Images),
+		Source: msg.Source,
 	}
 }
 
@@ -81,6 +89,20 @@ func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 	_ = s.trySteerWithImages(msg, images)
 }
 
+// SteerFromUser queues a text-only steering message sent by the human user
+// mid-turn (the UI steer action). Unlike daemon/system nudges queued via
+// Steer, it is marked Source "user" so UIs render it as a user message
+// rather than a system steering divider (issue #24).
+func (s *Session) SteerFromUser(msg string) {
+	s.SteerFromUserWithImages(msg, nil)
+}
+
+// SteerFromUserWithImages is SteerFromUser with optional image attachments,
+// mirroring SteerWithImages for the human-sent path.
+func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) {
+	_ = s.trySteerEnqueue(msg, images, nil, events.SteeringSourceUser)
+}
+
 func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
 	return s.trySteerWithImagesAndProvenance(msg, images, nil)
 }
@@ -98,6 +120,13 @@ func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Caus
 }
 
 func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal) bool {
+	return s.trySteerEnqueue(msg, images, p, "")
+}
+
+// trySteerEnqueue is the steering-queue append primitive. source carries the
+// steering provenance marker stored on the entry (events.SteeringSourceUser
+// for human-sent steering, "" for daemon/system steering).
+func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closingOrClosedLocked() {
@@ -106,7 +135,7 @@ func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAtta
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
 		return false
 	}
-	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p)}
+	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
@@ -259,11 +288,10 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 		combinedProvenance = provenance.Union(combinedProvenance, entry.Provenance)
 	}
 	combined := strings.Join(texts, "\n\n")
-	if len(drainedImages) == 0 {
-		s.trySteerWithProvenance(combined, combinedProvenance)
-	} else {
-		s.trySteerWithImagesAndProvenance(combined, drainedImages, combinedProvenance)
-	}
+	// The drained queue is user-typed input force-steered into the in-flight
+	// turn by a user action (turn/drainAsSteer), so the combined steering
+	// message keeps user provenance for rendering (issue #24).
+	s.trySteerEnqueue(combined, drainedImages, combinedProvenance, events.SteeringSourceUser)
 	return nil
 }
 
@@ -402,6 +430,26 @@ func (s *Session) drainSteering() []steeringMessage {
 	out := append([]steeringMessage{}, s.steeringQueue...)
 	s.steeringQueue = nil
 	return out
+}
+
+// injectDrainedSteering drains any pending steering messages at a turn
+// boundary (or mid-turn injection point), records each as a steering turn in
+// history and the transcript — preserving the message's provenance source so
+// reload/hydration renders user-sent steering as user speech (issue #24) —
+// and emits the steering-injected event. It is the single path every drain
+// site uses so live and replayed steering stay consistent.
+func (s *Session) injectDrainedSteering() {
+	for _, msg := range s.drainSteeringForTurn() {
+		t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+		t.SteeringSource = msg.Source
+		s.mu.Lock()
+		s.history = append(s.history, t)
+		s.mu.Unlock()
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	}
 }
 
 func (s *Session) hasPendingSteering() bool {

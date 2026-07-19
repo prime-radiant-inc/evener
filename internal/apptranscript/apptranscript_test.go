@@ -72,6 +72,37 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 }
 
+// TestProjectTurnSteeringCarriesUserSource (issue #24): a steering turn
+// recorded with SteeringSource="user" (human-sent steering) projects a
+// steering item whose Source reaches the web UI, so reload/hydration renders
+// it as a user message like the live path does. System steering keeps an
+// empty source.
+func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
+	userTurn := schema.Turn{
+		Kind:           schema.TurnSteering,
+		Message:        llm.User("focus on the tests"),
+		Timestamp:      time.Unix(1_700_000_000, 0).UTC(),
+		SteeringSource: "user",
+	}
+	items := ProjectTurn("turn_1", 1, userTurn, map[string]string{}, nil, nil)
+	if len(items) != 1 || items[0].Type != "steering" {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	if items[0].Source != "user" {
+		t.Fatalf("item.Source=%q, want %q", items[0].Source, "user")
+	}
+
+	sysTurn := schema.Turn{
+		Kind:      schema.TurnSteering,
+		Message:   llm.User("<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"),
+		Timestamp: time.Unix(1_700_000_000, 0).UTC(),
+	}
+	items = ProjectTurn("turn_2", 2, sysTurn, map[string]string{}, nil, nil)
+	if len(items) != 1 || items[0].Source != "" {
+		t.Fatalf("system steering item.Source=%q, want empty", items[0].Source)
+	}
+}
+
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := map[string]string{}
 	start := ProjectTurn("turn_1", 1, schema.Turn{

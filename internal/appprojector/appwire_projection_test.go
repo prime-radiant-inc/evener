@@ -1078,6 +1078,44 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorProjectsSteeringInjectedUserSource (issue #24): the
+// provenance source on SteeringInjectedData must reach the wire so the web UI
+// can render user-sent steering as a user message instead of a system
+// steering divider.
+func TestAppEventProjectorProjectsSteeringInjectedUserSource(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
+		SessionID: "th_1",
+		Data:      events.SteeringInjectedData{Text: "focus on the tests", Source: events.SteeringSourceUser},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params["source"] != events.SteeringSourceUser {
+		t.Fatalf("params[source]=%v, want %q", params["source"], events.SteeringSourceUser)
+	}
+
+	// System steering carries no source key (empty source omitted from the
+	// wire payload).
+	out = projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
+		SessionID: "th_1",
+		Data:      events.SteeringInjectedData{Text: "<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"},
+	})
+	params, ok = out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if src, present := params["source"]; present && src != "" {
+		t.Fatalf("system steering params[source]=%v, want absent or empty", src)
+	}
+}
+
 func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 
