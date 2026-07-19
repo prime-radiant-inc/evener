@@ -21,7 +21,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-const toolPurposeDescription = "Briefly explain why you are calling this tool and what you expect to learn or accomplish."
+const toolPurposeDescription = "A short verb-first gerund phrase naming what this call is doing, e.g. \"Reading the config file\" or \"Searching for the handler\". Keep it to a few words so it renders nicely as an inline activity label."
 
 func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	params := CloneSchemaMap(td.Parameters)
