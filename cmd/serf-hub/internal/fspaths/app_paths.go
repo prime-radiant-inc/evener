@@ -95,7 +95,6 @@ func directoryMatchScore(query, name string) (int, bool) {
 	queryRunes := []rune(query)
 	matched := 0
 	first := -1
-	last := -1
 	for index, char := range []rune(name) {
 		if char != queryRunes[matched] {
 			continue
@@ -103,10 +102,9 @@ func directoryMatchScore(query, name string) (int, bool) {
 		if first < 0 {
 			first = index
 		}
-		last = index
 		matched++
 		if matched == len(queryRunes) {
-			gaps := last - first + 1 - len(queryRunes)
+			gaps := index - first + 1 - len(queryRunes)
 			return 100 + first + gaps, true
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"html/template"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func launchpadServer(t *testing.T, metas []schema.SessionMeta) *WebServer {
 
 func renderEmpty(t *testing.T, s *WebServer) string {
 	t.Helper()
-	req := httptest.NewRequest("GET", "/_partials/workspace/empty", nil)
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/empty", nil)
 	rec := httptest.NewRecorder()
 	s.handleWorkspaceEmpty(rec, req)
 	body, _ := io.ReadAll(rec.Result().Body)

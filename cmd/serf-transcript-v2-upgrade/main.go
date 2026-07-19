@@ -374,7 +374,7 @@ func replaceTranscript(prepared preparedTranscript) error {
 	}
 	if err := os.Rename(temporaryPath, prepared.path); err != nil {
 		if restoreErr := os.Rename(backupPath, prepared.path); restoreErr != nil {
-			return fmt.Errorf("%s: publish v2 transcript: %v; restore v1 backup: %w", prepared.path, err, restoreErr)
+			return fmt.Errorf("%s: publish v2 transcript: %w; restore v1 backup: %w", prepared.path, err, restoreErr)
 		}
 		return fmt.Errorf("%s: publish v2 transcript: %w", prepared.path, err)
 	}
