@@ -1404,6 +1404,15 @@ func TestJobListOffsetWindowing(t *testing.T) {
 	if !strings.Contains(out, "showing 1-100 of 120 jobs.") {
 		t.Fatalf("truncated listing must show the window footer: %q", out[len(out)-200:])
 	}
+	// An offset past the end never renders an inverted "showing 121-120" —
+	// it reports the empty window honestly.
+	out = callJobListText(t, s, `{"limit": 50, "offset": 150}`)
+	if !strings.Contains(out, "showing none of 120 jobs (offset 150 past end).") {
+		t.Fatalf("past-end offset footer missing, output tail: %q", out[len(out)-200:])
+	}
+	if strings.Contains(out, "showing 151-") {
+		t.Fatalf("inverted window footer rendered: %q", out[len(out)-200:])
+	}
 	// A listing that fits on one page keeps the plain count footer.
 	small := newDelegateTestSession(t, c)
 	seedShellJobRecords(t, small, 3)
@@ -1427,17 +1436,20 @@ func TestJobListOffsetWindowing(t *testing.T) {
 
 // TestJobListShowsTurnSlotOccupancy pins the diagnostic footer line: while any
 // tree slot is held, job_list reports the slot usage and the job/drive split.
+// The drive figure comes from the separate drive budget (driveCounter) — the
+// production shape since drive turns stopped holding spawn-budget slots.
 func TestJobListShowsTurnSlotOccupancy(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	s := newDelegateTestSession(t, c)
 	s.treeCounter = newTreeCounter(50)
-	if !s.treeCounter.reserve(slotKindJob) || !s.treeCounter.reserve(slotKindDrive) {
+	s.driveCounter = newTreeCounter(defaultMaxConcurrentDriveTurns)
+	if !s.treeCounter.reserve(slotKindJob) || !s.driveCounter.reserve(slotKindDrive) {
 		t.Fatal("setup reserves failed")
 	}
 	out := callJobListText(t, s, `{}`)
-	if !strings.Contains(out, "delegate turn slots: 2/50 in use (1 jobs, 1 drive turns).") {
+	if !strings.Contains(out, "delegate turn slots: 1/50 in use (1 jobs, 1 drive turns).") {
 		t.Fatalf("occupancy line missing: %q", out)
 	}
 }

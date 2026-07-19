@@ -28,6 +28,9 @@ var errTreeAtCapacity = errors.New("tree_at_capacity")
 // treeCapacityError is the formatted spawn/resume failure at tree capacity.
 // It carries the live cap and the job/drive occupancy split so the error names
 // the configured limit and what is holding it, rather than a hardcoded one.
+// jobs counts holders of spawn-budget slots; drives counts drive turns in
+// flight on the separate drive budget (sourced from driveCounter, since drive
+// turns no longer hold spawn-budget slots).
 type treeCapacityError struct {
 	cap    int64
 	jobs   int64
@@ -142,9 +145,16 @@ func (s *Session) reserveTreeSlot(kind slotKind) (*treeReservation, bool) {
 }
 
 // treeCapacityErrorFor formats the capacity failure for this session's tree
-// from the counter's live occupancy.
+// from the counters' live occupancy: jobs holding spawn-budget slots, and
+// drive turns in flight on the separate drive budget. Reading the drive
+// counter (not the spawn counter's per-kind tally, which drive turns no
+// longer touch) keeps the tuple honest — a drive-saturated tree is visible.
 func (s *Session) treeCapacityErrorFor() error {
-	_, jobs, drives, cap := s.treeCounter.occupancy()
+	_, jobs, _, cap := s.treeCounter.occupancy()
+	var drives int64
+	if s.driveCounter != nil {
+		drives, _, _, _ = s.driveCounter.occupancy()
+	}
 	return &treeCapacityError{cap: cap, jobs: jobs, drives: drives}
 }
 

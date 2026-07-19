@@ -956,13 +956,19 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 
 // turnSlotOccupancyOf snapshots the session's tree-counter occupancy for the
 // job_list footer, or nil when nothing is held (the common idle case — no
-// noise).
+// noise). Jobs/InUse/Cap describe the spawn budget; Drives reads the
+// separate drive budget (driveCounter) so a drive-saturated tree with zero
+// running jobs is visible rather than reporting a dead 0.
 func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
 	if s == nil || s.treeCounter == nil {
 		return nil
 	}
-	total, jobs, drives, cap := s.treeCounter.occupancy()
-	if total == 0 {
+	total, jobs, _, cap := s.treeCounter.occupancy()
+	var drives int64
+	if s.driveCounter != nil {
+		drives, _, _, _ = s.driveCounter.occupancy()
+	}
+	if total == 0 && drives == 0 {
 		return nil
 	}
 	return &turnSlotOccupancy{InUse: total, Cap: cap, Jobs: jobs, Drives: drives}
@@ -1059,7 +1065,12 @@ func formatJobList(out jobListResult) string {
 		b.WriteString("No jobs.\n")
 	}
 	if out.Offset > 0 || out.Total > len(out.Jobs) {
-		fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Jobs), out.Total)
+		if len(out.Jobs) == 0 {
+			// Offset past the end: never print an inverted "showing 51-50".
+			fmt.Fprintf(&b, "\nshowing none of %d jobs (offset %d past end).", out.Total, out.Offset)
+		} else {
+			fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Jobs), out.Total)
+		}
 	} else {
 		fmt.Fprintf(&b, "\n%d job(s).", out.Count)
 	}
@@ -1247,12 +1258,14 @@ type jobOutputMatch struct {
 }
 
 // turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
-// job_list while any delegate-turn slot is held: total in use, cap, and the
-// job/drive split.
+// job_list while any delegate-turn slot is held: spawn-budget total in use,
+// cap, and jobs, plus drive turns in flight on the separate drive budget.
 type turnSlotOccupancy struct {
 	InUse  int64 `json:"in_use"`
 	Cap    int64 `json:"cap"`
 	Jobs   int64 `json:"jobs"`
+	// Drives is the live occupancy of the separate drive-turn budget
+	// (driveCounter); drive turns do not hold spawn-budget slots.
 	Drives int64 `json:"drive_turns"`
 }
 

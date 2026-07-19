@@ -554,6 +554,53 @@ func TestTreeCapacityErrorOccupancyClause(t *testing.T) {
 	}
 }
 
+// TestTreeCapacityErrorForReadsDriveBudget pins the occupancy-honesty fix:
+// drive turns reserve on the separate driveCounter, so the spawn counter's
+// per-kind drive tally is always 0. The capacity error must source its drive
+// figure from the drive budget, or a drive-saturated tree reports a dead 0.
+func TestTreeCapacityErrorForReadsDriveBudget(t *testing.T) {
+	t.Parallel()
+	s := &Session{
+		treeCounter:  newTreeCounter(50),
+		driveCounter: newTreeCounter(defaultMaxConcurrentDriveTurns),
+	}
+	s.treeCounter.reserve(slotKindJob)
+	for i := 0; i < 3; i++ {
+		s.driveCounter.reserve(slotKindDrive)
+	}
+	err := s.treeCapacityErrorFor()
+	want := "tree_at_capacity: 50 delegate turn slots in use across this session tree (1 delegate jobs, 3 drive turns). " +
+		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
+	if err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, errTreeAtCapacity) {
+		t.Fatal("treeCapacityErrorFor lost errTreeAtCapacity matching")
+	}
+}
+
+// TestTurnSlotOccupancyShowsDriveOnlyTree pins the job_list/status surface:
+// with zero spawn slots held but drive turns in flight, occupancy is still
+// reported (not elided), and the drive figure comes from the drive budget.
+func TestTurnSlotOccupancyShowsDriveOnlyTree(t *testing.T) {
+	t.Parallel()
+	s := &Session{
+		treeCounter:  newTreeCounter(50),
+		driveCounter: newTreeCounter(defaultMaxConcurrentDriveTurns),
+	}
+	if occ := turnSlotOccupancyOf(s); occ != nil {
+		t.Fatalf("idle tree should report no occupancy, got %+v", occ)
+	}
+	s.driveCounter.reserve(slotKindDrive)
+	occ := turnSlotOccupancyOf(s)
+	if occ == nil {
+		t.Fatal("drive-held tree must report occupancy, got nil")
+	}
+	if occ.InUse != 0 || occ.Jobs != 0 || occ.Drives != 1 || occ.Cap != 50 {
+		t.Fatalf("occupancy = %+v, want InUse=0 Jobs=0 Drives=1 Cap=50", occ)
+	}
+}
+
 // TestDriveBudgetIndependentOfSpawnBudget proves the drive-down budget split:
 // a saturated spawn (tree) budget does not block a drive turn, and a saturated
 // drive budget does not block a spawn reservation.
@@ -826,7 +873,10 @@ func TestRegressionIdleDelegatesNeverBlockSpawn(t *testing.T) {
 	if call.IsError {
 		t.Fatalf("job_list: %s", call.Output)
 	}
-	if !strings.Contains(call.Output, "delegate turn slots: 1/50 in use (1 jobs, 0 drive turns).") {
+	// The drive budget is saturated by setup above; the footer must report the
+	// live drive occupancy (8), not a structurally dead 0 (issue: occupancy
+	// honesty for the split budgets).
+	if !strings.Contains(call.Output, "delegate turn slots: 1/50 in use (1 jobs, 8 drive turns).") {
 		t.Fatalf("job_list missing occupancy line: %q", call.Output[len(call.Output)-300:])
 	}
 	if !strings.Contains(call.Output, "showing 1-50 of 51 jobs.") {
