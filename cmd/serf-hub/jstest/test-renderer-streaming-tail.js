@@ -172,6 +172,39 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.handleData("ASSISTANT_TEXT_END", { text: "q".repeat(4096) + "r".repeat(10) });
   pass(el5.innerHTML === "<p>" + "q".repeat(4096) + "r".repeat(10) + "</p>", "finalization parses the no-content-crossing buffer");
 
+  // --- Parse-failure fallback: marked.parse throwing at finalization must
+  // leave the message as plain text (textContent set) with no throw escaping.
+  const realParse = window.marked.parse;
+  window.marked.parse = () => { throw new Error("boom: parser exploded"); };
+  let endThrew = null;
+  R.handleData("TURN_STARTED", { turnId: "t6" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "plain fallback text" });
+  try {
+    R.handleData("ASSISTANT_TEXT_END", { text: "plain fallback text" });
+  } catch (err) {
+    endThrew = err;
+  }
+  window.marked.parse = realParse;
+  const el6 = conv.querySelectorAll(".assistant-message")[5];
+  pass(endThrew === null, "no throw escapes finalization when marked.parse fails: " + (endThrew && endThrew.message));
+  pass(!!el6, "sixth message element exists after the parse failure");
+  pass(el6 && el6.textContent === "plain fallback text", "message stays as plain text when marked.parse throws");
+  pass(el6 && el6.children.length === 0, "plain-text fallback set textContent (no parsed children)");
+
+  // --- Streaming caret breathe (stylesheet): the caret rule references the
+  // one sanctioned soft breathe (--pulse-cycle, think-breathe idiom) and the
+  // reduced-motion collapse covers it.
+  const fs = require("fs");
+  const path = require("path");
+  const css = fs.readFileSync(path.join(__dirname, "..", "assets", "style.css"), "utf8");
+  const caretRule = css.match(/\.assistant-message \.streaming-tail \.streaming-caret \{([^}]*)\}/);
+  pass(!!caretRule, "stylesheet has a .streaming-caret rule");
+  pass(caretRule && /animation:\s*think-breathe var\(--pulse-cycle\) infinite/.test(caretRule[1]),
+    "caret breathes via the think-breathe keyframe on --pulse-cycle (got: " + (caretRule && caretRule[1].trim()) + ")");
+  const reducedMotion = css.match(/@media \(prefers-reduced-motion: reduce\) \{\s*\*, \*::before, \*::after \{\s*animation-duration: 1ms !important;/);
+  pass(!!reducedMotion, "the universal reduced-motion collapse covers the caret breathe");
+
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: frozen head at the crossing, raw tail with aria-hidden caret, single final parse");
   process.exit(0);

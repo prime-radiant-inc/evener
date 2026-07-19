@@ -187,6 +187,8 @@
       this.appwireThreadId = null;
       this.appwireHydrated = false;
       this.hydrationInProgress = false;
+      this.readerScrolledDuringHydration = false;
+      this.programmaticScroll = false;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
@@ -842,6 +844,15 @@
       }
       window.SerfAppwire.readThread(sessionId, true, true, true, INITIAL_TURN_WINDOW)
         .then(async (resp) => {
+          // Stale-overlap guard, FIRST: a superseded readThread (its stream was
+          // replaced by a reconnect while the request was in flight) must
+          // return before ANY state/DOM mutation. Without this an H1 resolving
+          // after H2 completed would pass the session/conversation check below,
+          // reset H2's valid transcript, replay into it, and abort on the
+          // LATER liveStream check mid-chunk — leaving hydrationInProgress
+          // stuck true forever (which then no-ops status-visibility refresh
+          // and older-turns paging indefinitely).
+          if (this.liveStream !== appwireStream) return;
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
           // A reconnect can land DURING a chunked hydration: appwireHydrated is
@@ -858,6 +869,9 @@
           // NOT by the staleness aborts below (the superseding hydration may
           // already have set it; clearing here would unguard its replay).
           this.hydrationInProgress = true;
+          // Fresh replay window: any reader scroll from an earlier hydration
+          // must not suppress THIS settle.
+          this.readerScrolledDuringHydration = false;
           // The replay below is chunked and yields to the event loop between
           // slices, so the window in which live notifications could interleave
           // into the half-rendered transcript is no longer microscopic. Gate
@@ -928,9 +942,18 @@
           } finally {
             this.suppressScrollSettle = false;
           }
-          this.scrollToBottom();
+          // Reader scroll intent: a scroll event during the replay means the
+          // reader chose their position — the settle must not yank them back
+          // to the bottom. Programmatic scrolls (marked) never set the flag.
+          if (!this.readerScrolledDuringHydration) this.scrollToBottom();
+          this.readerScrolledDuringHydration = false;
         })
         .catch((err) => {
+          // Same stale-overlap guard as the .then entry: a superseded
+          // readThread's rejection must not clear the NEW stream's state
+          // (clearAppwireStream would kill live delivery and the banner would
+          // lie about a healthy connection).
+          if (this.liveStream !== appwireStream) return;
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           this.hydrationInProgress = false;
           this.suppressScrollSettle = false;
@@ -1183,6 +1206,7 @@
       if (!this.conversation) return;
       this.cancelFrameFlush();
       this.suppressScrollSettle = false;
+      this.readerScrolledDuringHydration = false;
       this.frameQueue = [];
       this.frameGeneration = (this.frameGeneration || 0) + 1;
       this.discardPendingAsk();
@@ -4859,7 +4883,15 @@
     },
 
     scrollToBottom() {
-      this.conversation.scrollTop = this.conversation.scrollHeight;
+      // Marked programmatic: the scroll listener must not read this as reader
+      // intent during hydration (the marker also guards any future
+      // programmatic scroll that CAN land inside a replay window).
+      this.programmaticScroll = true;
+      try {
+        this.conversation.scrollTop = this.conversation.scrollHeight;
+      } finally {
+        this.programmaticScroll = false;
+      }
       // Once parked at the bottom there is no unseen content, so the
       // new-content pill (and its counter) must reset.
       this.clearNewContentPill();
@@ -4932,6 +4964,13 @@
       if (!el.__serfScrollPillBound) {
         el.__serfScrollPillBound = true;
         el.addEventListener("scroll", () => {
+          // Reader intent during hydration: a genuine scroll mid-replay means
+          // the reader took control of the position — the hydration-end settle
+          // must not yank them to the bottom. Programmatic scrolls (prepend
+          // compensation, the settle itself) are marked and never set this.
+          if (this.hydrationInProgress && !this.programmaticScroll) {
+            this.readerScrolledDuringHydration = true;
+          }
           if (this.scrollAffordanceTick) return;
           this.scrollAffordanceTick = true;
           this.scheduleFrame(() => {

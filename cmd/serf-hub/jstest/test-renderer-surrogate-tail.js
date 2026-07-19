@@ -13,6 +13,10 @@ const out = "A" + "😀" + "x".repeat(7999);
 pass(out.length === 8002, "fixture is 8002 code units (slice(-8000) lands on the low surrogate)");
 pass(out.charCodeAt(2) >= 0xDC00 && out.charCodeAt(2) <= 0xDFFF, "fixture code unit 2 is a low surrogate");
 
+// The tail-fold prefix is the honest not-retained note (a bare "…" would
+// masquerade as ordinary output while silently discarding earlier bytes).
+const NOTE = "earlier output not retained — showing the last 8,000 chars\n";
+
 const startsClean = (text, label) => {
   const code = text.charCodeAt(0);
   pass(!(code >= 0xDC00 && code <= 0xDFFF), label + " begins with a lone low surrogate (renders U+FFFD)");
@@ -33,8 +37,8 @@ shell.bodyEnd(shellState, { tool_state: JSON.stringify({ exit_code: 0 }) }, out)
 const shellPre = shellState.body.pre.textContent;
 const shellMore = shellState.body.wrap.querySelector(".tool-output-more pre");
 const shellFull = shellPre + (shellMore ? "\n" + shellMore.textContent : "");
-pass(shellFull.startsWith("…\n"), "shell bodyEnd keeps the elision prefix");
-startsClean(shellFull.slice(2), "shell bodyEnd tail");
+pass(shellFull.startsWith(NOTE), "shell bodyEnd keeps the honest not-retained prefix");
+startsClean(shellFull.slice(NOTE.length), "shell bodyEnd tail");
 pass(!shellFull.includes("😀"), "shell bodyEnd elides the split head bytes");
 
 // ── read_file ──────────────────────────────────────────────────────────────
@@ -49,8 +53,8 @@ read.bodyEnd(readState, { output: out }, out); // post-bodyEnd fold
 const readPre = readState.body.wrap.querySelector(".read-tool-preview").textContent;
 const readMore = readState.body.wrap.querySelector(".read-tool-more pre");
 const readFull = readPre + (readMore ? "\n" + readMore.textContent : "");
-pass(readFull.startsWith("…\n"), "read_file bodyEnd keeps the elision prefix");
-startsClean(readFull.slice(2), "read_file bodyEnd tail");
+pass(readFull.startsWith(NOTE), "read_file bodyEnd keeps the honest not-retained prefix");
+startsClean(readFull.slice(NOTE.length), "read_file bodyEnd tail");
 
 // ── shared helper contract ─────────────────────────────────────────────────
 const { tailSlice } = window.SerfRendererInternal;

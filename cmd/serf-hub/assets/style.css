@@ -2409,6 +2409,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
    tree and screen readers announced "▍" on every chunk. */
 .assistant-message .streaming-tail .streaming-caret {
   color: var(--accent);
+  /* The one soft streaming-cursor breathe the design system allows: same
+     think-breathe keyframe on --pulse-cycle as the thinking spark; the
+     universal prefers-reduced-motion collapse (§1.5) makes it instant. */
+  animation: think-breathe var(--pulse-cycle) infinite;
 }
 
 /* Thinking — the quietest transcript entry (design-system §2.5, §4). A reset

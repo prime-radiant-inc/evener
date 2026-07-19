@@ -36,19 +36,22 @@ pass(!pre.textContent.startsWith("HEAD-MARKER"), "the head scrolls off while str
 // watching while streaming stay visible (the old head-clip snapped the pane
 // back to the oldest bytes).
 shell.bodyEnd(state, { tool_state: JSON.stringify({ exit_code: 0 }) }, marker);
-pass(state.body.pre.textContent.startsWith("…\n"), "bodyEnd prefixes the elision marker");
+pass(state.body.pre.textContent.startsWith("earlier output not retained — showing the last 8,000 chars\n"),
+  "bodyEnd prefixes an HONEST not-retained note (not a bare ellipsis masquerading as ordinary output)");
+pass(!state.body.pre.textContent.startsWith("…\n"), "the bare … prefix is gone — elision is stated, not implied");
 pass(state.body.pre.textContent.endsWith("TAIL-MARKER"), "bodyEnd keeps the LAST 8000 chars (the live tail the user was watching)");
 pass(!state.body.pre.textContent.includes("HEAD-MARKER"), "the oldest bytes are elided at bodyEnd");
 
-// Multi-line >8KB output: the expandable content begins with the elision
-// marker and ends with the FINAL line of the output.
+// Multi-line >8KB output: the expandable content begins with the honest
+// not-retained note and ends with the FINAL line of the output.
 const bigLines = Array.from({ length: 900 }, (_, i) => "line-" + String(i).padStart(4, "0")).join("\n");
 pass(bigLines.length > 8000, "multi-line fixture exceeds the 8000-char budget");
 shell.bodyDelta(state, bigLines);
 shell.bodyEnd(state, { tool_state: JSON.stringify({ exit_code: 0 }) }, bigLines);
 const morePre = state.body.wrap.querySelector(".tool-output-more pre");
 const fullContent = state.body.pre.textContent + (morePre ? "\n" + morePre.textContent : "");
-pass(fullContent.startsWith("…\n"), "expandable content begins with the elision marker");
+pass(fullContent.startsWith("earlier output not retained — showing the last 8,000 chars\n"),
+  "expandable content begins with the honest not-retained note");
 pass(fullContent.endsWith("line-0899"), "expandable content ends with the FINAL line of the output");
 pass(!fullContent.includes("line-0000"), "the oldest lines are elided at bodyEnd");
 pass(!!morePre, "tail-folded output still folds past 5 lines");
@@ -63,7 +66,8 @@ pass(readPre.textContent.length === 8000 && readPre.textContent.endsWith("TAIL-M
   "read streams the live tail past 8000 chars too");
 read.bodyEnd(readState, { output: marker }, marker);
 const readEndPre = readState.body.wrap.querySelector(".read-tool-preview");
-pass(readEndPre.textContent.startsWith("…\n"), "read bodyEnd prefixes the elision marker");
+pass(readEndPre.textContent.startsWith("earlier output not retained — showing the last 8,000 chars\n"),
+  "read bodyEnd prefixes the honest not-retained note");
 pass(readEndPre.textContent.endsWith("TAIL-MARKER"), "read bodyEnd keeps the LAST 8000 chars");
 
 // ── Frame-batched live deltas write the pre ONCE per frame (F4) ──────────

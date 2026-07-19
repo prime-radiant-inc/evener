@@ -87,9 +87,17 @@
   // past the clip budget, keep the LAST max chars (the lines the user was
   // watching while it streamed) prefixed with an elision line, rather than
   // snapping the pane back to the oldest bytes with a head-clip.
+  // The prefix is an HONEST not-retained note (the drop-note idiom from
+  // dropNote/opts.dropped, rendered as a text line since this string lands in
+  // a <pre>): the earlier bytes are GONE, and a bare "…" would masquerade as
+  // ordinary output — the design system distinguishes client-collapsed
+  // (recoverable) from source-dropped (stated plainly).
   function tailFoldOutput(text, max) {
     text = String(text || "");
-    return text.length > max ? "…\n" + tailSlice(text, max) : text;
+    if (text.length <= max) return text;
+    const note = "earlier output not retained — showing the last " +
+      Number(max).toLocaleString("en-US") + " chars";
+    return note + "\n" + tailSlice(text, max);
   }
 
   function outputPreviewBody(className, outputClassName, el) {
