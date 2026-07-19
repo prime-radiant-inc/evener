@@ -44,6 +44,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   // turn to a USER_INPUT event.
   let listCalls = 0;
   let lastCursorSeen = null;
+  let taskFetches = 0;
   window.SerfAppwire = {
     listTurns: (sessionId, cursor, limit) => {
       listCalls++;
@@ -51,6 +52,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
       return Promise.resolve({ turns: [{ text: "OLD-USER-MESSAGE", n: 1 }], nextCursor: "" });
     },
     eventsFromTurns: (turns) => turns.map((t) => ["USER_INPUT", { text: t.text, turn: t.n }]),
+    tasks: () => { taskFetches++; return Promise.resolve([]); },
   };
   R.sessionId = "01TEST";
 
@@ -191,6 +193,57 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(form.dataset.responseMode === "ask", "live ask flow still activates composer ask mode after a staging replay");
   pass(!!form.querySelector("[data-ask-response-dock]"), "live ask dock still renders after a staging replay");
 
+  // ── F1(e): a completed delegate spawn in a prepended page must not rewrite
+  // the LIVE breadcrumb rollup chip. The replay path TOOL_CALL_END →
+  // finalizeToolCall → upsertJobRef → refreshSubagentModule →
+  // updateBreadcrumbRollup reads rows from this.conversation (the STAGING div
+  // during replay) but paints the document-level [data-subagent-rollup] chip —
+  // a staging page with no failed rows would hide the live failure chip.
+  const crumb = window.document.createElement("nav");
+  crumb.setAttribute("aria-label", "breadcrumb");
+  crumb.innerHTML = '<span data-subagent-rollup class="bad">✕ 1 child failed</span>';
+  window.document.body.appendChild(crumb);
+  const liveChip = crumb.querySelector("[data-subagent-rollup]");
+  liveChip.hidden = false;
+  window.SerfAppwire.eventsFromTurns = () => [
+    ["TOOL_CALL_START", { call_id: "hdel1", tool_name: "delegate", arguments_json: JSON.stringify({ task: "historical subagent" }) }],
+    ["TOOL_CALL_END", { call_id: "hdel1", tool_name: "delegate", output: JSON.stringify({ job_id: "job-hist-1", type: "delegate", status: "completed" }) }],
+  ];
+  R.prependOlderTurns([{ id: "hist-t4" }]);
+  pass(liveChip.hidden === false, "live breadcrumb rollup chip still visible after prepend with a completed delegate spawn");
+  pass(liveChip.textContent === "✕ 1 child failed", "live breadcrumb rollup chip text untouched (got " + JSON.stringify(liveChip.textContent) + ")");
+  pass(liveChip.classList.contains("bad"), "live breadcrumb rollup chip keeps its failure styling");
+  // The historical spawn still renders into the prepended history itself —
+  // only the document-level chip side effect is suppressed.
+  pass(!!conv.querySelector(".sub-r"), "historical delegate spawn still renders a subagent row into the prepended history");
+
+  // ── F1(f): a historical task_list card must not kick the live task badge.
+  // appendTaskListSystemLine ends with refreshTaskBadgeSoon → requestTasks:
+  // the generation bump + /tasks fetch is pure waste during staging replay
+  // (requestTasks' conversation-identity guard drops the apply after the
+  // restore anyway), so the guard must no-op before the fetch.
+  const taskFetchesBefore = taskFetches;
+  window.SerfAppwire.eventsFromTurns = () => [
+    ["TOOL_CALL_START", { call_id: "htask1", tool_name: "task_list", arguments_json: JSON.stringify({ action: "update", updates: [{ id: 7, status: "done" }] }) }],
+    ["TOOL_CALL_END", { call_id: "htask1", tool_name: "task_list", output: "ok" }],
+  ];
+  R.prependOlderTurns([{ id: "hist-t5" }]);
+  pass(taskFetches === taskFetchesBefore, "historical task_list card does not fetch /tasks during staging replay (got " + (taskFetches - taskFetchesBefore) + " fetches)");
+
+  // ── Static guard scan: every document-level helper reachable from the
+  // replayable applyEvent kinds must no-op on this.stagingReplay. (A full
+  // reachability scan of renderer.js would be too fragile; this pins the
+  // known reachable set by name.)
+  const rendererSrc = require("./load-renderer").rendererSources().join("\n");
+  for (const fn of ["updateBreadcrumbRollup", "refreshTaskBadgeSoon", "renderNeedsYouDock", "setComposerAskMode", "renderPendingAskDock", "clearPendingAskDock", "focusComposer"]) {
+    const def = rendererSrc.match(new RegExp(fn + "\\([^)]*\\) \\{"));
+    pass(!!def, "static guard scan: " + fn + " definition found");
+    if (def) {
+      const head = rendererSrc.slice(def.index, def.index + 700);
+      pass(/this\.stagingReplay/.test(head), "static guard scan: " + fn + " no-ops on stagingReplay before touching document-level chrome");
+    }
+  }
+
   // ── F2: a scroll-triggered prepend must not hide the live new-content pill.
   // The staging render runs the normal per-event settle: the detached staging
   // div measures "near bottom", so settleFrame → scrollToBottom →
@@ -202,13 +255,29 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   const jumpTarget = conv.querySelector(".assistant-message");
   R.newContentJumpTarget = jumpTarget;
   R.newContentCountTimer = setTimeout(() => {}, 60000);
+  const killedTimer = R.newContentCountTimer;
   window.SerfAppwire.eventsFromTurns = () => [["USER_INPUT", { text: "HIST-USER-3", turn: 4 }]];
   R.prependOlderTurns([{ id: "hist-t9" }]);
   pass(R.newContentCount === 3, "pill count preserved across prepend (got " + R.newContentCount + ")");
   pass(R.newContentPaintedCount === 3, "pill painted count preserved across prepend (got " + R.newContentPaintedCount + ")");
   pass(R.newContentJumpTarget === jumpTarget, "pill jump target preserved across prepend");
   pass(R.newContentCountTimer !== null, "pill debounce timer survives prepend");
+  pass(R.newContentCountTimer !== killedTimer, "event-producing prepend re-arms the pill debounce timer (the settle killed the original)");
   clearTimeout(R.newContentCountTimer);
+  R.newContentCountTimer = null;
+
+  // ── F2(b): a ZERO-event prepend must leave a pending pill timer completely
+  // untouched. Nothing entered the settle, so nothing killed the original
+  // timeout — the old unconditional re-arm orphaned it into a double-fire.
+  R.newContentCount = 2;
+  R.newContentPaintedCount = 2;
+  const pendingTimer = setTimeout(() => {}, 60000);
+  R.newContentCountTimer = pendingTimer;
+  window.SerfAppwire.eventsFromTurns = () => [];
+  R.prependOlderTurns([{ id: "hist-empty" }]);
+  pass(R.newContentCountTimer === pendingTimer, "zero-event prepend leaves the pending pill timer untouched (no orphaned double-fire)");
+  pass(R.newContentCount === 2, "zero-event prepend preserves the pill count");
+  clearTimeout(pendingTimer);
   R.newContentCountTimer = null;
 
   if (failures.length) { failures.forEach((f) => console.log(f)); process.exit(1); }

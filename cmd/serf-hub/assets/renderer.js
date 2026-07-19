@@ -1245,6 +1245,20 @@
     // applyEvent is the event switch proper, split from the sync wrapper so the
     // frame-batched live path (flush) can apply N events and settle once.
     applyEvent(kind, data) {
+      // Staging-replay reachability (prependOlderTurns sets this.stagingReplay):
+      // the replay only ever feeds the kinds eventsFromTurns emits —
+      // USER_INPUT, STEERING_INJECTED, SYSTEM_MESSAGE, SYSTEM_LINE,
+      // ASSISTANT_TEXT_START/DELTA/END, TOOL_CALL_START/OUTPUT_DELTA/END,
+      // REASONING_START/DELTA, ERROR. The document-level side effects in the
+      // OTHER cases (THREAD_STATUS_CHANGED's dispatchEvent/htmx.trigger,
+      // TURN_STARTED/TURN_COMPLETED's htmx.trigger, THREAD_TITLE_CHANGED's
+      // header rewrite, SESSION_START's composer/queue chrome, QUEUE_CHANGED's
+      // queue preview, TASKS_CHANGED's badge + tasks fetch) therefore cannot
+      // fire under stagingReplay and need no guard. The document-level helpers
+      // reachable from the replayable kinds no-op on this.stagingReplay
+      // instead: updateBreadcrumbRollup, refreshTaskBadgeSoon,
+      // renderNeedsYouDock, setComposerAskMode, renderPendingAskDock,
+      // clearPendingAskDock, focusComposer.
       // Every frame from the daemon (incl. reasoning) resets the liveness clock.
       this.lastFrameAt = Date.now();
       switch (kind) {
@@ -3867,6 +3881,11 @@
     // rollup is composed honestly from the worst state we can actually observe
     // here — this session's direct children.
     updateBreadcrumbRollup() {
+      // Document-level: paints the LIVE breadcrumb's rollup chip
+      // ([data-subagent-rollup]) from this.conversation's rows. During staging
+      // replay this.conversation is the detached history div, so its rows
+      // describe the prepended page, not the live session — suppress.
+      if (this.stagingReplay) return;
       const chip = document.querySelector("[data-subagent-rollup]");
       if (!chip) return;
       let failed = 0, unknown = 0;
@@ -4781,6 +4800,11 @@
     },
 
     refreshTaskBadgeSoon() {
+      // Staging replay: historical task cards must not kick the live badge.
+      // The generation bump + /tasks fetch would be wasted anyway —
+      // requestTasks' conversation-identity guard drops the apply once the
+      // live conversation is restored — so no-op here instead.
+      if (this.stagingReplay) return;
       if (!this.sessionId) return;
       this.requestTasks();
     },
@@ -5058,8 +5082,10 @@
       // docks, focus) no-op while this is set so a historical ask_user cannot
       // hijack the LIVE composer.
       this.stagingReplay = true;
+      let replayedEvents = 0;
       try {
         for (const [kind, data] of window.SerfAppwire.eventsFromTurns(turns)) {
+          replayedEvents++;
           this.handleData(kind, data);
         }
       } finally {
@@ -5068,8 +5094,12 @@
         // The replay's own settle (stick → scrollToBottom →
         // clearNewContentPill) kills the live pill debounce timer's underlying
         // timeout; the restored handle alone would never fire. Re-arm it so
-        // the pending count commit still lands.
-        if (saved.newContentCountTimer != null) {
+        // the pending count commit still lands — but only when the replay
+        // actually applied events: a zero-event page never entered the settle,
+        // so the restored timer is still pending and re-arming would orphan it
+        // into a (idempotent but wrong) double-fire.
+        if (replayedEvents > 0 && saved.newContentCountTimer != null) {
+          if (this.newContentCountTimer) clearTimeout(this.newContentCountTimer);
           this.newContentCountTimer = null;
           this.scheduleNewContentCountPaint();
         }
