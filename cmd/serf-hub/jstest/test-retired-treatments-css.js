@@ -14,6 +14,6 @@ assert(!/text-transform:\s*uppercase/.test(css), "no ALL-CAPS label treatment an
 const literals = css.match(/border-radius:\s*[^v][^;]*/g) || [];
 const bad = literals.filter((l) => !/border-radius:\s*var\(--radius-(md|pill)\)/.test(l)
   && !/^border-radius:\s*0(\s+0)*\s*$/.test(l)
-  && !/30%/.test(l));
+  && !/^border-radius:\s*30%\s*$/.test(l));
 assert(bad.length === 0, "literal border-radius values snapped to tokens: " + JSON.stringify(bad));
 console.log("ok retired treatments");

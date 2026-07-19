@@ -10,7 +10,7 @@ const keepPatterns = [
   /\.subs\[data-stale="true"\] \{[^}]*border-left-color:\s*var\(--ink-4\)/,
   /\.task-card-meter-fill \{[^}]*background:\s*var\(--ink-4\)/,
   /\.details-meter-fill \{[^}]*background:\s*var\(--ink-4\)/,
-  // 10px radio-dot border (border-radius: 50% in the post-Task-7 sheet).
+  // 10px radio-dot border (radius snapped to var(--radius-pill) in Task 10).
   /width:\s*10px;[^}]*height:\s*10px;[^}]*border:\s*1px solid var\(--ink-4\)/,
   // Phone sheet grab-handle (36px × 4px pill inside the phone media band).
   /width:\s*36px;[^}]*height:\s*4px;[^}]*background:\s*var\(--ink-4\)/,
