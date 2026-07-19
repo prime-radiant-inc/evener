@@ -207,15 +207,24 @@
   }
 
   // --- Row menu (⋯ popover) ----------------------------------------------------
-  var openMenuEl = null, menuAnchor = null;
+  // Desktop opens an anchored mini-popover. On phone viewports
+  // (matchMedia "(max-width: 767px)", checked at open time) the menu instead
+  // opens as a modal: a full-width bottom sheet (.sb-menu-modal) inside a
+  // fixed tap-to-dismiss scrim (.sb-menu-scrim), with SerfFocusTrap keeping
+  // Tab traversal and screen-reader scope inside the sheet (#27). Every close
+  // path funnels through closeMenu, which tears down menu, scrim, and trap.
+  var openMenuEl = null, menuAnchor = null, openMenuScrim = null, openMenuTrap = null;
   function closeMenu() {
+    if (openMenuTrap) { window.SerfFocusTrap.deactivate(openMenuTrap); openMenuTrap = null; }
+    if (openMenuScrim) { openMenuScrim.remove(); openMenuScrim = null; }
     if (openMenuEl) { openMenuEl.remove(); openMenuEl = null; menuAnchor = null; document.removeEventListener("click", onDocClick, true); }
   }
   function onDocClick(e) { if (openMenuEl && !openMenuEl.contains(e.target) && e.target !== menuAnchor) closeMenu(); }
   function openMenu(anchor, items) {
     closeMenu();
+    var mobile = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
     var menu = document.createElement("div");
-    menu.className = "sb-menu";
+    menu.className = mobile ? "sb-menu sb-menu-modal" : "sb-menu";
     menu.setAttribute("role", "menu");
     items.forEach(function (it) {
       if (it.hidden) return;
@@ -224,15 +233,32 @@
       b.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); closeMenu(); it.run(); });
       menu.appendChild(b);
     });
-    document.body.appendChild(menu);
-    var r = anchor.getBoundingClientRect();
-    menu.style.position = "absolute";
-    menu.style.top = (r.bottom + window.scrollY + 2) + "px";
-    menu.style.left = (r.left + window.scrollX) + "px";
+    if (mobile) {
+      // The sheet sits inside the scrim; a tap on the scrim lands outside the
+      // menu, so the existing onDocClick outside-click path dismisses it.
+      var scrim = document.createElement("div");
+      scrim.className = "sb-menu-scrim";
+      scrim.appendChild(menu);
+      document.body.appendChild(scrim);
+      openMenuScrim = scrim;
+    } else {
+      document.body.appendChild(menu);
+      var r = anchor.getBoundingClientRect();
+      menu.style.position = "absolute";
+      menu.style.top = (r.bottom + window.scrollY + 2) + "px";
+      menu.style.left = (r.left + window.scrollX) + "px";
+    }
     openMenuEl = menu; menuAnchor = anchor;
     setTimeout(function () { document.addEventListener("click", onDocClick, true); }, 0);
     document.addEventListener("keydown", onMenuKeydown);
-    var first = menu.querySelector(".sb-menu-item"); if (first) first.focus();
+    if (mobile && window.SerfFocusTrap) {
+      // Trap on the scrim (the sheet's body-level parent): siblings go inert,
+      // Tab cycles inside, focus lands on the first item, and deactivate
+      // restores focus to the anchor.
+      openMenuTrap = window.SerfFocusTrap.activate(openMenuScrim, anchor);
+    } else {
+      var first = menu.querySelector(".sb-menu-item"); if (first) first.focus();
+    }
   }
   function onMenuKeydown(e) {
     if (!openMenuEl) { document.removeEventListener("keydown", onMenuKeydown); return; }

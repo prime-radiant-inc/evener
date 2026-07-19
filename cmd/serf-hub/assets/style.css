@@ -5734,6 +5734,43 @@ body.doc-page {
 .sb-menu { z-index: 60; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-1); box-shadow: 0 4px 16px rgba(0,0,0,.35); min-width: 160px; }
 .sb-menu-item { display: block; width: 100%; text-align: left; padding: var(--space-2) var(--space-3); background: transparent; border: none; color: var(--text); font-size: var(--text-sm); min-height: 24px; }
 .sb-menu-item:hover, .sb-menu-item:focus { background: var(--surface-secondary); }
+/* Mobile ⋯ menu modal (#27): below 768px sidebar.js opens the row/project ⋯
+   menu as a full-width bottom sheet on a tap-to-dismiss scrim instead of the
+   anchored mini-popover above. JS gates creation on matchMedia
+   "(max-width: 767px)", so the scrim/sheet only ever exist on phone
+   viewports; the media query below is belt-and-braces so the sheet layout
+   can never leak into a desktop viewport. Scrim fades in like the other
+   overlay scrims (chip-picker, panel). */
+.sb-menu-scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  animation: chip-picker-scrim-in var(--motion-fast) both;
+}
+@media (max-width: 767px) {
+  .sb-menu-modal {
+    width: 100%;
+    min-width: 0;
+    border: none;
+    border-top: 1px solid var(--rule);
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
+    padding: var(--space-2) var(--space-1);
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  /* Touch targets follow the phone --tap-min floor (44px, design §1.8). */
+  .sb-menu-modal .sb-menu-item {
+    min-height: var(--tap-min);
+    display: flex;
+    align-items: center;
+    padding: var(--space-3) var(--space-5);
+    font-size: var(--text-base);
+  }
+}
 .sb-rename-input { width: 100%; font-size: var(--text-base); background: var(--bg); color: var(--text); border: 1px solid var(--accent); border-radius: var(--radius-md); }
 
 /* Sidebar readability floor (design diagnostic WS3, Task 24): row meta on
