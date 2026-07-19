@@ -24,14 +24,16 @@ import (
 // promote params it was asked to relay.
 type promoteRecordingSource struct {
 	*scriptedAppSource
-	gotIndex int
-	calls    int
-	err      error
+	gotIndex      int
+	gotExpectedID string
+	calls         int
+	err           error
 }
 
 func (s *promoteRecordingSource) PromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) error {
 	s.calls++
 	s.gotIndex = params.Index
+	s.gotExpectedID = params.ExpectedEntryID
 	return s.err
 }
 
@@ -71,12 +73,15 @@ func postPromote(web *WebServer, route, body string) *httptest.ResponseRecorder 
 
 func TestWebPromoteQueuedRelaysIndex(t *testing.T) {
 	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":1}`)
+	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":1,"entryId":"q_7_abc"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	if source.calls != 1 || source.gotIndex != 1 {
 		t.Fatalf("promote relay calls=%d index=%d, want 1/1", source.calls, source.gotIndex)
+	}
+	if source.gotExpectedID != "q_7_abc" {
+		t.Fatalf("promote relay expectedEntryId=%q, want q_7_abc", source.gotExpectedID)
 	}
 }
 
@@ -149,11 +154,14 @@ func TestHubRPCPromoteQueuedAsSteerRelays(t *testing.T) {
 		return derr
 	}
 
-	if err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{Ref: "remote:thread-1", Index: 2}); err != nil {
+	if err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{Ref: "remote:thread-1", Index: 2, ExpectedEntryID: "q_9_def"}); err != nil {
 		t.Fatalf("dispatch promote: %v", err)
 	}
 	if source.calls != 1 || source.gotIndex != 2 {
 		t.Fatalf("promote relay calls=%d index=%d, want 1/2", source.calls, source.gotIndex)
+	}
+	if source.gotExpectedID != "q_9_def" {
+		t.Fatalf("promote relay expectedEntryId=%q, want q_9_def", source.gotExpectedID)
 	}
 
 	err := dispatch(appwire.TurnPromoteQueuedAsSteerParams{Ref: "remote:thread-1", Index: -1})

@@ -523,9 +523,11 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 // (issue #22): removes the queued follow-up at params.Index and injects it
 // as user-sourced steering into the in-flight turn. A negative index is an
 // InvalidParams rejection; an idle or closed session is a Conflict (the
-// queued message stays a normal follow-up — nothing is silently dropped);
-// a session-side out-of-range (the queue shifted between the client's
-// preview snapshot and the promote) propagates the session's error.
+// queued message stays a normal follow-up — nothing is silently dropped).
+// Session-side rejections are all queue-state conflicts — the index fell
+// out of range or the expected entry id no longer matches because the queue
+// shifted under the client's snapshot (review F1) — so they map to Conflict
+// and the client can re-sync its preview (review F2).
 func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
 	if params.Index < 0 {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
@@ -544,8 +546,8 @@ func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params app
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
 	}
-	if err := fn(params.Index); err != nil {
-		return appwire.EmptyResponse{}, err
+	if err := fn(params.Index, params.ExpectedEntryID); err != nil {
+		return appwire.EmptyResponse{}, appwire.Conflict(err.Error())
 	}
 	return appwire.EmptyResponse{}, nil
 }
@@ -715,6 +717,7 @@ func (s *Server) appThread() appwire.Thread {
 	dfn := s.detailedStatusFn
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
+	qifn := s.queueIDsFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	metafn := s.sessionMetaFn
@@ -753,6 +756,11 @@ func (s *Server) appThread() appwire.Thread {
 		if preview := qpfn(); len(preview) > 0 {
 			queue.Preview = append([]string(nil), preview...)
 			queue.Depth = len(preview)
+		}
+	}
+	if qifn != nil && queue.Depth > 0 {
+		if ids := qifn(); len(ids) == queue.Depth {
+			queue.IDs = append([]string(nil), ids...)
 		}
 	}
 	// Fall back to depthFn when preview isn't wired (some tests stub only

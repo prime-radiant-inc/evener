@@ -45,7 +45,7 @@ func TestSession_PromoteQueuedAsSteer_RemovesOnlyThatEntry(t *testing.T) {
 	}
 	markProcessing(sess)
 
-	if err := sess.PromoteQueuedAsSteer(context.Background(), 1); err != nil {
+	if err := sess.PromoteQueuedAsSteer(context.Background(), 1, ""); err != nil {
 		t.Fatalf("PromoteQueuedAsSteer: %v", err)
 	}
 
@@ -73,7 +73,7 @@ func TestSession_PromoteQueuedAsSteer_MarksUserSource(t *testing.T) {
 	if err := s.Enqueue(context.Background(), "human queued text"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if err := s.PromoteQueuedAsSteer(context.Background(), 0); err != nil {
+	if err := s.PromoteQueuedAsSteer(context.Background(), 0, ""); err != nil {
 		t.Fatalf("PromoteQueuedAsSteer: %v", err)
 	}
 	got := s.drainSteeringForTurn()
@@ -96,7 +96,7 @@ func TestSession_PromoteQueuedAsSteer_RejectsIdleWithoutMutatingQueue(t *testing
 	}
 	// No turn in flight: the promote must fail honestly and leave the queued
 	// message in place so it is still processed as a normal follow-up.
-	err := sess.PromoteQueuedAsSteer(context.Background(), 0)
+	err := sess.PromoteQueuedAsSteer(context.Background(), 0, "")
 	if err == nil || !strings.Contains(err.Error(), "no active turn") {
 		t.Fatalf("PromoteQueuedAsSteer idle err=%v, want no active turn", err)
 	}
@@ -119,7 +119,7 @@ func TestSession_PromoteQueuedAsSteer_IndexOutOfRange(t *testing.T) {
 	}
 	markProcessing(sess)
 	for _, idx := range []int{-1, 1, 42} {
-		err := sess.PromoteQueuedAsSteer(context.Background(), idx)
+		err := sess.PromoteQueuedAsSteer(context.Background(), idx, "")
 		if err == nil || !strings.Contains(err.Error(), "out of range") {
 			t.Fatalf("PromoteQueuedAsSteer(%d) err=%v, want out of range", idx, err)
 		}
@@ -139,7 +139,7 @@ func TestSession_PromoteQueuedAsSteer_EmitsQueueChanged(t *testing.T) {
 		t.Fatalf("Enqueue bravo: %v", err)
 	}
 	markProcessing(sess)
-	if err := sess.PromoteQueuedAsSteer(context.Background(), 0); err != nil {
+	if err := sess.PromoteQueuedAsSteer(context.Background(), 0, ""); err != nil {
 		t.Fatalf("PromoteQueuedAsSteer: %v", err)
 	}
 	sess.Close()
@@ -159,6 +159,84 @@ func TestSession_PromoteQueuedAsSteer_EmitsQueueChanged(t *testing.T) {
 	}
 }
 
+// TestSession_PromoteQueuedAsSteer_ExpectedIDMismatch covers review F1: the
+// queue head can be consumed while a turn is in flight, so an index that was
+// valid when the UI snapshotted the preview may now point at a DIFFERENT
+// queued message. The promote must refuse — leaving the queue untouched —
+// when the caller's expected entry id no longer matches the entry at index.
+func TestSession_PromoteQueuedAsSteer_ExpectedIDMismatch(t *testing.T) {
+	t.Parallel()
+	sess := newPromoteTestSession(t)
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	if err := sess.Enqueue(context.Background(), "bravo"); err != nil {
+		t.Fatalf("Enqueue bravo: %v", err)
+	}
+	ids := sess.QueueIDs()
+	if len(ids) != 2 || ids[0] == "" || ids[1] == "" || ids[0] == ids[1] {
+		t.Fatalf("QueueIDs = %#v, want two distinct non-empty ids", ids)
+	}
+	markProcessing(sess)
+
+	// Simulate the shift: the head (alpha) is consumed into a fresh user
+	// turn, so index 0 now holds bravo. A promote carrying alpha's id must
+	// fail honestly instead of steering bravo into the running turn.
+	_ = sess.popQueueHead()
+	err := sess.PromoteQueuedAsSteer(context.Background(), 0, ids[0])
+	if err == nil || !strings.Contains(err.Error(), "no longer matches") {
+		t.Fatalf("PromoteQueuedAsSteer shifted err=%v, want mismatch", err)
+	}
+	if preview := sess.QueuePreview(); len(preview) != 1 || preview[0] != "bravo" {
+		t.Fatalf("QueuePreview after mismatch: got %#v, want [bravo]", preview)
+	}
+	sess.mu.Lock()
+	steeringDepth := len(sess.steeringQueue)
+	sess.mu.Unlock()
+	if steeringDepth != 0 {
+		t.Fatalf("steeringQueue after mismatch: got %d, want 0", steeringDepth)
+	}
+
+	// The correct id still promotes.
+	if err := sess.PromoteQueuedAsSteer(context.Background(), 0, ids[1]); err != nil {
+		t.Fatalf("PromoteQueuedAsSteer with correct id: %v", err)
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after promote: got %d, want 0", depth)
+	}
+}
+
+func TestSession_PromoteQueuedAsSteer_QueueChangedCarriesIDs(t *testing.T) {
+	t.Parallel()
+	sess := newPromoteTestSession(t)
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	markProcessing(sess)
+	ids := sess.QueueIDs()
+	if err := sess.PromoteQueuedAsSteer(context.Background(), 0, ids[0]); err != nil {
+		t.Fatalf("PromoteQueuedAsSteer: %v", err)
+	}
+	sess.Close()
+	var last *events.QueueChangedData
+	for ev := range sess.Events() {
+		if d, ok := ev.Data.(events.QueueChangedData); ok {
+			d := d
+			last = &d
+		}
+	}
+	if last == nil {
+		t.Fatal("expected at least one QueueChanged event")
+	}
+	if len(last.IDs) != len(last.Preview) {
+		t.Fatalf("QueueChanged IDs=%#v misaligned with Preview=%#v", last.IDs, last.Preview)
+	}
+	// The enqueue-time event carried the minted id.
+	if len(last.IDs) != 0 {
+		t.Fatalf("final QueueChanged IDs=%#v, want empty after promote", last.IDs)
+	}
+}
+
 func TestSession_PromoteQueuedAsSteer_ClosedSession(t *testing.T) {
 	t.Parallel()
 	sess := newPromoteTestSession(t)
@@ -166,7 +244,7 @@ func TestSession_PromoteQueuedAsSteer_ClosedSession(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 	sess.Close()
-	err := sess.PromoteQueuedAsSteer(context.Background(), 0)
+	err := sess.PromoteQueuedAsSteer(context.Background(), 0, "")
 	if err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("PromoteQueuedAsSteer closed err=%v, want closed", err)
 	}

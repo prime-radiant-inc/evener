@@ -539,13 +539,17 @@
 
   // promoteQueuedAsSteer promotes ONE queued follow-up (by FIFO index, as
   // shown in the queue preview) to a user-sourced steering injection on the
-  // in-flight turn (issue #22), leaving the rest of the queue in place. No
-  // optimistic placeholder: the daemon's thread/queueChanged re-renders the
-  // preview and serf/steering/injected (source:"user") echoes the message.
-  function promoteQueuedAsSteer(sessionId, index) {
+  // in-flight turn (issue #22), leaving the rest of the queue in place. The
+  // queue-entry id from the client's snapshot rides along: the daemon
+  // rejects with Conflict when the queue shifted under us (review F1), so a
+  // stale row can never steer the wrong message. No optimistic placeholder:
+  // the daemon's thread/queueChanged re-renders the preview and
+  // serf/steering/injected (source:"user") echoes the message.
+  function promoteQueuedAsSteer(sessionId, index, entryId) {
     return request(METHOD.turnPromoteQueuedAsSteer, {
       ref: refForSession(sessionId),
       index,
+      expectedEntryId: entryId || "",
     });
   }
 
@@ -801,6 +805,7 @@
     events.push(["QUEUE_CHANGED", {
       depth: typeof queue.depth === "number" ? queue.depth : (Array.isArray(queue.preview) ? queue.preview.length : 0),
       preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
+      ids: Array.isArray(queue.ids) ? queue.ids.slice() : [],
     }]);
     events.push.apply(events, eventsFromTurns(thread.turns));
     return events;
@@ -917,6 +922,7 @@
       return [["QUEUE_CHANGED", {
         depth: typeof q.depth === "number" ? q.depth : (Array.isArray(q.preview) ? q.preview.length : 0),
         preview: Array.isArray(q.preview) ? q.preview.slice() : [],
+        ids: Array.isArray(q.ids) ? q.ids.slice() : [],
       }]];
     }
     if (method === "serf/task/updated") {

@@ -1027,6 +1027,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ref` | `string` |  |  |
 | `index` | `int` |  |  |
+| `expectedEntryId` | `string` | yes |  |
 
 
 ### `TurnQueueParams`

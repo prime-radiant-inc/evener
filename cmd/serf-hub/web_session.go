@@ -336,8 +336,9 @@ func (s *WebServer) handlePromoteQueued(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := source.PromoteQueuedAsSteer(r.Context(), appwire.TurnPromoteQueuedAsSteerParams{
-		Ref:   ref,
-		Index: body.Index,
+		Ref:             ref,
+		Index:           body.Index,
+		ExpectedEntryID: body.EntryID,
 	}); err != nil {
 		writeSessionActionError(w, r, err)
 		return

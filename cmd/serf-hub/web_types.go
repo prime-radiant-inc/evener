@@ -263,10 +263,14 @@ type drainAsSteerRequest struct {
 // promoteQueuedRequest is the JSON body for POST /s/<id>/promote-queued
 // (issue #22). Index selects one entry of the daemon's FIFO input queue —
 // matching the row position in the web queue preview — to promote into the
-// in-flight turn as user-sourced steering. The daemon rejects the call
-// (Conflict) when no turn is in flight or the index no longer resolves.
+// in-flight turn as user-sourced steering. EntryID carries the queue-entry
+// id from the client's queue snapshot; the daemon rejects the call
+// (Conflict) when no turn is in flight, the index no longer resolves, or
+// the queue shifted so the id no longer matches the entry at index
+// (review F1).
 type promoteQueuedRequest struct {
-	Index int `json:"index"`
+	Index   int    `json:"index"`
+	EntryID string `json:"entryId,omitempty"`
 }
 
 type forkRequest struct {

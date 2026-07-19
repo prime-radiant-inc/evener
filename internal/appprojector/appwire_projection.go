@@ -635,7 +635,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
-			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
+			Queue: appwire.QueueState{
+				Depth:   data.Depth,
+				Preview: append([]string(nil), data.Preview...),
+				IDs:     append([]string(nil), data.IDs...),
+			},
 		})}
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()

@@ -170,8 +170,9 @@ type Server struct {
 	goalStatusFn                 func() (status string, iterations int, ok bool)
 	drainSteerFunc               func() error
 	drainSteerInputFunc          func(string, []ImageAttachment) error
-	promoteSteerFunc             func(int) error
+	promoteSteerFunc             func(int, string) error
 	queueDepthFn                 func() int
+	queueIDsFn                   func() []string
 	queuePreviewFn               func() []string
 	compactFunc                  func(context.Context) error
 	clearFunc                    func(context.Context) error
@@ -411,8 +412,10 @@ func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment)
 // turn/promoteQueuedAsSteer (issue #22). The callback should remove the
 // queued message at the given FIFO index and inject it as a user-sourced
 // STEERING message into the in-flight turn, leaving the rest of the queue
-// untouched.
-func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int) error) {
+// untouched. A non-empty expectedID must match the queue-entry id minted at
+// enqueue time so a queue that shifted under the client's snapshot is
+// rejected rather than promoting the wrong message (review F1).
+func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int, string) error) {
 	s.mu.Lock()
 	s.promoteSteerFunc = fn
 	s.mu.Unlock()
@@ -433,6 +436,16 @@ func (s *Server) SetQueueDepthFunc(fn func() int) {
 func (s *Server) SetQueuePreviewFunc(fn func() []string) {
 	s.mu.Lock()
 	s.queuePreviewFn = fn
+	s.mu.Unlock()
+}
+
+// SetQueueIDsFunc sets a callback returning the stable per-entry ids of the
+// queued user messages in FIFO order (aligned with QueuePreview). Used by
+// appwire ReadThread to populate QueueState.IDs so a promote request can
+// carry the expected entry identity (review F1, issue #22).
+func (s *Server) SetQueueIDsFunc(fn func() []string) {
+	s.mu.Lock()
+	s.queueIDsFn = fn
 	s.mu.Unlock()
 }
 

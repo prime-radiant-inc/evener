@@ -32,7 +32,7 @@ func newPromoteTestServer(t *testing.T, processing bool) (*Server, *int) {
 	}
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: state})
 	called := 0
-	srv.SetPromoteQueuedAsSteerFunc(func(index int) error {
+	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
 		called++
 		return nil
 	})
@@ -52,18 +52,23 @@ func TestServerAppWireTurnPromoteQueuedAsSteerDispatchesIndex(t *testing.T) {
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	gotIndex := -1
-	srv.SetPromoteQueuedAsSteerFunc(func(index int) error {
+	var gotExpectedID string
+	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
 		gotIndex = index
+		gotExpectedID = expectedID
 		return nil
 	})
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", Index: 1})
+	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", Index: 1, ExpectedEntryID: "q_1_abc"})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}
 	if gotIndex != 1 {
 		t.Fatalf("promote callback index=%d, want 1", gotIndex)
+	}
+	if gotExpectedID != "q_1_abc" {
+		t.Fatalf("promote callback expectedID=%q, want q_1_abc", gotExpectedID)
 	}
 }
 
@@ -112,18 +117,25 @@ func TestServerAppWireTurnPromoteQueuedAsSteerUnavailableWithoutFunc(t *testing.
 	}
 }
 
+// TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError pins
+// review F2: session-side rejections (queue shifted → index out of range or
+// expected id mismatch) surface as Conflict so the client can re-sync its
+// preview instead of believing the wrong message was promoted.
 func TestServerAppWireTurnPromoteQueuedAsSteerPropagatesSessionError(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int) error {
+	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
 		return errors.New("promote: queue index 3 out of range (depth 1)")
 	})
 	conn := srv.AppServer().NewConnection("test")
 	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", Index: 3})
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error, got %v", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("error=%+v, want Conflict", resp.Error.Error)
 	}
 }
 
@@ -163,12 +175,46 @@ func TestServerAppWireTurnPromoteQueuedAsSteerThroughSession(t *testing.T) {
 	srv.SetAppIdentity("local", sess.ID())
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: sess.ID(), State: "active"})
-	srv.SetPromoteQueuedAsSteerFunc(func(index int) error {
-		return sess.PromoteQueuedAsSteer(context.Background(), index)
+	srv.SetPromoteQueuedAsSteerFunc(func(index int, expectedID string) error {
+		return sess.PromoteQueuedAsSteer(context.Background(), index, expectedID)
 	})
+	srv.SetQueuePreviewFunc(sess.QueuePreview)
+	srv.SetQueueIDsFunc(sess.QueueIDs)
 
 	conn := srv.AppServer().NewConnection("test")
-	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:" + sess.ID(), Index: 0})
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+
+	// The thread snapshot must carry the entry ids the UI needs to send back.
+	readResp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(9), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:" + sess.ID()}))
+	if readResp.Kind() != appwire.MessageResponse {
+		t.Fatalf("thread/read: %v", readResp.Kind())
+	}
+	read, ok := readResp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("thread/read result type=%T", readResp.Response.Result)
+	}
+	ids := read.Thread.Serf.Queue.IDs
+	if len(ids) != 2 || ids[0] == "" || ids[1] == "" {
+		t.Fatalf("thread queue IDs = %#v, want two non-empty ids", ids)
+	}
+
+	// Review F1: a promote naming the WRONG entry id (a stale snapshot) is a
+	// Conflict and leaves the queue fully intact — nothing is steered.
+	mismatch := promoteRPC(conn, 3, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[1]})
+	if mismatch.Kind() != appwire.MessageError {
+		t.Fatalf("mismatch promote: expected error, got %v", mismatch.Kind())
+	}
+	if mismatch.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("mismatch error=%+v, want Conflict", mismatch.Error.Error)
+	}
+	if preview := sess.QueuePreview(); len(preview) != 2 {
+		t.Fatalf("QueuePreview after mismatch: got %#v, want both entries intact", preview)
+	}
+	if steering := sess.SteeringQueueSnapshot(); len(steering) != 0 {
+		t.Fatalf("steering queue after mismatch: got %+v, want empty", steering)
+	}
+
+	resp := promoteRPC(conn, 2, appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:" + sess.ID(), Index: 0, ExpectedEntryID: ids[0]})
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
 	}

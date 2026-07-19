@@ -79,14 +79,14 @@ window.SerfRenderer.init(conv);
 const list = window.document.querySelector("[data-queue-list]");
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-function primeQueue(preview) {
+function primeQueue(preview, ids) {
   window.SerfRenderer.handle("QUEUE_CHANGED", {
-    data: JSON.stringify({ depth: preview.length, preview }),
+    data: JSON.stringify({ depth: preview.length, preview, ids: ids || [] }),
   });
 }
 
 async function testRowsHavePromoteButtons() {
-  primeQueue(["investigate the failing test", "and then verify the regression"]);
+  primeQueue(["investigate the failing test", "and then verify the regression"], ["q_1_aaa", "q_2_bbb"]);
   pass(list.children.length === 2, "expected 2 rows, got " + list.children.length);
   for (let i = 0; i < 2; i++) {
     const btn = list.children[i].querySelector("[data-promote-index]");
@@ -96,7 +96,7 @@ async function testRowsHavePromoteButtons() {
   }
 }
 
-async function testPromotePostsIndex() {
+async function testPromotePostsIndexAndEntryId() {
   fetchLog.length = 0;
   fetchResponseOk = true;
   const btn = list.children[1].querySelector("[data-promote-index]");
@@ -108,10 +108,12 @@ async function testPromotePostsIndex() {
     "expected one /promote-queued call, got " + JSON.stringify(calls));
   const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
   pass(body.index === 1, "expected body.index=1, got " + JSON.stringify(body));
+  pass(body.entryId === "q_2_bbb",
+    "expected body.entryId=q_2_bbb (review F1 identity), got " + JSON.stringify(body));
 
   // No local mirror: the row stays until the daemon's authoritative
   // thread/queueChanged lands with the promoted entry removed.
-  primeQueue(["investigate the failing test"]);
+  primeQueue(["investigate the failing test"], ["q_1_aaa"]);
   pass(list.children.length === 1, "expected 1 row after daemon queueChanged, got " + list.children.length);
   pass(list.children[0].textContent.includes("investigate the failing test"),
     "expected remaining row to be the first message, got " + list.children[0].textContent);
@@ -119,8 +121,23 @@ async function testPromotePostsIndex() {
     "re-rendered row should re-key its promote index to 0");
 }
 
+async function testPromoteUsesFreshIdAfterReRender() {
+  // The row re-rendered with id q_1_aaa at index 0 — a promote must send
+  // THAT id, not a stale one from an earlier snapshot.
+  fetchLog.length = 0;
+  fetchResponseOk = true;
+  const btn = list.children[0].querySelector("[data-promote-index]");
+  btn.click();
+  await wait(20);
+  const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
+  pass(body.index === 0 && body.entryId === "q_1_aaa",
+    "expected promote of re-rendered row to carry its current id, got " + JSON.stringify(body));
+}
+
 async function testPromoteFailureSurfacesBanner() {
-  primeQueue(["still queued"]);
+  // The 409 here is the review-F1 shape: the daemon rejected the promote
+  // because the queue shifted under the preview's snapshot.
+  primeQueue(["still queued"], ["q_3_ccc"]);
   fetchLog.length = 0;
   fetchResponseOk = false;
   const bannersBefore = window.document.querySelectorAll(".banner").length;
@@ -143,7 +160,8 @@ async function testPromoteFailureSurfacesBanner() {
 
 (async () => {
   await testRowsHavePromoteButtons();
-  await testPromotePostsIndex();
+  await testPromotePostsIndexAndEntryId();
+  await testPromoteUsesFreshIdAfterReRender();
   await testPromoteFailureSurfacesBanner();
 
   if (failures.length === 0) {

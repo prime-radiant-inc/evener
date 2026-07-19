@@ -1490,7 +1490,7 @@
             this.renderComposerChips();
             // Reset to empty; the next QUEUE_CHANGED event (cold-load or
             // notification) will fill in authoritative state from the wire.
-            this.queueState = { depth: 0, preview: [] };
+            this.queueState = { depth: 0, preview: [], ids: [] };
             this.renderQueuePreview();
           }
           if (data.capabilities) {
@@ -1506,11 +1506,15 @@
           break;
         case "QUEUE_CHANGED":
           // Authoritative queue state from the daemon (kata r80p). The
-          // depth + preview are stored verbatim; renderQueuePreview reads
-          // straight from this.queueState.
+          // depth + preview + ids are stored verbatim; renderQueuePreview
+          // reads straight from this.queueState. ids is FIFO-aligned with
+          // preview: each entry's daemon-minted queue id, sent back as the
+          // expected identity on promote so a shifted queue is rejected
+          // instead of steering the wrong message (review F1).
           this.queueState = {
             depth: typeof data.depth === "number" ? data.depth : (Array.isArray(data.preview) ? data.preview.length : 0),
             preview: Array.isArray(data.preview) ? data.preview.slice() : [],
+            ids: Array.isArray(data.ids) ? data.ids.slice() : [],
           };
           this.renderQueuePreview();
           break;
@@ -6532,7 +6536,11 @@
         li.appendChild(textEl);
         // Per-message promote (issue #22): pull just this queued follow-up
         // out of the FIFO and inject it as user-sourced steering into the
-        // in-flight turn, leaving the other queued messages in place.
+        // in-flight turn, leaving the other queued messages in place. The
+        // daemon-minted entry id rides along so a queue that shifted under
+        // this preview is rejected instead of steering the wrong message
+        // (review F1).
+        const entryId = (state.ids && state.ids[idx]) || "";
         const promoteBtn = document.createElement("button");
         promoteBtn.type = "button";
         promoteBtn.className = "qp-promote";
@@ -6540,28 +6548,31 @@
         promoteBtn.title = "promote to steering — inject this message into the running turn now";
         promoteBtn.setAttribute("aria-label", "promote queued message " + (idx + 1) + " to steering");
         promoteBtn.textContent = "⇧";
-        promoteBtn.addEventListener("click", () => { this.promoteQueuedMessage(idx); });
+        promoteBtn.addEventListener("click", () => { this.promoteQueuedMessage(idx, entryId); });
         li.appendChild(promoteBtn);
         list.appendChild(li);
       });
     },
 
     // promoteQueuedMessage promotes one queued follow-up to a steering
-    // injection on the in-flight turn (issue #22). There is no local mirror:
-    // on success the daemon emits thread/queueChanged without the promoted
-    // entry and a serf/steering/injected with source:"user", so the preview
-    // and transcript both re-render from authoritative wire data. A failure
+    // injection on the in-flight turn (issue #22). entryId is the
+    // daemon-minted queue-entry id from the preview snapshot; the daemon
+    // rejects with Conflict when it no longer matches the entry at idx
+    // (review F1). There is no local mirror: on success the daemon emits
+    // thread/queueChanged without the promoted entry and a
+    // serf/steering/injected with source:"user", so the preview and
+    // transcript both re-render from authoritative wire data. A failure
     // (turn already ended, queue shifted under the preview) surfaces as an
     // error banner and leaves the queued message in place.
-    async promoteQueuedMessage(idx) {
+    async promoteQueuedMessage(idx, entryId) {
       try {
         if (window.SerfAppwire && typeof window.SerfAppwire.promoteQueuedAsSteer === "function") {
-          await window.SerfAppwire.promoteQueuedAsSteer(this.sessionId, idx);
+          await window.SerfAppwire.promoteQueuedAsSteer(this.sessionId, idx, entryId || "");
         } else {
           const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/promote-queued", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ index: idx }),
+            body: JSON.stringify({ index: idx, entryId: entryId || "" }),
           });
           if (!resp.ok) {
             const detail = (await resp.text()).trim() || ("HTTP " + resp.status);

@@ -289,10 +289,15 @@ type SerfUsage struct {
 // QueueState is the wire representation of a session's per-input queue
 // (kata r80p). Depth is len(Preview) at projection time; Preview entries
 // are FIFO with the head at index 0 and have been truncated to a single
-// line so the UI can render them without further processing.
+// line so the UI can render them without further processing. IDs is
+// FIFO-aligned with Preview: each entry's stable queue-entry id, minted by
+// the daemon at enqueue time. turn/promoteQueuedAsSteer echoes an id back
+// as expectedEntryId so a queue that shifted under the client's snapshot is
+// rejected instead of promoting the wrong message (review F1, issue #22).
 type QueueState struct {
 	Depth   int      `json:"depth,omitempty"`
 	Preview []string `json:"preview,omitempty"`
+	IDs     []string `json:"ids,omitempty"`
 }
 
 // ThreadQueueChangedParams is the params shape for thread/queueChanged
@@ -740,11 +745,17 @@ type TurnDrainAsSteerParams struct {
 // one entry of the session's FIFO input queue (matching the position shown
 // in the queue preview); the daemon removes just that entry and injects it
 // as a user-sourced steering message into the in-flight turn, leaving the
-// other queued messages in place. The daemon returns Conflict when no turn
-// is in flight or the queue has shifted so the index no longer resolves.
+// other queued messages in place. ExpectedEntryID, when non-empty, must
+// match the id the daemon minted for that entry (surfaced via
+// QueueState.IDs): the queue head can be consumed mid-turn, so a bare index
+// from an older snapshot may point at a different message — a mismatch is a
+// Conflict, not a wrong-message promote (review F1). The daemon returns
+// Conflict when no turn is in flight, the index is out of range, or the
+// expected id no longer matches.
 type TurnPromoteQueuedAsSteerParams struct {
-	Ref   string `json:"ref"`
-	Index int    `json:"index"`
+	Ref             string `json:"ref"`
+	Index           int    `json:"index"`
+	ExpectedEntryID string `json:"expectedEntryId,omitempty"`
 }
 
 type ThreadCompactStartParams struct {
