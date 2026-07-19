@@ -19,11 +19,15 @@
   const PREFIX = "serf-hub.draft.";
   const FALLBACK_SESSION = "new";
 
-  function keyFor(form) {
+  function sessionOf(form) {
     const id = form && form.dataset && form.dataset.sessionId
       ? String(form.dataset.sessionId).trim()
       : "";
-    return PREFIX + (id || FALLBACK_SESSION);
+    return id || FALLBACK_SESSION;
+  }
+
+  function keyFor(form) {
+    return PREFIX + sessionOf(form);
   }
 
   // localStorage can throw (private mode, disabled storage, quota). Drafts
@@ -75,10 +79,42 @@
   // subsequent edits into storage. Never overwrites content the textarea
   // already has (e.g. a re-bound composer mid-typing). Returns true when a
   // draft was restored so the caller can re-autosize the textarea.
+  //
+  // Session guard: the same form element normally gets replaced on a session
+  // swap, but if it ever survives with the previous session's text still in
+  // the textarea (morph/reuse, out-of-order swap), that text is the OLD
+  // session's content — clear it before restoring, so a draft can never pose
+  // as another session's input or be written under the wrong key.
+  // isOtherSessionsDraft reports whether value is verbatim the stored draft
+  // of a DIFFERENT session — the fingerprint of a leak (element survival or
+  // browser form-state restore), as opposed to the user's fresh typing.
+  function isOtherSessionsDraft(form, value) {
+    const s = storage();
+    if (!s || value === "") return false;
+    const own = keyFor(form);
+    try {
+      for (let i = 0; i < s.length; i++) {
+        const k = s.key(i);
+        if (k && k.startsWith(PREFIX) && k !== own && s.getItem(k) === value) return true;
+      }
+    } catch (e) {
+      return false;
+    }
+    return false;
+  }
+
   function bind(form) {
     if (!form) return false;
     const ta = form.querySelector(".message-input");
     if (!ta) return false;
+    const session = sessionOf(form);
+    const bound = form.dataset.draftBoundSession || "";
+    if (bound !== session && ta.value !== "") {
+      if (bound !== "" || isOtherSessionsDraft(form, ta.value)) {
+        ta.value = "";
+      }
+    }
+    form.dataset.draftBoundSession = session;
     let restored = false;
     const draft = read(form);
     if (draft !== "" && ta.value === "") {

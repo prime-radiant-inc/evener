@@ -179,6 +179,61 @@ async function testSteerClears() {
   );
 })();
 
+// 8. A composer element that survives a session swap must not leak the old
+// session's text into the new session: re-binding after the form's
+// data-session-id changed clears the stale textarea before restoring the new
+// session's draft, and later typing writes only under the new key.
+(function testSurvivingElementDoesNotLeak() {
+  const dom = makeDOM("01AAA");
+  const ta = type(dom, "draft-from-A");
+  const form = dom.window.document.querySelector("form[data-input-form]");
+  pass(dom.window.localStorage.getItem(DRAFT_PREFIX + "01AAA") === "draft-from-A", "A draft stored");
+
+  // Simulate a swap where the element survives (morph/reuse): the form's
+  // session id flips to B while the textarea still shows A's text.
+  form.dataset.sessionId = "01BBB";
+  dom.window.SerfDrafts.bind(form);
+
+  pass(ta.value === "", "stale text from A must not stay visible in B's composer, got " + JSON.stringify(ta.value));
+  pass(dom.window.localStorage.getItem(DRAFT_PREFIX + "01AAA") === "draft-from-A", "A's stored draft must survive");
+  pass(dom.window.localStorage.getItem(DRAFT_PREFIX + "01BBB") === null, "nothing may be written under B's key on rebind");
+
+  type(dom, "draft-from-B");
+  pass(dom.window.localStorage.getItem(DRAFT_PREFIX + "01BBB") === "draft-from-B", "B draft stored under B's key");
+  pass(dom.window.localStorage.getItem(DRAFT_PREFIX + "01AAA") === "draft-from-A", "A draft untouched by B typing");
+
+  // Same-session re-bind (mid-typing) still preserves the textarea.
+  dom.window.SerfDrafts.bind(form);
+  pass(ta.value === "draft-from-B", "same-session re-bind preserves in-progress text");
+})();
+
+// 9. Browser form-state restore (WebKit/Blink refill the textarea from the
+// previous page on navigation): a FRESH composer element pre-filled with text
+// that is verbatim another session's stored draft must be cleared, not kept.
+// Unmatched pre-filled text is the user's own fresh typing and must survive.
+(function testBrowserRestoredValueCleared() {
+  // Standalone fresh element (no renderer init): the browser refilled the box
+  // with A's draft text before drafts.js ever bound it.
+  function freshForm(sessionId, prefill, seed) {
+    const dom = new JSDOM(`<!DOCTYPE html><html><body>
+      <form class="workspace-input" data-input-form data-session-id="${sessionId}">
+        <textarea class="message-input" rows="1"></textarea>
+      </form>
+    </body></html>`, { runScripts: "outside-only", url: "http://localhost/" });
+    for (const [k, v] of Object.entries(seed || {})) dom.window.localStorage.setItem(k, v);
+    dom.window.document.querySelector(".message-input").value = prefill;
+    dom.window.eval(DRAFTS_SRC);
+    dom.window.SerfDrafts.bind(dom.window.document.querySelector("form[data-input-form]"));
+    return dom.window.document.querySelector(".message-input").value;
+  }
+  const cleared = freshForm("01BBB", "draft-from-A", { [DRAFT_PREFIX + "01AAA"]: "draft-from-A" });
+  pass(cleared === "", "browser-restored foreign draft must be cleared, got " + JSON.stringify(cleared));
+
+  // Fresh typing the store doesn't know is never touched.
+  const kept = freshForm("01CCC", "brand new thought", { [DRAFT_PREFIX + "01AAA"]: "draft-from-A" });
+  pass(kept === "brand new thought", "unmatched pre-bind text is fresh typing and must survive");
+})();
+
 (async () => {
   await testSendClears();
   await testSteerClears();
