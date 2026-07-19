@@ -85,6 +85,69 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.maybeLoadOlderTurns();
   pass(listCalls === 1, "no fetch once the head is reached");
 
+  // ── F1(a): a prepend must not corrupt the LIVE turn's streaming state ──
+  // A historical (already-completed) turn's events run through the normal
+  // mutating path during the staging render; a historical TURN_COMPLETED with
+  // no turnId matches the live finalization guard and clears the live
+  // activeTurnId — the live turn's own completion then fails the guard and the
+  // message streams forever.
+  R.handleData("TURN_STARTED", { turnId: "live-t1" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "live answer streaming" });
+  const liveMsg = conv.querySelector('.assistant-message[data-turn-id="live-t1"]');
+  pass(!!liveMsg, "live streaming message exists");
+  window.SerfAppwire.eventsFromTurns = () => [
+    ["USER_INPUT", { text: "HIST-USER", turn: 2 }],
+    ["ASSISTANT_TEXT_START", {}],
+    ["ASSISTANT_TEXT_END", { text: "historical answer" }],
+    ["TURN_COMPLETED", { turn: { id: "hist-t0", durationMs: 100 } }],
+  ];
+  R.prependOlderTurns([{ id: "hist-t0" }]);
+  pass(R.activeTurnId === "live-t1", "live activeTurnId intact after prepend (got " + JSON.stringify(R.activeTurnId) + ")");
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: " continues" });
+  R.handleData("TURN_COMPLETED", { turnId: "live-t1", turn: { id: "live-t1", durationMs: 200 } });
+  pass(liveMsg.textContent.includes("live answer streaming continues"), "live message kept streaming across the prepend");
+  pass(!liveMsg.classList.contains("streaming"), "live TURN_COMPLETED still finalizes the live message");
+
+  // ── F1(b): a pending live ask_user survives a historical USER_INPUT ──
+  // USER_INPUT resolves the whole pending ask set (spec §5.2) — a HISTORICAL
+  // user message must not settle the LIVE pending ask or tear down its anchor.
+  R.handleData("TURN_STARTED", { turnId: "live-t2" });
+  R.handleData("TOOL_CALL_START", { call_id: "ask1", tool_name: "ask_user", arguments_json: JSON.stringify({ questions: [{ header: "Pick", question: "Pick one", options: [{ label: "A" }] }] }) });
+  R.handleData("TOOL_CALL_END", { call_id: "ask1", tool_name: "ask_user", output: "ok" });
+  const liveAnchor = conv.querySelector("[data-ask-anchor]");
+  pass(!!R.pendingAsk && !!liveAnchor, "live ask_user pending with a transcript anchor");
+  pass(R.agentQuestionEl === liveAnchor, "anchor recorded as the agent question");
+  window.SerfAppwire.eventsFromTurns = () => [["USER_INPUT", { text: "HIST-USER-2", turn: 3 }]];
+  R.prependOlderTurns([{ id: "hist-t1" }]);
+  pass(!!R.pendingAsk, "ask still pending after a historical USER_INPUT prepend");
+  pass(R.pendingAsk && R.pendingAsk.el === liveAnchor, "pending ask keeps its anchor element");
+  pass(liveAnchor.isConnected && conv.contains(liveAnchor), "ask anchor still in the live transcript");
+  pass(!conv.querySelector(".ask-settled-line"), "no settled line rendered for the live ask");
+  pass(R.agentQuestionEl === liveAnchor, "agent question element intact after prepend");
+
+  // ── F1(c): live reasoning survives a historical reasoning prepend ──
+  // A historical REASONING_START early-returns on the live reasoningEl, then
+  // the historical REASONING_DELTA hijacks the live think body and buffer.
+  R.handleData("TURN_STARTED", { turnId: "live-t3" });
+  R.handleData("REASONING_START", {});
+  R.handleData("REASONING_DELTA", { delta: "live thought" });
+  const liveThink = R.reasoningEl;
+  pass(!!liveThink, "live reasoning block streaming");
+  const liveThinkBody = liveThink.querySelector(".think-body");
+  window.SerfAppwire.eventsFromTurns = () => [
+    ["REASONING_START", {}],
+    ["REASONING_DELTA", { delta: "HIST-THOUGHT" }],
+    ["ASSISTANT_TEXT_START", {}],
+    ["ASSISTANT_TEXT_END", { text: "hist answer 2" }],
+  ];
+  R.prependOlderTurns([{ id: "hist-t2" }]);
+  pass(R.reasoningEl === liveThink, "live reasoningEl intact after prepend");
+  pass(R.reasoningBuf === "live thought", "live reasoningBuf intact (got " + JSON.stringify(R.reasoningBuf) + ")");
+  pass(!liveThinkBody.textContent.includes("HIST-THOUGHT"), "historical reasoning did not hijack the live think body");
+  R.handleData("REASONING_DELTA", { delta: " continues" });
+  pass(liveThinkBody.textContent === "live thought continues", "later live reasoning deltas still render into the live think body");
+
   if (failures.length) { failures.forEach((f) => console.log(f)); process.exit(1); }
   console.log("PASS: renderer lazily prepends older turns without disturbing live state");
   process.exit(0);

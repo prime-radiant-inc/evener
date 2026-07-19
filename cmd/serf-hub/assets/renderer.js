@@ -2438,27 +2438,27 @@
       if (!m) return;
       m.textBuf += delta;
       if (!m.tailEl && m.textBuf.length > 4096) {
-        // Frozen head, raw tail: stop re-parsing a long message per frame. The
-        // head's parsed DOM FREEZES at the crossing (re-parsing the whole
-        // buffer here would visibly reflow the head and destroy any selection
-        // over it) — it keeps its last settle-render. The crossing delta and
-        // everything after streams as plain text into the tail; the whole
-        // buffer parses once at finalization. Switches on LENGTH only (never
-        // fence state) and never flips back.
-        // If the last pre-crossing delta and the crossing delta landed in the
-        // SAME batched flush, the head text is still sitting in the dirty set
-        // un-rendered — the settle that would render it never runs for this
-        // message (tail mode removes it from the set). Render the pre-crossing
-        // buffer ONCE here, exactly the parse the settle would have done, so
-        // the head isn't missing until finalization. If the message is not
-        // dirty the last settle already rendered the head — nothing to do.
-        if (this.dirtyAssistantMessages && this.dirtyAssistantMessages.has(m)) {
-          this.renderAssistantMessage(m, m.textBuf.slice(0, m.textBuf.length - delta.length));
-          this.dirtyAssistantMessages.delete(m);
-        }
+        // Frozen head, raw tail: stop re-parsing a long message per frame. At
+        // the crossing the head is rendered ONCE as the first headLen chars
+        // (one bounded parse — never the whole buffer) and then FREEZES;
+        // everything past the boundary streams as plain text into the tail,
+        // and the whole buffer parses once at finalization. Switches on
+        // LENGTH only (never fence state) and never flips back.
+        // Always rendering the head here (not just when the dirty set holds
+        // an un-rendered pre-crossing buffer) means a single >4KB FIRST delta
+        // shows its first ~4KB parsed immediately instead of staying raw
+        // until finalization.
+        // Surrogate-safe boundary: a high surrogate exactly at 4096 would
+        // freeze half a pair into the head and leave the low half leading the
+        // tail as a separate text node (� until finalization). Back the
+        // boundary off one code unit so the pair stays whole in the tail.
+        let headLen = 4096;
+        const boundaryCode = m.textBuf.charCodeAt(headLen - 1);
+        if (boundaryCode >= 0xd800 && boundaryCode <= 0xdbff) headLen -= 1;
+        this.renderAssistantMessage(m, m.textBuf.slice(0, headLen));
         const tail = document.createElement("span");
         tail.className = "streaming-tail";
-        tail.appendChild(document.createTextNode(delta));
+        tail.appendChild(document.createTextNode(m.textBuf.slice(headLen)));
         tail.appendChild(this.streamingCaret());
         m.el.appendChild(tail);
         m.tailEl = tail;
@@ -2527,7 +2527,11 @@
           let onlyQuietFollowers = true;
           for (let s = last.nextElementSibling; s; s = s.nextElementSibling) {
             const cl = s.classList;
-            if (!cl || !(cl.contains("banner") || cl.contains("system-line"))) { onlyQuietFollowers = false; break; }
+            // Quiet followers: banners, system lines, and the .system-run
+            // wrapper appendSystemMessage/coalesced system runs produce
+            // (plugin runs carry .system-run too). Anything else means real
+            // content intervened and the pointer must not clobber history.
+            if (!cl || !(cl.contains("banner") || cl.contains("system-line") || cl.contains("system-run"))) { onlyQuietFollowers = false; break; }
           }
           if (onlyQuietFollowers && blocks.length && blocks[blocks.length - 1] === last) {
             const meta = last.querySelector(".turn-meta");
@@ -4961,6 +4965,16 @@
     prependOlderTurns(turns) {
       if (!this.conversation || !window.SerfAppwire || typeof window.SerfAppwire.eventsFromTurns !== "function") return;
       const sc = this.conversation;
+      // Live interaction state the staging render must not touch. Historical
+      // events run through the normal mutating path: a historical
+      // TURN_COMPLETED (no turnId) would finalize against and CLEAR the live
+      // activeTurnId (and flip the thread state / bump statusUpdateSeq); a
+      // historical USER_INPUT would settle the LIVE pending ask_user and tear
+      // down its anchor/agent-question frame; a historical REASONING_START
+      // early-returns on the live reasoningEl and its deltas then hijack the
+      // live think body/buffer. Save every field those paths touch, reset the
+      // element/buffer ones so history gets its own staging state, and restore
+      // them all in the finally.
       const saved = {
         activeMessages: this.activeMessages,
         activeTools: this.activeTools,
@@ -4981,6 +4995,19 @@
         newContentCount: this.newContentCount,
         conversation: this.conversation,
         lastFrameAt: this.lastFrameAt,
+        activeTurnId: this.activeTurnId,
+        state: this.state,
+        statusUpdateSeq: this.statusUpdateSeq,
+        reasoningEl: this.reasoningEl,
+        reasoningBuf: this.reasoningBuf,
+        reasoningPreviewDirty: this.reasoningPreviewDirty,
+        reasoningStartedAt: this.reasoningStartedAt,
+        pendingAsk: this.pendingAsk,
+        pendingAskCalls: this.pendingAskCalls,
+        agentQuestionEl: this.agentQuestionEl,
+        lastFinalizedAssistantEl: this.lastFinalizedAssistantEl,
+        currentTurnHasAgentWork: this.currentTurnHasAgentWork,
+        newContentNeedsYou: this.newContentNeedsYou,
       };
       const staging = document.createElement("div");
       this.conversation = staging;
@@ -4997,6 +5024,16 @@
       this.entryIndex = 0;
       this.cheapToolCluster = null;
       this.subagentModule = null;
+      this.activeTurnId = "";
+      this.reasoningEl = null;
+      this.reasoningBuf = "";
+      this.reasoningPreviewDirty = false;
+      this.reasoningStartedAt = 0;
+      this.pendingAsk = null;
+      this.pendingAskCalls = new Map();
+      this.agentQuestionEl = null;
+      this.lastFinalizedAssistantEl = null;
+      this.currentTurnHasAgentWork = false;
       try {
         for (const [kind, data] of window.SerfAppwire.eventsFromTurns(turns)) {
           this.handleData(kind, data);

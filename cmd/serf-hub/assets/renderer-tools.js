@@ -83,6 +83,15 @@
     return lines;
   }
 
+  // tailFoldOutput is the bodyEnd counterpart of the streaming live tail:
+  // past the clip budget, keep the LAST max chars (the lines the user was
+  // watching while it streamed) prefixed with an elision line, rather than
+  // snapping the pane back to the oldest bytes with a head-clip.
+  function tailFoldOutput(text, max) {
+    text = String(text || "");
+    return text.length > max ? "…\n" + text.slice(-max) : text;
+  }
+
   function outputPreviewBody(className, outputClassName, el) {
     const wrap = document.createElement("div");
     wrap.className = "tool-body output-preview-body tool-body--preview " + className;
@@ -229,7 +238,7 @@
     b.outputPre.style.display = "";
     // Live tail while streaming: past the clip budget a head-clip freezes the
     // pane (the tail stops moving — looks stalled). bodyEnd keeps the
-    // head-based clip + fold semantics for the final render.
+    // same tail orientation for the final render (tailFoldOutput).
     const text = String(out || "");
     b.outputPre.textContent = text.length > 8000 ? text.slice(-8000) : text;
     b.outputPre.scrollTop = b.outputPre.scrollHeight;
@@ -240,7 +249,9 @@
       state.body.streaming = false;
       if (state.body.wrap) state.body.wrap.classList.remove("streaming");
     }
-    setReadOutput(state, clip(data.error || out || "", 8000));
+    // Errors keep the head-clip (the message's leading context matters); a
+    // long successful read tail-folds so the final lines stay visible.
+    setReadOutput(state, data.error ? clip(data.error, 8000) : tailFoldOutput(out, 8000));
   }
 
   function grepTarget(a) {
@@ -547,7 +558,7 @@
       b.pre.style.display = "";
       // Live tail while streaming: past the clip budget a head-clip freezes
       // the pane (the tail stops moving — looks stalled). bodyEnd keeps the
-      // head-based clip + fold semantics for the final render.
+      // same tail orientation for the final render (tailFoldOutput).
       const text = String(out || "");
       b.pre.textContent = text.length > 8000 ? text.slice(-8000) : text;
       b.pre.scrollTop = b.pre.scrollHeight;
@@ -557,7 +568,10 @@
       state.body.streaming = false;
       if (state.body.wrap) state.body.wrap.classList.remove("streaming");
       const text = data.error || out || "";
-      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
+      // Errors keep the head-clip; a long successful run tail-folds to the
+      // LAST 8000 chars — the live tail the user was watching while it
+      // streamed — prefixed with an elision line.
+      setExpandableOutput(state.body, data.error ? clip(text, 8000) : tailFoldOutput(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output terminal-output" });
       const st = parseToolState(data.tool_state);
       const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
       if (state.body.footerEl) {

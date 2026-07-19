@@ -99,6 +99,28 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(t5Block.textContent.includes("final"), "late END content applied over the finalized block");
   pass(conv.querySelector(".banner.note") === banner, "end banner still present after the replace");
   pass(conv.lastElementChild === banner, "banner still follows the replaced block");
+  // ── Late END after a .system-run follower must still REPLACE (F2) ──────
+  // appendSystemMessage wraps quiet lifecycle events in a top-level
+  // .system-run element; the quiet-followers walk only allowed .banner and
+  // .system-line, so a system event between TURN_COMPLETED and the late END
+  // broke the replace guard and appended a duplicate answer.
+  R.handleData("TURN_STARTED", { turnId: "t6" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "system-run case answer" });
+  R.handleData("TURN_COMPLETED", { turnId: "t6", turn: { id: "t6", durationMs: 300 } });
+  R.handleData("SYSTEM_MESSAGE", { title: "Skill", text: "skill activated: demo" });
+  const sysRun = conv.querySelector(".system-run");
+  pass(!!sysRun, "system event produced a top-level .system-run wrapper");
+  pass(conv.lastElementChild === sysRun, "system-run follows the finalized assistant block");
+  const t6Block = conv.querySelector('.assistant-message[data-turn-id="t6"]');
+  const countBefore6 = conv.querySelectorAll(".assistant-message").length;
+  R.handleData("ASSISTANT_TEXT_END", { text: "system-run case answer, final" });
+  msgs = conv.querySelectorAll(".assistant-message");
+  pass(msgs.length === countBefore6, "late END after a system-run replaces in place — no duplicate (got " + msgs.length + ")");
+  pass(msgs[msgs.length - 1] === t6Block, "the SAME t6 block was replaced, not a new one appended");
+  pass(t6Block.textContent.includes("final"), "late END content applied over the system-run-followed block");
+  pass(conv.querySelector(".system-run") === sysRun, "system-run still present after the replace");
+  pass(conv.lastElementChild === sysRun, "system-run still follows the replaced block");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: finalization is idempotent across TURN_COMPLETED and a late END");
   process.exit(0);
