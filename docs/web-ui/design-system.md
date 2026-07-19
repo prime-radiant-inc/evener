@@ -167,6 +167,13 @@ is 1000px below the wide band and 1200px at/above it. Left edges never move.
 | **Liveness** | pinned strip: "working · 1:12 · waiting on N subagents" | — | — | not in scroll flow; always reachable |
 | **System / lifecycle** | quiet dim one-liner (plugin loaded, skill activated) | — | — | never divider-weight; no "N chars" |
 
+**Streaming text (2026-07-19 addendum).** While an assistant message streams past 4KB of
+accumulated text, the already-parsed head **freezes in place** and later deltas append as
+plain text in a `.streaming-tail` node below it, marked by a CSS streaming caret (the one
+sanctioned live-caret breathe, §9). The reader keeps the formatted head; the raw tail is
+honest about being not-yet-parsed. Finalization re-parses the whole buffer — the tail
+treatment never survives a completed turn.
+
 Status hierarchy: **running (blue) draws the eye; done (neutral) recedes; needs-you (amber) and
 error (red) stand out.** Pair every status color with a glyph so it is colorblind-safe.
 **Done recedes to *absence*, not a green check:** a successful tool row shows **no glyph at all** —
