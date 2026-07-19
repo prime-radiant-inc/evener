@@ -188,7 +188,7 @@ func jdraAttachWrapper(t *testing.T, prepared bool) {
 	var run *runningJob
 	var err error
 	if prepared {
-		slot, ok := p.reserveTreeSlot()
+		slot, ok := p.reserveTreeSlot(slotKindJob)
 		if !ok {
 			t.Fatal("reserve prepared slot")
 		}

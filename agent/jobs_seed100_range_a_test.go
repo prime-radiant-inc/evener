@@ -79,7 +79,7 @@ func seed100JobsRangeA(t *testing.T) {
 			durableStarted: true,
 		}
 	}
-	jobs, err := listed.listWithError(listFilter{Limit: 1})
+	jobs, _, err := listed.listWithError(listFilter{Limit: 1})
 	if err != nil {
 		t.Fatalf("listWithError: %v", err)
 	}

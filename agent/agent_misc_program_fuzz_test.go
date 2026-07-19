@@ -148,19 +148,19 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 		t.Fatal("missing live model changed profile")
 	}
 
-	counter := newTreeCounter(0)
-	for i := int64(0); i < counter.cap; i++ {
-		if !counter.reserve() {
+	counter := newTreeCounter(2)
+	for i := int64(0); i < 2; i++ {
+		if !counter.reserve(slotKindJob) {
 			t.Fatalf("reservation %d rejected", i)
 		}
 	}
-	if counter.reserve() {
+	if counter.reserve(slotKindJob) {
 		t.Fatal("counter exceeded capacity")
 	}
 	for counter.n.Load() > 0 {
-		counter.release()
+		counter.releaseKind(slotKindJob)
 	}
-	if slot, ok := (&Session{}).reserveTreeSlot(); !ok || slot != nil {
+	if slot, ok := (&Session{}).reserveTreeSlot(slotKindJob); !ok || slot != nil {
 		t.Fatalf("unbounded reservation = %#v, %v", slot, ok)
 	}
 	releasePreparedTreeSlot(nil)
