@@ -1,116 +1,79 @@
-# Task 7 Report: Migrate Managed Worktree Storage and Resume
+# Task 7 report — Token migration: canonical definitions, scripted rename, legacy/dead deletion
 
-## RED evidence
+Commit: `f8c508be` — "web: canonical color-token vocabulary (alias → rename → delete) + dead CSS removal"
 
-Tests were changed first. The exact required focused command was:
+## What changed
 
-```text
-(cd agent && go test ./internal/worktree . -run 'Test.*(ProjectID|Worktree|Isolation)' -count=1)
-```
+### `cmd/serf-hub/assets/style.css`
+- **Step 3 scripted rename**: ran the brief's exact 14-pattern sed. Post-rename counts:
+  `var(--ink)` ×160, `var(--ink-2)` ×265, `var(--surface)` ×66 (brief's ≥167 estimate for
+  `--ink` counted the alias definitions, which were then deleted — 160 is the 159 `var(--text)`
+  uses + 1 `var(--user)`? No: `--ink` = 159 `var(--text)` + 1 other exact-paren match in a
+  comment-free rule; `--ink-2` = 256 `--text-muted` + 7 `--muted` + 1 `--user` + 1 = 265. All
+  consistent with the mapping table.)
+- **4 theme blocks rewritten** (`:root`, `@media light :root`, `[data-theme="dark"]`,
+  `[data-theme="light"]`): canonical head `--surface/--surface-2/--ink/--ink-2/--ink-3/--ink-4/
+  --line/--hair/--accent/--attention/--done` with shipped values; `--ink-3` = `#7e8593` (dark)
+  / `#6b6b76` (light); `--done: var(--ink-3)`. Deleted `--surface-secondary`,
+  `--accent-secondary`, and the 6-line legacy alias block (+ its comment) from every block.
+  `--state-*`, `--error`, `--success`, diff palette, diagnostics, `--btn-primary-text`, and all
+  spacing/type/motion/z sections untouched. `--diagnostic-ui` now reads `var(--accent)` (sed
+  already rewrote its value).
+- **Dead CSS**: removed `.composer-send:active`/`#send-btn:active` from the scale-pop rule;
+  deleted the Pass-8 `.btn:active, … { transform: translateY(0.5px); }` group and the
+  `transform` on `.btn-primary:active`, keeping the surface-drop restyles. Kept
+  `.btn-icon:active`/`.btn-chip:active` (surface-only, no transform — they postdate the plan).
+- **Comment prose**: updated ~15 stale comments that referenced retired names
+  (`--text`, `--text-muted`, `--text-dim`) to the canonical names — no assertion required it,
+  but leaving prose pointing at dead tokens would rot.
 
-It exited 1. The new regression failed because production still used the deleted/local storage identity: linked-checkout create returned the old hash-based `<state>/worktrees/<old hash>/<name>` path instead of the shared canonical `Project.ID` path. Existing path-dependent restore tests also failed (`TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns` and `TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock`). This was the expected pre-implementation RED caused by stale production `worktree.ProjectID` callers.
+### `cmd/serf-hub/jstest/test-color-system-css.js` (rewritten in place)
+- Brief's contract verbatim (canonical tokens in all 4 blocks, `--ink-3` values, zero legacy
+  names, dead-CSS assertions) **plus** the pre-existing mockup-contract assertions folded in,
+  with expectations migrated per the mapping table (`--text-dim` → `--ink-4` in the five
+  body-text exclusions, `var(--bg-raised)` → `var(--surface)` in the pill/code background
+  exclusions). The `--user must not map to --state-idle` assertion was dropped — it is
+  subsumed by the "no legacy tokens" sweep (`--user` no longer exists at all).
+- Switched the harness from `assert/exit(1)` to the file's existing `failures[]` collector so
+  one run reports every broken assertion (this is how the old file worked).
 
-## Implementation summary
+### Existing tests migrated (same commit, assertions not weakened)
+| File | Migration |
+|---|---|
+| `test-composer-layout-css.js` | `var(--bg-raised)` → `var(--surface)` (+ message) |
+| `test-context-pressure-css.js` | `var(--text)` → `var(--ink)` (+ message) |
+| `test-pane-and-sidebar-css.js` | `var(--text-muted)` → `var(--ink-2)` (turn-meta color) |
+| `test-renderer-plan.js` | `var(--rule)` → `var(--line)` (task-card rail) |
+| `test-subagents.js` | `var(--rule)` → `var(--line)` (.subs rail) |
+| `test-transcript-typography.js` | `var(--text-muted)` → `var(--ink-2)` (tool-disclosure glyph) |
 
-- **Create / delegate create:** `worktreeCreateCore` resolves once with `identifier.ResolveProjectWith(activeRoot, execenv.NewProjectResolver(active))`, carries the resulting `identifier.Project`, builds `<worktree-root>/<Project.ID>/<name>`, and writes `Project.CanonicalPath` into sidecar metadata. Delegate isolation uses the same path.
-- **List / switch / remove / prune:** `worktreeStateSnapshot` resolves and carries one canonical Project per operation. All project directories use `Project.ID`; containment, managed-entry filtering, metadata lookup, restore relock, and prune sweeps use the canonical project directory/path.
-- **Resume / init-inside detection:** resume resolves the Project from the persisted target through the environment adapter, uses its canonical path for Git control and containment, and its ID for storage. Init-inside occupancy uses the same shared resolver and Project values.
-- **Local renderer removal:** deleted `agent/internal/worktree.ProjectID` and all SHA-256/hex/basename rendering code and tests. `ValidateName`, `EncodeSidecarName`, and `DecodeSidecarName` remain.
-- **Callers:** migrated untagged, build-tagged, and fuzz test helpers to `identifier.ResolveProjectWith` through the shared test helper. No old worktree renderer callers remain.
+### `docs/web-ui/design-system.md`
+- §3 neutral-ramp paragraph replaced with current-truth prose (shipped values, both themes,
+  `--hair` as the 50% `--line` mix) — clean replacement, no strike-through annotation style.
 
-## GREEN evidence
+## Test commands + results
+- `node test-color-system-css.js` before migration: **FAIL** (68 failures — canonicals
+  undefined, legacy present, dead selectors present). After: **ok canonical color tokens**.
+- `cd cmd/serf-hub/jstest && ./run-all.sh` → **exit 0, 184 tests OK, "jstest: all tests passed"**.
+- `make build-hub` → **exit 0**.
+- `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub` → **ok primeradiant.com/serf/cmd/serf-hub 20.802s** (the Go contract test needed no changes).
 
-Required agent suite:
+## Deviations from the brief
+1. **Pass-8 surface drops kept `var(--surface-2)`, not the brief's `var(--surface)`.** The
+   brief's Step-5 target block shows `var(--surface)` and claims it "reflects the Step 3 sed",
+   but its own mapping table sends `var(--surface-secondary)` → `var(--surface-2)`, and the
+   pre-task value was `var(--surface-secondary)` (#1c1c24). Using `--surface` (#16161e) would
+   have been a real visual change, contradicting the task's "SHIPPED values (no visual
+   change)" premise. Chose no-visual-change.
+2. **Kept `.btn-icon:active`/`.btn-chip:active` surface drops** in the Pass-8 block — they
+   were added after the plan was written and contain no scale-pop-cancelling transform;
+   deleting them would remove live styling beyond the task's scope.
+3. Updated stale comment prose referencing retired token names (cosmetic, in-scope hygiene).
 
-```text
-(cd agent && go test . -run 'Test.*(Worktree|Isolation)' -count=1)
-ok   primeradiant.com/serf/agent  6.314s
-```
-
-Required tagged compile:
-
-```text
-go test -tags serffuzz ./agent -run '^$' -count=1
-ok   primeradiant.com/serf/agent  0.355s [no tests to run]
-```
-
-Required linked-checkout regression:
-
-```text
-go test ./agent -run '^TestManagedWorktreeStorageUsesOneProjectIDFromMainAndLinkedCheckout$' -count=1
-ok   primeradiant.com/serf/agent  0.703s
-```
-
-Deterministic worktree codec tests:
-
-```text
-go test ./agent/internal/worktree -run 'TestValidateName|TestEncode|TestDecode' -count=1
-ok   primeradiant.com/serf/agent  0.150s
-```
-
-All default packages compiled:
-
-```text
-go test ./... -run '^$' -count=1
-ok   all default packages [no tests to run]
-```
-
-The required full internal package command was blocked in the implementer sandbox by Apple Git/xcrun cache restrictions, but parent verification outside that sandbox passed:
-
-```text
-$ (cd agent && go test ./internal/worktree -count=1)
-ok  	primeradiant.com/serf/agent/internal/worktree	2.151s
-```
-
-The implementer’s sandbox failures had errors such as:
-
-```text
-git: error: couldn't create cache file '/tmp/xcrun_db-*' (errno=Operation not permitted)
-```
-
-Retrying with writable `TMPDIR`, `HOME`, and `XDG_CACHE_HOME` still produced the same `/tmp/xcrun_db-*` failure. The failure is environmental; the focused deterministic tests and all agent worktree/isolation tests pass.
-
-## Changed files
-
-- `agent/internal/worktree/name.go`
-- `agent/internal/worktree/name_test.go`
-- `agent/internal/worktree/program_fuzz_test.go`
-- `agent/session_tools_worktree.go`
-- `agent/session_worktree_resume.go`
-- `agent/session_tools_worktree_test.go`
-- `agent/session_tools_worktree_create_test.go`
-- `agent/session_tools_worktree_errors_test.go`
-- `agent/session_tools_worktree_prune_test.go`
-- `agent/session_tools_worktree_remove_test.go`
-- `agent/session_tools_worktree_switch_test.go`
-- `agent/session_tools_worktree_livework_test.go`
-- `agent/session_worktree_close_test.go`
-- `agent/job_delegate_isolation_test.go`
-- `agent/job_delegate_attach_finalize_seed100_fuzz_test.go`
-- `agent/job_delegate_exact_tail_create_restore_fuzz_test.go`
-- `agent/job_delegate_send_seed100_fuzz_test.go`
-- `agent/session_tools_worktree_scripted_fuzzhelpers_test.go`
-- `agent/session_tools_worktree_seed100_exact_fuzz_test.go`
-
-The pre-existing `.superpowers/sdd/task-1-report.md` modification was not edited, staged, overwritten, or reverted. `.superpowers/sdd/progress.md` was not touched.
-
-## Self-review
-
-- `git diff --check` passes.
-- No `worktree.ProjectID` or local `func ProjectID` references remain; the only remaining `identifier.ProjectID` is the shared identifier API.
-- Managed storage has no fallback to old worktree hashes or old bucket lookup.
-- Project resolution uses `execenv.NewProjectResolver` and linked/main checkouts share the same resolved Project.
-- Default tests are offline/deterministic except the required real-Git internal package suite, which is blocked by the sandbox's Apple Git cache restriction.
-- No Task 8 hub project-key migration was started.
-
-## Concerns
-
-The full `agent/internal/worktree` suite cannot complete in this sandbox because Apple Git invokes xcrun and cannot create its cache under `/tmp`; this is unrelated to the Task 7 code. Required agent worktree/isolation tests, tagged compile, linked-checkout regression, deterministic codec tests, and all-package compilation pass.
-
-## Commit
-
-Task 7 migration commit:
-
-```text
-5cc5bd2e853e03071f74d44c2b5e82df8c185d83 refactor(worktree): use canonical project IDs
-```
+## Self-review notes
+- Type scale `--text-2xs…--text-2xl` verified untouched (`grep -c 'var(--text-'` unchanged in
+  behavior; font-size presets blocks intact).
+- No non-CSS uses of legacy tokens existed (pre-rename grep of `assets/*.js templates/` was
+  empty), so the sed scope was style.css only.
+- `git status` before commit showed pre-existing unrelated modifications to
+  `.superpowers/sdd/{progress,task-1-report,task-6-report}.md` — left unstaged, not mine.
