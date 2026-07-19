@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -632,4 +634,202 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 
 	releaseOnce.Do(func() { close(release) })
 	waitForDriveCount(t, sess.driveCounter, 0)
+}
+
+// firstCompleteThenBlockAdapter completes the first request (the coordinator's
+// own turn) and blocks every later request (drive turns) until the request
+// context is done, modeling a hung provider call that only a context cancel
+// can interrupt.
+type firstCompleteThenBlockAdapter struct {
+	mu   sync.Mutex
+	i    int
+}
+
+func (a *firstCompleteThenBlockAdapter) Name() string { return "openai" }
+func (a *firstCompleteThenBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	a.i++
+	n := a.i
+	a.mu.Unlock()
+	if n == 1 {
+		resp := finalResponse("coordinator idle")
+		resp.Provider = "openai"
+		resp.Model = req.Model
+		return resp, nil
+	}
+	<-ctx.Done()
+	return llm.Response{}, ctx.Err()
+}
+func (a *firstCompleteThenBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+// TestDriveTurnTimeoutFreesSlot proves a drive turn whose child hangs is
+// cancelled at driveTurnTimeout and its drive-budget slot is freed — a hung
+// child cannot pin the budget until parent close.
+func TestDriveTurnTimeoutFreesSlot(t *testing.T) {
+	// NOT parallel: this test shrinks a package-level timing var; parallel
+	// siblings must never observe the mutated value.
+	old := driveTurnTimeout
+	driveTurnTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { driveTurnTimeout = old })
+
+	c := llm.NewClient()
+	c.Register(&firstCompleteThenBlockAdapter{})
+	sess := newDelegateTestSession(t, c)
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+
+	if !sess.driveSubagentNotificationTurn(coordSub) {
+		t.Fatal("drive did not launch")
+	}
+	waitForDriveCount(t, sess.driveCounter, 1)
+	// The child hangs; the timeout must cancel the turn and free the slot.
+	waitForDriveCount(t, sess.driveCounter, 0)
+}
+
+// TestDriveRedriveIsPaced proves the post-turn re-drive waits
+// driveRedriveMinInterval instead of launching immediately: with attention
+// still queued on the child, no drive is in flight shortly after the re-check
+// begins, but one launches after the interval.
+func TestDriveRedriveIsPaced(t *testing.T) {
+	// NOT parallel: this test shrinks a package-level timing var; parallel
+	// siblings must never observe the mutated value.
+	old := driveRedriveMinInterval
+	driveRedriveMinInterval = 300 * time.Millisecond
+	t.Cleanup(func() { driveRedriveMinInterval = old })
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(_ llm.Request) llm.Response { return finalResponse("coordinator idle") },
+			func(_ llm.Request) llm.Response { return finalResponse("drive done") },
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+	// Queue attention on the child but drive nothing: the re-check owns the
+	// (paced) launch.
+	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sess.redriveChildIfAttentionRemains(coordSub, coordSub.sess, context.Background())
+	}()
+	// Inside the pacing interval, no drive may be in flight.
+	time.Sleep(100 * time.Millisecond)
+	if got := sess.driveCounter.n.Load(); got != 0 {
+		t.Fatalf("re-drive launched inside the pacing interval: drive counter = %d", got)
+	}
+	// After the interval, the paced re-drive launches and drains.
+	waitForDriveCount(t, sess.driveCounter, 1)
+	<-done
+	waitForDriveCount(t, sess.driveCounter, 0)
+	if got := coordSub.sess.peekNotifications(); got != 0 {
+		t.Fatalf("paced re-drive left %d notifications undrained", got)
+	}
+}
+
+
+// TestRegressionIdleDelegatesNeverBlockSpawn reproduces the 2026-07-19 field
+// failure (session 033rRr4hCSjZLuIs7XT5Nw): a session with a large fleet of
+// completed, idle delegates hit tree_at_capacity with zero jobs running
+// because drive activity shared the spawn budget. After the budget split, 50
+// sequential delegates complete, the drive budget is fully saturated, and the
+// next spawn still succeeds — idle delegates never count, and drives never
+// starve spawns.
+func TestRegressionIdleDelegatesNeverBlockSpawn(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(_ llm.Request) llm.Response { return communicateWithDefaultOutput("done") },
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	// 50 sequential foreground delegates, each completing before the next
+	// spawns: the spawn budget must return to zero every time.
+	for i := 1; i <= 50; i++ {
+		res := sess.createDelegate(context.Background(), delegateArgs{
+			Task:           fmt.Sprintf("seq-%d", i),
+			Background:     false,
+			BlockTimeoutMS: 10000,
+		})
+		if res.Err != nil {
+			t.Fatalf("spawn %d failed: %v", i, res.Err)
+		}
+	}
+	if got := sess.treeCounter.n.Load(); got != 0 {
+		t.Fatalf("idle delegates hold spawn slots: tree counter = %d, want 0", got)
+	}
+
+	// Saturate the drive budget completely: the 51st spawn must still succeed.
+	for i := 0; i < defaultMaxConcurrentDriveTurns; i++ {
+		if !sess.driveCounter.reserve(slotKindDrive) {
+			t.Fatalf("setup: drive reserve %d failed", i+1)
+		}
+	}
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "seq-51",
+		Background:     false,
+		BlockTimeoutMS: 10000,
+	})
+	if res.Err != nil {
+		t.Fatalf("spawn 51 blocked by saturated drive budget: %v", res.Err)
+	}
+
+	// While a spawn slot is held, job_list reports the occupancy tuple.
+	if !sess.treeCounter.reserve(slotKindJob) {
+		t.Fatal("setup: tree reserve failed")
+	}
+	call := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{"limit": 50}`),
+	})
+	if call.IsError {
+		t.Fatalf("job_list: %s", call.Output)
+	}
+	if !strings.Contains(call.Output, "delegate turn slots: 1/50 in use (1 jobs, 0 drive turns).") {
+		t.Fatalf("job_list missing occupancy line: %q", call.Output[len(call.Output)-300:])
+	}
+	if !strings.Contains(call.Output, "showing 1-50 of 51 jobs.") {
+		t.Fatalf("job_list missing window footer: %q", call.Output[len(call.Output)-300:])
+	}
 }
