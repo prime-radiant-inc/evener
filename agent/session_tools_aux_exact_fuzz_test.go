@@ -246,7 +246,11 @@ func auxFindExact(t *testing.T) {
 	if buckets, scope := findBuckets(good, scopeAllProjects); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("flat buckets = %#v %q", buckets, scope)
 	}
-	nested := filepath.Join(root, "home", "serf", "projects", "current")
+	// The bucket dir name must be a VALID project id (identifier.ValidateProjectID,
+	// enforced by validLocalBucketDir since the identifier refactor): a readable
+	// portion plus a 10-character base62 suffix. A bare stand-in like "current"
+	// is rejected by design and would degrade the scope probe to nil buckets.
+	nested := filepath.Join(root, "home", "serf", "projects", "current-abcdefghij")
 	if buckets, scope := findBucketsWithEnumerate(nested, scopeAllProjects, func(string) ([]string, error) { return nil, errors.New("enumerate") }); len(buckets) != 1 || scope != scopeCurrentProject {
 		t.Fatalf("failed enumeration = %#v %q", buckets, scope)
 	}

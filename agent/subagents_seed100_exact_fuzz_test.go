@@ -187,11 +187,17 @@ func seed100SubagentExactEdges(t *testing.T) {
 		sub := &subagent{id: "waiting", sess: newSession(t), running: true, done: make(chan struct{})}
 		s.subagents.track(sub)
 		done := make(chan error, 1)
+		// The session arms its own one-shot P3 lane-residue sweep timer
+		// (laneSweepDelay, 10m) on this clock at open, so BlockUntil must wait
+		// for cancelAgent's After(5s) waiter ON TOP of the waiters the session
+		// already owns — a bare BlockUntil(1) is satisfied by the sweep timer
+		// alone and Advance can then run before cancelAgent ever parks.
+		baseline := clk.BlockedCount()
 		go func() {
 			_, err := s.cancelAgent(sub.id)
 			done <- err
 		}()
-		clk.BlockUntil(1)
+		clk.BlockUntil(baseline + 1)
 		clk.Advance(5 * time.Second)
 		if err := <-done; err == nil {
 			t.Fatal("cancel timeout should fail")

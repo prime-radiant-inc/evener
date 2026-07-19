@@ -244,6 +244,17 @@ func srspCloseWorktree(t *testing.T, mode byte) {
 	if mode == 1 || (mode >= 4 && mode <= 7) {
 		laneEntry.head = "srsp-changed-head"
 	}
+	if mode == 1 {
+		// The changed head must be UNMERGED work for the keep oracle to hold:
+		// since 369ad7ef ("P0: close-time disposal collects ancestry-merged
+		// lanes") the D0-auto predicate also collects a clean lane whose tip is
+		// ancestry-merged into the local merge target, and the scripted git
+		// boundary answers merge-base --is-ancestor with success by default.
+		// Mode 1's contract is "unpreserved work is kept", so script the
+		// not-an-ancestor answer; modes 4-7 stay merged on purpose (their
+		// oracles exercise the collectible path's lock/unlock/remove faults).
+		faults.mergeMode = worktreeFaultUnmerged
+	}
 	switch mode {
 	case 2:
 		if err := worktree.DeleteSidecar(h2.metaDir(), "srsp-delegate"); err != nil {

@@ -1448,7 +1448,15 @@ func worktreeFaultLocalHelperTailProgram(t *testing.T, program []byte) {
 		emptyChild := &Session{id: "empty-child", env: &agenttest.DenyEnv{WorkDir: ""}}
 		liveChild := &Session{id: "live-child", env: &agenttest.DenyEnv{WorkDir: nested}}
 		for _, child := range []*Session{nilChild, emptyChild, liveChild} {
-			h.s.subagents.track(&subagent{id: child.id, sess: child})
+			sub := &subagent{id: child.id, sess: child}
+			if child == liveChild {
+				// liveWorkUnder labels honestly (spec §P1 step 3): only a child
+				// that is RUNNING or mid-drive earns the "running" label — a
+				// retained idle child is reported "retained — idle", so the
+				// fixture's live child must actually be running.
+				sub.running = true
+			}
+			h.s.subagents.track(sub)
 			childID := child.id
 			t.Cleanup(func() { h.s.subagents.remove(childID) })
 		}

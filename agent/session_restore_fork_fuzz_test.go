@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -154,8 +155,11 @@ func FuzzRfzForkSession(f *testing.F) {
 		}
 
 		// --- success oracle: a valid, internally consistent child branch ---
-		if _, perr := ulid.Parse(childID); perr != nil {
-			t.Fatalf("ForkSession success but childID %q is not a valid ULID: %v", childID, perr)
+		// ForkSession mints the child id with identifier.NewSessionID, so
+		// validate against the session-id domain validator (the identifier
+		// refactor ended the ULID format guarantee for session ids).
+		if verr := identifier.ValidateSessionID(childID); verr != nil {
+			t.Fatalf("ForkSession success but childID %q is not a valid session id: %v", childID, verr)
 		}
 		childMeta, merr := schema.LoadSessionMeta(stateDir, childID)
 		if merr != nil {

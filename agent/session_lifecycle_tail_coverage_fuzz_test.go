@@ -69,6 +69,15 @@ func FuzzSessionLifecycleTailCoverage(f *testing.F) {
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("cancelled input error = %v", err)
 			}
+		case 2:
+			// MaxTurns rejection is explicit (85c394d5 "make session budget
+			// exhaustion explicit"): an input arriving with turns already at the
+			// limit is declined with a typed turns-budget exhaustion, not
+			// silently dropped.
+			be, exhausted := budgetExhaustionFromError(err)
+			if !exhausted || be.Budget != exhaustedBudgetTurns {
+				t.Fatalf("mode 2 input error = %v, want max_turns budget exhaustion", err)
+			}
 		default:
 			if err != nil {
 				t.Fatalf("mode %d input error = %v", mode, err)

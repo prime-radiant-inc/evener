@@ -990,7 +990,19 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		sub.mu.Unlock()
 		return false
 	}
-	driveCtx, driveCancel := context.WithTimeout(context.Background(), driveTurnTimeout)
+	// The drive ctx is parented to the session's lifetime ctx (cancelled by
+	// cancelFunc at the very start of close(), before child closes and before
+	// sendersWG.Wait) — NOT to context.Background(): the drive goroutine holds
+	// s.sendersWG, so a drive whose ctx nothing cancels on teardown parks
+	// session Close until driveTurnTimeout (5m) whenever the child turn or the
+	// paced re-drive wait below is blocked on something close cannot otherwise
+	// reach (e.g. a frozen session clock: sclock().After never fires). Close
+	// cancelling sessionCtx both interrupts the child's ProcessInputKind turn
+	// and fires the driveCtx.Done() arm of the re-drive select, so sendersWG
+	// drains promptly and the Close comment "already cancelled above" is true
+	// again. The ctx is still independent of the LAUNCHING turn's ctx:
+	// sessionCtx outlives every turn and dies only at Close.
+	driveCtx, driveCancel := context.WithTimeout(s.sessionCtx, driveTurnTimeout)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()

@@ -512,9 +512,30 @@ func FuzzSafz_DriveNotificationTurn(f *testing.F) {
 		sub.running = false
 		sub.mu.Unlock()
 
-		// Guard: at tree capacity the drive declines. Fill the counter to its cap,
-		// prove the decline, then return every slot.
+		// Guard: at drive capacity the drive declines. Drives budget separately
+		// from spawns (driveCounter, PR #32), so fill the DRIVE counter to its
+		// cap — filling the spawn/tree counter must NOT block a drive, and is
+		// asserted separately below. Prove the decline, then return every slot.
 		var held []*treeReservation
+		for {
+			r, ok := parent.reserveDriveSlot()
+			if !ok {
+				break
+			}
+			held = append(held, r)
+		}
+		if parent.driveSubagentNotificationTurn(sub) {
+			t.Fatal("drive launched while the drive counter was at capacity")
+		}
+		for _, r := range held {
+			r.release()
+		}
+		safzWaitCounterZero(t, parent)
+
+		// Guard (budget independence, PR #32): a FULL spawn/tree counter does
+		// not decline the drive — notification maintenance never starves behind
+		// user fan-out. The launched drive is joined below by
+		// safzWaitCounterZero once its slot returns.
 		for {
 			r, ok := parent.reserveTreeSlot(slotKindJob)
 			if !ok {
@@ -522,12 +543,13 @@ func FuzzSafz_DriveNotificationTurn(f *testing.F) {
 			}
 			held = append(held, r)
 		}
-		if parent.driveSubagentNotificationTurn(sub) {
-			t.Fatal("drive launched while the tree counter was at capacity")
+		if !parent.driveSubagentNotificationTurn(sub) {
+			t.Fatal("drive declined with a full spawn counter but free drive budget")
 		}
 		for _, r := range held {
 			r.release()
 		}
+		held = nil
 		safzWaitCounterZero(t, parent)
 
 		// Success path: an idle live child launches a drive turn. The turn runs the
@@ -554,17 +576,19 @@ func safzWaitDone(t *testing.T, sub *subagent) {
 	}
 }
 
-// safzWaitCounterZero waits for the shared tree counter to return to its empty
-// baseline. A drive turn reserves exactly one slot for its duration and releases
-// it at finalize; if the counter never returns to zero, a reservation leaked.
+// safzWaitCounterZero waits for the shared tree counter AND the separate drive
+// counter (PR #32 budgets drives apart from spawns) to return to their empty
+// baselines. A drive turn reserves exactly one drive slot for its duration and
+// releases it at finalize; if either counter never returns to zero, a
+// reservation leaked.
 func safzWaitCounterZero(t *testing.T, parent *Session) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if parent.treeCounter.n.Load() == 0 {
+		if parent.treeCounter.n.Load() == 0 && parent.driveCounter.n.Load() == 0 {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	t.Fatalf("tree counter did not return to zero: %d (possible slot leak)", parent.treeCounter.n.Load())
+	t.Fatalf("counters did not return to zero: tree=%d drive=%d (possible slot leak)", parent.treeCounter.n.Load(), parent.driveCounter.n.Load())
 }

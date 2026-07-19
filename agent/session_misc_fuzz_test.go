@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/identifier"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
@@ -163,7 +164,13 @@ func FuzzSessionMetadataHelpers(f *testing.F) {
 			t.Fatal("nil live-model profile must remain nil")
 		}
 
-		workerID := "worker"
+		// workerSessionForWatchedJob validates the ref's session id
+		// (identifier.ValidateSessionID), so the fixture must mint a real one —
+		// a human-readable stand-in is rejected by design.
+		workerID, err := identifier.NewSessionID()
+		if err != nil {
+			t.Fatal(err)
+		}
 		records := map[string]*jobstore.JobRecord{
 			"local": {Type: jobstore.JobDelegate, TranscriptRef: encodeRef("", workerID)},
 			"cross": {Type: jobstore.JobDelegate, TranscriptRef: encodeRef("bucket", workerID)},

@@ -330,17 +330,21 @@ func fuzzSessionInitFaultBoundaries(t *testing.T) {
 	})
 
 	t.Run("restore-transcript", func(t *testing.T) {
+		// Restore fails CLOSED on transcript-creation faults (d0803de6 "Fail
+		// resumed sessions closed on invalid artifacts"): a resume that cannot
+		// create its transcript artifact must propagate the error rather than
+		// continue with untracked appends. The fault point is still exercised —
+		// it is exactly what fails the restore here.
 		cfg := sierRestoreConfig(t.TempDir(), clk)
 		cfg.deferRestoreSideEffects = true
 		cfg.testOnly.sessionInitFault = sessionInitFaultAt("restore_new_transcript", injected)
 		sess, err := RestoreSessionFromMetaWithConfig(client, profile, env, sierMeta(), cfg)
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, injected) {
+			t.Fatalf("restore with faulted transcript = (%p, %v), want fail-closed injected fault", sess, err)
 		}
-		if sess.transcript != nil {
-			t.Fatal("faulted restored transcript was installed")
+		if sess != nil {
+			sess.Close()
 		}
-		sess.Close()
 	})
 
 	t.Run("minimal-tools-success", func(t *testing.T) {
