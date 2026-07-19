@@ -6157,12 +6157,18 @@
       if (!form) return;
       const ta = form.querySelector(".message-input");
 
+      // Restore the sticky per-session draft (issue #21) before the initial
+      // autosize so a restored multi-line draft grows the textarea correctly.
+      // bind() also keeps localStorage in sync on every input event.
+      const draftRestored = window.SerfDrafts ? window.SerfDrafts.bind(form) : false;
+
       // Auto-grow the textarea up to 50% of the viewport, then scroll inside.
       const grow = () => {
         ta.style.height = "auto";
         ta.style.height = Math.min(ta.scrollHeight, window.innerHeight * 0.5) + "px";
       };
       ta.addEventListener("input", grow);
+      if (draftRestored) ta.style.height = "";
       grow();
 
       const snapshotComposerItems = () => ((this.composerPasteState && this.composerPasteState.items) || []).slice();
@@ -6181,6 +6187,11 @@
         ta.value = "";
         ta.style.height = "";
         grow();
+        // Successful send/queue/steer/drain consumed the composer text —
+        // drop the sticky draft too (issue #21). When the user typed more
+        // mid-flight (value changed) we keep both the textarea and the
+        // draft, which the input listener has already synced.
+        if (window.SerfDrafts) window.SerfDrafts.clear(form);
       };
 
       // Seed the queue-preview chrome (kata r80p). queueState starts empty
