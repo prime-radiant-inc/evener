@@ -1173,6 +1173,10 @@
   // sidebar simply stayed full, so this is a deliberate improvement).
   var SIDEBAR_MODE_KEY = "serf-hub.sidebar.rail";
   var SIDEBAR_DESKTOP_QUERY = "(min-width: 1200px)";
+  // Phone band: the off-canvas drawer (body[data-sidebar-open]) governs the
+  // sidebar, never the tri-state. The rail's 56px strip is a desktop/tablet
+  // affordance; on a phone it shrinks the drawer to an unusable sliver.
+  var SIDEBAR_PHONE_QUERY = "(max-width: 767px)";
 
   function readSidebarMode() {
     try {
@@ -1187,6 +1191,10 @@
   }
 
   function effectiveSidebarState(mode) {
+    // Phone: the drawer mechanism owns the sidebar — never reflect the rail
+    // attribute, whatever the persisted mode. The pref is kept, not rewritten,
+    // so it still applies when the viewport grows again.
+    if (window.matchMedia && window.matchMedia(SIDEBAR_PHONE_QUERY).matches) return "pane";
     if (mode === "rail" || mode === "pane") return mode;
     if (window.matchMedia && window.matchMedia(SIDEBAR_DESKTOP_QUERY).matches) return "pane";
     return "rail";
@@ -1216,7 +1224,9 @@
   // Apply persisted mode ASAP — before first paint when possible.
   applySidebarMode(readSidebarMode());
 
-  // In auto the effective state follows the viewport: re-resolve on crossings.
+  // The effective state follows the viewport: re-resolve on crossings. The
+  // phone band must re-resolve for EVERY mode (a pinned rail pref lifts when
+  // the viewport shrinks to phone); the desktop band only matters in auto.
   if (window.matchMedia) {
     var sidebarModeMq = window.matchMedia(SIDEBAR_DESKTOP_QUERY);
     var onSidebarModeMq = function () {
@@ -1224,6 +1234,13 @@
     };
     if (sidebarModeMq.addEventListener) sidebarModeMq.addEventListener("change", onSidebarModeMq);
     else if (sidebarModeMq.addListener) sidebarModeMq.addListener(onSidebarModeMq);
+
+    var sidebarPhoneMq = window.matchMedia(SIDEBAR_PHONE_QUERY);
+    var onSidebarPhoneMq = function () {
+      applySidebarMode(readSidebarMode());
+    };
+    if (sidebarPhoneMq.addEventListener) sidebarPhoneMq.addEventListener("change", onSidebarPhoneMq);
+    else if (sidebarPhoneMq.addListener) sidebarPhoneMq.addListener(onSidebarPhoneMq);
   }
 
   document.addEventListener("click", function (e) {
