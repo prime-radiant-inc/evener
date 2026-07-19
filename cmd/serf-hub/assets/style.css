@@ -66,6 +66,12 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* Width scale — one measure for prose, a wider bleed for machine rows
+     (design-system §4). Left edges never move; only the right edge of
+     machine rows extends. The wide band (≥1800px) widens the bleed. */
+  --measure: 720px;
+  --measure-machine: 1000px;
+
   /* Type scale — Pass 1. See design language §1.2. */
   --text-2xs: 10px;
   --text-xs:  11px;
@@ -497,7 +503,7 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   background: color-mix(in srgb, var(--rule) 70%, transparent);
 }
 #workspace {
-  --workspace-content-max-w: 832px;
+  --workspace-content-max-w: var(--measure-machine);
   --workspace-visible-height: 100dvh;
   position: relative;
   flex: 1;
@@ -514,6 +520,16 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   width: min(100%, var(--workspace-content-max-w));
   margin-inline: auto;
 }
+/* One width scale (design-system §4): prose rows hold the 720px measure;
+   machine rows (tool calls, clusters, the subagent rail, cards) bleed right
+   to --measure-machine. Children with their own max-width (e.g. .think's
+   680px) keep it — those rules come later in the file and win. */
+.conversation > * { max-width: var(--measure); }
+.conversation > .tool-call,
+.conversation > .tool-call-cluster,
+.conversation > .subs,
+.conversation > .notification-card,
+.conversation > .task-card { max-width: none; }
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
 .side-panes { --pane-min: 300px; display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); flex: 0 0 var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }
