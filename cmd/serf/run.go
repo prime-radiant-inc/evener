@@ -41,6 +41,8 @@ type runConfig struct {
 	systemPromptAppend        []string // --system-prompt-append file paths
 	maxRounds                 int      // --max-rounds (-1=default, 0=unlimited, >0=limit)
 	maxSubagentDepth          int      // --max-subagent-depth (-1=default)
+	maxConcurrentDelegates    int      // --max-concurrent-delegates (-1=default)
+	maxRetainedTerminal       int      // --max-retained-terminal (-1=default)
 	shareTaskStore            bool     // --share-task-store
 	resultToolName            string   // --result-tool-name override
 	reasoningEffort           string   // --reasoning-effort override (or SERF_REASONING_EFFORT)
@@ -235,6 +237,12 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if cfg.maxSubagentDepth >= 0 {
 		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
+	}
+	if cfg.maxConcurrentDelegates >= 0 {
+		baseSessionCfg.MaxConcurrentDelegateTurns = cfg.maxConcurrentDelegates
+	}
+	if cfg.maxRetainedTerminal >= 0 {
+		baseSessionCfg.MaxRetainedTerminal = cfg.maxRetainedTerminal
 	}
 	if effort.Set {
 		baseSessionCfg.ReasoningEffort = effort.Value

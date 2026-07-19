@@ -207,6 +207,8 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	systemPromptAsUser := fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message")
 	maxRounds := fs.Int("max-rounds", -1, "max tool rounds per input (-1=default, 0=unlimited)")
 	maxSubagentDepth := fs.Int("max-subagent-depth", -1, "max subagent nesting depth")
+	maxConcurrentDelegates := fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
+	maxRetainedTerminal := fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
 	shareTaskStore := fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	resultToolName := fs.String("result-tool-name", "", "override the result tool name")
 	reasoningEffort := fs.String("reasoning-effort", "", "reasoning effort: minimal|low|medium|high|xhigh|max|none")
@@ -375,6 +377,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
+	}
+	if *maxConcurrentDelegates >= 0 {
+		sessionCfg.MaxConcurrentDelegateTurns = *maxConcurrentDelegates
+	}
+	if *maxRetainedTerminal >= 0 {
+		sessionCfg.MaxRetainedTerminal = *maxRetainedTerminal
 	}
 	if effort.Set {
 		sessionCfg.ReasoningEffort = effort.Value

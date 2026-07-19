@@ -39,6 +39,12 @@ func ToArgs(r Resolved) []string {
 	if e.MaxSubagentDepth != nil {
 		add("--max-subagent-depth", strconv.Itoa(*e.MaxSubagentDepth))
 	}
+	if e.MaxConcurrentDelegateTurns != nil {
+		add("--max-concurrent-delegates", strconv.Itoa(*e.MaxConcurrentDelegateTurns))
+	}
+	if e.MaxRetainedTerminal != nil {
+		add("--max-retained-terminal", strconv.Itoa(*e.MaxRetainedTerminal))
+	}
 	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
 		out = append(out, "--no-project-prompts")
 	}

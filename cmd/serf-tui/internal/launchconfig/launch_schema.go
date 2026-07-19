@@ -119,6 +119,10 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 		return ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds)
 	case "max_subagent_depth":
 		return ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth)
+	case "max_concurrent_delegate_turns":
+		return ptrIntStr(l.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns)
+	case "max_retained_terminal":
+		return ptrIntStr(l.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal)
 	case "no_project_prompts":
 		return ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts)
 	case "app_replay_size":

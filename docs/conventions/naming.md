@@ -70,6 +70,8 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Path to `.mcp.json` | `--mcp-config` (repeatable) | `mcp_configs` (array) |
 | Max tool rounds per input | `--max-rounds` | `max_rounds` |
 | Max subagent nesting depth | `--max-subagent-depth` | `max_subagent_depth` |
+| Max concurrent delegate turns | `--max-concurrent-delegates` | `max_concurrent_delegate_turns` |
+| Max retained terminal delegate records | `--max-retained-terminal` | `max_retained_terminal` |
 | AppWire replay buffer size | `--app-replay-size` | `app_replay_size` |
 | Suppress `.serf/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
 

@@ -34,6 +34,8 @@ type runCLIFlags struct {
 	listSessions                *bool
 	maxRounds                   *int
 	maxSubagentDepth            *int
+	maxConcurrentDelegates      *int
+	maxRetainedTerminal         *int
 	shareTaskStore              *bool
 	resultToolName              *string
 	reasoningEffort             *string
@@ -182,6 +184,8 @@ func mainWithDeps(deps mainDeps) {
 		systemPromptAppend:          []string(flags.systemPromptAppend),
 		maxRounds:                   *flags.maxRounds,
 		maxSubagentDepth:            *flags.maxSubagentDepth,
+		maxConcurrentDelegates:      *flags.maxConcurrentDelegates,
+		maxRetainedTerminal:         *flags.maxRetainedTerminal,
 		shareTaskStore:              *flags.shareTaskStore,
 		resultToolName:              *flags.resultToolName,
 		reasoningEffort:             *flags.reasoningEffort,
@@ -232,6 +236,8 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.listSessions = fs.Bool("list-sessions", false, "list saved sessions and exit")
 	flags.maxRounds = fs.Int("max-rounds", -1, "max tool rounds per input (0=unlimited, default: 200)")
 	flags.maxSubagentDepth = fs.Int("max-subagent-depth", -1, "max subagent nesting depth (default: 1)")
+	flags.maxConcurrentDelegates = fs.Int("max-concurrent-delegates", -1, "max concurrently running delegate turns per session tree (default: 50)")
+	flags.maxRetainedTerminal = fs.Int("max-retained-terminal", -1, "max retained terminal delegate records per session (default: 2048)")
 	flags.shareTaskStore = fs.Bool("share-task-store", false, "share task list between parent and child sessions")
 	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
 	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: minimal|low|medium|high|xhigh|max|none")

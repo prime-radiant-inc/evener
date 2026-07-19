@@ -22,6 +22,7 @@ func FuzzRunFlagParse(f *testing.F) {
 		"--list-sessions",
 		"--unknown-flag value",
 		"--max-subagent-depth -1 --share-task-store",
+		"--max-concurrent-delegates 25 --max-retained-terminal 500",
 		"-h",
 		"",
 		"--model",

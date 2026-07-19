@@ -33,6 +33,8 @@ var launchConfigLayerSchema = map[string]any{
 		"openAIResponsesContinuation": map[string]any{"type": "string"},
 		"maxRounds":                   map[string]any{"type": []string{"integer", "null"}},
 		"maxSubagentDepth":            map[string]any{"type": []string{"integer", "null"}},
+		"maxConcurrentDelegateTurns":  map[string]any{"type": []string{"integer", "null"}},
+		"maxRetainedTerminal":         map[string]any{"type": []string{"integer", "null"}},
 		"noProjectPrompts":            map[string]any{"type": []string{"boolean", "null"}},
 		"nonInteractive":              map[string]any{"type": []string{"boolean", "null"}},
 		"appReplaySize":               map[string]any{"type": []string{"integer", "null"}},
