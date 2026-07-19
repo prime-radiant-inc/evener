@@ -44,6 +44,12 @@ func (s *cancelRecordingSource) CancelQueued(_ context.Context, params appwire.T
 	return appwire.TurnCancelQueuedResponse{RemovedText: s.removedText, RemovedImages: s.removedImages}, nil
 }
 
+// newCancelThread uses the REALISTIC mid-turn capability set (review C1):
+// Send is false while a turn is in flight — exactly when the queue preview
+// and its cancel/edit buttons exist. An earlier draft of this test stubbed
+// the impossible combination {Send:true, Steer:true, Queue:true}, which
+// masked that gating cancel on the Send capability 503'd every real
+// mid-turn cancel/edit.
 func newCancelThread() appwire.Thread {
 	return appwire.Thread{
 		ID: "thread-1", SessionID: "thread-1", Source: "remote", Name: "cancel test",
@@ -51,7 +57,7 @@ func newCancelThread() appwire.Thread {
 		Status: appwire.ThreadStatus{Type: "active"},
 		Turns:  []appwire.Turn{{ID: "turn-1", Status: appwire.TurnStatusCompleted}},
 		Serf: appwire.SerfThread{Ref: "remote:thread-1", ActiveTurnID: "turn-2",
-			Capabilities: appwire.ThreadCapabilities{Send: true, Steer: true, Queue: true}},
+			Capabilities: appwire.ThreadCapabilities{Send: false, Steer: true, Queue: true}},
 	}
 }
 
@@ -72,6 +78,22 @@ func postCancel(web *WebServer, route, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, route, strings.NewReader(body))
 	web.Handler().ServeHTTP(rec, req)
 	return rec
+}
+
+// TestWebCancelQueuedWorksWithRealisticMidTurnCaps is the review-C1
+// regression test: with a turn in flight the daemon projects Send=false,
+// Steer=true, Queue=true. The REST path must reach the source (gated on
+// Queue), not 503 with "send is not available for this session".
+func TestWebCancelQueuedWorksWithRealisticMidTurnCaps(t *testing.T) {
+	web, source := newCancelHarness()
+	source.removedText = "mid-turn text"
+	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":0,"entryId":"q_1_aaa"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200 with realistic mid-turn caps {Send:false,Steer:true,Queue:true}", rec.Code, rec.Body.String())
+	}
+	if source.calls != 1 {
+		t.Fatalf("source called %d times, want 1", source.calls)
+	}
 }
 
 func TestWebCancelQueuedRelaysIndexAndEchoesRemoval(t *testing.T) {
@@ -147,7 +169,9 @@ func TestWebCancelQueuedSurfacesDaemonConflict(t *testing.T) {
 // TestHubRPCCancelQueuedRelays drives the appwire RPC path: the hub app
 // server must route turn/cancelQueued to the source owning the ref,
 // forwarding the index and echoing the removal, and reject a negative index
-// client-side.
+// client-side. The scripted thread carries the realistic mid-turn caps
+// {Send:false, Steer:true, Queue:true} (review C1), so this also pins that
+// the relay gates on Queue — a Send-gated relay would 503 here.
 func TestHubRPCCancelQueuedRelays(t *testing.T) {
 	_, source := newCancelHarness()
 	source.removedText = "echo me"

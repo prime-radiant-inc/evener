@@ -351,10 +351,10 @@ func (s *WebServer) handlePromoteQueued(w http.ResponseWriter, r *http.Request, 
 // action). The daemon removes the queued follow-up at body.Index so it is
 // never consumed and echoes the removed entry's full text + image count,
 // which the hub passes through so the client can verify the removal matched
-// its snapshot and warn about dropped attachments. Rides on the Send
-// capability — unlike promote, cancel needs no in-flight turn: a queued
-// entry is cancellable whenever it is still queued, including entries
-// buffered on an idle session (where Queue/Steer are false). The daemon
+// its snapshot and warn about dropped attachments. Rides on the Queue
+// capability — the same gate as turn/queue. It must NOT gate on Send:
+// Send is false while a turn is in flight, which is exactly when the queue
+// preview (and its cancel/edit buttons) exists (review C1). The daemon
 // returns Conflict when the index no longer resolves or the queue shifted
 // under the client's snapshot (review F1).
 func (s *WebServer) handleCancelQueued(w http.ResponseWriter, r *http.Request, id string) {
@@ -372,7 +372,7 @@ func (s *WebServer) handleCancelQueued(w http.ResponseWriter, r *http.Request, i
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.ensureSessionActionAvailable(id, "send"); err != nil {
+	if err := s.ensureSessionActionAvailable(id, "queue"); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}

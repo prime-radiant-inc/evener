@@ -2107,11 +2107,13 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   border-color: var(--accent);
   outline: none;
 }
-.queue-preview-item .qp-edit:disabled {
+.queue-preview-item .qp-edit:disabled,
+.queue-preview-item .qp-cancel:disabled {
   opacity: 0.4;
   cursor: default;
 }
-.queue-preview-item .qp-edit:disabled:hover {
+.queue-preview-item .qp-edit:disabled:hover,
+.queue-preview-item .qp-cancel:disabled:hover {
   color: var(--ink-3);
   border-color: var(--line);
 }

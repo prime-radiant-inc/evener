@@ -6649,13 +6649,38 @@
       }
     },
 
+    // setQueuedRowActionsDisabled disables/enables one queue-preview row's
+    // edit + cancel buttons while a cancel/edit request for that entry is
+    // in flight (review M1): a double-click must not append the text to the
+    // composer twice or fire a second cancel that Conflicts confusingly.
+    // Re-enabling respects the image-only rule — an entry with no text
+    // keeps its edit button disabled.
+    setQueuedRowActionsDisabled(idx, disabled) {
+      const list = document.querySelector("[data-queue-list]");
+      if (!list) return;
+      const editBtn = list.querySelector('[data-edit-index="' + idx + '"]');
+      const cancelBtn = list.querySelector('[data-cancel-index="' + idx + '"]');
+      if (cancelBtn) cancelBtn.disabled = disabled;
+      if (editBtn) {
+        const texts = (this.queueState && this.queueState.texts) || [];
+        const imageOnly = typeof texts[idx] === "string" && texts[idx].trim() === "";
+        editBtn.disabled = disabled || imageOnly;
+      }
+    },
+
     // cancelQueuedMessage removes one queued follow-up so it is never
     // consumed (issue #23). On success the daemon's thread/queueChanged
     // re-renders the preview without the row; on failure (already consumed,
     // queue shifted under the preview) the row stays and the error banner
-    // says so — nothing is silently removed.
+    // says so — nothing is silently removed. The row's buttons are disabled
+    // for the duration so a second click can't double-fire (review M1).
     async cancelQueuedMessage(idx, entryId) {
-      await this.removeQueuedEntry(idx, entryId, "cancel failed");
+      this.setQueuedRowActionsDisabled(idx, true);
+      try {
+        await this.removeQueuedEntry(idx, entryId, "cancel failed");
+      } finally {
+        this.setQueuedRowActionsDisabled(idx, false);
+      }
     },
 
     // restoreTextToComposer puts text back into the composer without
@@ -6693,11 +6718,19 @@
         return;
       }
       if (text.trim() === "") return; // image-only entry; the row's edit button is disabled
-      this.restoreTextToComposer(text);
-      const removed = await this.removeQueuedEntry(idx, entryId,
-        "edit: your text is in the composer, but the queued copy could not be removed (it was already consumed or the queue changed) — delete the composer text if you don't want to resend it");
-      if (removed && typeof removed.removedImages === "number" && removed.removedImages > 0) {
-        this.appendBanner("warning", "edit: " + removed.removedImages + " image attachment(s) on the queued message were not restored — re-attach them before resending", { source: "hub", title: "Hub edit" });
+      // Disable the row's buttons before mutating the composer so a
+      // double-click can't append the text twice or fire a second cancel
+      // that Conflicts confusingly (review M1).
+      this.setQueuedRowActionsDisabled(idx, true);
+      try {
+        this.restoreTextToComposer(text);
+        const removed = await this.removeQueuedEntry(idx, entryId,
+          "edit: your text is in the composer, but the queued copy could not be removed (it was already consumed or the queue changed) — delete the composer text if you don't want to resend it");
+        if (removed && typeof removed.removedImages === "number" && removed.removedImages > 0) {
+          this.appendBanner("warning", "edit: " + removed.removedImages + " image attachment(s) on the queued message were not restored — re-attach them before resending", { source: "hub", title: "Hub edit" });
+        }
+      } finally {
+        this.setQueuedRowActionsDisabled(idx, false);
       }
     },
 

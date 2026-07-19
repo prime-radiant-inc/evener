@@ -392,13 +392,13 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.TurnCancelQueuedResponse{}, err
 		}
-		// cancelQueued rides on the Send capability, not Steer: unlike
-		// promote it needs no in-flight turn — a queued entry is cancellable
-		// whenever it is still queued, including entries buffered on an idle
-		// session (where Queue/Steer are false but Send is true). The daemon
-		// checks the live queue itself and returns Conflict when the index
-		// no longer resolves or the expected id mismatches (review F1).
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "send"); err != nil {
+		// cancelQueued rides on the Queue capability — the same gate as
+		// turn/queue. It must NOT gate on Send: Send is false while a turn
+		// is in flight, which is exactly when the queue preview (and its
+		// cancel/edit buttons) exists (review C1). The daemon checks the
+		// live queue itself and returns Conflict when the index no longer
+		// resolves or the expected id mismatches (review F1).
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
 			return appwire.TurnCancelQueuedResponse{}, err
 		}
 		return source.CancelQueued(ctx, params)

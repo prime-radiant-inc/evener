@@ -50,6 +50,7 @@ const { window } = dom;
 window.marked = { parse: (t) => t };
 
 let fetchBehavior = { ok: true, status: 200, body: { removedText: "", removedImages: 0 } };
+let deferredFetchSettle = null;
 const fetchLog = [];
 window.fetch = (url, opts) => {
   if (typeof url === "string" && url.includes("/tasks")) {
@@ -62,12 +63,16 @@ window.fetch = (url, opts) => {
   }
   fetchLog.push({ url, opts });
   const b = fetchBehavior;
-  return Promise.resolve({
+  const respond = () => ({
     ok: b.ok,
     status: b.status,
     json: () => Promise.resolve(b.body || {}),
     text: () => Promise.resolve(b.ok ? JSON.stringify(b.body || {}) : (b.text || "conflict")),
   });
+  // defer: hold the response until the test settles it explicitly, so a
+  // request can be observed while still in flight (review M1).
+  if (b.defer) return new Promise(resolve => { deferredFetchSettle = () => resolve(respond()); });
+  return Promise.resolve(respond());
 };
 
 Object.defineProperty(window.HTMLTextAreaElement.prototype, "scrollHeight", {
@@ -282,6 +287,61 @@ async function testEditWithoutTextsDegradesHonestly() {
   pass(fetchLog.length === 1, "cancel should still work without texts, got " + fetchLog.length + " calls");
 }
 
+async function testInFlightGuardPreventsDoubleFire() {
+  // Review M1: while a cancel/edit request for an entry is in flight, the
+  // row's edit + cancel buttons are disabled — a double-click must not
+  // append the text to the composer twice or fire a second cancel that
+  // Conflicts confusingly.
+  primeQueue(["guard me"], ["q_a_jjj"], ["guard me"]);
+  fetchLog.length = 0;
+  fetchBehavior = { defer: true };
+  const row = list.children[0];
+  const editBtn = row.querySelector("[data-edit-index]");
+  const cancelBtn = row.querySelector("[data-cancel-index]");
+
+  editBtn.click();
+  await wait(10);
+  pass(fetchLog.length === 1, "expected one in-flight cancel, got " + fetchLog.length);
+  pass(editBtn.disabled === true, "edit button should be disabled while the request is in flight");
+  pass(cancelBtn.disabled === true, "cancel button should be disabled while the request is in flight");
+
+  // Double-clicks on the disabled buttons are no-ops.
+  editBtn.click();
+  cancelBtn.click();
+  await wait(10);
+  pass(fetchLog.length === 1, "double-click must not fire a second request, got " + fetchLog.length);
+  pass(composer.value === "guard me",
+    "composer should hold the text exactly once, got " + JSON.stringify(composer.value));
+
+  // Settle: the buttons re-enable for the (still-queued, in this test) row.
+  deferredFetchSettle();
+  await wait(20);
+  pass(cancelBtn.disabled === false, "cancel button should re-enable after the request settles");
+  pass(editBtn.disabled === false, "edit button should re-enable after the request settles");
+
+  composer.value = "";
+  composer.dispatchEvent(new window.Event("input", { bubbles: true }));
+}
+
+async function testInFlightGuardKeepsImageOnlyEditDisabled() {
+  // Re-enabling after a settle must not re-enable the edit button of an
+  // image-only entry (nothing to recompose).
+  primeQueue(["[image]"], ["q_b_kkk"], [""]);
+  fetchLog.length = 0;
+  fetchBehavior = { defer: true };
+  const row = list.children[0];
+  const editBtn = row.querySelector("[data-edit-index]");
+  const cancelBtn = row.querySelector("[data-cancel-index]");
+  cancelBtn.click();
+  await wait(10);
+  pass(fetchLog.length === 1, "expected one in-flight cancel, got " + fetchLog.length);
+  pass(cancelBtn.disabled === true, "cancel button should be disabled in flight");
+  deferredFetchSettle();
+  await wait(20);
+  pass(cancelBtn.disabled === false, "cancel button should re-enable after settle");
+  pass(editBtn.disabled === true, "image-only edit button must stay disabled after settle");
+}
+
 (async () => {
   await testRowsHaveEditAndCancelButtons();
   await testCancelPostsIndexAndEntryId();
@@ -291,6 +351,8 @@ async function testEditWithoutTextsDegradesHonestly() {
   await testEditWarnsAboutDroppedImages();
   await testEditImageOnlyEntryDisabled();
   await testEditWithoutTextsDegradesHonestly();
+  await testInFlightGuardPreventsDoubleFire();
+  await testInFlightGuardKeepsImageOnlyEditDisabled();
 
   if (failures.length === 0) {
     console.log("PASS: queue-preview per-message edit and cancel");
