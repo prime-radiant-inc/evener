@@ -49,6 +49,54 @@ read.bodyEnd(readState, { output: marker }, marker);
 pass(readState.body.wrap.querySelector(".read-tool-preview").textContent.startsWith("HEAD-MARKER"),
   "read bodyEnd keeps the head-based clip");
 
-if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
-console.log("PASS: shell output streams append-only; fold builds at bodyEnd");
-process.exit(0);
+// ── Frame-batched live deltas write the pre ONCE per frame (F4) ──────────
+// Three shell deltas inside one batched flush() must coalesce through the
+// per-call last-wins map and drain at settleFrame: a single full-body write
+// with the final text, not one textContent replace (+ scrollHeight read) per
+// delta. Probe: MutationObserver childList records on the pre (jsdom emits
+// exactly one record per textContent assignment — verified).
+(async () => {
+  const dom2 = new JSDOM(`<!DOCTYPE html><html><body>
+  <div class="workspace-actions">
+    <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
+    <button data-details-trigger><span class="panel-toggle-label">details</span></button>
+  </div>
+  <header class="workspace-header" data-session-id="01TEST"></header>
+  <div id="conversation" data-session-id="01TEST" data-state="active"></div>
+  <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
+</body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  const win2 = dom2.window;
+  win2.marked = { parse: (t) => t };
+  win2.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
+  require("./load-renderer").evalRenderer(win2);
+  const conv2 = win2.document.getElementById("conversation");
+  const R2 = win2.SerfRenderer;
+  R2.init(conv2);
+  win2.SerfAppwire = {
+    eventsFromNotification: (m, p) => m === "test/tool-delta"
+      ? [["TOOL_CALL_OUTPUT_DELTA", { call_id: p.call_id, delta: p.delta }]] : [],
+  };
+  await new Promise((r) => setTimeout(r, 30));
+  R2.handleData("TURN_STARTED", { turnId: "t9" });
+  R2.handleData("TOOL_CALL_START", { call_id: "c9", tool_name: "shell", arguments_json: JSON.stringify({ command: "make test" }) });
+  const pre2 = conv2.querySelector(".tool-call.shell pre");
+  pass(!!pre2, "shell body pre exists at TOOL_CALL_START");
+  let writes = 0;
+  const mo = new win2.MutationObserver((recs) => { for (const r of recs) if (r.type === "childList") writes++; });
+  mo.observe(pre2, { childList: true });
+  R2.enqueueLiveNotification("test/tool-delta", { call_id: "c9", delta: "one\n" });
+  R2.enqueueLiveNotification("test/tool-delta", { call_id: "c9", delta: "two\n" });
+  R2.enqueueLiveNotification("test/tool-delta", { call_id: "c9", delta: "three\n" });
+  R2.flush(); // one frame: apply all three, settle once
+  pass(pre2.textContent === "one\ntwo\nthree\n", "the drain writes the FINAL accumulated text (got " + JSON.stringify(pre2.textContent) + ")");
+  await new Promise((r) => setTimeout(r, 0)); // deliver mutation records
+  pass(writes === 1, "three deltas in one flush → the pre is written ONCE (got " + writes + " writes)");
+  mo.disconnect();
+  // The sync path is unchanged: handle→settleFrame drains within the same call.
+  R2.handleData("TOOL_CALL_OUTPUT_DELTA", { call_id: "c9", delta: "four\n" });
+  pass(pre2.textContent === "one\ntwo\nthree\nfour\n", "sync handleData drains the deferred delta in the same call");
+
+  if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
+  console.log("PASS: shell output streams append-only; fold builds at bodyEnd; live deltas write once per frame");
+  process.exit(0);
+})();

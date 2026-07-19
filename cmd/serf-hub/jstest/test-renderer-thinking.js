@@ -65,6 +65,25 @@ const R = window.SerfRenderer;
   R.handleData("TURN_COMPLETED", {});
   pass(conv.querySelectorAll(".think").length === 1, "empty thinking block is removed on turn complete");
 
+  // ── Reconnect replay must not strand reasoning state (F1) ──────────────
+  // resetTranscriptReplay wipes the conversation DOM. If reasoningEl keeps
+  // pointing at the detached node, beginReasoning early-returns and every
+  // post-reconnect delta appends to a node that isn't on the page.
+  R.handleData("REASONING_START", { itemId: "r3" });
+  R.handleData("REASONING_DELTA", { delta: "stale pre-reconnect thought", itemId: "r3" });
+  pass(R.reasoningEl && R.reasoningEl.isConnected, "pre-reset reasoning element is live in the DOM");
+  R.resetTranscriptReplay();
+  pass(R.reasoningEl === null, "reset drops the detached reasoning element handle");
+  pass(R.reasoningBuf === "", "reset clears the reasoning buffer");
+  pass(conv.querySelectorAll(".think").length === 0, "reset wipes the transcript DOM");
+  R.handleData("REASONING_START", { itemId: "r4" });
+  R.handleData("REASONING_DELTA", { delta: "fresh post-reconnect thought", itemId: "r4" });
+  const freshThink = conv.querySelector(".think");
+  pass(!!freshThink && freshThink.isConnected, "fresh reasoning renders into the live conversation after reset");
+  const freshBody = conv.querySelector(".think .think-body");
+  pass(freshBody && freshBody.textContent === "fresh post-reconnect thought",
+    "post-reconnect deltas render the NEW content only (got " + JSON.stringify(freshBody && freshBody.textContent) + ")");
+
   if (failures.length > 0) {
     for (const f of failures) console.log(f);
     process.exit(1);

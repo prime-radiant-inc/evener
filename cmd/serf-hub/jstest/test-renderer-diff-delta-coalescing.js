@@ -1,9 +1,8 @@
-// Diff renderers (edit/write/apply_patch) rebuild the whole diff DOM per
-// bodyDelta call, so output deltas for one diff tool inside a single batched
-// flush must coalesce to ONE render per frame (last output wins), drained at
-// settleFrame. Cheap single-textContent renderers (shell) still stream per
-// delta, and a pending coalesced delta must never clobber bodyEnd's final
-// render at TOOL_CALL_END.
+// Every tool renderer's bodyDelta rewrites the whole body (diffs rebuild the
+// DOM; shell replaces textContent and reads scrollHeight), so output deltas
+// for one tool inside a single batched flush must coalesce to ONE render per
+// frame (last output wins), drained at settleFrame. A pending coalesced delta
+// must never clobber bodyEnd's final render at TOOL_CALL_END.
 const { JSDOM } = require("jsdom");
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
@@ -60,7 +59,8 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(pre.textContent.includes("+final") && !pre.textContent.includes("stale-pending"),
     "bodyEnd's final output stands after the settle");
 
-  // Cheap single-textContent renderers are untouched: shell still streams per delta.
+  // Cheap single-textContent renderers coalesce the same way: two shell
+  // deltas in one frame render once at settle, with the accumulated output.
   R.handleData("TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "make" }) });
   const shellRenderer = window.SerfRendererInternal.toolRendererFor("shell");
   let shellRenders = 0;
@@ -68,9 +68,13 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   shellRenderer.bodyDelta = (state, out) => { shellRenders++; return realShellDelta(state, out); };
   R.applyEvent("TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "a" });
   R.applyEvent("TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "b" });
-  pass(shellRenders === 2, "shell bodyDelta stays per-delta, not coalesced (got " + shellRenders + ")");
+  pass(shellRenders === 0, "shell bodyDelta defers mid-frame like every other renderer (got " + shellRenders + ")");
+  R.settleFrame(false, conv.children.length);
+  pass(shellRenders === 1, "shell coalesces to one write per frame, last output wins (got " + shellRenders + ")");
+  const shellPre = conv.querySelector(".tool-call.shell pre");
+  pass(shellPre && shellPre.textContent === "ab", "the shell drain writes the accumulated text (got " + JSON.stringify(shellPre && shellPre.textContent) + ")");
 
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
-  console.log("PASS: diff output deltas coalesce to one render per frame; cheap renderers unaffected");
+  console.log("PASS: tool output deltas coalesce to one render per frame per call, last output wins");
   process.exit(0);
 })();

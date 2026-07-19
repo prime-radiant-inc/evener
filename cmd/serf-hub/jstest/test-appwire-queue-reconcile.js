@@ -85,6 +85,33 @@ require("./load-renderer").evalRenderer(window);
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
     "image-only authoritative user items should reconcile pending turn/start chips");
 
+  // Multi-notification flush: two queued turns with DIFFERENT texts confirm
+  // in one batched frame. Reconcile must run per notification, in queue
+  // order — after that notification's events applied, before the next one.
+  const reconcileOrder = [];
+  const realTryReconcile = pending.tryReconcile;
+  pending.tryReconcile = (method, params) => {
+    reconcileOrder.push(method + ":" + ((params && params.text) || ""));
+    return realTryReconcile(method, params);
+  };
+  pending.register({ method: "turn/start", text: "first queued turn" });
+  pending.register({ method: "turn/start", text: "second queued turn" });
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 2, "expected two pending turn chips");
+  notify("item/completed", {
+    threadId: "01TEST",
+    item: { type: "userMessage", text: "first queued turn", images: [] },
+  });
+  notify("item/completed", {
+    threadId: "01TEST",
+    item: { type: "userMessage", text: "second queued turn", images: [] },
+  });
+  assert.deepEqual(reconcileOrder, [], "no reconcile before the frame flushes");
+  window.SerfRenderer.flush();
+  assert.deepEqual(reconcileOrder, ["turn/start:first queued turn", "turn/start:second queued turn"],
+    "reconcile must run per notification in queue order, got " + JSON.stringify(reconcileOrder));
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
+    "both placeholders reconcile inside the single flush");
+
   console.log("PASS test-appwire-queue-reconcile.js");
   process.exit(0);
 })().catch((err) => {

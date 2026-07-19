@@ -2404,8 +2404,10 @@ button.composer-model-value .caret { color: var(--text-dim); }
   white-space: pre-wrap;
   color: var(--text);
 }
-.assistant-message.streaming .streaming-tail::after {
-  content: "▍";
+/* The streaming caret is a real aria-hidden span (renderer.streamingCaret),
+   not a ::after pseudo-element — pseudo content lands in the accessibility
+   tree and screen readers announced "▍" on every chunk. */
+.assistant-message .streaming-tail .streaming-caret {
   color: var(--accent);
 }
 

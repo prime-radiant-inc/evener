@@ -31,6 +31,16 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(typeof R.updateReasoningPreview === "function", "updateReasoningPreview exists");
   const pv = conv.querySelector(".think .pv");
   pass(pv && pv.textContent.includes("first second"), "preview tail reflects the buffer");
+  // ── The preview shows the NEWEST text, not a stale prefix (F5) ─────────
+  // clip(prefix, 200) of the last-400 slice froze the teleprompter on chars
+  // -400..-201 forever. With a >400-char buffer the preview must END with
+  // the live edge of the thought.
+  R.handleData("REASONING_DELTA", { delta: "A".repeat(200), itemId: "r1" });
+  R.handleData("REASONING_DELTA", { delta: "B".repeat(200), itemId: "r1" });
+  const pvText = pv.textContent;
+  pass(pvText.length <= 200, "preview stays bounded to 200 chars (got " + pvText.length + ")");
+  pass(/B+$/.test(pvText) && !pvText.includes("A"), "preview ends with the newest content (B), not the stale prefix (A)");
+  pass(pvText === "B".repeat(200), "preview is exactly the newest 200 normalized chars");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: reasoning appends text nodes; preview tail is bounded");
   process.exit(0);

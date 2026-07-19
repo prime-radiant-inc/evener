@@ -200,7 +200,13 @@
       // a phantom error pill and dirty/pending sets render into detached nodes.
       this.errorAnchorCache = null;
       if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
-      this.pendingDiffDeltas = new Map(); // callId -> {renderer, state, out} (settleFrame coalescing)
+      this.pendingBodyDeltas = new Map(); // callId -> {renderer, state, out} (settleFrame coalescing)
+      // Reasoning state points into the (now swapped) conversation DOM too:
+      // a stale reasoningEl would strand every post-swap delta on a detached
+      // node — beginReasoning early-returns on the truthy handle.
+      this.reasoningEl = null;
+      this.reasoningBuf = "";
+      this.reasoningPreviewDirty = false;
       this.lastFinalizedAssistantEl = null;
       this.activeJobs = new Map();       // appwire jobId -> subagent row el
       this.subagentRowsByDelegate = new Map();   // delegateId -> subagent row els
@@ -1155,7 +1161,13 @@
       this.currentTurnHasAgentWork = false;
       this.errorAnchorCache = null;
       if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
-      if (this.pendingDiffDeltas) this.pendingDiffDeltas.clear();
+      if (this.pendingBodyDeltas) this.pendingBodyDeltas.clear();
+      // The in-flight thought lived in the conversation DOM just cleared.
+      // Without this reset, beginReasoning early-returns on the detached node
+      // and every post-reconnect reasoning delta vanishes into it.
+      this.reasoningEl = null;
+      this.reasoningBuf = "";
+      this.reasoningPreviewDirty = false;
       this.lastFinalizedAssistantEl = null;
     },
 
@@ -1323,6 +1335,8 @@
             history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.reasoningEl = null;
+            this.reasoningBuf = "";
+            this.reasoningPreviewDirty = false;
             this.activeMessages.clear();
             this.activeTools.clear();
             this.activeJobs.clear();
@@ -1337,7 +1351,7 @@
             // so caches holding element references from it must reset too.
             this.errorAnchorCache = null;
             if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
-            if (this.pendingDiffDeltas) this.pendingDiffDeltas.clear();
+            if (this.pendingBodyDeltas) this.pendingBodyDeltas.clear();
             this.lastFinalizedAssistantEl = null;
             taskDescriptions.clear();
             taskDetails.clear();
@@ -1583,13 +1597,13 @@
         for (const m of this.dirtyAssistantMessages) this.renderAssistantMessage(m, m.textBuf);
         this.dirtyAssistantMessages.clear();
       }
-      // Diff renderers defer their per-delta DOM rebuild to here (one render
+      // Tool renderers defer their per-delta body writes to here (one render
       // per frame per call, last output wins) — see appendToolDelta.
-      if (this.pendingDiffDeltas && this.pendingDiffDeltas.size) {
-        for (const pending of this.pendingDiffDeltas.values()) {
+      if (this.pendingBodyDeltas && this.pendingBodyDeltas.size) {
+        for (const pending of this.pendingBodyDeltas.values()) {
           pending.renderer.bodyDelta(pending.state, pending.out);
         }
-        this.pendingDiffDeltas.clear();
+        this.pendingBodyDeltas.clear();
       }
       if (this.reasoningPreviewDirty) {
         this.reasoningPreviewDirty = false;
@@ -2425,22 +2439,40 @@
       m.textBuf += delta;
       if (!m.tailEl && m.textBuf.length > 4096) {
         // Frozen head, raw tail: stop re-parsing a long message per frame. The
-        // DOM parsed so far stays; further deltas stream as plain text and the
-        // whole buffer parses once at finalization. Switches on LENGTH only
-        // (never fence state) and never flips back.
-        this.renderAssistantMessage(m, m.textBuf);
+        // head's parsed DOM FREEZES at the crossing (re-parsing the whole
+        // buffer here would visibly reflow the head and destroy any selection
+        // over it) — it keeps its last settle-render. The crossing delta and
+        // everything after streams as plain text into the tail; the whole
+        // buffer parses once at finalization. Switches on LENGTH only (never
+        // fence state) and never flips back.
         const tail = document.createElement("span");
         tail.className = "streaming-tail";
+        tail.appendChild(document.createTextNode(delta));
+        tail.appendChild(this.streamingCaret());
         m.el.appendChild(tail);
         m.tailEl = tail;
         if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.delete(m);
         return;
       }
       if (m.tailEl) {
-        m.tailEl.appendChild(document.createTextNode(delta));
+        // Insert ahead of the caret so it stays glued to the newest text.
+        m.tailEl.insertBefore(document.createTextNode(delta), m.tailEl.lastChild);
       } else {
         this.markAssistantDirty(m);
       }
+    },
+
+    // streamingCaret builds the live-tail caret as a real aria-hidden span —
+    // the old ::after pseudo-element's content lands in the accessibility
+    // tree, so screen readers announced "▍" on every streamed chunk. The span
+    // disappears with the tail at finalization (innerHTML re-parse), so no
+    // teardown is needed.
+    streamingCaret() {
+      const caret = document.createElement("span");
+      caret.className = "streaming-caret";
+      caret.setAttribute("aria-hidden", "true");
+      caret.textContent = "▍";
+      return caret;
     },
 
     renderAssistantMessage(m, text) {
@@ -2471,16 +2503,28 @@
         // (activeTurnId cleared) a late END REPLACES the finalized block in
         // place — it must never append a duplicate.
         const last = this.lastFinalizedAssistantEl;
-        // The block being replaced must be the transcript tail: after an
-        // intervening turn rendered tool rows (or finalized empty), the
-        // pointer can name an older turn's block — replacing that would
-        // clobber history mid-transcript instead of landing the late text.
-        if (!this.activeTurnId && last && last.isConnected && last === this.conversation.lastElementChild && String(finalText).trim()) {
-          const meta = last.querySelector(".turn-meta");
-          try { last.innerHTML = window.marked.parse(finalText); }
-          catch (e) { last.textContent = finalText; }
-          if (meta) last.appendChild(meta); // re-parse destroyed children; the badge rides back
-          return;
+        // The block being replaced must be the transcript's LAST assistant
+        // block — not the last ELEMENT. SESSION_END finalizes the message and
+        // then appends an end banner (and system lines may follow), so a
+        // lastElementChild check wrongly rejects the replace and appends a
+        // duplicate answer. But the pointer still must not clobber history:
+        // if anything other than banners/system lines followed the block
+        // (an intervening turn's tool rows, another turn's block), the late
+        // text lands as its own block instead.
+        if (!this.activeTurnId && last && last.isConnected && String(finalText).trim()) {
+          const blocks = this.conversation ? this.conversation.querySelectorAll(".assistant-message") : [];
+          let onlyQuietFollowers = true;
+          for (let s = last.nextElementSibling; s; s = s.nextElementSibling) {
+            const cl = s.classList;
+            if (!cl || !(cl.contains("banner") || cl.contains("system-line"))) { onlyQuietFollowers = false; break; }
+          }
+          if (onlyQuietFollowers && blocks.length && blocks[blocks.length - 1] === last) {
+            const meta = last.querySelector(".turn-meta");
+            try { last.innerHTML = window.marked.parse(finalText); }
+            catch (e) { last.textContent = finalText; }
+            if (meta) last.appendChild(meta); // re-parse destroyed children; the badge rides back
+            return;
+          }
         }
         this.appendAssistantBlock(finalText);
         return;
@@ -2591,7 +2635,10 @@
       const el = this.reasoningEl;
       if (!el) return;
       const pv = el.querySelector(".pv");
-      if (pv) pv.textContent = clip(String(this.reasoningBuf || "").slice(-400).replace(/\s+/g, " ").trim(), 200);
+      // Newest 200 chars AFTER whitespace normalization: clipping the PREFIX
+      // of the 400-char slice froze the teleprompter on stale text (chars
+      // -400..-201) and never showed the live edge of the thought.
+      if (pv) pv.textContent = String(this.reasoningBuf || "").slice(-400).replace(/\s+/g, " ").trim().slice(-200);
     },
 
     // finalizeReasoning collapses the in-progress thought to a one-line summary
@@ -2874,17 +2921,15 @@
       if (!m) return;
       m.outputBuf += data.delta || "";
       if (!m.renderer.bodyDelta) return;
-      // Diff renderers (edit/write/apply_patch — their body pre carries
-      // .diff-body) rebuild the whole diff DOM per call, so per-delta renders
-      // inside one batched flush are pure churn: defer to settleFrame, keyed
-      // by call — last output wins. Cheap single-textContent renderers
-      // (shell/read) still stream per delta.
-      if (m.body && m.body.pre && m.body.pre.classList && m.body.pre.classList.contains("diff-body")) {
-        if (!this.pendingDiffDeltas) this.pendingDiffDeltas = new Map();
-        this.pendingDiffDeltas.set(data.call_id || data.item_id, { renderer: m.renderer, state: m, out: m.outputBuf });
-        return;
-      }
-      m.renderer.bodyDelta(m, m.outputBuf);
+      // Every tool renderer's bodyDelta rewrites the whole body (diffs rebuild
+      // the DOM; shell/read replace the full textContent and read scrollHeight
+      // to re-pin). Inside one batched flush, N deltas → N full rewrites is
+      // pure churn: defer to settleFrame through a per-call last-wins map.
+      // Sync paths (handleData per event) drain at the same call's settle, so
+      // per-event semantics are unchanged. bodyEnd at TOOL_CALL_END stays
+      // immediate.
+      if (!this.pendingBodyDeltas) this.pendingBodyDeltas = new Map();
+      this.pendingBodyDeltas.set(data.call_id || data.item_id, { renderer: m.renderer, state: m, out: m.outputBuf });
     },
 
     finalizeToolCall(data) {
@@ -2894,9 +2939,9 @@
       // bodyEnd renders the authoritative final output below; a still-pending
       // coalesced delta for this call would re-render the stale delta buffer
       // over it at settleFrame, so drop it first.
-      if (this.pendingDiffDeltas) {
-        this.pendingDiffDeltas.delete(data.call_id);
-        this.pendingDiffDeltas.delete(data.item_id);
+      if (this.pendingBodyDeltas) {
+        this.pendingBodyDeltas.delete(data.call_id);
+        this.pendingBodyDeltas.delete(data.item_id);
       }
 
       const ok = !data.error && toolLooksGood(data);

@@ -35,7 +35,7 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 
 (async () => {
   // Case 1: a single delta that crosses the 4KB threshold. The crossing delta
-  // itself is rendered into the frozen head, so the tail is empty.
+  // streams raw into the fresh tail; the (unrendered) head freezes as-is.
   {
     const { R } = makeRenderer();
     await new Promise((r) => setTimeout(r, 30));

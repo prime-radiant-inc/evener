@@ -77,6 +77,28 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.handleData("ASSISTANT_TEXT_START", {});
   R.handleData("TURN_COMPLETED", { turnId: "t4", turn: { id: "t4", durationMs: 50 } });
   pass(R.lastFinalizedAssistantEl === null, "empty finalize clears the replace pointer");
+  // ── Late END after SESSION_END's banner must still REPLACE (F3) ────────
+  // SESSION_END finalizes the stream and then appends an end banner, so the
+  // finalized block is no longer conversation.lastElementChild. A replace
+  // guard keyed on lastElementChild rejects the late END and appends a
+  // duplicate answer.
+  R.handleData("TURN_STARTED", { turnId: "t5" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "banner case answer" });
+  R.handleData("TURN_COMPLETED", { turnId: "t5", turn: { id: "t5", durationMs: 900 } });
+  R.handleData("SESSION_END", { reason: "interrupted" });
+  const banner = conv.querySelector(".banner.note");
+  pass(!!banner && /interrupted/.test(banner.textContent), "SESSION_END appended the end banner");
+  pass(conv.lastElementChild === banner, "banner follows the finalized assistant block");
+  const t5Block = conv.querySelector('.assistant-message[data-turn-id="t5"]');
+  const countBefore = conv.querySelectorAll(".assistant-message").length;
+  R.handleData("ASSISTANT_TEXT_END", { text: "banner case answer, final" });
+  msgs = conv.querySelectorAll(".assistant-message");
+  pass(msgs.length === countBefore, "late END after the banner replaces in place — no duplicate (got " + msgs.length + ")");
+  pass(msgs[msgs.length - 1] === t5Block, "the SAME t5 block was replaced, not a new one appended");
+  pass(t5Block.textContent.includes("final"), "late END content applied over the finalized block");
+  pass(conv.querySelector(".banner.note") === banner, "end banner still present after the replace");
+  pass(conv.lastElementChild === banner, "banner still follows the replaced block");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: finalization is idempotent across TURN_COMPLETED and a late END");
   process.exit(0);

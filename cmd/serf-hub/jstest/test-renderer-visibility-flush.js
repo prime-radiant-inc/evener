@@ -33,6 +33,21 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   // Tab hides before the scheduled flush fires → event must still apply.
   window.document.dispatchEvent(new window.Event("visibilitychange"));
   pass(conv.querySelector(".assistant-message").textContent === "x", "hide drains the queue");
+
+  // Hidden tab with NO visibilitychange: rAF never fires while hidden, so the
+  // hidden-path timer (250ms) must drain the queue on its own.
+  Object.defineProperty(window.document, "hidden", { value: true, configurable: true });
+  R.enqueueLiveNotification("test/delta", { delta: "y" });
+  pass(conv.querySelector(".assistant-message").textContent === "x", "delta queued while hidden (not yet applied)");
+  await new Promise((r) => setTimeout(r, 400)); // hidden-path timer is 250ms
+  pass(conv.querySelector(".assistant-message").textContent === "xy",
+    "hidden-path timer flush drains the queue without a visibilitychange");
+
+  // Back to visible: a visibilitychange drains immediately again (both directions).
+  Object.defineProperty(window.document, "hidden", { value: false, configurable: true });
+  R.enqueueLiveNotification("test/delta", { delta: "z" });
+  window.document.dispatchEvent(new window.Event("visibilitychange"));
+  pass(conv.querySelector(".assistant-message").textContent === "xyz", "show drains the queue");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: visibilitychange drains the frame queue");
   process.exit(0);
