@@ -302,6 +302,7 @@ func DefJobList() llm.ToolDefinition {
 				"include_nested":      map[string]any{"type": "boolean", "default": false},
 				"include_descendants": map[string]any{"type": "boolean", "default": false, "description": "Walk the live descendant tree: include every live descendant's jobs, each annotated with owner_session_id and depth. A dead descendant contributes only its terminal record."},
 				"limit":               map[string]any{"type": "integer", "default": 50, "maximum": 100},
+				"offset":              map[string]any{"type": "integer", "default": 0, "description": "Window start into the newest-first listing; use with limit to page (footer reports 'showing A-B of N jobs')."},
 			},
 			"required": []any{},
 		},

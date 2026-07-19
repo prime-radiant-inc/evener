@@ -121,13 +121,13 @@ func TestW2Dlg_LiveSubagentSession_Guards(t *testing.T) {
 // than reporting an empty success.
 func TestW2Dlg_WalkDescendantJobs_Depth0Error(t *testing.T) {
 	t.Parallel()
-	if _, err := (&Session{}).walkDescendantJobs(listFilter{}); err == nil {
+	if _, _, err := (&Session{}).walkDescendantJobs(listFilter{}); err == nil {
 		t.Fatal("walkDescendantJobs depth-0 no jobmanager: want error")
 	}
 
 	s := w2dlg_session(t)
 	w2dlg_corruptSessionLog(t, s)
-	if _, err := s.walkDescendantJobs(listFilter{}); err == nil {
+	if _, _, err := s.walkDescendantJobs(listFilter{}); err == nil {
 		t.Fatal("walkDescendantJobs depth-0 corrupt store: want error")
 	}
 }

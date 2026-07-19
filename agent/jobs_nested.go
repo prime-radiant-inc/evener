@@ -62,10 +62,10 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 // recursing into the live child. Each job_id therefore appears once, at its
 // real owner's depth — except a dead descendant's job, whose only surviving row
 // is the forwarded copy at the ancestor store's depth.
-func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) {
+func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, int, error) {
 	merged := map[string]descendantWalkRow{}
 	if err := s.collectDescendantJobs(s, 0, filter, merged); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	rows := make([]descendantWalkRow, 0, len(merged))
@@ -80,6 +80,14 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 		}
 		return rows[i].rec.StartedAt.After(rows[j].rec.StartedAt)
 	})
+	total := len(rows)
+	if filter.Offset > 0 {
+		if filter.Offset >= len(rows) {
+			rows = nil
+		} else {
+			rows = rows[filter.Offset:]
+		}
+	}
 	if filter.Limit > 0 && len(rows) > filter.Limit {
 		rows = rows[:filter.Limit]
 	}
@@ -88,7 +96,7 @@ func (s *Session) walkDescendantJobs(filter listFilter) ([]jobListEntry, error) 
 	for _, row := range rows {
 		jobs = append(jobs, projectDescendantWalkRow(s, row))
 	}
-	return jobs, nil
+	return jobs, total, nil
 }
 
 func projectDescendantWalkRow(viewer *Session, row descendantWalkRow) jobListEntry {
@@ -145,7 +153,8 @@ func (s *Session) collectDescendantJobs(node *Session, depth int, filter listFil
 	storeFilter.IncludeNested = true
 	storeFilter.IncludeDescendants = false
 	storeFilter.Limit = 0
-	recs, err := jm.listWithError(storeFilter)
+	storeFilter.Offset = 0
+	recs, _, err := jm.listWithError(storeFilter)
 	if err != nil {
 		if depth == 0 {
 			return err

@@ -1499,7 +1499,7 @@ func subagentStatusFromJobStatus(status jobstore.Status) SubagentStatus {
 }
 
 func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*jobstore.JobRecord, error) {
-	jobs, err := jm.listWithError(listFilter{
+	jobs, _, err := jm.listWithError(listFilter{
 		Type:   jobstore.JobDelegate,
 		Status: jobstore.StatusRunning,
 	})

@@ -908,17 +908,20 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		return "", err
 	}
 	var jobs []jobListEntry
+	total := 0
 	if filter.IncludeDescendants {
-		descJobs, listErr := s.walkDescendantJobs(filter)
+		descJobs, descTotal, listErr := s.walkDescendantJobs(filter)
 		if listErr != nil {
 			return "", listErr
 		}
 		jobs = descJobs
+		total = descTotal
 	} else {
-		recs, listErr := jm.listWithError(filter)
+		recs, recTotal, listErr := jm.listWithError(filter)
 		if listErr != nil {
 			return "", listErr
 		}
+		total = recTotal
 		jobs = make([]jobListEntry, 0, len(recs))
 		for _, rec := range recs {
 			jobs = append(jobs, projectJobRecord(s, rec))
@@ -935,6 +938,8 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	result := jobListResult{
 		Jobs:          jobs,
 		Count:         len(jobs),
+		Offset:        filter.Offset,
+		Total:         total,
 		Delegates:     delegates,
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
@@ -1038,7 +1043,14 @@ func formatJobList(out jobListResult) string {
 	if len(out.Jobs) == 0 {
 		b.WriteString("No jobs.\n")
 	}
-	fmt.Fprintf(&b, "\n%d job(s).", out.Count)
+	if out.Offset > 0 || out.Total > len(out.Jobs) {
+		fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Jobs), out.Total)
+	} else {
+		fmt.Fprintf(&b, "\n%d job(s).", out.Count)
+	}
+	if len(out.Delegates) > 0 {
+		fmt.Fprintf(&b, " %d delegate(s).", len(out.Delegates))
+	}
 	if out.DelegationAllowance > 0 {
 		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
 	}
@@ -1219,6 +1231,8 @@ type jobOutputMatch struct {
 type jobListResult struct {
 	Jobs      []jobListEntry      `json:"jobs"`
 	Count     int                 `json:"count"`
+	Offset    int                 `json:"offset,omitempty"`
+	Total     int                 `json:"total"`
 	Delegates []delegateListEntry `json:"delegates,omitempty"`
 	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
 	// when they carry information: no active watches, no recent watch history, and
@@ -1884,6 +1898,13 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	if limit > maxJobListLimit {
 		limit = maxJobListLimit
 	}
+	offset := 0
+	if n, ok := shellIntArg(args, "offset"); ok {
+		offset = n
+	}
+	if offset < 0 {
+		return listFilter{}, errors.New("offset must be non-negative")
+	}
 
 	statuses, err := jobStatusArrayArg(args, "status")
 	if err != nil {
@@ -1897,6 +1918,7 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 		Statuses:           statuses,
 		Types:              types,
 		Limit:              limit,
+		Offset:             offset,
 		IncludeNested:      shellBoolArg(args, "include_nested"),
 		IncludeDescendants: shellBoolArg(args, "include_descendants"),
 	}, nil
@@ -2112,7 +2134,7 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 }
 
 func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
-	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	recs, _, err := jm.listWithError(listFilter{IncludeNested: true})
 	if err != nil {
 		return nil, err
 	}

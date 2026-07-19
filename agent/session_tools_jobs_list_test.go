@@ -1336,3 +1336,91 @@ func TestJobListSurfacesRecentWatches(t *testing.T) {
 		t.Fatalf("recent_watches = %+v, want one cleared entry on %s", got.RecentWatches, rec.JobID)
 	}
 }
+
+// seedShellJobRecords appends n completed shell job records, oldest first, to
+// the session's job store so job_list has a multi-page listing to window.
+func seedShellJobRecords(t *testing.T, s *Session, n int) {
+	t.Helper()
+	base := time.Unix(1_700_000_000, 0).UTC()
+	for i := 0; i < n; i++ {
+		started := base.Add(time.Duration(i) * time.Second)
+		jobID := fmt.Sprintf("job_seed_%03d", i)
+		if err := s.jobManager.appendJobEvents([]jobstore.Event{
+			{
+				Kind:             jobstore.EventJobStarted,
+				TS:               started,
+				JobID:            jobID,
+				Type:             jobstore.JobShell,
+				OwnerSessionID:   s.ID(),
+				VisibleToSession: s.ID(),
+				StartedAt:        &started,
+			},
+			{
+				Kind:   jobstore.EventJobFinished,
+				TS:     started,
+				JobID:  jobID,
+				Status: jobstore.StatusCompleted,
+			},
+		}); err != nil {
+			t.Fatalf("seed job %d: %v", i, err)
+		}
+	}
+}
+
+func callJobListText(t *testing.T, s *Session, argsJSON string) string {
+	t.Helper()
+	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(argsJSON),
+	})
+	if call.IsError {
+		t.Fatalf("job_list returned error: %s", call.Output)
+	}
+	return call.Output
+}
+
+// TestJobListOffsetWindowing pins the windowed footer: an offset into the
+// newest-first listing renders "showing A-B of N jobs." with the full filtered
+// total, while a listing that fits on one page keeps the plain "N job(s)."
+// footer. Negative offsets are rejected.
+func TestJobListOffsetWindowing(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newDelegateTestSession(t, c)
+	seedShellJobRecords(t, s, 120)
+
+	out := callJobListText(t, s, `{"limit": 50, "offset": 50}`)
+	if !strings.Contains(out, "showing 51-100 of 120 jobs.") {
+		t.Fatalf("offset window footer missing, output tail: %q", out[len(out)-200:])
+	}
+	out = callJobListText(t, s, `{"limit": 50, "offset": 100}`)
+	if !strings.Contains(out, "showing 101-120 of 120 jobs.") {
+		t.Fatalf("partial window footer missing, output tail: %q", out[len(out)-200:])
+	}
+	// A truncated listing (clamp at max limit) reports the window honestly.
+	out = callJobListText(t, s, `{"limit": 100}`)
+	if !strings.Contains(out, "showing 1-100 of 120 jobs.") {
+		t.Fatalf("truncated listing must show the window footer: %q", out[len(out)-200:])
+	}
+	// A listing that fits on one page keeps the plain count footer.
+	small := newDelegateTestSession(t, c)
+	seedShellJobRecords(t, small, 3)
+	out = callJobListText(t, small, `{}`)
+	if strings.Contains(out, "showing") {
+		t.Fatalf("full-page listing must not show a window footer: %q", out)
+	}
+	if !strings.Contains(out, "3 job(s).") {
+		t.Fatalf("plain count footer missing: %q", out)
+	}
+	// Negative offset is rejected.
+	call := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{"offset": -1}`),
+	})
+	if !call.IsError {
+		t.Fatal("negative offset accepted")
+	}
+}
