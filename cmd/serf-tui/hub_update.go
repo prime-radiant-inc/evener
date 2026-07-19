@@ -521,6 +521,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spawnHarness = m.spawnHarnesses[0]
 		}
 		m.spawnModels = msg.models
+		m.spawnRecentDirs = msg.recentDirs
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
 			if msg.modelErr != nil && m.spawnHarnessUsesSerfModels() {

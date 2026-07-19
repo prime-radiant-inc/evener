@@ -113,6 +113,13 @@ type hubModel struct {
 	spawnDirInput           textinput.Model
 	spawnSubmitting         bool
 	spawnFocus              hubSpawnField
+	// spawnRecentDirs holds the hub's most recently used project dirs (the
+	// Dir field's prepopulated dropdown options, issue #35), fetched with the
+	// spawn options. spawnRecentIdx tracks the tab-cycle position: the index
+	// of the recent dir currently shown in the field, or -1 when the field
+	// holds anything else.
+	spawnRecentDirs []string
+	spawnRecentIdx  int
 
 	detail  hubSessionDetail
 	session model
@@ -200,7 +207,7 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 		stateDir = strings.TrimSpace(stateDirs[0])
 	}
 	session := newModel(nil)
-	model := hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
+	model := hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput(), spawnRecentIdx: -1}
 	// Construct the pending coordinator with a buffering placeholder
 	// send. main.go calls model.pending.setSend(program.Send) after
 	// tea.NewProgram so coordinator-emitted msgs reach Update. Until
