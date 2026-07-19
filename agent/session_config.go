@@ -417,6 +417,11 @@ type spawnConfig struct {
 	// on the parent struct, like its siblings).
 	delegationAllowance int
 
+	// driveCounter is the tree-wide drive-down notification-turn counter,
+	// minted and inherited exactly like treeCounter but budgeted separately
+	// (defaultMaxConcurrentDriveTurns) so drives can never starve spawns.
+	driveCounter *treeCounter
+
 	// treeCounter is the tree-wide running delegate-turn counter. Created once
 	// by the root session (when parentSessionID == "") and inherited by all
 	// child sessions via spawnConfig. reserve/release are wired into the

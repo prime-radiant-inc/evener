@@ -236,6 +236,7 @@ type runningJob struct {
 // teardown paths (finalize, abandon, abandon-all) race on the same run.
 type treeReservation struct {
 	counter  *treeCounter
+	kind     slotKind
 	released atomic.Bool
 }
 
@@ -244,7 +245,7 @@ func (r *treeReservation) release() {
 		return
 	}
 	if r.released.CompareAndSwap(false, true) {
-		r.counter.release()
+		r.counter.releaseKind(r.kind)
 	}
 }
 

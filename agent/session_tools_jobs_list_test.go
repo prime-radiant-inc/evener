@@ -1424,3 +1424,20 @@ func TestJobListOffsetWindowing(t *testing.T) {
 		t.Fatal("negative offset accepted")
 	}
 }
+
+// TestJobListShowsTurnSlotOccupancy pins the diagnostic footer line: while any
+// tree slot is held, job_list reports the slot usage and the job/drive split.
+func TestJobListShowsTurnSlotOccupancy(t *testing.T) {
+	t.Parallel()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	s := newDelegateTestSession(t, c)
+	s.treeCounter = newTreeCounter(50)
+	if !s.treeCounter.reserve(slotKindJob) || !s.treeCounter.reserve(slotKindDrive) {
+		t.Fatal("setup reserves failed")
+	}
+	out := callJobListText(t, s, `{}`)
+	if !strings.Contains(out, "delegate turn slots: 2/50 in use (1 jobs, 1 drive turns).") {
+		t.Fatalf("occupancy line missing: %q", out)
+	}
+}

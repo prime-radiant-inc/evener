@@ -146,11 +146,11 @@ func jdraResumeClosed(t *testing.T) {
 func jdraAttachCapacity(t *testing.T) {
 	t.Helper()
 	p, c := newTestSession(t), newTestSession(t)
-	for p.treeCounter.reserve() {
+	for p.treeCounter.reserve(slotKindJob) {
 	}
 	t.Cleanup(func() {
 		for p.treeCounter.n.Load() > 0 {
-			p.treeCounter.release()
+			p.treeCounter.releaseKind(slotKindJob)
 		}
 	})
 	if run, err := p.attachDelegateJob(p.jobManager, c.ID(), "full", w3dlg_attachSub(c)); run != nil || !errors.Is(err, errTreeAtCapacity) {

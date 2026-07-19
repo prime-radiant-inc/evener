@@ -37,11 +37,11 @@ func TestW3Dlg_AttachTreeAtCapacity(t *testing.T) {
 	if parent.treeCounter == nil {
 		t.Fatal("root session has no tree counter; cannot saturate")
 	}
-	for parent.treeCounter.reserve() {
+	for parent.treeCounter.reserve(slotKindJob) {
 	}
 	t.Cleanup(func() {
 		for parent.treeCounter.n.Load() > 0 {
-			parent.treeCounter.release()
+			parent.treeCounter.releaseKind(slotKindJob)
 		}
 	})
 

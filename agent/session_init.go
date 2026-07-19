@@ -119,15 +119,18 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		delegationAllowance = cfg.MaxSubagentDepth
 	}
 	tc := cfg.spawn.treeCounter
+	dc := cfg.spawn.driveCounter
 	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counter; children inherit the pointer.
+		// Root sessions mint the tree-wide counters; children inherit the pointers.
 		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
+		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
 	}
 	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
 	// reflects it. prepareSubagentRun threads the pointer to children via
 	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
 	// down the tree.
 	cfg.spawn.treeCounter = tc
+	cfg.spawn.driveCounter = dc
 	sessionID, err := identifier.NewSessionID()
 	if err != nil {
 		return nil, fmt.Errorf("generate session ID: %w", err)
@@ -147,6 +150,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		depth:                         cfg.spawn.depth,
 		delegationAllowance:           delegationAllowance,
 		treeCounter:                   tc,
+		driveCounter:                  dc,
 		env:                           env,
 		clock:                         cfg.clock,
 		stateDir:                      cfg.StateDir,
@@ -459,15 +463,18 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		delegationAllowance = cfg.MaxSubagentDepth
 	}
 	tc := cfg.spawn.treeCounter
+	dc := cfg.spawn.driveCounter
 	if cfg.spawn.parentSessionID == "" {
-		// Root sessions mint the tree-wide counter; children inherit the pointer.
+		// Root sessions mint the tree-wide counters; children inherit the pointers.
 		tc = newTreeCounter(int64(cfg.MaxConcurrentDelegateTurns))
+		dc = newTreeCounter(defaultMaxConcurrentDriveTurns)
 	}
 	// Mirror the live counter onto cfg.spawn so s.cfg.spawn.treeCounter always
 	// reflects it. prepareSubagentRun threads the pointer to children via
 	// subCfg := s.cfg, so the mirror is what carries the root's minted counter
 	// down the tree.
 	cfg.spawn.treeCounter = tc
+	cfg.spawn.driveCounter = dc
 	s := &Session{
 		id:                       meta.ID,
 		cfg:                      cfg,
@@ -477,6 +484,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		depth:                    cfg.spawn.depth,
 		delegationAllowance:      delegationAllowance,
 		treeCounter:              tc,
+		driveCounter:             dc,
 		env:                      env,
 		clock:                    cfg.clock,
 		stateDir:                 cfg.StateDir,

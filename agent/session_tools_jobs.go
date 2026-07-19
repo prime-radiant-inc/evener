@@ -941,6 +941,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		Offset:        filter.Offset,
 		Total:         total,
 		Delegates:     delegates,
+		TurnSlots:     turnSlotOccupancyOf(s),
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
 	}
@@ -951,6 +952,20 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	_ = maxChars
 	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+}
+
+// turnSlotOccupancyOf snapshots the session's tree-counter occupancy for the
+// job_list footer, or nil when nothing is held (the common idle case — no
+// noise).
+func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
+	if s == nil || s.treeCounter == nil {
+		return nil
+	}
+	total, jobs, drives, cap := s.treeCounter.occupancy()
+	if total == 0 {
+		return nil
+	}
+	return &turnSlotOccupancy{InUse: total, Cap: cap, Jobs: jobs, Drives: drives}
 }
 
 var loadDelegatesForJobList = func(jm *jobManager) (map[string]*jobstore.DelegateRecord, error) {
@@ -1050,6 +1065,9 @@ func formatJobList(out jobListResult) string {
 	}
 	if len(out.Delegates) > 0 {
 		fmt.Fprintf(&b, " %d delegate(s).", len(out.Delegates))
+	}
+	if ts := out.TurnSlots; ts != nil {
+		fmt.Fprintf(&b, " delegate turn slots: %d/%d in use (%d jobs, %d drive turns).", ts.InUse, ts.Cap, ts.Jobs, ts.Drives)
 	}
 	if out.DelegationAllowance > 0 {
 		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
@@ -1228,11 +1246,22 @@ type jobOutputMatch struct {
 	Line       string `json:"line"`
 }
 
+// turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
+// job_list while any delegate-turn slot is held: total in use, cap, and the
+// job/drive split.
+type turnSlotOccupancy struct {
+	InUse  int64 `json:"in_use"`
+	Cap    int64 `json:"cap"`
+	Jobs   int64 `json:"jobs"`
+	Drives int64 `json:"drive_turns"`
+}
+
 type jobListResult struct {
 	Jobs      []jobListEntry      `json:"jobs"`
 	Count     int                 `json:"count"`
 	Offset    int                 `json:"offset,omitempty"`
 	Total     int                 `json:"total"`
+	TurnSlots *turnSlotOccupancy  `json:"turn_slots,omitempty"`
 	Delegates []delegateListEntry `json:"delegates,omitempty"`
 	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
 	// when they carry information: no active watches, no recent watch history, and

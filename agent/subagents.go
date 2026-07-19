@@ -731,11 +731,11 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
 		treeSlot, ok = reserve(s)
 	} else {
-		treeSlot, ok = s.reserveTreeSlot()
+		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
 	}
 	if !ok {
 		subSess.Close()
-		return nil, &treeCapacityError{cap: s.treeCounter.cap}
+		return nil, s.treeCapacityErrorFor()
 	}
 
 	now := s.sclock().Now()
@@ -967,12 +967,14 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		sub.mu.Unlock()
 		return false
 	}
-	// Reserve a tree-counter slot for the drive turn (spec §4): a drive launches a
-	// running delegate turn (the child's EntryNotification render) and holds the
-	// slot for its duration. At capacity the drive does not launch — return false,
-	// the not-launched signal the caller already honors (no settle), so the child's
-	// durable ledger stays queued and the next loop boundary retries (spec §3).
-	treeSlot, ok := s.reserveTreeSlot()
+	// Reserve a drive-budget slot for the drive turn: a drive launches a running
+	// delegate turn (the child's EntryNotification render) and holds the slot for
+	// its duration. Drive turns budget separately from spawns (driveCounter), so
+	// notification maintenance never starves user fan-out. At capacity the drive
+	// does not launch — return false, the not-launched signal the caller already
+	// honors (no settle), so the child's durable ledger stays queued and the next
+	// loop boundary retries (spec §3).
+	treeSlot, ok := s.reserveDriveSlot()
 	if !ok {
 		sub.mu.Unlock()
 		return false

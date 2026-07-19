@@ -31,6 +31,20 @@ func waitForTreeCount(t *testing.T, c *treeCounter, want int64) {
 	t.Fatalf("tree counter = %d, want %d (timed out)", c.n.Load(), want)
 }
 
+// waitForDriveCount mirrors waitForTreeCount for the drive-down budget
+// counter.
+func waitForDriveCount(t *testing.T, c *treeCounter, want int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := c.n.Load(); got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("drive counter = %d, want %d (timed out)", c.n.Load(), want)
+}
+
 // TestTreeCounterReserveRelease verifies the atomic check-and-reserve logic:
 // 16 reservations succeed at cap 16, the 17th fails, releasing one allows
 // another to succeed.
@@ -40,21 +54,21 @@ func TestTreeCounterReserveRelease(t *testing.T) {
 
 	// Reserve up to cap (16) — all must succeed.
 	for i := range 16 {
-		if !c.reserve() {
+		if !c.reserve(slotKindJob) {
 			t.Fatalf("reserve %d: expected true (under cap), got false", i+1)
 		}
 	}
 
 	// 17th reservation must fail — at cap.
-	if c.reserve() {
+	if c.reserve(slotKindJob) {
 		t.Fatal("reserve 17: expected false (at cap), got true")
 	}
 
 	// Release one slot.
-	c.release()
+	c.releaseKind(slotKindJob)
 
 	// Now one reservation should succeed again.
-	if !c.reserve() {
+	if !c.reserve(slotKindJob) {
 		t.Fatal("reserve after release: expected true, got false")
 	}
 }
@@ -116,12 +130,12 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 
 	// Demonstrate shared state: reserve via root counter, verify child counter
 	// (same pointer) reflects the reservation.
-	if !rootCounter.reserve() {
+	if !rootCounter.reserve(slotKindJob) {
 		t.Fatal("root counter reserve: expected true")
 	}
 	// child.treeCounter IS rootCounter, so the count is already reflected.
 	// Release to keep the counter balanced.
-	child.treeCounter.release()
+	child.treeCounter.releaseKind(slotKindJob)
 }
 
 // TestCounterReservesOnSpawnResumeDrive proves that each of the three paths that
@@ -252,19 +266,24 @@ func TestCounterReservesOnSpawnResumeDrive(t *testing.T) {
 		if !sess.driveSubagentNotificationTurn(coordSub) {
 			t.Fatal("driveSubagentNotificationTurn returned false; expected a launched drive turn")
 		}
-		// The drive turn is running and holds a reservation.
-		waitForTreeCount(t, sess.treeCounter, 1)
+		// The drive turn is running and holds a DRIVE-budget reservation; the
+		// spawn budget is untouched.
+		waitForDriveCount(t, sess.driveCounter, 1)
+		if got := sess.treeCounter.n.Load(); got != 0 {
+			t.Fatalf("drive turn consumed a spawn-budget slot: tree counter = %d, want 0", got)
+		}
 
 		// Let the drive turn finish → its turn end releases the slot.
 		releaseOnce.Do(func() { close(release) })
-		waitForTreeCount(t, sess.treeCounter, 0)
+		waitForDriveCount(t, sess.driveCounter, 0)
 	})
 }
 
-// TestDriveAtCapacityDoesNotLaunchOrSettle proves the §4/§3 interaction: when the
-// tree is at capacity, a drive does NOT launch (driveSubagentNotificationTurn
-// returns false), does NOT settle, and the child's durable signal persists so the
-// next loop boundary retries (spec §3: the ledger is durable; no retry daemon).
+// TestDriveAtCapacityDoesNotLaunchOrSettle proves the drive-budget/§3
+// interaction: when the drive budget is at capacity, a drive does NOT launch
+// (driveSubagentNotificationTurn returns false), does NOT settle, and the
+// child's durable signal persists so the next loop boundary retries (spec §3:
+// the ledger is durable; no retry daemon).
 func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
@@ -301,21 +320,18 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 		t.Fatal("coordinator has no pending notification; test setup failed")
 	}
 
-	// Saturate the tree counter directly so the drive cannot claim a slot.
-	// Pin the cap at 16 (the session default is 50).
-	sess.treeCounter = newTreeCounter(16)
-	for i := range 16 {
-		if !sess.treeCounter.reserve() {
-			t.Fatalf("manual saturating reserve %d failed", i+1)
-		}
+	// Saturate the drive budget directly so the drive cannot claim a slot.
+	sess.driveCounter = newTreeCounter(1)
+	if !sess.driveCounter.reserve(slotKindDrive) {
+		t.Fatal("manual saturating drive reserve failed")
 	}
 
 	if sess.driveSubagentNotificationTurn(coordSub) {
 		t.Fatal("driveSubagentNotificationTurn returned true at capacity; the drive must not launch")
 	}
-	// No slot was consumed by the (rejected) drive — still exactly 16.
-	if got := sess.treeCounter.n.Load(); got != 16 {
-		t.Fatalf("tree counter = %d after rejected drive, want 16 (drive reserved nothing)", got)
+	// No slot was consumed by the (rejected) drive — still exactly 1 held.
+	if got := sess.driveCounter.n.Load(); got != 1 {
+		t.Fatalf("drive counter = %d after rejected drive, want 1 (drive reserved nothing)", got)
 	}
 	// The durable signal persists: the coordinator's queued notification is not
 	// drained or settled, so a later boundary (with a free slot) can retry.
@@ -324,7 +340,7 @@ func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	}
 
 	// Free one slot; the retry now launches and drains the signal.
-	sess.treeCounter.release()
+	sess.driveCounter.releaseKind(slotKindDrive)
 	if !sess.driveSubagentNotificationTurn(coordSub) {
 		t.Fatal("driveSubagentNotificationTurn returned false after a slot freed; the retry should launch")
 	}
@@ -350,7 +366,7 @@ func TestCounter17thFails(t *testing.T) {
 	// directly so the next spawn cannot claim a slot.
 	sess.treeCounter = newTreeCounter(16)
 	for i := range 16 {
-		if !sess.treeCounter.reserve() {
+		if !sess.treeCounter.reserve(slotKindJob) {
 			t.Fatalf("saturating reserve %d failed", i+1)
 		}
 	}
@@ -363,7 +379,7 @@ func TestCounter17thFails(t *testing.T) {
 	if seventeenth.Err == nil {
 		t.Fatal("17th createDelegate succeeded; want tree_at_capacity error")
 	}
-	wantErr := "tree_at_capacity: 16 delegate turn slots in use across this session tree. " +
+	wantErr := "tree_at_capacity: 16 delegate turn slots in use across this session tree (16 delegate jobs, 0 drive turns). " +
 		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
 	if got := seventeenth.Err.Error(); !strings.Contains(got, wantErr) {
 		t.Fatalf("17th error = %q, want it to contain %q", got, wantErr)
@@ -476,15 +492,15 @@ func TestTreeCounterConfigurableCapAndErrorText(t *testing.T) {
 	t.Parallel()
 	c := newTreeCounter(3)
 	for i := range 3 {
-		if !c.reserve() {
+		if !c.reserve(slotKindJob) {
 			t.Fatalf("reserve %d failed below cap 3", i+1)
 		}
 	}
-	if c.reserve() {
+	if c.reserve(slotKindJob) {
 		t.Fatal("reserve succeeded at cap 3")
 	}
 	err := &treeCapacityError{cap: 3}
-	want := "tree_at_capacity: 3 delegate turn slots in use across this session tree. " +
+	want := "tree_at_capacity: 3 delegate turn slots in use across this session tree (0 delegate jobs, 0 drive turns). " +
 		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
 	if err.Error() != want {
 		t.Fatalf("Error() = %q, want %q", err.Error(), want)
@@ -492,4 +508,128 @@ func TestTreeCounterConfigurableCapAndErrorText(t *testing.T) {
 	if !errors.Is(err, errTreeAtCapacity) {
 		t.Fatal("treeCapacityError does not match errTreeAtCapacity via errors.Is")
 	}
+}
+
+// TestTreeCounterOccupancyByKind pins the per-kind occupancy accounting: job
+// and drive reservations are counted separately, release decrements only its
+// own kind, and release stays idempotent.
+func TestTreeCounterOccupancyByKind(t *testing.T) {
+	t.Parallel()
+	c := newTreeCounter(4)
+	if !c.reserve(slotKindJob) {
+		t.Fatal("job reserve failed")
+	}
+	if !c.reserve(slotKindDrive) {
+		t.Fatal("drive reserve failed")
+	}
+	total, jobs, drives, cap := c.occupancy()
+	if total != 2 || jobs != 1 || drives != 1 || cap != 4 {
+		t.Fatalf("occupancy = (%d, %d, %d, %d), want (2, 1, 1, 4)", total, jobs, drives, cap)
+	}
+	c.releaseKind(slotKindJob)
+	c.releaseKind(slotKindJob) // a stray double release must not drive jobs negative
+	_, jobs, drives, _ = c.occupancy()
+	if jobs != 0 {
+		t.Fatalf("jobs = %d after release, want 0", jobs)
+	}
+	if drives != 1 {
+		t.Fatalf("drives = %d after job release, want 1", drives)
+	}
+}
+
+// TestTreeCapacityErrorOccupancyClause pins the occupancy breakdown in the
+// formatted capacity error: the text names the cap and the job/drive split.
+func TestTreeCapacityErrorOccupancyClause(t *testing.T) {
+	t.Parallel()
+	err := &treeCapacityError{cap: 50, jobs: 12, drives: 4}
+	want := "tree_at_capacity: 50 delegate turn slots in use across this session tree (12 delegate jobs, 4 drive turns). " +
+		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry."
+	if err.Error() != want {
+		t.Fatalf("Error() = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, errTreeAtCapacity) {
+		t.Fatal("treeCapacityError lost errTreeAtCapacity matching")
+	}
+}
+
+// TestDriveBudgetIndependentOfSpawnBudget proves the drive-down budget split:
+// a saturated spawn (tree) budget does not block a drive turn, and a saturated
+// drive budget does not block a spawn reservation.
+func TestDriveBudgetIndependentOfSpawnBudget(t *testing.T) {
+	t.Parallel()
+
+	// Part 1: saturated drive budget never blocks a spawn reservation.
+	sess := newDelegateTestSession(t, func() *llm.Client {
+		c := llm.NewClient()
+		c.Register(&fakeAdapter{name: "openai"})
+		return c
+	}())
+	sess.driveCounter = newTreeCounter(1)
+	if !sess.driveCounter.reserve(slotKindDrive) {
+		t.Fatal("setup: drive reserve failed")
+	}
+	if _, ok := sess.reserveTreeSlot(slotKindJob); !ok {
+		t.Fatal("spawn slot blocked by saturated drive budget")
+	}
+}
+
+// TestDriveTurnReservesFromDriveCounter proves a drive turn holds a
+// driveCounter slot, not a spawn-budget slot: with the spawn budget
+// saturated, the drive still launches, holds a drive slot for its duration,
+// and releases it at turn end.
+func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(_ llm.Request) llm.Response { return finalResponse("coordinator idle") },
+			func(_ llm.Request) llm.Response {
+				<-release
+				return finalResponse("drive done")
+			},
+		},
+	})
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	sess := newDelegateTestSession(t, c)
+
+	coord := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "coordinate",
+		Background: true,
+	})
+	if coord.Err != nil {
+		t.Fatalf("createDelegate (coordinator): %v", coord.Err)
+	}
+	waitForShellDone(t, sess.jobManager, coord.JobID)
+	waitForTreeCount(t, sess.treeCounter, 0)
+
+	_, coordID, err := decodeRef(coord.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decodeRef: %v", err)
+	}
+	coordSub := sess.subagents.get(coordID)
+	if coordSub == nil || coordSub.sess == nil {
+		t.Fatalf("coordinator subagent %q not found", coordID)
+	}
+	enqueueCompletedDelegateNotification(t, coordSub.sess, "worker-1")
+
+	// Saturate the spawn budget: the drive must still launch.
+	sess.treeCounter = newTreeCounter(1)
+	if !sess.treeCounter.reserve(slotKindJob) {
+		t.Fatal("setup: tree reserve failed")
+	}
+	if !sess.driveSubagentNotificationTurn(coordSub) {
+		t.Fatal("drive did not launch with the spawn budget saturated")
+	}
+	// While the drive turn runs, the drive counter holds the slot and the
+	// spawn budget is untouched (still exactly its pinned 1).
+	waitForDriveCount(t, sess.driveCounter, 1)
+	if got := sess.treeCounter.n.Load(); got != 1 {
+		t.Fatalf("spawn budget moved to %d during drive, want pinned 1", got)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	waitForDriveCount(t, sess.driveCounter, 0)
 }

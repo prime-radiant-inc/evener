@@ -11,6 +11,11 @@ import (
 // via SessionConfig.MaxConcurrentDelegateTurns.
 const defaultMaxConcurrentDelegateTurns = 50
 
+// defaultMaxConcurrentDriveTurns caps concurrently running drive-down
+// notification turns tree-wide. Drives budget separately from spawns so
+// notification maintenance can never starve user fan-out (and vice versa).
+const defaultMaxConcurrentDriveTurns = 8
+
 // errTreeAtCapacity is the sentinel matched by errors.Is when a spawn or
 // resume cannot claim a tree-counter slot. The model-facing text is formatted
 // by treeCapacityError with the live cap; the "tree_at_capacity" prefix token
@@ -21,13 +26,17 @@ const defaultMaxConcurrentDelegateTurns = 50
 var errTreeAtCapacity = errors.New("tree_at_capacity")
 
 // treeCapacityError is the formatted spawn/resume failure at tree capacity.
-// It carries the live cap so the error names the configured limit rather than
-// a hardcoded one.
-type treeCapacityError struct{ cap int64 }
+// It carries the live cap and the job/drive occupancy split so the error names
+// the configured limit and what is holding it, rather than a hardcoded one.
+type treeCapacityError struct {
+	cap    int64
+	jobs   int64
+	drives int64
+}
 
 func (e *treeCapacityError) Error() string {
-	return fmt.Sprintf("tree_at_capacity: %d delegate turn slots in use across this session tree. "+
-		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.", e.cap)
+	return fmt.Sprintf("tree_at_capacity: %d delegate turn slots in use across this session tree (%d delegate jobs, %d drive turns). "+
+		"Wait for completions to free slots, job_stop work you no longer need, or narrow your fan-out and retry.", e.cap, e.jobs, e.drives)
 }
 
 // Is lets errors.Is(err, errTreeAtCapacity) match the formatted error.
@@ -41,9 +50,21 @@ func (e *treeCapacityError) Is(target error) bool { return target == errTreeAtCa
 // are called by the paths that create or terminate running delegate turns: the
 // spawn paths (reserveTreeSlot in subagents.go), the drive/delegate path
 // (job_delegate.go), and the finalize/abandon release paths (jobs.go).
+// slotKind identifies what holds a tree-counter slot: a running delegate job
+// turn (spawn/resume) or a drive-down notification turn. The split exists for
+// diagnostics: a saturated tree with zero running jobs is visibly drive-held.
+type slotKind int
+
+const (
+	slotKindJob slotKind = iota
+	slotKindDrive
+)
+
 type treeCounter struct {
-	n   atomic.Int64
-	cap int64
+	n      atomic.Int64
+	jobs   atomic.Int64
+	drives atomic.Int64
+	cap    int64
 }
 
 // newTreeCounter returns a treeCounter with the given cap; cap <= 0 selects
@@ -55,38 +76,76 @@ func newTreeCounter(cap int64) *treeCounter {
 	return &treeCounter{cap: cap}
 }
 
-// reserve atomically increments the counter if below cap. Returns true if the
-// slot was claimed, false if the tree is already at capacity.
-func (c *treeCounter) reserve() bool {
+// reserve atomically increments the counter if below cap, attributing the slot
+// to kind. Returns true if the slot was claimed, false if the tree is already
+// at capacity.
+func (c *treeCounter) reserve(kind slotKind) bool {
 	for {
 		cur := c.n.Load()
 		if cur >= c.cap {
 			return false
 		}
 		if c.n.CompareAndSwap(cur, cur+1) {
+			c.kindCounter(kind).Add(1)
 			return true
 		}
 	}
 }
 
-// release decrements the counter, returning a slot to the tree budget.
-func (c *treeCounter) release() {
-	c.n.Add(-1)
+// releaseKind decrements the counter and its per-kind tally, returning a slot
+// to the tree budget. Both floors clamp at zero so a stray double release
+// cannot drive occupancy negative.
+func (c *treeCounter) releaseKind(kind slotKind) {
+	decClamped(&c.n)
+	decClamped(c.kindCounter(kind))
+}
+
+func (c *treeCounter) kindCounter(kind slotKind) *atomic.Int64 {
+	if kind == slotKindDrive {
+		return &c.drives
+	}
+	return &c.jobs
+}
+
+func decClamped(v *atomic.Int64) {
+	for {
+		cur := v.Load()
+		if cur <= 0 {
+			return
+		}
+		if v.CompareAndSwap(cur, cur-1) {
+			return
+		}
+	}
+}
+
+// occupancy reports the current slot usage split by holder kind plus the cap.
+// Reads are approximate under concurrent reserve/release; the tuple is
+// diagnostic, not authoritative.
+func (c *treeCounter) occupancy() (total, jobs, drives, cap int64) {
+	return c.n.Load(), c.jobs.Load(), c.drives.Load(), c.cap
 }
 
 // reserveTreeSlot claims a tree-counter slot for a running delegate turn on this
-// session's tree (spec §4). It returns a treeReservation and true on success, or
-// nil and false when the tree is at capacity. A session with no counter (never
-// minted) is unbounded and always succeeds with a nil reservation that releases
-// to a no-op.
-func (s *Session) reserveTreeSlot() (*treeReservation, bool) {
+// session's tree (spec §4), attributed to kind (job turn vs drive turn). It
+// returns a treeReservation and true on success, or nil and false when the tree
+// is at capacity. A session with no counter (never minted) is unbounded and
+// always succeeds with a nil reservation that releases to a no-op.
+func (s *Session) reserveTreeSlot(kind slotKind) (*treeReservation, bool) {
 	if s == nil || s.treeCounter == nil {
 		return nil, true
 	}
-	if !s.treeCounter.reserve() {
+	if !s.treeCounter.reserve(kind) {
 		return nil, false
 	}
-	return &treeReservation{counter: s.treeCounter}, true
+	return &treeReservation{counter: s.treeCounter, kind: kind}, true
+}
+
+// treeCapacityErrorFor formats the capacity failure for this session's tree
+// from the counter's live occupancy.
+func (s *Session) treeCapacityErrorFor() error {
+	_, jobs, drives, cap := s.treeCounter.occupancy()
+	return &treeCapacityError{cap: cap, jobs: jobs, drives: drives}
 }
 
 // releasePreparedTreeSlot returns the tree-counter slot a prepared spawn reserved
@@ -99,4 +158,18 @@ func releasePreparedTreeSlot(prepared *preparedSubagentRun) {
 	}
 	prepared.treeSlot.release()
 	prepared.treeSlot = nil
+}
+
+// reserveDriveSlot claims a drive-budget slot for a drive-down notification
+// turn, mirroring reserveTreeSlot against the session's driveCounter. A
+// session with no drive counter (never minted) is unbounded and always
+// succeeds with a nil reservation that releases to a no-op.
+func (s *Session) reserveDriveSlot() (*treeReservation, bool) {
+	if s == nil || s.driveCounter == nil {
+		return nil, true
+	}
+	if !s.driveCounter.reserve(slotKindDrive) {
+		return nil, false
+	}
+	return &treeReservation{counter: s.driveCounter, kind: slotKindDrive}, true
 }
