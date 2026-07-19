@@ -251,6 +251,9 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 		{"TurnSteer", MethodTurnSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnSteer(ctx, TurnSteerParams{}) }},
 		{"TurnQueue", MethodTurnQueue, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnQueue(ctx, TurnQueueParams{}) }},
 		{"TurnDrain", MethodTurnDrainAsSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error { return c.TurnDrainAsSteer(ctx, TurnDrainAsSteerParams{}) }},
+		{"TurnPromoteQueuedAsSteer", MethodTurnPromoteQueuedAsSteer, EmptyResponse{}, func(ctx context.Context, c *Client) error {
+			return c.TurnPromoteQueuedAsSteer(ctx, TurnPromoteQueuedAsSteerParams{Index: 0})
+		}},
 		{"CommandList", MethodSerfCommandList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.CommandList(ctx); return err }},
 		{"MarketplaceList", MethodSerfMarketplaceList, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.MarketplaceList(ctx); return err }},
 		{"MarketplaceAdd", MethodSerfMarketplaceAdd, map[string]any{}, func(ctx context.Context, c *Client) error {

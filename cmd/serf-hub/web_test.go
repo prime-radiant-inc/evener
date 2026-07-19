@@ -1851,6 +1851,10 @@ func (s *scriptedAppSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSte
 	return appwire.Unavailable("scripted source does not drain as steer")
 }
 
+func (s *scriptedAppSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
+	return appwire.Unavailable("scripted source does not promote queued messages")
+}
+
 func (s *scriptedAppSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("scripted source does not compact threads")
 }

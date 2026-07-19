@@ -96,6 +96,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
+	appserver.HandleTyped(router, appwire.MethodTurnPromoteQueuedAsSteer, s.handleAppTurnPromoteQueuedAsSteer)
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
@@ -513,6 +514,37 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 		err = fn()
 	}
 	if err != nil {
+		return appwire.EmptyResponse{}, err
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
+// handleAppTurnPromoteQueuedAsSteer handles turn/promoteQueuedAsSteer
+// (issue #22): removes the queued follow-up at params.Index and injects it
+// as user-sourced steering into the in-flight turn. A negative index is an
+// InvalidParams rejection; an idle or closed session is a Conflict (the
+// queued message stays a normal follow-up — nothing is silently dropped);
+// a session-side out-of-range (the queue shifted between the client's
+// preview snapshot and the promote) propagates the session's error.
+func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
+	if params.Index < 0 {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
+	}
+	s.mu.RLock()
+	fn := s.promoteSteerFunc
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	s.mu.RUnlock()
+	if closed {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
+	}
+	if !processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
+	}
+	if err := fn(params.Index); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
 	return appwire.EmptyResponse{}, nil

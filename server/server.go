@@ -170,6 +170,7 @@ type Server struct {
 	goalStatusFn                 func() (status string, iterations int, ok bool)
 	drainSteerFunc               func() error
 	drainSteerInputFunc          func(string, []ImageAttachment) error
+	promoteSteerFunc             func(int) error
 	queueDepthFn                 func() int
 	queuePreviewFn               func() []string
 	compactFunc                  func(context.Context) error
@@ -403,6 +404,17 @@ func (s *Server) SetDrainAsSteerFunc(fn func() error) {
 func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment) error) {
 	s.mu.Lock()
 	s.drainSteerInputFunc = fn
+	s.mu.Unlock()
+}
+
+// SetPromoteQueuedAsSteerFunc sets the function called by appwire
+// turn/promoteQueuedAsSteer (issue #22). The callback should remove the
+// queued message at the given FIFO index and inject it as a user-sourced
+// STEERING message into the in-flight turn, leaving the rest of the queue
+// untouched.
+func (s *Server) SetPromoteQueuedAsSteerFunc(fn func(int) error) {
+	s.mu.Lock()
+	s.promoteSteerFunc = fn
 	s.mu.Unlock()
 }
 

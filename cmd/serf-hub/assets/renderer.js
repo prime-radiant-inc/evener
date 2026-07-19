@@ -6530,8 +6530,48 @@
         textEl.textContent = oneLine.length > 140 ? (oneLine.slice(0, 139) + "…") : oneLine;
         li.appendChild(idxEl);
         li.appendChild(textEl);
+        // Per-message promote (issue #22): pull just this queued follow-up
+        // out of the FIFO and inject it as user-sourced steering into the
+        // in-flight turn, leaving the other queued messages in place.
+        const promoteBtn = document.createElement("button");
+        promoteBtn.type = "button";
+        promoteBtn.className = "qp-promote";
+        promoteBtn.setAttribute("data-promote-index", String(idx));
+        promoteBtn.title = "promote to steering — inject this message into the running turn now";
+        promoteBtn.setAttribute("aria-label", "promote queued message " + (idx + 1) + " to steering");
+        promoteBtn.textContent = "⇧";
+        promoteBtn.addEventListener("click", () => { this.promoteQueuedMessage(idx); });
+        li.appendChild(promoteBtn);
         list.appendChild(li);
       });
+    },
+
+    // promoteQueuedMessage promotes one queued follow-up to a steering
+    // injection on the in-flight turn (issue #22). There is no local mirror:
+    // on success the daemon emits thread/queueChanged without the promoted
+    // entry and a serf/steering/injected with source:"user", so the preview
+    // and transcript both re-render from authoritative wire data. A failure
+    // (turn already ended, queue shifted under the preview) surfaces as an
+    // error banner and leaves the queued message in place.
+    async promoteQueuedMessage(idx) {
+      try {
+        if (window.SerfAppwire && typeof window.SerfAppwire.promoteQueuedAsSteer === "function") {
+          await window.SerfAppwire.promoteQueuedAsSteer(this.sessionId, idx);
+        } else {
+          const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/promote-queued", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ index: idx }),
+          });
+          if (!resp.ok) {
+            const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+            this.appendBanner("error", "promote failed: " + detail, { source: "hub", title: "Hub promote error" });
+            return;
+          }
+        }
+      } catch (err) {
+        this.appendBanner("error", "promote failed: " + err.message, { source: "hub", title: "Hub promote error" });
+      }
     },
 
     bindKeyboard() {

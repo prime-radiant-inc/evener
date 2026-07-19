@@ -25,6 +25,7 @@ const (
 	MethodTurnInterrupt             = "turn/interrupt"
 	MethodTurnQueue                 = "turn/queue"
 	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer  = "turn/promoteQueuedAsSteer"
 	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadNameSet         = "serf/thread/name/set"
@@ -732,6 +733,18 @@ type GoalSetResponse struct {
 type TurnDrainAsSteerParams struct {
 	Ref   string      `json:"ref"`
 	Input []InputItem `json:"input,omitempty"`
+}
+
+// TurnPromoteQueuedAsSteerParams is the wire shape for
+// turn/promoteQueuedAsSteer (issue #22 per-message promote). Index selects
+// one entry of the session's FIFO input queue (matching the position shown
+// in the queue preview); the daemon removes just that entry and injects it
+// as a user-sourced steering message into the in-flight turn, leaving the
+// other queued messages in place. The daemon returns Conflict when no turn
+// is in flight or the queue has shifted so the index no longer resolves.
+type TurnPromoteQueuedAsSteerParams struct {
+	Ref   string `json:"ref"`
+	Index int    `json:"index"`
 }
 
 type ThreadCompactStartParams struct {

@@ -355,6 +355,10 @@ func (s *CodexSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerPara
 	return appwire.Unavailable("codex source does not support turn/drainAsSteer")
 }
 
+func (s *CodexSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
+	return appwire.Unavailable("codex source does not support turn/promoteQueuedAsSteer")
+}
+
 func (s *CodexSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
 	return appwire.Unavailable("codex source does not support serf/sandbox/escalation/resolve")
 }

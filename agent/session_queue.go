@@ -295,6 +295,46 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	return nil
 }
 
+// PromoteQueuedAsSteer removes the single queued message at index and
+// injects it as a user-sourced STEERING message into the in-flight turn
+// (issue #22 per-message promote; the single-message counterpart of
+// DrainAsSteer). Other queued messages stay queued in FIFO order. The
+// steering entry keeps the queued message's images and causal provenance,
+// and is marked Source "user" so UIs render it as user speech rather than a
+// system steering divider (issue #24). Returns an error — leaving the queue
+// untouched — when the session is closed, no turn is in flight, or index is
+// out of range, so a failed promote never silently loses the follow-up.
+func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return errors.New("promote: session is closed")
+	}
+	if s.state != SessionProcessing {
+		s.mu.Unlock()
+		return errors.New("promote: no active turn to steer")
+	}
+	if index < 0 || index >= len(s.inputQueue) {
+		s.mu.Unlock()
+		return fmt.Errorf("promote: queue index %d out of range (depth %d)", index, len(s.inputQueue))
+	}
+	entry := s.inputQueue[index]
+	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(events.EventQueueChanged, data)
+	// The promoted entry is user-typed input steered into the in-flight turn
+	// by a user action, so it keeps user provenance for rendering — same as
+	// the DrainAsSteer collapse (issue #24).
+	s.trySteerEnqueue(entry.Text, entry.Images, entry.Provenance, events.SteeringSourceUser)
+	return nil
+}
+
 // QueueDepth returns the number of messages currently in the input queue.
 func (s *Session) QueueDepth() int {
 	s.mu.Lock()

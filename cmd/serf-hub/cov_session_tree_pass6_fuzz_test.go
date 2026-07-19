@@ -30,6 +30,9 @@ func (s *pass6SessionSource) QueueTurn(context.Context, appwire.TurnQueueParams)
 func (s *pass6SessionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
 	return s.err
 }
+func (s *pass6SessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
+	return s.err
+}
 func (s *pass6SessionSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
 	return s.err
 }

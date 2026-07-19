@@ -42,6 +42,9 @@ func (f fakeSource) QueueTurn(context.Context, appwire.TurnQueueParams) error { 
 func (f fakeSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) error {
 	return nil
 }
+func (f fakeSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
+	return nil
+}
 func (f fakeSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return nil
 }

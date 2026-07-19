@@ -103,6 +103,7 @@ var Methods = []MethodSpec{
 	{MethodTurnInterrupt, TurnInterruptParams{}, EmptyResponse{}, ScopeBoth, "Cancels the active turn matching expectedTurnId."},
 	{MethodTurnQueue, TurnQueueParams{}, EmptyResponse{}, ScopeBoth, "Queues a user message for after the active turn completes."},
 	{MethodTurnDrainAsSteer, TurnDrainAsSteerParams{}, EmptyResponse{}, ScopeBoth, "Drains the input queue and injects it as a single steering message."},
+	{MethodTurnPromoteQueuedAsSteer, TurnPromoteQueuedAsSteerParams{}, EmptyResponse{}, ScopeBoth, "Removes one queued message by index and injects it as user-sourced steering into the in-flight turn."},
 	{MethodGoalSet, GoalSetParams{}, GoalSetResponse{}, ScopeBoth, "Sets or clears the session's /goal objective."},
 	{MethodSerfTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodSerfThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},

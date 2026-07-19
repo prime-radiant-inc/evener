@@ -43,6 +43,7 @@ var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/s/{id}/steer", true},
 	{http.MethodPost, "/s/{id}/queue", true},
 	{http.MethodPost, "/s/{id}/drain-as-steer", true},
+	{http.MethodPost, "/s/{id}/promote-queued", true},
 }
 
 // buildMutatingTarget substitutes the fuzzed id into a route template, escaping
@@ -123,6 +124,7 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		{"/s/{id}/steer", sandboxSessionID, `{"text":"go"}`},
 		{"/s/{id}/queue", sandboxSessionID, `{"text":"later"}`},
 		{"/s/{id}/drain-as-steer", sandboxSessionID, `{}`},
+		{"/s/{id}/promote-queued", sandboxSessionID, `{"index":0}`},
 	}
 	for _, seed := range seeds {
 		f.Add(idx(seed.template), seed.id, []byte(seed.body))

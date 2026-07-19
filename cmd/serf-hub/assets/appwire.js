@@ -18,6 +18,7 @@
     turnInterrupt: "turn/interrupt",
     turnQueue: "turn/queue",
     turnDrainAsSteer: "turn/drainAsSteer",
+    turnPromoteQueuedAsSteer: "turn/promoteQueuedAsSteer",
     tasksList: "serf/tasks/list",
     sandboxEscalationResolve: "serf/sandbox/escalation/resolve",
     dirsComplete: "serf/dirs/complete",
@@ -534,6 +535,18 @@
       ref: refForSession(sessionId),
       input: inputItemsForTextAndAttachments(text || "", attachments),
     }, { text: text || "", items: attachments || [] });
+  }
+
+  // promoteQueuedAsSteer promotes ONE queued follow-up (by FIFO index, as
+  // shown in the queue preview) to a user-sourced steering injection on the
+  // in-flight turn (issue #22), leaving the rest of the queue in place. No
+  // optimistic placeholder: the daemon's thread/queueChanged re-renders the
+  // preview and serf/steering/injected (source:"user") echoes the message.
+  function promoteQueuedAsSteer(sessionId, index) {
+    return request(METHOD.turnPromoteQueuedAsSteer, {
+      ref: refForSession(sessionId),
+      index,
+    });
   }
 
   function action(sessionId, name, turnId) {
@@ -1053,6 +1066,7 @@
     steer,
     queueTurn,
     drainAsSteer,
+    promoteQueuedAsSteer,
     action,
     setModel,
     setReasoningEffort,

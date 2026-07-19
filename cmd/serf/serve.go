@@ -68,6 +68,7 @@ type serveServer interface {
 	SetGoalStatusFunc(func() (string, int, bool))
 	SetDrainAsSteerFunc(func() error)
 	SetDrainAsSteerWithInputFunc(func(string, []server.ImageAttachment) error)
+	SetPromoteQueuedAsSteerFunc(func(int) error)
 	SetQueueDepthFunc(func() int)
 	SetQueuePreviewFunc(func() []string)
 	SetContextPressureFunc(func() float64)
@@ -536,6 +537,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)
+	})
+	srv.SetPromoteQueuedAsSteerFunc(func(index int) error {
+		return getSession().PromoteQueuedAsSteer(ctx, index)
 	})
 	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })

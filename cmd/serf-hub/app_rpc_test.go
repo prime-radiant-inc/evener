@@ -3606,6 +3606,10 @@ func (s *relayLifecycleSource) DrainAsSteer(context.Context, appwire.TurnDrainAs
 	return appwire.Unavailable("relay lifecycle source does not drain as steer")
 }
 
+func (s *relayLifecycleSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) error {
+	return appwire.Unavailable("relay lifecycle source does not promote queued messages")
+}
+
 func (s *relayLifecycleSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
 	return appwire.Unavailable("relay lifecycle source does not compact threads")
 }
@@ -7072,6 +7076,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodTurnInterrupt,
 		appwire.MethodTurnQueue,
 		appwire.MethodTurnDrainAsSteer,
+		appwire.MethodTurnPromoteQueuedAsSteer,
 		appwire.MethodThreadClear,
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,

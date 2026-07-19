@@ -304,6 +304,47 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handlePromoteQueued forwards a turn/promoteQueuedAsSteer request (issue
+// #22 per-message promote). The daemon removes the queued follow-up at
+// body.Index and injects it as user-sourced steering into the in-flight
+// turn; other queued messages stay queued. Rides on the Steer capability,
+// like drain-as-steer; the daemon returns Conflict when idle or when the
+// index no longer resolves against the live queue.
+func (s *WebServer) handlePromoteQueued(w http.ResponseWriter, r *http.Request, id string) {
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
+	var body promoteQueuedRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Index < 0 {
+		http.Error(w, "index must be >= 0", http.StatusBadRequest)
+		return
+	}
+	if !s.isLive(id) {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.ensureSessionActionAvailable(id, "steer"); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	source, err := sourceForThread(s.sources, ref, "")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := source.PromoteQueuedAsSteer(r.Context(), appwire.TurnPromoteQueuedAsSteerParams{
+		Ref:   ref,
+		Index: body.Index,
+	}); err != nil {
+		writeSessionActionError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleSessionAction forwards imperative actions to a daemon. Interrupt,
 // clear, and shutdown remain live-only; compact can resume a known past
 // session because it is a session-level maintenance action rather than an

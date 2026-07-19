@@ -260,6 +260,15 @@ type drainAsSteerRequest struct {
 	Items []appwire.InputItem `json:"items,omitempty"`
 }
 
+// promoteQueuedRequest is the JSON body for POST /s/<id>/promote-queued
+// (issue #22). Index selects one entry of the daemon's FIFO input queue —
+// matching the row position in the web queue preview — to promote into the
+// in-flight turn as user-sourced steering. The daemon rejects the call
+// (Conflict) when no turn is in flight or the index no longer resolves.
+type promoteQueuedRequest struct {
+	Index int `json:"index"`
+}
+
 type forkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
