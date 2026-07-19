@@ -503,10 +503,16 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
   flex-direction: column;
   overflow: hidden;
 }
+/* The content column positions so the PROSE measure stays window-centered
+   (like the shipped column always was) while machine rows bleed RIGHT of it:
+   margin-left centers the 720px measure; the container widens rightward up
+   to --measure-machine, clamped by the workspace edge. Left edges of the
+   header, prose rows, machine rows, and the composer card all share one x. */
 .workspace-header,
 .conversation {
-  width: min(100%, var(--workspace-content-max-w));
-  margin-inline: auto;
+  width: min(calc(100% - max(0px, calc((100% - var(--measure)) / 2))), var(--workspace-content-max-w));
+  margin-left: max(0px, calc((100% - var(--measure)) / 2));
+  margin-right: 0;
 }
 /* One width scale (design-system §4): prose rows hold the 720px measure;
    machine rows (tool calls, clusters, the subagent rail, cards) bleed right

@@ -293,8 +293,8 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 		"--workspace-content-max-w: var(--measure-machine);",
 		".workspace-header,",
 		".conversation {",
-		"width: min(100%, var(--workspace-content-max-w));",
-		"margin-inline: auto;",
+		"width: min(calc(100% - max(0px, calc((100% - var(--measure)) / 2))), var(--workspace-content-max-w));",
+		"margin-left: max(0px, calc((100% - var(--measure)) / 2));",
 	}
 	for _, want := range desktopChecks {
 		if !strings.Contains(css, want) {
