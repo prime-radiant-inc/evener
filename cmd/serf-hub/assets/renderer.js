@@ -4597,30 +4597,43 @@
       }
 
       if (summary.kind === "notification") {
-        this.appendNotificationCard(summary);
+        // A notification turn can carry several <job-notification> blocks;
+        // each one renders as its own card.
+        const notifications = summary.notifications || [summary.notification];
+        for (const n of notifications) {
+          this.appendNotificationCard({ notification: n, cleanText: (n && n.rawText) || summary.cleanText });
+        }
+        // Any text between/around the blocks is kept as a plain divider.
+        if (summary.leftover) {
+          this.appendSteeringDivider("steering injected", "", summary.leftover);
+        }
         return;
       }
 
       // Default: keep the existing collapsible divider for genuine system
       // notes (loop detection, read-only nudge, all-done, transcript
       // pointer, unknown).
+      this.appendSteeringDivider(summary.label, summary.detail, summary.cleanText || text);
+    },
+
+    appendSteeringDivider(label, detail, text) {
       const el = document.createElement("details");
       el.className = "steering";
       const sum = document.createElement("summary");
       const verb = document.createElement("span");
       verb.className = "steering-verb";
-      verb.textContent = "↻ " + summary.label;
+      verb.textContent = "↻ " + label;
       sum.appendChild(verb);
-      if (summary.detail) {
-        const detail = document.createElement("span");
-        detail.className = "steering-detail";
-        detail.textContent = " · " + summary.detail;
-        sum.appendChild(detail);
+      if (detail) {
+        const detailEl = document.createElement("span");
+        detailEl.className = "steering-detail";
+        detailEl.textContent = " · " + detail;
+        sum.appendChild(detailEl);
       }
       el.appendChild(sum);
       const body = document.createElement("pre");
       body.className = "steering-body";
-      body.textContent = summary.cleanText || text;
+      body.textContent = text;
       el.appendChild(body);
       this.conversation.appendChild(el);
     },

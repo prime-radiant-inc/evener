@@ -331,6 +331,22 @@
     return "Job " + status;
   }
 
+  // splitJobNotificationBlocks extracts each individual
+  // <job-notification ...>...</job-notification> block from steering text. A
+  // notification turn can carry several blocks joined by newlines (the daemon
+  // drains every pending notification into one reminder), so the per-block
+  // match must be non-greedy: a greedy match spans from the first opening tag
+  // to the last closing tag and aggregates distinct notifications into one.
+  // Any text between/around blocks is returned separately as leftover.
+  function splitJobNotificationBlocks(text) {
+    const blocks = [];
+    const leftover = String(text || "").replace(/<job-notification\s+[^>]*>[\s\S]*?<\/job-notification>/g, (block) => {
+      blocks.push(block);
+      return "";
+    }).trim();
+    return { blocks, leftover };
+  }
+
   function parseJobNotification(stripped) {
     const m = String(stripped || "").match(/^<job-notification\s+([^>]*)>([\s\S]*)<\/job-notification>$/);
     if (!m) return null;
@@ -457,9 +473,18 @@
     if (/pre-compaction transcript/.test(stripped)) {
       return { kind: "transcript", label: "transcript pointer", detail: "", cleanText: stripped };
     }
-    const jobNotification = parseJobNotification(stripped);
-    if (jobNotification) {
-      return { kind: "notification", label: jobNotification.title, detail: "", cleanText: stripped, notification: jobNotification };
+    const jobBlocks = splitJobNotificationBlocks(stripped);
+    if (jobBlocks.blocks.length) {
+      const notifications = jobBlocks.blocks.map(parseJobNotification);
+      return {
+        kind: "notification",
+        label: notifications[0].title,
+        detail: "",
+        cleanText: stripped,
+        notification: notifications[0],
+        notifications,
+        leftover: jobBlocks.leftover,
+      };
     }
     const observerNotification = parseObserverCallback(stripped);
     if (observerNotification) {
