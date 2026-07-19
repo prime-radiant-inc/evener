@@ -17,4 +17,5 @@ assert(bleed, "machine rows (.tool-call, …) bleed past the measure");
 for (const sel of [".tool-call-cluster", ".subs", ".notification-card", ".task-card"]) {
   assert(bleed[0].includes(sel), "bleed list includes " + sel);
 }
+assert(!/680px/.test(css), "legacy 680px caps snapped to var(--measure)");
 console.log("ok layout width scale");

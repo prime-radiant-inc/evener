@@ -2375,7 +2375,7 @@ button.composer-model-value .caret { color: var(--ink-3); }
 .image-lightbox-pos { position: fixed; top: var(--space-5); right: var(--space-5); color: #fff; font-family: var(--font-mono); font-size: var(--text-xs); opacity: 0.75; font-variant-numeric: tabular-nums; }
 .assistant-message {
   margin-bottom: var(--space-6);
-  max-width: 680px;
+  max-width: var(--measure);
   /* One reading size (2026-07-11 round 2): prose dropped from --text-lg to
      --text-base so ALL flowing transcript text shares one size; contrast and
      spacing carry the prose's weight, not a larger step. */
@@ -2449,7 +2449,7 @@ button.composer-model-value .caret { color: var(--ink-3); }
   align-items: baseline;
   gap: var(--space-3);
   width: 100%;
-  max-width: 680px;
+  max-width: var(--measure);
   margin: 0 0 var(--space-5) 0;
   padding: 0;
   background: none;
@@ -2544,7 +2544,7 @@ button.composer-model-value .caret { color: var(--ink-3); }
 .tool-cluster-summary { display: none; }
 .tool-call-cluster.done > .tool-cluster-summary {
   display: flex; align-items: baseline; gap: var(--space-3);
-  width: 100%; max-width: 680px; margin: 0;
+  width: 100%; max-width: var(--measure); margin: 0;
   padding: 0; background: none; border: none; cursor: pointer;
   text-align: left; font-family: var(--font-sans); font-size: var(--text-base);
   color: var(--ink-2); line-height: var(--leading-normal);
@@ -3396,7 +3396,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .system-run-toggle { display: none; }
 .system-run.coalesced > .system-run-toggle {
   display: flex; align-items: baseline; gap: var(--space-3);
-  width: 100%; max-width: 680px; margin: var(--space-3) 0;
+  width: 100%; max-width: var(--measure); margin: var(--space-3) 0;
   padding: 0; background: none; border: none; cursor: pointer;
   text-align: left; font-family: inherit; font-size: var(--text-sm);
   font-style: italic; color: var(--ink-2); line-height: var(--leading-snug);
@@ -5503,7 +5503,7 @@ body.has-connection-banner #workspace {
   flex-direction: column;
   gap: var(--space-3);
   padding: var(--space-3) 0;
-  max-width: 680px;
+  max-width: var(--measure);
 }
 .cold-start-skeleton-lines {
   display: flex;
