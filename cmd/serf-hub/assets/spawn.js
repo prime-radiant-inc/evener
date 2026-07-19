@@ -482,8 +482,12 @@
       addPickerScrim(picker);
       return;
     }
+    // Clamp inside the viewport: at tablet widths an anchor near the right
+    // edge would push the fixed-width panel off-screen.
+    var pw = picker.offsetWidth || 520;
+    var maxLeft = Math.max(8, (window.innerWidth || 1024) - pw - 8);
+    picker.style.left = Math.min(anchor.offsetLeft, maxLeft) + "px";
     picker.style.top = (anchor.offsetTop + anchor.offsetHeight + 4) + "px";
-    picker.style.left = anchor.offsetLeft + "px";
     picker.style.zIndex = "50";
   }
 
