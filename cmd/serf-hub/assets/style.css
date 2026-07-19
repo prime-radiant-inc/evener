@@ -3240,7 +3240,8 @@ details.tool-body[open] > summary::before,
 .plan-item.pending .plan-step { color: var(--ink-2); }
 /* cancelled — recedes like done, struck to read as dropped. The step label is
    readable text, so it stays at --ink-2 (AA); line-through carries the
-   "dropped" meaning without sub-AA color. The glyph stays --ink-4 (non-text). */
+   "dropped" meaning without sub-AA color. The glyph is meaning-carrying, so
+   it sits at --ink-3 like the label tier below it. */
 .plan-item.cancelled .plan-glyph { color: var(--ink-3); }
 .plan-item.cancelled .plan-step { color: var(--ink-2); text-decoration: line-through; }
 
