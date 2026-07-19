@@ -74,6 +74,18 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   const shellPre = conv.querySelector(".tool-call.shell pre");
   pass(shellPre && shellPre.textContent === "ab", "the shell drain writes the accumulated text (got " + JSON.stringify(shellPre && shellPre.textContent) + ")");
 
+  // Key-mismatch: the delta event carries BOTH call_id and item_id (the old
+  // map keyed on call_id), but TOOL_CALL_END arrives carrying only item_id —
+  // the alias resolves the same tool state, yet a string-keyed delete misses.
+  // The stale deferred entry must not re-render the delta buffer over
+  // bodyEnd's authoritative output at the settle.
+  R.handleData("TOOL_CALL_START", { call_id: "w2", item_id: "it2", tool_name: "write_file", arguments_json: JSON.stringify({ file_path: "/b.js", content: "x" }) });
+  R.applyEvent("TOOL_CALL_OUTPUT_DELTA", { call_id: "w2", item_id: "it2", delta: "+stale-mismatch\n" });
+  R.handleData("TOOL_CALL_END", { item_id: "it2", tool_name: "write_file", output: "+final-mismatch\n" });
+  const pre2 = conv.querySelectorAll(".write-body pre.diff-body")[1];
+  pass(pre2 && pre2.textContent.includes("+final-mismatch") && !pre2.textContent.includes("stale-mismatch"),
+    "id-mismatched pending delta dropped at finalize — bodyEnd output stands (got " + JSON.stringify(pre2 && pre2.textContent) + ")");
+
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: tool output deltas coalesce to one render per frame per call, last output wins");
   process.exit(0);

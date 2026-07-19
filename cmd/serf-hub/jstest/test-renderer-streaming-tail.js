@@ -74,6 +74,53 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.handleData("ASSISTANT_TEXT_END", { text: "hello head" + big + "**tail**" });
   pass(!el.querySelector(".streaming-tail"), "finalization replaces the tail with parsed output");
   pass(!el.querySelector(".streaming-caret"), "caret disappears with the tail at finalization");
+
+  const rawTailTextOf = (t) => Array.from(t.childNodes)
+    .filter((n) => !(n.nodeType === 1 && n.classList.contains("streaming-caret")))
+    .map((n) => n.textContent).join("");
+
+  // --- Same-flush crossing (batched live path): the last pre-crossing delta
+  // and the crossing delta landing in ONE flush must not lose the head — the
+  // switch renders the pending head once before freezing it.
+  R.handleData("TURN_STARTED", { turnId: "t2" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  // Mirror the frame-batching stub: drive the batched path directly.
+  window.SerfAppwire = {
+    eventsFromNotification: (method, params) =>
+      method === "test/delta" ? [["ASSISTANT_TEXT_DELTA", { delta: params.delta }]] : [],
+  };
+  R.appwireHydrated = true;
+  const head2 = "batched pre-crossing head";
+  const cross2 = "y".repeat(4100);
+  R.enqueueLiveNotification("test/delta", { delta: head2 });
+  R.enqueueLiveNotification("test/delta", { delta: cross2 });
+  R.flush();
+  const el2 = conv.querySelectorAll(".assistant-message")[1];
+  pass(!!el2, "second message element exists");
+  pass(el2 && el2.innerHTML.startsWith("<p>" + head2 + "</p>"),
+    "pending head rendered at the switch inside one flush (got " + JSON.stringify(el2 && el2.innerHTML.slice(0, 120)) + ")");
+  const tail2 = el2 && el2.querySelector(".streaming-tail");
+  pass(!!tail2, "tail exists after same-flush crossing");
+  pass(tail2 && rawTailTextOf(tail2) === cross2, "tail holds the crossing delta raw after same-flush crossing");
+  pass(el2 && el2.textContent.includes(head2) && el2.textContent.includes(cross2.slice(0, 100)),
+    "no content missing after same-flush crossing");
+  R.handleData("ASSISTANT_TEXT_END", { text: head2 + cross2 });
+  pass(!el2.querySelector(".streaming-tail"), "finalization replaces the same-flush tail");
+
+  // --- First-delta crossing: a single >4KB FIRST delta → empty head, the
+  // entire delta raw in the tail, finalization parses it.
+  R.handleData("TURN_STARTED", { turnId: "t3" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  const first3 = "z".repeat(4100);
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: first3 });
+  const el3 = conv.querySelectorAll(".assistant-message")[2];
+  const tail3 = el3 && el3.querySelector(".streaming-tail");
+  pass(!!tail3, "tail exists for first-delta crossing");
+  pass(el3 && !el3.querySelector("p"), "head stays empty for first-delta crossing (nothing pre-crossing to render)");
+  pass(tail3 && rawTailTextOf(tail3) === first3, "entire first delta raw in the tail");
+  R.handleData("ASSISTANT_TEXT_END", { text: first3 });
+  pass(el3.innerHTML === "<p>" + first3 + "</p>", "finalization parses the first-delta buffer");
+
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: frozen head at the crossing, raw tail with aria-hidden caret, single final parse");
   process.exit(0);

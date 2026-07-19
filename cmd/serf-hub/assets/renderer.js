@@ -200,7 +200,7 @@
       // a phantom error pill and dirty/pending sets render into detached nodes.
       this.errorAnchorCache = null;
       if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
-      this.pendingBodyDeltas = new Map(); // callId -> {renderer, state, out} (settleFrame coalescing)
+      this.pendingBodyDeltas = new Map(); // tool state object -> {renderer, state, out} (settleFrame coalescing)
       // Reasoning state points into the (now swapped) conversation DOM too:
       // a stale reasoningEl would strand every post-swap delta on a detached
       // node — beginReasoning early-returns on the truthy handle.
@@ -2445,6 +2445,17 @@
         // everything after streams as plain text into the tail; the whole
         // buffer parses once at finalization. Switches on LENGTH only (never
         // fence state) and never flips back.
+        // If the last pre-crossing delta and the crossing delta landed in the
+        // SAME batched flush, the head text is still sitting in the dirty set
+        // un-rendered — the settle that would render it never runs for this
+        // message (tail mode removes it from the set). Render the pre-crossing
+        // buffer ONCE here, exactly the parse the settle would have done, so
+        // the head isn't missing until finalization. If the message is not
+        // dirty the last settle already rendered the head — nothing to do.
+        if (this.dirtyAssistantMessages && this.dirtyAssistantMessages.has(m)) {
+          this.renderAssistantMessage(m, m.textBuf.slice(0, m.textBuf.length - delta.length));
+          this.dirtyAssistantMessages.delete(m);
+        }
         const tail = document.createElement("span");
         tail.className = "streaming-tail";
         tail.appendChild(document.createTextNode(delta));
@@ -2928,8 +2939,11 @@
       // Sync paths (handleData per event) drain at the same call's settle, so
       // per-event semantics are unchanged. bodyEnd at TOOL_CALL_END stays
       // immediate.
+      // Keyed by the tool STATE OBJECT, not an id string: delta and END events
+      // resolve the same state through activeTools aliases even when they carry
+      // different id shapes (call_id vs item_id), so keying can't diverge.
       if (!this.pendingBodyDeltas) this.pendingBodyDeltas = new Map();
-      this.pendingBodyDeltas.set(data.call_id || data.item_id, { renderer: m.renderer, state: m, out: m.outputBuf });
+      this.pendingBodyDeltas.set(m, { renderer: m.renderer, state: m, out: m.outputBuf });
     },
 
     finalizeToolCall(data) {
@@ -2939,10 +2953,7 @@
       // bodyEnd renders the authoritative final output below; a still-pending
       // coalesced delta for this call would re-render the stale delta buffer
       // over it at settleFrame, so drop it first.
-      if (this.pendingBodyDeltas) {
-        this.pendingBodyDeltas.delete(data.call_id);
-        this.pendingBodyDeltas.delete(data.item_id);
-      }
+      if (this.pendingBodyDeltas) this.pendingBodyDeltas.delete(m);
 
       const ok = !data.error && toolLooksGood(data);
       if (m.statusEl) {
