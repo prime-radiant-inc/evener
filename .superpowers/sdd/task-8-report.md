@@ -1,179 +1,110 @@
-# Task 8 report: canonical hub project keys
+# Task 8 report — State colors: blue=live, amber=needs-you, diagnostics lane, neutral favicon
 
-## RED evidence
+**Status:** DONE
+**Commit:** `717f87b8` — "web: state colors — blue=live, amber=needs-you, diagnostics lane, neutral base favicon"
 
-The required focused suite initially could not complete in this sandbox because `httptest` attempted IPv6 loopback binding and failed with:
+## What changed
 
-```text
-listen tcp6 [::1]:0: bind: operation not permitted
-```
+### `cmd/serf-hub/assets/style.css`
+- **`:root` block:** replaced the stale block comment (old green=working/blue=awaiting
+  world, mis-cited design-system §3) with the brief's new comment verbatim
+  (blue=live/working, amber=needs-you, red=error, neutral=done; warning tier moved
+  to the diagnostics lane).
+- **All 4 theme blocks** (`:root`, `@media light :root`, `:root[data-theme="dark"]`,
+  `:root[data-theme="light"]`):
+  - `--state-working: var(--accent)` (blue = live)
+  - `--state-awaiting: var(--attention)` (amber = needs-you)
+  - `--state-idle: var(--done)`, `--state-subagent: var(--done)` (neutral = done)
+  - `--state-ended` unchanged (`#3a3a44` dark / `#7a7a82` light)
+  - deleted every `--state-warning:` definition line
+  - added `--diagnostic-warning` (`#e0af68` dark / `#8a5a14` light) and
+    `--diagnostic-hub` (`#7dc98f` dark / `#2e7d4f` light) per block
+- **`:root` diagnostics:** `--diagnostic-serf: var(--state-warning)` →
+  `var(--diagnostic-warning)`; `--diagnostic-hub: var(--state-working)` → `#7dc98f`
+  (the freed green, so it can't collide with `--diagnostic-ui` blue).
+- **Renamed all 28 uses** of `var(--state-warning)` → `var(--diagnostic-warning)`
+  (26 exact-form via the brief's sed, **plus 2 fallback-form** uses the sed missed:
+  `var(--state-warning, #e0af68)` on `.search-results mark` and `.search-hit`,
+  fixed by hand). Post-rename grep confirms zero `--state-warning` left in
+  `assets/` and `templates/`.
+  - Note: the brief said 31 uses; the actual count was 28 (line numbers/counts
+    had drifted, as the integration notes warned).
 
-Before migration fixes, targeted tests also failed on old slug/path assumptions, nonexistent `/w/...` fixture paths, and legacy basename archive behavior. These were migrated to canonical `identifier.Project.ID` and resolvable canonical paths.
+### `cmd/serf-hub/assets/notifications.js`
+- `PLAIN_FAVICON` base circle `%237aa2f7` → `%237e8593` (neutral).
+- `STATE_COLORS` → `{ error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7" }`
+  with the brief's pinned-dark-theme comment block verbatim.
+- `buildFaviconDataURI` base circle `fill='#7aa2f7'` → `fill='#7e8593'`.
 
-## Implementation summary
+### `cmd/serf-hub/templates/thread.html`
+- Hardcoded favicon `fill='%237aa2f7'` → `fill='%237e8593'`.
 
-- **Ingestion/tree:** `hubcore` resolves each distinct live/past effective working directory once at the ingestion boundary, reuses carried live `identifier.Project` values, groups by canonical `Project.ID`, emits canonical `WorkingDir`, and keeps pathless sessions in presentation-only `no-project`.
-- **Destructive APIs:** archive and project delete validate supplied IDs with `identifier.ValidateProjectID`, resolve the supplied path, require recomputed ID and canonical path agreement, and reject `no-project`. Delete no longer performs legacy basename cleanup.
-- **TUI/spawn:** project rows use server-provided canonical keys only. `groupKey` is presentation-only for keyless grouping/folding/filtering; missing-key rows are non-actionable and never synthesize IDs from display names. Spawn prefill uses the canonical server project path.
-- **Web UI:** project archive posts `{id: p.key, working_dir: p.working_dir}`; sidebar expansion state has no basename-key migration or co-basename copying.
-- **Callers/tests:** migrated ordinary, fuzz, and `serffuzz` seam callers to canonical project-aware signatures and real resolvable path fixtures. Added main/linked-worktree, symlink, same-basename clone, canonical-key, mismatch, and `no-project` coverage.
+### Hardcoded-hue sweep
+`grep -rn '#7dc98f\|#2e7d4f\|#7aa2f7' assets/*.js templates/` after the change:
+only `notifications.js` `working: "#7aa2f7"` remains — legitimate (pinned
+dark-theme favicon constant, asserted by the new test).
 
-## GREEN / verification evidence
+## Tests
 
-Passed:
+### New / extended (written first, watched fail, then pass)
+- **`jstest/test-favicon-language.js`** — created verbatim from the brief.
+  Before implementation: `FAIL: PLAIN_FAVICON base is neutral #7e8593` (rc=1).
+  After: `ok favicon language`.
+- **`jstest/test-color-system-css.js`** — appended the brief's 7 state-language
+  assertions. Before: all 7 FAIL (rc=1). After: `ok canonical color tokens`.
 
-```text
-go test ./cmd/serf-hub/internal/hubcore -run 'Test.*(Tree|Project|Archive|Delete)' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore
+### Migrated existing tests (same commit)
+- **test-color-system-css.js** — old-world asserts rewritten:
+  `state-awaiting === "#7aa2f7"` → `=== "var(--attention)"`; added
+  `state-working === "var(--accent)"`; `state-idle === "#7a7a86"` →
+  `=== "var(--done)"`; steering-verb negative check moved from retired
+  `--state-warning` to `--state-awaiting` (amber).
+- **test-notifications-palette.js** — `working: "#7dc98f"`→`"#7aa2f7"`,
+  `needs_you: "#7aa2f7"`→`"#e0af68"`; messages now name --accent/--attention.
+- **test-style-palette.js** — hex-count asserts (4× `#…` defs) no longer apply
+  since the defs are now var() refs; migrated to count 4×
+  `--state-working: var(--accent)` and 4× `--state-awaiting: var(--attention)`;
+  added `--state-warning` absence check and 4× hex `--diagnostic-hub` check.
+- **test-context-pressure-css.js** — assertions unchanged (the call sites still
+  use `var(--state-awaiting)`, which is now amber = needs-you, semantically
+  correct for near-limit context); all stale "blue" wording → "amber".
+- **test-subagents.js** — the only color-coupled assertion (`.g.run` must use
+  `var(--state-working)`) survives the recolor intact because it pins the token,
+  not the hue; updated the wording to name the new language ("blue = live").
+  The pre-existing "running (blue)" comment is now accurate.
 
-go test -run 'TestHubModelSlashDashboardAndProjectNavigate|TestHubModelDashboardNewFromProjectRowUsesProjectDir|TestHubModelDashboardLaunchRowOpensUnscopedSpawn' ./cmd/serf-tui -count=1
-ok   primeradiant.com/serf/cmd/serf-tui
+### Gate results
+- `cd cmd/serf-hub/jstest && ./run-all.sh` → **"jstest: all tests passed"**
+  (every `test-*.js` OK, including the new `test-favicon-language.js`, which
+  `run-all.sh` picks up via its `test-*.js` glob).
+- `make build-hub` → success.
+- `GOCACHE=/tmp/serf-go-build-cache go test ./cmd/serf-hub` →
+  **ok primeradiant.com/serf/cmd/serf-hub 21.905s**.
 
-go test -tags serffuzz ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1
-ok   all three packages; no tests to run
+## Deviations from the brief
+1. **`pass()` instead of `assert()` in test-color-system-css.js.** The brief's
+   snippet uses `assert(cond, msg)`, but that file defines no `assert` — it
+   collects failures via `pass()`. Translated verbatim otherwise; a literal
+   paste would have thrown `ReferenceError` on the first assertion instead of
+   reporting all failures.
+2. **Two fallback-form `--state-warning` uses** (`var(--state-warning, #e0af68)`)
+   escaped the brief's exact-match sed; renamed by hand. Final use count was 28,
+   not 31 (drift already flagged in the integration notes).
+3. **`--diagnostic-warning` / `--diagnostic-hub` added to all 4 blocks.** The
+   override blocks previously defined no `--diagnostic-*` tokens (they inherited
+   `:root`'s var()-based ones). With `--diagnostic-hub` now a raw per-theme hex,
+   the light blocks need their own `#2e7d4f` or they'd render the dark green —
+   the brief's per-block values were applied literally.
+4. **Report committed separately** (the brief's commit path list covers only
+   code+tests; kept it clean).
 
-go test ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1
-ok   all three packages; no tests to run
-
-git diff --check
-pass
-```
-
-The exact required focused command was run. Hubcore passed; hub and TUI reached only unrelated sandbox IPv6 `httptest` panics in `TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError` and `TestFetchHubTreeUsesAppWireThreadList`. The full hubcore package reached and passed all canonical migration scenarios; its fuzz scenario's HTTP fixture hit the same sandbox IPv6 limitation.
-
-Sidebar JavaScript tests were attempted but could not run because the environment lacks the `jsdom` module (`Error: Cannot find module 'jsdom'`).
-
-## Audits
-
-- `ProjectSlug`, `projectSlug`, `hubProjectKey`, basename-8hex synthesis, and sidebar basename migration references were absent from `cmd/serf-hub` and `cmd/serf-tui` production/test sources after migration.
-- Tagged/fuzz callers compile with `-tags serffuzz`.
-- `.superpowers/sdd/task-1-report.md` and `.superpowers/sdd/progress.md` were not modified.
-- No Task 9 clean-break reader work was started.
-
-## Changed files
-
-- `cmd/serf-hub/assets/sidebar.js`
-- `cmd/serf-hub/cov_core_api_pass4_fuzz_test.go`
-- `cmd/serf-hub/cov_exact_lifecycle_tree_fuzz_test.go`
-- `cmd/serf-hub/cov_final_session_tree_fuzz_test.go`
-- `cmd/serf-hub/cov_session_live_pass4_fuzz_test.go`
-- `cmd/serf-hub/cov_session_residue_pass5_fuzz_test.go`
-- `cmd/serf-hub/cov_session_tree_pass6_fuzz_test.go`
-- `cmd/serf-hub/cov_web_tree_session_fuzz_test.go`
-- `cmd/serf-hub/cov_workspace_mutations_pass6_fuzz_test.go`
-- `cmd/serf-hub/internal/hubcore/coverage_edges_test.go`
-- `cmd/serf-hub/internal/hubcore/roster.go`
-- `cmd/serf-hub/internal/hubcore/scenarios_fuzz_test.go`
-- `cmd/serf-hub/internal/hubcore/tree.go`
-- `cmd/serf-hub/internal/hubcore/tree_test.go`
-- `cmd/serf-hub/jstest/test-sidebar-migration.js`
-- `cmd/serf-hub/web_api_archive.go`
-- `cmd/serf-hub/web_api_archive_test.go`
-- `cmd/serf-hub/web_api_favorite_test.go`
-- `cmd/serf-hub/web_api_project_delete.go`
-- `cmd/serf-hub/web_api_project_delete_test.go`
-- `cmd/serf-hub/web_api_tree.go`
-- `cmd/serf-hub/web_api_tree_test.go`
-- `cmd/serf-tui/hub_controls_fuzz_test.go`
-- `cmd/serf-tui/hub_dashboard.go`
-- `cmd/serf-tui/hub_dashboard_view.go`
-- `cmd/serf-tui/hub_keys.go`
-- `cmd/serf-tui/hub_model.go`
-- `cmd/serf-tui/hub_spawn.go`
-- `cmd/serf-tui/hub_types.go`
-
-## Self-review and concerns
-
-The implementation is focused on Task 8 and uses canonical IDs at destructive boundaries. Parent verification exposed stale `/w/...` and basename fixtures; those are now real temporary directories resolved through `identifier.ResolveProject`, and the shared TUI mock provides explicit canonical server keys. The appwire Thread boundary now carries `ProjectID`/`ProjectPath`; TUI grouping uses those fields and leaves unresolved rows non-actionable.
-
-## Parent-verification review fixes
-
-### Exact RED evidence
-
-The parent-required focused command reproduced these stale-fixture failures before the fixes:
-
-```text
-TestArchiveEndpointProjectKind: status=400 invalid project ID
-TestArchiveUnarchiveSkipsRedundantLegacyDeleteForBasenameID: status=400 invalid project ID
-TestProjectDeleteRemovesFilesAndScrubs: resolve project: lstat /w: no such file or directory
-TestProjectDeleteRefusesWhenLive: got 400 (expected 409)
-TestProjectDeleteSkipsOnRemoveFailure: resolve project: lstat /w: no such file or directory
-TestArchiveDecisionsFlowIntoTree: alpha grouped as no-project
-TestAPITreeProjectServedFromTree: status=404 project not found
-TestAPITree_ArchivedProjectsAreStubs: archived project list empty
-TestWeb_APITreeGroupsLiveOnlySessionsByProject: serf projects=0; rows grouped under no-project
-TestHubDashboardSpawnWaitsForSlowHubSpawn: fixture path/key was not an actionable canonical server row
-```
-
-The same required suite also reaches unrelated existing HTTP tests that panic in this sandbox because `httptest` cannot bind IPv6 loopback:
-
-```text
-listen tcp6 [::1]:0: bind: operation not permitted
-```
-
-### Review-fix implementation and GREEN evidence
-
-- Migrated archive, delete, and tree web fixtures to real temporary directories and `identifier.ResolveProject`, asserting canonical IDs and paths.
-- Added canonical `ProjectID`/`ProjectPath` to appwire thread responses at hub list/read/start/resume boundaries; TUI consumes only those server fields and preserves keyless presentation-only groups.
-- Migrated the shared tmux fixture and slow-spawn fixture to explicit canonical server keys and canonical paths.
-- Deterministic migrated tests pass:
-
-```text
-go test ./cmd/serf-hub/internal/hubcore -run 'Test.*(Tree|Project|Archive|Delete|Spawn)' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore
-
-go test ./cmd/serf-hub -run '^(TestArchive|TestProjectDelete|TestOrphan|TestTreeResponse|TestAPITree_|TestWeb_APITreeGroupsLiveOnlySessionsByProject|TestWeb_APITreeReturnsRefsAndNormalizesAwaiting|TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown|TestSpawnAndResumeRequestsCarryCanonicalProjectSeparatelyFromWorkingDir|TestResolveStateDirForProjectUsesCarriedProjectWithoutResolvingWorkingDir)$' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub
-```
-
-- Tagged compile passed: `go test -tags serffuzz ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1` (all three packages, no tests to run). Ordinary compile passed for the same three packages. `git diff --check` passed.
-- Parent reran the exact focused command outside the delegate sandbox after the fixes:
-
-```text
-go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.486s
-ok   primeradiant.com/serf/cmd/serf-hub                   3.013s
-ok   primeradiant.com/serf/cmd/serf-tui                   2.264s
-```
-
-- The documented sidebar setup was attempted with `npm init -y && npm install jsdom`; installation failed offline with `npm ERR! code ENOTFOUND` for `registry.npmjs.org`, so `node test-sidebar-migration.js` could not run.
-
-Implementation commit: `606eb6ead2190d0f5c92446e0e9b2b82b65555a6`
-Fix commit: `b0096985f`
-
-## Parent follow-up: TUI E2E fixture fixes
-
-Parent verification initially reduced the failures to three TUI E2Es. The shared fixture had two stale assumptions:
-
-- Its literal `/tmp/serf-tui-e2e/serf` expectation did not account for Darwin canonicalizing `/tmp` to `/private/tmp`. The fixture now canonicalizes the original short `/tmp` root with `filepath.EvalSymlinks` before joining the suffix. This preserves Linux behavior and avoids the UI truncation caused by switching to the much longer ambient Darwin `TMPDIR`.
-- Dashboard and Codex spawn tests used `Tab` while focused on the directory field. That invokes directory completion; subsequent prompt text was appended to the path. Both tests now use the form's explicit `Enter` transition from directory to prompt.
-
-Each reproduced TUI failure passed in a focused rerun, and the exact three-package command above then passed in full. The parent tagged compile also passed for all three packages. `git diff --check` and the forbidden-key audit pass.
-
-## Independent review fix: remote appwire project identity
-
-The first independent review found one Important defect: remote appwire threads carried `ProjectID`/`ProjectPath`, but web-tree ingestion discarded those fields and attempted to resolve only the remote `CWD` on the local filesystem. A TDD regression reproduced the empty carried identity when the remote CWD was not locally resolvable. `appThreadTreeEntries` now validates the supplied project ID and preserves the pair in `LiveEntry.Project`, allowing `ResolveProjectMap` to reuse the remote hub's canonical identity.
-
-Fresh verification after this fix:
-
-```text
-go test ./cmd/serf-hub/internal/hubcore ./cmd/serf-hub ./cmd/serf-tui -run 'Test.*(Tree|Project|Archive|Delete|Spawn|Dashboard)' -count=1
-ok   primeradiant.com/serf/cmd/serf-hub/internal/hubcore  0.416s
-ok   primeradiant.com/serf/cmd/serf-hub                   2.497s
-ok   primeradiant.com/serf/cmd/serf-tui                   2.153s
-
-go test -tags serffuzz ./cmd/serf-hub ./cmd/serf-hub/internal/hubcore ./cmd/serf-tui -run '^$' -count=1
-ok   all three packages; no tests to run
-
-git diff --check
-pass
-```
-
-Review-fix commit: `de042d413`
-
-## Final independent re-review
-
-A fresh independent review of `2eb33dcae..de042d413` found no Critical, Important, or Minor issues.
-
-- Spec compliance: ✅
-- Task quality: Approved
+## Self-review notes
+- Verified per-block: dark `--diagnostic-hub` `#7dc98f` ≠ `--diagnostic-ui`
+  `#7aa2f7`; light `#2e7d4f` ≠ `#2e58b8`. No collision either theme.
+- `--state-ended` keeps raw hex in both themes (unchanged, per brief).
+- All four "four-meaning" consumers (`--diagnostic-provider/serf/hub/ui`) still
+  resolve: provider→--error, serf→--diagnostic-warning, hub→hex green, ui→--accent.
+- No hardcoded old state hues remain in JS/templates; the one `#7aa2f7` left is
+  the intentional pinned favicon `working` dot.
+- The `.context-warn` call site intentionally keeps `var(--state-awaiting)`:
+  near-limit context = needs-you = amber in the new language.
