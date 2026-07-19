@@ -188,7 +188,8 @@
       this.appwireHydrated = false;
       this.hydrationInProgress = false;
       this.readerScrolledDuringHydration = false;
-      this.programmaticScroll = false;
+      this.programmaticScrollDepth = 0;
+      this.prependSettleHolds = 0;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
@@ -944,7 +945,8 @@
           }
           // Reader scroll intent: a scroll event during the replay means the
           // reader chose their position — the settle must not yank them back
-          // to the bottom. Programmatic scrolls (marked) never set the flag.
+          // to the bottom. Programmatic scrolls (depth-counted) never set the
+          // flag.
           if (!this.readerScrolledDuringHydration) this.scrollToBottom();
           this.readerScrolledDuringHydration = false;
         })
@@ -4883,14 +4885,19 @@
     },
 
     scrollToBottom() {
-      // Marked programmatic: the scroll listener must not read this as reader
-      // intent during hydration (the marker also guards any future
-      // programmatic scroll that CAN land inside a replay window).
-      this.programmaticScroll = true;
+      // Depth-counted programmatic scroll: the browser fires the scroll event
+      // ASYNC (a later task at the earliest), so a synchronous marker would
+      // already be cleared by the time the listener runs. Hold the depth until
+      // the next task so the listener never reads this write as reader intent
+      // during hydration (it also guards any future programmatic scroll that
+      // CAN land inside a replay window).
+      this.programmaticScrollDepth++;
       try {
         this.conversation.scrollTop = this.conversation.scrollHeight;
       } finally {
-        this.programmaticScroll = false;
+        setTimeout(() => {
+          this.programmaticScrollDepth = Math.max(0, this.programmaticScrollDepth - 1);
+        }, 0);
       }
       // Once parked at the bottom there is no unseen content, so the
       // new-content pill (and its counter) must reset.
@@ -4967,8 +4974,9 @@
           // Reader intent during hydration: a genuine scroll mid-replay means
           // the reader took control of the position — the hydration-end settle
           // must not yank them to the bottom. Programmatic scrolls (prepend
-          // compensation, the settle itself) are marked and never set this.
-          if (this.hydrationInProgress && !this.programmaticScroll) {
+          // compensation, the settle itself) hold a depth count that covers
+          // their ASYNC scroll events, and never set this.
+          if (this.hydrationInProgress && this.programmaticScrollDepth === 0) {
             this.readerScrolledDuringHydration = true;
           }
           if (this.scrollAffordanceTick) return;
@@ -5197,22 +5205,53 @@
           this.scheduleNewContentCountPaint();
         }
       }
-      const beforeHeight = sc.scrollHeight;
-      const beforeTop = sc.scrollTop;
-      const frag = document.createDocumentFragment();
-      while (staging.firstChild) frag.appendChild(staging.firstChild);
-      sc.insertBefore(frag, sc.firstChild);
-      sc.scrollTop = beforeTop + (sc.scrollHeight - beforeHeight);
-      // Second settle: freshly prepended entries may sit at estimated sizes
-      // (content-visibility). After the browser lays out the near-viewport
-      // ones, correct the residual drift so the reader's anchor holds.
-      const settledHeight = sc.scrollHeight;
-      this.scheduleFrame(() => {
-        if (!sc.isConnected) return;
-        const drift = sc.scrollHeight - settledHeight;
-        if (drift) sc.scrollTop += drift;
-      }, "prepend-settle");
-      this.errorAnchorCache = null;
+      // Depth-counted programmatic scroll: BOTH scrollTop writes below (the
+      // sync compensation and the rAF drift correction) fire their scroll
+      // events ASYNC, after this function returns — a synchronous marker is
+      // already cleared by then, and mid-hydration paging
+      // (loadOlderTurnsUntilPrimaryDialogue) read those events as reader
+      // intent, wrongly suppressing the hydration-end settle. Hold a depth
+      // count from here until the final settle callback has completed its
+      // correction; the release is deferred one task so the correction's own
+      // async scroll event also lands while depth > 0. A subsequent prepend
+      // re-schedules the keyed "prepend-settle" frame, cancelling the
+      // previous one — its hold is subsumed by the surviving settle, so the
+      // holds pile up and the LAST settle releases them all (no stuck
+      // counter). The catch path releases this prepend's own hold if anything
+      // throws before the settle is scheduled.
+      this.programmaticScrollDepth++;
+      this.prependSettleHolds++;
+      try {
+        const beforeHeight = sc.scrollHeight;
+        const beforeTop = sc.scrollTop;
+        const frag = document.createDocumentFragment();
+        while (staging.firstChild) frag.appendChild(staging.firstChild);
+        sc.insertBefore(frag, sc.firstChild);
+        sc.scrollTop = beforeTop + (sc.scrollHeight - beforeHeight);
+        // Second settle: freshly prepended entries may sit at estimated sizes
+        // (content-visibility). After the browser lays out the near-viewport
+        // ones, correct the residual drift so the reader's anchor holds.
+        const settledHeight = sc.scrollHeight;
+        this.scheduleFrame(() => {
+          try {
+            if (sc.isConnected) {
+              const drift = sc.scrollHeight - settledHeight;
+              if (drift) sc.scrollTop += drift;
+            }
+          } finally {
+            const holds = this.prependSettleHolds;
+            this.prependSettleHolds = 0;
+            setTimeout(() => {
+              this.programmaticScrollDepth = Math.max(0, this.programmaticScrollDepth - holds);
+            }, 0);
+          }
+        }, "prepend-settle");
+        this.errorAnchorCache = null;
+      } catch (err) {
+        this.prependSettleHolds--;
+        this.programmaticScrollDepth--;
+        throw err;
+      }
     },
 
     // noteNewContent records that `added` new transcript entries rendered while
