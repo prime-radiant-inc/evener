@@ -139,7 +139,7 @@ pass(
 // Per-turn duration/tokens/cost badge mirrors the tool-meta pattern above:
 // hidden at rest, hover/focus-within reveal, still in the accessibility tree.
 pass(
-  ruleContains(".assistant-message .turn-meta", /color:\s*var\(--text-muted\)/) &&
+  ruleContains(".assistant-message .turn-meta", /color:\s*var\(--ink-2\)/) &&
     ruleContains(".assistant-message .turn-meta", /opacity:\s*0\b/) &&
     !ruleContains(".assistant-message .turn-meta", /visibility:\s*hidden\b/),
   "turn-meta badge should rest at opacity:0, never visibility:hidden"

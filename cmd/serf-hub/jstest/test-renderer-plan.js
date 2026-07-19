@@ -53,7 +53,7 @@ let allPass = true;
       "progress count should use tabular-nums",
     ],
     [
-      /\.task-card\s*\{[^}]*border-left:[^;]*var\(--rule\)/.test(styleSrc),
+      /\.task-card\s*\{[^}]*border-left:[^;]*var\(--line\)/.test(styleSrc),
       ".task-card should use a left rail, not a box",
     ],
     [

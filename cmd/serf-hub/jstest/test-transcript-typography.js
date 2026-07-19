@@ -128,7 +128,7 @@ for (const consistent of [".assistant-message", ".tool-call", ".think", ".user-m
 const disc = rule(".tool-disclosure");
 pass(/width:\s*24px/.test(disc) && /height:\s*24px/.test(disc),
   ".tool-disclosure must have a 24px hit target");
-pass(/color:\s*var\(--text-muted\)/.test(disc) && /font-size:\s*var\(--text-md\)/.test(disc),
+pass(/color:\s*var\(--ink-2\)/.test(disc) && /font-size:\s*var\(--text-md\)/.test(disc),
   ".tool-disclosure glyph must be comfortably visible (muted, --text-md)");
 pass(/\.tool-disclosure\[aria-expanded="true"\]\s*\{\s*transform:\s*rotate\(90deg\)/.test(css),
   ".tool-disclosure must rotate its › 90° when expanded");

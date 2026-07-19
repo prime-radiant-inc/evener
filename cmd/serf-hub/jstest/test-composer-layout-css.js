@@ -7,8 +7,8 @@ function assert(cond, msg) { if (!cond) { console.error("FAIL: " + msg); process
 const capGroup = css.match(/\.workspace-header,\s*\n\.conversation,\s*\n?[^{]*\{/);
 assert(!capGroup || !capGroup[0].includes(".workspace-input"),
   ".workspace-input removed from the width-capped group (dock spans the window)");
-assert(/\.workspace-input\s*\{[^}]*background:\s*var\(--bg-raised\)/.test(css),
-  "dock carries the --bg-raised background step");
+assert(/\.workspace-input\s*\{[^}]*background:\s*var\(--surface\)/.test(css),
+  "dock carries the --surface background step");
 assert(/\.workspace-input > \[data-composer-surface\] \{[^}]*width:\s*min\(100%, var\(--measure\)\)[^}]*margin-inline:\s*auto/.test(css),
   "composer content column centers at the measure");
 assert(/button\.composer-model-value \{[^}]*min-height:\s*30px/.test(css),

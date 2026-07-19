@@ -486,7 +486,7 @@ await scenario("CSS: the subagents module is a left rail, not a box", [], () => 
   // section-header treatment is gone — the label is plain muted sans.
   const blocks = styleSrc.match(/\.subs\s*\{[^}]*\}/g) || [];
   if (!blocks.length) return { ok: false, detail: "missing .subs rule" };
-  if (!blocks.some(b => /border-left:[^;]*var\(--rule\)/.test(b))) return { ok: false, detail: ".subs must use a neutral left rail" };
+  if (!blocks.some(b => /border-left:[^;]*var\(--line\)/.test(b))) return { ok: false, detail: ".subs must use a neutral left rail" };
   if (blocks.some(b => /\bbackground:\s*var\(--bg-raised\)/.test(b))) return { ok: false, detail: ".subs must not be a filled box" };
   if (!/\.subs\[data-count="1"\]/.test(styleSrc)) return { ok: false, detail: "a lone subagent (data-count=1) must drop the rail/header to read as a row" };
   return { ok: true };

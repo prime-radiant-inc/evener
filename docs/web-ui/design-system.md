@@ -66,9 +66,12 @@ Defined in the golden example's `:root`. Semantic names carry meaning; raw hues 
 > **done (neutral)** with the bad news in its result text — **not** red. Red means the subagent
 > or tool itself failed to run.
 
-Neutral ramp: `--bg #0e0f13`, `--surface #16181d`, `--surface-2 #1c1f26`, rules `--line #23262e`
-/ `--hair #2d313b`; text `--ink #e8e9ee` (primary), `--ink-2 #abb1be` (secondary, AA), `--ink-3
-#7e8593` (tertiary, AA ~4.8:1), `--ink-4 #4b5060` (**hairlines / non-text only** — never words).
+Neutral ramp (aligned to shipped values, 2026-07-19): `--bg #0a0a0e`, `--surface #16161e`,
+`--surface-2 #1c1c24`, rules `--line #1a1a20` / `--hair` (a 50% `--line` mix — the *faint*
+hairline); text `--ink #ececf0` (primary), `--ink-2 #7a7a86` (secondary), `--ink-3 #7e8593`
+(tertiary, AA ~4.8:1), `--ink-4 #5a5a64` (**hairlines / non-text only** — never words).
+Light theme: `--bg #fafafa`, `--surface #f1f1f2`, `--surface-2 #e6e6e8`, `--line #dadadc`,
+`--ink #16161e`, `--ink-2 #5e5e6a`, `--ink-3 #6b6b76`, `--ink-4 #8a8a92`.
 
 ### Type
 

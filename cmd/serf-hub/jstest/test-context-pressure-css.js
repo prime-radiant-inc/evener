@@ -30,7 +30,7 @@ if (glyph) {
 const defaultNumbers = css.match(/\.input-telemetry \.context \.context-numbers\s*\{[^}]*\}/);
 pass(!!defaultNumbers, "default compact context value rule exists");
 if (defaultNumbers) {
-  pass(/color\s*:\s*var\(--text\)/.test(defaultNumbers[0]), "default compact context uses neutral --text");
+  pass(/color\s*:\s*var\(--ink\)/.test(defaultNumbers[0]), "default compact context uses neutral --ink");
   pass(!/var\(--state-awaiting\)/.test(defaultNumbers[0]), "default compact context must NOT be blue --state-awaiting");
   pass(!/var\(--error\)/.test(defaultNumbers[0]), "default compact context must NOT be red --error");
 }
