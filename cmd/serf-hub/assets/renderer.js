@@ -899,29 +899,54 @@
     // scheduleFrame runs cb on the next animation frame when rAF exists and the
     // tab is visible; otherwise on a 16ms timer. Plain jsdom has no rAF at all,
     // and hidden tabs never fire it — never call rAF unguarded.
-    scheduleFrame(cb) {
-      this.cancelFrame();
+    // Slots are keyed: each key owns its pending callback, and scheduling on a
+    // key cancels only that key's pending callback. A single shared slot would
+    // let one caller (e.g. the prepend settle) cancel another's frame (e.g. the
+    // scroll tick), leaving scrollAffordanceTick stuck true forever.
+    scheduleFrame(cb, key) {
+      const slot = key == null ? "default" : key;
+      if (!this.scheduledFrameRafs) this.scheduledFrameRafs = new Map();
+      if (!this.scheduledFrameTimers) this.scheduledFrameTimers = new Map();
+      this.cancelFrame(slot);
       const hidden = typeof document !== "undefined" && document.hidden;
       if (!hidden && typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-        this.scheduledFrameRaf = window.requestAnimationFrame(() => {
-          this.scheduledFrameRaf = null;
+        this.scheduledFrameRafs.set(slot, window.requestAnimationFrame(() => {
+          this.scheduledFrameRafs.delete(slot);
           cb();
-        });
+        }));
         return;
       }
-      this.scheduledFrameTimer = setTimeout(() => {
-        this.scheduledFrameTimer = null;
+      this.scheduledFrameTimers.set(slot, setTimeout(() => {
+        this.scheduledFrameTimers.delete(slot);
         cb();
-      }, 16);
+      }, 16));
     },
 
-    cancelFrame() {
-      if (this.scheduledFrameRaf != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
-        try { window.cancelAnimationFrame(this.scheduledFrameRaf); } catch (e) {}
+    // cancelFrame(key) cancels that key's pending callback; with no key it
+    // cancels every slot — a bare cancelFrame() still retires a bare
+    // scheduleFrame(), which lives on the "default" key.
+    cancelFrame(key) {
+      if (key != null) {
+        this.cancelFrameSlot(key);
+        return;
       }
-      if (this.scheduledFrameTimer != null) clearTimeout(this.scheduledFrameTimer);
-      this.scheduledFrameRaf = null;
-      this.scheduledFrameTimer = null;
+      if (this.scheduledFrameRafs) for (const slot of [...this.scheduledFrameRafs.keys()]) this.cancelFrameSlot(slot);
+      if (this.scheduledFrameTimers) for (const slot of [...this.scheduledFrameTimers.keys()]) this.cancelFrameSlot(slot);
+    },
+
+    cancelFrameSlot(key) {
+      if (this.scheduledFrameRafs) {
+        const raf = this.scheduledFrameRafs.get(key);
+        if (raf != null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+          try { window.cancelAnimationFrame(raf); } catch (e) {}
+        }
+        this.scheduledFrameRafs.delete(key);
+      }
+      if (this.scheduledFrameTimers) {
+        const timer = this.scheduledFrameTimers.get(key);
+        if (timer != null) clearTimeout(timer);
+        this.scheduledFrameTimers.delete(key);
+      }
     },
 
     // Frame batching — LIVE socket events only. Replay paths (initial hydration,
@@ -1001,11 +1026,11 @@
           workspace.style.setProperty("--workspace-visible-height", viewport.height + "px");
         }
       };
-      const schedule = () => this.scheduleFrame(apply);
+      const schedule = () => this.scheduleFrame(apply, "viewport");
       this.workspaceViewportCleanup = () => {
         viewport.removeEventListener("resize", schedule);
         viewport.removeEventListener("scroll", schedule);
-        this.cancelFrame();
+        this.cancelFrame("viewport");
       };
       viewport.addEventListener("resize", schedule);
       viewport.addEventListener("scroll", schedule);
@@ -4709,7 +4734,7 @@
           this.scheduleFrame(() => {
             this.scrollAffordanceTick = false;
             this.onScrollAffordance();
-          });
+          }, "scroll");
         });
       }
       this.clearNewContentPill();
@@ -4883,7 +4908,7 @@
         if (!sc.isConnected) return;
         const drift = sc.scrollHeight - settledHeight;
         if (drift) sc.scrollTop += drift;
-      });
+      }, "prepend-settle");
       this.errorAnchorCache = null;
     },
 

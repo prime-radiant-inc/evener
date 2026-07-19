@@ -32,6 +32,14 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(runs <= 1, "scroll handler coalesced to at most one run per frame (got " + runs + ")");
   await new Promise((r) => setTimeout(r, 50));
   pass(runs === 1, "the coalesced run executes on the next frame");
+  // Regression: a same-tick scheduleFrame on another key (prepend-settle) must
+  // not cancel the scroll tick's pending frame — before keyed slots it did,
+  // leaving scrollAffordanceTick stuck true and killing scroll affordance.
+  runs = 0;
+  conv.dispatchEvent(new window.Event("scroll"));
+  R.scheduleFrame(() => {}, "prepend-settle");
+  await new Promise((r) => setTimeout(r, 50));
+  pass(runs === 1, "scroll tick frame survives a prepend-settle scheduleFrame (got " + runs + ")");
   // Anchor cache: querySelectorAll runs once until invalidated.
   let queries = 0;
   const realQSA = conv.querySelectorAll.bind(conv);
