@@ -516,8 +516,9 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
 }
 /* One width scale (design-system §4): prose rows hold the 720px measure;
    machine rows (tool calls, clusters, the subagent rail, cards) bleed right
-   to --measure-machine. Children with their own max-width (e.g. .think's
-   680px) keep it — those rules come later in the file and win. */
+   to --measure-machine. The bleed rule outranks any max-width a bleed-listed
+   child sets for itself; non-bleed children keep their own caps when a
+   later, more specific rule sets one. */
 .conversation > * { max-width: var(--measure); }
 .conversation > .tool-call,
 .conversation > .tool-call-cluster,
