@@ -404,6 +404,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if p.skillCandidate.valid && p.skillCandidate.callID == data.CallID && p.skillCandidate.activationName != "" {
 			raw = skillActivationRaw(p.skillCandidate.activationName)
 		}
+		argsJSON := p.toolArgsByKey[data.CallID]
+		if argsJSON == "" {
+			argsJSON = data.ArgumentsJSON
+		}
 		item := appwire.ThreadItem{
 			Type:         "commandExecution",
 			ID:           p.toolItemID(data.CallID),
@@ -415,8 +419,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			OutputImages: projectOutputImages(data.OutputImages),
 			Status:       "completed",
 			Raw:          raw,
+			// Carry the call's purpose onto the completed item too (#26):
+			// the started item already has it, and live consumers (the web
+			// subagent activity line) render the purpose from Description.
+			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
 		}
-		argsJSON := p.toolArgsByKey[data.CallID]
 		if data.ToolName == "use_skill" && data.Error == "" {
 			skill := useSkillNameFromArgs(argsJSON)
 			activationName := ""

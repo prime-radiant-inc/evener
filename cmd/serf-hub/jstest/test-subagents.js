@@ -314,8 +314,11 @@ await scenario("live activity: child frames push to the row's activity line, ste
     return { ok: false, detail: "a child frame must NOT render into the parent transcript" };
   }
   if (row.dataset.steps !== "1") return { ok: false, detail: "first activity should set steps=1, got " + row.dataset.steps };
-  const live = row.querySelector(".res .live");
-  if (!live || !/shell: go test/.test(live.textContent)) return { ok: false, detail: "activity line should show the latest step: " + (live && live.textContent) };
+  const liveText = () => { const el = row.querySelector(".res .live"); return el ? el.textContent : ""; };
+  // Issue #26: inline child activity renders the tool call's purpose only —
+  // no "toolname:" prefix, no raw command/target dump.
+  if (liveText() !== "go test ./...") return { ok: false, detail: "activity line should be just the purpose: " + liveText() };
+  if (liveText().includes("shell:")) return { ok: false, detail: "activity line must not carry a toolname prefix: " + liveText() };
   // A frame for an UNwatched ref is not ours — must not be swallowed.
   if (R.handleChildFrame("item/started", { ref: "local:other", item: { toolName: "grep" } })) {
     return { ok: false, detail: "a frame for an unwatched ref must not be swallowed" };
@@ -323,8 +326,14 @@ await scenario("live activity: child frames push to the row's activity line, ste
   // New activity advances the step count; an identical repeat does NOT (honest).
   R.handleChildFrame("item/started", { ref: "local:child-L", item: { toolName: "read_file", description: "auth/session.go" } });
   if (row.dataset.steps !== "2") return { ok: false, detail: "new activity should advance steps to 2, got " + row.dataset.steps };
+  if (liveText() !== "auth/session.go") return { ok: false, detail: "activity line should be the new purpose: " + liveText() };
   R.handleChildFrame("item/started", { ref: "local:child-L", item: { toolName: "read_file", description: "auth/session.go" } });
   if (row.dataset.steps !== "2") return { ok: false, detail: "identical activity must not advance steps, got " + row.dataset.steps };
+  // No purpose available: the honest fallback is the bare tool name — never a
+  // fabricated detail and never a raw arguments dump.
+  R.handleChildFrame("item/completed", { ref: "local:child-L", item: { toolName: "shell", status: "completed" } });
+  if (row.dataset.steps !== "3") return { ok: false, detail: "a purpose-less tool frame is still a new step, got " + row.dataset.steps };
+  if (liveText() !== "shell") return { ok: false, detail: "purpose-less tool frame should fall back to the bare tool name: " + liveText() };
   // Honest aging: rewind the last change and re-age → silent + a 'quiet Ns' clock.
   row.dataset.lastChangeAt = String(Date.now() - 50000);
   R.ageSubagentRow(row);
@@ -626,7 +635,7 @@ await scenario("expanded subagent row lazy-loads bounded preview", [
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ ref: "local:child-preview", truncated: true, items: [
       { type: "agentMessage", text: "found three callers" },
       { type: "commandExecution", toolName: "grep_files", description: "search billing", status: "completed" },
-      { type: "agentMessage", text: "recommended fix" },
+      { type: "commandExecution", toolName: "shell", status: "completed" },
       { type: "agentMessage", text: "extra item should not render when limit is 3" },
     ] }) });
   };
@@ -638,7 +647,12 @@ await scenario("expanded subagent row lazy-loads bounded preview", [
   if (!requested.includes("local%3Achild-preview")) return { ok: false, detail: "preview endpoint not requested: " + requested };
   if (!preview) return { ok: false, detail: "missing preview container" };
   if (!preview.textContent.includes("found three callers") || !preview.textContent.includes("search billing")) return { ok: false, detail: "missing preview snippets: " + preview.textContent };
-  if (!preview.textContent.includes("recommended fix")) return { ok: false, detail: "preview should render third item (lower bound of limit is 3): " + preview.textContent };
+  const lines = Array.from(preview.querySelectorAll(".sub-preview-line"));
+  // Issue #26: a tool line is just the purpose — no "toolname:" prefix.
+  if (!lines[1] || lines[1].textContent !== "search billing") return { ok: false, detail: "tool preview line should be the bare purpose: " + (lines[1] && lines[1].textContent) };
+  if (lines[1].textContent.includes("grep_files:")) return { ok: false, detail: "tool preview line must not carry a toolname prefix: " + lines[1].textContent };
+  // No purpose on the third item: the honest fallback is the bare tool name.
+  if (!lines[2] || lines[2].textContent !== "shell") return { ok: false, detail: "purpose-less tool preview line should be the bare tool name: " + (lines[2] && lines[2].textContent) };
   if (preview.textContent.includes("extra item should not render")) return { ok: false, detail: "preview rendered more than bounded limit" };
   return { ok: true };
 });
