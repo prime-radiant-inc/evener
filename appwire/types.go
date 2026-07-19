@@ -512,25 +512,30 @@ const (
 )
 
 type ThreadItem struct {
-	Type                 string          `json:"type"`
-	ID                   string          `json:"id"`
-	TurnID               string          `json:"turnId,omitempty"`
-	TranscriptEntryIndex int             `json:"transcriptEntryIndex,omitempty"`
-	Text                 string          `json:"text,omitempty"`
-	Delta                string          `json:"delta,omitempty"`
-	Images               []InputItem     `json:"images,omitempty"`
-	ToolName             string          `json:"toolName,omitempty"`
-	CallID               string          `json:"callId,omitempty"`
-	ArgumentsJSON        string          `json:"argumentsJson,omitempty"`
-	Description          string          `json:"description,omitempty"`
-	Output               string          `json:"output,omitempty"`
-	Error                string          `json:"error,omitempty"`
-	OutputImages         []OutputImage   `json:"outputImages,omitempty"`
-	Status               string          `json:"status,omitempty"`
-	StartedAt            *int64          `json:"startedAt,omitempty"`
-	CompletedAt          *int64          `json:"completedAt,omitempty"`
-	Raw                  json.RawMessage `json:"raw,omitempty"`
-	EventKind            string          `json:"eventKind,omitempty"`
+	Type                 string        `json:"type"`
+	ID                   string        `json:"id"`
+	TurnID               string        `json:"turnId,omitempty"`
+	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
+	Text                 string        `json:"text,omitempty"`
+	Delta                string        `json:"delta,omitempty"`
+	Images               []InputItem   `json:"images,omitempty"`
+	ToolName             string        `json:"toolName,omitempty"`
+	CallID               string        `json:"callId,omitempty"`
+	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
+	Description          string        `json:"description,omitempty"`
+	Output               string        `json:"output,omitempty"`
+	Error                string        `json:"error,omitempty"`
+	OutputImages         []OutputImage `json:"outputImages,omitempty"`
+	Status               string        `json:"status,omitempty"`
+	StartedAt            *int64        `json:"startedAt,omitempty"`
+	CompletedAt          *int64        `json:"completedAt,omitempty"`
+	// DurationMS is the item's real server-measured runtime in milliseconds
+	// (tool-call items only). Stamped live from the event stream's own
+	// timestamps; nil when no honest span was recorded (issue #37: the web
+	// hover meta shows real times or nothing).
+	DurationMS *int64          `json:"durationMs,omitempty"`
+	Raw        json.RawMessage `json:"raw,omitempty"`
+	EventKind  string          `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
 	// daemon/system steering (issue #24).
