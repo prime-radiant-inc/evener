@@ -9,7 +9,7 @@
   // (so this.upsertJobRef etc. resolve at call time). Loads after
   // renderer-format.js, before renderer.js.
 
-  const { parseToolState, parseToolJSON, formatBytes, compactParts, clip } =
+  const { parseToolState, parseToolJSON, formatBytes, compactParts, clip, tailSlice } =
     window.SerfRendererInternal;
 
   // toolRendererFor returns the renderer descriptor for a given tool name.
@@ -89,7 +89,7 @@
   // snapping the pane back to the oldest bytes with a head-clip.
   function tailFoldOutput(text, max) {
     text = String(text || "");
-    return text.length > max ? "…\n" + text.slice(-max) : text;
+    return text.length > max ? "…\n" + tailSlice(text, max) : text;
   }
 
   function outputPreviewBody(className, outputClassName, el) {
@@ -240,7 +240,7 @@
     // pane (the tail stops moving — looks stalled). bodyEnd keeps the
     // same tail orientation for the final render (tailFoldOutput).
     const text = String(out || "");
-    b.outputPre.textContent = text.length > 8000 ? text.slice(-8000) : text;
+    b.outputPre.textContent = tailSlice(text, 8000);
     b.outputPre.scrollTop = b.outputPre.scrollHeight;
   }
 
@@ -560,7 +560,7 @@
       // the pane (the tail stops moving — looks stalled). bodyEnd keeps the
       // same tail orientation for the final render (tailFoldOutput).
       const text = String(out || "");
-      b.pre.textContent = text.length > 8000 ? text.slice(-8000) : text;
+      b.pre.textContent = tailSlice(text, 8000);
       b.pre.scrollTop = b.pre.scrollHeight;
     },
     bodyEnd: (state, data, out) => {

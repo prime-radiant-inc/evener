@@ -621,6 +621,20 @@
     return s.length > n ? s.slice(0, n) + "…" : s;
   }
 
+  // tailSlice returns the last max code units of text, adjusted so the slice
+  // never BEGINS on a low surrogate (0xDC00–0xDFFF): starting mid-pair renders
+  // U+FFFD as the first visible char of the tail. The orphaned unit is dropped
+  // (the tail is one code unit shorter), keeping the pair's high half with the
+  // elided head. Shared by every 8KB live/final tail slice in renderer-tools.
+  function tailSlice(text, max) {
+    text = String(text || "");
+    if (text.length <= max) return text;
+    let start = text.length - max;
+    const code = text.charCodeAt(start);
+    if (code >= 0xDC00 && code <= 0xDFFF) start++;
+    return text.slice(start);
+  }
+
   // turnMetaParts distills a completed turn's Usage/Cost/durationMs into the
   // individual display parts the per-turn badge renders as separate DOM nodes
   // (the cost gets its own child span for later Show-cost CSS gating).
@@ -722,6 +736,7 @@
     taskTimeOf,
     formatToolDuration,
     clip,
+    tailSlice,
     reasoningGist,
     reasoningTier,
     turnMetaParts,

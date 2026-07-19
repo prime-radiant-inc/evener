@@ -119,6 +119,11 @@
   const INITIAL_TURN_WINDOW = 40;
   const OLDER_TURN_PAGE = 30;
 
+  // Hydration replay chunk size: after this many events the readThread replay
+  // yields a macrotask so opening/reconnecting a long session doesn't freeze
+  // the page (an unchunked 2000-event replay is one multi-second task).
+  const HYDRATION_CHUNK = 150;
+
   const SerfRenderer = {
     // isInPane returns true when the renderer is running inside a framed pane
     // (a side-pane iframe). Uses the standard same-origin cross-frame check;
@@ -839,6 +844,16 @@
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
           if (this.appwireHydrated) this.resetTranscriptReplay();
+          // The replay below is chunked and yields to the event loop between
+          // slices, so the window in which live notifications could interleave
+          // into the half-rendered transcript is no longer microscopic. Gate
+          // live delivery for the whole replay: the onNotification handler's
+          // !appwireHydrated branch buffers matching notifications into
+          // pendingNotifications, and the buffered-replay loop at the end of
+          // this block delivers them in order after hydration completes. On
+          // failure the reconnect schedule re-runs hydration from scratch, so
+          // the flag is never stuck false.
+          this.appwireHydrated = false;
           // Seed the lazy-load cursor: non-empty means older turns exist beyond
           // the hydrated window and can be paged in on scroll-up.
           this.olderTurnsCursor = resp.olderCursor || "";
@@ -855,8 +870,20 @@
           // events AND buffered notifications) and settle once at the end.
           this.suppressScrollSettle = true;
           try {
-            for (const [kind, data] of hydrationEvents) {
+            // Chunked replay: a long session's thousands of events must not
+            // run as one blocking task. Slice the loop and yield a macrotask
+            // between slices so input and timers stay responsive. The
+            // staleness guards re-run after EVERY yield: a session swap (or
+            // stream teardown) mid-chunk must abort the abandoned replay
+            // cleanly instead of rendering into the new conversation.
+            for (let i = 0; i < hydrationEvents.length; i++) {
+              const [kind, data] = hydrationEvents[i];
               this.handleData(kind, data);
+              if ((i + 1) % HYDRATION_CHUNK === 0 && i + 1 < hydrationEvents.length) {
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+                if (this.liveStream !== appwireStream) return;
+              }
             }
             await this.loadOlderTurnsUntilPrimaryDialogue(
               this.eventsContainPrimaryDialogue(hydrationEvents),
