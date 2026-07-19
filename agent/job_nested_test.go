@@ -41,7 +41,7 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -742,7 +742,7 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -805,7 +805,7 @@ func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -857,7 +857,7 @@ func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:            "CHILD",
@@ -926,7 +926,7 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -1015,8 +1015,8 @@ func TestNestedReadOutputDepth2FallsBackToOwnerParentForwardedCopy(t *testing.T)
 		t.Fatalf("root store unexpectedly holds forwarded worker copy; forwarding must be single-hop")
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
 
 	// Close the OWNER (worker) store: the read can only be served from the
@@ -1071,7 +1071,7 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -3027,10 +3027,10 @@ func TestJobReadOutputDepth2Resolves(t *testing.T) {
 		t.Fatalf("append worker output: %v", err)
 	}
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	// Snapshot read at depth 2: the root resolves root -> coordinator -> worker
@@ -3264,10 +3264,10 @@ func TestJobStopCascadesToWorkers(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
@@ -3359,8 +3359,8 @@ func TestJobStopTerminalDelegateCascadesToLiveWorkers(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
@@ -3429,8 +3429,8 @@ func TestJobStopStaleSupersededDelegateDoesNotCascade(t *testing.T) {
 		waitForShellDone(t, coordJM, coordShell.JobID)
 	})
 
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	out, err := jobStopTool(context.Background(), root, map[string]any{
@@ -3493,10 +3493,10 @@ func TestJobStopNonDirectDescendant(t *testing.T) {
 		waitForShellDone(t, workerJM, workerShell.JobID)
 	})
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	_, err := jobStopTool(context.Background(), root, map[string]any{

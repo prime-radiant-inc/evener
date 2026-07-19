@@ -601,7 +601,7 @@ func TestJobManagerListWithErrorSurfacesLoadFailure(t *testing.T) {
 		t.Fatalf("close store: %v", err)
 	}
 
-	if _, err := jm.listWithError(listFilter{}); err == nil {
+	if _, _, err := jm.listWithError(listFilter{}); err == nil {
 		t.Fatal("listWithError returned nil error")
 	}
 	if jobs := jm.list(listFilter{}); jobs != nil {

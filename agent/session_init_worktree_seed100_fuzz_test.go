@@ -183,7 +183,7 @@ func fuzzInitWorktreePureEdges(t *testing.T) {
 	if _, err := (&Session{}).clearParentSourceWatchForChild("", "", ""); err == nil {
 		t.Fatal("empty parent-watch observer clear succeeded")
 	}
-	missingSub := &Session{subagents: newSubagentManager(func(events.EventKind, events.EventData) {})}
+	missingSub := &Session{subagents: newSubagentManager(func(events.EventKind, events.EventData) {}, 0)}
 	if _, err := missingSub.sendInput(context.Background(), "missing", "input"); err == nil {
 		t.Fatal("unknown subagent send succeeded")
 	}

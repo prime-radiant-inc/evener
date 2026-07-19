@@ -126,6 +126,18 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["max_subagent_depth"] = name
 			nonEmpty = true
 		}
+		if l.MaxConcurrentDelegateTurns != nil {
+			v := *l.MaxConcurrentDelegateTurns
+			eff.MaxConcurrentDelegateTurns = &v
+			prov["max_concurrent_delegate_turns"] = name
+			nonEmpty = true
+		}
+		if l.MaxRetainedTerminal != nil {
+			v := *l.MaxRetainedTerminal
+			eff.MaxRetainedTerminal = &v
+			prov["max_retained_terminal"] = name
+			nonEmpty = true
+		}
 		if l.NoProjectPrompts != nil {
 			v := *l.NoProjectPrompts
 			eff.NoProjectPrompts = &v

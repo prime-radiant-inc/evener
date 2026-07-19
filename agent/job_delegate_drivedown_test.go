@@ -555,7 +555,7 @@ func TestDrainDoesNotReRouteChildCallerPendings(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 	child := &Session{id: "CHILD", jobManager: childJM}
 	parent.subagents.track(&subagent{
@@ -658,14 +658,14 @@ func TestParentDrainDeliversChildWatchSendThroughChildSession(t *testing.T) {
 	}
 
 	worker := &Session{id: "WORKER"}
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
 	child.subagents.track(&subagent{
 		id:      "WORKER",
 		sess:    worker,
 		status:  SubagentRunning,
 		driving: true,
 	})
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
 		sess:   child,
@@ -750,7 +750,7 @@ func TestStopGatingNoResurrection(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 
 	// Latest record for child CHILD is a deliberate stop.
@@ -789,7 +789,7 @@ func TestStopGateUsesAppendOrderNotWallClock(t *testing.T) {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	// Freeze the clock so wall-clock CANNOT disambiguate: the stop and the later
 	// resume share an identical TS. Only append order separates them.
@@ -903,7 +903,7 @@ func TestDriveHandoffSettleAndCrashReArm(t *testing.T) {
 		_ = childJM.store.Close()
 	})
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	// The parent holds a forwarded copy of CHILD's own delegate terminal (pending):
 	// owner=CHILD, visible=PARENT. CHILD's OWN store holds the same job, also pending
@@ -1026,7 +1026,7 @@ func TestFallbackRenderNonResumableChild(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	// The parent holds a forwarded pending for GONE's own job, but GONE has no live
 	// subagent session (closed / descriptor-less) — it cannot be driven.
@@ -1077,7 +1077,7 @@ func TestFallbackRenderNonResumableChildSurvivesDeliveryFilter(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	// The parent holds a forwarded pending for GONE's own job, but GONE has no live
 	// subagent session (closed / descriptor-less) — it cannot be driven.
@@ -1116,7 +1116,7 @@ func TestFallbackRenderNonResumableChildCallerWatchSend(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	state := appendForwardedChildCallerWatchSendPending(t, parentJM, "GONE", "job_gone_watch")
 	if pending := loadWatchSendRecord(t, parentJM).Pending; len(pending) != 1 {
@@ -1209,7 +1209,7 @@ func TestSelfDeliverySettlesParentForwardedPending(t *testing.T) {
 	childJM.forward = parentJM.forwardEvent
 	childJM.parentJobID = "job_PARENTDELEGATE"
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	// The parent holds a forwarded copy of CHILD's own delegate terminal (pending),
 	// and CHILD's OWN ledger holds the same job (also pending).

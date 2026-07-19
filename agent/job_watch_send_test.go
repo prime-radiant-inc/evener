@@ -951,7 +951,7 @@ func TestWatchSendRestoreDropsTerminalResumableDelegateMissingRestoreDescriptor(
 		id:         sessionID,
 		stateDir:   stateDir,
 		jobManager: reopened,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 	}
 
 	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
@@ -1082,7 +1082,7 @@ func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 			s := &Session{
 				id:         sessionID,
 				jobManager: reopened,
-				subagents:  newSubagentManager(nil),
+				subagents:  newSubagentManager(nil, 0),
 			}
 
 			if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
@@ -3759,7 +3759,7 @@ func TestWatchSendTokenRenderByKey(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
-	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}
 
 	current := &watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID}
 	staleSeq := &watchSendToken{Key: key, UpdateSeq: 1, DeliveryID: deliveryID}
@@ -3787,7 +3787,7 @@ func TestWatchSendTokenSettleAfterPersist(t *testing.T) {
 	t.Parallel()
 	jm := newTestJM(t)
 	_, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
-	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}
 
 	resolvedJM, cfg, state, ok := s.resolveWatchSendToken(&watchSendToken{Key: key, UpdateSeq: 2, DeliveryID: deliveryID})
 	if !ok {
@@ -4547,7 +4547,7 @@ func TestWatchDeliveryCounterCountsCallerSettle(t *testing.T) {
 	jm := newTestJM(t)
 	jm.enqueue = func(jobNotification) {}
 	cfg, key, deliveryID := installCallerSendWatchWithCurrentFrame(t, jm, "frame-v2")
-	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil)}
+	s := &Session{id: jm.sessionID, jobManager: jm, subagents: newSubagentManager(nil, 0)}
 
 	resolvedJM, resolvedCfg, state, ok := s.resolveWatchSendToken(&watchSendToken{
 		Key:        key,

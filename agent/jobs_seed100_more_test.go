@@ -161,13 +161,13 @@ func seed100JobsMore(t *testing.T) {
 	for _, id := range []string{"b", "a"} {
 		listJM.running[id] = &runningJob{rec: &jobstore.JobRecord{JobID: id, Type: jobstore.JobShell, Status: jobstore.StatusRunning, StartedAt: started}, output: listOut, durableStarted: true}
 	}
-	if _, err := listJM.listWithError(listFilter{Limit: 1}); err != nil {
+	if _, _, err := listJM.listWithError(listFilter{Limit: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := listJM.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = listJM.listWithError(listFilter{})
+	_, _, _ = listJM.listWithError(listFilter{})
 
 	// Existing terminals cover the kept-sync terminal path and both mismatch guards.
 	jm3 := newTestJM(t)

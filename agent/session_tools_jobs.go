@@ -908,17 +908,20 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 		return "", err
 	}
 	var jobs []jobListEntry
+	total := 0
 	if filter.IncludeDescendants {
-		descJobs, listErr := s.walkDescendantJobs(filter)
+		descJobs, descTotal, listErr := s.walkDescendantJobs(filter)
 		if listErr != nil {
 			return "", listErr
 		}
 		jobs = descJobs
+		total = descTotal
 	} else {
-		recs, listErr := jm.listWithError(filter)
+		recs, recTotal, listErr := jm.listWithError(filter)
 		if listErr != nil {
 			return "", listErr
 		}
+		total = recTotal
 		jobs = make([]jobListEntry, 0, len(recs))
 		for _, rec := range recs {
 			jobs = append(jobs, projectJobRecord(s, rec))
@@ -935,7 +938,10 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	result := jobListResult{
 		Jobs:          jobs,
 		Count:         len(jobs),
+		Offset:        filter.Offset,
+		Total:         total,
 		Delegates:     delegates,
+		TurnSlots:     turnSlotOccupancyOf(s),
 		Watches:       jm.liveWatchSummaries(),
 		RecentWatches: jm.recentWatchSummaries(),
 	}
@@ -946,6 +952,26 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (any, error) {
 	}
 	_ = maxChars
 	return tool.StateResult{Output: formatJobList(result), State: result}, nil
+}
+
+// turnSlotOccupancyOf snapshots the session's tree-counter occupancy for the
+// job_list footer, or nil when nothing is held (the common idle case — no
+// noise). Jobs/InUse/Cap describe the spawn budget; Drives reads the
+// separate drive budget (driveCounter) so a drive-saturated tree with zero
+// running jobs is visible rather than reporting a dead 0.
+func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
+	if s == nil || s.treeCounter == nil {
+		return nil
+	}
+	total, jobs, _, cap := s.treeCounter.occupancy()
+	var drives int64
+	if s.driveCounter != nil {
+		drives, _, _, _ = s.driveCounter.occupancy()
+	}
+	if total == 0 && drives == 0 {
+		return nil
+	}
+	return &turnSlotOccupancy{InUse: total, Cap: cap, Jobs: jobs, Drives: drives}
 }
 
 var loadDelegatesForJobList = func(jm *jobManager) (map[string]*jobstore.DelegateRecord, error) {
@@ -1038,7 +1064,22 @@ func formatJobList(out jobListResult) string {
 	if len(out.Jobs) == 0 {
 		b.WriteString("No jobs.\n")
 	}
-	fmt.Fprintf(&b, "\n%d job(s).", out.Count)
+	if out.Offset > 0 || out.Total > len(out.Jobs) {
+		if len(out.Jobs) == 0 {
+			// Offset past the end: never print an inverted "showing 51-50".
+			fmt.Fprintf(&b, "\nshowing none of %d jobs (offset %d past end).", out.Total, out.Offset)
+		} else {
+			fmt.Fprintf(&b, "\nshowing %d-%d of %d jobs.", out.Offset+1, out.Offset+len(out.Jobs), out.Total)
+		}
+	} else {
+		fmt.Fprintf(&b, "\n%d job(s).", out.Count)
+	}
+	if len(out.Delegates) > 0 {
+		fmt.Fprintf(&b, " %d delegate(s).", len(out.Delegates))
+	}
+	if ts := out.TurnSlots; ts != nil {
+		fmt.Fprintf(&b, " delegate turn slots: %d/%d in use (%d jobs, %d drive turns).", ts.InUse, ts.Cap, ts.Jobs, ts.Drives)
+	}
 	if out.DelegationAllowance > 0 {
 		fmt.Fprintf(&b, " delegation_allowance: %d.", out.DelegationAllowance)
 	}
@@ -1216,9 +1257,24 @@ type jobOutputMatch struct {
 	Line       string `json:"line"`
 }
 
+// turnSlotOccupancy is the diagnostic tree-counter snapshot surfaced in
+// job_list while any delegate-turn slot is held: spawn-budget total in use,
+// cap, and jobs, plus drive turns in flight on the separate drive budget.
+type turnSlotOccupancy struct {
+	InUse  int64 `json:"in_use"`
+	Cap    int64 `json:"cap"`
+	Jobs   int64 `json:"jobs"`
+	// Drives is the live occupancy of the separate drive-turn budget
+	// (driveCounter); drive turns do not hold spawn-budget slots.
+	Drives int64 `json:"drive_turns"`
+}
+
 type jobListResult struct {
 	Jobs      []jobListEntry      `json:"jobs"`
 	Count     int                 `json:"count"`
+	Offset    int                 `json:"offset,omitempty"`
+	Total     int                 `json:"total"`
+	TurnSlots *turnSlotOccupancy  `json:"turn_slots,omitempty"`
 	Delegates []delegateListEntry `json:"delegates,omitempty"`
 	// Watches/RecentWatches/DelegationAllowance are supervision signal kept only
 	// when they carry information: no active watches, no recent watch history, and
@@ -1884,6 +1940,13 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	if limit > maxJobListLimit {
 		limit = maxJobListLimit
 	}
+	offset := 0
+	if n, ok := shellIntArg(args, "offset"); ok {
+		offset = n
+	}
+	if offset < 0 {
+		return listFilter{}, errors.New("offset must be non-negative")
+	}
 
 	statuses, err := jobStatusArrayArg(args, "status")
 	if err != nil {
@@ -1897,6 +1960,7 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 		Statuses:           statuses,
 		Types:              types,
 		Limit:              limit,
+		Offset:             offset,
 		IncludeNested:      shellBoolArg(args, "include_nested"),
 		IncludeDescendants: shellBoolArg(args, "include_descendants"),
 	}, nil
@@ -2112,7 +2176,7 @@ func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error
 }
 
 func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
-	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	recs, _, err := jm.listWithError(listFilter{IncludeNested: true})
 	if err != nil {
 		return nil, err
 	}

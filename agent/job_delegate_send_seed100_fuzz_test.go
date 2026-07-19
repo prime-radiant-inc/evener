@@ -76,13 +76,13 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 				t.Fatalf("error = %v", err)
 			}
 		case 6:
-			s := &Session{subagents: newSubagentManager(nil)}
+			s := &Session{subagents: newSubagentManager(nil, 0)}
 			rec := sendSeed100RestoreRecord("parent", "child")
 			if _, err := s.restoreTerminalDelegateChild(rec, "child", &delegateRestorePreflight{}); err == nil || err.Error() != "state directory is not configured" {
 				t.Fatalf("error = %v", err)
 			}
 		case 7:
-			s := &Session{stateDir: t.TempDir(), subagents: newSubagentManager(nil)}
+			s := &Session{stateDir: t.TempDir(), subagents: newSubagentManager(nil, 0)}
 			s.subagents.mu.Lock()
 			s.subagents.closing = true
 			s.subagents.mu.Unlock()

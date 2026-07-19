@@ -1499,7 +1499,7 @@ func subagentStatusFromJobStatus(status jobstore.Status) SubagentStatus {
 }
 
 func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*jobstore.JobRecord, error) {
-	jobs, err := jm.listWithError(listFilter{
+	jobs, _, err := jm.listWithError(listFilter{
 		Type:   jobstore.JobDelegate,
 		Status: jobstore.StatusRunning,
 	})
@@ -1962,9 +1962,9 @@ func (s *Session) attachDelegateJobWithRestoreAndDelegate(jm *jobManager, childI
 		treeSlot = prepared.treeSlot
 		prepared.treeSlot = nil
 	} else {
-		slot, ok := s.reserveTreeSlot()
+		slot, ok := s.reserveTreeSlot(slotKindJob)
 		if !ok {
-			return nil, errTreeAtCapacity
+			return nil, s.treeCapacityErrorFor()
 		}
 		treeSlot = slot
 	}

@@ -49,7 +49,7 @@ func (f *fakeEmit) count() int {
 func TestSubagentManager_TrackGetRemove(t *testing.T) {
 	t.Parallel()
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, 0)
 
 	if got := m.get("missing"); got != nil {
 		t.Fatalf("get on empty manager: got %v, want nil", got)
@@ -78,7 +78,7 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 
 func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(t *testing.T) {
 	t.Parallel()
-	m := newSubagentManager(nil)
+	m := newSubagentManager(nil, 0)
 	childID := "child"
 	published := &subagent{id: childID}
 	pending := &subagentReconstruction{done: make(chan struct{})}
@@ -103,7 +103,7 @@ func TestSubagentManager_BeginReconstructionWaitsForPendingBeforePublishedChild(
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	t.Parallel()
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, 0)
 
 	want := map[string]*subagent{
 		"a": {id: "a"},
@@ -146,7 +146,7 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 	t.Parallel()
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, 0)
 	m.emit(events.EventJobStarted, nil)
 	m.emit(events.EventJobFinished, nil)
 	if got := fe.count(); got != 2 {
@@ -485,5 +485,19 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 	}
 	if got := sess.getSub(newID); got == nil {
 		t.Errorf("newly spawned child must be tracked after eviction")
+	}
+}
+
+// TestNewSubagentManagerCapPinsDefault2048 pins the retained-terminal default at
+// 2048 and the explicit-override path of the constructor.
+func TestNewSubagentManagerCapPinsDefault2048(t *testing.T) {
+	t.Parallel()
+	m := newSubagentManager(nil, 0)
+	if m.maxRetainedTerminal != 2048 {
+		t.Fatalf("default cap = %d, want 2048", m.maxRetainedTerminal)
+	}
+	m = newSubagentManager(nil, 7)
+	if m.maxRetainedTerminal != 7 {
+		t.Fatalf("explicit cap = %d, want 7", m.maxRetainedTerminal)
 	}
 }

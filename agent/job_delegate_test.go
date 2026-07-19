@@ -53,7 +53,7 @@ func newLeanDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Sessio
 		id:         sessionID,
 		stateDir:   stateDir,
 		jobManager: jm,
-		subagents:  newSubagentManager(nil),
+		subagents:  newSubagentManager(nil, 0),
 		profile:    NewOpenAIProfile("gpt-5.2"),
 	}
 }

@@ -254,6 +254,8 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"openai_responses_continuation", "openai_responses_continuation", l.OpenAIResponsesContinuation, l.OpenAIResponsesContinuation, false},
 		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds), false},
 		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
+		{"max_concurrent_delegate_turns", "max_concurrent_delegate_turns", ptrIntStr(l.MaxConcurrentDelegateTurns), ptrIntStr(l.MaxConcurrentDelegateTurns), false},
+		{"max_retained_terminal", "max_retained_terminal", ptrIntStr(l.MaxRetainedTerminal), ptrIntStr(l.MaxRetainedTerminal), false},
 		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
 		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", "), true},
 		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", "), true},
@@ -390,6 +392,18 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.MaxSubagentDepth = v
+	case "max_concurrent_delegate_turns":
+		v, err := parseOptionalInt(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MaxConcurrentDelegateTurns = v
+	case "max_retained_terminal":
+		v, err := parseOptionalInt(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MaxRetainedTerminal = v
 	case "app_replay_size":
 		v, err := parseOptionalInt(value)
 		if err != nil {

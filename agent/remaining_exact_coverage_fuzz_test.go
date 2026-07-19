@@ -34,14 +34,14 @@ func remainingRefCoverage(t *testing.T) {
 
 func remainingManagerCoverage(t *testing.T) {
 	t.Helper()
-	m := newSubagentManager(nil)
+	m := newSubagentManager(nil, 0)
 	existing := &subagent{id: "existing"}
 	m.track(existing)
 	if got, pending, leader, err := m.beginReconstruction(existing.id); err != nil || got != existing || pending != nil || leader {
 		t.Fatalf("existing reconstruction = (%p, %p, %v, %v)", got, pending, leader, err)
 	}
 
-	closing := newSubagentManager(nil)
+	closing := newSubagentManager(nil, 0)
 	tracked := &subagent{id: "tracked"}
 	closing.track(tracked)
 	closing.closing = true
@@ -54,7 +54,7 @@ func remainingManagerCoverage(t *testing.T) {
 		t.Fatalf("closing side effects removed nonmatching runtime: %v", err)
 	}
 
-	waiting := newSubagentManager(nil)
+	waiting := newSubagentManager(nil, 0)
 	finish, err := waiting.beginReconstructionSideEffects("child", nil)
 	if err != nil {
 		t.Fatal(err)

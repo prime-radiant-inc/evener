@@ -236,6 +236,7 @@ type runningJob struct {
 // teardown paths (finalize, abandon, abandon-all) race on the same run.
 type treeReservation struct {
 	counter  *treeCounter
+	kind     slotKind
 	released atomic.Bool
 }
 
@@ -244,7 +245,7 @@ func (r *treeReservation) release() {
 		return
 	}
 	if r.released.CompareAndSwap(false, true) {
-		r.counter.release()
+		r.counter.releaseKind(r.kind)
 	}
 }
 
@@ -426,6 +427,7 @@ type listFilter struct {
 	Type          jobstore.JobType
 	Types         []jobstore.JobType
 	Limit         int
+	Offset        int
 	IncludeNested bool
 	// IncludeDescendants drives the recursive live-subtree walk in jobListTool
 	// (spec §2). It is not consulted by listWithError, which lists a single
@@ -740,17 +742,17 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 }
 
 func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
-	jobs, err := jm.listWithError(filter)
+	jobs, _, err := jm.listWithError(filter)
 	if err != nil {
 		return nil
 	}
 	return jobs
 }
 
-func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, error) {
+func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, int, error) {
 	recs, err := jm.store.Load()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	jm.mu.Lock()
@@ -781,10 +783,18 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 		}
 		return jobs[i].StartedAt.After(jobs[j].StartedAt)
 	})
+	total := len(jobs)
+	if filter.Offset > 0 {
+		if filter.Offset >= len(jobs) {
+			jobs = nil
+		} else {
+			jobs = jobs[filter.Offset:]
+		}
+	}
 	if filter.Limit > 0 && len(jobs) > filter.Limit {
 		jobs = jobs[:filter.Limit]
 	}
-	return jobs, nil
+	return jobs, total, nil
 }
 
 // keepListedJobRow is the pure per-record filter decision lifted out of

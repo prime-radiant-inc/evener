@@ -37,7 +37,7 @@ func seed100JobsNestedMore(t *testing.T) {
 	walk := newSession(t)
 	start(t, walk.jobManager, "b", walk.ID(), "", jobstore.JobShell, "")
 	start(t, walk.jobManager, "a", walk.ID(), "", jobstore.JobShell, "")
-	if jobs, err := walk.walkDescendantJobs(listFilter{Limit: 1}); err != nil || len(jobs) != 1 {
+	if jobs, _, err := walk.walkDescendantJobs(listFilter{Limit: 1}); err != nil || len(jobs) != 1 {
 		t.Fatalf("limited walk = %v, %v", jobs, err)
 	}
 	_ = projectDescendantWalkRow(walk, descendantWalkRow{rec: &jobstore.JobRecord{JobID: "nil-owner", OwnerSessionID: walk.ID(), StartedAt: started}})
@@ -198,19 +198,19 @@ func seed100JobsNestedMore(t *testing.T) {
 	_, _ = guardRoot.ownerJobManagerFor("guard")
 
 	// Root collection errors are surfaced; descendant errors remain best effort.
-	_, _ = (&Session{}).walkDescendantJobs(listFilter{})
+	_, _, _ = (&Session{}).walkDescendantJobs(listFilter{})
 	closedWalk := newSession(t)
 	if err := closedWalk.jobManager.store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = closedWalk.walkDescendantJobs(listFilter{})
+	_, _, _ = closedWalk.walkDescendantJobs(listFilter{})
 	ordered := newSession(t)
 	earlier := started.Add(-time.Second)
 	if err := ordered.jobManager.store.Append(jobstore.Event{Kind: jobstore.EventJobStarted, TS: earlier, JobID: "earlier", Type: jobstore.JobShell, OwnerSessionID: ordered.ID(), VisibleToSession: ordered.ID(), StartedAt: &earlier}); err != nil {
 		t.Fatal(err)
 	}
 	start(t, ordered.jobManager, "later", ordered.ID(), "", jobstore.JobShell, "")
-	_, _ = ordered.walkDescendantJobs(listFilter{})
+	_, _, _ = ordered.walkDescendantJobs(listFilter{})
 	_ = ordered.directDelegateJobForChild("absent")
 
 	// Direct-owner stop success/error, dead forwarded terminal, and local stop.

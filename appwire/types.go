@@ -1156,6 +1156,8 @@ type LaunchConfigLayer struct {
 	SandboxNet                  *bool             `json:"sandboxNet,omitempty"`
 	MaxRounds                   *int              `json:"maxRounds,omitempty"`
 	MaxSubagentDepth            *int              `json:"maxSubagentDepth,omitempty"`
+	MaxConcurrentDelegateTurns  *int              `json:"maxConcurrentDelegateTurns,omitempty"`
+	MaxRetainedTerminal         *int              `json:"maxRetainedTerminal,omitempty"`
 	NoProjectPrompts            *bool             `json:"noProjectPrompts,omitempty"`
 	NonInteractive              *bool             `json:"nonInteractive,omitempty"`
 	AppReplaySize               *int              `json:"appReplaySize,omitempty"`

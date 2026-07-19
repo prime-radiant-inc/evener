@@ -37,7 +37,7 @@ func TestW2Watch_renderUnreachableChildPendingsSkipsLiveChild(t *testing.T) {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	appendForwardedChildTerminalPending(t, parentJM, "job_live_work", "GONE")
 	appendForwardedChildCallerWatchSendPending(t, parentJM, "GONE", "job_live_watch")
@@ -89,7 +89,7 @@ func TestW2Watch_renderUnreachableChildPendingsDropAppendError(t *testing.T) {
 		t.Fatalf("new parent jobManager: %v", err)
 	}
 	t.Cleanup(func() { _ = parentJM.store.Close() })
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 
 	appendForwardedChildCallerWatchSendPending(t, parentJM, "GONE", "job_gone_watch")
 

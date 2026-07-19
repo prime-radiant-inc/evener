@@ -731,11 +731,11 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 	if reserve := s.cfg.testOnly.subagentReserveTreeSlot; reserve != nil {
 		treeSlot, ok = reserve(s)
 	} else {
-		treeSlot, ok = s.reserveTreeSlot()
+		treeSlot, ok = s.reserveTreeSlot(slotKindJob)
 	}
 	if !ok {
 		subSess.Close()
-		return nil, errTreeAtCapacity
+		return nil, s.treeCapacityErrorFor()
 	}
 
 	now := s.sclock().Now()
@@ -938,6 +938,17 @@ func (a *subagent) clearDisposeGate() {
 	a.mu.Unlock()
 }
 
+// driveTurnTimeout bounds a single drive-down notification turn: a hung child
+// turn is cancelled and its drive slot freed rather than pinned until parent
+// close. A var so tests can shrink it.
+var driveTurnTimeout = 5 * time.Minute
+
+// driveRedriveMinInterval paces the post-turn re-drive: when attention remains
+// after a drive turn, the next drive of the same child waits this long instead
+// of launching immediately, so a child whose attention never drains cannot
+// hot-loop its budget slot. A var so tests can shrink it.
+var driveRedriveMinInterval = 1 * time.Second
+
 // driveSubagentNotificationTurn launches ONE EntryNotification turn on a live,
 // idle direct child whose own loop has undelivered attention (spec §3 drive-down:
 // a parent never renders a non-owned job's notification; it runs the child whose
@@ -967,17 +978,19 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 		sub.mu.Unlock()
 		return false
 	}
-	// Reserve a tree-counter slot for the drive turn (spec §4): a drive launches a
-	// running delegate turn (the child's EntryNotification render) and holds the
-	// slot for its duration. At capacity the drive does not launch — return false,
-	// the not-launched signal the caller already honors (no settle), so the child's
-	// durable ledger stays queued and the next loop boundary retries (spec §3).
-	treeSlot, ok := s.reserveTreeSlot()
+	// Reserve a drive-budget slot for the drive turn: a drive launches a running
+	// delegate turn (the child's EntryNotification render) and holds the slot for
+	// its duration. Drive turns budget separately from spawns (driveCounter), so
+	// notification maintenance never starves user fan-out. At capacity the drive
+	// does not launch — return false, the not-launched signal the caller already
+	// honors (no settle), so the child's durable ledger stays queued and the next
+	// loop boundary retries (spec §3).
+	treeSlot, ok := s.reserveDriveSlot()
 	if !ok {
 		sub.mu.Unlock()
 		return false
 	}
-	driveCtx, driveCancel := context.WithCancel(context.Background())
+	driveCtx, driveCancel := context.WithTimeout(context.Background(), driveTurnTimeout)
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -995,37 +1008,52 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 	go func() {
 		defer s.sendersWG.Done()
 		defer driveCancel()
-		defer treeSlot.release()
+		// The re-check defer is registered BEFORE treeSlot.release so LIFO runs
+		// the release first: the paced re-drive wait below holds no slot, and
+		// the re-drive can claim one even at drive budget 1.
 		defer func() {
 			sub.mu.Lock()
 			sub.driving = false
 			sub.mu.Unlock()
-			// Re-drive if attention arrived during this turn (spec §3): a notify that
-			// fired while driving==true was dropped at the live/idle guard, so a
-			// notification landing after the child's final peek would otherwise
-			// strand (the parent is idle and there is no autonomous poll). The
-			// re-check runs AFTER sub.driving is cleared so the inner guard passes.
-			// It is idempotent and self-terminating: it re-drives only when real
-			// attention remains, each re-drive is a fresh goroutine, and it stops
-			// when peek==0 && !hasPendingWatchSends.
-			stopGated := s.childStopGated(childSess.id)
-			if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
-				if stopped, handled := hook(s, childSess.id); handled {
-					stopGated = stopped
-				}
-			}
-			if stopGated {
-				return
-			}
-			if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
-				if s.driveSubagentNotificationTurn(sub) {
-					s.settleDrivenChildForwardedPendings(childSess.id)
-				}
-			}
+			s.redriveChildIfAttentionRemains(sub, childSess, driveCtx)
 		}()
+		defer treeSlot.release()
 		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
 	}()
 	return true
+}
+
+// redriveChildIfAttentionRemains is the post-turn re-drive check (spec §3): a
+// notify that fired while driving==true was dropped at the live/idle guard, so
+// a notification landing after the child's final in-turn peek would otherwise
+// strand (the parent is idle and there is no autonomous poll). It runs AFTER
+// sub.driving is cleared so the inner guard passes, and AFTER the drive slot
+// is released so the wait holds no budget. It is idempotent and
+// self-terminating: it re-drives only when real attention remains, each
+// re-drive is a fresh goroutine, and it stops when
+// peek==0 && !hasPendingWatchSends. The re-drive is paced: it waits
+// driveRedriveMinInterval (or drive cancel) before launching so a child whose
+// attention never drains cannot hot-loop its budget slot.
+func (s *Session) redriveChildIfAttentionRemains(sub *subagent, childSess *Session, driveCtx context.Context) {
+	stopGated := s.childStopGated(childSess.id)
+	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
+		if stopped, handled := hook(s, childSess.id); handled {
+			stopGated = stopped
+		}
+	}
+	if stopGated {
+		return
+	}
+	if childSess.peekNotifications() > 0 || (childSess.jobManager != nil && childSess.jobManager.hasPendingWatchSends()) {
+		select {
+		case <-s.sclock().After(driveRedriveMinInterval):
+		case <-driveCtx.Done():
+			return
+		}
+		if s.driveSubagentNotificationTurn(sub) {
+			s.settleDrivenChildForwardedPendings(childSess.id)
+		}
+	}
 }
 
 func (s *Session) subagentPrepareFault(point string) error {

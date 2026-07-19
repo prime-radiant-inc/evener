@@ -67,6 +67,9 @@ type DetailedStatus struct {
 	HookEvents []HookEventStatus `json:"hook_events,omitempty"`
 	Jobs       []JobStatusInfo   `json:"jobs,omitempty"`   // active and recent jobs
 	Agents     []string          `json:"agents,omitempty"` // public agent names
+	// TurnSlots reports tree-counter occupancy while any delegate-turn slot is
+	// held; nil when idle.
+	TurnSlots *turnSlotOccupancy `json:"turn_slots,omitempty"`
 }
 
 const detailedStatusTerminalJobsLimit = 50
@@ -167,6 +170,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Agents = append(ds.Agents, name)
 	}
 	sort.Strings(ds.Agents)
+
+	ds.TurnSlots = turnSlotOccupancyOf(s)
 
 	return ds
 }

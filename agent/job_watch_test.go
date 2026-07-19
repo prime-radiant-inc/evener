@@ -621,7 +621,7 @@ func newGrantReadFixture(t *testing.T) *grantReadFixture {
 		_ = observerJM.store.Close()
 	})
 
-	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil)}
+	parent := &Session{id: "PARENT", jobManager: parentJM, subagents: newSubagentManager(nil, 0)}
 	observer := &Session{id: "child_job_obs", jobManager: observerJM}
 	observer.cfg.spawn.parentGrantedJobRead = parent.lookupGrantedJobRead
 

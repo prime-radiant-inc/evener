@@ -36,20 +36,24 @@ type subagentManager struct {
 }
 
 // defaultMaxRetainedTerminal is the default cap on retained terminal child records.
-const defaultMaxRetainedTerminal = 128
+const defaultMaxRetainedTerminal = 2048
 
 var errSubagentManagerClosing = errors.New("session is closed")
 
 var restoreSideEffectsWait = (*sync.Cond).Wait
 
 // newSubagentManager creates a manager that captures the parent session's emit
-// closure for forwarding subagent lifecycle events.
-func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
+// closure for forwarding subagent lifecycle events. cap bounds retained terminal
+// records; cap <= 0 selects the default (defaultMaxRetainedTerminal).
+func newSubagentManager(emit func(events.EventKind, events.EventData), cap int) *subagentManager {
+	if cap <= 0 {
+		cap = defaultMaxRetainedTerminal
+	}
 	m := &subagentManager{
 		subs:                map[string]*subagent{},
 		reconstructing:      map[string]*subagentReconstruction{},
 		emit:                emit,
-		maxRetainedTerminal: defaultMaxRetainedTerminal,
+		maxRetainedTerminal: cap,
 	}
 	m.restoreSideEffectsCond = sync.NewCond(&m.mu)
 	return m

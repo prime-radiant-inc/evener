@@ -892,7 +892,7 @@ func TestGrantSurvivesWatchClearAndStoreReopen(t *testing.T) {
 		t.Fatalf("grants after clear+reopen = %+v, want child_job_obs -> %s", grants, watched.JobID)
 	}
 
-	reopenedParent := &Session{id: "PARENT", jobManager: reopenedJM, subagents: newSubagentManager(nil)}
+	reopenedParent := &Session{id: "PARENT", jobManager: reopenedJM, subagents: newSubagentManager(nil, 0)}
 	observer := &Session{id: "child_job_obs", jobManager: observerJM}
 	observer.cfg.spawn.parentGrantedJobRead = reopenedParent.lookupGrantedJobRead
 
@@ -958,8 +958,8 @@ func TestJobWatchAllowsDirectChildConcreteJobSourceAndManagesIt(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, childJM, childRec.JobID) })
 
-	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil)}
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	child := &Session{id: "CHILD", jobManager: childJM, subagents: newSubagentManager(nil, 0)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "CHILD", sess: child, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{
@@ -1112,10 +1112,10 @@ func TestJobWatchAllowsDescendantConcreteJobSource(t *testing.T) {
 	}
 	t.Cleanup(func() { finishRunningTestJob(t, workerJM, workerRec.JobID) })
 
-	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil)}
-	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil)}
+	worker := &Session{id: "WORK", jobManager: workerJM, subagents: newSubagentManager(nil, 0)}
+	coordinator := &Session{id: "COORD", jobManager: coordJM, subagents: newSubagentManager(nil, 0)}
 	coordinator.subagents.track(&subagent{id: "WORK", sess: worker, status: SubagentRunning})
-	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil)}
+	root := &Session{id: "ROOT", jobManager: rootJM, subagents: newSubagentManager(nil, 0)}
 	root.subagents.track(&subagent{id: "COORD", sess: coordinator, status: SubagentRunning})
 
 	out, err := jobWatchTool(root, map[string]any{

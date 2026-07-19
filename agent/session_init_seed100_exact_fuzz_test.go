@@ -245,7 +245,7 @@ func FuzzSessionInitSeed100Exact(f *testing.F) {
 
 			spawnRestore := sierRestoreConfig(t.TempDir(), agenttest.NewFakeClock())
 			spawnRestore.spawn.parentSessionID = "parent"
-			spawnRestore.spawn.treeCounter = newTreeCounter()
+			spawnRestore.spawn.treeCounter = newTreeCounter(0)
 			spawnRestore.resumeHistory = []schema.Turn{}
 			spawned, err := RestoreSessionFromMetaWithConfig(client, profile, env, sierMeta(), spawnRestore)
 			if err != nil {

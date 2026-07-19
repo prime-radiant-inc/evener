@@ -422,7 +422,7 @@ func nslpAssertDescendantRouting(t *testing.T, root, coordinator, worker *Sessio
 		t.Fatalf("nested owner route = (%p, %+v, %v), want coordinator manager", resolvedJM, resolvedRec, err)
 	}
 
-	rows, err := root.walkDescendantJobs(listFilter{IncludeDescendants: true})
+	rows, _, err := root.walkDescendantJobs(listFilter{IncludeDescendants: true})
 	if err != nil {
 		t.Fatalf("walkDescendantJobs: %v", err)
 	}
@@ -506,7 +506,7 @@ func nslpAddNestedRecord(t *testing.T, root, coordinator, worker *Session, worke
 		t.Fatalf("deep stop guidance = %v, want not_controllable naming %q", err, rootJobID)
 	}
 
-	rows, err := root.walkDescendantJobs(listFilter{IncludeDescendants: true})
+	rows, _, err := root.walkDescendantJobs(listFilter{IncludeDescendants: true})
 	if err != nil {
 		t.Fatalf("walk descendants after nested record: %v", err)
 	}
@@ -528,7 +528,7 @@ func nslpAddNestedRecord(t *testing.T, root, coordinator, worker *Session, worke
 
 func nslpManagerOwnershipProgram(t *testing.T, childID string) {
 	t.Helper()
-	manager := newSubagentManager(nil)
+	manager := newSubagentManager(nil, 0)
 	first, pending, leader, err := manager.beginReconstruction(childID)
 	if err != nil || first != nil || pending == nil || !leader {
 		t.Fatalf("first reconstruction = (%+v, %p, %v, %v)", first, pending, leader, err)

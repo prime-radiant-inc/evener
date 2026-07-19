@@ -51,6 +51,16 @@ type SessionConfig struct {
 	// sub-agents (root session is depth 0). Zero defaults to 1.
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
+	// MaxConcurrentDelegateTurns bounds concurrently running delegate turns
+	// across the whole session tree (the tree-counter cap). Zero defaults to
+	// defaultMaxConcurrentDelegateTurns (50). Idle delegates hold no slot.
+	MaxConcurrentDelegateTurns int `json:"max_concurrent_delegate_turns,omitempty"`
+
+	// MaxRetainedTerminal bounds how many terminal child records
+	// (completed|failed|cancelled|exhausted) the subagent manager retains per
+	// parent. Zero defaults to defaultMaxRetainedTerminal (2048).
+	MaxRetainedTerminal int `json:"max_retained_terminal,omitempty"`
+
 	// ToolOutputLimits overrides default per-tool truncation behavior.
 	ToolOutputLimits map[string]schema.ToolOutputLimit `json:"tool_output_limits,omitempty"`
 
@@ -407,6 +417,11 @@ type spawnConfig struct {
 	// on the parent struct, like its siblings).
 	delegationAllowance int
 
+	// driveCounter is the tree-wide drive-down notification-turn counter,
+	// minted and inherited exactly like treeCounter but budgeted separately
+	// (defaultMaxConcurrentDriveTurns) so drives can never starve spawns.
+	driveCounter *treeCounter
+
 	// treeCounter is the tree-wide running delegate-turn counter. Created once
 	// by the root session (when parentSessionID == "") and inherited by all
 	// child sessions via spawnConfig. reserve/release are wired into the
@@ -449,6 +464,12 @@ func (c *SessionConfig) applyDefaults() {
 		// lets a delegate itself delegate one level (grant allowance 1) by default.
 		c.MaxSubagentDepth = 2
 	}
+	if c.MaxConcurrentDelegateTurns <= 0 {
+		c.MaxConcurrentDelegateTurns = defaultMaxConcurrentDelegateTurns
+	}
+	if c.MaxRetainedTerminal <= 0 {
+		c.MaxRetainedTerminal = defaultMaxRetainedTerminal
+	}
 	if c.EnableLoopDetection == nil {
 		v := true
 		c.EnableLoopDetection = &v
@@ -472,6 +493,8 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		DefaultCommandTimeoutMS:     c.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         c.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            c.MaxSubagentDepth,
+		MaxConcurrentDelegateTurns:  c.MaxConcurrentDelegateTurns,
+		MaxRetainedTerminal:         c.MaxRetainedTerminal,
 		ToolOutputLimits:            c.ToolOutputLimits,
 		UserInstructionOverride:     c.UserInstructionOverride,
 		AgentName:                   c.AgentName,
@@ -509,6 +532,8 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		DefaultCommandTimeoutMS:     s.DefaultCommandTimeoutMS,
 		MaxCommandTimeoutMS:         s.MaxCommandTimeoutMS,
 		MaxSubagentDepth:            s.MaxSubagentDepth,
+		MaxConcurrentDelegateTurns:  s.MaxConcurrentDelegateTurns,
+		MaxRetainedTerminal:         s.MaxRetainedTerminal,
 		ToolOutputLimits:            s.ToolOutputLimits,
 		UserInstructionOverride:     s.UserInstructionOverride,
 		AgentName:                   s.AgentName,
