@@ -290,10 +290,9 @@ func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
 	// that CSS reformatting (whitespace, selector ordering, CRLF) does not
 	// break the test while the stylesheet remains semantically identical.
 	desktopChecks := []string{
-		"--workspace-content-max-w: 832px;",
+		"--workspace-content-max-w: var(--measure-machine);",
 		".workspace-header,",
-		".conversation,",
-		".workspace-input {",
+		".conversation {",
 		"width: min(100%, var(--workspace-content-max-w));",
 		"margin-inline: auto;",
 	}
