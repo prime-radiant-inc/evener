@@ -52,6 +52,31 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   pass(live.dataset.turnId === "t2", "live message still belongs to the active turn");
   pass(live.textContent.includes("streaming continues"), "delta after mismatched completion renders into the active message");
   pass(!live.querySelector(".turn-meta"), "mismatched completion appends no .turn-meta to the live message");
+  // ── Late END after an empty finalize must not target an older turn's block ──
+  // Finish t2 so its block is the finalized tail.
+  R.handleData("TURN_COMPLETED", { turnId: "t2", turn: { id: "t2", durationMs: 700 } });
+  const t2Block = conv.querySelector('.assistant-message[data-turn-id="t2"]');
+  pass(t2Block && t2Block.textContent.includes("streaming continues"), "t2 finalized as the tail block");
+  // Turn t3: tool work renders at the tail, then the turn finalizes empty
+  // (no assistant text) — lastFinalizedAssistantEl still points at t2's block.
+  R.handleData("TURN_STARTED", { turnId: "t3" });
+  // (card-mode tool: its row lands directly at the conversation tail)
+  R.handleData("TOOL_CALL_START", { call_id: "c1", tool_name: "shell", arguments_json: JSON.stringify({ command: "make test" }) });
+  R.handleData("TURN_COMPLETED", { turnId: "t3", turn: { id: "t3", durationMs: 100 } });
+  const tail = conv.lastElementChild;
+  pass(tail && tail.classList.contains("tool-call"), "tool row is the transcript tail after the empty finalize");
+  // A late END with no active message must NOT replace t2's block: the block
+  // being replaced is no longer the transcript tail.
+  R.handleData("ASSISTANT_TEXT_END", { text: "late orphan text" });
+  pass(t2Block.textContent.includes("streaming continues"), "late END did not clobber the older turn's block");
+  msgs = conv.querySelectorAll(".assistant-message");
+  pass(msgs[msgs.length - 1].textContent.includes("late orphan text"), "late END lands as its own block at the tail");
+  pass(msgs[msgs.length - 1] !== t2Block, "the late block is a new element, not the t2 block");
+  // Empty finalize of a started-then-empty message also drops the replace pointer.
+  R.handleData("TURN_STARTED", { turnId: "t4" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("TURN_COMPLETED", { turnId: "t4", turn: { id: "t4", durationMs: 50 } });
+  pass(R.lastFinalizedAssistantEl === null, "empty finalize clears the replace pointer");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: finalization is idempotent across TURN_COMPLETED and a late END");
   process.exit(0);

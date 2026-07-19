@@ -50,6 +50,30 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.handleData("TOOL_CALL_END", { callId: "nope" });
   R.errorAnchors();
   pass(queries === 2, "TOOL_CALL_END invalidates the cache");
+  // Session swap: init() against a fresh conversation element must invalidate
+  // the anchor cache — session A's anchors are detached after the swap and
+  // must not produce a phantom error pill on session B.
+  const anchor = window.document.createElement("div");
+  anchor.className = "tool-call";
+  anchor.dataset.attention = "error";
+  conv.appendChild(anchor);
+  R.errorAnchorCache = null; // a real error row invalidates via TOOL_CALL_END
+  pass(R.errorAnchors().length === 1, "anchor cache populated from session A");
+  // F6: the dirty-assistant set is the same per-conversation hazard.
+  R.dirtyAssistantMessages = new Set([{ el: anchor, textBuf: "stale" }]);
+  const convB = window.document.createElement("div");
+  convB.id = "conversation";
+  convB.dataset.sessionId = "01TESTB";
+  convB.dataset.state = "idle";
+  conv.replaceWith(convB);
+  R.init(convB);
+  pass(R.dirtyAssistantMessages.size === 0, "init clears dirtyAssistantMessages on session swap");
+  let queriesB = 0;
+  const realQSB = convB.querySelectorAll.bind(convB);
+  convB.querySelectorAll = (sel) => { if (sel.includes('data-attention="error"')) queriesB++; return realQSB(sel); };
+  const anchorsB = R.errorAnchors();
+  pass(queriesB === 1, "errorAnchors() re-queries after session swap, no stale cache (got " + queriesB + ")");
+  pass(anchorsB.length === 0, "no detached anchors from session A leak into session B");
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: scroll handler throttled; error anchors cached with invalidation");
   process.exit(0);

@@ -45,6 +45,18 @@ const drainMicrotasks = async () => {
   R.suppressScrollSettle = false;
   R.handleData("ASSISTANT_TEXT_DELTA", { delta: "!" });
   pass(measures === 1, "measurement resumes after suppression");
+  // The new-content pill must not tick during a suppressed (hydration) settle
+  // either — the final scrollToBottom after replay clears it anyway.
+  let noted = 0;
+  const realNote = R.noteNewContent.bind(R);
+  R.noteNewContent = (n) => { noted++; return realNote(n); };
+  R.suppressScrollSettle = true;
+  R.handleData("USER_INPUT", { text: "replayed history" });
+  R.suppressScrollSettle = false;
+  pass(noted === 0, "noteNewContent skipped while suppressScrollSettle (got " + noted + ")");
+  R.handleData("USER_INPUT", { text: "live input" });
+  pass(noted === 1, "noteNewContent resumes after suppression (got " + noted + ")");
+  R.noteNewContent = realNote;
 
   // ── Hydration drive (appwire stubs mirror test-renderer-hydration-order.js) ──
   // A multi-event readThread replay plus one buffered live notification must

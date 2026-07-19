@@ -227,7 +227,11 @@
     if (!b || !b.outputPre) return;
     if (!b.streaming) { b.streaming = true; if (b.wrap) b.wrap.classList.add("streaming"); }
     b.outputPre.style.display = "";
-    b.outputPre.textContent = clip(out || "", 8000);
+    // Live tail while streaming: past the clip budget a head-clip freezes the
+    // pane (the tail stops moving — looks stalled). bodyEnd keeps the
+    // head-based clip + fold semantics for the final render.
+    const text = String(out || "");
+    b.outputPre.textContent = text.length > 8000 ? text.slice(-8000) : text;
     b.outputPre.scrollTop = b.outputPre.scrollHeight;
   }
 
@@ -541,7 +545,11 @@
       // fold/binary/error chrome is built once at bodyEnd — never per delta.
       if (!b.streaming) { b.streaming = true; if (b.wrap) b.wrap.classList.add("streaming"); }
       b.pre.style.display = "";
-      b.pre.textContent = clip(out, 8000);
+      // Live tail while streaming: past the clip budget a head-clip freezes
+      // the pane (the tail stops moving — looks stalled). bodyEnd keeps the
+      // head-based clip + fold semantics for the final render.
+      const text = String(out || "");
+      b.pre.textContent = text.length > 8000 ? text.slice(-8000) : text;
       b.pre.scrollTop = b.pre.scrollHeight;
     },
     bodyEnd: (state, data, out) => {

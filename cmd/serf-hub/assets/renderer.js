@@ -194,6 +194,14 @@
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
+      // Per-conversation render caches: the previous session's DOM is gone
+      // (element swapped, innerHTML wiped below), so any cache holding element
+      // references from it must reset — otherwise stale error anchors produce
+      // a phantom error pill and dirty/pending sets render into detached nodes.
+      this.errorAnchorCache = null;
+      if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
+      this.pendingDiffDeltas = new Map(); // callId -> {renderer, state, out} (settleFrame coalescing)
+      this.lastFinalizedAssistantEl = null;
       this.activeJobs = new Map();       // appwire jobId -> subagent row el
       this.subagentRowsByDelegate = new Map();   // delegateId -> subagent row els
       this.subagentRowsByOriginCall = new Map(); // origin tool call id -> subagent row el
@@ -1146,6 +1154,9 @@
       this.subagentModule = null;
       this.currentTurnHasAgentWork = false;
       this.errorAnchorCache = null;
+      if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
+      if (this.pendingDiffDeltas) this.pendingDiffDeltas.clear();
+      this.lastFinalizedAssistantEl = null;
     },
 
     markCurrentTurnAgentWork() {
@@ -1322,6 +1333,12 @@
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
             this.pendingAskCalls.clear();
+            // Same swap hazard as init(): the conversation DOM was just wiped,
+            // so caches holding element references from it must reset too.
+            this.errorAnchorCache = null;
+            if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.clear();
+            if (this.pendingDiffDeltas) this.pendingDiffDeltas.clear();
+            this.lastFinalizedAssistantEl = null;
             taskDescriptions.clear();
             taskDetails.clear();
             this.lastCurrentTaskId = null;
@@ -1566,6 +1583,14 @@
         for (const m of this.dirtyAssistantMessages) this.renderAssistantMessage(m, m.textBuf);
         this.dirtyAssistantMessages.clear();
       }
+      // Diff renderers defer their per-delta DOM rebuild to here (one render
+      // per frame per call, last output wins) — see appendToolDelta.
+      if (this.pendingDiffDeltas && this.pendingDiffDeltas.size) {
+        for (const pending of this.pendingDiffDeltas.values()) {
+          pending.renderer.bodyDelta(pending.state, pending.out);
+        }
+        this.pendingDiffDeltas.clear();
+      }
       if (this.reasoningPreviewDirty) {
         this.reasoningPreviewDirty = false;
         this.updateReasoningPreview();
@@ -1574,7 +1599,10 @@
       // Reader is up in history: if this frame rendered new entries, surface
       // the floating "↓ N new" affordance instead of yanking the viewport.
       const added = this.conversation.children.length - entriesBefore;
-      if (added > 0) this.noteNewContent(added);
+      // Hydration replay suppresses the per-event settle; the pill must not
+      // flash for replayed history either — the final scrollToBottom after the
+      // replay clears it anyway.
+      if (added > 0 && !this.suppressScrollSettle) this.noteNewContent(added);
       if (stick && !this.suppressScrollSettle) this.scrollToBottom();
     },
 
@@ -2443,7 +2471,11 @@
         // (activeTurnId cleared) a late END REPLACES the finalized block in
         // place — it must never append a duplicate.
         const last = this.lastFinalizedAssistantEl;
-        if (!this.activeTurnId && last && last.isConnected && String(finalText).trim()) {
+        // The block being replaced must be the transcript tail: after an
+        // intervening turn rendered tool rows (or finalized empty), the
+        // pointer can name an older turn's block — replacing that would
+        // clobber history mid-transcript instead of landing the late text.
+        if (!this.activeTurnId && last && last.isConnected && last === this.conversation.lastElementChild && String(finalText).trim()) {
           const meta = last.querySelector(".turn-meta");
           try { last.innerHTML = window.marked.parse(finalText); }
           catch (e) { last.textContent = finalText; }
@@ -2457,6 +2489,10 @@
       this.currentMessageId = null;
       if (this.dirtyAssistantMessages) this.dirtyAssistantMessages.delete(m);
       if (!String(finalText || "").trim()) {
+        // Empty finalize: this turn's segment produced nothing, so no fresh
+        // block exists for a late END to replace — drop the pointer at the
+        // older turn's block before one can target it.
+        this.lastFinalizedAssistantEl = null;
         if (m.el.parentNode) m.el.parentNode.removeChild(m.el);
         return;
       }
@@ -2837,13 +2873,31 @@
       const m = this.toolStateFor(data);
       if (!m) return;
       m.outputBuf += data.delta || "";
-      if (m.renderer.bodyDelta) m.renderer.bodyDelta(m, m.outputBuf);
+      if (!m.renderer.bodyDelta) return;
+      // Diff renderers (edit/write/apply_patch — their body pre carries
+      // .diff-body) rebuild the whole diff DOM per call, so per-delta renders
+      // inside one batched flush are pure churn: defer to settleFrame, keyed
+      // by call — last output wins. Cheap single-textContent renderers
+      // (shell/read) still stream per delta.
+      if (m.body && m.body.pre && m.body.pre.classList && m.body.pre.classList.contains("diff-body")) {
+        if (!this.pendingDiffDeltas) this.pendingDiffDeltas = new Map();
+        this.pendingDiffDeltas.set(data.call_id || data.item_id, { renderer: m.renderer, state: m, out: m.outputBuf });
+        return;
+      }
+      m.renderer.bodyDelta(m, m.outputBuf);
     },
 
     finalizeToolCall(data) {
       const m = this.toolStateFor(data);
       if (!m) return;
       const out = data.output || m.outputBuf || "";
+      // bodyEnd renders the authoritative final output below; a still-pending
+      // coalesced delta for this call would re-render the stale delta buffer
+      // over it at settleFrame, so drop it first.
+      if (this.pendingDiffDeltas) {
+        this.pendingDiffDeltas.delete(data.call_id);
+        this.pendingDiffDeltas.delete(data.item_id);
+      }
 
       const ok = !data.error && toolLooksGood(data);
       if (m.statusEl) {

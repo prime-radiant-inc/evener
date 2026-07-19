@@ -25,6 +25,30 @@ pass(!state.body.wrap.classList.contains("streaming"), "bodyEnd drops .streaming
 pass(!!state.body.wrap.querySelector(".tool-output-more"), "fold chrome built once at bodyEnd");
 pass(state.body.pre.textContent.split("\n").length === 5, "head shows the first 5 lines");
 
+// Past the 8000-char budget, STREAMING keeps the live tail (a head-clip
+// freezes the pane — the tail stops moving and the command looks stalled).
+const marker = "HEAD-MARKER" + "y".repeat(9000) + "TAIL-MARKER";
+shell.bodyDelta(state, marker);
+pass(pre.textContent.length === 8000, "streaming caps the pane at 8000 chars");
+pass(pre.textContent.endsWith("TAIL-MARKER"), "streaming shows the LAST 8000 chars (live tail)");
+pass(!pre.textContent.startsWith("HEAD-MARKER"), "the head scrolls off while streaming");
+// bodyEnd keeps the existing head-based clip + fold semantics.
+shell.bodyEnd(state, { tool_state: JSON.stringify({ exit_code: 0 }) }, marker);
+pass(state.body.pre.textContent.startsWith("HEAD-MARKER"), "bodyEnd keeps the head-based clip");
+pass(state.body.pre.textContent.includes("…"), "bodyEnd marks the truncation");
+
+// The read renderer shares the live-tail streaming behavior.
+const read = (window.SerfRendererInternal.toolRendererFor || window.toolRendererFor)("read_file", {});
+const readHost = window.document.createElement("div");
+const readState = { body: read.body({ file_path: "/f" }, readHost), el: readHost };
+read.bodyDelta(readState, marker);
+const readPre = readState.body.outputPre;
+pass(readPre.textContent.length === 8000 && readPre.textContent.endsWith("TAIL-MARKER"),
+  "read streams the live tail past 8000 chars too");
+read.bodyEnd(readState, { output: marker }, marker);
+pass(readState.body.wrap.querySelector(".read-tool-preview").textContent.startsWith("HEAD-MARKER"),
+  "read bodyEnd keeps the head-based clip");
+
 if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
 console.log("PASS: shell output streams append-only; fold builds at bodyEnd");
 process.exit(0);
