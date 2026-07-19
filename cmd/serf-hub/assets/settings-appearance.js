@@ -24,10 +24,12 @@
     }
 
     if (target.matches('input[name="sidebar-mode"]')) {
-      const rail = target.value === "rail";
-      localStorage.setItem("serf-hub.sidebar.rail", String(rail));
-      if (rail) document.body.dataset.sidebarRail = "";
-      else delete document.body.dataset.sidebarRail;
+      const v = target.value; // "auto" | "rail" | "pane"
+      if (window.SerfSidebar && window.SerfSidebar.applySidebarMode) {
+        window.SerfSidebar.applySidebarMode(v);
+      } else {
+        localStorage.setItem("serf-hub.sidebar.rail", v);
+      }
       return;
     }
 
@@ -55,7 +57,9 @@
     }
     const sidebarModeRadios = document.querySelectorAll('input[name="sidebar-mode"]');
     if (sidebarModeRadios.length) {
-      const stored = localStorage.getItem("serf-hub.sidebar.rail") === "true" ? "rail" : "pane";
+      const stored = (window.SerfSidebar && window.SerfSidebar.readSidebarMode)
+        ? window.SerfSidebar.readSidebarMode()
+        : (localStorage.getItem("serf-hub.sidebar.rail") || "auto");
       sidebarModeRadios.forEach((r) => { r.checked = r.value === stored; });
     }
     const fontSizeRadios = document.querySelectorAll('input[name="font-size"]');
@@ -74,14 +78,6 @@
   const KEY = "serf-hub.phone-density";
   const stored = localStorage.getItem(KEY) || "compact";
   document.body.dataset.phoneDensity = stored;
-})();
-
-// Sidebar mode (pane / rail) — apply stored value to body on every page load.
-(function () {
-  const KEY = "serf-hub.sidebar.rail";
-  const rail = localStorage.getItem(KEY) === "true";
-  if (rail) document.body.dataset.sidebarRail = "";
-  else delete document.body.dataset.sidebarRail;
 })();
 
 // Font size — apply stored value to body on every page load.

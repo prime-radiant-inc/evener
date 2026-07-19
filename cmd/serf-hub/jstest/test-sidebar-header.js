@@ -51,6 +51,8 @@ function boot() {
   w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(emptyTree()) });
   w.htmx = { process() {} };
   w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+  // Desktop viewport: tri-state auto resolves to pane, so rail starts off.
+  w.matchMedia = (q) => ({ matches: q === "(min-width: 1200px)", addEventListener() {}, addListener() {} });
   w.eval(sidebarSrc);
   return w;
 }
@@ -72,13 +74,14 @@ w.SerfSidebar.renderTree(emptyTree());
 w.SerfSidebar.renderTree(emptyTree());
 pass(w.document.querySelectorAll(".sidebar-header").length === 1, "header must not be duplicated across repeated renders");
 
-// Rail-toggle: delegated document click handler flips body[data-sidebar-rail].
+// Rail-toggle: delegated document click handler cycles the tri-state
+// (auto → rail → pane → auto); from auto on desktop the first click rails.
 const railBtn = w.document.querySelector("[data-sidebar-rail-toggle]");
 pass(!!railBtn, "rail-toggle button must exist in the DOM");
 if (railBtn) {
-  pass(!w.document.body.hasAttribute("data-sidebar-rail"), "rail starts disabled");
+  pass(!w.document.body.hasAttribute("data-sidebar-rail"), "rail starts disabled (auto on desktop = pane)");
   railBtn.dispatchEvent(new w.MouseEvent("click", { bubbles: true, cancelable: true }));
-  pass(w.document.body.hasAttribute("data-sidebar-rail"), "clicking rail-toggle enables rail mode");
+  pass(w.document.body.hasAttribute("data-sidebar-rail"), "clicking rail-toggle cycles auto → rail");
 }
 
 // Close button: shares the data-sidebar-toggle wiring with the app-shell hamburger.

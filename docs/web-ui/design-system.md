@@ -261,6 +261,11 @@ collapsed archived stubs — the whole header is the toggle; the chevron is deco
 top margin between a project and whatever precedes it — group separation reads as a subtle
 rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
 
+**Tri-state mode (2026-07-19 addendum).** The sidebar mode is `auto | rail | pane`,
+persisted per-browser. `auto` (the default) rails below 1200px and expands at/above it;
+`rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy binary
+preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
+
 ---
 
 ## 6. Controls layout

@@ -1138,44 +1138,66 @@
     }
   });
 
-  // Sidebar rail mode — persisted to localStorage. The body[data-sidebar-rail]
-  // attribute is the single source of truth that CSS reads; the helper
-  // syncs that attribute to storage and back.
-  var RAIL_KEY = "serf-hub.sidebar.rail";
+  // Sidebar tri-state — auto | rail | pane, persisted to localStorage under
+  // the legacy key. body[data-sidebar-mode] records the SETTING;
+  // body[data-sidebar-rail] reflects the EFFECTIVE state, so all rail CSS and
+  // panes.js's resizer-disable keep reading one attribute. Migration: the old
+  // binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
+  // rail below 1200px, pane at/above — before the tablet band existed the
+  // sidebar simply stayed full, so this is a deliberate improvement).
+  var SIDEBAR_MODE_KEY = "serf-hub.sidebar.rail";
+  var SIDEBAR_DESKTOP_QUERY = "(min-width: 1200px)";
 
-  function isRailEnabled() {
+  function readSidebarMode() {
     try {
-      return window.localStorage.getItem(RAIL_KEY) === "true";
+      var v = window.localStorage.getItem(SIDEBAR_MODE_KEY);
+      if (v === "rail" || v === "pane" || v === "auto") return v;
+      if (v === "true") return "rail";
+      if (v === "false") return "pane";
     } catch (e) {
-      return false;
+      // localStorage may be disabled; fall through to auto.
     }
+    return "auto";
   }
 
-  function setRail(enabled) {
-    if (enabled) {
+  function effectiveSidebarState(mode) {
+    if (mode === "rail" || mode === "pane") return mode;
+    if (window.matchMedia && window.matchMedia(SIDEBAR_DESKTOP_QUERY).matches) return "pane";
+    return "rail";
+  }
+
+  function applySidebarMode(mode) {
+    var eff = effectiveSidebarState(mode);
+    document.body.setAttribute("data-sidebar-mode", mode);
+    if (eff === "rail") {
       document.body.setAttribute("data-sidebar-rail", "");
     } else {
       document.body.removeAttribute("data-sidebar-rail");
     }
     try {
-      if (enabled) {
-        window.localStorage.setItem(RAIL_KEY, "true");
-      } else {
-        window.localStorage.removeItem(RAIL_KEY);
-      }
+      window.localStorage.setItem(SIDEBAR_MODE_KEY, mode);
     } catch (e) {
       // localStorage may be disabled; flip still works for this session.
     }
     syncRailToggleLabel();
   }
 
-  function toggleRail() {
-    setRail(!document.body.hasAttribute("data-sidebar-rail"));
+  function cycleSidebarMode() {
+    var order = { rail: "pane", pane: "auto", auto: "rail" };
+    applySidebarMode(order[readSidebarMode()]);
   }
 
-  // Apply persisted rail state ASAP — before first paint when possible.
-  if (isRailEnabled()) {
-    setRail(true);
+  // Apply persisted mode ASAP — before first paint when possible.
+  applySidebarMode(readSidebarMode());
+
+  // In auto the effective state follows the viewport: re-resolve on crossings.
+  if (window.matchMedia) {
+    var sidebarModeMq = window.matchMedia(SIDEBAR_DESKTOP_QUERY);
+    var onSidebarModeMq = function () {
+      if (readSidebarMode() === "auto") applySidebarMode("auto");
+    };
+    if (sidebarModeMq.addEventListener) sidebarModeMq.addEventListener("change", onSidebarModeMq);
+    else if (sidebarModeMq.addListener) sidebarModeMq.addListener(onSidebarModeMq);
   }
 
   document.addEventListener("click", function (e) {
@@ -1185,14 +1207,14 @@
     if (!btn) return;
     e.preventDefault();
     e.stopPropagation();
-    toggleRail();
+    cycleSidebarMode();
   });
 
-  // ⌘B / Ctrl+B — toggle rail mode. Skip when the focus is on an editable
-  // surface (textarea, contenteditable, input) so the shortcut doesn't fire
-  // while the user is typing browser-native chords. Mobile (no
-  // matchMedia "(min-width: 768px)") ignores the shortcut because rail
-  // mode is a desktop affordance.
+  // ⌘B / Ctrl+B — cycle sidebar mode rail → pane → auto. Skip when the focus
+  // is on an editable surface (textarea, contenteditable, input) so the
+  // shortcut doesn't fire while the user is typing browser-native chords.
+  // Mobile (no matchMedia "(min-width: 768px)") ignores the shortcut because
+  // rail mode is a desktop affordance.
   function isEditableTarget(el) {
     if (!el) return false;
     var tag = (el.tagName || "").toLowerCase();
@@ -1209,7 +1231,7 @@
     // Desktop only — match the design-language breakpoint.
     if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) return;
     e.preventDefault();
-    toggleRail();
+    cycleSidebarMode();
   });
 
   // Sync the rail-toggle button's aria-label so screen readers hear the
@@ -1218,9 +1240,10 @@
   function syncRailToggleLabel() {
     var btn = document.querySelector("[data-sidebar-rail-toggle]");
     if (!btn) return;
-    var railed = document.body.hasAttribute("data-sidebar-rail");
-    btn.setAttribute("aria-label", railed ? "expand sidebar" : "collapse sidebar");
-    btn.setAttribute("title", railed ? "expand sidebar (⌘B)" : "collapse sidebar (⌘B)");
+    var mode = readSidebarMode();
+    var eff = effectiveSidebarState(mode);
+    btn.setAttribute("aria-label", "sidebar: " + mode + (mode === "auto" ? " (" + eff + ")" : ""));
+    btn.setAttribute("title", "sidebar: " + mode + (mode === "auto" ? " (" + eff + ")" : "") + " (⌘B)");
   }
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
@@ -1240,5 +1263,5 @@
     if (e && e.target && e.target.id === "workspace") syncActiveRow();
   });
 
-  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); } };
+  window.SerfSidebar = { renderTree: renderTree, refresh: fetchTree, favorite: favorite, archive: archive, rename: rename, close: function () { setSidebarOpen(false); }, applySidebarMode: applySidebarMode, readSidebarMode: readSidebarMode, effectiveSidebarState: effectiveSidebarState, cycleSidebarMode: cycleSidebarMode };
 })();

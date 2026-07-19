@@ -27,6 +27,7 @@ function makeWindow() {
       <label class="val-radio"><input type="radio" name="phone-density" value="comfortable"></label>
     </div>
     <div class="val-radio-group" data-sidebar-mode-picker>
+      <label class="val-radio"><input type="radio" name="sidebar-mode" value="auto"></label>
       <label class="val-radio"><input type="radio" name="sidebar-mode" value="pane"></label>
       <label class="val-radio"><input type="radio" name="sidebar-mode" value="rail"></label>
     </div>
@@ -62,24 +63,31 @@ function makeWindow() {
   assert(window.localStorage.getItem("serf-hub.phone-density") === "comfortable", "phone-density choice persists");
   assert(window.document.body.dataset.phoneDensity === "comfortable", "phone-density applies to body dataset immediately");
 
-  // --- sidebar mode ---
+  // --- sidebar mode: delegates to window.SerfSidebar.applySidebarMode when present ---
+  window.SerfSidebar = { applied: [], applySidebarMode(v) { this.applied.push(v); } };
   const rail = window.document.querySelector('input[name="sidebar-mode"][value="rail"]');
   rail.checked = true;
   change(rail);
-  assert(window.localStorage.getItem("serf-hub.sidebar.rail") === "true", "sidebar-mode=rail persists");
-  assert(window.document.body.dataset.sidebarRail === "", "sidebar-mode=rail sets the rail dataset attribute");
+  assert(window.SerfSidebar.applied.length === 1 && window.SerfSidebar.applied[0] === "rail", "sidebar-mode=rail delegates to SerfSidebar.applySidebarMode");
 
+  const auto = window.document.querySelector('input[name="sidebar-mode"][value="auto"]');
+  auto.checked = true;
+  change(auto);
+  assert(window.SerfSidebar.applied.length === 2 && window.SerfSidebar.applied[1] === "auto", "sidebar-mode=auto delegates to SerfSidebar.applySidebarMode");
+  assert(window.localStorage.getItem("serf-hub.sidebar.rail") === null, "delegated sidebar-mode does not write localStorage directly");
+  delete window.SerfSidebar;
+
+  // --- sidebar mode fallback (no SerfSidebar): persists the raw value ---
   const pane = window.document.querySelector('input[name="sidebar-mode"][value="pane"]');
   pane.checked = true;
   change(pane);
-  assert(window.localStorage.getItem("serf-hub.sidebar.rail") === "false", "sidebar-mode=pane persists");
-  assert(!("sidebarRail" in window.document.body.dataset), "sidebar-mode=pane clears the rail dataset attribute");
+  assert(window.localStorage.getItem("serf-hub.sidebar.rail") === "pane", "sidebar-mode=pane falls back to localStorage without SerfSidebar");
 
   // --- restore on (re)load ---
   const restored = makeWindow();
   restored.localStorage.setItem("serf-hub.theme", "light");
   restored.localStorage.setItem("serf-hub.phone-density", "comfortable");
-  restored.localStorage.setItem("serf-hub.sidebar.rail", "true");
+  restored.localStorage.setItem("serf-hub.sidebar.rail", "rail");
   restored.eval(THEME_SRC);
   restored.eval(SRC);
   restored.document.dispatchEvent(new restored.Event("DOMContentLoaded", { bubbles: true }));
@@ -87,14 +95,20 @@ function makeWindow() {
   assert(restored.document.querySelector('input[name="phone-density"][value="comfortable"]').checked, "restore checks the stored phone-density radio");
   assert(restored.document.querySelector('input[name="sidebar-mode"][value="rail"]').checked, "restore checks the stored sidebar-mode radio");
 
-  // --- the two "apply stored value on load" IIFEs run before DOMContentLoaded ---
+  // --- restore defaults to auto when no pref is stored ---
+  const fresh = makeWindow();
+  fresh.eval(THEME_SRC);
+  fresh.eval(SRC);
+  fresh.document.dispatchEvent(new fresh.Event("DOMContentLoaded", { bubbles: true }));
+  assert(fresh.document.querySelector('input[name="sidebar-mode"][value="auto"]').checked, "restore checks auto when no sidebar-mode pref is stored");
+
+  // --- the "apply stored value on load" IIFE runs before DOMContentLoaded ---
   const preset = makeWindow();
   preset.localStorage.setItem("serf-hub.phone-density", "comfortable");
-  preset.localStorage.setItem("serf-hub.sidebar.rail", "true");
   preset.eval(THEME_SRC);
   preset.eval(SRC);
   assert(preset.document.body.dataset.phoneDensity === "comfortable", "phone-density applies on script load, before DOMContentLoaded fires");
-  assert(preset.document.body.dataset.sidebarRail === "", "sidebar-mode applies on script load, before DOMContentLoaded fires");
+  assert(!("sidebarRail" in preset.document.body.dataset), "sidebar-mode no longer writes the rail attribute on script load (sidebar.js owns it)");
 
   console.log("PASS — settings-appearance theme/phone-density/sidebar-mode commit, restore, and on-load apply");
 })();

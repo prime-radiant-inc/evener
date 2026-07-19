@@ -11,10 +11,13 @@ const w = dom.window;
 w.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ needs_you: [], favorites: [], projects: [], archived_projects: [], test_runs: [], attentionSummary: { needsYou: 0, error: 0, working: 0 } }) });
 w.htmx = { process() {} };
 w.SerfAppwire = { onNotification() {}, onConnectionRestored() {} };
+// Desktop viewport: tri-state auto resolves to pane; the first toggle click
+// cycles auto → rail.
+w.matchMedia = (q) => ({ matches: q === "(min-width: 1200px)", addEventListener() {}, addListener() {} });
 w.eval(src);
 w.document.querySelector("[data-sidebar-rail-toggle]").dispatchEvent(new w.MouseEvent("click", { bubbles: true }));
 if (!w.document.body.hasAttribute("data-sidebar-rail")) throw new Error("rail toggle must set body[data-sidebar-rail]");
-if (w.localStorage.getItem("serf-hub.sidebar.rail") !== "true") throw new Error("rail must persist");
+if (w.localStorage.getItem("serf-hub.sidebar.rail") !== "rail") throw new Error("rail mode must persist under the legacy key");
 if (typeof w.SerfSidebar.close !== "function") throw new Error("drawer close API must survive");
 
 // onSidebarOpenBeside (carried verbatim from the pre-rewrite sidebar.js) is a
