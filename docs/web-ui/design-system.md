@@ -141,6 +141,11 @@ ambient hues; `--text-dim`-on-dark for primary navigation (failed contrast).
 Design rule: **one scannable primary line per entry; status on a left rail or glyph; machine
 detail demoted to a mono chip; deep detail hidden until expanded.** Content column capped ~720px.
 
+**Breakpoint ladder + wide band (2026-07-19 addendum).** Phone ≤767px; tablet 768–1199px
+(side panes hidden, sidebar auto-rails — see §5); desktop 1200–1799px; wide ≥1800px.
+The prose measure holds 720px at **every** width; the machine bleed (`--measure-machine`)
+is 1000px below the wide band and 1200px at/above it. Left edges never move.
+
 | Entry | Primary (glance) | Secondary | Hidden until expanded | Color / containment |
 |---|---|---|---|---|
 | **User prompt** | quiet: a dim `You` tag + muted text | turn index | — | none. Demoted on purpose. |
@@ -338,6 +343,9 @@ raises the OS notification too.
 ---
 
 ## 8. Mobile (≤767px)
+
+> Breakpoint context (2026-07-19): this section is the **phone** band. The full ladder is
+> phone ≤767px · tablet 768–1199px · desktop 1200–1799px · wide ≥1800px (§4).
 
 The hub must work on a phone, not just survive on one. The desktop two-pane layout collapses to
 a single-pane workspace; the sidebar becomes an off-canvas drawer behind the header hamburger.

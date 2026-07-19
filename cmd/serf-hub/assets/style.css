@@ -530,6 +530,11 @@ body.app[data-sidebar-resizing="true"] .sidebar-resizer {
 .conversation > .subs,
 .conversation > .notification-card,
 .conversation > .task-card { max-width: none; }
+/* Wide band (≥1800px): the prose measure stays 720px at every width; only
+   the machine bleed widens. */
+@media (min-width: 1800px) {
+  :root { --measure-machine: 1200px; }
+}
 /* Multi-pane: side panes sit as flex columns to the right of #workspace. */
 .side-panes { --pane-min: 300px; display: flex; flex-direction: row; min-width: 0; height: 100vh; width: var(--side-panes-w, 420px); flex: 0 0 var(--side-panes-w, 420px); }
 .side-panes[hidden] { display: none; }
@@ -552,7 +557,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .pane-splitter { width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--rule); opacity: .4; }
 .pane-splitter:hover { opacity: 1; }
 .pane-splitter[hidden] { display: none; }
-@media (max-width: 767px) { .side-panes, .pane-splitter { display: none !important; } }
+@media (max-width: 1199px) { .side-panes, .pane-splitter { display: none !important; } }
 .sidebar-loading { padding: var(--space-6); color: var(--text-muted); font-size: var(--text-sm); }
 .workspace-empty { padding: var(--space-9); color: var(--text-muted); text-align: center; }
 
