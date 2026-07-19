@@ -3641,6 +3641,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .chip-picker-dir-parent:hover { background: var(--line); }
 .chip-picker-dir-name { color: var(--ink); font-family: var(--font-mono); font-size: var(--text-sm); min-width: 0; overflow-wrap: anywhere; }
 .chip-picker-dir-tag { color: var(--diagnostic-warning); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-1) var(--space-3); border: 1px solid var(--diagnostic-warning); border-radius: var(--radius-md); flex-shrink: 0; }
+.chip-picker-dir-recent-header { color: var(--ink-3); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-2) var(--space-4) 0; }
+.chip-picker-dir-recent-path { color: var(--ink-3); font-family: var(--font-mono); font-size: var(--text-2xs); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: right; }
 
 
 /* ── Search palette ──────────────────────────────────────────────────────── */
