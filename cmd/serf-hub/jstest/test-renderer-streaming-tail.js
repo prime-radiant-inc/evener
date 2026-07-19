@@ -148,6 +148,30 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
   R.handleData("ASSISTANT_TEXT_END", { text: delta4 });
   pass(el4.innerHTML === "<p>" + delta4 + "</p>", "finalization parses the surrogate-boundary buffer intact");
 
+  // --- Selection-safe crossing: the head already shows EXACTLY headLen chars
+  // (settled clean — not dirty) when the crossing delta arrives, so no new
+  // content would enter the head. The crossing must NOT re-render it: a
+  // re-parse replaces the head DOM and destroys any reader selection for zero
+  // visual change.
+  R.handleData("TURN_STARTED", { turnId: "t5" });
+  R.handleData("ASSISTANT_TEXT_START", {});
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "q".repeat(4096) });
+  const el5 = conv.querySelectorAll(".assistant-message")[4];
+  pass(!!el5, "fifth message element exists");
+  const headP5 = el5 && el5.querySelector("p");
+  pass(headP5 && headP5.textContent === "q".repeat(4096), "head settled at exactly 4096 chars pre-crossing");
+  const headHTML5 = el5.innerHTML;
+  const parsesBefore5 = parses;
+  R.handleData("ASSISTANT_TEXT_DELTA", { delta: "r".repeat(10) });
+  pass(parses === parsesBefore5, "no head re-parse at the crossing when the head gains no content (selection survives)");
+  pass(el5.querySelector("p") === headP5, "head DOM node untouched at the no-content crossing");
+  pass(el5.innerHTML.indexOf(headHTML5) === 0, "head innerHTML identical across the no-content crossing");
+  const tail5 = el5.querySelector(".streaming-tail");
+  pass(!!tail5, "tail still opens at the no-content crossing");
+  pass(tail5 && rawTailTextOf(tail5) === "r".repeat(10), "the whole crossing delta streams into the tail");
+  R.handleData("ASSISTANT_TEXT_END", { text: "q".repeat(4096) + "r".repeat(10) });
+  pass(el5.innerHTML === "<p>" + "q".repeat(4096) + "r".repeat(10) + "</p>", "finalization parses the no-content-crossing buffer");
+
   if (failures.length) { for (const f of failures) console.log(f); process.exit(1); }
   console.log("PASS: frozen head at the crossing, raw tail with aria-hidden caret, single final parse");
   process.exit(0);

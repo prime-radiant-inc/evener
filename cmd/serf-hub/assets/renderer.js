@@ -258,6 +258,12 @@
       // guards against overlapping scroll-triggered fetches.
       this.olderTurnsCursor = "";
       this.loadingOlderTurns = false;
+      // Staging replay: true while prependOlderTurns runs historical events
+      // through the normal mutating path against a detached staging div.
+      // Document-level UI side effects (composer ask mode, the ask/needs-you
+      // docks, focus moves) must no-op while it is set — field save/restore
+      // cannot undo real-document mutations.
+      this.stagingReplay = false;
       this.lastFrameAt = Date.now();     // wall-clock of the last frame, for honest liveness
       this.livenessLevel = "none";       // none | quiet | concern (mockup #13)
       // New-content pill: counts transcript entries that rendered while the
@@ -2444,10 +2450,10 @@
         // everything past the boundary streams as plain text into the tail,
         // and the whole buffer parses once at finalization. Switches on
         // LENGTH only (never fence state) and never flips back.
-        // Always rendering the head here (not just when the dirty set holds
-        // an un-rendered pre-crossing buffer) means a single >4KB FIRST delta
-        // shows its first ~4KB parsed immediately instead of staying raw
-        // until finalization.
+        // Rendering the head whenever new content would enter it (not just
+        // when the dirty set holds an un-rendered pre-crossing buffer) means
+        // a single >4KB FIRST delta shows its first ~4KB parsed immediately
+        // instead of staying raw until finalization.
         // Surrogate-safe boundary: a high surrogate exactly at 4096 would
         // freeze half a pair into the head and leave the low half leading the
         // tail as a separate text node (� until finalization). Back the
@@ -2455,7 +2461,17 @@
         let headLen = 4096;
         const boundaryCode = m.textBuf.charCodeAt(headLen - 1);
         if (boundaryCode >= 0xd800 && boundaryCode <= 0xdbff) headLen -= 1;
-        this.renderAssistantMessage(m, m.textBuf.slice(0, headLen));
+        // Render the head ONLY when this crossing puts new content into it:
+        // either earlier deltas are still un-rendered (m is in the dirty set),
+        // or the settled head does not already show exactly headLen chars —
+        // preLen < headLen when part of the crossing delta belongs in the
+        // head (the first-delta/short-head case), preLen > headLen when a
+        // surrogate backoff moves a settled char into the tail. When the head
+        // already shows exactly headLen chars, re-rendering would replace the
+        // head DOM (killing any reader selection) for zero visual change.
+        const preLen = m.textBuf.length - delta.length;
+        const headStale = this.dirtyAssistantMessages && this.dirtyAssistantMessages.has(m);
+        if (headStale || preLen !== headLen) this.renderAssistantMessage(m, m.textBuf.slice(0, headLen));
         const tail = document.createElement("span");
         tail.className = "streaming-tail";
         tail.appendChild(document.createTextNode(m.textBuf.slice(headLen)));
@@ -5008,6 +5024,9 @@
         lastFinalizedAssistantEl: this.lastFinalizedAssistantEl,
         currentTurnHasAgentWork: this.currentTurnHasAgentWork,
         newContentNeedsYou: this.newContentNeedsYou,
+        newContentPaintedCount: this.newContentPaintedCount,
+        newContentJumpTarget: this.newContentJumpTarget,
+        newContentCountTimer: this.newContentCountTimer,
       };
       const staging = document.createElement("div");
       this.conversation = staging;
@@ -5034,12 +5053,26 @@
       this.agentQuestionEl = null;
       this.lastFinalizedAssistantEl = null;
       this.currentTurnHasAgentWork = false;
+      // Historical events replay through the normal mutating path; guards on
+      // the document-level UI mutations (composer ask mode, ask/needs-you
+      // docks, focus) no-op while this is set so a historical ask_user cannot
+      // hijack the LIVE composer.
+      this.stagingReplay = true;
       try {
         for (const [kind, data] of window.SerfAppwire.eventsFromTurns(turns)) {
           this.handleData(kind, data);
         }
       } finally {
         for (const key of Object.keys(saved)) this[key] = saved[key];
+        this.stagingReplay = false;
+        // The replay's own settle (stick → scrollToBottom →
+        // clearNewContentPill) kills the live pill debounce timer's underlying
+        // timeout; the restored handle alone would never fire. Re-arm it so
+        // the pending count commit still lands.
+        if (saved.newContentCountTimer != null) {
+          this.newContentCountTimer = null;
+          this.scheduleNewContentCountPaint();
+        }
       }
       const beforeHeight = sc.scrollHeight;
       const beforeTop = sc.scrollTop;
@@ -5189,6 +5222,9 @@
     },
 
     renderNeedsYouDock() {
+      // Document-level: owns the real dock above the composer form — suppress
+      // during staging replay.
+      if (this.stagingReplay) return;
       const dock = this.needsYouDockEl();
       if (!dock) return;
       if (!this.needsYouDockActive()) {
@@ -5233,6 +5269,7 @@
     },
 
     focusComposer() {
+      if (this.stagingReplay) return;
       const ta = document.querySelector("form[data-input-form] .message-input");
       if (ta) ta.focus();
     },
@@ -5288,6 +5325,8 @@
     },
 
     setComposerAskMode(active) {
+      // Staging replay (prependOlderTurns) must never touch the real composer.
+      if (this.stagingReplay) return;
       const form = document.querySelector("form[data-input-form]");
       if (!form) return;
       const wasActive = form.dataset.responseMode === "ask";
@@ -5313,6 +5352,9 @@
     },
 
     renderPendingAskDock() {
+      // Document-level: builds the dock in the real composer form, flips ask
+      // mode, and moves focus — suppress during staging replay.
+      if (this.stagingReplay) return;
       const pa = this.pendingAsk;
       const form = document.querySelector("form[data-input-form]");
       const dock = this.askDockEl();
@@ -5360,6 +5402,9 @@
     },
 
     clearPendingAskDock() {
+      // Document-level: removes the dock/footer from the real composer form
+      // and restores the composer surface — suppress during staging replay.
+      if (this.stagingReplay) return;
       const form = document.querySelector("form[data-input-form]");
       if (!form) return;
       const dock = form.querySelector("[data-ask-response-dock]");
