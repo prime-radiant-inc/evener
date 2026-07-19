@@ -445,8 +445,9 @@ await scenario("CSS defines the subagents module section with the four-color gly
   if (!doneBlock) return { ok: false, detail: "missing .g.done rule" };
   if (!errBlock)  return { ok: false, detail: "missing .g.err rule" };
   if (!unkBlock)  return { ok: false, detail: "missing .g.unk rule (mockup #8 honest-clock demotion)" };
-  // running glyph must carry the active/working token — not muted or dim.
-  if (!/color:[^;]*var\(--state-working\)/.test(runBlock)) return { ok: false, detail: ".g.run must use --state-working so the running glyph signals an active worker" };
+  // running glyph must carry the live/working token (blue = live post-Task-8)
+  // — not muted or dim.
+  if (!/color:[^;]*var\(--state-working\)/.test(runBlock)) return { ok: false, detail: ".g.run must use --state-working (blue = live) so the running glyph signals an active worker" };
   // error glyph must carry an error-semantic color so failed workers render red.
   if (!/color:[^;]*var\(--error\)/.test(errBlock)) return { ok: false, detail: ".g.err must use --error so a failed worker is visually distinct" };
   return { ok: true };

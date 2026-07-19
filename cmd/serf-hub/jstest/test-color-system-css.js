@@ -74,15 +74,17 @@ const tokenVal = (name) => {
   return m ? m[1].trim() : null;
 };
 
-// blue = needs-you / awaiting input (NOT red). (palette v2: awaiting moved
-// from amber to blue; --state-warning now owns amber.)
-pass(tokenVal("state-awaiting") === "#7aa2f7", "--state-awaiting is blue #7aa2f7 (needs-you), got " + tokenVal("state-awaiting"));
+// amber = needs-you / awaiting input (NOT red). (Task 8 recolor: awaiting
+// moved from blue to amber --attention; blue is now live/working.)
+pass(tokenVal("state-awaiting") === "var(--attention)", "--state-awaiting is amber var(--attention) (needs-you), got " + tokenVal("state-awaiting"));
+// blue = live/working.
+pass(tokenVal("state-working") === "var(--accent)", "--state-working is blue var(--accent) (live), got " + tokenVal("state-working"));
 // red = error, its own token (not an alias of awaiting).
 pass(tokenVal("error") === "#f7768e", "--error is its own red #f7768e, got " + tokenVal("error"));
 pass(!/--error:\s*var\(--state-awaiting\)/.test(darkRoot), "--error must not alias --state-awaiting");
-// idle/user are neutral (no color).
+// idle/user are neutral (no color) — the --done canonical, not a raw hue.
 pass(tokenVal("state-idle") !== "#9ece6a", "--state-idle must not be green #9ece6a (idle/user are neutral)");
-pass(tokenVal("state-idle") === "#7a7a86", "--state-idle should be neutral muted #7a7a86, got " + tokenVal("state-idle"));
+pass(tokenVal("state-idle") === "var(--done)", "--state-idle should be neutral var(--done), got " + tokenVal("state-idle"));
 // purple subagent retired everywhere.
 pass(!/--state-subagent:\s*#bb9af7/.test(css), "--state-subagent purple #bb9af7 must be retired");
 // success token exists for genuine good-news only.
@@ -156,8 +158,8 @@ if (pillRule) {
 }
 // A "You" tag exists for the demoted user message.
 pass(/\.user-message-tag/.test(css), "user-message-tag (the quiet 'You' label) is styled");
-// Steering tick must be neutral, not amber (--state-warning).
-pass(!/\.steering \.steering-verb\s*\{[^}]*color:\s*var\(--state-warning\)/s.test(css), "steering-verb must not use amber --state-warning (steering is neutral)");
+// Steering tick must be neutral, not amber (--state-awaiting / --attention).
+pass(!/\.steering \.steering-verb\s*\{[^}]*color:\s*var\(--state-awaiting\)/s.test(css), "steering-verb must not use amber --state-awaiting (steering is neutral)");
 
 // ── Mockup #4 — assistant prose hero; inline code quiet underline ────────
 const assistantRule = css.match(/\.assistant-message\s*\{[^}]*\}/s);
@@ -174,6 +176,16 @@ if (codeRule) {
   pass(/border-bottom:/.test(codeRule[0]), "inline code uses a quiet underline (border-bottom)");
   pass(!/background:\s*var\(--surface\)/.test(codeRule[0]), "inline code must not be a filled chip background");
 }
+
+// ── State language: blue=live, amber=needs-you, red=error, neutral=done ──
+// (Task 8; the brief's assertions, translated to this file's pass() collector.)
+pass(/--state-working:\s*var\(--accent\);/.test(css), "working = blue (--accent)");
+pass(/--state-awaiting:\s*var\(--attention\);/.test(css), "awaiting = amber (--attention)");
+pass(/--state-idle:\s*var\(--done\);/.test(css), "idle = neutral (--done)");
+pass(/--state-subagent:\s*var\(--done\);/.test(css), "subagent = neutral (--done)");
+pass(!/--state-warning/.test(css), "--state-warning renamed away (diagnostics lane)");
+pass(/--diagnostic-warning:\s*#e0af68;/.test(css), "dark --diagnostic-warning keeps the amber identity");
+pass(/--diagnostic-hub:\s*#7dc98f;/.test(css), "dark --diagnostic-hub takes the freed green (≠ --diagnostic-ui blue)");
 
 if (failures.length === 0) {
   console.log("ok canonical color tokens");

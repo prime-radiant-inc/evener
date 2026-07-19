@@ -20,18 +20,20 @@
   --attention: #e0af68;
   /* Neutral = done/settled. Recedes — it is --ink-3, not a color. */
   --done: var(--ink-3);
-  /* Four meanings, each exactly one (design-system §3, palette v2):
-     green=working, blue=needs-you, amber=warning, red=error, neutral=done/settled.
-     --state-awaiting is BLUE (needs your eye, no longer amber — accepted churn),
-     --state-working is GREEN, --state-warning keeps its own AMBER identity
-     (no longer folded into needs-you), --state-idle is NEUTRAL. */
-  --state-awaiting: #7aa2f7;
-  --state-working: #7dc98f;
-  --state-warning: #e0af68;
-  --state-idle: #7a7a86;
+  /* Four meanings, each exactly one (design-system §3): blue=live/working,
+     amber=needs-you (awaiting), red=error, neutral=done/settled. The old
+     warning tier left the state vocabulary: diagnostics use
+     --diagnostic-warning (amber — their own lane, not a session state). */
+  --state-working: var(--accent);
+  --state-awaiting: var(--attention);
+  --state-idle: var(--done);
   --state-ended: #3a3a44;
-  /* Subagents carry no ambient hue: green when active, neutral when done. */
-  --state-subagent: #7a7a86;
+  /* Subagents carry no ambient hue: blue when live, neutral when done. */
+  --state-subagent: var(--done);
+  /* Diagnostics lane — not session state. Warning keeps amber (its own
+     identity, distinct from needs-you's container grammar); hub takes the
+     green freed by live→blue so it can't collide with --diagnostic-ui. */
+  --diagnostic-warning: #e0af68;
   --btn-primary-text: var(--bg);
   /* Red, its own token — failed-to-run / broke. */
   --error: #f7768e;
@@ -48,8 +50,8 @@
   --diff-add-bg: rgba(118,170,142,.085); /* faint add tint */
   --diff-del-bg: rgba(176,128,142,.075); /* faint del tint */
   --diagnostic-provider: var(--error);
-  --diagnostic-serf: var(--state-warning);
-  --diagnostic-hub: var(--state-working);
+  --diagnostic-serf: var(--diagnostic-warning);
+  --diagnostic-hub: #7dc98f;
   --diagnostic-ui: var(--accent);
 
   /* Spacing scale — Pass 1. Layout values (padding, margin, gap, top/right/bottom/left)
@@ -160,12 +162,13 @@ body[data-font-size="xl"] {
     --accent: #2e58b8;
     --attention: #8a5a14;
     --done: var(--ink-3);
-    --state-awaiting: #2e58b8;
-    --state-working: #2e7d4f;
-    --state-warning: #8a5a14;
-    --state-idle: #5e5e6a;
+    --state-working: var(--accent);
+    --state-awaiting: var(--attention);
+    --state-idle: var(--done);
     --state-ended: #7a7a82;
-    --state-subagent: #5e5e6a;
+    --state-subagent: var(--done);
+    --diagnostic-warning: #8a5a14;
+    --diagnostic-hub: #2e7d4f;
     --btn-primary-text: #fafafa;
     --error: #b62a48;
     --success: #336a14;
@@ -186,12 +189,13 @@ body[data-font-size="xl"] {
   --accent: #7aa2f7;
   --attention: #e0af68;
   --done: var(--ink-3);
-  --state-awaiting: #7aa2f7;
-  --state-working: #7dc98f;
-  --state-warning: #e0af68;
-  --state-idle: #7a7a86;
+  --state-working: var(--accent);
+  --state-awaiting: var(--attention);
+  --state-idle: var(--done);
   --state-ended: #3a3a44;
-  --state-subagent: #7a7a86;
+  --state-subagent: var(--done);
+  --diagnostic-warning: #e0af68;
+  --diagnostic-hub: #7dc98f;
   --btn-primary-text: var(--bg);
   --error: #f7768e;
   --success: #8aa873;
@@ -211,12 +215,13 @@ body[data-font-size="xl"] {
   --accent: #2e58b8;
   --attention: #8a5a14;
   --done: var(--ink-3);
-  --state-awaiting: #2e58b8;
-  --state-working: #2e7d4f;
-  --state-warning: #8a5a14;
-  --state-idle: #5e5e6a;
+  --state-working: var(--accent);
+  --state-awaiting: var(--attention);
+  --state-idle: var(--done);
   --state-ended: #7a7a82;
-  --state-subagent: #5e5e6a;
+  --state-subagent: var(--done);
+  --diagnostic-warning: #8a5a14;
+  --diagnostic-hub: #2e7d4f;
   --btn-primary-text: #fafafa;
   --error: #b62a48;
   --success: #336a14;
@@ -426,7 +431,7 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 .msg { margin-bottom: var(--space-4); padding: var(--space-3); border-radius: var(--radius-md); }
 .msg.user { background: none; border-left: 2px solid var(--line); color: var(--ink-2); }
 .msg.assistant { background: var(--surface-2); border-left: 2px solid var(--accent); }
-.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--state-warning); padding-left: var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); }
+.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--diagnostic-warning); padding-left: var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); }
 .msg.error { background: rgba(247, 118, 142, 0.08); border-left: 2px solid var(--error); color: var(--error); }
 .msg .role { font-size: var(--text-xs); text-transform: uppercase; color: var(--ink-2); margin-bottom: var(--space-2); }
 .msg pre, .msg code { font-family: var(--font-mono); }
@@ -637,7 +642,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
    the selected/hover treatment below. */
 .sb-row[data-state="awaiting"] { border-left-color: var(--state-awaiting); }
 .sb-row[data-state="active"]   { border-left-color: var(--state-working); }
-.sb-row[data-state="warning"]  { border-left-color: var(--state-warning); }
+.sb-row[data-state="warning"]  { border-left-color: var(--diagnostic-warning); }
 .sb-row[data-state="errored"]  { border-left-color: var(--error); }
 
 /* Active session marker — JS sets [data-active] on the row whose href
@@ -658,13 +663,13 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .sb-row.fork .fork-glyph { color: var(--state-ended); }
 .sb-row.fork[data-state="active"]   .fork-glyph { color: var(--state-working); }
 .sb-row.fork[data-state="awaiting"] .fork-glyph { color: var(--state-awaiting); }
-.sb-row.fork[data-state="warning"]  .fork-glyph { color: var(--state-warning); }
+.sb-row.fork[data-state="warning"]  .fork-glyph { color: var(--diagnostic-warning); }
 .sb-row.fork[data-state="idle"]     .fork-glyph { color: var(--state-idle); }
 
 .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--state-ended); flex-shrink: 0; }
 .status-dot[data-state="active"] { background: var(--state-working); }
 .status-dot[data-state="awaiting"] { background: var(--state-awaiting); }
-.status-dot[data-state="warning"] { background: var(--state-warning); }
+.status-dot[data-state="warning"] { background: var(--diagnostic-warning); }
 .status-dot[data-state="idle"] { background: var(--state-idle); }
 .status-dot.subagent { background: var(--state-subagent); }
 .status-dot.rollup { margin-left: auto; }
@@ -672,7 +677,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .status-icon { display: inline-flex; width: 12px; height: 12px; font-size: 12px; color: var(--state-ended); flex-shrink: 0; }
 .status-icon[data-state="active"] { color: var(--state-working); }
 .status-icon[data-state="awaiting"] { color: var(--state-awaiting); }
-.status-icon[data-state="warning"] { color: var(--state-warning); }
+.status-icon[data-state="warning"] { color: var(--diagnostic-warning); }
 .status-icon[data-state="idle"] { color: var(--state-idle); }
 .status-icon[data-state="errored"] { color: var(--error); }
 
@@ -740,7 +745,7 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
 .project-rollup-dot[data-state="ended"]      { display: none; }
 .project-rollup-dot[data-state="awaiting"]   { background: var(--state-awaiting); }
 .project-rollup-dot[data-state="active"] { background: var(--state-working); }
-.project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
+.project-rollup-dot[data-state="warning"]    { background: var(--diagnostic-warning); }
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
 .project-rollup-dot[data-state="errored"]  { background: var(--error); }
 
@@ -1585,7 +1590,7 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
 .status-badge[data-state="active"]    { color: var(--state-working); }
 .status-badge[data-state="awaiting"]  { color: var(--state-awaiting); }
 .status-badge[data-state="errored"]   { color: var(--error); }
-.status-badge[data-state="warning"]   { color: var(--state-warning); }
+.status-badge[data-state="warning"]   { color: var(--diagnostic-warning); }
 .status-badge[data-state="idle"]      { color: var(--state-idle); }
 .status-badge[data-state="ended"]     { color: var(--ink-2); }
 .status-badge[data-state="closed"]    { color: var(--ink-2); }
@@ -2812,7 +2817,7 @@ details.tool-body[open] > summary::before,
 .tool-output-rest { margin-top: 0; order: 1; }
 /* Server-dropped note — the bytes were truncated/binary at the source and are
    gone. Amber (needs-your-eye), NEVER a fake expand. */
-.tool-output-dropped { margin: var(--space-2) 0 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--state-warning); line-height: var(--leading-snug); }
+.tool-output-dropped { margin: var(--space-2) 0 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--diagnostic-warning); line-height: var(--leading-snug); }
 .task-list-body {
   list-style: none;
   margin: 0 0 var(--space-4) calc(-1 * var(--gutter));
@@ -2961,7 +2966,7 @@ details.tool-body[open] > summary::before,
 .sub-r.res-error .res .live { color: var(--error); }
 /* Honest aging: the activity dims when quiet; the clock turns amber when silent. */
 .sub-r.act-quiet .res .live { color: var(--ink-4); }
-.sub-r.act-silent .res .age { color: var(--state-warning); }
+.sub-r.act-silent .res .age { color: var(--diagnostic-warning); }
 .sub-r:hover .lk,
 .sub-r:focus-visible .lk { opacity: 1; color: var(--accent); }
 .sub-r:hover { color: var(--ink); }
@@ -3054,7 +3059,7 @@ details.tool-body[open] > summary::before,
 .subs-more[hidden] { display: none; }
 .subs-more:hover { filter: brightness(1.12); }
 .diagnostic {
-  --diagnostic-accent: var(--state-warning);
+  --diagnostic-accent: var(--diagnostic-warning);
   margin: 0 0 var(--space-5) 0;
   max-width: min(720px, 100%);
   padding: var(--space-3) var(--space-4) var(--space-3) var(--space-4);
@@ -3111,7 +3116,7 @@ details.tool-body[open] > summary::before,
   border-radius: var(--radius-md);
 }
 .banner.error   { color: var(--error); border-left: 2px solid var(--error); padding-left: var(--space-3); }
-.banner.warning { color: var(--state-warning);  border-left: 2px solid var(--state-warning);  padding-left: var(--space-3); }
+.banner.warning { color: var(--diagnostic-warning);  border-left: 2px solid var(--diagnostic-warning);  padding-left: var(--space-3); }
 .banner.note    { color: var(--ink-2);     border-left: 2px solid var(--line);           padding-left: var(--space-3); }
 
 /* Sandbox-escalation approval card (M7): a HARNESS-initiated prompt, styled
@@ -3122,13 +3127,13 @@ details.tool-body[open] > summary::before,
   margin: 0 0 var(--space-4) 0;
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-sm);
-  border: 1px solid var(--state-warning);
+  border: 1px solid var(--diagnostic-warning);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--state-warning) 8%, transparent);
+  background: color-mix(in srgb, var(--diagnostic-warning) 8%, transparent);
 }
 .sandbox-escalation-label {
   font-weight: 600;
-  color: var(--state-warning);
+  color: var(--diagnostic-warning);
   margin-bottom: var(--space-2);
 }
 .sandbox-escalation-body { color: var(--ink); }
@@ -3144,8 +3149,8 @@ details.tool-body[open] > summary::before,
 .sandbox-escalation-caveat { margin-top: var(--space-2); color: var(--ink-2); font-style: italic; }
 .sandbox-escalation-actions { display: flex; gap: var(--space-2); margin-top: var(--space-3); }
 .sandbox-escalation-settled { margin-top: var(--space-3); color: var(--ink-2); }
-.sandbox-escalation-settled.sandbox-escalation-expired { color: var(--state-warning); }
-.sandbox-escalation-note { margin-top: var(--space-2); color: var(--state-warning); font-size: var(--text-xs); }
+.sandbox-escalation-settled.sandbox-escalation-expired { color: var(--diagnostic-warning); }
+.sandbox-escalation-note { margin-top: var(--space-2); color: var(--diagnostic-warning); font-size: var(--text-xs); }
 
 /* System-line: short prose narration between user and agent — used for compact
  * system events (hook exits, round timings). Reads as a quiet aside, not a tool
@@ -3282,12 +3287,12 @@ details.tool-body[open] > summary::before,
 /* "Done" is the expected, settled state — its rail recedes to neutral. Colour
    (amber / red) is spent only on a warning or a failure that needs the eye. */
 .notification-card-success { border-left-color: var(--ink-2); }
-.notification-card-warning { border-left-color: var(--state-warning); }
+.notification-card-warning { border-left-color: var(--diagnostic-warning); }
 .notification-card-error { border-left-color: var(--error); }
 .notification-card-neutral { border-left-color: var(--ink-2); }
 .notification-card-header { display: flex; align-items: baseline; gap: var(--space-2); margin-bottom: var(--space-2); }
 .notification-card-glyph { color: var(--ink-2); }
-.notification-card-warning .notification-card-glyph { color: var(--state-warning); }
+.notification-card-warning .notification-card-glyph { color: var(--diagnostic-warning); }
 .notification-card-error .notification-card-glyph { color: var(--error); }
 .notification-card-title { font-weight: 600; color: var(--ink); }
 /* Quiet, plain-language secondary (job kind, failure signal). The rest of the
@@ -3572,7 +3577,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .chip-picker-dir-row:hover,
 .chip-picker-dir-parent:hover { background: var(--line); }
 .chip-picker-dir-name { color: var(--ink); font-family: var(--font-mono); font-size: var(--text-sm); min-width: 0; overflow-wrap: anywhere; }
-.chip-picker-dir-tag { color: var(--state-warning); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-1) var(--space-3); border: 1px solid var(--state-warning); border-radius: var(--radius-md); flex-shrink: 0; }
+.chip-picker-dir-tag { color: var(--diagnostic-warning); font-family: var(--font-mono); font-size: var(--text-2xs); padding: var(--space-1) var(--space-3); border: 1px solid var(--diagnostic-warning); border-radius: var(--radius-md); flex-shrink: 0; }
 
 
 /* ── Search palette ──────────────────────────────────────────────────────── */
@@ -3607,8 +3612,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .search-help-keys { color: var(--ink); font-family: var(--font-mono); font-weight: 600; flex-shrink: 0; min-width: 110px; }
 .search-help-desc { color: var(--ink-2); }
 .search-snippet { font-size: var(--text-sm); color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.search-results mark { background: var(--state-warning, #e0af68); color: var(--bg, #1a1b26); border-radius: var(--radius-md); padding: 0 var(--space-1); }
-.search-hit { outline: 2px solid var(--state-warning, #e0af68); outline-offset: 4px; transition: outline-color var(--motion-slow); animation: search-hit-flash var(--flash-cycle); }
+.search-results mark { background: var(--diagnostic-warning, #e0af68); color: var(--bg, #1a1b26); border-radius: var(--radius-md); padding: 0 var(--space-1); }
+.search-hit { outline: 2px solid var(--diagnostic-warning, #e0af68); outline-offset: 4px; transition: outline-color var(--motion-slow); animation: search-hit-flash var(--flash-cycle); }
 @keyframes search-hit-flash {
   0%   { background-color: rgba(224, 175, 104, 0.35); }
   100% { background-color: transparent; }
@@ -4148,8 +4153,8 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .settings-launch-form .form-actions { margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-4); }
 .form-actions { margin-top: var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
 .settings-form-status { margin: 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--ink-2); }
-.settings-diagnostics { margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border-left: 3px solid var(--state-warning); font-size: var(--text-xs); }
-.settings-diagnostics-heading { margin: 0 0 var(--space-1); font-weight: 600; color: var(--state-warning); }
+.settings-diagnostics { margin-top: var(--space-3); padding: var(--space-2) var(--space-3); border-left: 3px solid var(--diagnostic-warning); font-size: var(--text-xs); }
+.settings-diagnostics-heading { margin: 0 0 var(--space-1); font-weight: 600; color: var(--diagnostic-warning); }
 .settings-diagnostics ul { margin: 0; padding-left: var(--space-4); }
 .settings-launch-textarea { width: 100%; min-height: 132px; line-height: var(--leading-snug); resize: vertical; cursor: text; }
 
@@ -5196,10 +5201,10 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 }
 /* Mode-specific chip tint (e.g., access_mode chip on spawn). */
 .btn-chip[data-mode] {
-  background: color-mix(in srgb, var(--state-warning) 12%, var(--surface));
-  color: var(--state-warning);
+  background: color-mix(in srgb, var(--diagnostic-warning) 12%, var(--surface));
+  color: var(--diagnostic-warning);
 }
-.btn-chip[data-mode] .val { color: var(--state-warning); }
+.btn-chip[data-mode] .val { color: var(--diagnostic-warning); }
 
 /* ── Status badge (Pass 5) ────────────────────────────────────────────────
    Typographic small-caps mono in state color. No background fill — replaces
@@ -5215,7 +5220,7 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
 .status-badge.status-available { color: var(--success); }
 .status-badge.status-error,
 .status-badge.status-missing   { color: var(--error); }
-.status-badge.status-unreachable { color: var(--state-warning); }
+.status-badge.status-unreachable { color: var(--diagnostic-warning); }
 .status-badge.status-stopped,
 .status-badge.status-unknown,
 .status-badge.status-absent,

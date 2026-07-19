@@ -30,16 +30,17 @@
   const PREFS_VERSION_KEY = "serf-hub.notifications.v";
   const DEFAULT_PREFS = { title: true, favicon: true, os: false, sound: false, loudScope: "asks" };
   const PLAIN_FAVICON =
-    "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>";
+    "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237e8593'/></svg>";
 
-  // Dot color by attention level, mirroring style.css's --state-working /
-  // --state-awaiting (dark-theme values — the favicon/badge always renders
-  // against the dark default regardless of the page's active theme).
-  // No "idle" entry: idle never sets a dot.
+  // Dot color by attention level. Pinned DARK-THEME constants — the favicon
+  // renders against dark browser chrome regardless of the page's active
+  // theme. Post-recolor language: blue=working, amber=needs_you, red=error.
+  // The base circle is neutral (#7e8593 = dark --ink-3): a blue base would
+  // read as "working" at rest. No "idle" entry: idle never sets a dot.
   const STATE_COLORS = {
     error: "#f7768e",
-    needs_you: "#7aa2f7",
-    working: "#7dc98f",
+    needs_you: "#e0af68",
+    working: "#7aa2f7",
   };
 
   // The authoritative badge summary, or null until the /api/tree baseline
@@ -126,7 +127,7 @@
     // Base circle plus a small dot in the corner if a state is active.
     let svg =
       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>" +
-      "<circle cx='50' cy='50' r='40' fill='#7aa2f7'/>";
+      "<circle cx='50' cy='50' r='40' fill='#7e8593'/>";
     if (dotColor) {
       svg +=
         "<circle cx='78' cy='78' r='18' fill='" +
