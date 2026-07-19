@@ -105,6 +105,7 @@ no router (reserved).
 | `turn/interrupt` | both | `TurnInterruptParams` | `EmptyResponse` | Cancels the active turn matching expectedTurnId. |
 | `turn/queue` | both | `TurnQueueParams` | `EmptyResponse` | Queues a user message for after the active turn completes. |
 | `turn/drainAsSteer` | both | `TurnDrainAsSteerParams` | `EmptyResponse` | Drains the input queue and injects it as a single steering message. |
+| `turn/promoteQueuedAsSteer` | both | `TurnPromoteQueuedAsSteerParams` | `EmptyResponse` | Removes one queued message by index and injects it as user-sourced steering into the in-flight turn. |
 | `goal/set` | both | `GoalSetParams` | `GoalSetResponse` | Sets or clears the session's /goal objective. |
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
@@ -475,6 +476,8 @@ _(no fields)_
 | `sandboxNet` | `*bool` | yes |  |
 | `maxRounds` | `*int` | yes |  |
 | `maxSubagentDepth` | `*int` | yes |  |
+| `maxConcurrentDelegateTurns` | `*int` | yes |  |
+| `maxRetainedTerminal` | `*int` | yes |  |
 | `noProjectPrompts` | `*bool` | yes |  |
 | `nonInteractive` | `*bool` | yes |  |
 | `appReplaySize` | `*int` | yes |  |
@@ -1016,6 +1019,15 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `threadId` | `string` | yes |  |
 | `expectedTurnId` | `string` | yes |  |
+
+
+### `TurnPromoteQueuedAsSteerParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `index` | `int` |  |  |
+| `expectedEntryId` | `string` | yes |  |
 
 
 ### `TurnQueueParams`

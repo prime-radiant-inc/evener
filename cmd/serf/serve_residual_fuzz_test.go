@@ -40,7 +40,9 @@ type residualServeServer struct {
 	goalStatus         func() (string, int, bool)
 	drain              func() error
 	drainInput         func(string, []server.ImageAttachment) error
+	promote            func(int, string) error
 	queueDepth         func() int
+	queueIDs           func() []string
 	queuePreview       func() []string
 	pressure           func() float64
 	contextMetrics     func() server.ContextMetrics
@@ -82,8 +84,12 @@ func (s *residualServeServer) SetDrainAsSteerFunc(f func() error)             { 
 func (s *residualServeServer) SetDrainAsSteerWithInputFunc(f func(string, []server.ImageAttachment) error) {
 	s.drainInput = f
 }
+func (s *residualServeServer) SetPromoteQueuedAsSteerFunc(f func(int, string) error) {
+	s.promote = f
+}
 func (s *residualServeServer) SetQueueDepthFunc(f func() int)          { s.queueDepth = f }
 func (s *residualServeServer) SetQueuePreviewFunc(f func() []string)   { s.queuePreview = f }
+func (s *residualServeServer) SetQueueIDsFunc(f func() []string)       { s.queueIDs = f }
 func (s *residualServeServer) SetContextPressureFunc(f func() float64) { s.pressure = f }
 func (s *residualServeServer) SetContextMetricsFunc(f func() server.ContextMetrics) {
 	s.contextMetrics = f
@@ -119,8 +125,10 @@ func exerciseResidualCallbacks(s *residualServeServer) {
 	_, _, _ = s.goalStatus()
 	_ = s.drain()
 	_ = s.drainInput("x", nil)
+	_ = s.promote(0, "q_1_x")
 	_ = s.queueDepth()
 	_ = s.queuePreview()
+	_ = s.queueIDs()
 	_ = s.pressure()
 	_ = s.contextMetrics()
 	_, _, _ = s.workMetrics()

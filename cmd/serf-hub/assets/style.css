@@ -2056,6 +2056,30 @@ body.app[data-sidebar-rail] .archive-btn { display: none; }
   white-space: nowrap;
   flex: 1;
 }
+/* issue #22: per-row promote-to-steering affordance. Subtle until
+   hover/focus, then inks up with the accent so it reads as an action. */
+.queue-preview-item .qp-promote {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink-3);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.queue-preview-item .qp-promote:hover,
+.queue-preview-item .qp-promote:focus-visible {
+  color: var(--accent);
+  border-color: var(--accent);
+  outline: none;
+}
 
 .input-card { background: color-mix(in srgb, var(--surface) 88%, var(--bg)); border: 0; border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); min-height: 0; transition: outline-color var(--motion-fast), background var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper

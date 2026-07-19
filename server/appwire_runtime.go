@@ -96,6 +96,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
+	appserver.HandleTyped(router, appwire.MethodTurnPromoteQueuedAsSteer, s.handleAppTurnPromoteQueuedAsSteer)
 	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
@@ -518,6 +519,39 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	return appwire.EmptyResponse{}, nil
 }
 
+// handleAppTurnPromoteQueuedAsSteer handles turn/promoteQueuedAsSteer
+// (issue #22): removes the queued follow-up at params.Index and injects it
+// as user-sourced steering into the in-flight turn. A negative index is an
+// InvalidParams rejection; an idle or closed session is a Conflict (the
+// queued message stays a normal follow-up — nothing is silently dropped).
+// Session-side rejections are all queue-state conflicts — the index fell
+// out of range or the expected entry id no longer matches because the queue
+// shifted under the client's snapshot (review F1) — so they map to Conflict
+// and the client can re-sync its preview (review F2).
+func (s *Server) handleAppTurnPromoteQueuedAsSteer(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
+	if params.Index < 0 {
+		return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
+	}
+	s.mu.RLock()
+	fn := s.promoteSteerFunc
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	s.mu.RUnlock()
+	if closed {
+		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
+	}
+	if !processing {
+		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("promote-queued-as-steer not available")
+	}
+	if err := fn(params.Index, params.ExpectedEntryID); err != nil {
+		return appwire.EmptyResponse{}, appwire.Conflict(err.Error())
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
 // handleAppGoalSet handles goal/set. An empty objective clears the goal; both
 // set and clear route through the single goalFunc callback (the callback maps an
 // empty objective to ClearGoal). Started reports whether the goal loop began
@@ -683,6 +717,7 @@ func (s *Server) appThread() appwire.Thread {
 	dfn := s.detailedStatusFn
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
+	qifn := s.queueIDsFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
 	metafn := s.sessionMetaFn
@@ -721,6 +756,11 @@ func (s *Server) appThread() appwire.Thread {
 		if preview := qpfn(); len(preview) > 0 {
 			queue.Preview = append([]string(nil), preview...)
 			queue.Depth = len(preview)
+		}
+	}
+	if qifn != nil && queue.Depth > 0 {
+		if ids := qifn(); len(ids) == queue.Depth {
+			queue.IDs = append([]string(nil), ids...)
 		}
 	}
 	// Fall back to depthFn when preview isn't wired (some tests stub only

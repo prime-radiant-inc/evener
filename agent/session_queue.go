@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
@@ -186,10 +189,26 @@ func (s *Session) FollowUp(msg string) {
 // are forwarded together when the entry is drained as a fresh user turn.
 // Provenance carries the causal watch origin (nil for human-typed input) so a
 // DrainAsSteer collapse can fold it into the steering message it injects.
+// ID is a stable per-entry identifier minted at enqueue time; it rides the
+// queue snapshot so a promote-by-index request can verify the entry it meant
+// is still the entry at that index (review F1, issue #22).
 type queuedInput struct {
+	ID         string
 	Text       string
 	Images     []ImageAttachment
 	Provenance *provenance.Causal
+}
+
+// queueEntrySeq guarantees queue-entry id uniqueness by construction,
+// mirroring escalationSeq: a process-monotonic counter plus a random suffix.
+var queueEntrySeq atomic.Uint64
+
+// newQueueEntryID mints a unique opaque handle for one queued input entry.
+func newQueueEntryID() string {
+	seq := queueEntrySeq.Add(1)
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return fmt.Sprintf("q_%d_%s", seq, hex.EncodeToString(b[:]))
 }
 
 // Enqueue appends a text-only user message to the per-session input queue
@@ -221,7 +240,7 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 		s.mu.Unlock()
 		return errors.New("queue: session is closed")
 	}
-	entry := queuedInput{Text: text}
+	entry := queuedInput{ID: newQueueEntryID(), Text: text}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
@@ -262,7 +281,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 		return errors.New("drain: no active turn to steer")
 	}
 	if strings.TrimSpace(text) != "" || len(images) > 0 {
-		entry := queuedInput{Text: text}
+		entry := queuedInput{ID: newQueueEntryID(), Text: text}
 		if len(images) > 0 {
 			entry.Images = append([]ImageAttachment(nil), images...)
 		}
@@ -292,6 +311,54 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	// turn by a user action (turn/drainAsSteer), so the combined steering
 	// message keeps user provenance for rendering (issue #24).
 	s.trySteerEnqueue(combined, drainedImages, combinedProvenance, events.SteeringSourceUser)
+	return nil
+}
+
+// PromoteQueuedAsSteer removes the single queued message at index and
+// injects it as a user-sourced STEERING message into the in-flight turn
+// (issue #22 per-message promote; the single-message counterpart of
+// DrainAsSteer). Other queued messages stay queued in FIFO order. The
+// steering entry keeps the queued message's images and causal provenance,
+// and is marked Source "user" so UIs render it as user speech rather than a
+// system steering divider (issue #24). When expectedID is non-empty it must
+// match the id of the entry currently at index — the queue head can be
+// consumed mid-turn, so a bare index captured from an earlier snapshot may
+// otherwise resolve to the wrong message (review F1). Returns an error —
+// leaving the queue untouched — when the session is closed, no turn is in
+// flight, index is out of range, or the id mismatches, so a failed promote
+// never silently loses or swaps the follow-up.
+func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return errors.New("promote: session is closed")
+	}
+	if s.state != SessionProcessing {
+		s.mu.Unlock()
+		return errors.New("promote: no active turn to steer")
+	}
+	if index < 0 || index >= len(s.inputQueue) {
+		s.mu.Unlock()
+		return fmt.Errorf("promote: queue index %d out of range (depth %d)", index, len(s.inputQueue))
+	}
+	entry := s.inputQueue[index]
+	if expectedID != "" && entry.ID != expectedID {
+		s.mu.Unlock()
+		return fmt.Errorf("promote: queue entry at index %d no longer matches the snapshot (queue changed)", index)
+	}
+	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(events.EventQueueChanged, data)
+	// The promoted entry is user-typed input steered into the in-flight turn
+	// by a user action, so it keeps user provenance for rendering — same as
+	// the DrainAsSteer collapse (issue #24).
+	s.trySteerEnqueue(entry.Text, entry.Images, entry.Provenance, events.SteeringSourceUser)
 	return nil
 }
 
@@ -380,14 +447,34 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 	s.emit(events.EventQueueChanged, data)
 }
 
+// QueueIDs returns the stable per-entry ids of the queued messages in FIFO
+// order, aligned with QueuePreview. Callers promoting a queued message by
+// index should read the id from the same snapshot and pass it back as the
+// expected identity so a shifted queue is rejected instead of promoting the
+// wrong entry (review F1, issue #22).
+func (s *Session) QueueIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.inputQueue) == 0 {
+		return nil
+	}
+	out := make([]string, len(s.inputQueue))
+	for i, entry := range s.inputQueue {
+		out[i] = entry.ID
+	}
+	return out
+}
+
 // queueChangedDataLocked builds a QueueChangedData snapshot from the
 // current inputQueue. The caller must hold s.mu.
 func (s *Session) queueChangedDataLocked() events.QueueChangedData {
 	data := events.QueueChangedData{Depth: len(s.inputQueue)}
 	if len(s.inputQueue) > 0 {
 		data.Preview = make([]string, len(s.inputQueue))
+		data.IDs = make([]string, len(s.inputQueue))
 		for i, entry := range s.inputQueue {
 			data.Preview[i] = queuedEntryPreviewLine(entry)
+			data.IDs[i] = entry.ID
 		}
 	}
 	return data

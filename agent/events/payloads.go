@@ -178,10 +178,14 @@ type SteeringInjectedData struct {
 
 // QueueChangedData carries an authoritative snapshot of the per-session
 // input queue after a mutation (kata r80p). Preview entries are FIFO with
-// the head at index 0 and have been collapsed to a single line.
+// the head at index 0 and have been collapsed to a single line. IDs is
+// FIFO-aligned with Preview and carries each entry's stable queue-entry id
+// (minted at enqueue time) so a client can promote a specific entry by
+// identity rather than by bare index (review F1, issue #22).
 type QueueChangedData struct {
 	Depth   int      `json:"depth"`
 	Preview []string `json:"preview,omitempty"`
+	IDs     []string `json:"ids,omitempty"`
 }
 
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current

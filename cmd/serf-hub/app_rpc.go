@@ -368,6 +368,22 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.DrainAsSteer(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.EmptyResponse, error) {
+		if params.Index < 0 {
+			return appwire.EmptyResponse{}, appwire.InvalidParams("index must be >= 0")
+		}
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		// promoteQueuedAsSteer rides on the Steer capability, same as
+		// drainAsSteer — the daemon checks the live queue and turn state
+		// itself and returns Conflict when the promote can't happen.
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
+			return appwire.EmptyResponse{}, err
+		}
+		return appwire.EmptyResponse{}, source.PromoteQueuedAsSteer(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {

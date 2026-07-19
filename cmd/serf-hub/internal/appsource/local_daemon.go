@@ -208,6 +208,16 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 	})
 }
 
+func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.TurnPromoteQueuedAsSteer(ctx, params)
+	})
+}
+
 func (s *LocalDaemonSource) CompactThread(ctx context.Context, params appwire.ThreadCompactStartParams) error {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {

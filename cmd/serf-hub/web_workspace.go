@@ -89,6 +89,12 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleDrainAsSteer(w, r, id)
+	case "promote-queued":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handlePromoteQueued(w, r, id)
 	default:
 		// /s/<id>/images/<sha> — sha-addressed image fetch for replay.
 		if strings.HasPrefix(sub, "images/") {
