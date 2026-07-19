@@ -42,6 +42,12 @@ type Turn struct {
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
 	Usage llm.Usage `json:"usage,omitempty"`
+	// SteeringSource records the provenance of a TurnSteering entry:
+	// "user" for human-sent steering (the UI steer action or queued user
+	// input drained as steering), empty for daemon/system nudges. Persisted
+	// so replay/hydration can render user steering as user speech
+	// (issue #24). Empty on non-steering turns.
+	SteeringSource string `json:"steering_source,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

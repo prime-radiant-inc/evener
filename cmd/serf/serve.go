@@ -506,9 +506,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		return getSession().ResolveSandboxEscalation(id, approve)
 	})
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
-	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
+	// The steer RPC carries human-sent steering, so it takes the user-sourced
+	// entry points: UIs render it as a user message, not a system steering
+	// divider (issue #24).
+	srv.SetSteerFunc(func(text string) { getSession().SteerFromUser(text) })
 	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) {
-		getSession().SteerWithImages(text, images)
+		getSession().SteerFromUserWithImages(text, images)
 	})
 	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
 	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {

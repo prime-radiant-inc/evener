@@ -1243,10 +1243,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteeringForTurn() {
-		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-	}
+	s.injectDrainedSteering()
 	return nil
 }
 
@@ -1283,10 +1280,7 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 	s.appendTurn(schema.TurnSteering, llm.User(input))
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteeringForTurn() {
-		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-	}
+	s.injectDrainedSteering()
 }
 
 // acceptNotificationInput records a job-completion notification turn at the
@@ -1365,10 +1359,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
-	for _, msg := range s.drainSteeringForTurn() {
-		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-	}
+	s.injectDrainedSteering()
 	return true
 }
 

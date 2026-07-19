@@ -1680,6 +1680,15 @@
           this.appendSystemLine(data.text || data.message || "");
           break;
         case "STEERING_INJECTED":
+          // User-sent steering (the steer button, or queued user input
+          // drained as steering) is the human speaking mid-turn: render it as
+          // a user message, images included, not as a system steering
+          // divider (issue #24). Daemon/system steering (no source) keeps the
+          // classified treatment below.
+          if (data && data.source === "user") {
+            this.appendUserMessage(data.text || "", null, data.images || []);
+            break;
+          }
           this.appendSteeringMessage(data.text || imagePlaceholderForCount((data.images || []).length));
           break;
         case "SESSION_END":

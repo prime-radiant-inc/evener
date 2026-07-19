@@ -652,7 +652,11 @@
       return [["USER_INPUT", event]];
     }
     if (type === "steering") {
-      return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
+      const steering = { text: item.text || "", images: item.images || [] };
+      // User-sent steering keeps its provenance through hydration so reload
+      // renders it as a user message like the live path does (issue #24).
+      if (item.source) steering.source = item.source;
+      return [["STEERING_INJECTED", steering]];
     }
     if (type === "systemMessage") {
       if (!item.text && !item.description) return [];
@@ -1014,7 +1018,13 @@
       if (params.cause) payload.cause = params.cause;
       return [["WARNING", payload]];
     }
-    if (method === "serf/steering/injected") return [["STEERING_INJECTED", { text: params.text || "", images: params.images || [] }]];
+    if (method === "serf/steering/injected") {
+      const steering = { text: params.text || "", images: params.images || [] };
+      // source:"user" marks human-sent steering; the renderer branches on it
+      // to draw a user message instead of a system steering divider (issue #24).
+      if (params.source) steering.source = params.source;
+      return [["STEERING_INJECTED", steering]];
+    }
     if (method === "serf/job/started") return [["JOB_STARTED", params.job || params]];
     if (method === "serf/job/finished") return [["JOB_FINISHED", params.job || params]];
     return [];

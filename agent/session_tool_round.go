@@ -354,14 +354,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		drainedSteering := s.drainSteeringForTurn()
-		if len(drainedSteering) > 0 {
+		if s.hasPendingSteering() {
 			yieldToObserverCallback = false
 		}
-		for _, msg := range drainedSteering {
-			s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-			s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-		}
+		s.injectDrainedSteering()
 	}); abortErr != nil {
 		return false, abortErr
 	}
