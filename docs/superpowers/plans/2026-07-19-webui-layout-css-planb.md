@@ -1334,7 +1334,6 @@ assert(!/text-transform:\s*uppercase/.test(css), "no ALL-CAPS label treatment an
 // Radius literals: only 0 (square), the two tokens, and the one documented
 // squircle (30%, its own shape) may remain.
 const literals = css.match(/border-radius:\s*[^v][^;]*/g) || [];
-const allowed = /^border-radius:\s*(0;|0\s|50%;|30%|var\()/;
 const bad = literals.filter((l) => !/border-radius:\s*var\(--radius-(md|pill)\)/.test(l)
   && !/^border-radius:\s*0[;\s]/.test(l)
   && !/30%/.test(l));
