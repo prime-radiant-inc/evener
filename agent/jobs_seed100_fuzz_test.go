@@ -201,7 +201,7 @@ func seed100Nested(t *testing.T) {
 	if owner, rec := root.ownerJobManagerFor(forwarded.JobID); owner != child.jobManager || rec == nil {
 		t.Fatalf("nested owner = %p, %+v", owner, rec)
 	}
-	if jobs, err := root.walkDescendantJobs(listFilter{Limit: 1}); err != nil || len(jobs) != 1 {
+	if jobs, _, err := root.walkDescendantJobs(listFilter{Limit: 1}); err != nil || len(jobs) != 1 {
 		t.Fatalf("descendant walk = %v, %v", jobs, err)
 	}
 	_, _, _, _, _ = root.resolveDescendantJobOwner(forwarded.JobID)

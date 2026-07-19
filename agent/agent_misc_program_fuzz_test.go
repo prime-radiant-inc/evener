@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -25,6 +26,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -149,18 +151,18 @@ func miscContinuationAndCounterProgram(t *testing.T) {
 	}
 
 	counter := newTreeCounter(0)
-	for i := int64(0); i < counter.cap; i++ {
-		if !counter.reserve() {
+	for i := int64(0); i < counter.limit; i++ {
+		if !counter.reserve(slotKindJob) {
 			t.Fatalf("reservation %d rejected", i)
 		}
 	}
-	if counter.reserve() {
+	if counter.reserve(slotKindJob) {
 		t.Fatal("counter exceeded capacity")
 	}
 	for counter.n.Load() > 0 {
-		counter.release()
+		counter.releaseKind(slotKindJob)
 	}
-	if slot, ok := (&Session{}).reserveTreeSlot(); !ok || slot != nil {
+	if slot, ok := (&Session{}).reserveTreeSlot(slotKindJob); !ok || slot != nil {
 		t.Fatalf("unbounded reservation = %#v, %v", slot, ok)
 	}
 	releasePreparedTreeSlot(nil)
@@ -227,13 +229,27 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The grants path validates session ids (identifier.ValidateSessionID), so
+	// the fixture must mint real ones — human-readable stand-ins are skipped.
+	workerID, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerA, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	observerB, err := identifier.NewSessionID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	events := []jobstore.Event{
 		{Kind: jobstore.EventJobStarted, JobID: "good", Type: jobstore.JobDelegate},
-		{Kind: jobstore.EventJobSessionAssigned, JobID: "good", TranscriptRef: encodeRef("", "worker")},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: "observer-b"},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: "observer-a"},
+		{Kind: jobstore.EventJobSessionAssigned, JobID: "good", TranscriptRef: encodeRef("", workerID)},
+		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: observerB},
+		{Kind: jobstore.EventWatchReadGrant, JobID: "good", ObserverSessionID: observerA},
 		{Kind: jobstore.EventJobStarted, JobID: "shell", Type: jobstore.JobShell},
-		{Kind: jobstore.EventWatchReadGrant, JobID: "shell", ObserverSessionID: "ignored"},
+		{Kind: jobstore.EventWatchReadGrant, JobID: "shell", ObserverSessionID: observerA},
 	}
 	if err := store.AppendBatch(events); err != nil {
 		t.Fatal(err)
@@ -246,7 +262,9 @@ func miscStatusAndPersistenceProgram(t *testing.T, token string) {
 		t.Fatalf("historical records = %#v, %v", records, err)
 	}
 	grants, err := LoadSessionObserverGrants(dir, "valid")
-	if err != nil || strings.Join(grants["worker"], ",") != "observer-a,observer-b" {
+	wantObservers := []string{observerA, observerB}
+	sort.Strings(wantObservers)
+	if err != nil || strings.Join(grants[workerID], ",") != strings.Join(wantObservers, ",") {
 		t.Fatalf("observer grants = %#v, %v", grants, err)
 	}
 

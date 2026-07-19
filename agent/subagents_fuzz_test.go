@@ -516,7 +516,7 @@ func FuzzSafz_DriveNotificationTurn(f *testing.F) {
 		// prove the decline, then return every slot.
 		var held []*treeReservation
 		for {
-			r, ok := parent.reserveTreeSlot()
+			r, ok := parent.reserveTreeSlot(slotKindJob)
 			if !ok {
 				break
 			}
