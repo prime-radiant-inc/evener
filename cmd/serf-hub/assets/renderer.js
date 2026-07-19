@@ -3442,9 +3442,16 @@
       for (const item of items) {
         const line = document.createElement("div");
         line.className = "sub-preview-line";
-        const label = item.toolName ? item.toolName : (item.type === "agentMessage" ? "assistant" : item.type || "item");
-        const text = item.description || item.text || item.output || item.status || "";
-        line.textContent = label + (text ? ": " + clip(text, 100) : "");
+        if (item.toolName) {
+          // Tool lines render just the call's purpose (#26); with no purpose,
+          // the bare tool name — never an output dump behind a "tool:" prefix.
+          const purpose = typeof item.description === "string" ? item.description.trim() : "";
+          line.textContent = purpose ? clip(purpose, 100) : item.toolName;
+        } else {
+          const label = item.type === "agentMessage" ? "assistant" : item.type || "item";
+          const text = item.description || item.text || item.output || item.status || "";
+          line.textContent = label + (text ? ": " + clip(text, 100) : "");
+        }
         box.appendChild(line);
       }
       if (data && data.truncated) {
@@ -3563,8 +3570,11 @@
       if (!item) return null;
       const tool = item.toolName || item.tool_name;
       if (tool) {
-        const detail = item.description || item.command || item.target || item.query || "";
-        return clip(detail ? tool + ": " + detail : tool, 80);
+        // Render just the tool call's purpose (#26) — no "toolname:" prefix,
+        // no raw command/target dump. With no purpose the honest fallback is
+        // the bare tool name.
+        const purpose = typeof item.description === "string" ? item.description.trim() : "";
+        return clip(purpose || tool, 80);
       }
       const type = String(item.type || "");
       if (type === "agentMessage" || type === "assistantText" || type === "reasoning") return "responding";

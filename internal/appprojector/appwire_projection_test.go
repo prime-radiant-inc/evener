@@ -1850,6 +1850,65 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 	return notificationTurn(t, items, method).ID
 }
 
+// Issue #26: live tool frames feed the web UI's inline subagent activity line,
+// which renders the tool call's purpose. The started item carries the purpose
+// in Description; the completed item must carry it too (derived from the
+// call's arguments, mirroring apptranscript.ToolIntentFromArguments) so the
+// activity line stays on the purpose when the tool finishes.
+func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_1",
+		ArgumentsJSON: `{"command":"go test ./...","purpose":"run the full test suite"}`,
+		Description:   "run the full test suite",
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_1",
+		Output:   "ok",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "run the full test suite" {
+		t.Fatalf("completed tool item should carry the purpose-derived Description, got %q", item.Description)
+	}
+
+	// The intent field is honored too, matching ToolIntentFromArguments.
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "grep",
+		CallID:        "call_2",
+		ArgumentsJSON: `{"query":"retry","intent":"trace the retry callers"}`,
+	}})
+	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "grep",
+		CallID:   "call_2",
+		Output:   "3 matches",
+	}})
+	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "trace the retry callers" {
+		t.Fatalf("completed tool item should derive Description from the intent field, got %q", item.Description)
+	}
+
+	// No purpose in the arguments: Description stays empty rather than
+	// falling back to a raw command dump.
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_3",
+		ArgumentsJSON: `{"command":"ls -la"}`,
+	}})
+	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_3",
+		Output:   "...",
+	}})
+	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Description != "" {
+		t.Fatalf("purpose-less tool call should have empty Description, got %q", item.Description)
+	}
+}
+
 func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
 	t.Helper()
 	for _, item := range items {
