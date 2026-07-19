@@ -270,7 +270,7 @@ type drainAsSteerRequest struct {
 // (review F1).
 type promoteQueuedRequest struct {
 	Index   int    `json:"index"`
-	EntryID string `json:"entryId,omitempty"`
+	EntryID string `json:"entry_id,omitempty"`
 }
 
 // cancelQueuedRequest is the JSON body for POST /s/<id>/cancel-queued
@@ -284,7 +284,7 @@ type promoteQueuedRequest struct {
 // index (review F1).
 type cancelQueuedRequest struct {
 	Index   int    `json:"index"`
-	EntryID string `json:"entryId,omitempty"`
+	EntryID string `json:"entry_id,omitempty"`
 }
 
 // cancelQueuedResponse is the JSON body returned by POST
@@ -294,8 +294,8 @@ type cancelQueuedRequest struct {
 // restored by an edit, so the UI can warn instead of silently dropping
 // them.
 type cancelQueuedResponse struct {
-	RemovedText   string `json:"removedText"`
-	RemovedImages int    `json:"removedImages,omitempty"`
+	RemovedText   string `json:"removed_text"`
+	RemovedImages int    `json:"removed_images,omitempty"`
 }
 
 type forkRequest struct {

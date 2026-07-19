@@ -108,8 +108,8 @@ async function testPromotePostsIndexAndEntryId() {
     "expected one /promote-queued call, got " + JSON.stringify(calls));
   const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
   pass(body.index === 1, "expected body.index=1, got " + JSON.stringify(body));
-  pass(body.entryId === "q_2_bbb",
-    "expected body.entryId=q_2_bbb (review F1 identity), got " + JSON.stringify(body));
+  pass(body.entry_id === "q_2_bbb",
+    "expected body.entry_id=q_2_bbb (review F1 identity), got " + JSON.stringify(body));
 
   // No local mirror: the row stays until the daemon's authoritative
   // thread/queueChanged lands with the promoted entry removed.
@@ -130,7 +130,7 @@ async function testPromoteUsesFreshIdAfterReRender() {
   btn.click();
   await wait(20);
   const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
-  pass(body.index === 0 && body.entryId === "q_1_aaa",
+  pass(body.index === 0 && body.entry_id === "q_1_aaa",
     "expected promote of re-rendered row to carry its current id, got " + JSON.stringify(body));
 }
 

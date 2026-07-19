@@ -87,7 +87,7 @@ func postCancel(web *WebServer, route, body string) *httptest.ResponseRecorder {
 func TestWebCancelQueuedWorksWithRealisticMidTurnCaps(t *testing.T) {
 	web, source := newCancelHarness()
 	source.removedText = "mid-turn text"
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":0,"entryId":"q_1_aaa"}`)
+	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":0,"entry_id":"q_1_aaa"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s, want 200 with realistic mid-turn caps {Send:false,Steer:true,Queue:true}", rec.Code, rec.Body.String())
 	}
@@ -100,7 +100,7 @@ func TestWebCancelQueuedRelaysIndexAndEchoesRemoval(t *testing.T) {
 	web, source := newCancelHarness()
 	source.removedText = "the full\nmulti-line text"
 	source.removedImages = 2
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":1,"entryId":"q_7_abc"}`)
+	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":1,"entry_id":"q_7_abc"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

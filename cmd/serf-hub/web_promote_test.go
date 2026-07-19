@@ -73,7 +73,7 @@ func postPromote(web *WebServer, route, body string) *httptest.ResponseRecorder 
 
 func TestWebPromoteQueuedRelaysIndex(t *testing.T) {
 	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":1,"entryId":"q_7_abc"}`)
+	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":1,"entry_id":"q_7_abc"}`)
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}

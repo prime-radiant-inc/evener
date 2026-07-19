@@ -6607,7 +6607,7 @@
           const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/promote-queued", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ index: idx, entryId: entryId || "" }),
+            body: JSON.stringify({ index: idx, entry_id: entryId || "" }),
           });
           if (!resp.ok) {
             const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -6635,14 +6635,18 @@
         const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/cancel-queued", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ index: idx, entryId: entryId || "" }),
+          body: JSON.stringify({ index: idx, entry_id: entryId || "" }),
         });
         if (!resp.ok) {
           const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
           this.appendBanner("error", failLabel + ": " + detail, { source: "hub", title: "Hub cancel error" });
           return null;
         }
-        return await resp.json();
+        // REST speaks snake_case (repo naming gate); normalize to the
+        // camelCase shape the appwire path returns so downstream reads
+        // have a single shape.
+        const data = await resp.json();
+        return { removedText: data.removed_text || "", removedImages: data.removed_images || 0 };
       } catch (err) {
         this.appendBanner("error", failLabel + ": " + err.message, { source: "hub", title: "Hub cancel error" });
         return null;

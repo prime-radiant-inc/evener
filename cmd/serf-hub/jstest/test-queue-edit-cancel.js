@@ -49,7 +49,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
 const { window } = dom;
 window.marked = { parse: (t) => t };
 
-let fetchBehavior = { ok: true, status: 200, body: { removedText: "", removedImages: 0 } };
+let fetchBehavior = { ok: true, status: 200, body: { removed_text: "", removed_images: 0 } };
 let deferredFetchSettle = null;
 const fetchLog = [];
 window.fetch = (url, opts) => {
@@ -126,7 +126,7 @@ async function testRowsHaveEditAndCancelButtons() {
 
 async function testCancelPostsIndexAndEntryId() {
   fetchLog.length = 0;
-  fetchBehavior = { ok: true, status: 200, body: { removedText: "and then verify the regression", removedImages: 0 } };
+  fetchBehavior = { ok: true, status: 200, body: { removed_text: "and then verify the regression", removed_images: 0 } };
   const btn = list.children[1].querySelector("[data-cancel-index]");
   btn.click();
   await wait(20);
@@ -136,8 +136,8 @@ async function testCancelPostsIndexAndEntryId() {
     "expected one /cancel-queued call, got " + JSON.stringify(calls));
   const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
   pass(body.index === 1, "expected body.index=1, got " + JSON.stringify(body));
-  pass(body.entryId === "q_2_bbb",
-    "expected body.entryId=q_2_bbb (review F1 identity), got " + JSON.stringify(body));
+  pass(body.entry_id === "q_2_bbb",
+    "expected body.entry_id=q_2_bbb (review F1 identity), got " + JSON.stringify(body));
 
   // No local mirror: the row stays until the daemon's authoritative
   // thread/queueChanged lands with the canceled entry removed.
@@ -171,7 +171,7 @@ async function testEditRestoresFullTextPreservingComposer() {
   composer.dispatchEvent(new window.Event("input", { bubbles: true }));
 
   fetchLog.length = 0;
-  fetchBehavior = { ok: true, status: 200, body: { removedText: "line one\nline two\nline three", removedImages: 0 } };
+  fetchBehavior = { ok: true, status: 200, body: { removed_text: "line one\nline two\nline three", removed_images: 0 } };
   list.children[0].querySelector("[data-edit-index]").click();
   await wait(20);
 
@@ -188,7 +188,7 @@ async function testEditRestoresFullTextPreservingComposer() {
   pass(calls.length === 1 && calls[0].includes("/s/01TEST/cancel-queued"),
     "edit should cancel the queued copy, got " + JSON.stringify(calls));
   const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
-  pass(body.index === 0 && body.entryId === "q_4_ddd",
+  pass(body.index === 0 && body.entry_id === "q_4_ddd",
     "edit cancel should carry index 0 + q_4_ddd, got " + JSON.stringify(body));
   pass(window.document.activeElement === composer, "composer should be focused after edit");
 
@@ -233,7 +233,7 @@ async function testEditFailureKeepsTextAndIsHonest() {
 async function testEditWarnsAboutDroppedImages() {
   primeQueue(["look at these screenshots"], ["q_7_ggg"], ["look at these screenshots"]);
   fetchLog.length = 0;
-  fetchBehavior = { ok: true, status: 200, body: { removedText: "look at these screenshots", removedImages: 2 } };
+  fetchBehavior = { ok: true, status: 200, body: { removed_text: "look at these screenshots", removed_images: 2 } };
   const before = bannerTexts().length;
   list.children[0].querySelector("[data-edit-index]").click();
   await wait(20);
@@ -255,7 +255,7 @@ async function testEditImageOnlyEntryDisabled() {
   const editBtn = list.children[0].querySelector("[data-edit-index]");
   pass(editBtn.disabled === true, "edit should be disabled for an image-only queued message");
   fetchLog.length = 0;
-  fetchBehavior = { ok: true, status: 200, body: { removedText: "", removedImages: 1 } };
+  fetchBehavior = { ok: true, status: 200, body: { removed_text: "", removed_images: 1 } };
   editBtn.click();
   await wait(20);
   pass(fetchLog.length === 0, "disabled edit must not call the daemon, got " + fetchLog.length + " calls");
@@ -281,7 +281,7 @@ async function testEditWithoutTextsDegradesHonestly() {
   pass(news.some(t => /not available/i.test(t)),
     "expected an honest 'edit not available' banner; new banners: " + news.join(", "));
   // Cancel is unaffected by the missing texts.
-  fetchBehavior = { ok: true, status: 200, body: { removedText: "only the first line is shown", removedImages: 0 } };
+  fetchBehavior = { ok: true, status: 200, body: { removed_text: "only the first line is shown", removed_images: 0 } };
   list.children[0].querySelector("[data-cancel-index]").click();
   await wait(20);
   pass(fetchLog.length === 1, "cancel should still work without texts, got " + fetchLog.length + " calls");
