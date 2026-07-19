@@ -1,0 +1,22 @@
+{{define "workspace_empty"}}
+<div class="empty-state empty-state-workspace">
+  <div class="welcome-wordmark">serf<span class="welcome-dot">.</span></div>
+  {{if .Rows}}
+  <p class="empty-state-body">Jump back in, or start something new.</p>
+  <ul class="launchpad-list">
+    {{range .Rows}}
+    <li><a class="launchpad-row" href="{{.Href}}" hx-get="{{.PartialHref}}" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="{{.Href}}">
+      <span class="launchpad-title">{{.Title}}</span>
+      <span class="launchpad-meta">{{if .Project}}<span class="launchpad-project">{{.Project}}</span> · {{end}}<span class="launchpad-age">{{.Age}}</span></span>
+    </a></li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="empty-state-body">Spawn a session, or pick one from the sidebar.</p>
+  {{end}}
+  <div class="empty-state-actions">
+    <a class="btn btn-primary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
+    <button class="btn btn-ghost" type="button" data-search-trigger>{{if .AllArchived}}Search all sessions{{else}}Search <kbd>⌘K</kbd>{{end}}</button>
+  </div>
+</div>
+{{end}}

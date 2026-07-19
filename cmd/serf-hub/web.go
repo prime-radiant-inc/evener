@@ -2,12 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +27,7 @@ type WebServer struct {
 	cfg                 hubcore.WebConfig
 	appTmpl             *template.Template
 	workspaceTmpl       *template.Template
+	workspaceEmptyTmpl  *template.Template
 	threadTmpl          *template.Template
 	spawnTmpl           *template.Template
 	inputStripTmpl      *template.Template
@@ -71,6 +72,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
+	workspaceEmptyTmpl := template.Must(template.New("workspace_empty.html").ParseFS(templatesRoot(), "templates/partials/workspace_empty.html"))
 	threadTmpl := template.Must(template.New("thread.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/thread.html",
 		"templates/partials/workspace.html",
@@ -102,7 +104,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	}
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl,
-		workspaceTmpl: workspaceTmpl, threadTmpl: threadTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
+		workspaceTmpl: workspaceTmpl, workspaceEmptyTmpl: workspaceEmptyTmpl, threadTmpl: threadTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		projectSettingsTmpl: projectSettingsTmpl,
 		settingsTmpls:       settingsTmpls,
 		sources:             sources,
@@ -371,14 +373,52 @@ func splitProviderModel(raw string) (string, string) {
 	return provider, model
 }
 
+type launchpadRow struct {
+	ID, Href, PartialHref, Title, Project, Age string
+}
+
+type workspaceEmptyData struct {
+	Rows        []launchpadRow
+	AllArchived bool
+}
+
+// handleWorkspaceEmpty renders the home launchpad: up to 8 sessions across
+// projects from the Current+Recent tiers, most-recently-touched first. No
+// live status dots — the home page has no appwire connection, so age-only
+// markup can't go stale.
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
+	tree, _ := s.memoTree(r.Context())
+	var sessions []hubcore.TreeNode
+	for _, p := range tree.Projects {
+		if p.IsArchived || p.IsTestRun {
+			continue
+		}
+		for _, n := range append(append([]hubcore.TreeNode{}, p.Current...), p.Recent...) {
+			if n.Kind == "session" || n.Kind == "fork" {
+				sessions = append(sessions, n)
+			}
+		}
+	}
+	sort.Slice(sessions, func(i, j int) bool { return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt) })
+	if len(sessions) > 8 {
+		sessions = sessions[:8]
+	}
+	data := workspaceEmptyData{}
+	for _, n := range sessions {
+		title := n.Title
+		if title == "" {
+			title = "Untitled session"
+		}
+		data.Rows = append(data.Rows, launchpadRow{
+			ID: n.ID, Href: "/s/" + n.ID, PartialHref: "/_partials/s/" + n.ID + "/workspace",
+			Title: title, Project: n.Project, Age: n.Age,
+		})
+	}
+	// Every session archived (or none): the quiet wordmark welcome is honest;
+	// when archived sessions exist the search affordance says so.
+	data.AllArchived = len(data.Rows) == 0 && (len(tree.Projects) > 0 || len(tree.ArchivedProjects) > 0)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
-  <div class="welcome-wordmark">serf<span class="welcome-dot">.</span></div>
-  <p class="empty-state-body">Spawn a session, or pick one from the sidebar.</p>
-  <div class="empty-state-actions">
-    <a class="btn btn-primary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
-    <button class="btn btn-ghost" type="button" data-search-trigger>Search <kbd>⌘K</kbd></button>
-  </div>
-</div>`)
+	if err := s.workspaceEmptyTmpl.ExecuteTemplate(w, "workspace_empty", data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
 }
