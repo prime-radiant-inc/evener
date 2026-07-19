@@ -67,16 +67,16 @@ type treeCounter struct {
 	n      atomic.Int64
 	jobs   atomic.Int64
 	drives atomic.Int64
-	cap    int64
+	limit  int64
 }
 
 // newTreeCounter returns a treeCounter with the given cap; cap <= 0 selects
 // the default (defaultMaxConcurrentDelegateTurns).
-func newTreeCounter(cap int64) *treeCounter {
-	if cap <= 0 {
-		cap = defaultMaxConcurrentDelegateTurns
+func newTreeCounter(limit int64) *treeCounter {
+	if limit <= 0 {
+		limit = defaultMaxConcurrentDelegateTurns
 	}
-	return &treeCounter{cap: cap}
+	return &treeCounter{limit: limit}
 }
 
 // reserve atomically increments the counter if below cap, attributing the slot
@@ -85,7 +85,7 @@ func newTreeCounter(cap int64) *treeCounter {
 func (c *treeCounter) reserve(kind slotKind) bool {
 	for {
 		cur := c.n.Load()
-		if cur >= c.cap {
+		if cur >= c.limit {
 			return false
 		}
 		if c.n.CompareAndSwap(cur, cur+1) {
@@ -125,8 +125,8 @@ func decClamped(v *atomic.Int64) {
 // occupancy reports the current slot usage split by holder kind plus the cap.
 // Reads are approximate under concurrent reserve/release; the tuple is
 // diagnostic, not authoritative.
-func (c *treeCounter) occupancy() (total, jobs, drives, cap int64) {
-	return c.n.Load(), c.jobs.Load(), c.drives.Load(), c.cap
+func (c *treeCounter) occupancy() (total, jobs, drives, limit int64) {
+	return c.n.Load(), c.jobs.Load(), c.drives.Load(), c.limit
 }
 
 // reserveTreeSlot claims a tree-counter slot for a running delegate turn on this
@@ -150,12 +150,12 @@ func (s *Session) reserveTreeSlot(kind slotKind) (*treeReservation, bool) {
 // counter (not the spawn counter's per-kind tally, which drive turns no
 // longer touch) keeps the tuple honest — a drive-saturated tree is visible.
 func (s *Session) treeCapacityErrorFor() error {
-	_, jobs, _, cap := s.treeCounter.occupancy()
+	_, jobs, _, limit := s.treeCounter.occupancy()
 	var drives int64
 	if s.driveCounter != nil {
 		drives, _, _, _ = s.driveCounter.occupancy()
 	}
-	return &treeCapacityError{cap: cap, jobs: jobs, drives: drives}
+	return &treeCapacityError{cap: limit, jobs: jobs, drives: drives}
 }
 
 // releasePreparedTreeSlot returns the tree-counter slot a prepared spawn reserved

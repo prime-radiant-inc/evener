@@ -1015,7 +1015,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 			sub.mu.Lock()
 			sub.driving = false
 			sub.mu.Unlock()
-			s.redriveChildIfAttentionRemains(sub, childSess, driveCtx)
+			s.redriveChildIfAttentionRemains(driveCtx, sub, childSess)
 		}()
 		defer treeSlot.release()
 		_, _ = childSess.ProcessInputKind(driveCtx, "", nil, EntryNotification)
@@ -1034,7 +1034,7 @@ func (s *Session) driveSubagentNotificationTurn(sub *subagent) bool {
 // peek==0 && !hasPendingWatchSends. The re-drive is paced: it waits
 // driveRedriveMinInterval (or drive cancel) before launching so a child whose
 // attention never drains cannot hot-loop its budget slot.
-func (s *Session) redriveChildIfAttentionRemains(sub *subagent, childSess *Session, driveCtx context.Context) {
+func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *subagent, childSess *Session) {
 	stopGated := s.childStopGated(childSess.id)
 	if hook := s.cfg.testOnly.subagentStopGated; hook != nil {
 		if stopped, handled := hook(s, childSess.id); handled {

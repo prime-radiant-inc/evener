@@ -524,9 +524,9 @@ func TestTreeCounterOccupancyByKind(t *testing.T) {
 	if !c.reserve(slotKindDrive) {
 		t.Fatal("drive reserve failed")
 	}
-	total, jobs, drives, cap := c.occupancy()
-	if total != 2 || jobs != 1 || drives != 1 || cap != 4 {
-		t.Fatalf("occupancy = (%d, %d, %d, %d), want (2, 1, 1, 4)", total, jobs, drives, cap)
+	total, jobs, drives, limit := c.occupancy()
+	if total != 2 || jobs != 1 || drives != 1 || limit != 4 {
+		t.Fatalf("occupancy = (%d, %d, %d, %d), want (2, 1, 1, 4)", total, jobs, drives, limit)
 	}
 	c.releaseKind(slotKindJob)
 	c.releaseKind(slotKindJob) // a stray double release must not drive jobs negative
@@ -688,8 +688,8 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 // context is done, modeling a hung provider call that only a context cancel
 // can interrupt.
 type firstCompleteThenBlockAdapter struct {
-	mu   sync.Mutex
-	i    int
+	mu sync.Mutex
+	i  int
 }
 
 func (a *firstCompleteThenBlockAdapter) Name() string { return "openai" }
@@ -795,7 +795,7 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sess.redriveChildIfAttentionRemains(coordSub, coordSub.sess, context.Background())
+		sess.redriveChildIfAttentionRemains(context.Background(), coordSub, coordSub.sess)
 	}()
 	// Inside the pacing interval, no drive may be in flight.
 	time.Sleep(100 * time.Millisecond)
@@ -810,7 +810,6 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 		t.Fatalf("paced re-drive left %d notifications undrained", got)
 	}
 }
-
 
 // TestRegressionIdleDelegatesNeverBlockSpawn reproduces the 2026-07-19 field
 // failure (session 033rRr4hCSjZLuIs7XT5Nw): a session with a large fleet of

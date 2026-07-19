@@ -963,7 +963,7 @@ func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
 	if s == nil || s.treeCounter == nil {
 		return nil
 	}
-	total, jobs, _, cap := s.treeCounter.occupancy()
+	total, jobs, _, limit := s.treeCounter.occupancy()
 	var drives int64
 	if s.driveCounter != nil {
 		drives, _, _, _ = s.driveCounter.occupancy()
@@ -971,7 +971,7 @@ func turnSlotOccupancyOf(s *Session) *turnSlotOccupancy {
 	if total == 0 && drives == 0 {
 		return nil
 	}
-	return &turnSlotOccupancy{InUse: total, Cap: cap, Jobs: jobs, Drives: drives}
+	return &turnSlotOccupancy{InUse: total, Cap: limit, Jobs: jobs, Drives: drives}
 }
 
 var loadDelegatesForJobList = func(jm *jobManager) (map[string]*jobstore.DelegateRecord, error) {
@@ -1261,9 +1261,9 @@ type jobOutputMatch struct {
 // job_list while any delegate-turn slot is held: spawn-budget total in use,
 // cap, and jobs, plus drive turns in flight on the separate drive budget.
 type turnSlotOccupancy struct {
-	InUse  int64 `json:"in_use"`
-	Cap    int64 `json:"cap"`
-	Jobs   int64 `json:"jobs"`
+	InUse int64 `json:"in_use"`
+	Cap   int64 `json:"cap"`
+	Jobs  int64 `json:"jobs"`
 	// Drives is the live occupancy of the separate drive-turn budget
 	// (driveCounter); drive turns do not hold spawn-budget slots.
 	Drives int64 `json:"drive_turns"`

@@ -43,17 +43,17 @@ var errSubagentManagerClosing = errors.New("session is closed")
 var restoreSideEffectsWait = (*sync.Cond).Wait
 
 // newSubagentManager creates a manager that captures the parent session's emit
-// closure for forwarding subagent lifecycle events. cap bounds retained terminal
-// records; cap <= 0 selects the default (defaultMaxRetainedTerminal).
-func newSubagentManager(emit func(events.EventKind, events.EventData), cap int) *subagentManager {
-	if cap <= 0 {
-		cap = defaultMaxRetainedTerminal
+// closure for forwarding subagent lifecycle events. limit bounds retained
+// terminal records; limit <= 0 selects the default (defaultMaxRetainedTerminal).
+func newSubagentManager(emit func(events.EventKind, events.EventData), limit int) *subagentManager {
+	if limit <= 0 {
+		limit = defaultMaxRetainedTerminal
 	}
 	m := &subagentManager{
 		subs:                map[string]*subagent{},
 		reconstructing:      map[string]*subagentReconstruction{},
 		emit:                emit,
-		maxRetainedTerminal: cap,
+		maxRetainedTerminal: limit,
 	}
 	m.restoreSideEffectsCond = sync.NewCond(&m.mu)
 	return m
