@@ -747,3 +747,68 @@ func TestProjectTurnModelSwitchMarkerEmptyTextOmitted(t *testing.T) {
 		t.Fatalf("items=%+v, want nil for blank marker text", out)
 	}
 }
+
+// TestProjectTurnStampsToolItemTimestamps (issue #37): a replayed tool row's
+// hover meta (timestamp · runtime) must come from REAL recorded times. The
+// transcript stamps every entry with when it was recorded, so an assistant
+// entry's tool-call item carries StartedAt (when the call was issued) and a
+// tool-results entry's item carries CompletedAt (when the result landed).
+// Zero timestamps stay unset — no epoch-0 fakes.
+func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
+	start := time.Unix(1_700_000_000, 0).UTC()
+	end := start.Add(3 * time.Second)
+	toolNames := map[string]string{}
+
+	items := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind:      schema.TurnAssistant,
+		Timestamp: start,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: []byte(`{"path":"README.md"}`),
+			},
+		}}},
+	}, toolNames, nil, nil)
+	if len(items) != 1 || items[0].Type != "commandExecution" {
+		t.Fatalf("tool start items=%+v", items)
+	}
+	if items[0].StartedAt == nil || *items[0].StartedAt != start.Unix() {
+		t.Fatalf("tool call item StartedAt=%v, want %d (entry timestamp)", items[0].StartedAt, start.Unix())
+	}
+
+	items = ProjectTurn("turn_2", 2, schema.Turn{
+		Kind:      schema.TurnToolResults,
+		Timestamp: end,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_read",
+				Content:    "ok",
+			},
+		}}},
+	}, toolNames, nil, nil)
+	if len(items) != 1 || items[0].Type != "commandExecution" {
+		t.Fatalf("tool result items=%+v", items)
+	}
+	if items[0].CompletedAt == nil || *items[0].CompletedAt != end.Unix() {
+		t.Fatalf("tool result item CompletedAt=%v, want %d (entry timestamp)", items[0].CompletedAt, end.Unix())
+	}
+
+	// A zero entry timestamp mints no stamps.
+	items = ProjectTurn("turn_3", 3, schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_notime",
+				Name:      "read_file",
+				Arguments: []byte(`{"path":"x"}`),
+			},
+		}}},
+	}, toolNames, nil, nil)
+	if len(items) != 1 || items[0].StartedAt != nil {
+		t.Fatalf("zero-timestamp tool call item StartedAt=%v, want nil", items[0].StartedAt)
+	}
+}

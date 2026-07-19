@@ -2535,7 +2535,7 @@ button.composer-model-value .caret { color: var(--ink-3); }
 .think.think-tier-short .pv { color: var(--ink-2); }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-normal); color: var(--ink-2); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
+.tool-call { position: relative; margin: 0 0 var(--space-3) 0; font-family: var(--font-sans); font-size: var(--text-base); line-height: var(--leading-normal); color: var(--ink-2); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 /* Collapsed cluster summary (mockup #6 alt A): while the cluster is live the
@@ -2606,10 +2606,16 @@ button.composer-model-value .caret { color: var(--ink-3); }
 }
 /* Timestamp · runtime: quiet on demand, not ambient noise. Hidden at rest and
    revealed on row hover / :focus-within (keyboard). opacity keeps the text in
-   the accessibility tree; touch devices reveal it via tap (sticky :hover). */
+   the accessibility tree; touch devices reveal it via tap (sticky :hover).
+   The meta is FIXED top-right of the row (position: absolute — issue #37):
+   out of the flex flow, it reserves no width and its reveal (or the runtime
+   landing at tool end) can never reflow the row's text, on any breakpoint. */
 .tool-call .tool-meta {
-  order: 2;
-  margin-left: auto;
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding-left: var(--space-3);
+  background: inherit;
   color: var(--ink-2);
   font-family: var(--font-sans);
   font-variant-numeric: tabular-nums;
@@ -4843,13 +4849,9 @@ details[open] > .diagnostic-detail-summary::after { transform: rotate(90deg); }
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
 
-  /* Compact phone layout removes per-row timing meta from the flow so it does
-     not reserve ~112px and squeeze command/path text into a narrow,
-     mid-word-wrapping column; a tap on the row (sticky :hover / focus) brings
-     it back for inspection. */
-  .tool-call .tool-meta { display: none; }
-  .tool-call:hover .tool-meta,
-  .tool-call:focus-within .tool-meta { display: inline; }
+  /* Compact phone layout needs no per-row timing-meta carve-out: the meta is
+     position:absolute on every breakpoint (issue #37), so it is already out
+     of the flow and a tap reveal (sticky :hover / focus) reflows nothing. */
 
   /* Phone reading scale (2026-07-11 round 2): the transcript follows the same
      one-size rule as desktop — flowing text --text-base, mono machine text

@@ -184,15 +184,22 @@ content with the occasional red ✕ standing out; you never scan past a wall of 
 the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
 card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ›` with the
 chevron at the right edge. A left-hung chevron offsets every row and ragged-edges the column; on the
-right it's a quiet "there's more." (On phones the timing meta is out of the flow entirely so
-commands and file paths get the full row width; a tap on the row brings it back.)
+right it's a quiet "there's more." (The timing meta is out of the flow on every
+breakpoint — fixed top-right — so commands and file paths always get the full row width; a
+hover, focus, or tap on the row brings the meta back.)
 
-**Timing metadata is on-demand.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
+**Timing metadata is on-demand — and honest.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
 `03:19:32 PM · 1ms`) and the per-turn badge (`.assistant-message .turn-meta`: duration ·
 tokens · cost) rest at `opacity: 0` and reveal on row hover, keyboard `:focus-within`, or tap
 (sticky `:hover`) on touch. `opacity` — never `display`/`visibility` — so they stay in the
-accessibility tree. A column of permanent clock stamps was ambient noise competing with the
-content; the data is one hover away, not gone. (This supersedes the 2026-07-01
+accessibility tree and revealing them reflows nothing. The meta is `position: absolute`,
+fixed to the row's top-right and out of the flex flow on every breakpoint, so neither the
+reveal nor the runtime landing at tool end can shift the row's text. The times themselves
+are **server truth or nothing** (issue #37): the hub stamps each tool item with the session
+event's own `startedAt`/`completedAt`/`durationMs` (live) or the transcript entry's recorded
+timestamp (replay), and the renderer shows no clock when none arrived — never a
+browser-wall-clock stand-in. A column of permanent clock stamps was ambient noise competing
+with the content; the data is one hover away, not gone. (This supersedes the 2026-07-01
 "always-visible" revert: the accessibility concern is answered by the a11y-tree +
 focus-within pairing, not by permanence.)
 
@@ -210,7 +217,8 @@ gutter (`--gutter`) is to its left (§3).
   Mono `--text-sm` whether primary (no purpose, target `--ink`) or demoted under a purpose
   (one truncated line, `--ink-3`, same x=0 column, no sub-indent) — dim color, not a
   smaller size, carries the demotion.
-- `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--ink-2`, hover/focus-reveal.
+- `.tool-meta` fixed top-right (`position: absolute`, out of flow): sans `--text-xs`
+  `tabular-nums`, `--ink-2`, hover/focus-reveal; server-stamped times only (issue #37).
 - `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
   boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
 

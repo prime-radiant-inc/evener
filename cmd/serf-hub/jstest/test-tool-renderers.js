@@ -687,8 +687,8 @@ await scenario("tool disclosure is inline, visible, and not a separate right-sid
   if (/\.tool-expand-btn\s*\{[^}]*order:\s*3/.test(styleSrc)) {
     return { ok: false, detail: "old right-column tool-expand-btn order:3 rule should be removed" };
   }
-  if (!/\.tool-call \.tool-meta\s*\{[^}]*margin-left:\s*auto/.test(styleSrc)) {
-    return { ok: false, detail: "tool metadata should remain right-side timing context" };
+  if (!/\.tool-call \.tool-meta\s*\{[^}]*position:\s*absolute/.test(styleSrc) || !/\.tool-call \.tool-meta\s*\{[^}]*right:\s*0/.test(styleSrc)) {
+    return { ok: false, detail: "tool metadata should remain right-side timing context (fixed top-right, issue #37)" };
   }
   if (!/\.notification-card-raw > summary::after/.test(styleSrc) || !/\.notification-card-raw > summary[\s\S]{0,400}justify-content:\s*space-between/.test(styleSrc)) {
     return { ok: false, detail: "non-tool card disclosures must keep their right chevrons" };
