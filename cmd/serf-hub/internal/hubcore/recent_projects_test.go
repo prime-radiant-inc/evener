@@ -19,7 +19,7 @@ func TestPastIndex_RecentProjectDirs_DedupesGlobalRecencyLastN(t *testing.T) {
 	idx.SeedForTest([]schema.SessionMeta{
 		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}},
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/beta"}},
-		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "  "}}, // blank — skipped
+		{ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "  "}},     // blank — skipped
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-4 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}}, // dup of /alpha, older — dropped
 		{ID: "02wMz5Txv733WHFsVy66SR", UpdatedAt: now.Add(-5 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/gamma"}},
 	})
