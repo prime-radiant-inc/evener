@@ -511,9 +511,27 @@ func isActionUnavailable(err error) bool {
 	return ok && wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
 }
 
+// validateForkRequest enforces the same defer_input + edited_message
+// validation as the RPC thread/fork path so the REST endpoints stay at
+// parity: the two are mutually exclusive, and a non-deferred fork requires
+// edited_message.
+func validateForkRequest(body forkRequest) error {
+	if body.DeferInput && strings.TrimSpace(body.EditedMessage) != "" {
+		return errors.New("edited_message and defer_input are mutually exclusive")
+	}
+	if !body.DeferInput && strings.TrimSpace(body.EditedMessage) == "" {
+		return errors.New("edited_message is required")
+	}
+	return nil
+}
+
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
 	var body forkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := validateForkRequest(body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -541,17 +559,22 @@ func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parent
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateForkRequest(body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	childID, _, err := s.forkSession(parentID, body)
+	childID, originalInput, err := s.forkSession(parentID, body)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	ref := hubapi.LocalRef(childID)
-	writeAPIJSON(w, http.StatusOK, hubapi.RefResponse{
-		Ref:       ref.String(),
-		HostID:    ref.HostID,
-		SessionID: ref.SessionID,
+	writeAPIJSON(w, http.StatusOK, hubapi.ForkResponse{
+		Ref:           ref.String(),
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		OriginalInput: originalInput,
 	})
 }
 
