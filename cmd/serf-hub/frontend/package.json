@@ -1,8 +1,6 @@
 {
   "name": "serf-hub-frontend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,8 +10,6 @@
     "test": "vitest run",
     "lint": "eslint src"
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "dependencies": {
     "@tanstack/react-virtual": "^3.14.7",
