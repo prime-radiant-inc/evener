@@ -1,3 +1,4 @@
+import { requireClass } from "../internal/requireClass";
 import styles from "./cadence.module.css";
 
 export type CadenceState = "idle" | "working" | "needs-you" | "failed" | "ended";
@@ -37,36 +38,25 @@ const STATE_FAMILY: Record<CadenceState, Family> = {
   ended: "neutral",
 };
 
-// CSS Modules import as an index signature (`{ [key: string]: string }`),
-// so under this project's noUncheckedIndexedAccess every styles.foo access
-// is typed string | undefined — TypeScript can't know the module actually
-// has a "foo" class. requireClass turns a missing class into a loud,
-// immediate module-load error instead of a silently-wrong className (or,
-// worse, one that only surfaces once it reaches a strict-string position).
-function requireClass(value: string | undefined, name: string): string {
-  if (value === undefined) throw new Error(`cadence.module.css is missing the "${name}" class`);
-  return value;
-}
-
 const BASE_CLASS = {
-  cadence: requireClass(styles.cadence, "cadence"),
-  dot: requireClass(styles.dot, "dot"),
-  trace: requireClass(styles.trace, "trace"),
-  tick: requireClass(styles.tick, "tick"),
+  cadence: requireClass(styles.cadence, "cadence.module.css", "cadence"),
+  dot: requireClass(styles.dot, "cadence.module.css", "dot"),
+  trace: requireClass(styles.trace, "cadence.module.css", "trace"),
+  tick: requireClass(styles.tick, "cadence.module.css", "tick"),
 };
 
 const FAMILY_CLASS: Record<Family, string> = {
-  alive: requireClass(styles.alive, "alive"),
-  attention: requireClass(styles.attention, "attention"),
-  danger: requireClass(styles.danger, "danger"),
-  neutral: requireClass(styles.neutral, "neutral"),
+  alive: requireClass(styles.alive, "cadence.module.css", "alive"),
+  attention: requireClass(styles.attention, "cadence.module.css", "attention"),
+  danger: requireClass(styles.danger, "cadence.module.css", "danger"),
+  neutral: requireClass(styles.neutral, "cadence.module.css", "neutral"),
 };
 
 const BUCKET_CLASS: readonly [string, string, string, string] = [
-  requireClass(styles.age0, "age0"),
-  requireClass(styles.age1, "age1"),
-  requireClass(styles.age2, "age2"),
-  requireClass(styles.age3, "age3"),
+  requireClass(styles.age0, "cadence.module.css", "age0"),
+  requireClass(styles.age1, "cadence.module.css", "age1"),
+  requireClass(styles.age2, "cadence.module.css", "age2"),
+  requireClass(styles.age3, "cadence.module.css", "age3"),
 ];
 
 function bucketOf(age: number): 0 | 1 | 2 | 3 {

@@ -1,5 +1,6 @@
 import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { requireClass } from "../internal/requireClass";
 import { Cadence, type CadenceState } from "./index";
 import rawStyles from "./cadence.module.css";
 
@@ -8,24 +9,18 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// See index.tsx's own requireClass: styles imports as an index signature,
-// so noUncheckedIndexedAccess types every access string | undefined. This
-// asserts the class this test is about to assert on actually exists,
-// rather than letting a typo'd class name compare `undefined` to itself.
-function requireClass(value: string | undefined, name: string): string {
-  if (value === undefined) throw new Error(`cadence.module.css is missing the "${name}" class`);
-  return value;
-}
-
+// requireClass asserts the class this test is about to assert on actually
+// exists, rather than letting a typo'd class name compare `undefined` to
+// itself (see src/widgets/internal/requireClass.ts).
 const styles = {
-  age0: requireClass(rawStyles.age0, "age0"),
-  age1: requireClass(rawStyles.age1, "age1"),
-  age2: requireClass(rawStyles.age2, "age2"),
-  age3: requireClass(rawStyles.age3, "age3"),
-  alive: requireClass(rawStyles.alive, "alive"),
-  attention: requireClass(rawStyles.attention, "attention"),
-  danger: requireClass(rawStyles.danger, "danger"),
-  neutral: requireClass(rawStyles.neutral, "neutral"),
+  age0: requireClass(rawStyles.age0, "cadence.module.css", "age0"),
+  age1: requireClass(rawStyles.age1, "cadence.module.css", "age1"),
+  age2: requireClass(rawStyles.age2, "cadence.module.css", "age2"),
+  age3: requireClass(rawStyles.age3, "cadence.module.css", "age3"),
+  alive: requireClass(rawStyles.alive, "cadence.module.css", "alive"),
+  attention: requireClass(rawStyles.attention, "cadence.module.css", "attention"),
+  danger: requireClass(rawStyles.danger, "cadence.module.css", "danger"),
+  neutral: requireClass(rawStyles.neutral, "cadence.module.css", "neutral"),
 };
 
 test("renders just the dot with no ticks when frameTimes is empty", () => {
@@ -57,6 +52,24 @@ test("age buckets: a tick's opacity class reflects how long ago it arrived", () 
     .map((tick) => bucketClasses.findIndex((c) => tick.classList.contains(c)))
     .sort((a, b) => a - b);
   expect(foundBuckets).toEqual([0, 1, 2, 3]);
+});
+
+test("a tick exactly on a bucket boundary falls into the next (older) bucket", () => {
+  const now = 1_700_000_000_000;
+  // Half-open intervals: [0,15000) is bucket 0, so age===15000 is already
+  // bucket 1, not 0 - and so on for the 30000 and 45000 edges. This is a
+  // property of Math.floor(age / BUCKET_MS), not of any specific sample,
+  // so it's asserted at all three internal boundaries directly rather than
+  // only inferred from the interior samples above.
+  const bucketClasses = [styles.age0, styles.age1, styles.age2, styles.age3];
+  const frameTimes = [now - 15_000, now - 30_000, now - 45_000];
+  render(<Cadence state="working" frameTimes={frameTimes} now={now} />);
+  const ticks = Array.from(document.querySelectorAll("rect"));
+  expect(ticks).toHaveLength(3);
+  const foundBuckets = ticks
+    .map((tick) => bucketClasses.findIndex((c) => tick.classList.contains(c)))
+    .sort((a, b) => a - b);
+  expect(foundBuckets).toEqual([1, 2, 3]);
 });
 
 test("excludes frames older than the ~60s trace window", () => {

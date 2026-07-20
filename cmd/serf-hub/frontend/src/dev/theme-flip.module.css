@@ -18,6 +18,6 @@
 .label {
   margin: 0;
   color: var(--ink-mid);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
   font-size: var(--font-size-caption);
 }

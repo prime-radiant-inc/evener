@@ -1,18 +1,11 @@
 import type { ReactNode } from "react";
+import { requireClass } from "../widgets/internal/requireClass";
 import styles from "./theme-flip.module.css";
 
-// CSS Modules import as an index signature, so under this project's
-// noUncheckedIndexedAccess every styles.foo access is string | undefined
-// (see src/widgets/cadence/index.tsx's requireClass for the full story).
-function requireClass(value: string | undefined, name: string): string {
-  if (value === undefined) throw new Error(`theme-flip.module.css is missing the "${name}" class`);
-  return value;
-}
-
 const CLASS = {
-  flip: requireClass(styles.flip, "flip"),
-  pane: requireClass(styles.pane, "pane"),
-  label: requireClass(styles.label, "label"),
+  flip: requireClass(styles.flip, "theme-flip.module.css", "flip"),
+  pane: requireClass(styles.pane, "theme-flip.module.css", "pane"),
+  label: requireClass(styles.label, "theme-flip.module.css", "label"),
 };
 
 /**
