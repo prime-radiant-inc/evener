@@ -185,7 +185,7 @@ func FuzzForkExactFaultProgram(f *testing.F) {
 			deps := forkSessionDeps{maxScanToken: 64, newWriter: func(fs afero.Fs, path string, h transcript.Header) (forkTranscriptWriter, error) {
 				return transcript.NewWriterWithFS(fs, path, h)
 			}, saveMeta: schema.SaveSessionMetaWithFS}
-			_, _, _ = forkSessionWithDeps(fs, state, id, 1, "x", false, "", deps)
+			_, _ = forkSessionWithDeps(fs, state, id, 1, "x", "", deps)
 			return
 		}
 		fs, state, id := fuzzAuxParentFS(t)
@@ -218,16 +218,16 @@ func FuzzForkExactFaultProgram(f *testing.F) {
 			},
 		}
 		if mode == 2 {
-			_, _, _ = forkSessionFS(fuzzAuxOpenFaultFS{Fs: fs}, state, id, 1, "x", false, "")
+			_, _ = forkSessionFS(fuzzAuxOpenFaultFS{Fs: fs}, state, id, 1, "x", "")
 			return
 		}
 		if mode == 3 {
 			_ = fs.Remove(filepath.Join(state, sessionsSubdir, id+".meta.json"))
 		}
 		if mode == 9 {
-			_, _, _ = forkSessionWithDeps(fs, state, id, 4, "edit", false, "", deps)
+			_, _ = forkSessionWithDeps(fs, state, id, 4, "edit", "", deps)
 		}
-		_, _, _ = forkSessionWithDeps(fs, state, id, 3, "edit", false, "label", deps)
+		_, _ = forkSessionWithDeps(fs, state, id, 3, "edit", "label", deps)
 	})
 }
 
@@ -281,11 +281,11 @@ func fuzzAuxForkBasic(t *testing.T) {
 		id   string
 		turn int
 	}{{"missing", 0}, {"missing", 1}} {
-		_, _, _ = forkSessionFS(fs, "/state", tc.id, tc.turn, "x", false, "")
+		_, _ = forkSessionFS(fs, "/state", tc.id, tc.turn, "x", "")
 	}
 	_ = fs.MkdirAll("/state/sessions", 0o755)
 	_ = afero.WriteFile(fs, "/state/sessions/empty.transcript.jsonl", nil, 0o644)
-	_, _, _ = forkSessionFS(fs, "/state", "empty", 1, "x", false, "")
+	_, _ = forkSessionFS(fs, "/state", "empty", 1, "x", "")
 }
 
 func fuzzAuxForkCorrupt(t *testing.T) {
@@ -297,7 +297,7 @@ func fuzzAuxForkCorrupt(t *testing.T) {
 	} {
 		id := string(rune('a' + i))
 		_ = afero.WriteFile(fs, "/state/sessions/"+id+".transcript.jsonl", body, 0o644)
-		_, _, err := forkSessionFS(fs, "/state", id, 1, "x", false, "")
+		_, err := forkSessionFS(fs, "/state", id, 1, "x", "")
 		if i == 1 && !errors.Is(err, transcript.ErrUnsupportedFormat) {
 			t.Fatalf("mixed transcript error = %v, want transcript.ErrUnsupportedFormat", err)
 		}
@@ -331,7 +331,7 @@ func fuzzAuxForkSuccess(t *testing.T, label bool) {
 	if label {
 		forkLabel = "branch"
 	}
-	child, _, err := forkSessionFS(fs, state, id, 3, "edit", false, forkLabel)
+	child, err := forkSessionFS(fs, state, id, 3, "edit", forkLabel)
 	if err != nil || child == "" {
 		t.Fatalf("fork = %q, %v", child, err)
 	}
