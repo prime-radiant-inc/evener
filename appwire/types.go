@@ -685,6 +685,12 @@ type ThreadForkParams struct {
 	Label         string `json:"label,omitempty"`
 	ModelProvider string `json:"modelProvider,omitempty"`
 	Model         string `json:"model,omitempty"`
+	// Aside forks a local serf thread at its tip instead of at a source turn:
+	// the child is a complete copy of the parent session (same permissions and
+	// config via the inherited session meta) and opens as a side thread. Aside
+	// is mutually exclusive with SourceTurnID, EditedInput, and Label, and is
+	// only supported for local serf threads.
+	Aside bool `json:"aside,omitempty"`
 }
 
 type ThreadForkResponse struct {
