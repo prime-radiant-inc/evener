@@ -14,6 +14,32 @@ export interface ButtonProps {
   type?: "button" | "submit" | "reset";
 }
 
+// CSS Modules import as an index signature (`{ [key: string]: string }`),
+// so under this project's noUncheckedIndexedAccess every styles.foo access
+// is typed string | undefined — TypeScript can't know the module actually
+// has a "foo" class. requireClass turns a missing class into a loud,
+// immediate module-load error instead of a silently-wrong className.
+function requireClass(value: string | undefined, name: string): string {
+  if (value === undefined) throw new Error(`button.module.css is missing the "${name}" class`);
+  return value;
+}
+
+const BASE_CLASS = {
+  button: requireClass(styles.button, "button"),
+  icon: requireClass(styles.icon, "icon"),
+};
+
+const VARIANT_CLASS: Record<ButtonVariant, string> = {
+  primary: requireClass(styles.primary, "primary"),
+  quiet: requireClass(styles.quiet, "quiet"),
+  danger: requireClass(styles.danger, "danger"),
+};
+
+const SIZE_CLASS: Record<ButtonSize, string> = {
+  sm: requireClass(styles.sm, "sm"),
+  md: requireClass(styles.md, "md"),
+};
+
 export function Button({
   variant = "primary",
   size = "md",
@@ -26,11 +52,11 @@ export function Button({
   return (
     <button
       type={type}
-      className={`${styles.button} ${styles[variant]} ${styles[size]}`}
+      className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
       onClick={onClick}
       disabled={disabled}
     >
-      {icon !== undefined && <span className={styles.icon}>{icon}</span>}
+      {icon !== undefined && <span className={BASE_CLASS.icon}>{icon}</span>}
       {children}
     </button>
   );
