@@ -1,0 +1,11 @@
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+.sample {
+  width: 260px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+}
