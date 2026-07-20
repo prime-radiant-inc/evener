@@ -1,0 +1,14 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rowLabel {
+  width: 80px;
+  flex: none;
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}

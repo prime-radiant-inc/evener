@@ -93,14 +93,18 @@ const SEMANTIC_USE_ALLOWLIST = [
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger|accent)\b/;
 
-function widgetNameOf(path: string): string {
-  return basenameOf(path).replace(/\.module\.css$/, "").replace(/\.css$/, "");
-}
+// The allowlist is a widget concept: only src/widgets/<name>/<name>.module.css
+// is eligible, keyed off the directory (not just the basename) so a
+// same-named stylesheet elsewhere (e.g. a dev-tooling file that happens to
+// be called button.module.css) can't ride along on a real widget's entry.
+const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger/--accent if allowlisted`, () => {
     if (!SEMANTIC_VAR_RE.test(text)) return;
-    expect(SEMANTIC_USE_ALLOWLIST).toContain(widgetNameOf(path));
+    const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
+    expect(widgetMatch).not.toBeNull();
+    expect(SEMANTIC_USE_ALLOWLIST).toContain(widgetMatch![1]);
   });
 }
 
