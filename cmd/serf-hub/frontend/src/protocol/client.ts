@@ -5,7 +5,7 @@
 // top of this in a later change; this client only defines the state machine
 // and close handling those need, without any timers beyond request timeouts.
 import type { WebSocketLike } from "./transport";
-import { RequestTimeoutError, WireError } from "./errors";
+import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
 
 export type { AnyNotification };
@@ -68,6 +68,10 @@ export class AppwireClient {
   private connectionState: ConnectionState = "idle";
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
+  // Set only while waitForOpen() is in flight (before the socket has opened
+  // or failed). Lets close() abort a handshake that's stuck waiting for a
+  // socket event, the same way `pending` lets it abort in-flight RPCs.
+  private handshakeReject: ((err: Error) => void) | null = null;
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
   private readonly readyHandlers = new Set<() => void>();
@@ -97,6 +101,15 @@ export class AppwireClient {
     if (this.connectionState === "closed") return;
     const socket = this.socket;
     this.socket = null;
+    // Abort a handshake stuck in waitForOpen() before nulling the socket's
+    // handlers below: those handlers are the only thing that would otherwise
+    // ever settle that promise, so clearing them first would hang connect()
+    // forever instead of rejecting it.
+    const abortHandshake = this.handshakeReject;
+    this.handshakeReject = null;
+    if (abortHandshake) {
+      abortHandshake(new ConnectionClosedError("AppwireClient: closed"));
+    }
     if (socket) {
       socket.onopen = null;
       socket.onmessage = null;
@@ -108,7 +121,7 @@ export class AppwireClient {
         // Best-effort: the socket may already be closing.
       }
     }
-    this.failAllPending(new Error("AppwireClient: closed"));
+    this.failAllPending(new ConnectionClosedError("AppwireClient: closed"));
     this.setState("closed");
   }
 
@@ -203,10 +216,16 @@ export class AppwireClient {
 
   private waitForOpen(socket: WebSocketLike): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      socket.onopen = () => resolve();
-      socket.onerror = () => reject(new Error("AppwireClient: socket error while connecting"));
+      const settle = (err: Error | null) => {
+        this.handshakeReject = null;
+        if (err) reject(err);
+        else resolve();
+      };
+      this.handshakeReject = (err) => settle(err);
+      socket.onopen = () => settle(null);
+      socket.onerror = () => settle(new Error("AppwireClient: socket error while connecting"));
       socket.onclose = (ev) =>
-        reject(new Error(`AppwireClient: socket closed while connecting (code ${ev.code})`));
+        settle(new Error(`AppwireClient: socket closed while connecting (code ${ev.code})`));
     });
   }
 
@@ -269,9 +288,24 @@ export class AppwireClient {
   private setState(next: ConnectionState): void {
     if (this.connectionState === next) return;
     this.connectionState = next;
-    for (const cb of Array.from(this.stateChangeHandlers)) cb(next);
+    for (const cb of Array.from(this.stateChangeHandlers)) {
+      try {
+        cb(next);
+      } catch {
+        // A misbehaving subscriber must not corrupt the state machine or
+        // abort whatever operation (e.g. a successful handshake, since
+        // setState runs inside performHandshake's try) triggered this
+        // transition.
+      }
+    }
     if (next === "ready") {
-      for (const cb of Array.from(this.readyHandlers)) cb();
+      for (const cb of Array.from(this.readyHandlers)) {
+        try {
+          cb();
+        } catch {
+          // See above.
+        }
+      }
     }
   }
 }

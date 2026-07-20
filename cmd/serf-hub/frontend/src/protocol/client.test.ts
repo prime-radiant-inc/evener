@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { AppwireClient, type AnyNotification, type ConnectionState } from "./client";
-import { RequestTimeoutError, WireError } from "./errors";
+import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { rpcURLFromLocation } from "./transport";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 
@@ -26,14 +26,15 @@ function connectReady(fake: FakeSocket, client: AppwireClient) {
   return connecting;
 }
 
-// flushMicrotasks drains a generous, fixed number of microtask turns so
-// promise continuations inside AppwireClient (e.g. resuming after
-// waitForOpen) have run before the test inspects side effects like
-// fake.sent. A generous fixed budget is deliberately used instead of a
-// single `await Promise.resolve()` so this stays correct if a future change
-// adds another await in that path.
-async function flushMicrotasks(): Promise<void> {
-  for (let i = 0; i < 5; i += 1) await Promise.resolve();
+// flushUntil drains microtask turns until `done()` reports true (or a
+// bounded number of turns elapse, so a genuine hang fails fast instead of
+// silently). Promise continuations inside AppwireClient (e.g. resuming after
+// waitForOpen) need at least one turn to run before a test can inspect their
+// side effects, like fake.sent; polling a real condition instead of a magic
+// flush count keeps this correct if a future change (performHandshake is
+// exactly what the next change touches) adds or removes an await in that path.
+async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
+  for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
 }
 
 beforeEach(() => {
@@ -120,7 +121,7 @@ describe("AppwireClient", () => {
 
     // Let performHandshake resume past waitForOpen and actually send
     // "initialize" before replying to it.
-    await flushMicrotasks();
+    await flushUntil(() => fake.sent.length > 0);
     const frame = lastSentFrame(fake);
     fake.receive({ id: frame.id, error: { code: 401, message: "unauthorized" } });
 
@@ -230,7 +231,7 @@ describe("AppwireClient", () => {
     client.close();
 
     expect(client.state).toBe("closed");
-    await expect(reqPromise).rejects.toThrow();
+    await expect(reqPromise).rejects.toBeInstanceOf(ConnectionClosedError);
     await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow();
   });
 
@@ -250,19 +251,78 @@ describe("AppwireClient", () => {
     await expect(reqPromise).rejects.toThrow();
   });
 
-  test("close() while connecting rejects the pending connect() promise", async () => {
+  test("close() after socket open but before ready rejects the pending connect() promise", async () => {
     const fake = new FakeSocket({ autoInitialize: false });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
     const connecting = client.connect();
     fake.open();
+    // Let performHandshake resume past waitForOpen and register+send
+    // "initialize" so close() rejects it via the pending-request path
+    // (rather than the earlier waitForOpen-abort path exercised by the
+    // "before the socket ever opens" test below).
+    await flushUntil(() => fake.sent.length > 0);
     // Attach before close() so the rejection is never observably unhandled
     // (same reasoning as the timeout test above).
-    const rejection = expect(connecting).rejects.toThrow();
+    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
 
     client.close();
 
     await rejection;
     expect(client.state).toBe("closed");
+  });
+
+  // Regression test: close() used to null socket.onopen/onclose/onerror
+  // before calling socket.close(), which wiped the exact handlers
+  // waitForOpen()'s promise needed to ever settle — connect() would hang
+  // forever (state flips to "closed" but nothing ever resolves/rejects the
+  // caller's promise). A short per-test timeout makes a reintroduced hang
+  // fail fast instead of burning the whole suite's default timeout.
+  test(
+    "close() before the socket ever opens still rejects the pending connect() promise",
+    async () => {
+      const fake = new FakeSocket({ autoInitialize: false });
+      const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+      const connecting = client.connect();
+      // Deliberately never call fake.open().
+      const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
+
+      client.close();
+
+      await rejection;
+      expect(client.state).toBe("closed");
+    },
+    1000,
+  );
+
+  // Regression test: setState()'s dispatch loops had no per-handler
+  // try/catch (unlike notification dispatch), so a throwing subscriber on
+  // setState("ready") — called from inside performHandshake's try — was
+  // caught by the handshake's own catch and tore down an otherwise-successful
+  // connection.
+  test("throwing onStateChange/onReady subscribers do not abort a successful connect()", async () => {
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+
+    const states: ConnectionState[] = [];
+    let readyCount = 0;
+    client.onStateChange(() => {
+      throw new Error("boom from a bad state subscriber");
+    });
+    client.onStateChange((s) => states.push(s));
+    client.onReady(() => {
+      throw new Error("boom from a bad ready subscriber");
+    });
+    client.onReady(() => {
+      readyCount += 1;
+    });
+
+    const result = await connectReady(fake, client);
+
+    expect(client.state).toBe("ready");
+    expect(result).toEqual(FAKE_INITIALIZE_RESULT);
+    expect(states).toEqual(["connecting", "ready"]);
+    expect(readyCount).toBe(1);
   });
 });

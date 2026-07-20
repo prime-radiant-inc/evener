@@ -33,3 +33,16 @@ export class RequestTimeoutError extends Error {
     this.name = "RequestTimeoutError";
   }
 }
+
+// ConnectionClosedError signals that a request, or the in-flight
+// initialize/initialized handshake, was aborted because close() was called —
+// as opposed to a server-reported failure (WireError), a request that
+// outlived its timeout (RequestTimeoutError), or a connection lost for some
+// other reason (a plain Error). Callers that want to distinguish "I closed
+// this on purpose" from an unexpected disconnect can check for this type.
+export class ConnectionClosedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ConnectionClosedError";
+  }
+}
