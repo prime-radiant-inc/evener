@@ -111,5 +111,17 @@ function makeDom(appwire) {
   assert(picker3.querySelector('[data-dir-path="/home/jesse/other"]'),
     "browse rows should still render without recentProjects support");
 
+  // Layout contract: recent rows put the path in the SHRINKING column
+  // (minmax(0, 1fr), where it ellipsizes rtl) and the basename in the
+  // natural-width column — the shared minmax(0,1fr)/auto grid starves the
+  // name to zero width on long unbroken paths (delegate worktree ids) and
+  // wraps it one character per line.
+  {
+    const css = require("fs").readFileSync(require("path").resolve(__dirname, "../assets/style.css"), "utf8");
+    const m = /\.chip-picker-dir-recent\s*\{([^{}]*)\}/.exec(css);
+    assert(m && /grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)/.test(m[1]),
+      ".chip-picker-dir-recent must override the row grid to auto minmax(0, 1fr) so paths ellipsize instead of starving names");
+  }
+
   console.log("PASS test-dir-picker-recent");
 })();
