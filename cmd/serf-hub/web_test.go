@@ -3847,6 +3847,91 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	}
 }
 
+// TestWeb_Fork_DeferInput verifies the fork-from-message REST flow (issue
+// #42): POST /s/<id>/fork with defer_input forks at the turn without
+// appending a replacement message, and the response carries the original
+// input text so the client can stage it in the composer for editing.
+func TestWeb_Fork_DeferInput(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+
+	parentID := "02wMz5Txv5aIxgf9yVdd0N"
+	sessionsDir := filepath.Join(proj, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tpath := filepath.Join(sessionsDir, parentID+".transcript.jsonl")
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: parentID, ProfileID: "openai", Model: "gpt-5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first task"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("second task"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
+		ID: parentID, UpdatedAt: time.Now(), OriginalPrompt: "test fork",
+		ProfileID: "openai", Model: "gpt-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr:  "127.0.0.1:9180",
+		Roster:   hubcore.NewRoster(t.TempDir(), nil),
+		Past:     idx,
+		StateDir: proj,
+	})
+	reqBody := strings.NewReader(`{"turn":3,"defer_input":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/s/"+parentID+"/fork", reqBody)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		ChildSessionID string `json:"child_session_id"`
+		OriginalInput  string `json:"original_input"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v body=%q", err, rec.Body.String())
+	}
+	if resp.ChildSessionID == "" || resp.ChildSessionID == parentID {
+		t.Fatalf("child_session_id=%q", resp.ChildSessionID)
+	}
+	if resp.OriginalInput != "second task" {
+		t.Errorf("original_input=%q, want %q", resp.OriginalInput, "second task")
+	}
+	// The child transcript must hold only the prefix: no trailing USER_INPUT
+	// turn that would auto-run the message on open.
+	raw, err := os.ReadFile(filepath.Join(sessionsDir, resp.ChildSessionID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatalf("read child transcript: %v", err)
+	}
+	if strings.Contains(string(raw), "second task") {
+		t.Errorf("deferred fork must not copy the diverging user message:\n%s", raw)
+	}
+}
+
 // TestWeb_ApiSearch_FiltersPast populates the past index with two metas,
 // queries for one by name, and asserts only that result is returned.
 func TestWeb_ApiSearch_FiltersPast(t *testing.T) {

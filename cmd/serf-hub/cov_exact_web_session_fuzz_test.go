@@ -253,7 +253,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		}
 		localWeb = NewWebServer(hubcore.WebConfig{RunDir: runDir, Roster: localRoster, Past: past, Spawner: exactWebSessionSpawner{resume: resume}})
 		call(func(w http.ResponseWriter, r *http.Request) { localWeb.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"resume"}`)
-		_, _ = localWeb.forkSession(localID, forkRequest{Turn: 3, EditedMessage: "edited", Label: "branch"})
+		_, _, _ = localWeb.forkSession(localID, forkRequest{Turn: 3, EditedMessage: "edited", Label: "branch"})
 
 		rosterOnly := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 33, Address: "127.0.0.1:1"}, SessionID: "roster-only"})})
 		call(func(w http.ResponseWriter, r *http.Request) { rosterOnly.handleSend(w, r, "roster-only") }, http.MethodPost, "/s/roster-only/send", `{"text":"hi"}`)

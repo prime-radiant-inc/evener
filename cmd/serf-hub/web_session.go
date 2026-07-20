@@ -518,13 +518,17 @@ func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID 
 		return
 	}
 
-	childID, err := s.forkSession(parentID, body)
+	childID, originalInput, err := s.forkSession(parentID, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+	resp := map[string]string{"child_session_id": childID}
+	if originalInput != "" {
+		resp["original_input"] = originalInput
+	}
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parentID string) {
@@ -538,7 +542,7 @@ func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parent
 		return
 	}
 
-	childID, err := s.forkSession(parentID, body)
+	childID, _, err := s.forkSession(parentID, body)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -551,7 +555,7 @@ func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parent
 	})
 }
 
-func (s *WebServer) forkSession(parentID string, body forkRequest) (string, error) {
+func (s *WebServer) forkSession(parentID string, body forkRequest) (string, string, error) {
 	// Resolve the state dir for the parent session. Forks must write into
 	// the same project's state-dir as the parent (so they appear in the
 	// project tree). Past index knows the per-project state-dir; cfg.StateDir
@@ -567,18 +571,24 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 		stateDir = s.cfg.StateDir
 	}
 	if stateDir == "" {
-		return "", errors.New("state dir not resolvable for parent session")
+		return "", "", errors.New("state dir not resolvable for parent session")
 	}
 
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	var childID, originalInput string
+	var err error
+	if body.DeferInput {
+		childID, originalInput, err = agent.ForkSessionAtUserTurn(stateDir, parentID, body.Turn, body.Label)
+	} else {
+		childID, err = agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
 		_ = s.cfg.Past.Rebuild()
 	}
-	return childID, nil
+	return childID, originalInput, nil
 }
 
 // waitForRosterMatch polls the roster until it sees a daemon with the given PID
