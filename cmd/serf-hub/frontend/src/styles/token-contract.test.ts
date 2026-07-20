@@ -60,25 +60,30 @@ test("every non-token stylesheet under src is named global.css or <name>.module.
 //
 // 1. COLOR_LITERAL_RE - hex, rgb()/rgba(), hsl()/hsla(), oklch(), oklab(),
 //    lab(), lch(): every literal-color FUNCTION/hex syntax CSS has. Scanned
-//    across the whole file text (comments included) because these forms
+//    across the ORIGINAL, comment-intact file text, because these forms
 //    are distinctive enough not to false-positive on a selector or class
-//    name. color-mix() is deliberately NOT in this list - mixing
-//    var(--token) values (e.g. `color-mix(in oklab, var(--accent) 40%,
-//    transparent)`) is normal token composition, not a new color; any raw
-//    hex/rgb/... smuggled into a color-mix() argument is still caught
-//    because this regex scans the whole file text, nesting notwithstanding.
+//    name - so a hex code or color function mentioned only in a comment
+//    still trips this (accepted, deliberate: not a parser). color-mix() is
+//    deliberately NOT in this list - mixing var(--token) values (e.g.
+//    `color-mix(in oklab, var(--accent) 40%, transparent)`) is normal
+//    token composition, not a new color; any raw hex/rgb/... smuggled
+//    into a color-mix() argument is still caught since this regex scans
+//    the whole file text, nesting notwithstanding.
 // 2. NAMED_COLOR_RE - the CSS named-color keywords (red, white, black, ...;
 //    NOT transparent/currentColor, which aren't chromatic, and NOT CSS-wide
 //    keywords like inherit/initial/unset/revert/none/auto). Unlike (1),
 //    named colors are ordinary English words that legitimately appear in
 //    class names, comments, and font-family lists ("Helvetica" is not a
 //    color), so this one is scanned ONLY inside extracted declaration
-//    VALUES (property: value pairs), never the raw file text - a selector
-//    like `.red { color: var(--danger); }` is not a violation.
-//
-// Neither mechanism strips comments before scanning (1) or before
-// extracting declarations for (2) - a hex code or color name mentioned in
-// a comment can still trip this. Accepted trade-off, not a parser.
+//    VALUES (property: value pairs), and ONLY after COMMENT_RE strips
+//    every /* ... */ block first - a selector like `.red { color:
+//    var(--danger); }` is not a violation, and neither is a comment that
+//    happens to mention a color name (`/* was red */`). Stripping matters
+//    for more than comment text itself: a comment sitting between two
+//    declarations (`color: var(--x); /* note */ background: red;`) would
+//    otherwise break DECLARATION_VALUE_RE's adjacency requirement and
+//    silently hide the declaration after it - see that regex's own
+//    comment for why.
 const COLOR_LITERAL_RE = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch)\(/g;
 
 // CSS Color Module Level 4 named colors (the full "extended color keywords"
@@ -131,13 +136,30 @@ const NAMED_COLOR_RE = new RegExp(`(?:^|[:\\s,(])(${NAMED_COLOR_ALTERNATION})(?=
 // last declaration with no trailing semicolon) declaration in a stylesheet.
 // Anchored on a `{` or `;` immediately before the property name (mod
 // whitespace) so it can only start where a declaration can legally start -
-// not, say, on "hover" inside the selector text ".button:hover".
-const DECLARATION_VALUE_RE = /[{;]\s*[a-zA-Z-]+\s*:\s*([^;{}]+)[;}]/g;
+// not, say, on "hover" inside the selector text ".button:hover". The
+// terminator is a lookahead, `(?=[;}])`, rather than consumed: an earlier
+// version consumed it, which meant that `;` was gone by the time matchAll
+// looked for the NEXT declaration's leading anchor, so only the first
+// declaration in any block was ever visible - `.foo { a: 1; b: red; }`
+// silently dropped `b` even with no comment in sight. The lookahead
+// leaves the `;` in the string for the next match to consume as ITS
+// leading anchor, so every declaration in a block is found, not just the
+// first. Run against comment-stripped text (see chromaticLiteralViolations)
+// so a comment between two declarations can't reintroduce the same gap by
+// breaking the "immediately preceding, mod whitespace" requirement.
+const DECLARATION_VALUE_RE = /[{;]\s*[a-zA-Z-]+\s*:\s*([^;{}]+)(?=[;}])/g;
+
+// Block comments only - CSS has no line comments. Declarations are
+// extracted from the stripped text (mechanism 2) so a comment can't hide
+// an adjacent declaration or have its own contents mistaken for one;
+// mechanism 1 above deliberately keeps scanning the untouched original.
+const COMMENT_RE = /\/\*[\s\S]*?\*\//g;
 
 function chromaticLiteralViolations(cssText: string): string[] {
   const violations: string[] = [];
   for (const match of cssText.matchAll(COLOR_LITERAL_RE)) violations.push(match[0]);
-  for (const declaration of cssText.matchAll(DECLARATION_VALUE_RE)) {
+  const withoutComments = cssText.replace(COMMENT_RE, " ");
+  for (const declaration of withoutComments.matchAll(DECLARATION_VALUE_RE)) {
     const value = declaration[1]!;
     for (const named of value.matchAll(NAMED_COLOR_RE)) violations.push(named[1]!);
   }
@@ -174,6 +196,29 @@ test("a color name as a substring of a longer token is not a false positive", ()
 
 test("a color name mentioned only in a comment is not scanned", () => {
   expect(chromaticLiteralViolations("/* was red before */ .foo { color: var(--danger); }")).toEqual([]);
+});
+
+// A prior version of DECLARATION_VALUE_RE consumed its own terminator,
+// which meant only the FIRST declaration in any block was ever visible to
+// the named-color scan - not a comment-specific bug, a structural one. A
+// comment between declarations was one way to notice it (see the case
+// below), but a plain second declaration with no comment anywhere
+// exhibited the identical gap, so that's asserted directly too.
+test("a violation in a non-first declaration is caught, no comment involved", () => {
+  expect(chromaticLiteralViolations(".foo { color: var(--ink-hi); background: red; }")).toEqual(["red"]);
+  expect(chromaticLiteralViolations(".foo { a: var(--x); b: var(--y); color: white; }")).toEqual(["white"]);
+});
+
+test("a comment between two declarations does not hide the one after it", () => {
+  expect(chromaticLiteralViolations(".foo { color: var(--ink-hi); /* comment */ background: red; }")).toEqual([
+    "red",
+  ]);
+});
+
+test("a comment containing a named color does not false-positive once stripped, with otherwise-clean declarations", () => {
+  expect(
+    chromaticLiteralViolations(".foo { /* was red */ color: var(--danger); background: var(--surface-0); }"),
+  ).toEqual([]);
 });
 
 test("still catches hex/rgb/hsl/oklch literals alongside named colors", () => {
