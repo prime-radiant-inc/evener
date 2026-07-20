@@ -155,8 +155,8 @@ func (c *Client) Clear(ctx context.Context, ref Ref) (RefResponse, error) {
 	return out, err
 }
 
-func (c *Client) Fork(ctx context.Context, ref Ref, req ForkRequest) (RefResponse, error) {
-	var out RefResponse
+func (c *Client) Fork(ctx context.Context, ref Ref, req ForkRequest) (ForkResponse, error) {
+	var out ForkResponse
 	err := c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/fork", req, &out)
 	return out, err
 }

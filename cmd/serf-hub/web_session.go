@@ -511,20 +511,42 @@ func isActionUnavailable(err error) bool {
 	return ok && wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorActionUnavailable)
 }
 
+// validateForkRequest enforces the same defer_input + edited_message
+// validation as the RPC thread/fork path so the REST endpoints stay at
+// parity: the two are mutually exclusive, and a non-deferred fork requires
+// edited_message.
+func validateForkRequest(body forkRequest) error {
+	if body.DeferInput && strings.TrimSpace(body.EditedMessage) != "" {
+		return errors.New("edited_message and defer_input are mutually exclusive")
+	}
+	if !body.DeferInput && strings.TrimSpace(body.EditedMessage) == "" {
+		return errors.New("edited_message is required")
+	}
+	return nil
+}
+
 func (s *WebServer) handleFork(w http.ResponseWriter, r *http.Request, parentID string) {
 	var body forkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateForkRequest(body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
-	childID, err := s.forkSession(parentID, body)
+	childID, originalInput, err := s.forkSession(parentID, body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+	resp := map[string]string{"child_session_id": childID}
+	if originalInput != "" {
+		resp["original_input"] = originalInput
+	}
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parentID string) {
@@ -537,17 +559,22 @@ func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parent
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := validateForkRequest(body); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
-	childID, err := s.forkSession(parentID, body)
+	childID, originalInput, err := s.forkSession(parentID, body)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	ref := hubapi.LocalRef(childID)
-	writeAPIJSON(w, http.StatusOK, hubapi.RefResponse{
-		Ref:       ref.String(),
-		HostID:    ref.HostID,
-		SessionID: ref.SessionID,
+	writeAPIJSON(w, http.StatusOK, hubapi.ForkResponse{
+		Ref:           ref.String(),
+		HostID:        ref.HostID,
+		SessionID:     ref.SessionID,
+		OriginalInput: originalInput,
 	})
 }
 
@@ -579,21 +606,30 @@ func (s *WebServer) asideSession(parentID string) (string, error) {
 	return childID, nil
 }
 
-func (s *WebServer) forkSession(parentID string, body forkRequest) (string, error) {
+// forkSession forks the parent session at body.Turn. When body.DeferInput is
+// set the fork carries only the entries before the turn (no replacement turn,
+// so opening the fork never auto-runs) and the turn's original text is
+// returned for the caller to stage for editing (issue #42).
+func (s *WebServer) forkSession(parentID string, body forkRequest) (string, string, error) {
 	stateDir, err := s.stateDirForSession(parentID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	var childID, originalInput string
+	if body.DeferInput {
+		childID, originalInput, err = agent.ForkSessionAtUserTurn(stateDir, parentID, body.Turn, body.Label)
+	} else {
+		childID, err = agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	}
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
 		_ = s.cfg.Past.Rebuild()
 	}
-	return childID, nil
+	return childID, originalInput, nil
 }
 
 // stateDirForSession resolves the state dir for a session. Branches must write

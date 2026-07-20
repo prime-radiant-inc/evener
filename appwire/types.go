@@ -691,16 +691,26 @@ type ThreadForkParams struct {
 	Label         string `json:"label,omitempty"`
 	ModelProvider string `json:"modelProvider,omitempty"`
 	Model         string `json:"model,omitempty"`
+	// DeferInput forks at the source turn WITHOUT appending a replacement
+	// message: the child thread holds only the entries before the turn, and
+	// the turn's original text comes back in ThreadForkResponse.OriginalInput
+	// so the client can stage it for editing and explicit submission (the
+	// fork never auto-runs the message). Mutually exclusive with EditedInput
+	// and Aside.
+	DeferInput bool `json:"deferInput,omitempty"`
 	// Aside forks a local serf thread at its tip instead of at a source turn:
 	// the child is a complete copy of the parent session (same permissions and
 	// config via the inherited session meta) and opens as a side thread. Aside
-	// is mutually exclusive with SourceTurnID, EditedInput, and Label, and is
-	// only supported for local serf threads.
+	// is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+	// Label, and is only supported for local serf threads.
 	Aside bool `json:"aside,omitempty"`
 }
 
 type ThreadForkResponse struct {
 	Thread Thread `json:"thread"`
+	// OriginalInput is the source turn's original user text, set only when
+	// the fork was requested with DeferInput.
+	OriginalInput string `json:"originalInput,omitempty"`
 }
 
 type TurnStartParams struct {

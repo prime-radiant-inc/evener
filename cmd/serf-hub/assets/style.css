@@ -2472,6 +2472,25 @@ button.composer-model-value .caret { color: var(--ink-3); }
 }
 .assistant-message:hover .turn-meta,
 .assistant-message:focus-within .turn-meta { opacity: 1; }
+/* Fork-from-message action (issue #42): same quiet reveal as .turn-meta —
+   hidden at rest, revealed on hover or keyboard focus within the message,
+   and stripped of button chrome so it stays inline quiet text. */
+.assistant-message .msg-fork {
+  margin-left: var(--space-2);
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--ink-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast);
+}
+.assistant-message:hover .msg-fork,
+.assistant-message:focus-within .msg-fork { opacity: 1; }
+.assistant-message .msg-fork:hover { color: var(--ink); }
 
 /* Frozen-head/raw-tail streaming (long messages): the tail is plain pre-wrap
    text with the one sanctioned streaming caret; finalization replaces it with

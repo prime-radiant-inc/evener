@@ -31,6 +31,76 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	return forkSessionFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel)
 }
 
+// ForkSessionAtUserTurn creates a new session branched from a parent session at a
+// given divergence turn WITHOUT appending a replacement message (issue #42).
+//
+// divergenceTurn is a 1-based index into the parent's full entry list (all turns,
+// not just USER_INPUT) and must point at a USER_INPUT turn. The child transcript
+// contains only the entries BEFORE that turn, so opening the fork never auto-runs
+// anything: the original text of the diverging user message is returned to the
+// caller, which hands it back to the user for editing and explicit submission.
+//
+// If parentForkLabel is non-empty, the parent's meta is updated with that label so
+// the parent branch can be identified in session listings.
+func ForkSessionAtUserTurn(stateDir, parentID string, divergenceTurn int, parentForkLabel string) (childID, originalInput string, err error) {
+	return forkSessionAtUserTurnFS(afero.NewOsFs(), stateDir, parentID, divergenceTurn, parentForkLabel)
+}
+
+func forkSessionAtUserTurnFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, parentForkLabel string) (string, string, error) {
+	if divergenceTurn < 1 {
+		return "", "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
+	}
+
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, 10*1024*1024)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Validate that divergenceTurn points to a valid entry in the parent transcript.
+	if divergenceTurn > len(allEntries) {
+		return "", "", fmt.Errorf("divergenceTurn %d exceeds parent turn count %d", divergenceTurn, len(allEntries))
+	}
+
+	// The entry at the divergence position must be a USER_INPUT turn; its text
+	// goes back to the caller instead of being written into the child.
+	divergenceEntry := allEntries[divergenceTurn-1]
+	if divergenceEntry.Turn.Kind != schema.TurnUserInput {
+		return "", "", fmt.Errorf("entry at divergenceTurn %d is not a USER_INPUT turn (got %s)", divergenceTurn, divergenceEntry.Turn.Kind)
+	}
+
+	// Load parent meta — required for copying fields to the child.
+	parentMeta, err := schema.LoadSessionMetaWithFS(fs, stateDir, parentID)
+	if err != nil {
+		return "", "", fmt.Errorf("load parent session meta: %w", err)
+	}
+
+	deps := forkSessionDeps{
+		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {
+			return transcript.NewWriterWithFS(fs, path, header)
+		},
+		saveMeta:     schema.SaveSessionMetaWithFS,
+		maxScanToken: 10 * 1024 * 1024,
+	}
+
+	// The child gets only the prefix before the divergence turn, with nil
+	// replacement turn (the aside pattern): opening the fork never auto-runs
+	// the diverging message.
+	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, allEntries[:divergenceTurn-1], divergenceTurn, nil, deps)
+	if err != nil {
+		return "", "", err
+	}
+
+	// Update the parent meta with the fork label if provided.
+	if parentForkLabel != "" {
+		parentMeta.ForkLabel = parentForkLabel
+		if err := deps.saveMeta(fs, stateDir, parentMeta); err != nil {
+			return "", "", fmt.Errorf("update parent session meta with fork label: %w", err)
+		}
+	}
+
+	return childID, divergenceEntry.Turn.Message.Text(), nil
+}
+
 func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, editedMessage, parentForkLabel string) (string, error) {
 	return forkSessionWithDeps(fs, stateDir, parentID, divergenceTurn, editedMessage, parentForkLabel, forkSessionDeps{
 		newWriter: func(fs afero.Fs, path string, header transcript.Header) (forkTranscriptWriter, error) {

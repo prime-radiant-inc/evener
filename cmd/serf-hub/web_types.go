@@ -302,6 +302,10 @@ type forkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
 	Label         string `json:"label"`
+	// DeferInput forks at the turn WITHOUT appending a replacement message:
+	// the child holds only the prefix, and the response carries the original
+	// input text so the client can stage it in the composer (issue #42).
+	DeferInput bool `json:"defer_input"`
 }
 
 // daemonStatus is the subset of /status fields the hub cares about.

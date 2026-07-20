@@ -186,7 +186,7 @@ func FuzzSessionTreePass3(f *testing.F) {
 					web.handleFork(rec, req, "missing")
 				}
 			}
-			_, _ = web.forkSession("missing", forkRequest{})
+			_, _, _ = web.forkSession("missing", forkRequest{})
 			_ = waitForRosterMatch(hubcore.NewRosterWithEntries(), "missing", 1, 0)
 		case 15:
 			dir := t.TempDir()

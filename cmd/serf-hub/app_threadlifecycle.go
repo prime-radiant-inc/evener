@@ -26,6 +26,7 @@ var (
 	hubRosterRefresh   = func(r *hubcore.Roster) { r.Refresh() }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
 	hubForkSession     = agent.ForkSession
+	hubForkSessionAt   = agent.ForkSessionAtUserTurn
 	hubAsideSession    = agent.AsideSession
 	hubEnsureSource    = func(ctx context.Context, launcher *codexlaunch.CodexLauncher, id string, sources *appsource.Registry) (appsource.Source, error) {
 		return launcher.EnsureSource(ctx, id, sources)
@@ -323,8 +324,8 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return source.ForkThread(ctx, params)
 	}
 	if params.Aside {
-		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" {
-			return appwire.ThreadForkResponse{}, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, or label")
+		if strings.TrimSpace(params.SourceTurnID) != "" || strings.TrimSpace(params.EditedInput) != "" || strings.TrimSpace(params.Label) != "" || params.DeferInput {
+			return appwire.ThreadForkResponse{}, appwire.InvalidParams("aside does not accept sourceTurnId, editedInput, deferInput, or label")
 		}
 		stateDir := cfg.StateDir
 		if cfg.Past != nil {
@@ -354,7 +355,10 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if err != nil {
 		return appwire.ThreadForkResponse{}, appwire.InvalidParams(err.Error())
 	}
-	if strings.TrimSpace(params.EditedInput) == "" {
+	if params.DeferInput && strings.TrimSpace(params.EditedInput) != "" {
+		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput and deferInput are mutually exclusive")
+	}
+	if !params.DeferInput && strings.TrimSpace(params.EditedInput) == "" {
 		return appwire.ThreadForkResponse{}, appwire.InvalidParams("editedInput is required")
 	}
 	stateDir := cfg.StateDir
@@ -366,7 +370,12 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if stateDir == "" {
 		return appwire.ThreadForkResponse{}, appwire.Unavailable("state dir not resolvable for parent thread")
 	}
-	childID, err := hubForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
+	var childID, originalInput string
+	if params.DeferInput {
+		childID, originalInput, err = hubForkSessionAt(stateDir, ref.ThreadID, turn, params.Label)
+	} else {
+		childID, err = hubForkSession(stateDir, ref.ThreadID, turn, params.EditedInput, params.Label)
+	}
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err
 	}
@@ -374,18 +383,22 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		_ = cfg.Past.Rebuild()
 	}
 	childRef := appwire.Ref{SourceID: "local", ThreadID: childID}.String()
-	return appwire.ThreadForkResponse{Thread: appwire.Thread{
-		ID:        childID,
-		SessionID: childID,
-		Source:    "local",
-		Serf:      appwire.SerfThread{Ref: childRef},
-	}}, nil
+	return appwire.ThreadForkResponse{
+		Thread: appwire.Thread{
+			ID:        childID,
+			SessionID: childID,
+			Source:    "local",
+			Serf:      appwire.SerfThread{Ref: childRef},
+		},
+		OriginalInput: originalInput,
+	}, nil
 }
 
 func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
 	return strings.TrimSpace(params.SourceTurnID) != "" ||
 		strings.TrimSpace(params.EditedInput) != "" ||
-		strings.TrimSpace(params.Label) != ""
+		strings.TrimSpace(params.Label) != "" ||
+		params.DeferInput
 }
 
 func parseSourceTurnID(raw string) (int, error) {

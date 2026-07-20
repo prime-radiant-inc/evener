@@ -6947,6 +6947,95 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	}
 }
 
+// TestHubRPCThreadForkDeferInput verifies the fork-from-message flow (issue
+// #42): deferInput forks the thread at the source turn WITHOUT appending a
+// replacement message, so the child transcript holds only the prefix and the
+// response carries the original input text for the client to stage in its
+// composer. The forked session must not auto-run the message.
+func TestHubRPCThreadForkDeferInput(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+		Ref:          "local:" + parentID,
+		SourceTurnID: "3",
+		DeferInput:   true,
+	})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Serf.Ref != "local:"+resp.Thread.ID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	if resp.OriginalInput != "second task" {
+		t.Fatalf("OriginalInput=%q, want %q", resp.OriginalInput, "second task")
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ParentSessionID != parentID || childMeta.DivergenceTurn != 3 {
+		t.Fatalf("child meta=%+v", childMeta)
+	}
+	// The child transcript must contain only the prefix entries [U1, A1]:
+	// no trailing USER_INPUT turn that would auto-run on open.
+	raw, err := os.ReadFile(filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatalf("read child transcript: %v", err)
+	}
+	if strings.Contains(string(raw), "second task") {
+		t.Fatalf("deferred fork must not copy the diverging user message:\n%s", raw)
+	}
+}
+
+// TestHubRPCThreadForkDeferInputRejectsEditedInput verifies that deferInput
+// and editedInput are mutually exclusive: one either replaces the message
+// inline (editedInput) or hands it back for editing (deferInput), never both.
+func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
+		Ref:          "local:" + parentID,
+		SourceTurnID: "3",
+		EditedInput:  "second task, edited",
+		DeferInput:   true,
+	}, &appwire.ThreadForkResponse{})
+	if err == nil {
+		t.Fatal("ThreadFork with both editedInput and deferInput should fail")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error=%v, want InvalidParams", err)
+	}
+}
+
 type fakeRPCSpawner struct {
 	spawn        func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error)
 	resume       func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error)

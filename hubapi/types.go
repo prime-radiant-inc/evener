@@ -216,6 +216,22 @@ type ForkRequest struct {
 	Turn          int    `json:"turn"`
 	EditedMessage string `json:"edited_message"`
 	Label         string `json:"label"`
+	// DeferInput forks at the turn WITHOUT appending a replacement message:
+	// the child holds only the entries before the turn and the turn's
+	// original text comes back in ForkResponse.OriginalInput so the caller
+	// can stage it for editing and explicit submission (issue #42).
+	// Mutually exclusive with EditedMessage.
+	DeferInput bool `json:"defer_input,omitempty"`
+}
+
+// ForkResponse is the JSON response for POST /api/sessions/<id>/fork. It
+// carries the child ref plus, for deferred-input forks, the source turn's
+// original user text.
+type ForkResponse struct {
+	Ref           string `json:"ref"`
+	HostID        string `json:"host_id"`
+	SessionID     string `json:"session_id"`
+	OriginalInput string `json:"original_input,omitempty"`
 }
 
 type ErrorResponse struct {

@@ -75,6 +75,26 @@
     }
   }
 
+  // writeFor stores a draft for a session by ID — no live form required. The
+  // fork-from-message flow (issue #42) uses it to stage the original message
+  // in the fork child's composer before navigating there; the child's own
+  // bind() then restores it like any typed draft. Blank content removes the
+  // key, matching write().
+  function writeFor(sessionId, value) {
+    const s = storage();
+    if (!s) return;
+    const session = String(sessionId || "").trim() || FALLBACK_SESSION;
+    try {
+      if (String(value || "").trim() === "") {
+        s.removeItem(PREFIX + session);
+      } else {
+        s.setItem(PREFIX + session, String(value));
+      }
+    } catch (e) {
+      /* storage unavailable or full — the fork still opens, just empty */
+    }
+  }
+
   // bind restores any stored draft into the composer's textarea and mirrors
   // subsequent edits into storage. Never overwrites content the textarea
   // already has (e.g. a re-bound composer mid-typing). Returns true when a
@@ -125,5 +145,5 @@
     return restored;
   }
 
-  window.SerfDrafts = { keyFor, read, write, clear, bind };
+  window.SerfDrafts = { keyFor, read, write, writeFor, clear, bind };
 })();
