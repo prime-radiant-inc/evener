@@ -257,6 +257,11 @@
       this.currentMessageId = null;
       this.userTurnIndex = 0;            // counts user turns rendered (for fork divergence)
       this.entryIndex = 0;               // counts ALL entries rendered (matches transcript entry index)
+      // Fork-from-message (issue #42): the most recent user message's
+      // transcript entry index + text, so an assistant message's fork action
+      // can fork at the prompt that produced it (retry semantics).
+      this.lastUserForkTurn = 0;
+      this.lastUserForkText = "";
       this.cheapToolCluster = null;      // current cluster div for batching cheap reads
       // Image attachments are owned by the SerfComposerAttachments helper
       // (kata r6a1/65mm — paste/drop/file-picker all funnel through it). The
@@ -1260,6 +1265,8 @@
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;
+      this.lastUserForkTurn = 0;
+      this.lastUserForkText = "";
       this.cheapToolCluster = null;
       this.subagentModule = null;
       this.currentTurnHasAgentWork = false;
@@ -1479,10 +1486,12 @@
             this.lastFinalizedAssistantEl = null;
             taskDescriptions.clear();
             taskDetails.clear();
-            this.lastCurrentTaskId = null;
-            this.userTurnIndex = 0;
-            this.entryIndex = 0;
-            this.currentTurnHasAgentWork = false;
+          this.lastCurrentTaskId = null;
+          this.userTurnIndex = 0;
+          this.entryIndex = 0;
+          this.lastUserForkTurn = 0;
+          this.lastUserForkText = "";
+          this.currentTurnHasAgentWork = false;
             this.clearAgentQuestion();
             // Drop any pending image attachments and let the composer-
             // attachments helper repaint the (now empty) chip container.
@@ -1994,6 +2003,12 @@
       wrap.className = "user-message";
       wrap.dataset.entryIdx = String(entryIdx || "");
       wrap.dataset.userTurn = String(this.userTurnIndex || "");
+      // Fork-from-message (issue #42): remember this message as the fork
+      // point for any assistant message that follows it.
+      if (Number(entryIdx) > 0) {
+        this.lastUserForkTurn = Number(entryIdx);
+        this.lastUserForkText = text || "";
+      }
       // Quiet "You" tag anchors the demoted user prompt (design-system #2:
       // never emphasize the user's own message). It is a sibling of the pill
       // so .pill.textContent stays the clean prompt text.
@@ -2045,6 +2060,18 @@
       edit.className = "action edit"; edit.textContent = "✎ edit";
       edit.onclick = () => this.startEdit(wrap, pill, text);
       actions.appendChild(copy); actions.appendChild(edit);
+      // Fork (issue #42): branch the conversation at this message and re-enter
+      // its text in the fork's composer, ready for editing and submission.
+      if (Number(entryIdx) > 0) {
+        const fork = document.createElement("button");
+        fork.type = "button";
+        fork.className = "action fork";
+        fork.textContent = "⎇ fork";
+        fork.title = "fork the conversation from this message";
+        fork.setAttribute("aria-label", "fork the conversation from this message");
+        fork.onclick = () => this.startFork(Number(entryIdx), text);
+        actions.appendChild(fork);
+      }
       wrap.appendChild(tag); wrap.appendChild(pill); wrap.appendChild(actions);
       this.conversation.appendChild(wrap);
       return wrap;
@@ -2404,6 +2431,10 @@
         if (typeof data.turn === "number" && data.turn > 0) {
           wrap.dataset.entryIdx = String(data.turn);
           this.entryIndex = Math.max(this.entryIndex, data.turn);
+          // The server echo carries the authoritative transcript entry index
+          // for the fork point; the local echo's was only inferred.
+          this.lastUserForkTurn = data.turn;
+          this.lastUserForkText = data.text || this.lastUserForkText;
         }
         if (turnId) wrap.dataset.turnId = turnId;
         delete wrap.dataset.localEcho;
@@ -2516,6 +2547,65 @@
       input.select();
     },
 
+    // startFork forks the session at a transcript entry index WITHOUT running
+    // anything (issue #42): the child session holds only the entries before
+    // that user message, and the original message text is staged in the
+    // child's composer (sticky per-session draft) so the user edits and
+    // submits it explicitly — the fork never auto-runs the message.
+    async startFork(forkTurn, originalText) {
+      const turn = parseInt(forkTurn, 10);
+      if (!turn || turn < 1) return;
+      try {
+        const json = window.SerfAppwire
+          ? await window.SerfAppwire.forkThread(this.sessionId, { turn, defer_input: true })
+          : await fetch("/s/" + encodeURIComponent(this.sessionId) + "/fork", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ turn, defer_input: true }),
+            }).then(async (resp) => {
+              if (!resp.ok) throw new Error(await resp.text());
+              return resp.json();
+            });
+        // Stage the message text as the fork child's composer draft. Prefer
+        // the server-authoritative original from the transcript; fall back to
+        // the rendered text the action was bound with.
+        const childSession = json.session_id || json.child_session_id || "";
+        const composerText = json.original_input || originalText || "";
+        if (childSession && composerText && window.SerfDrafts && typeof window.SerfDrafts.writeFor === "function") {
+          window.SerfDrafts.writeFor(childSession, composerText);
+        }
+        // Refresh sidebar so the new fork shows up.
+        if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
+        // Navigate to the forked session; its composer binds the staged draft.
+        window.location.href = "/s/" + encodeURIComponent(json.ref || json.child_session_id || json.session_id);
+      } catch (e) {
+        this.appendBanner("error", "fork failed: " + e.message, { source: "hub", title: "Hub fork error" });
+      }
+    },
+
+    // appendMessageForkAction adds the fork-from-message affordance (issue
+    // #42) to an assistant message: fork at the user prompt that produced
+    // this reply and stage that prompt in the fork's composer (retry
+    // semantics). Idempotent; a message with no recorded fork point (before
+    // any user input) gets no action.
+    appendMessageForkAction(el) {
+      if (!el || !el.dataset) return;
+      const turn = parseInt(el.dataset.forkTurn || "0", 10);
+      if (!turn || turn < 1) return;
+      if (el.querySelector(".msg-fork")) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "action fork msg-fork";
+      btn.textContent = "⎇ fork";
+      btn.title = "fork the conversation from the prompt that produced this message";
+      btn.setAttribute("aria-label", "fork the conversation from the prompt that produced this message");
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.startFork(turn, el.dataset.forkText || "");
+      });
+      el.appendChild(btn);
+    },
+
     beginAssistantMessage() {
       this.removeColdStartSkeleton();
       this.endCheapCluster();
@@ -2527,6 +2617,13 @@
       el.className = "assistant-message";
       el.classList.add("streaming");
       el.dataset.turnId = this.activeTurnId || "";
+      // Fork-from-message (issue #42): an assistant message forks at the user
+      // prompt that produced it — the conversation rewinds to before that
+      // prompt and the prompt text is staged in the fork's composer.
+      if (this.lastUserForkTurn > 0) {
+        el.dataset.forkTurn = String(this.lastUserForkTurn);
+        el.dataset.forkText = this.lastUserForkText || "";
+      }
       this.conversation.appendChild(el);
       this.activeMessages.set(id, { el, textBuf: "" });
     },
@@ -2541,9 +2638,14 @@
       const el = document.createElement("div");
       el.className = "assistant-message";
       el.dataset.turnId = this.activeTurnId || "";
+      if (this.lastUserForkTurn > 0) {
+        el.dataset.forkTurn = String(this.lastUserForkTurn);
+        el.dataset.forkText = this.lastUserForkText || "";
+      }
       try { el.innerHTML = window.marked.parse(text); }
       catch (e) { el.textContent = text; }
       this.conversation.appendChild(el);
+      this.appendMessageForkAction(el);
       return el;
     },
 
@@ -2690,6 +2792,7 @@
             try { last.innerHTML = window.marked.parse(finalText); }
             catch (e) { last.textContent = finalText; }
             if (meta) last.appendChild(meta); // re-parse destroyed children; the badge rides back
+            this.appendMessageForkAction(last); // dataset.forkTurn survives the re-parse
             return;
           }
         }
@@ -2709,6 +2812,7 @@
       }
       m.el.classList.remove("streaming");
       this.renderAssistantMessage(m, finalText);
+      this.appendMessageForkAction(m.el);
       this.lastFinalizedAssistantEl = m.el;
     },
 
@@ -5192,6 +5296,8 @@
         currentMessageId: this.currentMessageId,
         userTurnIndex: this.userTurnIndex,
         entryIndex: this.entryIndex,
+        lastUserForkTurn: this.lastUserForkTurn,
+        lastUserForkText: this.lastUserForkText,
         cheapToolCluster: this.cheapToolCluster,
         subagentModule: this.subagentModule,
         lastUserText: this.lastUserText,
@@ -5230,6 +5336,8 @@
       this.currentMessageId = null;
       this.userTurnIndex = 0;
       this.entryIndex = 0;
+      this.lastUserForkTurn = 0;
+      this.lastUserForkText = "";
       this.cheapToolCluster = null;
       this.subagentModule = null;
       this.activeTurnId = "";

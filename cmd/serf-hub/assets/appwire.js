@@ -604,9 +604,17 @@
       sourceTurnId: String(body.turn || ""),
       editedInput: body.edited_message || "",
       label: body.label || "",
+      // defer_input (issue #42): fork WITHOUT replacing the turn — the child
+      // holds only the prefix and the response's originalInput comes back so
+      // the renderer can stage it in the fork's composer for editing.
+      deferInput: body.defer_input === true,
     }).then((resp) => {
       const thread = resp.thread || {};
-      return { ref: threadRef(thread), session_id: threadID(thread) };
+      return {
+        ref: threadRef(thread),
+        session_id: threadID(thread),
+        original_input: resp.originalInput || "",
+      };
     });
   }
 
