@@ -1179,8 +1179,9 @@
     if (open) {
       document.body.setAttribute("data-sidebar-open", "");
       document.addEventListener("click", onOutsideClick, true);
-      // Only trap focus on phone — desktop sidebar isn't a drawer. Match
-      // the design-language breakpoint.
+      // Only trap focus on phone — on tablet/desktop the collapsed-state
+      // drawer follows the short-landscape precedent (no trap; ⌘B and the
+      // chip remain reachable). Match the design-language breakpoint.
       var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
       if (isPhone && window.SerfFocusTrap) {
         var sidebar = document.getElementById("sidebar");
@@ -1242,16 +1243,19 @@
 
   // Sidebar tri-state — auto | rail | pane, persisted to localStorage under
   // the legacy key. body[data-sidebar-mode] records the SETTING;
-  // body[data-sidebar-rail] reflects the EFFECTIVE state, so all rail CSS and
-  // panes.js's resizer-disable keep reading one attribute. Migration: the old
-  // binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
+  // body[data-sidebar-rail] reflects the EFFECTIVE state, so the collapsed CSS
+  // and panes.js's resizer-disable keep reading one attribute. Migration: the
+  // old binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
   // rail below 1200px, pane at/above — before the tablet band existed the
   // sidebar simply stayed full, so this is a deliberate improvement).
+  // "rail" is the legacy name for the collapsed state: since issue #33 the
+  // collapse is TOTAL — the sidebar leaves the layout (no 56px icon strip)
+  // and reopens as an overlay drawer via the app-shell nav chip.
   var SIDEBAR_MODE_KEY = "serf-hub.sidebar.rail";
   var SIDEBAR_DESKTOP_QUERY = "(min-width: 1200px)";
   // Phone band: the off-canvas drawer (body[data-sidebar-open]) governs the
-  // sidebar, never the tri-state. The rail's 56px strip is a desktop/tablet
-  // affordance; on a phone it shrinks the drawer to an unusable sliver.
+  // sidebar, never the tri-state. Collapse is a desktop/tablet affordance; on
+  // a phone the rail attribute would hide the drawer entirely.
   var SIDEBAR_PHONE_QUERY = "(max-width: 767px)";
 
   function readSidebarMode() {

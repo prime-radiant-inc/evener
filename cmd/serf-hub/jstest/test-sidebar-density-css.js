@@ -11,13 +11,11 @@ function ruleBody(selector) {
 const fails = [];
 const menuBtn = ruleBody(".sb-menu-btn");
 if (!/min-height:\s*24px/.test(menuBtn) || !/min-width:\s*24px/.test(menuBtn)) fails.push("reveal button must be >=24px");
-// Rail mode (56px icon-only collapsed sidebar) must hide the ENTIRE
-// .sb-section archived-section toggle, exactly like the legacy
-// .tier-header/.sidebar-section-header disclosure headers are hidden there
-// — otherwise its "Archived sessions (N)" label has no width constraint and bleeds
-// out of the 56px rail into the workspace pane.
-const railHidesSbSection = /body\.app\[data-sidebar-rail\][^{}]*\.sb-section[^{}]*\{([^{}]*)\}/.exec(css);
-if (!railHidesSbSection || !/display:\s*none/.test(railHidesSbSection[1])) fails.push("rail mode (data-sidebar-rail) must hide .sb-section entirely (display:none)");
+// Collapsed mode (data-sidebar-rail) hides the ENTIRE sidebar (issue #33 —
+// the 56px icon rail was retired), so no per-element rail rules (e.g. hiding
+// .sb-section to stop its "Archived (N)" label bleeding out of the strip) may
+// survive: the whole-hide contract lives in test-sidebar-collapsed-css.js.
+if (/body\.app\[data-sidebar-rail\][^{}]*\.sb-section/.test(css)) fails.push("collapsed mode must not carry per-element .sb-section strip styling (the whole sidebar is hidden)");
 if (fails.length) { fails.forEach((f) => console.log("FAIL: " + f)); process.exit(1); }
 console.log("ok sidebar density/contrast floor");
 process.exit(0);

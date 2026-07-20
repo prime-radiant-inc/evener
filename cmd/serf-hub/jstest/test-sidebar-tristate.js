@@ -49,10 +49,10 @@ assert(w.SerfSidebar.readSidebarMode() === "rail", "auto cycles to rail");
 assert(w.localStorage.getItem("serf-hub.sidebar.rail") === "rail", "cycle persists to storage");
 
 // Phone band (max-width: 767px): the off-canvas drawer governs, never the
-// 56px rail — body[data-sidebar-rail] must stay unset for every mode, or the
-// rail CSS (width:56px !important-free but higher-specificity) shrinks the
-// drawer to an unusable strip. The persisted pref is untouched: a rail pref
-// still applies when the same browser is back on a tablet/desktop viewport.
+// collapsed state — body[data-sidebar-rail] must stay unset for every mode, or
+// the collapsed CSS (display:none on #sidebar, higher specificity) kills the
+// drawer entirely. The persisted pref is untouched: a rail pref still applies
+// when the same browser is back on a tablet/desktop viewport.
 w = makeWindow(null, false, true);
 assert(!w.document.body.hasAttribute("data-sidebar-rail"), "auto on phone → no rail attr (drawer governs)");
 assert(w.document.body.getAttribute("data-sidebar-mode") === "auto", "phone auto still records the setting");

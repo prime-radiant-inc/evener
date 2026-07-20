@@ -904,24 +904,35 @@ body.app[data-pane-dragging="true"] .pane-frame { pointer-events: none; }
   border-color: var(--line);
 }
 
-/* Rail mode: collapse to 56px, hide text columns, hide most header actions. */
-body.app[data-sidebar-rail] #sidebar { width: 56px; min-width: 56px; max-width: 56px; }
+/* Collapsed mode (issue #33): the sidebar leaves the layout entirely — the
+   56px icon rail is retired. The app-shell nav chip (display:none on desktop
+   otherwise) floats top-left so the sidebar can be reopened as an overlay
+   drawer, mirroring the phone / short-landscape pattern; ⌘B and the in-header
+   mode toggle cycle back to pane. */
+body.app[data-sidebar-rail] #sidebar { display: none; }
 body.app[data-sidebar-rail] .sidebar-resizer { display: none; }
-body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
-body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
-body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "☰"; }
-body.app[data-sidebar-rail] .sidebar-rail-toggle { font-size: 0; }
-body.app[data-sidebar-rail] .sidebar-rail-toggle::before { font-size: var(--text-base); }
-body.app[data-sidebar-rail] .sidebar-section-header,
-body.app[data-sidebar-rail] .project-header .project-name,
-body.app[data-sidebar-rail] .project-header .count,
-body.app[data-sidebar-rail] .project-header .project-folder,
-body.app[data-sidebar-rail] .project-gear-btn,
-body.app[data-sidebar-rail] .project-new-btn { display: none; }
-body.app[data-sidebar-rail] .sb-row { grid-template-columns: 1fr; padding: var(--space-2); justify-content: center; }
-body.app[data-sidebar-rail] .sb-row .text-col,
-body.app[data-sidebar-rail] .sb-row .title,
-body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
+body.app[data-sidebar-rail] .app-nav-toggle {
+  display: inline-flex;
+  position: fixed;
+  top: var(--space-3);
+  left: var(--space-3);
+  width: var(--tap-min);
+  height: var(--tap-min);
+  z-index: var(--z-fixed-action);
+}
+body.has-connection-banner.app[data-sidebar-rail] .app-nav-toggle { top: calc(32px + var(--space-3)); }
+body.app[data-sidebar-rail] .workspace-header { padding-left: calc(var(--tap-min) + var(--space-6)); }
+body.app[data-sidebar-rail][data-sidebar-open] #sidebar {
+  display: block;
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--sidebar-w, 260px);
+  max-width: 88vw;
+  z-index: var(--z-drawer);
+  background: var(--surface);
+}
 
 /* Container query — the same collapse triggered structurally if a parent
    ever shrinks the sidebar below 80px independent of the rail attribute. */
@@ -1127,15 +1138,6 @@ body.app[data-sidebar-rail] .sb-row .row-end { display: none; }
   transform: rotate(90deg);
 }
 
-/* Rail mode: hide tier headers, age, and subagent rows along with the
-   rest of the text-bearing chrome. */
-body.app[data-sidebar-rail] .tier-header,
-body.app[data-sidebar-rail] .project-age,
-body.app[data-sidebar-rail] .subagent-toggle,
-body.app[data-sidebar-rail] .cluster-header,
-body.app[data-sidebar-rail] .sb-section { display: none; }
-body.app[data-sidebar-rail] .subagent-row .subagent-title { display: none; }
-body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: none; }
 @container sidebar (max-width: 80px) {
   .tier-header span,
   .project-age,
@@ -1299,13 +1301,9 @@ body.app[data-sidebar-rail] .subagent-row-wrap > .open-beside-btn { display: non
   color: var(--ink-2);
 }
 
-/* Rail mode + container-collapse hide the needs-you label, rollup badges,
-   cluster text, and date sub-headers along with the rest of the text-bearing
-   sidebar chrome. */
-body.app[data-sidebar-rail] .needs-you-header span,
-body.app[data-sidebar-rail] .rollup-badge,
-body.app[data-sidebar-rail] .cluster-header .text-col,
-body.app[data-sidebar-rail] .test-date-header { display: none; }
+/* Container-collapse hides the needs-you label, rollup badges, cluster text,
+   and date sub-headers along with the rest of the text-bearing sidebar
+   chrome. */
 @container sidebar (max-width: 80px) {
   .needs-you-header span,
   .rollup-badge,
@@ -1494,10 +1492,6 @@ details.session-tier.archived .sb-row .title { color: var(--ink-2); }
   color: var(--ink);
 }
 
-/* Rail mode + container-collapse: hide tier labels and archive buttons
-   along with the rest of the text-bearing sidebar chrome. */
-body.app[data-sidebar-rail] .session-tier-label,
-body.app[data-sidebar-rail] .archive-btn { display: none; }
 /* Archive control icon (a box, not the ⋯ menu glyph): block so it centers in
    the icon button without baseline gap; inherits the button's color. */
 .archive-btn .archive-icon { display: block; }
@@ -5842,10 +5836,8 @@ body.doc-page {
    is opacity:0 from intercepting clicks meant for the other. */
 .sb-row .age-slot .sb-menu-btn { pointer-events: none; }
 .sb-row:hover .age-slot .sb-menu-btn, .sb-row:focus-within .age-slot .sb-menu-btn { pointer-events: auto; }
-/* Rail mode (56px icon rail): session rows already hide their whole
-   .row-end (age + ⋯ menu) above — nothing session-row-specific needed
-   here. Project headers have no row-end equivalent, so they still need
-   their own hide, but they have none in rail mode today (unchanged). */
+/* Collapsed mode hides the entire sidebar (issue #33), so no row-end or
+   project-header menu chrome needs rail-scoped hides here. */
 .sb-menu { z-index: 60; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-1); box-shadow: 0 4px 16px rgba(0,0,0,.35); min-width: 160px; }
 .sb-menu-item { display: block; width: 100%; text-align: left; padding: var(--space-2) var(--space-3); background: transparent; border: none; color: var(--ink); font-size: var(--text-sm); min-height: 24px; }
 .sb-menu-item:hover, .sb-menu-item:focus { background: var(--surface-2); }
