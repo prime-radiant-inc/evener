@@ -3,10 +3,12 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/sandbox"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/identifier"
@@ -116,6 +118,14 @@ func TestAsideSession_CopiesFullTranscriptAtTip(t *testing.T) {
 // i.e. it stays addressable as a child of the main session in the tree.
 func TestAsideSession_ChildRestoresAsSideThread(t *testing.T) {
 	t.Parallel()
+	// The fixture parent runs --sandbox workspace-write; restoring the child
+	// enforces it, which requires a real sandbox backend (bubblewrap on
+	// Linux). CI runners without one refuse fail-closed — skip there, the
+	// config-inheritance assertion itself is host-independent and covered by
+	// TestAsideSession_CopiesFullTranscriptAtTip.
+	if !sandbox.Prober(sandbox.RealProber{}).Probe().BwrapCapable && runtime.GOOS == "linux" {
+		t.Skip("no sandbox backend on this host (bubblewrap unavailable)")
+	}
 	stateDir, parentID := buildAsideParentSession(t)
 
 	childID, err := AsideSession(stateDir, parentID)
