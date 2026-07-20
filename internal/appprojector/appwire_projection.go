@@ -36,15 +36,20 @@ type AppEventProjector struct {
 	threadID string
 	ref      string
 
-	nextTurn        int
-	nextItem        int
-	reservedTurnID  string
-	activeTurnID    string
-	assistantItem   string
-	assistantText   string
-	reasoningItem   string
-	toolItemsByKey  map[string]string
-	toolArgsByKey   map[string]string
+	nextTurn       int
+	nextItem       int
+	reservedTurnID string
+	activeTurnID   string
+	assistantItem  string
+	assistantText  string
+	reasoningItem  string
+	toolItemsByKey map[string]string
+	toolArgsByKey  map[string]string
+	// toolStartByKey records each open tool call's server-side start time (the
+	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
+	// the completed item with the call's real StartedAt/DurationMS (issue
+	// #37: the web hover meta shows server truth or nothing).
+	toolStartByKey  map[string]time.Time
 	suppressedTools map[string]struct{}
 	skillCandidate  skillActivationCandidate
 
@@ -78,6 +83,7 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		ref:             ref,
 		toolItemsByKey:  map[string]string{},
 		toolArgsByKey:   map[string]string{},
+		toolStartByKey:  map[string]time.Time{},
 		suppressedTools: map[string]struct{}{},
 	}
 }
@@ -132,6 +138,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
+			p.toolStartByKey = map[string]time.Time{}
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
@@ -183,6 +190,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
+			p.toolStartByKey = map[string]time.Time{}
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
@@ -356,6 +364,24 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		itemID := p.nextItemID("tool")
 		p.toolItemsByKey[data.CallID] = itemID
 		p.toolArgsByKey[data.CallID] = data.ArgumentsJSON
+		startedItem := appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            itemID,
+			TurnID:        p.activeTurnID,
+			ToolName:      data.ToolName,
+			CallID:        data.CallID,
+			ArgumentsJSON: data.ArgumentsJSON,
+			Description:   data.Description,
+			Status:        appwire.TurnStatusInProgress,
+		}
+		// The event's own timestamp is the server truth for when the call
+		// started; a zero timestamp leaves StartedAt unset rather than
+		// reporting the Unix epoch (issue #37).
+		if !event.Timestamp.IsZero() {
+			unix := event.Timestamp.Unix()
+			startedItem.StartedAt = &unix
+			p.toolStartByKey[data.CallID] = event.Timestamp
+		}
 		if data.ToolName == "use_skill" {
 			skill := useSkillNameFromArgs(data.ArgumentsJSON)
 			p.skillCandidate = skillActivationCandidate{
@@ -370,16 +396,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"turnId":   p.activeTurnID,
-			"item": appwire.ThreadItem{
-				Type:          "commandExecution",
-				ID:            itemID,
-				TurnID:        p.activeTurnID,
-				ToolName:      data.ToolName,
-				CallID:        data.CallID,
-				ArgumentsJSON: data.ArgumentsJSON,
-				Description:   data.Description,
-				Status:        appwire.TurnStatusInProgress,
-			},
+			"item":     startedItem,
 		})}
 	case events.EventToolCallOutputDelta:
 		data := eventData[events.ToolCallOutputDeltaData](event.Data)
@@ -424,6 +441,22 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			// subagent activity line) render the purpose from Description.
 			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
 		}
+		// Server-truth timing for the hover meta (issue #37): CompletedAt from
+		// this event's own timestamp; StartedAt/DurationMS from the recorded
+		// call start. Anything not honestly recorded stays unset.
+		if !event.Timestamp.IsZero() {
+			unix := event.Timestamp.Unix()
+			item.CompletedAt = &unix
+			if start, ok := p.toolStartByKey[data.CallID]; ok && !start.IsZero() {
+				startUnix := start.Unix()
+				item.StartedAt = &startUnix
+				duration := event.Timestamp.Sub(start).Milliseconds()
+				if duration >= 0 {
+					item.DurationMS = &duration
+				}
+			}
+		}
+		delete(p.toolStartByKey, data.CallID)
 		if data.ToolName == "use_skill" && data.Error == "" {
 			skill := useSkillNameFromArgs(argsJSON)
 			activationName := ""
@@ -789,6 +822,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.reasoningItem = ""
 			p.toolItemsByKey = map[string]string{}
 			p.toolArgsByKey = map[string]string{}
+			p.toolStartByKey = map[string]time.Time{}
 			p.suppressedTools = map[string]struct{}{}
 			turn := appwire.Turn{ID: turnID, Status: turnStatus}
 			p.applyPendingTiming(turnID, &turn)

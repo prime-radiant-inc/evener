@@ -543,7 +543,8 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 		}
 	}
 	return schema.Turn{
-		Kind: schema.TurnKind(turn.Kind),
+		Kind:      schema.TurnKind(turn.Kind),
+		Timestamp: turn.Timestamp,
 		Message: llm.Message{
 			Role:    llm.Role(turn.Message.Role),
 			Content: content,

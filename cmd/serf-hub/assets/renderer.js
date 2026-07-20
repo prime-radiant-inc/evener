@@ -3047,7 +3047,10 @@
       parent.appendChild(el);
       this.attachFileOpenBeside(el, tool, args);
 
-      const startedAt = toolEventTime(data) || new Date();
+      // Issue #37: the hover meta shows REAL server times or nothing. No
+      // client wall-clock fallback — a timestamp minted at render time would
+      // claim the action happened when the browser drew the row.
+      const startedAt = toolEventTime(data);
       const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, caretEl: null, ids: [], startedAt, durationMs: toolDuration(data) };
       this.renderToolMeta(state, null);
       if (renderer.body) {
@@ -3131,7 +3134,7 @@
         const text = m.renderer.result ? m.renderer.result(data, out, m) : "";
         m.resultEl.textContent = (text === "ok" || text === "done") ? "" : text;
       }
-      const endedAt = toolEventTime(data) || new Date();
+      const endedAt = toolEventTime(data);
       const duration = toolDuration(data);
       if (duration != null) m.durationMs = duration;
       this.renderToolMeta(m, endedAt);
@@ -3292,7 +3295,11 @@
       const parts = [];
       if (state.startedAt) parts.push(formatToolClock(state.startedAt));
       const duration = state.durationMs != null ? state.durationMs : (endedAt && state.startedAt ? endedAt - state.startedAt : null);
-      if (duration != null) parts.push(formatToolDuration(duration));
+      // A duration derived from second-precision replay stamps that lands on
+      // 0 is too coarse to display honestly (the real span is anywhere in
+      // 0–2s) — omit it rather than show a fake "1ms". An explicit server
+      // durationMs is millisecond truth and always shown.
+      if (duration != null && (state.durationMs != null || duration > 0)) parts.push(formatToolDuration(duration));
       state.metaEl.textContent = parts.join(" · ");
     },
 

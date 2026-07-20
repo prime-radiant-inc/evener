@@ -2027,3 +2027,65 @@ func notificationThreadStatus(t *testing.T, items []AppNotification, method stri
 	t.Fatalf("missing notification %q in %+v", method, items)
 	return appwire.ThreadStatus{}
 }
+
+// TestAppEventProjectorStampsToolItemTiming (issue #37): the web transcript's
+// per-tool hover meta (timestamp · runtime) must be built from REAL server
+// times, not the browser's wall clock. The session event stream already
+// records when each tool call started and ended (SessionEvent.Timestamp), so
+// the projector stamps the started item with StartedAt and the completed item
+// with StartedAt/CompletedAt/DurationMS. Zero timestamps stay unset rather
+// than reporting the Unix epoch.
+func TestAppEventProjectorStampsToolItemTiming(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	start := time.Unix(1_700_000_000, 0).UTC()
+	end := start.Add(2500 * time.Millisecond)
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Timestamp: start, Data: events.ToolCallStartData{
+		ToolName: "shell",
+		CallID:   "call_timed",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemStarted)
+	if item.StartedAt == nil || *item.StartedAt != start.Unix() {
+		t.Fatalf("started item StartedAt=%v, want %d", item.StartedAt, start.Unix())
+	}
+
+	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Timestamp: end, Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_timed",
+		Output:   "ok",
+	}})
+	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.StartedAt == nil || *item.StartedAt != start.Unix() {
+		t.Fatalf("completed item StartedAt=%v, want %d", item.StartedAt, start.Unix())
+	}
+	if item.CompletedAt == nil || *item.CompletedAt != end.Unix() {
+		t.Fatalf("completed item CompletedAt=%v, want %d", item.CompletedAt, end.Unix())
+	}
+	if item.DurationMS == nil || *item.DurationMS != 2500 {
+		t.Fatalf("completed item DurationMS=%v, want 2500", item.DurationMS)
+	}
+}
+
+// TestAppEventProjectorLeavesToolItemTimingUnsetWithoutClock: an event with a
+// zero timestamp (no recorded server time) must NOT mint epoch-0 stamps — the
+// client shows nothing rather than a fake time (issue #37).
+func TestAppEventProjectorLeavesToolItemTimingUnsetWithoutClock(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName: "shell",
+		CallID:   "call_clockless",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemStarted)
+	if item.StartedAt != nil {
+		t.Fatalf("started item StartedAt=%v, want nil for zero event timestamp", *item.StartedAt)
+	}
+	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_clockless",
+		Output:   "ok",
+	}})
+	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.StartedAt != nil || item.CompletedAt != nil || item.DurationMS != nil {
+		t.Fatalf("completed item timing=(%v,%v,%v), want all nil for zero event timestamps", item.StartedAt, item.CompletedAt, item.DurationMS)
+	}
+}
