@@ -226,16 +226,20 @@ test("still catches hex/rgb/hsl/oklch literals alongside named colors", () => {
   expect(chromaticLiteralViolations(".foo { color: rgb(255, 0, 0); }")).toEqual(["rgb("]);
 });
 
-// --- (b) the four attention-family vars stay on the allowlist ----------
+// --- (b) the three attention-family vars stay on the allowlist ---------
 //
-// --attention/--alive/--danger/--accent exist so exactly one meaning maps
-// to each hue across the whole app (a human is needed / agent is working /
-// something failed / focus-selection-links). A widget earns a place on
-// this list only when it has a state that genuinely needs one of those
-// hues - a status color, a destructive action, the cadence signature -
-// never for decoration. This list is seeded with every widget named in the
-// wave-2 plan's locked API (not just the two this task builds) so later
-// streams, which never edit this file, land pre-cleared.
+// --attention/--alive/--danger exist so exactly one meaning maps to each
+// hue across the whole app (a human is needed / agent is working /
+// something failed). A widget earns a place on this list only when it has
+// a state that genuinely needs one of those hues - a status color, a
+// destructive action, the cadence signature - never for decoration.
+//
+// --accent is deliberately NOT gated: it is interaction chrome by
+// definition (the plan's Global Constraints require an accent
+// :focus-visible ring on EVERY interactive widget, and accent also carries
+// selection and links), so gating it would grow this list with every
+// interactive widget forever while protecting nothing - the design thesis
+// guards the three ATTENTION-class hues' meanings, not focus chrome.
 const SEMANTIC_USE_ALLOWLIST = [
   "cadence", // signature: state dot + trailing-edge tick tint
   "button", // danger variant
@@ -247,7 +251,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "dialog", // danger footer
 ];
 
-const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger|accent)\b/;
+const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 
 // The allowlist is a widget concept: only src/widgets/<name>/<name>.module.css
 // is eligible, keyed off the directory (not just the basename) so a
@@ -256,7 +260,7 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger|accent)\b/;
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
 for (const [path, text] of OTHER_STYLESHEETS) {
-  test(`${path} only reaches for --attention/--alive/--danger/--accent if allowlisted`, () => {
+  test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
     if (!SEMANTIC_VAR_RE.test(text)) return;
     const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
     expect(widgetMatch).not.toBeNull();
