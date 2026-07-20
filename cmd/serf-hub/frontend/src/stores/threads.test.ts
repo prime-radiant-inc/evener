@@ -70,6 +70,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("FakeClient", () => {
+  test("request() rejects while not ready, mirroring AppwireClient's own ready-gate, without recording the call", async () => {
+    const fake = new FakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    await expect(fake.request("thread/read", { ref: "ref_a", includeTurns: true })).rejects.toThrow(
+      /cannot call "thread\/read" while state is "connecting"/,
+    );
+    expect(fake.calls).toHaveLength(0); // never "sent" — the real client never reaches socket.send() in this case either
+  });
+});
+
 describe("useConnectionStore", () => {
   test("connect captures the client's current state immediately", () => {
     const fake = new FakeClient("connecting");
@@ -174,6 +186,47 @@ describe("useThreadsStore.ensureThread", () => {
     });
 
     await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow("boom");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+  });
+
+  test("a failed ensureThread rolls back its own refcount: retry-success + a single release fully untracks the ref", async () => {
+    const fake = connectFakeClient();
+    let shouldFail = true;
+    let readCount = 0;
+    fake.on("thread/read", () => {
+      readCount += 1;
+      if (shouldFail) throw new Error("boom");
+      return readResponse("ref_a");
+    });
+
+    // Attempt 1 fails. Without rolling back, its refcount increment would
+    // strand the ref permanently once attempt 2 succeeds and the caller
+    // releases only once (the normal mount/retry/unmount lifecycle: one
+    // logical pane, two ensureThread attempts, one eventual release).
+    await expect(threadsStore.getState().ensureThread("ref_a")).rejects.toThrow("boom");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // Attempt 2 (the retry) succeeds.
+    shouldFail = false;
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    expect(readCount).toBe(2); // one failed read, one successful read — no stale inflight sharing across attempts
+
+    // The single natural release must fully untrack it. releaseThread()
+    // only removes the ref from `threads` on the branch where its refcount
+    // was exactly 1 going in — so this passing is itself proof the failed
+    // attempt's claim was rolled back rather than silently surviving
+    // alongside the successful retry's claim.
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+
+    // Further evidence refCounts (module-private, unreachable directly from
+    // this test) reads back at true zero rather than negative or stale: a
+    // brand new cycle behaves exactly as if the ref had never been touched
+    // before — one fresh read, one release fully untracks it again.
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(readCount).toBe(3);
+    threadsStore.getState().releaseThread("ref_a");
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 

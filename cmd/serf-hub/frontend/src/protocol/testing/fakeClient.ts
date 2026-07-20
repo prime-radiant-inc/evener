@@ -55,6 +55,15 @@ export class FakeClient implements AppwireClientLike {
   }
 
   request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
+    // Fidelity with AppwireClient.request's own ready-gate (client.ts):
+    // a store (or a future test) calling request() while not ready should
+    // see the same rejection shape from this fake as it would from the real
+    // client — not a scripted response that could never actually arrive
+    // over the wire in that state, and no frame recorded as "sent" (the
+    // real client never reaches socket.send() in this case either).
+    if (this.state !== "ready") {
+      return Promise.reject(new Error(`FakeClient: cannot call "${method}" while state is "${this.state}"`));
+    }
     this.calls.push({ method, params });
     const handler = this.handlers.get(method);
     if (!handler) {

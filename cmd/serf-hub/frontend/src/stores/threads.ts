@@ -181,7 +181,23 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         })
         .catch(() => {});
     }
-    const model = await inflight;
+    let model: ThreadModel;
+    try {
+      model = await inflight;
+    } catch (err) {
+      // This call's own claim (the increment above) never landed: undo it
+      // via the same releaseThread() a caller would otherwise use, so a
+      // caller that retries ensureThread() after a failure and then
+      // releases exactly once (the normal mount/retry/unmount lifecycle)
+      // doesn't strand a phantom refcount that keeps a never-hydrated ref
+      // "tracked" forever (scanned by handleNotification on every
+      // notification, with no pane left to ever release it). Reusing
+      // releaseThread() rather than hand-rolling the decrement also means
+      // its own <=0 guard already makes this safe if a concurrent
+      // releaseThread() consumed this exact claim first.
+      threadsStore.getState().releaseThread(ref);
+      throw err;
+    }
     // A concurrent releaseThread() may have dropped this ref to zero panes
     // while the hydrate was in flight; don't resurrect it.
     if ((refCounts.get(ref) ?? 0) <= 0) return;
