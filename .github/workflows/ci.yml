@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+
+      - name: Test and build
+        run: make test-web && make build-web
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -18,6 +32,15 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.work
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+
+      - name: Build web frontend (go:embed all:frontend/dist needs real output)
+        run: make build-web
 
       - name: Build
         run: go build ./...

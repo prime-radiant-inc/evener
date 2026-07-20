@@ -1,4 +1,4 @@
-.PHONY: build build-runtime build-hub build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
+.PHONY: build build-runtime build-hub build-web test-web build-tui build-doctor build-all build-linux build-namingcheck dist install install-home install-system test-install test test-short test-race vet lint lint-naming lint-internal lint-docs lint-golangci clean fuzz fuzz-nightly fuzz-triage fuzz-triage-selftest fuzz-continuous fuzz-continuous-selftest fuzz-drive fuzz-drive-selftest fuzz-coverage-global fuzz-coverage-global-selftest fuzz-bisect fuzz-bisect-selftest fuzz-oracle-audit fuzz-oracle-audit-selftest fuzz-mutation-score fuzz-ledger fuzz-coverage fuzz-gap-check fuzz-registry-check fuzz-goldens secret-scan fuzz-corpus-scan refresh-model-catalog
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -29,7 +29,19 @@ build-linux:
 	go clean -cache -x ./agent/ 2>/dev/null; \
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
-build-hub: build-runtime
+build-hub: build-runtime build-web
+
+# build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
+# into frontend/dist, which build-hub embeds via go:embed. npm ci installs
+# exactly what's pinned in the committed package-lock.json.
+build-web:
+	cd cmd/serf-hub/frontend && npm ci && npm run build
+
+# test-web is the frontend's single gate entry point: typecheck, unit tests,
+# then lint (mirrors the Go test+lint split, but the frontend toolchain
+# doesn't need separate targets per check).
+test-web:
+	cd cmd/serf-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
 
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/
