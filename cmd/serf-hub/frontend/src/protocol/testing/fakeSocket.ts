@@ -51,9 +51,14 @@ export class FakeSocket implements WebSocketLike {
   send(data: string): void {
     this.sent.push(data);
     if (!this.autoInitialize) return;
+    // Auto-reply to the two requests a client sends without an explicit
+    // test-scripted response: the handshake's "initialize" and the
+    // heartbeat's "ping" liveness probe.
     const msg = JSON.parse(data) as { id?: number; method?: string };
     if (msg.method === "initialize" && msg.id != null) {
       this.receive({ id: msg.id, result: FAKE_INITIALIZE_RESULT });
+    } else if (msg.method === "ping" && msg.id != null) {
+      this.receive({ id: msg.id, result: {} });
     }
   }
 

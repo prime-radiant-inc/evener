@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { AppwireClient, type AnyNotification, type ConnectionState } from "./client";
+import { AppwireClient, RECONNECT_BASE_MS, type AnyNotification, type ConnectionState } from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import { rpcURLFromLocation } from "./transport";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
@@ -235,20 +235,61 @@ describe("AppwireClient", () => {
     await expect(client.request("thread/list", { limit: 1 })).rejects.toThrow();
   });
 
-  test("server-initiated close fails pending requests and updates state", async () => {
-    const fake = new FakeSocket({ autoInitialize: true });
-    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
-    await connectReady(fake, client);
+  // Supersedes a pre-reconnect assertion: Task 4 had no reconnect, so an
+  // unprompted server close could only ever land in "closed" — that was the
+  // honest terminal state for the client that existed then. Task 5's spec
+  // makes reconnect automatic and unconditional once a connection has been
+  // ready, so the same drop must now surface as "reconnecting", not
+  // "closed" ("closed" is reserved for a caller-initiated close()). This
+  // test locks the new contract end to end: the drop rejects what was
+  // in-flight (never a ConnectionClosedError — that type is reserved for
+  // close()-induced rejections) without inventing a retry, and the very
+  // next backoff attempt re-dials, re-handshakes, and reaches "ready" again
+  // with onReady refiring.
+  test("server-initiated close while ready enters reconnecting, rejects pending requests, and re-handshakes to ready", async () => {
+    const sockets: FakeSocket[] = [];
+    const dial = () => {
+      const fake = new FakeSocket({ autoInitialize: true });
+      sockets.push(fake);
+      return fake;
+    };
+    function socketAt(index: number): FakeSocket {
+      const s = sockets[index];
+      if (!s) throw new Error(`expected a dialed socket at index ${index}`);
+      return s;
+    }
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: dial });
 
     const states: ConnectionState[] = [];
     client.onStateChange((s) => states.push(s));
+    let readyCount = 0;
+    client.onReady(() => {
+      readyCount += 1;
+    });
+
+    const connecting = client.connect();
+    socketAt(0).open();
+    await connecting;
+    expect(readyCount).toBe(1);
+
     const reqPromise = client.request("thread/list", { limit: 1 });
 
-    fake.closeFromServer(1006);
+    socketAt(0).closeFromServer(1006);
 
-    expect(client.state).toBe("closed");
-    expect(states).toEqual(["closed"]);
+    expect(client.state).toBe("reconnecting");
+    expect(states[states.length - 1]).toBe("reconnecting");
     await expect(reqPromise).rejects.toThrow();
+    await expect(reqPromise).rejects.not.toBeInstanceOf(ConnectionClosedError);
+
+    // The first backoff attempt re-dials a fresh socket.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    expect(sockets).toHaveLength(2);
+    socketAt(1).open();
+    await flushUntil(() => client.state === "ready");
+
+    expect(client.state).toBe("ready");
+    expect(readyCount).toBe(2);
+    expect(states[states.length - 1]).toBe("ready");
   });
 
   test("close() after socket open but before ready rejects the pending connect() promise", async () => {

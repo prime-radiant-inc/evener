@@ -1,9 +1,10 @@
 // AppwireClient owns the websocket connection to the hub's /rpc endpoint: the
-// initialize/initialized handshake, typed request/response correlation, and
-// notification fan-out. It mirrors the message-handling semantics of the
-// legacy cmd/serf-hub/assets/appwire.js. Heartbeat and reconnect are added on
-// top of this in a later change; this client only defines the state machine
-// and close handling those need, without any timers beyond request timeouts.
+// initialize/initialized handshake, typed request/response correlation,
+// notification fan-out, an application-level heartbeat, and automatic
+// reconnect with backoff. It mirrors the message-handling, heartbeat, and
+// reconnect semantics of the legacy cmd/serf-hub/assets/appwire.js
+// (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
+// backs off exponentially up to a cap.
 import type { WebSocketLike } from "./transport";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -22,6 +23,20 @@ export interface AppwireClientOptions {
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CLIENT_INFO = { name: "serf-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
+
+// Same values as legacy appwire.js. Browsers can't send WebSocket ping
+// frames from JS, so a silently-dropped connection leaves readyState OPEN
+// forever with no notifications flowing; the heartbeat sends a cheap app-level
+// `ping` on an interval and force-closes the socket if it goes unanswered.
+export const HEARTBEAT_INTERVAL_MS = 20_000;
+export const HEARTBEAT_TIMEOUT_MS = 10_000;
+
+// Reconnect backoff: doubles from the base up to the cap, then holds there
+// until a successful re-handshake. Unlike legacy appwire.js's fixed 250ms
+// retry (renderer.js scheduleAppwireReconnect), this backs off so a
+// prolonged outage doesn't hammer the hub with reconnect attempts.
+export const RECONNECT_BASE_MS = 250;
+export const RECONNECT_MAX_MS = 5_000;
 
 // Methods allowed before the client reaches "ready": initialize is how it
 // gets there, and ping is an app-level liveness probe the heartbeat needs to
@@ -59,8 +74,10 @@ interface PendingRequest {
 export class AppwireClient {
   private readonly url: string;
   private readonly socketFactory: (url: string) => WebSocketLike;
-  // Reserved for heartbeat/reconnect timestamps in a later change; unused
-  // until then.
+  // Heartbeat/reconnect scheduling here is interval-based (setInterval /
+  // setTimeout), not timestamp-based, so `now` is unused; kept for callers
+  // that want a controllable clock for other purposes (e.g. future
+  // timestamp-stamped telemetry) without changing this constructor's shape.
   private readonly now: () => number;
   private readonly clientInfo: { name: string; version: string };
 
@@ -70,12 +87,27 @@ export class AppwireClient {
   private readonly pending = new Map<number, PendingRequest>();
   // Set only while waitForOpen() is in flight (before the socket has opened
   // or failed). Lets close() abort a handshake that's stuck waiting for a
-  // socket event, the same way `pending` lets it abort in-flight RPCs.
+  // socket event, the same way `pending` lets it abort in-flight RPCs. Reused
+  // for reconnect attempts (attemptReconnect), which dial and wait for open
+  // exactly like the initial connect does.
   private handshakeReject: ((err: Error) => void) | null = null;
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
   private readonly readyHandlers = new Set<() => void>();
   private connectPromise: Promise<InitializeResponse> | null = null;
+
+  // Heartbeat: one interval timer, armed on entering "ready" and disarmed on
+  // leaving it (drop or close()). Its ping rides the same request()/pending
+  // machinery as any other call, so the ping's own timeout self-cleans; no
+  // separate "pong wait" timer is needed.
+  private heartbeatIntervalTimer: ReturnType<typeof setInterval> | null = null;
+
+  // Reconnect: one backoff timer at a time, armed by scheduleReconnect() and
+  // disarmed the moment it fires (or by close()). reconnectAttempts counts
+  // consecutive failures since the last time "ready" was reached, driving
+  // the doubling delay; it resets to 0 on every successful re-handshake.
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
 
   constructor(opts: AppwireClientOptions) {
     this.url = opts.url;
@@ -104,7 +136,8 @@ export class AppwireClient {
     // Abort a handshake stuck in waitForOpen() before nulling the socket's
     // handlers below: those handlers are the only thing that would otherwise
     // ever settle that promise, so clearing them first would hang connect()
-    // forever instead of rejecting it.
+    // forever instead of rejecting it. Covers both the initial connect() and
+    // a reconnect attempt, since attemptReconnect reuses waitForOpen.
     const abortHandshake = this.handshakeReject;
     this.handshakeReject = null;
     if (abortHandshake) {
@@ -121,6 +154,8 @@ export class AppwireClient {
         // Best-effort: the socket may already be closing.
       }
     }
+    this.disarmHeartbeat();
+    this.disarmReconnect();
     this.failAllPending(new ConnectionClosedError("AppwireClient: closed"));
     this.setState("closed");
   }
@@ -182,36 +217,145 @@ export class AppwireClient {
 
   private async performHandshake(): Promise<InitializeResponse> {
     this.setState("connecting");
+    try {
+      return await this.dialAndHandshake();
+    } catch (err) {
+      // Covers both a socket that never opened and a server-rejected
+      // initialize: either way the FIRST-EVER handshake failed, so this is a
+      // terminal failure — there is no prior "ready" to reconnect back to,
+      // and connect() must reject rather than retry silently.
+      this.teardownFailedSocket();
+      this.failAllPending(err instanceof Error ? err : new Error(String(err)));
+      this.setState("closed");
+      throw err;
+    }
+  }
+
+  // dialAndHandshake dials a fresh socket and runs it through
+  // open -> initialize -> initialized -> ready, arming the heartbeat on
+  // success. Shared by the initial connect() (performHandshake) and every
+  // reconnect attempt (attemptReconnect); callers decide what a failure
+  // means for connection lifecycle (terminal close vs. another backoff).
+  private async dialAndHandshake(): Promise<InitializeResponse> {
     const socket = this.socketFactory(this.url);
     this.socket = socket;
     socket.onmessage = (ev) => this.handleMessage(ev.data);
 
-    try {
-      await this.waitForOpen(socket);
-      socket.onerror = () => this.handleSocketError();
-      socket.onclose = (ev) => this.handleSocketClose(ev.code);
+    await this.waitForOpen(socket);
+    socket.onerror = () => this.handleSocketError();
+    socket.onclose = (ev) => this.handleSocketClose(ev.code);
 
-      const result = await this.request("initialize", {
-        clientInfo: this.clientInfo,
-        capabilities: DEFAULT_CAPABILITIES,
-      });
-      this.sendFrame({ method: "initialized", params: {} });
-      this.setState("ready");
-      return result;
-    } catch (err) {
-      // Covers both a socket that never opened and a server-rejected
-      // initialize: either way the handshake failed, so tear down the
-      // (possibly still-open) socket and fail anything left pending on it.
-      this.socket = null;
+    const result = await this.request("initialize", {
+      clientInfo: this.clientInfo,
+      capabilities: DEFAULT_CAPABILITIES,
+    });
+    this.sendFrame({ method: "initialized", params: {} });
+    this.setState("ready");
+    this.armHeartbeat();
+    return result;
+  }
+
+  // teardownFailedSocket clears a socket that dialAndHandshake failed to
+  // bring up. Reads `this.socket` rather than a caller-supplied reference:
+  // handshakes never overlap, so whatever dialAndHandshake most recently
+  // assigned is the one that just failed (or, if close() already cleared it
+  // first, there is nothing left to tear down).
+  private teardownFailedSocket(): void {
+    const socket = this.socket;
+    this.socket = null;
+    if (socket) {
       try {
         socket.close();
       } catch {
         // Best-effort: the socket may already be closing.
       }
-      this.failAllPending(err instanceof Error ? err : new Error(String(err)));
-      this.setState("closed");
-      throw err;
     }
+  }
+
+  // scheduleReconnect arms the next backoff timer and marks the connection
+  // "reconnecting". Called once when a ready connection drops (from
+  // handleSocketClose) and again after each failed attempt (from
+  // attemptReconnect), so the delay it computes doubles attempt over
+  // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
+  private scheduleReconnect(): void {
+    if (this.connectionState === "closed") return;
+    this.setState("reconnecting");
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.attemptReconnect();
+    }, delay);
+  }
+
+  // attemptReconnect re-dials and re-handshakes exactly like the initial
+  // connect, via the same dialAndHandshake (so close() can abort it the same
+  // way too, via handshakeReject). A failure here never surfaces to a
+  // caller — there is no pending connect() promise to reject once already
+  // past the first "ready" — it just schedules the next backoff attempt.
+  private async attemptReconnect(): Promise<void> {
+    if (this.isClosed()) return;
+    try {
+      await this.dialAndHandshake();
+      this.reconnectAttempts = 0;
+    } catch {
+      // close() already moved to "closed" and disarmed reconnection (it ran
+      // synchronously before this rejection could be observed here): honor
+      // that instead of scheduling another attempt on a closed client.
+      if (this.isClosed()) return;
+      this.teardownFailedSocket();
+      this.scheduleReconnect();
+    }
+  }
+
+  // isClosed reads connectionState through a method call rather than
+  // comparing the property directly, so a second check later in the same
+  // async function isn't narrowed away by TypeScript's control-flow
+  // analysis of an earlier one. Plain "this.connectionState === 'closed'"
+  // narrowing doesn't know close() can run, via an event handler, during an
+  // intervening await — it would otherwise consider "closed" impossible by
+  // the time attemptReconnect's catch re-checks it.
+  private isClosed(): boolean {
+    return this.connectionState === "closed";
+  }
+
+  private armHeartbeat(): void {
+    this.disarmHeartbeat();
+    this.heartbeatIntervalTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
+  }
+
+  private disarmHeartbeat(): void {
+    if (this.heartbeatIntervalTimer == null) return;
+    clearInterval(this.heartbeatIntervalTimer);
+    this.heartbeatIntervalTimer = null;
+  }
+
+  private disarmReconnect(): void {
+    if (this.reconnectTimer == null) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  // sendHeartbeat sends one app-level ping with an explicit HEARTBEAT_TIMEOUT_MS
+  // deadline (reusing request()'s own timeout machinery rather than a second,
+  // separately-tracked timer). An open-but-unresponsive socket never recovers
+  // on its own, so any failure to answer in time force-closes it; the close
+  // handler runs the same reconnect lifecycle as a server-initiated drop.
+  private sendHeartbeat(): void {
+    if (this.connectionState !== "ready") return;
+    const socket = this.socket;
+    if (!socket) return;
+    this.request("ping", {}, { timeoutMs: HEARTBEAT_TIMEOUT_MS }).catch(() => {
+      // Ignore rejections caused by an unrelated disconnect that already
+      // moved the socket on: only force-close if this ping's own socket is
+      // still the live one.
+      if (this.socket !== socket || this.connectionState !== "ready") return;
+      try {
+        socket.close();
+      } catch {
+        // Best-effort: the socket may already be closing.
+      }
+    });
   }
 
   private waitForOpen(socket: WebSocketLike): Promise<void> {
@@ -230,15 +374,33 @@ export class AppwireClient {
   }
 
   private handleSocketError(): void {
-    // WebSocket errors are always followed by a close event per spec; the
-    // close handler performs the actual state transition and pending cleanup.
+    // WebSocket errors are always followed by a close event per spec (and
+    // FakeSocket has no separate error path to simulate), so this stays a
+    // no-op: the close handler below performs the actual state transition,
+    // pending cleanup, and — while ready — reconnect scheduling.
   }
 
   private handleSocketClose(code: number): void {
     if (this.connectionState === "closed") return;
     this.socket = null;
     this.failAllPending(new Error(`AppwireClient: socket closed (code ${code})`));
-    this.setState("closed");
+    if (this.connectionState === "ready") {
+      // A previously-healthy connection just dropped (server-initiated close,
+      // or sendHeartbeat's force-close after an unanswered ping): try to get
+      // back, rather than treating this as terminal.
+      this.disarmHeartbeat();
+      this.scheduleReconnect();
+      return;
+    }
+    if (this.connectionState === "connecting") {
+      // The FIRST-EVER handshake's socket dropped before ever reaching
+      // ready: terminal, same as before reconnect existed. (A drop mid
+      // *reconnect* attempt also passes through here with connectionState
+      // still "reconnecting" — deliberately falls through to do nothing
+      // beyond the failAllPending above, since attemptReconnect's own
+      // try/catch is what schedules that case's next backoff.)
+      this.setState("closed");
+    }
   }
 
   private handleMessage(data: unknown): void {
