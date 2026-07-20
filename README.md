@@ -354,6 +354,7 @@ checks, see [`cmd/serf-hub/README.md`](cmd/serf-hub/README.md).
 - **Workspace pane** with a two-tier conversation: messages (user pills + assistant body) at the primary reading tier, tool calls and diffs as muted margin annotations.
 - **New session** at `/new` — prompt-first, pick model and working dir, click spawn.
 - **Edit-to-fork**: hover any prior user message, click `✎ edit`, hit ⌘↵, label the original branch, confirm. The new branch becomes active; the original is preserved as a sibling fork.
+- **Aside**: `/aside` (TUI) or the *Aside: fork to side thread* palette command (web UI) forks the current session at its tip into a side thread with the same permissions and config — for asking a distracting question without derailing the main session.
 - **Transparent resume**: click any closed session, type, send. The daemon spawns from where it left off — same identity throughout.
 - **⌘K search** across live + past sessions.
 - **Settings** for theme (light/dark/system), notification preferences (all opt-in), and read-only inspection of providers and MCP setup.
