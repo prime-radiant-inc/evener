@@ -22,10 +22,6 @@ import (
 // Session fragments live under /_partials/s/... so direct navigation always
 // lands in the app shell instead of a standalone workspace fragment.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
-	if newWebEnabled() {
-		serveSPAIndex(w, r, distFS())
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)
 	id := parts[0]
@@ -41,6 +37,15 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 
 	switch sub {
 	case "":
+		// Only the bare page GET (no sub-path) is a page route. Every other
+		// case below — images and the POST actions — is either consumed by
+		// the future SPA client directly (images) or legacy-client-only and
+		// due to be replaced in a later wave (actions); neither should ever
+		// see an HTML shell in place of its real response.
+		if newWebEnabled() {
+			serveSPAIndex(w, r, distFS())
+			return
+		}
 		if r.Header.Get("HX-Request") == "true" {
 			http.NotFound(w, r)
 			return
