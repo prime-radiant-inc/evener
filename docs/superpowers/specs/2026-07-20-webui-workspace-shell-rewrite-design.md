@@ -239,8 +239,10 @@ re-generated to the new brand tokens.
 1. `internal/appwirets` generator + `go:generate` wiring + drift test (like appwiredoc).
 2. Serve the SPA: embed `frontend/dist`; every page route (`/`, `/new`, `/s/…`, `/settings…`,
    `/thread/…`, `/credentials`) returns `index.html`; `/assets/*` serves hashed Vite output with
-   immutable cache headers (hashing replaces the `?v=mtime` scheme). Dev mode: `SERF_HUB_DEV_WEB`
-   proxies non-API routes to the Vite dev server for HMR (replaces `SERF_HUB_ASSETS_DIR`).
+   immutable cache headers (hashing replaces the `?v=mtime` scheme). Dev mode: the Vite dev
+   server proxies `/rpc` (ws), `/api`, `/auth`, `/doc`, and image routes to the hub — cookies are
+   port-agnostic on localhost, so the capability-token flow works through the proxy. No Go-side
+   dev proxy; `SERF_HUB_ASSETS_DIR` dies with the old assets.
 3. Tree-change push: broadcast an empty `serf/tree/changed` notification on roster refresh
    deltas, past-index changes, archive/favorite/rename/project-delete mutations. Client refetches
    `/api/tree` on it (debounced). This kills the sidebar poll without moving the tree off REST.
