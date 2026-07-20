@@ -240,6 +240,11 @@ func TestDeriveName(t *testing.T) {
 		{"warning", "Payload", "WarningPayload"},
 		{"ping", "Params", "PingParams"},
 		{"/leading/slash", "Payload", "LeadingSlashPayload"},
+		// A hyphen is a word boundary too, matching the catalog's own
+		// convention (thread/reasoning-effort/set -> ThreadReasoningEffortSetParams):
+		// left unsplit, it would leak into the identifier as "Reasoning-effort".
+		{"thread/reasoning-effort/reset", "Payload", "ThreadReasoningEffortResetPayload"},
+		{"thread/reasoning-effort/changed", "Payload", "ThreadReasoningEffortChangedPayload"},
 	}
 	for _, c := range cases {
 		if got := deriveName(c.wire, c.suffix); got != c.want {
@@ -379,16 +384,41 @@ func TestEmitCatalogStructuralInvariants(t *testing.T) {
 		}
 	}
 
+	// Scoped to each interface's own body (not the whole file): a quoted
+	// "name": prefix is also how every MethodTypes line starts, so an
+	// unscoped search for a NotificationTypes entry could in principle be
+	// masked by a same-named MethodTypes line (or vice versa) rather than
+	// actually failing when the real entry is missing.
+	methodTypesBody := interfaceBody(t, out, "MethodTypes")
 	for _, m := range appwire.Methods {
-		if !strings.Contains(out, fmt.Sprintf("\n  %q: { params:", m.Name)) {
+		if !strings.Contains(methodTypesBody, fmt.Sprintf("\n  %q: { params:", m.Name)) {
 			t.Errorf("MethodTypes missing entry for %q", m.Name)
 		}
 	}
+	notificationTypesBody := interfaceBody(t, out, "NotificationTypes")
 	for _, n := range appwire.Notifications {
-		if !strings.Contains(out, fmt.Sprintf("\n  %q: ", n.Name)) {
+		if !strings.Contains(notificationTypesBody, fmt.Sprintf("\n  %q: ", n.Name)) {
 			t.Errorf("NotificationTypes missing entry for %q", n.Name)
 		}
 	}
+}
+
+// interfaceBody returns the substring of out between `export interface
+// <name> {` and its closing `\n}\n`, so a caller can search for an entry
+// within exactly that interface rather than the whole generated file.
+func interfaceBody(t *testing.T, out, name string) string {
+	t.Helper()
+	marker := "export interface " + name + " {"
+	start := strings.Index(out, marker)
+	if start == -1 {
+		t.Fatalf("interface %s not found in generated output", name)
+	}
+	start += len(marker)
+	end := strings.Index(out[start:], "\n}\n")
+	if end == -1 {
+		t.Fatalf("interface %s has no closing brace in generated output", name)
+	}
+	return out[start : start+end]
 }
 
 // TestGeneratedFileCurrent is the drift test: types.gen.ts is committed, and

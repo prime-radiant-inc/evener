@@ -26,8 +26,14 @@ var (
 	timeTimeType   = reflect.TypeOf(time.Time{})
 )
 
+// isOpaqueStruct reports whether t is a struct-kind type the registry must
+// not walk into and independently register — today, only time.Time (its
+// fields are encoding/json-invisible implementation detail: unexported wall/
+// ext/loc). json.RawMessage does not belong in this check: its Kind is
+// Slice, so registry.discover never reaches the Struct case for it at all —
+// typeExpr's own t == rawMessageType case maps it directly instead.
 func isOpaqueStruct(t reflect.Type) bool {
-	return t == rawMessageType || t == timeTimeType
+	return t == timeTimeType
 }
 
 // rawField is one JSON-visible field of a struct, midway between reflection
@@ -209,20 +215,25 @@ func (r *registry) discover(t reflect.Type) {
 
 // deriveName synthesizes a PascalCase TS type name from a wire name (e.g.
 // "thread/started") and a suffix (e.g. "Payload"): "ThreadStartedPayload".
-// Used only when a catalog entry has no dedicated Go type to name itself
-// after — today that is exactly the notifications with a nil Payload (an
-// inline object at the projector; see appwire.Notifications' doc comment).
+// Both "/" and "-" are word boundaries — "thread/reasoning-effort/set"
+// segments the same way the catalog's own ThreadReasoningEffortSetParams
+// does — since a "-" left in place would produce an invalid TS identifier
+// (subtraction is not valid inside `export interface Name {`). Used only
+// when a catalog entry has no dedicated Go type to name itself after —
+// today that is exactly the notifications with a nil Payload (an inline
+// object at the projector; see appwire.Notifications' doc comment).
 func deriveName(wireName, suffix string) string {
 	var b strings.Builder
-	for _, seg := range strings.Split(wireName, "/") {
-		if seg == "" {
-			continue
-		}
+	for _, seg := range strings.FieldsFunc(wireName, isNameBoundary) {
 		b.WriteString(strings.ToUpper(seg[:1]))
 		b.WriteString(seg[1:])
 	}
 	b.WriteString(suffix)
 	return b.String()
+}
+
+func isNameBoundary(r rune) bool {
+	return r == '/' || r == '-'
 }
 
 // registerTopLevel registers a catalog entry's Params/Result/Payload value v
