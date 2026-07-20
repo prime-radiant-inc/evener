@@ -23,6 +23,7 @@
     tasksList: "serf/tasks/list",
     sandboxEscalationResolve: "serf/sandbox/escalation/resolve",
     dirsComplete: "serf/dirs/complete",
+    projectsRecent: "serf/projects/recent",
     pathValidate: "serf/path/validate",
     serfUpgrade: "serf/upgrade",
     modelList: "model/list",
@@ -367,6 +368,14 @@
     return request(METHOD.dirsComplete, { prefix: prefix || "" }).then((resp) => ({
       results: (resp.data || []).map((path) => ({ path, is_git: false })),
     }));
+  }
+
+  // recentProjects returns the hub's most recently used project working
+  // directories (server-capped at 15) for the session creation path dropdown.
+  function recentProjects() {
+    return request(METHOD.projectsRecent, {}).then((resp) => (
+      resp && Array.isArray(resp.data) ? resp.data : []
+    ));
   }
 
   function validatePath(path, kind) {
@@ -1096,6 +1105,7 @@
     listModels,
     listModelsWithDiagnostics,
     completeDirs,
+    recentProjects,
     validatePath,
     upgrade,
     startThread,

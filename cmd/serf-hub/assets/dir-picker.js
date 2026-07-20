@@ -44,6 +44,16 @@
     return global.SerfAppwire.completeDirs(prefix);
   }
 
+  // recentProjects fetches the hub's most recently used project directories
+  // (server-capped at 15) to prepopulate the picker on an empty query. Older
+  // hub clients without the RPC degrade to no recent section.
+  function recentProjects() {
+    if (global.SerfAppwire && typeof global.SerfAppwire.recentProjects === "function") {
+      return global.SerfAppwire.recentProjects().catch(() => []);
+    }
+    return Promise.resolve([]);
+  }
+
   function removeExisting() {
     const existing = document.querySelector(".chip-picker");
     if (existing) {
@@ -157,6 +167,10 @@
 
     let timer = null;
     let requestID = 0;
+    // The dropdown is prepopulated with the most recent projects (issue #35)
+    // on its initial listing only; browsing or typing swaps to plain
+    // completion results.
+    let pendingRecent = true;
 
     function close() {
       if (timer) {
@@ -184,12 +198,14 @@
     }
 
     function browseTo(path) {
+      pendingRecent = false;
       currentDir = trimTrailingSlash(path);
       setInputValue(withTrailingSlash(currentDir));
       fetchDirs(withTrailingSlash(currentDir));
     }
 
     function searchFromInput(value) {
+      pendingRecent = false;
       const query = String(value || "");
       currentDir = query.endsWith("/") ? trimTrailingSlash(query) : parentDir(query);
       fetchDirs(query);
@@ -206,6 +222,33 @@
       row.innerHTML = '<span class="chip-picker-dir-name">..</span>';
       row.addEventListener("click", () => browseTo(parent || "/"));
       results.appendChild(row);
+    }
+
+    // Recent-project options accept on click (they pick the project, not
+    // browse into it) and show the full path — basenames collide across
+    // projects, so the basename alone would be ambiguous.
+    function appendRecentRows(recents) {
+      const header = document.createElement("div");
+      header.className = "chip-picker-dir-recent-header";
+      header.textContent = "Recent projects";
+      results.appendChild(header);
+      recents.forEach((path) => {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "chip-picker-dir-row chip-picker-dir-recent";
+        el.dataset.recentPath = path;
+        el.title = path;
+        const name = document.createElement("span");
+        name.className = "chip-picker-dir-name";
+        name.textContent = baseName(path);
+        el.appendChild(name);
+        const full = document.createElement("span");
+        full.className = "chip-picker-dir-recent-path";
+        full.textContent = path;
+        el.appendChild(full);
+        el.addEventListener("click", () => accept(path));
+        results.appendChild(el);
+      });
     }
 
     function appendDirRow(r) {
@@ -230,17 +273,25 @@
 
     function fetchDirs(prefix) {
       const currentRequestID = ++requestID;
+      const showRecent = pendingRecent;
+      pendingRecent = false;
+      const recentsPromise = showRecent ? recentProjects() : Promise.resolve([]);
       const dirsPromise = completeDirs(prefix);
-      dirsPromise.then((data) => {
+      Promise.all([dirsPromise, recentsPromise]).then(([data, recents]) => {
         if (currentRequestID !== requestID || !picker.parentNode) return;
         results.innerHTML = "";
         appendParentRow();
+        if (showRecent && recents.length > 0) {
+          appendRecentRows(recents);
+        }
         const list = normalizedResults(data);
         if (list.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty-state empty-state-picker";
-          empty.innerHTML = '<p class="empty-state-body">No directories here</p>';
-          results.appendChild(empty);
+          if (!showRecent || recents.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty-state empty-state-picker";
+            empty.innerHTML = '<p class="empty-state-body">No directories here</p>';
+            results.appendChild(empty);
+          }
           return;
         }
         list.forEach(appendDirRow);

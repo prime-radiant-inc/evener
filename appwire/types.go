@@ -33,6 +33,7 @@ const (
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfProjectsRecent        = "serf/projects/recent"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
 	MethodSerfUpgrade               = "serf/upgrade"
@@ -887,6 +888,19 @@ type DirsCompleteParams struct {
 }
 
 type DirsCompleteResponse struct {
+	Data []string `json:"data"`
+}
+
+// ProjectsRecentParams selects how many recent project directories the hub
+// returns. Limit <= 0 means the hub default (the session creation flows'
+// 15-option dropdown cap).
+type ProjectsRecentParams struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+// ProjectsRecentResponse lists distinct project working directories ordered
+// by actual recency of use (most recently active session first).
+type ProjectsRecentResponse struct {
 	Data []string `json:"data"`
 }
 

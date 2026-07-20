@@ -186,6 +186,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"ProjectsRecent", MethodSerfProjectsRecent, ProjectsRecentResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+			out, err := c.ProjectsRecent(ctx, ProjectsRecentParams{Limit: 15})
+			if err != nil {
+				return err
+			}
+			if len(out.Data) != 2 {
+				return errors.New("ProjectsRecent decode mismatch")
+			}
+			return nil
+		}},
 		{"HarnessList", MethodSerfHarnessesList, HarnessListResponse{Data: []HarnessDescriptor{{ID: "serf"}}}, func(ctx context.Context, c *Client) error {
 			out, err := c.HarnessList(ctx, HarnessListParams{})
 			if err != nil {

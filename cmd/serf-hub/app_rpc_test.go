@@ -6717,6 +6717,55 @@ func TestHubRPCDirsCompleteReturnsMatchingDirectories(t *testing.T) {
 	}
 }
 
+// TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
+// flows' recent-project source (issue #35): serf/projects/recent serves the
+// past index's distinct working dirs, most-recently-used first, defaulting to
+// the 15-option cap when the request carries no limit.
+func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
+	past := hubcore.NewPastIndex("")
+	now := time.Now().UTC()
+	metas := []schema.SessionMeta{
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/beta"}},
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}}, // older dup — dropped
+	}
+	for n := 0; n < 20; n++ {
+		metas = append(metas, schema.SessionMeta{
+			ID:        fmt.Sprintf("02wMz5Txv1C3Hut0M8GC%02d", n),
+			UpdatedAt: now.Add(-time.Duration(n+4) * time.Minute),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: fmt.Sprintf("/proj-%02d", n)},
+		})
+	}
+	past.SeedForTest(metas)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{})
+	if err != nil {
+		t.Fatalf("ProjectsRecent: %v", err)
+	}
+	if len(resp.Data) != 15 {
+		t.Fatalf("recent dirs=%d, want the default 15-option cap", len(resp.Data))
+	}
+	if resp.Data[0] != "/alpha" || resp.Data[1] != "/beta" {
+		t.Fatalf("recent dirs[0:2]=%v, want [/alpha /beta] (most recently used first)", resp.Data[:2])
+	}
+
+	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
+	if err != nil {
+		t.Fatalf("ProjectsRecent limit=2: %v", err)
+	}
+	if len(limited.Data) != 2 || limited.Data[0] != "/alpha" || limited.Data[1] != "/beta" {
+		t.Fatalf("recent dirs limit=2 = %v, want [/alpha /beta]", limited.Data)
+	}
+}
+
 func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	source := &forkingRelaySource{
 		relayBroadcastSource: relayBroadcastSource{
@@ -7215,6 +7264,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodSerfTasksList,
 		appwire.MethodSerfThreadTranscriptsList,
 		appwire.MethodSerfDirsComplete,
+		appwire.MethodSerfProjectsRecent,
 		appwire.MethodSerfPathValidate,
 		appwire.MethodSerfHarnessesList,
 		appwire.MethodSerfCommandList,

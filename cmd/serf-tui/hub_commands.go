@@ -117,8 +117,12 @@ type hubSpawnOptionsMsg struct {
 	emptyTaskUnsupportedReasons map[string]string
 	emptyTaskUnsupportedNext    map[string]string
 	models                      []tuipick.ModelPickerItem
-	err                         error
-	modelErr                    error
+	// recentDirs carries the hub's most recently used project dirs (the Dir
+	// field's prepopulated dropdown options, issue #35). Best-effort: a hub
+	// too old for serf/projects/recent leaves it nil.
+	recentDirs []string
+	err        error
+	modelErr   error
 }
 
 type hubAuthStatusMsg struct {
@@ -287,12 +291,18 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 				emptyTaskUnsupportedNext[option.ID] = next
 			}
 		}
+		// Recent project dirs are best-effort: a failure (e.g. an older hub
+		// without serf/projects/recent) must not break spawning.
+		var recentDirs []string
+		if recentResp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{}); err == nil {
+			recentDirs = recentResp.Data
+		}
 		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
 		if err != nil {
-			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, modelErr: err}
+			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, recentDirs: recentDirs, modelErr: err}
 		}
 		models := modelPickerItemsFromResponse(modelResp, false)
-		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, models: models}
+		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, models: models, recentDirs: recentDirs}
 	}
 }
 

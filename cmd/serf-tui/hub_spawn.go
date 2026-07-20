@@ -63,6 +63,14 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		if m.spawnFocus == hubSpawnFieldDir {
 			current := m.spawnDirInput.Value()
+			// The Dir field's dropdown is prepopulated with the most recent
+			// projects (issue #35): on an empty field (or while a recent
+			// option is showing) tab cycles them instead of completing.
+			if next, ok := m.nextSpawnRecentDir(current); ok {
+				m.spawnDirInput.SetValue(next)
+				m.spawnDir = strings.TrimSpace(next)
+				return m, nil
+			}
 			// Spawn working-dir accepts directories only; without this
 			// filter Tab could land a file path in the field which the
 			// later submit validation would reject.
@@ -241,6 +249,40 @@ func (m hubModel) spawnFieldPrefix(field hubSpawnField) string {
 	return " "
 }
 
+// nextSpawnRecentDir cycles the Dir field through the hub's most recently
+// used project dirs: from an empty field it fills the most recent one, and
+// from a recent option it advances (wrapping) to the next. It returns false
+// when the field holds a custom path, leaving tab to plain path completion.
+func (m *hubModel) nextSpawnRecentDir(current string) (string, bool) {
+	if len(m.spawnRecentDirs) == 0 {
+		return "", false
+	}
+	cur := strings.TrimSpace(current)
+	if cur == "" {
+		m.spawnRecentIdx = 0
+		return m.spawnRecentDirs[0], true
+	}
+	if m.spawnRecentIdx >= 0 && m.spawnRecentIdx < len(m.spawnRecentDirs) && cur == m.spawnRecentDirs[m.spawnRecentIdx] {
+		m.spawnRecentIdx = (m.spawnRecentIdx + 1) % len(m.spawnRecentDirs)
+		return m.spawnRecentDirs[m.spawnRecentIdx], true
+	}
+	return "", false
+}
+
+// spawnRecentDirsVisible reports whether the Dir field's recent-project
+// dropdown options render: while the field is empty or shows one of the
+// recent options, hidden once the user types a custom path.
+func (m hubModel) spawnRecentDirsVisible() bool {
+	if len(m.spawnRecentDirs) == 0 {
+		return false
+	}
+	cur := strings.TrimSpace(m.spawnDirInput.Value())
+	if cur == "" {
+		return true
+	}
+	return stringInSlice(cur, m.spawnRecentDirs)
+}
+
 func (m hubModel) spawnFieldHint() string {
 	switch m.spawnFocus {
 	case hubSpawnFieldHarness:
@@ -251,7 +293,7 @@ func (m hubModel) spawnFieldHint() string {
 		}
 		return "enter: choose model"
 	case hubSpawnFieldDir:
-		return "type path  tab: complete  enter: next  ctrl+u clear"
+		return "type path  tab: recent/complete  enter: next  ctrl+u clear"
 	default:
 		return "enter: spawn  ctrl+j: newline"
 	}
@@ -291,6 +333,8 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnModelPicker = nil
 	m.spawnSubmitting = false
 	m.spawnFocus = hubSpawnFieldPrompt
+	m.spawnRecentDirs = nil
+	m.spawnRecentIdx = -1
 	m.spawnDirInput.Blur()
 	m.session.resetInput()
 	if envModel := envvars.SERFModel.Trimmed(); strings.Contains(envModel, "/") {
@@ -486,6 +530,15 @@ func (m hubModel) spawnView() string {
 		fmt.Fprintf(&b, "  Project:  %s\n", m.spawnProject)
 	}
 	fmt.Fprintf(&b, "%s Dir:      %s\n", m.spawnFieldPrefix(hubSpawnFieldDir), m.spawnDirView())
+	if m.spawnFocus == hubSpawnFieldDir && m.spawnRecentDirsVisible() {
+		for i, dir := range m.spawnRecentDirs {
+			prefix := "    "
+			if i == m.spawnRecentIdx {
+				prefix = "  > "
+			}
+			fmt.Fprintf(&b, "%s%s\n", prefix, dir)
+		}
+	}
 	fmt.Fprintf(&b, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
 	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value(), m.width-2, 0), "\n"), "\n") {
 		b.WriteString("  ")
