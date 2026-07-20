@@ -245,6 +245,10 @@ const SEMANTIC_USE_ALLOWLIST = [
   "meter", // danger/attention fill tone
   "toast", // tone prop
   "dialog", // danger footer
+  // Not pre-seeded above despite the comment's claim (a genuine gap found
+  // while building T4 - see the w2-task-4 report): Direction names "links"
+  // as one of --accent's three uses alongside focus rings and selection.
+  "markdown", // link color
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger|accent)\b/;
