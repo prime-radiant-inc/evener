@@ -201,6 +201,51 @@ async function settle() { await new Promise((r) => setTimeout(r, 30)); }
     pass(ta.value === "original prompt", "child composer should be pre-populated with the original message, got " + JSON.stringify(ta.value));
   }
 
+  // -----------------------------------------------------------------------
+  // 5. Local echo + server-echo correction: the fork button must read the
+  //    entry index AT CLICK TIME. The optimistic local echo binds an inferred
+  //    index; promoteLocalUserMessage later corrects wrap.dataset.entryIdx to
+  //    the server-authoritative turn. Clicking after the correction must fork
+  //    at the corrected index, never the stale inferred one.
+  // -----------------------------------------------------------------------
+  {
+    const { window, conv } = newHarness("01HOST");
+    await settle();
+
+    const calls = [];
+    window.SerfAppwire = makeForkAppwire(calls, "follow-up");
+
+    // An existing transcript message, then an optimistic local echo whose
+    // entry index is only inferred (entryIndex 3 -> inferred 4).
+    window.SerfRenderer.handleData("USER_INPUT", { text: "first", turn: 3 });
+    window.SerfRenderer.appendLocalUserMessage("follow-up", [], "tid-9", 1);
+    await settle();
+
+    const localWrap = conv.querySelector('.user-message[data-local-echo="true"]');
+    pass(!!localWrap, "local echo should render before promotion");
+    pass(localWrap && localWrap.dataset.entryIdx === "4", "local echo starts at the inferred index 4, got " + (localWrap && localWrap.dataset.entryIdx));
+
+    // The server echo corrects the entry index to the authoritative turn 7.
+    const promoted = window.SerfRenderer.promoteLocalUserMessage({ text: "follow-up", turn: 7, turnId: "tid-9", images: [] });
+    pass(promoted === true, "promoteLocalUserMessage should promote the local echo");
+    pass(localWrap && localWrap.dataset.entryIdx === "7", "promotion corrects dataset.entryIdx to 7, got " + (localWrap && localWrap.dataset.entryIdx));
+
+    const forkBtn = localWrap && localWrap.querySelector(".user-message-actions .action.fork");
+    pass(!!forkBtn, "local echo should render a fork action");
+    if (forkBtn) forkBtn.click();
+    await settle();
+
+    const forkCalls = calls.filter((c) => c.name === "forkThread");
+    pass(forkCalls.length === 1, "expected exactly one forkThread call, got " + forkCalls.length);
+    if (forkCalls.length) {
+      pass(
+        forkCalls[0].body.turn === 7,
+        "click after dataset correction must fork at the corrected index 7, not the stale inferred 4, got " + JSON.stringify(forkCalls[0].body)
+      );
+      pass(forkCalls[0].body.defer_input === true, "forkThread body.defer_input should be true, got " + JSON.stringify(forkCalls[0].body));
+    }
+  }
+
   if (failures.length === 0) {
     console.log("PASS: fork-from-message stages the original message in the fork composer's draft");
     process.exit(0);

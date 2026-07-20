@@ -2069,7 +2069,12 @@
         fork.textContent = "⎇ fork";
         fork.title = "fork the conversation from this message";
         fork.setAttribute("aria-label", "fork the conversation from this message");
-        fork.onclick = () => this.startFork(Number(entryIdx), text);
+        // Read the entry index AT CLICK TIME, not from the render-time
+        // closure: a local echo's index is only inferred and
+        // promoteLocalUserMessage corrects wrap.dataset.entryIdx once the
+        // server echo arrives (same pattern as the edit-fork dialog), so a
+        // stale closure could fork at the wrong point.
+        fork.onclick = () => this.startFork(parseInt(wrap.dataset.entryIdx || "0", 10), text);
         actions.appendChild(fork);
       }
       wrap.appendChild(tag); wrap.appendChild(pill); wrap.appendChild(actions);
@@ -3151,7 +3156,10 @@
       parent.appendChild(el);
       this.attachFileOpenBeside(el, tool, args);
 
-      const startedAt = toolEventTime(data) || new Date();
+      // Issue #37: the hover meta shows REAL server times or nothing. No
+      // client wall-clock fallback — a timestamp minted at render time would
+      // claim the action happened when the browser drew the row.
+      const startedAt = toolEventTime(data);
       const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, caretEl: null, ids: [], startedAt, durationMs: toolDuration(data) };
       this.renderToolMeta(state, null);
       if (renderer.body) {
@@ -3235,7 +3243,7 @@
         const text = m.renderer.result ? m.renderer.result(data, out, m) : "";
         m.resultEl.textContent = (text === "ok" || text === "done") ? "" : text;
       }
-      const endedAt = toolEventTime(data) || new Date();
+      const endedAt = toolEventTime(data);
       const duration = toolDuration(data);
       if (duration != null) m.durationMs = duration;
       this.renderToolMeta(m, endedAt);
@@ -3396,7 +3404,11 @@
       const parts = [];
       if (state.startedAt) parts.push(formatToolClock(state.startedAt));
       const duration = state.durationMs != null ? state.durationMs : (endedAt && state.startedAt ? endedAt - state.startedAt : null);
-      if (duration != null) parts.push(formatToolDuration(duration));
+      // A duration derived from second-precision replay stamps that lands on
+      // 0 is too coarse to display honestly (the real span is anywhere in
+      // 0–2s) — omit it rather than show a fake "1ms". An explicit server
+      // durationMs is millisecond truth and always shown.
+      if (duration != null && (state.durationMs != null || duration > 0)) parts.push(formatToolDuration(duration));
       state.metaEl.textContent = parts.join(" · ");
     },
 
@@ -4710,30 +4722,43 @@
       }
 
       if (summary.kind === "notification") {
-        this.appendNotificationCard(summary);
+        // A notification turn can carry several <job-notification> blocks;
+        // each one renders as its own card.
+        const notifications = summary.notifications || [summary.notification];
+        for (const n of notifications) {
+          this.appendNotificationCard({ notification: n, cleanText: (n && n.rawText) || summary.cleanText });
+        }
+        // Any text between/around the blocks is kept as a plain divider.
+        if (summary.leftover) {
+          this.appendSteeringDivider("steering injected", "", summary.leftover);
+        }
         return;
       }
 
       // Default: keep the existing collapsible divider for genuine system
       // notes (loop detection, read-only nudge, all-done, transcript
       // pointer, unknown).
+      this.appendSteeringDivider(summary.label, summary.detail, summary.cleanText || text);
+    },
+
+    appendSteeringDivider(label, detail, text) {
       const el = document.createElement("details");
       el.className = "steering";
       const sum = document.createElement("summary");
       const verb = document.createElement("span");
       verb.className = "steering-verb";
-      verb.textContent = "↻ " + summary.label;
+      verb.textContent = "↻ " + label;
       sum.appendChild(verb);
-      if (summary.detail) {
-        const detail = document.createElement("span");
-        detail.className = "steering-detail";
-        detail.textContent = " · " + summary.detail;
-        sum.appendChild(detail);
+      if (detail) {
+        const detailEl = document.createElement("span");
+        detailEl.className = "steering-detail";
+        detailEl.textContent = " · " + detail;
+        sum.appendChild(detailEl);
       }
       el.appendChild(sum);
       const body = document.createElement("pre");
       body.className = "steering-body";
-      body.textContent = summary.cleanText || text;
+      body.textContent = text;
       el.appendChild(body);
       this.conversation.appendChild(el);
     },
