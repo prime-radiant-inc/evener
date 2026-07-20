@@ -1,0 +1,23 @@
+.frame {
+  /* PaneScaffold fills its container (height: 100%), so the gallery gives
+   * it a fixed-height box to fill - in real usage that box is a dockview
+   * pane or a sidebar slot. */
+  width: 320px;
+  height: 360px;
+}
+
+.longBody p {
+  margin: 0 0 var(--space-3);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+}
+
+.footerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
