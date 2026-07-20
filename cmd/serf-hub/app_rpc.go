@@ -663,6 +663,10 @@ func notifyPluginUpdated(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifySerfPluginUpdated, map[string]string{})
 }
 
+// recentProjectDirsLimit is the session creation flows' path-dropdown option
+// count (issue #35): the 15 most recently used projects.
+const recentProjectDirsLimit = 15
+
 // registerMiscHandlers registers the remaining hub RPC handlers: model list,
 // task list, transcript list, directory completion, path validation, and the
 // harness descriptor list.
@@ -683,6 +687,17 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfDirsComplete, func(_ context.Context, params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 		return fspaths.CompleteDirs(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfProjectsRecent, func(_ context.Context, params appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
+		limit := params.Limit
+		if limit <= 0 {
+			limit = recentProjectDirsLimit
+		}
+		var dirs []string
+		if cfg.Past != nil {
+			dirs = cfg.Past.RecentProjectDirs(limit)
+		}
+		return appwire.ProjectsRecentResponse{Data: dirs}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
 		return fspaths.ValidateLaunchPath(params), nil

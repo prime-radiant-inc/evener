@@ -222,11 +222,15 @@ const perKindOverride = blocks.find(
 );
 pass(!perKindOverride, "no compact phone rule may re-tier the reading column with per-kind font-size overrides");
 
-// Compact phone layout hides timing meta narrowly to avoid reserving ~112px and
-// squeezing command/path text into a narrow, mid-word-wrapping column. This is a
-// mobile overflow guard, not a desktop hover-only metadata contract.
+// The timing meta is fixed top-right (position: absolute) on every breakpoint
+// (issue #37), so it never reserves width and the command/path text always gets
+// the full row — the old compact-phone display:none carve-out (which reflowed
+// text on tap) is gone. This is the no-reflow metadata contract, not a mobile
+// overflow guard.
+const metaFixed = /\.tool-call \.tool-meta\s*\{[^}]*position:\s*absolute/.test(css);
+pass(metaFixed, ".tool-call .tool-meta is position:absolute so the command gets full width on every breakpoint");
 const metaHidden = blocks.find((b) => /\.tool-call \.tool-meta/.test(b.split("{")[0]) && /display:\s*none/.test(b));
-pass(!!metaHidden, "compact mobile may hide .tool-call .tool-meta so the command gets full width");
+pass(!metaHidden, "no breakpoint hides .tool-call .tool-meta with display:none (display toggling reflows text)");
 
 // iOS standalone runs edge-to-edge (black-translucent status bar), so every
 // full-height fixed overlay must pad its screen-edge sides with the safe-area

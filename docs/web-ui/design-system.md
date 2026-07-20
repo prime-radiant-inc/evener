@@ -145,7 +145,7 @@ Design rule: **one scannable primary line per entry; status on a left rail or gl
 detail demoted to a mono chip; deep detail hidden until expanded.** Content column capped ~720px.
 
 **Breakpoint ladder + wide band (2026-07-19 addendum).** Phone ≤767px; tablet 768–1199px
-(side panes hidden, sidebar auto-rails — see §5); desktop 1200–1799px; wide ≥1800px.
+(side panes hidden, sidebar auto-collapses — see §5); desktop 1200–1799px; wide ≥1800px.
 The prose measure holds 720px at **every** width; the machine bleed (`--measure-machine`)
 is 1000px below the wide band and 1200px at/above it. Left edges never move.
 
@@ -184,15 +184,22 @@ content with the occasional red ✕ standing out; you never scan past a wall of 
 the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
 card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ›` with the
 chevron at the right edge. A left-hung chevron offsets every row and ragged-edges the column; on the
-right it's a quiet "there's more." (On phones the timing meta is out of the flow entirely so
-commands and file paths get the full row width; a tap on the row brings it back.)
+right it's a quiet "there's more." (The timing meta is out of the flow on every
+breakpoint — fixed top-right — so commands and file paths always get the full row width; a
+hover, focus, or tap on the row brings the meta back.)
 
-**Timing metadata is on-demand.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
+**Timing metadata is on-demand — and honest.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
 `03:19:32 PM · 1ms`) and the per-turn badge (`.assistant-message .turn-meta`: duration ·
 tokens · cost) rest at `opacity: 0` and reveal on row hover, keyboard `:focus-within`, or tap
 (sticky `:hover`) on touch. `opacity` — never `display`/`visibility` — so they stay in the
-accessibility tree. A column of permanent clock stamps was ambient noise competing with the
-content; the data is one hover away, not gone. (This supersedes the 2026-07-01
+accessibility tree and revealing them reflows nothing. The meta is `position: absolute`,
+fixed to the row's top-right and out of the flex flow on every breakpoint, so neither the
+reveal nor the runtime landing at tool end can shift the row's text. The times themselves
+are **server truth or nothing** (issue #37): the hub stamps each tool item with the session
+event's own `startedAt`/`completedAt`/`durationMs` (live) or the transcript entry's recorded
+timestamp (replay), and the renderer shows no clock when none arrived — never a
+browser-wall-clock stand-in. A column of permanent clock stamps was ambient noise competing
+with the content; the data is one hover away, not gone. (This supersedes the 2026-07-01
 "always-visible" revert: the accessibility concern is answered by the a11y-tree +
 focus-within pairing, not by permanence.)
 
@@ -210,7 +217,8 @@ gutter (`--gutter`) is to its left (§3).
   Mono `--text-sm` whether primary (no purpose, target `--ink`) or demoted under a purpose
   (one truncated line, `--ink-3`, same x=0 column, no sub-indent) — dim color, not a
   smaller size, carries the demotion.
-- `.tool-meta` top-right: sans `--text-xs` `tabular-nums`, `--ink-2`, hover/focus-reveal.
+- `.tool-meta` fixed top-right (`position: absolute`, out of flow): sans `--text-xs`
+  `tabular-nums`, `--ink-2`, hover/focus-reveal; server-stamped times only (issue #37).
 - `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
   boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
 
@@ -253,6 +261,12 @@ Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
   subagents" past ~3.
 - **RECENT** — touched in ~last day; collapsed.
 - **OLDER** — collapsed.
+- **ARCHIVED SESSIONS (N)** — one top-level disclosure, collapsed by default, folding away
+  everything archived so it stops cluttering the active list. N counts the archived sessions
+  inside. Expanding reveals per-project sub-headings (project name, own disclosure chevron):
+  archived projects ride as session-less stubs that lazy-hydrate on expand, and each active
+  project with archived-tier sessions gets a group revealing only those sessions (they already
+  ride the tree snapshot, so no fetch). Active projects never list archived sessions inline.
 - **TEST RUNS (N)** — auto-bucket the disposable `serf-e2e-*` single-session sprawl into one
   collapsed group so it stops drowning real projects.
 
@@ -271,10 +285,18 @@ collapsed archived stubs — the whole header is the toggle; the chevron is deco
 top margin between a project and whatever precedes it — group separation reads as a subtle
 rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
 
-**Tri-state mode (2026-07-19 addendum).** The sidebar mode is `auto | rail | pane`,
-persisted per-browser. `auto` (the default) rails below 1200px and expands at/above it;
-`rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy binary
-preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
+**Tri-state mode (2026-07-19 addendum; collapsed = hidden since issue #33).** The
+sidebar mode is `auto | rail | pane`, persisted per-browser (`rail` is the legacy
+name for the collapsed state). `auto` (the default) collapses below 1200px and expands
+at/above it; `rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy
+binary preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
+
+**Collapsed means fully collapsed.** There is no 56px icon rail: the sidebar leaves
+the layout entirely. The app-shell nav chip (`.app-nav-toggle`, hidden on desktop
+otherwise) floats top-left and reopens the sidebar as an **overlay drawer**
+(`body[data-sidebar-rail][data-sidebar-open]`) — the same pattern as the phone and
+short-landscape bands, including outside-click / Escape close and close-on-navigate.
+⌘B or the in-header mode toggle cycle back to `pane` to re-pin it.
 
 ---
 

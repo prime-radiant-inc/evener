@@ -548,6 +548,34 @@ func (i *PastIndex) RecentModels(limit int) []appwire.ModelDescriptor {
 	return out
 }
 
+// RecentProjectDirs returns up to limit distinct project working directories
+// for the session creation flows' path dropdown (issue #35), ordered by
+// actual recency of use: the index's most-recently-updated-first session
+// order (session_order.go's sessionMetaLess — a session's UpdatedAt is its
+// last activity moment), not directory mtime. Entries with a blank WorkingDir
+// are skipped. Deduped on the dir's first (most recent) occurrence.
+func (i *PastIndex) RecentProjectDirs(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	seen := make(map[string]bool, limit)
+	var out []string
+	for _, e := range i.all {
+		dir := strings.TrimSpace(e.Meta.EnvInfo.WorkingDir)
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		out = append(out, dir)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // ObserversOf returns the session ids of observer subagents granted read on the
 // given worker session, reconstructed from durable jobs.jsonl watch-read-grants
 // at the last Rebuild. The result is at most one rebuild interval stale. It is

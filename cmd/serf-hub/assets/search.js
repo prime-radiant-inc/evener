@@ -206,6 +206,33 @@
       });
   }
 
+  // asideSession forks the current session at its tip into a side thread
+  // (same permissions and config) and opens it, leaving the main session
+  // untouched. AppWire thread/fork aside mode when available, else the
+  // /s/<id>/aside REST fallback.
+  function asideSession(ctx) {
+    if (!ctx.sessionId) return Promise.resolve();
+    const promise = (window.SerfAppwire && typeof window.SerfAppwire.asideThread === "function")
+      ? window.SerfAppwire.asideThread(ctx.sessionId)
+      : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/aside", { method: "POST" })
+          .then(function (resp) {
+            if (!resp.ok) {
+              return Promise.resolve(typeof resp.text === "function" ? resp.text() : "").then(function (body) {
+                throw new Error(String(body || "").trim() || ("HTTP " + resp.status));
+              });
+            }
+            return resp.json();
+          });
+    return Promise.resolve(promise).then(function (result) {
+      const childID = result && (result.session_id || result.child_session_id || result.ref);
+      if (!childID) throw new Error("aside returned no child session");
+      // Refresh sidebar so the side thread shows up, then open it.
+      if (window.htmx) htmx.trigger(document.body, "sidebar:refresh");
+      Nav.go("/s/" + encodeURIComponent(childID));
+      return result;
+    });
+  }
+
   function postSession(ctx, action) {
     if (!ctx.sessionId) return Promise.resolve();
     const turnId = activeTurnId();
@@ -328,6 +355,11 @@
         run: (ctx) => postSession(ctx, "interrupt") },
       { id: "clear", title: "Clear context", hint: "start fresh in this session", keywords: [], scope: "session",
         run: (ctx) => postSession(ctx, "clear") },
+      // aside — fork this session at its tip into a side thread (same
+      // permissions and config) and open it, for asking a distracting
+      // question without derailing the main session.
+      { id: "aside", title: "Aside: fork to side thread", hint: "side question, same permissions", keywords: ["fork", "side"], scope: "session",
+        run: (ctx) => asideSession(ctx) },
       { id: "shutdown", title: "Shut down daemon", hint: "ends this session", keywords: ["kill"], scope: "session",
         run: (ctx) => {
           const p = postSession(ctx, "shutdown");

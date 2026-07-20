@@ -400,6 +400,85 @@ ${JSON.stringify({ message: "x".repeat(8200), data: { status: "DONE", concerns: 
     return { ok: true };
   });
 
+  // Issue #36: a notification turn can carry several <job-notification> blocks
+  // joined by newlines (the daemon drains every pending notification into one
+  // reminder). Each block must parse and render individually — a greedy
+  // per-message match aggregates them into one notification.
+  const multiNotification = `<job-notification job_id="job_033sO5k8TeGZmH2lGJT6BK" event="watch" job_type="watch" status="watch" reason="output_match: jstest: all tests passed" output_bytes="0">
+Job job_033sO5k8TeGZmH2lGJT6BK watch. Output is available through read_transcript(transcript_ref="job:job_033sO5k8TeGZmH2lGJT6BK") if needed.
+</job-notification>
+<job-notification job_id="job_033sNxu2eUcKPnizpWBQER" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="85" exit_code="0">
+Job job_033sNxu2eUcKPnizpWBQER completed. Complete output below.
+excerpt:
+PASS: composer drafts are sticky per session (localStorage)
+jstest: all tests passed
+
+</job-notification>
+<job-notification job_id="job_033sO5k8TeGZmH2lGJT6BK" event="completed" job_type="shell" status="completed" reason="exit_zero" output_bytes="473" exit_code="0">
+Job job_033sO5k8TeGZmH2lGJT6BK completed. Complete output below.
+excerpt:
+PASS: composer drafts are sticky per session (localStorage)
+jstest: all tests passed
+990534ea hub: drafts guard against cross-session text leaks (#21)
+
+</job-notification>`;
+
+  parserScenario("multi-block notification turn parses each block individually", multiNotification, (summary) => {
+    if (!summary || summary.kind !== "notification") return { ok: false, detail: "not notification" };
+    const list = summary.notifications;
+    if (!Array.isArray(list) || list.length !== 3) return { ok: false, detail: "notifications length = " + (list && list.length) };
+    const expect = [
+      { job_id: "job_033sO5k8TeGZmH2lGJT6BK", event: "watch", status: "watch", tone: "warning" },
+      { job_id: "job_033sNxu2eUcKPnizpWBQER", event: "completed", status: "completed", tone: "success" },
+      { job_id: "job_033sO5k8TeGZmH2lGJT6BK", event: "completed", status: "completed", tone: "success" },
+    ];
+    for (let i = 0; i < expect.length; i++) {
+      const n = list[i];
+      for (const [key, value] of Object.entries(expect[i])) {
+        const actual = key === "tone" ? n.tone : (n.attrs && n.attrs[key]);
+        if (actual !== value) return { ok: false, detail: "block " + i + " " + key + " = " + actual };
+      }
+    }
+    // Each block keeps only its own raw text: the first block must not span
+    // into the third block's excerpt.
+    if (list[0].rawText.includes("990534ea")) return { ok: false, detail: "first block aggregated later blocks" };
+    if (!list[2].excerpt.includes("990534ea hub: drafts guard against cross-session text leaks (#21)")) {
+      return { ok: false, detail: "third block lost its own excerpt" };
+    }
+    return { ok: true };
+  });
+
+  await scenario("multi-block notification turn renders one card per block", multiNotification, (conv) => {
+    const cards = conv.querySelectorAll(".notification-card");
+    if (cards.length !== 3) return { ok: false, detail: "card count = " + cards.length };
+    const watchCards = conv.querySelectorAll('.notification-card-warning[data-job-id="job_033sO5k8TeGZmH2lGJT6BK"]');
+    if (watchCards.length !== 1) return { ok: false, detail: "watch card count = " + watchCards.length };
+    // A watch frame carrying a concrete job_id renders "Job watch" (only a
+    // job-less watch event titles "Watch triggered").
+    if (!expectText(watchCards[0], "Job watch")) return { ok: false, detail: "watch card missing title" };
+    if (!expectText(watchCards[0], "output_match: jstest: all tests passed")) return { ok: false, detail: "watch card missing trigger reason" };
+    const doneCards = conv.querySelectorAll('.notification-card-success[data-job-id="job_033sO5k8TeGZmH2lGJT6BK"]');
+    if (doneCards.length !== 1) return { ok: false, detail: "completed card count = " + doneCards.length };
+    if (!expectText(doneCards[0], "990534ea")) return { ok: false, detail: "completed card missing its excerpt" };
+    const other = conv.querySelector('.notification-card-success[data-job-id="job_033sNxu2eUcKPnizpWBQER"]');
+    if (!other) return { ok: false, detail: "missing card for job_033sNxu2eUcKPnizpWBQER" };
+    // Each card's raw disclosure shows only its own block.
+    const raw = cards[0].querySelector(".notification-card-raw pre");
+    if (!raw || raw.textContent.includes("990534ea")) return { ok: false, detail: "first card raw aggregated later blocks" };
+    return { ok: true };
+  });
+
+  await scenario("blocks parse individually with arbitrary text between and around them",
+    "lead-in note\n" + watchNotification + "\narbitrary middle text\n" + errorNotification + "\ntrailing note", (conv) => {
+      const cards = conv.querySelectorAll(".notification-card");
+      if (cards.length !== 2) return { ok: false, detail: "card count = " + cards.length };
+      if (!expectText(cards[0], "Watch triggered")) return { ok: false, detail: "first card is not the watch notification" };
+      if (!expectText(cards[1], "Job completed")) return { ok: false, detail: "second card is not the completion notification" };
+      // The interstitial text is preserved, not swallowed into a notification.
+      if (!conv.textContent.includes("arbitrary middle text")) return { ok: false, detail: "interstitial text was lost" };
+      return { ok: true };
+    });
+
   if (!allPass) process.exit(1);
   console.log("PASS: notification renderer assertions");
   process.exit(0); // renderer pollers keep the event loop alive otherwise

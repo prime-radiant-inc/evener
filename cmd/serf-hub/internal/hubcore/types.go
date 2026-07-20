@@ -1,6 +1,9 @@
 package hubcore
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ModelDescriptor is a provider/model pair used by the spawn chip and /api/models.
 type ModelDescriptor struct {
@@ -21,6 +24,9 @@ type ReplayEntry struct {
 type ReplayTurn struct {
 	Kind    string        `json:"kind"`
 	Message ReplayMessage `json:"message"`
+	// Timestamp is the turn's recorded time, carried through reload so
+	// replayed tool items can be stamped with real server times (issue #37).
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 type ReplayMessage struct {

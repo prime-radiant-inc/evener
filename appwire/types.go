@@ -33,6 +33,7 @@ const (
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfProjectsRecent        = "serf/projects/recent"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
 	MethodSerfUpgrade               = "serf/upgrade"
@@ -512,25 +513,30 @@ const (
 )
 
 type ThreadItem struct {
-	Type                 string          `json:"type"`
-	ID                   string          `json:"id"`
-	TurnID               string          `json:"turnId,omitempty"`
-	TranscriptEntryIndex int             `json:"transcriptEntryIndex,omitempty"`
-	Text                 string          `json:"text,omitempty"`
-	Delta                string          `json:"delta,omitempty"`
-	Images               []InputItem     `json:"images,omitempty"`
-	ToolName             string          `json:"toolName,omitempty"`
-	CallID               string          `json:"callId,omitempty"`
-	ArgumentsJSON        string          `json:"argumentsJson,omitempty"`
-	Description          string          `json:"description,omitempty"`
-	Output               string          `json:"output,omitempty"`
-	Error                string          `json:"error,omitempty"`
-	OutputImages         []OutputImage   `json:"outputImages,omitempty"`
-	Status               string          `json:"status,omitempty"`
-	StartedAt            *int64          `json:"startedAt,omitempty"`
-	CompletedAt          *int64          `json:"completedAt,omitempty"`
-	Raw                  json.RawMessage `json:"raw,omitempty"`
-	EventKind            string          `json:"eventKind,omitempty"`
+	Type                 string        `json:"type"`
+	ID                   string        `json:"id"`
+	TurnID               string        `json:"turnId,omitempty"`
+	TranscriptEntryIndex int           `json:"transcriptEntryIndex,omitempty"`
+	Text                 string        `json:"text,omitempty"`
+	Delta                string        `json:"delta,omitempty"`
+	Images               []InputItem   `json:"images,omitempty"`
+	ToolName             string        `json:"toolName,omitempty"`
+	CallID               string        `json:"callId,omitempty"`
+	ArgumentsJSON        string        `json:"argumentsJson,omitempty"`
+	Description          string        `json:"description,omitempty"`
+	Output               string        `json:"output,omitempty"`
+	Error                string        `json:"error,omitempty"`
+	OutputImages         []OutputImage `json:"outputImages,omitempty"`
+	Status               string        `json:"status,omitempty"`
+	StartedAt            *int64        `json:"startedAt,omitempty"`
+	CompletedAt          *int64        `json:"completedAt,omitempty"`
+	// DurationMS is the item's real server-measured runtime in milliseconds
+	// (tool-call items only). Stamped live from the event stream's own
+	// timestamps; nil when no honest span was recorded (issue #37: the web
+	// hover meta shows real times or nothing).
+	DurationMS *int64          `json:"durationMs,omitempty"`
+	Raw        json.RawMessage `json:"raw,omitempty"`
+	EventKind  string          `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
 	// daemon/system steering (issue #24).
@@ -689,8 +695,15 @@ type ThreadForkParams struct {
 	// message: the child thread holds only the entries before the turn, and
 	// the turn's original text comes back in ThreadForkResponse.OriginalInput
 	// so the client can stage it for editing and explicit submission (the
-	// fork never auto-runs the message). Mutually exclusive with EditedInput.
+	// fork never auto-runs the message). Mutually exclusive with EditedInput
+	// and Aside.
 	DeferInput bool `json:"deferInput,omitempty"`
+	// Aside forks a local serf thread at its tip instead of at a source turn:
+	// the child is a complete copy of the parent session (same permissions and
+	// config via the inherited session meta) and opens as a side thread. Aside
+	// is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+	// Label, and is only supported for local serf threads.
+	Aside bool `json:"aside,omitempty"`
 }
 
 type ThreadForkResponse struct {
@@ -885,6 +898,19 @@ type DirsCompleteParams struct {
 }
 
 type DirsCompleteResponse struct {
+	Data []string `json:"data"`
+}
+
+// ProjectsRecentParams selects how many recent project directories the hub
+// returns. Limit <= 0 means the hub default (the session creation flows'
+// 15-option dropdown cap).
+type ProjectsRecentParams struct {
+	Limit int `json:"limit,omitempty"`
+}
+
+// ProjectsRecentResponse lists distinct project working directories ordered
+// by actual recency of use (most recently active session first).
+type ProjectsRecentResponse struct {
 	Data []string `json:"data"`
 }
 

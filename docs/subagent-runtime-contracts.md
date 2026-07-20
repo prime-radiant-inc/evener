@@ -227,6 +227,11 @@ Fork and subagent are **distinct relations** sharing lineage fields, kept explic
   editing before explicit submission — the forked session never auto-runs it. The
   divergence turn must still be a `USER_INPUT` entry; both variants record the same
   `ParentSessionID`/`DivergenceTurn` lineage.
+  `AsideSession` (`agent/aside.go`) is the degenerate fork at the tip: it copies the
+  parent's full transcript with no divergent edit, records `DivergenceTurn` one past
+  the tip, and inherits the parent's config — the machinery behind the `/aside`
+  side-thread command. Both are built on the shared `writeForkChild` helper; the nil
+  replacement-turn variant covers both the deferred-input fork and the aside.
 - **Lineage lives in metadata and headers, discoverable without reading transcript
   bodies.** `SessionMeta` (`agent/schema/snapshot.go`) carries `ParentSessionID`,
   `DivergenceTurn`, `ForkLabel`, and `IsSubagent`; the transcript `Header`

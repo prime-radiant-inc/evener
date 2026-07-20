@@ -93,7 +93,7 @@ no router (reserved).
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no serf router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
-| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput). |
+| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local serf threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
 | `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation (rejected while a turn is processing). |
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `serf/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
@@ -112,6 +112,7 @@ no router (reserved).
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `serf/dirs/complete` | hub | `DirsCompleteParams` | `DirsCompleteResponse` | Directory-path autocompletion for a prefix. |
+| `serf/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `serf/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `serf/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a serf binary upgrade. |
@@ -648,6 +649,20 @@ _(no fields)_
 | `plugin` | `string` |  |  |
 | `marketplace` | `string` |  |  |
 | `autoUpgrade` | `bool` |  |  |
+
+
+### `ProjectsRecentParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `limit` | `int` | yes |  |
+
+
+### `ProjectsRecentResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `[]string` |  |  |
 
 
 ### `ReasoningSummaryDeltaParams`

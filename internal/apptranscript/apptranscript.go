@@ -303,7 +303,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					}
 					continue
 				}
-				items = append(items, appwire.ThreadItem{
+				item := appwire.ThreadItem{
 					Type:          "commandExecution",
 					ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
 					TurnID:        turnID,
@@ -312,7 +312,14 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 					ArgumentsJSON: string(part.ToolCall.Arguments),
 					Description:   ToolIntentFromArguments(part.ToolCall.Arguments),
 					Status:        appwire.TurnStatusInProgress,
-				})
+				}
+				// The entry's recorded timestamp is the server truth for when the
+				// call was issued (issue #37); a zero timestamp mints no stamp.
+				if !turn.Timestamp.IsZero() {
+					unix := turn.Timestamp.Unix()
+					item.StartedAt = &unix
+				}
+				items = append(items, item)
 			}
 		}
 		return items
@@ -338,6 +345,14 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				CallID:   part.ToolResult.ToolCallID,
 				Status:   appwire.TurnStatusCompleted,
 				Raw:      part.ToolResult.ToolState,
+			}
+			// The entry's recorded timestamp is the server truth for when the
+			// result landed (issue #37); a zero timestamp mints no stamp. The
+			// matching StartedAt rides the earlier assistant entry's item; the
+			// client merges the two by call id.
+			if !turn.Timestamp.IsZero() {
+				unix := turn.Timestamp.Unix()
+				item.CompletedAt = &unix
 			}
 			if part.ToolResult.IsError {
 				item.Error = StringifyToolContent(part.ToolResult.Content)

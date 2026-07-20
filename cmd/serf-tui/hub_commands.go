@@ -86,9 +86,13 @@ type hubGoalMsg struct {
 	err     error
 }
 
+// hubForkMsg reports the result of a thread/fork call. aside distinguishes the
+// /aside tip-fork (side thread) from the divergent fork-from-turn flow so
+// failures are attributed to the right command.
 type hubForkMsg struct {
-	resp hubRefResponse
-	err  error
+	resp  hubRefResponse
+	err   error
+	aside bool
 }
 
 type hubSpawnMsg struct {
@@ -113,8 +117,12 @@ type hubSpawnOptionsMsg struct {
 	emptyTaskUnsupportedReasons map[string]string
 	emptyTaskUnsupportedNext    map[string]string
 	models                      []tuipick.ModelPickerItem
-	err                         error
-	modelErr                    error
+	// recentDirs carries the hub's most recently used project dirs (the Dir
+	// field's prepopulated dropdown options, issue #35). Best-effort: a hub
+	// too old for serf/projects/recent leaves it nil.
+	recentDirs []string
+	err        error
+	modelErr   error
 }
 
 type hubAuthStatusMsg struct {
@@ -283,12 +291,18 @@ func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
 				emptyTaskUnsupportedNext[option.ID] = next
 			}
 		}
+		// Recent project dirs are best-effort: a failure (e.g. an older hub
+		// without serf/projects/recent) must not break spawning.
+		var recentDirs []string
+		if recentResp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{}); err == nil {
+			recentDirs = recentResp.Data
+		}
 		modelResp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
 		if err != nil {
-			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, modelErr: err}
+			return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, recentDirs: recentDirs, modelErr: err}
 		}
 		models := modelPickerItemsFromResponse(modelResp, false)
-		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, models: models}
+		return hubSpawnOptionsMsg{harnesses: harnesses, harnessKinds: harnessKinds, emptyTaskUnsupportedReasons: emptyTaskUnsupportedReasons, emptyTaskUnsupportedNext: emptyTaskUnsupportedNext, models: models, recentDirs: recentDirs}
 	}
 }
 
@@ -684,6 +698,20 @@ func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) te
 			Label:        req.Label,
 		})
 		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err}
+	}
+}
+
+// sendHubAside issues the /aside fork: thread/fork in aside mode forks the
+// session at its tip into a side thread that inherits this session's
+// permissions and config. The success path mirrors fork: the update loop opens
+// the returned child thread.
+func sendHubAside(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+			Ref:   ref.String(),
+			Aside: true,
+		})
+		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err, aside: true}
 	}
 }
 

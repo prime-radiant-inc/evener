@@ -23,6 +23,7 @@
     tasksList: "serf/tasks/list",
     sandboxEscalationResolve: "serf/sandbox/escalation/resolve",
     dirsComplete: "serf/dirs/complete",
+    projectsRecent: "serf/projects/recent",
     pathValidate: "serf/path/validate",
     serfUpgrade: "serf/upgrade",
     modelList: "model/list",
@@ -369,6 +370,14 @@
     }));
   }
 
+  // recentProjects returns the hub's most recently used project working
+  // directories (server-capped at 15) for the session creation path dropdown.
+  function recentProjects() {
+    return request(METHOD.projectsRecent, {}).then((resp) => (
+      resp && Array.isArray(resp.data) ? resp.data : []
+    ));
+  }
+
   function validatePath(path, kind) {
     return request(METHOD.pathValidate, { path: path || "", kind: kind || "" });
   }
@@ -615,6 +624,19 @@
         session_id: threadID(thread),
         original_input: resp.originalInput || "",
       };
+    });
+  }
+
+  // asideThread forks the session at its tip (thread/fork aside mode) into a
+  // side thread that inherits the session's permissions and config. Used by
+  // the /aside palette command.
+  function asideThread(sessionId) {
+    return request(METHOD.threadFork, {
+      ref: refForSession(sessionId),
+      aside: true,
+    }).then((resp) => {
+      const thread = resp.thread || {};
+      return { ref: threadRef(thread), session_id: threadID(thread) };
     });
   }
 
@@ -1091,6 +1113,7 @@
     listModels,
     listModelsWithDiagnostics,
     completeDirs,
+    recentProjects,
     validatePath,
     upgrade,
     startThread,
@@ -1108,6 +1131,7 @@
     setModel,
     setReasoningEffort,
     forkThread,
+    asideThread,
     eventsFromThread,
     eventsFromTurns,
     activeTurnIDFromThread,

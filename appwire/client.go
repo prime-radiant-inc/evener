@@ -406,6 +406,12 @@ func (c *Client) DirsComplete(ctx context.Context, params DirsCompleteParams) (D
 	return out, err
 }
 
+func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams) (ProjectsRecentResponse, error) {
+	var out ProjectsRecentResponse
+	err := c.request(ctx, MethodSerfProjectsRecent, params, &out)
+	return out, err
+}
+
 func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
 	var out HarnessListResponse
 	err := c.request(ctx, MethodSerfHarnessesList, params, &out)

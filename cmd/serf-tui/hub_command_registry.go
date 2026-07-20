@@ -283,6 +283,24 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:               "aside",
+		Summary:            "Fork session into a side thread",
+		PaletteLabel:       "/aside",
+		PaletteDetail:      "fork this session into a side thread (same permissions and config)",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "aside",
+		UnavailableSummary: "Aside is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.Fork }, "source does not advertise fork"),
+		Run: func(m *hubModel, _ string) tea.Cmd {
+			ref, ok := m.currentRef()
+			if !ok {
+				m.addSessionSystem("Session ref is invalid.")
+				return nil
+			}
+			return sendHubAside(m.client, ref)
+		},
+	},
+	{
 		Name:               "shutdown",
 		Summary:            "Stop this resumable session",
 		PaletteLabel:       "/shutdown",

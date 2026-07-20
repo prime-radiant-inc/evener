@@ -377,7 +377,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.forkDraft != nil {
 				m.forkDraft.Submitting = false
 			}
-			m.recordSessionError("Fork failed: " + msg.err.Error())
+			if msg.aside {
+				m.recordSessionError("Aside failed: " + msg.err.Error())
+			} else {
+				m.recordSessionError("Fork failed: " + msg.err.Error())
+			}
 			return m, nil
 		}
 		m.clearSessionError()
@@ -521,6 +525,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.spawnHarness = m.spawnHarnesses[0]
 		}
 		m.spawnModels = msg.models
+		m.spawnRecentDirs = msg.recentDirs
 		if m.mode == hubModeSpawn {
 			m.syncSpawnModelWithHarness()
 			if msg.modelErr != nil && m.spawnHarnessUsesSerfModels() {

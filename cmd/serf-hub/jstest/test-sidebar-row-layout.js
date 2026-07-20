@@ -95,16 +95,11 @@ if (!/\.sb-row:hover \.sb-menu-btn,\s*\.sb-row:focus-within \.sb-menu-btn\s*\{[^
   fails.push("hovering/focusing the row must fade the ⋯ menu in");
 }
 
-// Rail-collapsed mode (56px icon rail) must hide title/row-end, leaving
-// only the status icon visible.
-const railBlock = css.slice(css.indexOf('body.app[data-sidebar-rail] .sb-row {'));
-const railSnippet = railBlock.slice(0, railBlock.indexOf('@container'));
-if (!/\.sb-row \.title[^;{}]*\{[^}]*display:\s*none/.test(railSnippet) &&
-    !/\.title[\s\S]{0,80}display:\s*none/.test(railSnippet)) {
-  fails.push("rail mode must hide .sb-row .title");
-}
-if (!/\.row-end[\s\S]{0,120}display:\s*none/.test(railSnippet)) {
-  fails.push("rail mode must hide .sb-row .row-end");
+// Collapsed mode (data-sidebar-rail) hides the whole sidebar (issue #33 — the
+// 56px icon rail that used to hide title/row-end inside a narrow strip is
+// retired), so no rail-scoped .sb-row styling may survive.
+if (/body\.app\[data-sidebar-rail\]\s+\.sb-row/.test(css)) {
+  fails.push("collapsed mode must not restyle .sb-row (the whole sidebar is hidden)");
 }
 
 if (fails.length) {

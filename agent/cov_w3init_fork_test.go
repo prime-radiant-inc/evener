@@ -73,7 +73,7 @@ func TestW3Init_ForkSession_OpenError(t *testing.T) {
 	id := "01W3FORKOPENDENIED0000001"
 	fs := fault.FS(afero.NewMemMapFs(), fault.FromBytes([]byte{0}))
 
-	_, _, err := forkSessionFS(fs, stateDir, id, 1, "x", false, "")
+	_, err := forkSessionFS(fs, stateDir, id, 1, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "open parent transcript") {
 		t.Fatalf("err = %v, want open parent transcript error", err)
 	}
@@ -120,7 +120,7 @@ func TestW3Init_ForkSession_NewWriterError(t *testing.T) {
 		Fs:                   base,
 		parentTranscriptPath: parentPath,
 	}
-	_, _, err := forkSessionFS(fs, stateDir, id, 1, "x", false, "")
+	_, err := forkSessionFS(fs, stateDir, id, 1, "x", "")
 	if err == nil || !strings.Contains(err.Error(), "create child transcript") {
 		t.Fatalf("err = %v, want create child transcript error", err)
 	}

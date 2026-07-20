@@ -382,24 +382,33 @@
   }
 
   // flatten emits one keyed element descriptor per rendered row/section in
-  // order: NeedsYou, Pinned, active projects, Archived (N), Test runs (N).
-  // Render session rows grouped under project section headers; expansion +
-  // lazy children are honored via model.expanded.
+  // order: NeedsYou, Pinned, active projects, Archived sessions (N),
+  // Test runs (N). Render session rows grouped under project section headers;
+  // expansion + lazy children are honored via model.expanded.
   function flatten(tree) {
     var out = [];
     (tree.needs_you || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n, []); } });
     (tree.favorites || []).forEach(function (n) { if (!n.__drop) { out.push(n); pushChildren(out, n, []); } });
-    (tree.projects || []).forEach(function (p) { pushProject(out, p); });
+    (tree.projects || []).forEach(function (p) { pushProject(out, p, true); });
     pushArchivedSection(out, tree);
     pushTestRunsSection(out, tree);
     return out;
   }
-  function pushProject(out, p) {
+  // skipArchived diverts tier:"archived" sessions out of an ACTIVE project's
+  // inline list — they fold into the "Archived sessions" section instead
+  // (#44). Sections (archived projects, test runs) pass false: their buckets
+  // are server-decided and render every session they carry.
+  function pushProject(out, p, skipArchived) {
     // Project header is itself a keyed element (data-row-id="header:<key>").
-    out.push({ row_id: "header:" + p.key, __project: p });
-    if (!isExpanded(p.key, p.default_expanded)) return;
+    // An archived-sessions group header keys on __groupKey ("archived:<key>")
+    // so it never collides with — or shares expansion state with — the active
+    // project's own header.
+    var hkey = p.__groupKey || p.key;
+    out.push({ row_id: "header:" + hkey, __project: p });
+    if (!isExpanded(hkey, p.default_expanded)) return;
     (p.sessions || []).forEach(function (n) {
       if (n.__drop) return;
+      if (skipArchived && n.tier === "archived") return;
       n.__projectKey = p.key;
       if (n.kind === "cluster") { pushCluster(out, n); return; }
       out.push(n);
@@ -481,8 +490,53 @@
       list.forEach(function (p) { if (markKey) p[markKey] = true; pushProject(out, p); });
     }
   }
+  // The "Archived sessions" section (#44) folds EVERY archived session away
+  // behind one top-level disclosure, grouped by project inside it:
+  //   - archived projects (tree.archived_projects) render as session-less
+  //     stubs that lazy-hydrate on expand — unchanged pre-#44 behavior;
+  //   - each ACTIVE project with archived-tier sessions gets a per-project
+  //     sub-heading (row_id "header:archived:<key>", expansion key
+  //     "archived:<key>") showing the project name, revealing only that
+  //     project's archived sessions. Those sessions already ride the /api/tree
+  //     snapshot inside their project, so the group needs no lazy fetch.
+  // The header count is the number of archived sessions the section holds
+  // (a stub contributes its session_count until hydrated).
   function pushArchivedSection(out, tree) {
-    pushSection(out, tree.archived_projects || [], SECTION_ARCHIVED, "Archived", "__archived");
+    var stubs = tree.archived_projects || [];
+    var groups = archivedGroups(tree);
+    if (!stubs.length && !groups.length) return; // no chrome for an empty bucket
+    var count = 0;
+    stubs.forEach(function (p) { count += p.sessions ? visibleCount(p.sessions) : (p.session_count || 0); });
+    groups.forEach(function (g) { count += visibleCount(g.sessions); });
+    out.push({ row_id: SECTION_ARCHIVED, __section: true, key: SECTION_ARCHIVED, label: "Archived sessions", count: count });
+    if (model.expanded.has(SECTION_ARCHIVED)) {
+      stubs.forEach(function (p) { p.__archived = true; pushProject(out, p); });
+      groups.forEach(function (g) { pushProject(out, g); });
+    }
+  }
+  function visibleCount(sessions) {
+    var n = 0;
+    (sessions || []).forEach(function (s) { if (!s.__drop) n++; });
+    return n;
+  }
+  function archivedGroupKey(key) { return "archived:" + key; }
+  // archivedGroups synthesizes one project-header-shaped group per active
+  // project that has archived-tier sessions. __groupKey gives the header its
+  // own row_id/expansion key; __menuProject points the ⋯ menu at the real
+  // project (its key/working_dir/counts) so project actions stay correct.
+  function archivedGroups(tree) {
+    var groups = [];
+    (tree.projects || []).forEach(function (p) {
+      var archived = (p.sessions || []).filter(function (n) { return !n.__drop && n.tier === "archived"; });
+      if (!archived.length) return;
+      groups.push({
+        key: p.key, name: p.name, working_dir: p.working_dir,
+        sessions: archived,
+        __groupKey: archivedGroupKey(p.key),
+        __menuProject: p,
+      });
+    });
+    return groups;
   }
   function pushTestRunsSection(out, tree) {
     pushSection(out, tree.test_runs || [], SECTION_TEST_RUNS, "Test runs", null);
@@ -635,14 +689,19 @@
 
   function buildProjectHeader(p) {
     var d = document.createElement("div");
+    // __groupKey scopes an archived-sessions group header (#44) to its own
+    // row_id + expansion key; __menuProject keeps the ⋯ menu bound to the
+    // real project. Plain projects leave both unset and behave exactly as
+    // before.
+    var hkey = p.__groupKey || p.key;
     // NOTE: intentionally NOT "sb-row" — a project header is not a session
     // row, and the existing template/CSS (partials/sidebar.html, style.css)
     // already style ".project-header" as its own standalone class.
     d.className = "project-header";
-    d.setAttribute("data-row-id", "header:" + p.key);
+    d.setAttribute("data-row-id", "header:" + hkey);
     d.setAttribute("data-project-key", p.key);
     d.setAttribute("role", "button");
-    d.setAttribute("aria-expanded", String(isExpanded(p.key, p.default_expanded)));
+    d.setAttribute("aria-expanded", String(isExpanded(hkey, p.default_expanded)));
     // Disclosure affordance: same "›" idiom as sb-children-chevron /
     // cluster-chevron. Decorative span (aria-hidden) — the header itself is
     // the toggle and carries aria-expanded, which style.css uses to rotate
@@ -651,7 +710,7 @@
     d.querySelector(".project-name").textContent = p.name;
     setProjectCount(d, p);
     setProjectRollup(d, p);
-    d.addEventListener("click", function () { toggleExpanded(p.key); });
+    d.addEventListener("click", function () { toggleExpanded(hkey); });
     var menuBtn = document.createElement("button");
     menuBtn.type = "button";
     menuBtn.className = "sb-menu-btn btn-icon";
@@ -660,13 +719,13 @@
     menuBtn.textContent = "⋯"; // ⋯
     menuBtn.addEventListener("click", function (e) {
       e.preventDefault(); e.stopPropagation();
-      openMenu(menuBtn, projectMenuItems(p));
+      openMenu(menuBtn, projectMenuItems(p.__menuProject || p));
     });
     d.appendChild(menuBtn);
     return d;
   }
   function patchProjectHeader(el, p) {
-    el.setAttribute("aria-expanded", String(isExpanded(p.key, p.default_expanded)));
+    el.setAttribute("aria-expanded", String(isExpanded(p.__groupKey || p.key, p.default_expanded)));
     setProjectCount(el, p);
     setProjectRollup(el, p);
   }
@@ -778,6 +837,8 @@
   function restoreExpanded(tree) {
     var all = (tree.projects || []).concat(tree.archived_projects || [], tree.test_runs || []);
     all.forEach(function (p) { restoreExpansionPref(p.key); });
+    // Archived-sessions group headers (#44) persist under their own key.
+    (tree.projects || []).forEach(function (p) { restoreExpansionPref(archivedGroupKey(p.key)); });
     SECTION_KEYS.forEach(restoreExpansionPref);
     restoreInactiveExpansion(tree.needs_you || []);
     restoreInactiveExpansion(tree.favorites || []);
@@ -945,11 +1006,26 @@
     return (
       searchNodes(tree.needs_you, routeID, []) ||
       searchNodes(tree.favorites, routeID, []) ||
-      searchProjects(tree.projects, routeID, []) ||
+      searchActiveProjects(tree.projects, routeID) ||
       searchProjects(tree.archived_projects, routeID, [SECTION_ARCHIVED]) ||
       searchProjects(tree.test_runs, routeID, [SECTION_TEST_RUNS]) ||
       null
     );
+  }
+  // Active projects split their reveal chain by tier (#44): a non-archived
+  // match reveals the project itself; an archived-tier match sits behind the
+  // "Archived sessions" section and its per-project group header.
+  function searchActiveProjects(projects, routeID) {
+    for (var i = 0; i < (projects || []).length; i++) {
+      var p = projects[i];
+      var active = [], archived = [];
+      (p.sessions || []).forEach(function (n) { (n.tier === "archived" ? archived : active).push(n); });
+      var found = searchNodes(active, routeID, [p.key]);
+      if (found) return found;
+      found = searchNodes(archived, routeID, [SECTION_ARCHIVED, archivedGroupKey(p.key)]);
+      if (found) return found;
+    }
+    return null;
   }
   function searchProjects(projects, routeID, prefix) {
     for (var i = 0; i < (projects || []).length; i++) {
@@ -1103,8 +1179,9 @@
     if (open) {
       document.body.setAttribute("data-sidebar-open", "");
       document.addEventListener("click", onOutsideClick, true);
-      // Only trap focus on phone — desktop sidebar isn't a drawer. Match
-      // the design-language breakpoint.
+      // Only trap focus on phone — on tablet/desktop the collapsed-state
+      // drawer follows the short-landscape precedent (no trap; ⌘B and the
+      // chip remain reachable). Match the design-language breakpoint.
       var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
       if (isPhone && window.SerfFocusTrap) {
         var sidebar = document.getElementById("sidebar");
@@ -1166,16 +1243,19 @@
 
   // Sidebar tri-state — auto | rail | pane, persisted to localStorage under
   // the legacy key. body[data-sidebar-mode] records the SETTING;
-  // body[data-sidebar-rail] reflects the EFFECTIVE state, so all rail CSS and
-  // panes.js's resizer-disable keep reading one attribute. Migration: the old
-  // binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
+  // body[data-sidebar-rail] reflects the EFFECTIVE state, so the collapsed CSS
+  // and panes.js's resizer-disable keep reading one attribute. Migration: the
+  // old binary pref maps "true"→rail, "false"→pane, absent→auto (auto is new:
   // rail below 1200px, pane at/above — before the tablet band existed the
   // sidebar simply stayed full, so this is a deliberate improvement).
+  // "rail" is the legacy name for the collapsed state: since issue #33 the
+  // collapse is TOTAL — the sidebar leaves the layout (no 56px icon strip)
+  // and reopens as an overlay drawer via the app-shell nav chip.
   var SIDEBAR_MODE_KEY = "serf-hub.sidebar.rail";
   var SIDEBAR_DESKTOP_QUERY = "(min-width: 1200px)";
   // Phone band: the off-canvas drawer (body[data-sidebar-open]) governs the
-  // sidebar, never the tri-state. The rail's 56px strip is a desktop/tablet
-  // affordance; on a phone it shrinks the drawer to an unusable sliver.
+  // sidebar, never the tri-state. Collapse is a desktop/tablet affordance; on
+  // a phone the rail attribute would hide the drawer entirely.
   var SIDEBAR_PHONE_QUERY = "(max-width: 767px)";
 
   function readSidebarMode() {
