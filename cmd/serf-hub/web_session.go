@@ -551,12 +551,56 @@ func (s *WebServer) handleAPIFork(w http.ResponseWriter, r *http.Request, parent
 	})
 }
 
+func (s *WebServer) handleAside(w http.ResponseWriter, r *http.Request, parentID string) {
+	childID, err := s.asideSession(parentID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"child_session_id": childID}) //nolint:errcheck
+}
+
+// asideSession forks the parent session at its tip into a side thread that
+// inherits the parent's permissions and config (agent.AsideSession).
+func (s *WebServer) asideSession(parentID string) (string, error) {
+	stateDir, err := s.stateDirForSession(parentID)
+	if err != nil {
+		return "", err
+	}
+	childID, err := agent.AsideSession(stateDir, parentID)
+	if err != nil {
+		return "", err
+	}
+	// Refresh past index so the new session shows up immediately in the sidebar.
+	if s.cfg.Past != nil {
+		_ = s.cfg.Past.Rebuild()
+	}
+	return childID, nil
+}
+
 func (s *WebServer) forkSession(parentID string, body forkRequest) (string, error) {
-	// Resolve the state dir for the parent session. Forks must write into
-	// the same project's state-dir as the parent (so they appear in the
-	// project tree). Past index knows the per-project state-dir; cfg.StateDir
-	// is the parent of all projects and would point ForkSession at the wrong
-	// directory.
+	stateDir, err := s.stateDirForSession(parentID)
+	if err != nil {
+		return "", err
+	}
+
+	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
+	if err != nil {
+		return "", err
+	}
+	// Refresh past index so the new session shows up immediately in the sidebar.
+	if s.cfg.Past != nil {
+		_ = s.cfg.Past.Rebuild()
+	}
+	return childID, nil
+}
+
+// stateDirForSession resolves the state dir for a session. Branches must write
+// into the same project's state-dir as the parent (so they appear in the
+// project tree). Past index knows the per-project state-dir; cfg.StateDir is
+// the parent of all projects and would point the fork at the wrong directory.
+func (s *WebServer) stateDirForSession(parentID string) (string, error) {
 	var stateDir string
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(parentID); ok {
@@ -569,16 +613,7 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 	if stateDir == "" {
 		return "", errors.New("state dir not resolvable for parent session")
 	}
-
-	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)
-	if err != nil {
-		return "", err
-	}
-	// Refresh past index so the new session shows up immediately in the sidebar.
-	if s.cfg.Past != nil {
-		_ = s.cfg.Past.Rebuild()
-	}
-	return childID, nil
+	return stateDir, nil
 }
 
 // waitForRosterMatch polls the roster until it sees a daemon with the given PID

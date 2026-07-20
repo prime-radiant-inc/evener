@@ -63,6 +63,12 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFork(w, r, id)
+	case "aside":
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST required", http.StatusMethodNotAllowed)
+			return
+		}
+		s.handleAside(w, r, id)
 	case "interrupt":
 		s.handleSessionAction(w, r, id, "interrupt")
 	case "compact":

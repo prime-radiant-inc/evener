@@ -610,6 +610,19 @@
     });
   }
 
+  // asideThread forks the session at its tip (thread/fork aside mode) into a
+  // side thread that inherits the session's permissions and config. Used by
+  // the /aside palette command.
+  function asideThread(sessionId) {
+    return request(METHOD.threadFork, {
+      ref: refForSession(sessionId),
+      aside: true,
+    }).then((resp) => {
+      const thread = resp.thread || {};
+      return { ref: threadRef(thread), session_id: threadID(thread) };
+    });
+  }
+
   function firstNonEmpty() {
     for (const value of arguments) {
       if (value) return value;
@@ -1100,6 +1113,7 @@
     setModel,
     setReasoningEffort,
     forkThread,
+    asideThread,
     eventsFromThread,
     eventsFromTurns,
     activeTurnIDFromThread,
