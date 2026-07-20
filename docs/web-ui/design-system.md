@@ -145,7 +145,7 @@ Design rule: **one scannable primary line per entry; status on a left rail or gl
 detail demoted to a mono chip; deep detail hidden until expanded.** Content column capped ~720px.
 
 **Breakpoint ladder + wide band (2026-07-19 addendum).** Phone ≤767px; tablet 768–1199px
-(side panes hidden, sidebar auto-rails — see §5); desktop 1200–1799px; wide ≥1800px.
+(side panes hidden, sidebar auto-collapses — see §5); desktop 1200–1799px; wide ≥1800px.
 The prose measure holds 720px at **every** width; the machine bleed (`--measure-machine`)
 is 1000px below the wide band and 1200px at/above it. Left edges never move.
 
@@ -271,10 +271,18 @@ collapsed archived stubs — the whole header is the toggle; the chevron is deco
 top margin between a project and whatever precedes it — group separation reads as a subtle
 rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
 
-**Tri-state mode (2026-07-19 addendum).** The sidebar mode is `auto | rail | pane`,
-persisted per-browser. `auto` (the default) rails below 1200px and expands at/above it;
-`rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy binary
-preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
+**Tri-state mode (2026-07-19 addendum; collapsed = hidden since issue #33).** The
+sidebar mode is `auto | rail | pane`, persisted per-browser (`rail` is the legacy
+name for the collapsed state). `auto` (the default) collapses below 1200px and expands
+at/above it; `rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy
+binary preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
+
+**Collapsed means fully collapsed.** There is no 56px icon rail: the sidebar leaves
+the layout entirely. The app-shell nav chip (`.app-nav-toggle`, hidden on desktop
+otherwise) floats top-left and reopens the sidebar as an **overlay drawer**
+(`body[data-sidebar-rail][data-sidebar-open]`) — the same pattern as the phone and
+short-landscape bands, including outside-click / Escape close and close-on-navigate.
+⌘B or the in-header mode toggle cycle back to `pane` to re-pin it.
 
 ---
 
