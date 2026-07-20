@@ -29,6 +29,10 @@ var (
 )
 
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if newWebEnabled() {
+		serveSPAIndex(w, r, distFS())
+		return
+	}
 	if r.Header.Get("HX-Request") == "true" {
 		http.NotFound(w, r)
 		return

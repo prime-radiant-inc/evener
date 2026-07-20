@@ -33,9 +33,11 @@ build-hub: build-runtime build-web
 
 # build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. npm ci installs
-# exactly what's pinned in the committed package-lock.json.
+# exactly what's pinned in the committed package-lock.json. vite's
+# emptyOutDir wipes the tracked dist/PLACEHOLDER on every build; restore it
+# from git so `git status` stays clean after a build.
 build-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run build
+	cd cmd/serf-hub/frontend && npm ci && npm run build && git checkout -- dist/PLACEHOLDER
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain

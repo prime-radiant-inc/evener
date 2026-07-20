@@ -161,6 +161,11 @@ func (s *WebServer) Handler() http.Handler {
 	}
 	mux.Handle("/assets/", assetHandler)
 
+	// Rewritten SPA's hashed Vite output — always registered regardless of
+	// SERF_HUB_WEB, mirroring /assets/ above (same auth-guard wrapping below;
+	// hashed filenames are immutable, so aggressive caching is safe).
+	mux.Handle("/webassets/", webassetsHandler(distFS()))
+
 	// PWA manifest — served dynamically (not as a static asset) so start_url can
 	// carry the auth token. A home-screen launch on iOS gets its own cookie jar,
 	// separate from the browser that authorized the hub, so it must re-auth via
@@ -218,6 +223,10 @@ func (s *WebServer) Handler() http.Handler {
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if newWebEnabled() {
+		serveSPAIndex(w, r, distFS())
+		return
+	}
 	if r.URL.Path != "/" && r.URL.Path != "/new" {
 		http.NotFound(w, r)
 		return

@@ -22,6 +22,10 @@ import (
 // Session fragments live under /_partials/s/... so direct navigation always
 // lands in the app shell instead of a standalone workspace fragment.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
+	if newWebEnabled() {
+		serveSPAIndex(w, r, distFS())
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)
 	id := parts[0]
@@ -146,6 +150,10 @@ func (s *WebServer) workspaceDataForRender(id string) WorkspaceData {
 }
 
 func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request) {
+	if newWebEnabled() {
+		serveSPAIndex(w, r, distFS())
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
