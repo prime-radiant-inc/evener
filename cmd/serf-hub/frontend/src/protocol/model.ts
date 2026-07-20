@@ -1,0 +1,54 @@
+// UI-ready thread/turn/item model. reducer.ts folds wire shapes (Thread,
+// Turn, ThreadItem, AnyNotification, ...) from ./types.gen.ts into this
+// shape; components should only ever read this model, never the wire types
+// directly.
+
+import type { QueueState, ThreadStatus } from "./types.gen";
+
+export interface ItemModel {
+  id: string;
+  turnId: string;
+  type: string; // wire ThreadItem.type verbatim
+  text: string; // settled text
+  pendingText?: string[]; // in-flight delta chunks (join on complete)
+  toolName?: string;
+  callId?: string;
+  argumentsJSON?: string;
+  output?: string;
+  images?: string[];
+  outputImages?: string[];
+  status?: string;
+  source?: string;
+  reasoningSummaries?: string[][]; // per summaryIndex chunk lists
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TurnModel {
+  id: string;
+  status: string;
+  items: ItemModel[];
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+  usage?: unknown;
+  cost?: unknown;
+  error?: unknown;
+}
+
+export interface ThreadModel {
+  ref: string;
+  threadId: string;
+  name: string;
+  status: ThreadStatus;
+  modelProvider: string;
+  model: string;
+  reasoningEffort?: string;
+  askPending: boolean;
+  turns: TurnModel[];
+  activeTurnId?: string;
+  queue: QueueState | null;
+  tasks: { total: number; done: number } | null;
+  olderCursor?: string;
+  lastFrameAt: number; // liveness input
+}
