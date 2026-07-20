@@ -777,6 +777,7 @@ _(no fields)_
 | `modelProvider` | `string` | yes |  |
 | `model` | `string` | yes |  |
 | `deferInput` | `bool` | yes |  |
+| `aside` | `bool` | yes |  |
 
 
 ### `ThreadForkResponse`

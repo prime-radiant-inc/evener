@@ -26,3 +26,8 @@ Task 10: complete (commits e8afceaa..7017ede9, review Approved; controller fixed
 Task 11: final whole-branch review (gpt-5.6-sol): Ready to merge — 0 Critical, 0 Important, 6 Minor all triaged non-blocking; spec compliance pass for increments 5-9 (.superpowers/sdd/final-review.md).
 Visual matrix (playwright: 390/768/1100/1440/2560 + 1100x600, dark/light, home/session) caught 2 geometry defects; controller fixes: 6b2b801a (prose-centered bleed-right geometry), 53cdaf84 (legacy 680px caps → var(--measure)), 273efa84 (comment correction, also final-review Minor #1). Full gate green at 273efa84. Focused re-review of the 3 commits dispatched to the final reviewer.
 Task 11: complete — focused re-review of geometry fixes: Still Ready to merge (0 findings, geometry verified). Branch webui-joy-b ready at 273efa84.
+
+## Workspace-shell rewrite Wave 1 (2026-07-20, branch worktree-webui-workspace-shell, plan commit 89a45301b, spec 940cdff30)
+
+Task 1: complete (commits 89a45301b..409c51dab, review Approved after 1 fix wave: .npmrc ignore-scripts for transitive fsevents postinstall; boilerplate cleanup; tsconfig vite/client authorized)
+Task 2: complete (commits 409c51dab..d352d9447 [ddc85772c impl, 9bae74070 guard-scope fix, d352d9447 test fixes], review Approved; guard covers only page GETs — controller ruling; SPA fallback for unmatched paths pinned as intended; Minors deferred to final review: 5x guard duplication, skip-guard helper dedup)
