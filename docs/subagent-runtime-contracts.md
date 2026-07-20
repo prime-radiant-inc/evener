@@ -221,6 +221,12 @@ Fork and subagent are **distinct relations** sharing lineage fields, kept explic
 - **Fork copies history; a subagent starts fresh.** `ForkSession` (`agent/fork.go`)
   replays the parent's first `divergenceTurn-1` entries into the child transcript; a
   spawned subagent gets a new empty session with only a lineage pointer.
+- **A fork may defer the diverging input.** `ForkSessionAtUserTurn` (`agent/fork.go`)
+  writes only the prefix (no replacement user turn) and returns the original message
+  text, so the web UI's fork-from-message flow can stage it in the composer for
+  editing before explicit submission — the forked session never auto-runs it. The
+  divergence turn must still be a `USER_INPUT` entry; both variants record the same
+  `ParentSessionID`/`DivergenceTurn` lineage.
 - **Lineage lives in metadata and headers, discoverable without reading transcript
   bodies.** `SessionMeta` (`agent/schema/snapshot.go`) carries `ParentSessionID`,
   `DivergenceTurn`, `ForkLabel`, and `IsSubagent`; the transcript `Header`
