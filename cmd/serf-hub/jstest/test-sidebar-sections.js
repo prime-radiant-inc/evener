@@ -1,7 +1,9 @@
-// Sidebar sections: a keyed "Archived (N)" divider, collapsed by default,
-// that reuses pushProject/buildProjectHeader/buildRow for its content once
-// expanded, with an Unarchive (not Archive) row-menu action for the projects
-// it contains.
+// Sidebar sections: a keyed "Archived sessions (N)" divider, collapsed by
+// default, that reuses pushProject/buildProjectHeader/buildRow for its
+// content once expanded, with an Unarchive (not Archive) row-menu action for
+// the projects it contains. (Renamed from "Archived (N)" in #44, which also
+// folds active projects' archived-tier sessions into this section, grouped
+// per project — see test-sidebar-archived-sessions.js.)
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
 const src = fs.readFileSync(__dirname + "/../assets/sidebar.js", "utf8");
@@ -47,8 +49,8 @@ const tree = treeWithArchived();
 w.SerfSidebar.renderTree(tree);
 const header = w.document.querySelector('[data-row-id="section:archived"]');
 if (!header) throw new Error("archived section header must render when archived_projects is non-empty");
-if (!/Archived \(1\)/.test(header.textContent)) {
-  throw new Error('section header must show label "Archived (N)", got ' + JSON.stringify(header.textContent));
+if (!/Archived sessions \(1\)/.test(header.textContent)) {
+  throw new Error('section header must show label "Archived sessions (N)", got ' + JSON.stringify(header.textContent));
 }
 if (header.getAttribute("aria-expanded") !== "false") {
   throw new Error('collapsed section header must have aria-expanded="false", got ' + JSON.stringify(header.getAttribute("aria-expanded")));
@@ -105,5 +107,5 @@ if (last.body.kind !== "project" || last.body.id !== "apk1" || last.body.archive
   throw new Error("Unarchive POST body wrong: " + JSON.stringify(last.body));
 }
 
-console.log("ok sidebar sections: archived (N) collapsed-by-default + identity + unarchive menu");
+console.log("ok sidebar sections: archived sessions (N) collapsed-by-default + identity + unarchive menu");
 process.exit(0); // sidebar.js's 60s idle-resync interval keeps the event loop alive otherwise

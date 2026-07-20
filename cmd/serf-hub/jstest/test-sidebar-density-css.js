@@ -14,7 +14,7 @@ if (!/min-height:\s*24px/.test(menuBtn) || !/min-width:\s*24px/.test(menuBtn)) f
 // Rail mode (56px icon-only collapsed sidebar) must hide the ENTIRE
 // .sb-section archived-section toggle, exactly like the legacy
 // .tier-header/.sidebar-section-header disclosure headers are hidden there
-// — otherwise its "Archived (N)" label has no width constraint and bleeds
+// — otherwise its "Archived sessions (N)" label has no width constraint and bleeds
 // out of the 56px rail into the workspace pane.
 const railHidesSbSection = /body\.app\[data-sidebar-rail\][^{}]*\.sb-section[^{}]*\{([^{}]*)\}/.exec(css);
 if (!railHidesSbSection || !/display:\s*none/.test(railHidesSbSection[1])) fails.push("rail mode (data-sidebar-rail) must hide .sb-section entirely (display:none)");

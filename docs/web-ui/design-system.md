@@ -253,6 +253,12 @@ Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
   subagents" past ~3.
 - **RECENT** — touched in ~last day; collapsed.
 - **OLDER** — collapsed.
+- **ARCHIVED SESSIONS (N)** — one top-level disclosure, collapsed by default, folding away
+  everything archived so it stops cluttering the active list. N counts the archived sessions
+  inside. Expanding reveals per-project sub-headings (project name, own disclosure chevron):
+  archived projects ride as session-less stubs that lazy-hydrate on expand, and each active
+  project with archived-tier sessions gets a group revealing only those sessions (they already
+  ride the tree snapshot, so no fetch). Active projects never list archived sessions inline.
 - **TEST RUNS (N)** — auto-bucket the disposable `serf-e2e-*` single-session sprawl into one
   collapsed group so it stops drowning real projects.
 
