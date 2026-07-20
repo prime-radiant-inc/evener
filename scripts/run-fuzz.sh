@@ -40,6 +40,7 @@ set -uo pipefail
 #             ("adapter.go#decodeStream"). Empty means "the whole SUT package".
 TARGETS=(
 	"native:llm:.:FuzzParseSSE::sse.go"
+	"native:.:./cmd/serf-transcript-v2-upgrade:FuzzConvertHeader::main.go#convertHeader"
 	"native:.:./appwire:FuzzMessageDecode::jsonrpc.go"
 	"native:.:./appwire:FuzzMessageDecodeStructured::jsonrpc.go"
 	"native:.:./appwire:FuzzTurnPagingEquivalence::paging.go"
