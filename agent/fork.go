@@ -57,75 +57,9 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		return "", fmt.Errorf("divergenceTurn must be >= 1, got %d", divergenceTurn)
 	}
 
-	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
-
-	// Read the raw transcript lines so we can replay entry lines into the child.
-	f, err := fs.Open(transcriptPath)
+	parentHeader, allEntries, err := readForkParent(fs, stateDir, parentID, deps.maxScanToken)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("parent transcript not found for session %s", parentID)
-		}
-		return "", fmt.Errorf("open parent transcript: %w", err)
-	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
-
-	maxScanToken := deps.maxScanToken
-	if maxScanToken <= 0 {
-		maxScanToken = 10 * 1024 * 1024
-	}
-	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
-
-	// The first non-empty complete line is the header.
-	var parentHeader transcript.Header
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return "", fmt.Errorf("reading parent transcript header: %w", readErr)
-		}
-		if !complete {
-			return "", errors.New("parent transcript is empty")
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		parentHeader, err = transcript.DecodeHeader(line)
-		if err != nil {
-			return "", fmt.Errorf("parsing parent transcript header: %w", err)
-		}
-		break
-	}
-
-	// Collect all entry lines from the parent transcript.
-	// divergenceTurn is a 1-based index into the full entry list (all turns, not just
-	// USER_INPUT). The entry at position divergenceTurn (1-based) must be a USER_INPUT
-	// turn; it is replaced by the edited message in the child. All entries before it
-	// form the prefix.
-	//
-	// Example with transcript [U1, A1, U2, A2] and divergenceTurn=3:
-	//   entries[2] (1-based: turn 3) = U2. Prefix = [U1, A1].
-	//   Child = [U1, A1, edited-U2].
-	var allEntries []transcript.Entry
-
-	for {
-		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
-		if readErr != nil {
-			return "", fmt.Errorf("reading parent transcript entries: %w", readErr)
-		}
-		if !complete {
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-
-		entry, err := transcript.DecodeEntry(line)
-		if err != nil {
-			return "", fmt.Errorf("parsing parent transcript entry: %w", err)
-		}
-
-		allEntries = append(allEntries, entry)
+		return "", err
 	}
 
 	// Validate that divergenceTurn points to a valid entry in the parent transcript.
@@ -148,6 +82,95 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
 
+	childID, err := writeForkChild(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, &editedMessage, deps)
+	if err != nil {
+		return "", err
+	}
+
+	// Update the parent meta with the fork label if provided.
+	if parentForkLabel != "" {
+		parentMeta.ForkLabel = parentForkLabel
+		if err := deps.saveMeta(fs, stateDir, parentMeta); err != nil {
+			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
+		}
+	}
+
+	return childID, nil
+}
+
+// readForkParent loads the parent transcript's header and full entry list.
+// divergenceTurn indexing in ForkSession is 1-based into this entry list (all
+// turns, not just USER_INPUT).
+func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (transcript.Header, []transcript.Entry, error) {
+	transcriptPath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
+
+	// Read the raw transcript lines so we can replay entry lines into the child.
+	f, err := fs.Open(transcriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return transcript.Header{}, nil, fmt.Errorf("parent transcript not found for session %s", parentID)
+		}
+		return transcript.Header{}, nil, fmt.Errorf("open parent transcript: %w", err)
+	}
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
+
+	if maxScanToken <= 0 {
+		maxScanToken = 10 * 1024 * 1024
+	}
+	reader := bufio.NewReaderSize(f, min(64*1024, maxScanToken))
+
+	// The first non-empty complete line is the header.
+	var parentHeader transcript.Header
+	for {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
+		if readErr != nil {
+			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript header: %w", readErr)
+		}
+		if !complete {
+			return transcript.Header{}, nil, errors.New("parent transcript is empty")
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+		parentHeader, err = transcript.DecodeHeader(line)
+		if err != nil {
+			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript header: %w", err)
+		}
+		break
+	}
+
+	// Collect all entry lines from the parent transcript.
+	var allEntries []transcript.Entry
+	for {
+		line, complete, _, readErr := transcript.ReadLine(reader, maxScanToken)
+		if readErr != nil {
+			return transcript.Header{}, nil, fmt.Errorf("reading parent transcript entries: %w", readErr)
+		}
+		if !complete {
+			break
+		}
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
+			continue
+		}
+
+		entry, err := transcript.DecodeEntry(line)
+		if err != nil {
+			return transcript.Header{}, nil, fmt.Errorf("parsing parent transcript entry: %w", err)
+		}
+
+		allEntries = append(allEntries, entry)
+	}
+	return parentHeader, allEntries, nil
+}
+
+// writeForkChild writes the child transcript (prefix entries plus, when
+// editedMessage is non-nil, a replacement USER_INPUT turn carrying that text)
+// and saves the child meta. divergenceTurn is recorded in the child meta as
+// the first turn unique to this branch; editedMessage == nil means the branch
+// diverges past the parent's tip with no replacement turn (the aside case).
+func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, deps forkSessionDeps) (string, error) {
 	// Mint a new child session ID.
 	childID, err := identifier.NewSessionID()
 	if err != nil {
@@ -177,7 +200,7 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		return "", fmt.Errorf("create child transcript: %w", err)
 	}
 	// Safety net for early error returns; the success path closes tw explicitly
-	// below (line ~165) and checks that error, after which this defer is a no-op.
+	// below and checks that error, after which this defer is a no-op.
 	defer func() { _ = tw.Close() }()
 
 	modelResponses := 0
@@ -195,12 +218,15 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 		}
 	}
 
-	// Append the edited turn as a new USER_INPUT turn.
-	editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(editedMessage))
-	if err := tw.Append(editedTurn); err != nil {
-		return "", fmt.Errorf("append edited turn to child transcript: %w", err)
+	// Append the edited turn as a new USER_INPUT turn when this is a
+	// divergence fork (aside forks pass nil and copy the tip verbatim).
+	if editedMessage != nil {
+		editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(*editedMessage))
+		if err := tw.Append(editedTurn); err != nil {
+			return "", fmt.Errorf("append edited turn to child transcript: %w", err)
+		}
+		acceptedInputTurns++
 	}
-	acceptedInputTurns++
 
 	if err := tw.Close(); err != nil {
 		return "", fmt.Errorf("close child transcript: %w", err)
@@ -225,14 +251,6 @@ func forkSessionWithDeps(fs afero.Fs, stateDir, parentID string, divergenceTurn 
 
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
-	}
-
-	// Update the parent meta with the fork label if provided.
-	if parentForkLabel != "" {
-		parentMeta.ForkLabel = parentForkLabel
-		if err := deps.saveMeta(fs, stateDir, parentMeta); err != nil {
-			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
-		}
 	}
 
 	return childID, nil
