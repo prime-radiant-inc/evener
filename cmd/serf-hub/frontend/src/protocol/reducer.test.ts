@@ -227,9 +227,11 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
 
 test("turn/completed applies even though its payload carries no ref or threadId", () => {
   // TurnCompletedParams is {turnId, turn} on the wire — no ref/threadId field
-  // exists to check (confirmed against appwire/types.go and types.gen.ts).
-  // The reducer applies it unconditionally rather than gating on
-  // notificationTargetsThread, which would otherwise always reject it.
+  // exists to check (confirmed against appwire/types.go and types.gen.ts), so
+  // notificationTargetsThread always rejects it. The reducer instead gates
+  // turn/completed on model.activeTurnId === turnId (see the sibling-thread
+  // immunity test below for why: turn IDs are per-thread sequential, so the
+  // same turnId can legitimately belong to a different, unrelated thread).
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -245,6 +247,62 @@ test("turn/completed applies even though its payload carries no ref or threadId"
   expect(model).not.toBe(beforeCompletion);
   expect(turnAt(model, 0).status).toBe("completed");
   expect(model.activeTurnId).toBeUndefined();
+});
+
+test("turn/completed does not cross-apply to a different thread's same-numbered turn", () => {
+  // Turn IDs are per-thread sequential ("turn_%d") and turn/completed carries
+  // no ref/threadId, so two unrelated threads can each legitimately have
+  // their own "turn_1" — one active on thread A, one long since settled on
+  // thread B. Applying A's completion notification to B's model (e.g. a
+  // store-layer routing bug, or delivery before the store learns better)
+  // must be a true no-op: same reference, B's content untouched.
+  const threadA = testThread({ id: "thr_a", serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {} } });
+  let modelA = hydrateThread({ thread: threadA }, threadA.serf.ref, 1000);
+  modelA = applyNotification(
+    modelA,
+    { method: "turn/started", params: { threadId: "thr_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  expect(modelA.activeTurnId).toBe("turn_1");
+
+  const threadB = testThread({
+    id: "thr_b",
+    serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: {} },
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ type: "agentMessage", id: "item_b1", turnId: "turn_1", text: "B's own answer", status: "completed" }],
+      },
+    ],
+  });
+  const modelB = hydrateThread({ thread: threadB }, threadB.serf.ref, 1000);
+  expect(modelB.activeTurnId).toBeUndefined();
+
+  const aTurnCompleted = {
+    method: "turn/completed",
+    params: {
+      turnId: "turn_1",
+      turn: {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "",
+        items: [{ type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" }],
+      },
+    },
+  } as AnyNotification;
+
+  // Sanity: the same notification legitimately completes A's own active turn.
+  const settledA = applyNotification(modelA, aTurnCompleted, 2000);
+  expect(settledA).not.toBe(modelA);
+  expect(itemAt(turnAt(settledA, 0), 0).text).toBe("A's answer");
+
+  // But applying it to B — which merely happens to share the turn id — must
+  // no-op entirely.
+  const result = applyNotification(modelB, aTurnCompleted, 2000);
+  expect(result).toBe(modelB);
+  expect(itemAt(turnAt(result, 0), 0).text).toBe("B's own answer");
 });
 
 test("prependOlderTurns keeps order and advances olderCursor", () => {

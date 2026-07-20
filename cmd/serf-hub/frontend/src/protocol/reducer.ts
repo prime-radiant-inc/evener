@@ -203,6 +203,15 @@ function isAskUserItem(item: ThreadItem): boolean {
   return item.type === "commandExecution" && item.toolName === "ask_user";
 }
 
+// Folds one live wire notification into model. Most notifications carry
+// ref/threadId and are matched via notificationTargetsThread — routing those
+// to the right ThreadModel is the caller's job (or not: a mismatch is a safe
+// no-op here) either way. turn/completed is the one exception worth calling
+// out: it carries no thread identifier at all, and turn IDs are per-thread
+// sequential, so the same turnId legitimately exists on multiple threads at
+// once. The store MUST deliver turn/completed only to the model whose
+// activeTurnId matches turnId; this function enforces that match
+// independently as a second line of defense (see the "turn/completed" case).
 export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
   switch (n.method) {
     case "turn/started": {
@@ -217,21 +226,31 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     }
 
     case "turn/completed": {
-      // TurnCompletedParams is {turnId, turn} on the wire — it carries
-      // neither ref nor threadId (confirmed against appwire/types.go and
-      // types.gen.ts), so notificationTargetsThread would always reject it.
-      // The connection is already scoped to one thread's subscription, so
-      // this is applied unconditionally rather than gated on that check.
+      // Routing contract (store-layer requirement): TurnCompletedParams is
+      // {turnId, turn} on the wire — it carries neither ref nor threadId
+      // (confirmed against appwire/types.go and types.gen.ts), and turn IDs
+      // are per-thread sequential ("turn_%d", internal/appprojector), so the
+      // SAME turnId routinely exists on more than one thread at once. A
+      // multiplexed store MUST NOT broadcast this notification to every
+      // subscribed ThreadModel — it must deliver it only to the model whose
+      // activeTurnId matches turnId. This reducer independently enforces
+      // that as a second line of defense (below), so a store bug or a
+      // notification delivered to the wrong model degrades to a same-
+      // reference no-op instead of corrupting an unrelated thread's history.
+      // One case is genuinely unroutable from the payload alone — two panes
+      // simultaneously mid-turn on the exact same numbered turn_N — and is
+      // left to correct store-side subscription routing; this gate cannot
+      // resolve it because both models would pass the check.
       const params = n.params;
       const turnId = params.turnId || params.turn.id;
+      if (model.activeTurnId !== turnId) return model;
       const oldTurn = model.turns.find((t) => t.id === turnId);
-      if (!oldTurn) return { ...model, lastFrameAt: now };
       const settledTurn = wireToTurnModel(params.turn);
-      settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn.items.find((old) => old.id === item.id)));
+      settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn?.items.find((old) => old.id === item.id)));
       return {
         ...model,
         turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),
-        activeTurnId: model.activeTurnId === turnId ? undefined : model.activeTurnId,
+        activeTurnId: undefined,
         lastFrameAt: now,
       };
     }
