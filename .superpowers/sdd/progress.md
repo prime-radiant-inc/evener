@@ -31,3 +31,4 @@ Task 11: complete — focused re-review of geometry fixes: Still Ready to merge 
 
 Task 1: complete (commits 89a45301b..409c51dab, review Approved after 1 fix wave: .npmrc ignore-scripts for transitive fsevents postinstall; boilerplate cleanup; tsconfig vite/client authorized)
 Task 2: complete (commits 409c51dab..d352d9447 [ddc85772c impl, 9bae74070 guard-scope fix, d352d9447 test fixes], review Approved; guard covers only page GETs — controller ruling; SPA fallback for unmatched paths pinned as intended; Minors deferred to final review: 5x guard duplication, skip-guard helper dedup)
+Task 3: complete (commits d352d9447..3ad5a682c [1effe822 impl, 27654d58e controller catalog-summary fix, 3ad5a682c review fixes], review Approved on re-review with independent execution; deferred to final review: embed-collision handling in flattener)
