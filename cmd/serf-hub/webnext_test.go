@@ -42,10 +42,19 @@ func authedGet(t *testing.T, s *WebServer, path string) *httptest.ResponseRecord
 	return rec
 }
 
+// TestWebNextServesSPAWhenEnabled exercises the REAL embedded/dev dist tree,
+// so it needs a prior `make build-web`; CI always builds first (ci.yml runs
+// make build-web before the Go tests). Locally without a build it skips
+// rather than failing with a mysterious 503.
 func TestWebNextServesSPAWhenEnabled(t *testing.T) {
 	t.Setenv("SERF_HUB_WEB", "new")
 	s := newTestWebServer(t)
-	for _, path := range []string{"/", "/new", "/s/some-ref", "/settings/theme", "/thread/x"} {
+
+	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
+		t.Skipf("frontend not built (run `make build-web`): %v", err)
+	}
+
+	for _, path := range []string{"/", "/new", "/s/some-ref", "/settings/theme", "/credentials", "/thread/x"} {
 		rr := authedGet(t, s, path)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: code=%d", path, rr.Code)
@@ -158,5 +167,27 @@ func TestWebNextWithoutBuildServes503(t *testing.T) {
 	rr := authedGet(t, s, "/")
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("code=%d, want 503 run-make-build-web page", rr.Code)
+	}
+}
+
+// TestWebNextUnmatchedPathsServeSPAShell codifies SPA-fallback semantics:
+// unmatched paths return 200 with the SPA shell, delegating routing to the
+// client-side router.
+func TestWebNextUnmatchedPathsServeSPAShell(t *testing.T) {
+	t.Setenv("SERF_HUB_WEB", "new")
+	s := newTestWebServer(t)
+
+	if _, err := fs.ReadFile(distFS(), "index.html"); err != nil {
+		t.Skipf("frontend not built (run `make build-web`): %v", err)
+	}
+
+	for _, path := range []string{"/thread/x/y", "/nonexistent"} {
+		rr := authedGet(t, s, path)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: code=%d, want 200", path, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), `id="root"`) {
+			t.Fatalf("%s: not the SPA shell: %q", path, rr.Body.String())
+		}
 	}
 }
