@@ -4643,6 +4643,82 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
+	const sessionID = "033snFBSHFr78ZbQQMAeBD"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		}}, nil
+	})
+	var gotPrompt string
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		gotPrompt = inputTextForTest(params.Input)
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+	})
+	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+	dropper := &dropFirstConnectionListener{
+		Listener: daemonHTTP.Listener,
+		dropped:  make(chan struct{}),
+	}
+	daemonHTTP.Listener = dropper
+	daemonHTTP.Start()
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	}
+	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+	roster := hubcore.NewRoster(runDir, failedRPCProber{})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: spawner,
+		Past:    hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5",
+		CWD:   "/tmp",
+		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	select {
+	case <-dropper.dropped:
+	default:
+		t.Fatal("startup test did not drop the first daemon connection")
+	}
+	if gotPrompt != "review the open PRs" {
+		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+	}
+	if resp.Thread.Serf.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+		t.Fatalf("response=%+v", resp)
+	}
+}
+
 func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 	runDir := t.TempDir()
 	var got hubcore.SpawnRequest
@@ -6826,6 +6902,37 @@ type fakeRPCSpawner struct {
 	spawn        func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error)
 	resume       func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error)
 	launchModels func(context.Context) ([]appwire.ModelDescriptor, error)
+}
+
+type failedRPCProber struct{}
+
+func (failedRPCProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	return hubcore.ProbeResult{}
+}
+
+type dropFirstConnectionListener struct {
+	net.Listener
+	once    sync.Once
+	dropped chan struct{}
+}
+
+func (l *dropFirstConnectionListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		dropped := false
+		l.once.Do(func() {
+			dropped = true
+			_ = conn.Close()
+			close(l.dropped)
+		})
+		if dropped {
+			continue
+		}
+		return conn, nil
+	}
 }
 
 type fakeRPCModelContractSpawner struct {

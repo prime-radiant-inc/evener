@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/rendezvous"
 )
 
 var (
@@ -140,7 +141,17 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		}
 	}
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.ThreadID}.String()
-	source, err := sourceForThread(sources, ref, "")
+	var source appsource.Source
+	if entry.Protocol == appwire.ProtocolVersion && entry.Endpoint != "" && entry.ThreadID != "" {
+		// SpawnDaemon already returned this exact, freshly published rendezvous
+		// entry. Route the initial read and turn through it directly instead of
+		// depending on a concurrent roster status probe to admit the new daemon.
+		source = appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry {
+			return []rendezvous.Entry{entry}
+		}, nil)
+	} else {
+		source, err = sourceForThread(sources, ref, "")
+	}
 	if err != nil {
 		if entry.ThreadID == "" {
 			return appwire.ThreadStartResponse{}, err

@@ -134,6 +134,24 @@ func fuzzScenarioRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 	}
 }
 
+func TestRoster_FailedProbeDoesNotAdmitColdEntryWithReusedPID(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Endpoint:  "ws://127.0.0.1:50001/rpc",
+		ThreadID:  "01STALE",
+		SessionID: "01STALE",
+	})
+	r := NewRoster(dir, fakeProber{shouldFail: true})
+	r.procAlive = func(int) bool { return true } // PID was reused by an unrelated process.
+
+	r.Refresh()
+
+	if got := r.List(); len(got) != 0 {
+		t.Fatalf("failed probe admitted an unverified cold entry: %+v", got)
+	}
+}
+
 // TestRoster_KeepsAliveDaemonThroughProbeFailures is the regression test for the
 // "flash of no sessions" bug: a live daemon that transiently fails its /status
 // probe (busy daemon / overloaded host) must stay in the roster, not blank the
