@@ -236,7 +236,20 @@ export class AppwireClient {
   // success. Shared by the initial connect() (performHandshake) and every
   // reconnect attempt (attemptReconnect); callers decide what a failure
   // means for connection lifecycle (terminal close vs. another backoff).
+  //
+  // Both setState() calls in here dispatch synchronously to
+  // onStateChange/onReady subscribers, and a subscriber calling close()
+  // reentrantly runs it to completion — tears down, disarms, and reaches
+  // "closed" — *before* control returns to the line right after that
+  // setState() call. The two isClosed() checks below are load-bearing, not
+  // defensive: without the first, the caller (performHandshake, on the very
+  // first connect) would still dial a socket that close() can never clean up
+  // again; without the second, "ready" would still arm a heartbeat interval
+  // on a client that just closed.
   private async dialAndHandshake(): Promise<InitializeResponse> {
+    if (this.isClosed()) {
+      throw new ConnectionClosedError("AppwireClient: closed");
+    }
     const socket = this.socketFactory(this.url);
     this.socket = socket;
     socket.onmessage = (ev) => this.handleMessage(ev.data);
@@ -251,7 +264,10 @@ export class AppwireClient {
     });
     this.sendFrame({ method: "initialized", params: {} });
     this.setState("ready");
-    this.armHeartbeat();
+    // The handshake itself genuinely succeeded, so this still resolves with
+    // `result` even if a reentrant close() just ran: only the side effect
+    // (arming a timer this client will never get to disarm again) is guarded.
+    if (!this.isClosed()) this.armHeartbeat();
     return result;
   }
 
@@ -278,8 +294,14 @@ export class AppwireClient {
   // attemptReconnect), so the delay it computes doubles attempt over
   // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
   private scheduleReconnect(): void {
-    if (this.connectionState === "closed") return;
+    if (this.isClosed()) return;
     this.setState("reconnecting");
+    // setState("reconnecting") just dispatched synchronously to
+    // onStateChange subscribers; one of them may have called close()
+    // reentrantly and already reached "closed" by now. Re-check before
+    // arming — otherwise this would leak a reconnect timer close() can never
+    // clear, on a client that has already torn everything else down.
+    if (this.isClosed()) return;
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
@@ -309,12 +331,22 @@ export class AppwireClient {
   }
 
   // isClosed reads connectionState through a method call rather than
-  // comparing the property directly, so a second check later in the same
-  // async function isn't narrowed away by TypeScript's control-flow
-  // analysis of an earlier one. Plain "this.connectionState === 'closed'"
-  // narrowing doesn't know close() can run, via an event handler, during an
-  // intervening await — it would otherwise consider "closed" impossible by
-  // the time attemptReconnect's catch re-checks it.
+  // comparing the property directly. Two independent reasons make that the
+  // right idiom everywhere this class re-checks "closed" after doing
+  // something that could let close() run in between:
+  //   - Across an await (attemptReconnect's catch): plain
+  //     "this.connectionState === 'closed'" narrowing doesn't know close()
+  //     can run, via an event handler, during the intervening await — it
+  //     would otherwise consider "closed" impossible by the time the second
+  //     check runs, which is a TypeScript false negative, not a real
+  //     guarantee.
+  //   - Across a synchronous setState() call (dialAndHandshake,
+  //     scheduleReconnect): setState() dispatches to onStateChange/onReady
+  //     subscribers *synchronously*, and a subscriber calling close()
+  //     reentrantly runs it to completion before setState() returns. A
+  //     direct property comparison would still be correct here (no TS
+  //     narrowing hazard), but the method call keeps every one of these
+  //     "did close() just happen underneath me" checks in one idiom.
   private isClosed(): boolean {
     return this.connectionState === "closed";
   }

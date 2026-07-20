@@ -265,4 +265,88 @@ describe("AppwireClient close() during heartbeat/reconnect", () => {
     expect(client.state).toBe("closed");
     expect(sockets).toHaveLength(2);
   });
+
+  // Distinct from the "dial is in flight" test above: here the attempt's
+  // socket has already opened and is mid-RPC (waiting on the server's reply
+  // to "initialize"), not waiting on open() at all. This exercises a
+  // different internal path — failAllPending()'s ConnectionClosedError
+  // rejecting the in-flight request, observed via attemptReconnect's catch —
+  // that was reviewed by inspection but had no test locking it.
+  test("while a reconnect attempt's initialize is in flight lands closed with no timers", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    expect(sockets).toHaveLength(2);
+
+    // Suppress auto-reply so "initialize" stays in flight until close().
+    socketAt(sockets, 1).autoInitialize = false;
+    socketAt(sockets, 1).open();
+    await flushUntil(() => sentFrames(socketAt(sockets, 1)).some((f) => f.method === "initialize"));
+    expect(client.state).toBe("reconnecting"); // not ready yet: initialize hasn't resolved
+
+    client.close();
+
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The rejected in-flight request must not resurrect anything once its
+    // rejection is observed on a later microtask turn.
+    await flushUntil(() => false, 5);
+    expect(client.state).toBe("closed");
+    expect(sockets).toHaveLength(2);
+  });
+});
+
+// Reentrancy: setState() dispatches to onStateChange/onReady subscribers
+// *synchronously*, so a subscriber that calls close() from inside that
+// dispatch runs it to completion before control returns to whichever method
+// called setState(). Three call sites continue unconditionally right after a
+// setState() call (dialAndHandshake at "ready", scheduleReconnect at
+// "reconnecting", and — via dialAndHandshake — performHandshake at
+// "connecting" on the very first connect); each is a distinct leak/orphan
+// hazard if a reentrant close() isn't re-checked for.
+describe("AppwireClient reentrant close() from inside setState dispatch", () => {
+  test("closing at 'ready' leaves no heartbeat timer armed", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    client.onStateChange((s) => {
+      if (s === "ready") client.close();
+    });
+
+    await connectReady(sockets, client);
+
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("closing at 'reconnecting' leaves no reconnect backoff timer armed", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    client.onStateChange((s) => {
+      if (s === "reconnecting") client.close();
+    });
+    socketAt(sockets, 0).closeFromServer(1006);
+
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("closing at 'connecting' on the first connect dials no orphaned socket and rejects with ConnectionClosedError", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    client.onStateChange((s) => {
+      if (s === "connecting") client.close();
+    });
+
+    await expect(client.connect()).rejects.toBeInstanceOf(ConnectionClosedError);
+
+    expect(client.state).toBe("closed");
+    expect(sockets).toHaveLength(0); // socketFactory was never called
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
