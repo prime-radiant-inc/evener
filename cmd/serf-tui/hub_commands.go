@@ -86,9 +86,13 @@ type hubGoalMsg struct {
 	err     error
 }
 
+// hubForkMsg reports the result of a thread/fork call. aside distinguishes the
+// /aside tip-fork (side thread) from the divergent fork-from-turn flow so
+// failures are attributed to the right command.
 type hubForkMsg struct {
-	resp hubRefResponse
-	err  error
+	resp  hubRefResponse
+	err   error
+	aside bool
 }
 
 type hubSpawnMsg struct {
@@ -684,6 +688,20 @@ func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) te
 			Label:        req.Label,
 		})
 		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err}
+	}
+}
+
+// sendHubAside issues the /aside fork: thread/fork in aside mode forks the
+// session at its tip into a side thread that inherits this session's
+// permissions and config. The success path mirrors fork: the update loop opens
+// the returned child thread.
+func sendHubAside(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+			Ref:   ref.String(),
+			Aside: true,
+		})
+		return hubForkMsg{resp: hubRefResponse{Ref: resp.Thread.Serf.Ref}, err: err, aside: true}
 	}
 }
 
