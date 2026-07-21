@@ -1,14 +1,17 @@
 import { test, expect } from "vitest";
-import { itemRendererFor, registerItemRenderer, type ItemRenderProps } from "./types";
+import { itemRendererFor, registerItemRenderer } from "./types";
 import { RawItemView } from "./RawItemView";
 
 // Dummy stand-ins - these tests are about registry MECHANICS (does a
 // registration resolve, does it override, does it stay scoped to its own
-// type), not about rendering, so no render() is needed here.
-function DummyA(_: ItemRenderProps) {
+// type), not about rendering, so no render() is needed here. No parameter
+// declared: a zero-arg function is structurally assignable to
+// ComponentType<ItemRenderProps> (it simply ignores whatever props it's
+// given).
+function DummyA() {
   return null;
 }
-function DummyB(_: ItemRenderProps) {
+function DummyB() {
   return null;
 }
 

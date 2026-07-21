@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { registerToolRenderer, toolRendererFor, type ToolRenderProps } from "./toolRenderers";
+import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 import { RawToolOutput } from "./RawToolOutput";
 import type { ItemModel } from "../../../protocol/model";
 
@@ -7,7 +7,12 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
-function DummyBody(_: ToolRenderProps) {
+// No parameter declared: a zero-arg function is structurally assignable to
+// ToolRendererDescriptor.body's ComponentType<ToolRenderProps> (it simply
+// ignores whatever props it's given) - this dummy's only job is to prove
+// "the resolved descriptor's body slot is populated with THIS component",
+// not to read its props.
+function DummyBody() {
   return null;
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, test, expect } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "../../../protocol/types.gen";
+import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { useTranscript } from "./useTranscript";
