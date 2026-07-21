@@ -1243,3 +1243,93 @@ test("resolvePendingEscalation on an unknown escalationId is a same-reference no
 
   expect(result).toBe(model);
 });
+
+test('turn/completed\'s "full" replace branch composes mergeArguments and mergeObservedTiming alongside mergeReasoning', () => {
+  // Addendum (R2 review): the "full" branch (reducer.ts's turn/completed
+  // case) only composed mergeReasoning; mergeArguments and
+  // mergeObservedTiming (added by R2 for item/completed) were not, even
+  // though the same live-settle-only gaps apply here. R2's reviewer
+  // verified this cannot lose data in today's live traffic (the only live
+  // "full" emitter mints a brand-new turn with a fresh systemMessage —
+  // internal/appprojector/appwire_projection.go:962-972) — this closes the
+  // same bug class Part C fixed, one code path over.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool2", turnId: "turn_1", toolName: "bash", callId: "call_2", argumentsJson: '{"command":"stale"}', status: "inProgress" },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1004,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking..." } } as AnyNotification,
+    1005,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        turnId: "turn_1",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", output: "file1\nfile2", status: "completed" },
+            { type: "commandExecution", id: "item_tool2", turnId: "turn_1", toolName: "bash", callId: "call_2", argumentsJson: '{"command":"pwd"}', status: "completed" },
+            { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" },
+          ],
+        },
+      },
+    } as AnyNotification,
+    1006,
+  );
+
+  const items = turnAt(model, 0).items;
+  const tool = items.find((it) => it.id === "item_tool")!;
+  const tool2 = items.find((it) => it.id === "item_tool2")!;
+  const reasoning = items.find((it) => it.id === "item_r")!;
+
+  // mergeArguments: the settle payload omits argumentsJson for item_tool — the old value survives.
+  expect(tool.argumentsJSON).toBe('{"command":"ls"}');
+  // item_tool2's settle payload carries its OWN (different) argumentsJson — wire truth wins over memory.
+  expect(tool2.argumentsJSON).toBe('{"command":"pwd"}');
+  // mergeReasoning: accumulated chunks survive settlement (already covered elsewhere; reconfirmed here as part of the composition).
+  expect(reasoning.reasoningSummaries).toEqual([["thinking..."]]);
+  // mergeObservedTiming: observedStartedAt carries forward from the delta's stamp; observedCompletedAt gets
+  // stamped from `now` since the turn settling is the honest end of observation.
+  expect(reasoning.observedStartedAt).toBe(new Date(1005).toISOString());
+  expect(reasoning.observedCompletedAt).toBe(new Date(1006).toISOString());
+});

@@ -391,7 +391,16 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       let settledTurn: TurnModel;
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp);
-        settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn?.items.find((old) => old.id === item.id)));
+        // Same three-helper composition as item/completed's existing-item
+        // branch below (mergeReasoning/mergeArguments/mergeObservedTiming
+        // read/write disjoint fields off the same `old` reference, so
+        // composition order is free) — this branch has its own settled
+        // items rather than item/completed's single one, so it maps instead
+        // of a single mapItem call.
+        settledTurn.items = settledTurn.items.map((item) => {
+          const old = oldTurn?.items.find((o) => o.id === item.id);
+          return mergeObservedTiming(mergeArguments(mergeReasoning(item, old), old), old, now);
+        });
       } else {
         // The live wire's settle stamp never carries items — every live
         // settle site (EventUserInput, EventGoalContinuation, EventError,
