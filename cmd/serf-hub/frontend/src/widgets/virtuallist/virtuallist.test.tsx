@@ -206,6 +206,36 @@ describe("dynamic sizing", () => {
       expect((el as HTMLElement).style.transform).toBe(`translateY(${index * MEASURED_HEIGHT}px)`);
     }
   });
+
+  // The live defect this pins (T5b, verified against a real browser):
+  // measureElement reads offsetHeight off the SAME element the virtualizer
+  // itself writes `height: item.size` onto - so the read always plays back
+  // exactly what was just written, ResizeObserver never sees a box-size
+  // change, and a row's real content height (e.g. a long streamed turn) is
+  // never adopted; the row stays pinned at its estimate forever, overlapping
+  // whatever renders after it. jsdom can't lay out real content to prove the
+  // height NUMBER is right (see this file's own top comment) - so this
+  // proves the STRUCTURAL precondition dynamic remeasurement actually needs:
+  // the measured element must carry no inline height of the virtualizer's
+  // own, ever, so its rendered box is free to be exactly its content's
+  // natural height and a real ResizeObserver can see it change.
+  test("dynamic=true: the measured element carries no inline height - its box is sized by content, never by the virtualizer's own size write", () => {
+    stubPerElementOffsetHeight(styles);
+    const count = 10;
+    const { container } = render(
+      <VirtualList
+        dynamic
+        count={count}
+        estimateSize={() => ROW_HEIGHT}
+        renderRow={(i) => <div key={i}>row {i}</div>}
+      />,
+    );
+    const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]"));
+    expect(rowEls.length).toBeGreaterThan(0);
+    for (const el of rowEls) {
+      expect((el as HTMLElement).style.height).toBe("");
+    }
+  });
 });
 
 test("declares no :focus-visible rule of its own (rows are consumer content, not this widget's concern)", () => {

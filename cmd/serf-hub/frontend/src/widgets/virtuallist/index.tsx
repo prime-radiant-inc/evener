@@ -111,7 +111,24 @@ export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKe
             data-index={item.index}
             ref={dynamic ? virtualizer.measureElement : undefined}
             className={CLASS.item}
-            style={{ height: item.size, transform: `translateY(${item.start}px)` }}
+            // dynamic mode never writes an inline height here: measureElement
+            // reads this same element's offsetHeight (both on mount and via
+            // ResizeObserver), so if the virtualizer's own item.size were
+            // written back as this element's height, the read would always
+            // just play back what was last written - no box-size change is
+            // ever observable, and a row's real content height is never
+            // adopted (T5b's live finding: a settled row stayed pinned at its
+            // 96px estimate while its real content measured 337px, silently
+            // overlapping the next row). Leaving height unset lets the box's
+            // rendered size come from the content alone (the .item class's
+            // position: absolute takes it out of flow, so this never affects
+            // layout of anything else) - non-dynamic rows are unaffected,
+            // keeping their known/fixed height exactly as before.
+            style={
+              dynamic
+                ? { transform: `translateY(${item.start}px)` }
+                : { height: item.size, transform: `translateY(${item.start}px)` }
+            }
           >
             {renderRow(item.index)}
           </div>
