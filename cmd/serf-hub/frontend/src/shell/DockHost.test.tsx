@@ -260,6 +260,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     modelProvider: "anthropic",
     model: "claude",
     askPending: false,
+    pendingEscalations: [],
     turns: [],
     queue: null,
     tasks: null,
