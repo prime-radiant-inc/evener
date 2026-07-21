@@ -111,3 +111,87 @@ test("switching away from a pane and back remounts it fresh - local state does n
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
   expect(screen.getByRole("button", { name: /clicks: 0/ })).toBeTruthy(); // reset, not preserved
 });
+
+// --- back navigation ---------------------------------------------------
+
+test("the back affordance is hidden while welcome (the stack's root) is focused", async () => {
+  render(<StackHost />);
+  await screen.findByText("No session open");
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+});
+
+test("the back affordance is shown once a non-welcome pane is focused", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
+});
+
+test("back returns to the pane that was focused before the current one", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // a forward navigation, observed live
+  await screen.findByText(/doc pane: ref_b/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+});
+
+test("back falls all the way to welcome when this component never observed an earlier pane", async () => {
+  // StackHost mounts with ref_a already focused (simulating AppShell
+  // having pre-seeded it via routing, same as the real integration) - this
+  // component never itself witnessed a transition INTO ref_a, so there is
+  // nothing on ITS OWN back-stack to return to; welcome is the documented
+  // fallback (see requirement 2 - "pops to the previously-focused pane or
+  // welcome").
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test("back walks multiple levels deep, one pane per tap", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  await screen.findByText(/doc pane: ref_b/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  await screen.findByText(/doc pane: ref_c/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText(/doc pane: ref_b/)).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Back" })).toBeNull(); // welcome: nothing further behind it
+});
+
+test("a back tap does not push the pane it left onto the stack (no ping-pong)", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  await screen.findByText(/doc pane: ref_b/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" })); // -> ref_a
+  await screen.findByText(/doc pane: ref_a/);
+
+  // ref_a is StackHost's own root here (it never observed anything before
+  // ref_a - see the "falls all the way to welcome" test above) - a second
+  // tap must go straight to welcome, not bounce forward to ref_b.
+  await user.click(screen.getByRole("button", { name: "Back" }));
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
