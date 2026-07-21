@@ -194,3 +194,76 @@ Modified:
 signatures match the plan's Locked interfaces block exactly (registerPane's generic-vs-literal
 nuance noted above). Did not build `shell/workspace.ts`/`useWorkspaceStore` — explicitly Task 2's,
 per the plan.
+
+## Fix wave (post-review)
+
+One follow-up commit, addressing the coordinator's review verdict (Approved + 1 Important +
+1 sanctioned adjudication):
+
+1. **Unmount cleanup.** `AppShell`'s bootstrap effect now returns `() => owned?.close()` —
+   unconditionally registered (not skipped by the effect's internal test-mode branch), so a
+   client this component constructed itself is always retired on unmount (HMR remount,
+   navigating away, or a test's own `cleanup()`/`unmount()`). Acts only on `owned` (the concrete
+   `AppwireClient` this component dialed), never on the interface-typed `client` — an injected
+   client's lifecycle stays its caller's responsibility, and this is enforced at the type level
+   (`AppwireClientLike` still has no `close()`, so `client.close()` would not compile).
+   TDD: added `"closes the client it constructed itself on unmount"`, spying on
+   `AppwireClient.prototype.close` around a no-client-prop render/unmount — red (0 calls) before
+   the fix, green (1 call) after.
+
+2. **`AppwireClientLike`/`FakeClient` gain `connect(): Promise<InitializeResponse>`** —
+   sanctioned by the coordinator for this one change only, scoped to
+   `src/protocol/testing/fakeClient.ts` (otherwise a forbidden path for this task). `FakeClient`'s
+   `connect()` is a separately-scripted promise (`scriptConnect(handler)`, mirroring `on()`'s
+   throw-to-reject shape) defaulting to a minimal-but-valid `InitializeResponse` when unscripted,
+   and is fully decoupled from `state`/`emitStateChange`/`emitReady` — resolving `connect()` does
+   not itself change `state`, so no existing test's behavior shifts. Verified directly: the 5
+   Wave-1 protocol/store test files (`stores/threads.test.ts`, `protocol/client.test.ts`,
+   `protocol/reducer.test.ts`, `protocol/reconnect.test.ts`, `dev/DevHarness.test.tsx` — 78 tests)
+   pass unchanged.
+
+   `AppShell`'s bootstrap effect now calls `.connect()` on the interface-typed `client` (not just
+   `owned`), so an injected `FakeClient` is exercised too; the test-mode socket guard narrows from
+   "skip whenever we're not injected" to `if (owned && MODE === "test") return` (skip only when
+   *and only when* this component dialed a real client under a test runner — the previous
+   `if (!owned) return` blocked every injected client from ever reaching `connect()`, which is
+   exactly why the serverInfo duty had no coverage before this).
+
+   TDD: added `"populates connectionStore.serverInfo from the injected client's scripted
+   connect() response"` — red (`fake.scriptConnect is not a function`) before the interface/class
+   change, green after both the `fakeClient.ts` extension and the `AppShell.tsx` restructuring
+   landed together (they're inseparable as a red/green unit: neither alone makes the test pass).
+
+Verification after both changes: `npx vitest run` exit 0, 611/611 (609 + 2 new), across four
+full reruns, identical every time; `npx tsc --noEmit` exit 0; `npx eslint src` exit 0;
+`npm run build` exit 0. Wave-1 protocol/store suite re-verified in isolation (5 files, 78 tests,
+all pass) per the coordinator's explicit ask.
+
+**Self-review catch**: the first draft of this fix left `AppShellProps.client`'s doc comment
+describing the *old* behavior ("AppwireClientLike has no connect() method... AppShell only ever
+calls .connect() on a client it constructed itself") — now false. Caught on a final read-through
+before committing and rewritten to describe what the code actually does post-fix.
+
+### Report notes (no code), per the coordinator's item 3
+
+- **Not-found view is Task 2's.** `AppShell`'s routing awareness stays exactly as scoped in the
+  original Task 1 section above — it distinguishes `/new` (shows the welcome pane with a note)
+  from everything else (always shows the plain welcome pane), and does not render a not-found
+  view for a `urlToPane()` miss or for a resolved-but-unhosted type. Once Task 2 adds the
+  dockview/pane-hosting glue, that's where "route resolves to nothing renderable" should turn
+  into an actual not-found view — `urlToPane` already returns `null` for a genuinely unknown path
+  today, ready for that glue to consume.
+- **Task 5 finding for `stores/threads.ts` (not this task's file, not touched here):** the
+  reviewer found that a "swap in a fresh client on retry" redesign of the connection-recovery
+  path (relevant to Task 5's auth/connection chrome work) must also rewire `threads.ts`'s
+  module-level `wiredClient` — swapping only the client reference elsewhere (e.g. in
+  `connectionStore`) while `threads.ts` keeps its old `onNotification`/`onReady` subscriptions
+  attached to the now-dead client would leave panes *looking* reconnected (banner clears,
+  `connectionStore.state` is `"ready"`) while actually starved of every notification a live
+  session needs. Flagging for whoever designs Task 5's retry mechanism — this task's own
+  `ConnectionBanner` retry sidesteps the whole problem by reloading the page rather than swapping
+  a client in place (see the original Concerns section above), so it does not hit this, but a
+  future in-place-swap design would need to.
+- **`registerPane`'s generic form is approved** by the coordinator as-is (see the original
+  Self-review section above for the original justification: strictly compatible with the plan's
+  literal, non-generic locked signature, and buys call sites a real type check).

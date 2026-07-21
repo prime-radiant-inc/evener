@@ -6,9 +6,10 @@
 // scripted per-method request handlers and manual notification/ready/
 // state-change injection. No sockets, no timers.
 import type { AppwireClient, ConnectionState } from "../client";
-import type { AnyNotification, MethodName, MethodTypes } from "../types.gen";
+import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
 
 export interface AppwireClientLike {
+  connect: AppwireClient["connect"];
   request: AppwireClient["request"];
   onNotification: AppwireClient["onNotification"];
   onReady: AppwireClient["onReady"];
@@ -19,6 +20,32 @@ export interface AppwireClientLike {
 export type RequestHandler<M extends MethodName> = (
   params: MethodTypes[M]["params"],
 ) => MethodTypes[M]["result"] | Promise<MethodTypes[M]["result"]>;
+
+export type ConnectHandler = () => InitializeResponse | Promise<InitializeResponse>;
+
+// A minimal but well-formed response - every field is required by
+// InitializeResponse, so a FakeClient that never calls scriptConnect() still
+// resolves connect() with something valid rather than forcing every caller
+// to script one just to get past the handshake.
+const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
+  serverInfo: { name: "fake-serf-hub", version: "0.0.0" },
+  protocolVersion: "0",
+  sourceId: "fake",
+  features: {
+    threadList: false,
+    threadTurnsList: false,
+    turnStart: false,
+    turnSteer: false,
+    threadClear: false,
+    threadShutdown: false,
+    forkFromTurn: false,
+    tasks: false,
+    transcriptList: false,
+    modelList: false,
+    directoryComplete: false,
+    auth: false,
+  },
+};
 
 export interface RecordedCall {
   method: MethodName;
@@ -38,6 +65,14 @@ export class FakeClient implements AppwireClientLike {
   private readonly readyHandlers = new Set<() => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
 
+  // Deliberately independent of `state`/emitStateChange/emitReady below:
+  // resolving connect() does not itself change `state`, so every existing
+  // test that only drives readiness via the constructor/emitStateChange
+  // (i.e. all of them, before this field existed) is unaffected. A test
+  // that wants a state transition alongside a scripted connect() still
+  // drives that explicitly, exactly as before.
+  private connectHandler: ConnectHandler = () => DEFAULT_INITIALIZE_RESPONSE;
+
   // Defaults to "ready": tests overwhelmingly want a client stores can
   // request() against immediately, without separately staging the
   // idle -> connecting -> ready sequence a real handshake goes through. Pass
@@ -52,6 +87,20 @@ export class FakeClient implements AppwireClientLike {
   // error value the handler threw (e.g. a WireError instance).
   on<M extends MethodName>(method: M, handler: RequestHandler<M>): void {
     this.handlers.set(method, handler as unknown as RequestHandler<MethodName>);
+  }
+
+  // scriptConnect scripts connect()'s resolved value, mirroring on()'s
+  // shape: the handler may throw (or return a rejected promise) to script a
+  // handshake failure.
+  scriptConnect(handler: ConnectHandler): void {
+    this.connectHandler = handler;
+  }
+
+  // Deferred through a microtask like a real handshake, and lets a
+  // synchronously-thrown handler become a normal rejection - same idiom as
+  // request() below.
+  connect(): Promise<InitializeResponse> {
+    return Promise.resolve().then(() => this.connectHandler());
   }
 
   request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {

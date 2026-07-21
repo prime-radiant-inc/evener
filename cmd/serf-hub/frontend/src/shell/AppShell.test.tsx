@@ -1,9 +1,26 @@
-import { afterEach, beforeAll, beforeEach, test, expect } from "vitest";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { AppShell } from "./AppShell";
+
+const ALL_FEATURES_OFF = {
+  threadList: false,
+  threadTurnsList: false,
+  turnStart: false,
+  turnSteer: false,
+  threadClear: false,
+  threadShutdown: false,
+  forkFromTurn: false,
+  tasks: false,
+  transcriptList: false,
+  modelList: false,
+  directoryComplete: false,
+  auth: false,
+};
 
 // Await the welcome pane's lazy-loaded module ONCE up front so React.lazy
 // resolves from a warm module cache - mirrors App.test.tsx's own beforeAll
@@ -63,4 +80,36 @@ test('clicking "New session" navigates to /new and the welcome pane shows a note
 
   expect(window.location.pathname).toBe("/new");
   expect(await screen.findByText(/starting a new session isn't available yet/i)).toBeTruthy();
+});
+
+test("populates connectionStore.serverInfo from the injected client's scripted connect() response", async () => {
+  const fake = new FakeClient("ready");
+  const scripted: InitializeResponse = {
+    serverInfo: { name: "serf-hub-test", version: "9.9.9" },
+    protocolVersion: "1",
+    sourceId: "src_test",
+    features: ALL_FEATURES_OFF,
+  };
+  fake.scriptConnect(() => scripted);
+
+  render(<AppShell client={fake} />);
+  await screen.findByText("No session open");
+
+  await waitFor(() => {
+    expect(connectionStore.getState().serverInfo).toEqual({ name: "serf-hub-test", version: "9.9.9" });
+  });
+});
+
+test("closes the client it constructed itself on unmount", () => {
+  const closeSpy = vi.spyOn(AppwireClient.prototype, "close");
+  // No client prop: AppShell constructs its own real AppwireClient (never
+  // connected under MODE==="test" - see AppShell.tsx) and must own tearing
+  // it down again on unmount, the same one-client-per-window invariant a
+  // real navigation away from the app would need.
+  const { unmount } = render(<AppShell />);
+
+  unmount();
+
+  expect(closeSpy).toHaveBeenCalledTimes(1);
+  closeSpy.mockRestore();
 });

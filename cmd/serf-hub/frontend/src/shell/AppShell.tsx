@@ -18,12 +18,14 @@ import styles from "./AppShell.module.css";
 export interface AppShellProps {
   // Test seam: production (main.tsx) omits this, and AppShell constructs +
   // connects the one real AppwireClient itself (below). Tests inject a
-  // FakeClient so the rest of AppShell's wiring runs with no real sockets.
-  // AppwireClientLike (protocol/testing/fakeClient.ts) has no connect()
-  // method - fakes simulate readiness directly via their own
-  // constructor/emitStateChange instead of a real handshake - so AppShell
-  // only ever calls .connect() on a client it constructed itself (the
-  // `owned` half of ClientSlot below), never on an injected one.
+  // FakeClient (whose connect() is a separately-scripted promise, see
+  // protocol/testing/fakeClient.ts) so the rest of AppShell's wiring -
+  // including the serverInfo-population duty - runs with no real sockets.
+  // AppShell calls .connect() on whatever `client` is, injected or not; the
+  // `owned` half of ClientSlot below exists to gate the ONE thing that
+  // still differs between them - never opening a real socket under a test
+  // runner - and to know which client this component itself is responsible
+  // for closing again on unmount.
   client?: AppwireClientLike;
 }
 
@@ -68,23 +70,32 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
 
   useEffect(() => {
     connectionStore.getState().connect(client);
-    if (!owned) return;
     // jsdom (unlike a real browser-less environment) implements a global
     // WebSocket that would otherwise dial the page's own origin for real.
     // App.test.tsx renders <App/> - and therefore <AppShell/> with its
-    // default, no-prop production wiring - with no injected client, so this
-    // must never open a real socket under vitest. AppShell's own tests
-    // (AppShell.test.tsx) always inject a client and never reach this
-    // branch (mirrors dev/DevHarness.tsx's identical guard/rationale).
-    if (import.meta.env.MODE === "test") return;
-    void owned.connect().then(
-      (info) => connectionStore.setState({ serverInfo: info.serverInfo }),
-      () => {
-        // Failure is already reflected via the client's own onStateChange
-        // -> connectionStore.state transition (to "closed"); nothing
-        // further to do with the rejection itself.
-      },
-    );
+    // default, no-prop production wiring - with no injected client, so a
+    // REAL client's connect() must never run under vitest. An injected
+    // client (AppShellProps.client - always a FakeClient in tests) has no
+    // socket to open, so it's fine - and necessary, to exercise the
+    // serverInfo-population duty below - for its connect() to run even
+    // under MODE==="test" (mirrors dev/DevHarness.tsx's identical
+    // guard/rationale, narrowed to only the client AppShell itself dialed).
+    if (!(owned && import.meta.env.MODE === "test")) {
+      void client.connect().then(
+        (info) => connectionStore.setState({ serverInfo: info.serverInfo }),
+        () => {
+          // Failure is already reflected via the client's own onStateChange
+          // -> connectionStore.state transition (to "closed"); nothing
+          // further to do with the rejection itself.
+        },
+      );
+    }
+    // Tear down the client we constructed ourselves on unmount (HMR
+    // remount, navigating away, etc.) - the one-client-per-window invariant
+    // means this component must retire what it dialed. An injected client's
+    // lifecycle stays its owner's (the test's) responsibility, so this only
+    // ever acts on `owned`, never the interface-typed `client`.
+    return () => owned?.close();
   }, [client, owned]);
 
   const connectionState = useConnectionStore((s) => s.state);
