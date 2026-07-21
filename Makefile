@@ -29,7 +29,10 @@ build-linux:
 	go clean -cache -x ./agent/ 2>/dev/null; \
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
-build-hub: build-runtime build-web
+# Prerequisite ORDER is load-bearing under serial make: build-web must run
+# first so build-runtime's go build embeds the dist it just produced —
+# reversed, every build-hub ships the PREVIOUS build's frontend.
+build-hub: build-web build-runtime
 
 # build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. npm ci installs
