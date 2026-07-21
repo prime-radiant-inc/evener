@@ -1,0 +1,12 @@
+.root {
+  /* Raw streamed text often carries literal newlines the source never
+   * wraps in <p>/<br> - collapse-by-default inline flow would run every
+   * paragraph together into one line. white-space: pre-wrap keeps both:
+   * newlines are honored AND long lines still wrap at the container edge. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--ink-hi);
+}
