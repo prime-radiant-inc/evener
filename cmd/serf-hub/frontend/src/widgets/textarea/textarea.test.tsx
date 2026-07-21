@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
-import { Textarea } from "./index";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MAX_HEIGHT_VIEWPORT_FRACTION, Textarea } from "./index";
 
 afterEach(cleanup);
 
@@ -76,38 +76,92 @@ test("without autoGrow, an explicit rows prop is honored", () => {
   expect(screen.getByRole("textbox").getAttribute("rows")).toBe("6");
 });
 
-test("with autoGrow, rows grows to fit the number of lines in value", () => {
-  render(<Textarea value={"a\nb\nc\nd"} onChange={() => {}} autoGrow />);
-  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("4");
-});
-
-test("with autoGrow, rows never drops below the 2-row minimum for empty value", () => {
-  render(<Textarea value="" onChange={() => {}} autoGrow />);
-  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("2");
-});
-
-test("with autoGrow, rows never drops below the 2-row minimum for a single short line", () => {
-  render(<Textarea value="hi" onChange={() => {}} autoGrow />);
-  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("2");
-});
-
-test("with autoGrow, rows is clamped at a 12-row maximum however many lines value has", () => {
-  const manyLines = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
-  render(<Textarea value={manyLines} onChange={() => {}} autoGrow />);
-  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("12");
-});
-
-test("with autoGrow, rows recomputes as the controlled value changes", async () => {
-  const user = userEvent.setup();
-  render(<ControlledTextarea autoGrow />);
-  const textarea = screen.getByRole("textbox");
-  expect(textarea.getAttribute("rows")).toBe("2");
-  await user.type(textarea, "one{Enter}two{Enter}three");
-  expect(textarea.getAttribute("rows")).toBe("3");
+test("without autoGrow, no inline height style is ever applied - sizing stays rows-only", () => {
+  render(<Textarea value={"a\nb\nc\nd\ne"} onChange={() => {}} />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.style.height).toBe("");
 });
 
 test("declares a :focus-visible rule in its CSS module, using only tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "textarea.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+// --- autoGrow: scrollHeight-based, not newline-counting -------------------
+//
+// jsdom performs no real layout/text measurement (scrollHeight is always 0
+// with no stub - same rationale as widgets/virtuallist's own test suite,
+// see its file-level comment). This stubs HTMLElement.prototype.scrollHeight
+// as a pure function of the element's OWN current value length (20px per
+// 40 chars, 40px floor) rather than a fixed constant, specifically so a
+// test can type one long UNBROKEN line (no literal "\n" at all) and still
+// observe scrollHeight - and therefore the rendered height - grow. That is
+// exactly the case the OLD newline-counting autoGrow could never handle
+// (computeRows only ever split on "\n"); a fixed-value stub would pass
+// either implementation and prove nothing about which one is under test.
+let scrollHeightDescriptor: PropertyDescriptor | undefined;
+
+function simulatedScrollHeight(value: string): number {
+  return Math.max(40, Math.ceil(value.length / 40) * 20);
+}
+
+beforeEach(() => {
+  scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement) {
+      return simulatedScrollHeight(this.value ?? "");
+    },
+  });
+});
+
+afterEach(() => {
+  if (scrollHeightDescriptor) {
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
+  }
+});
+
+test("with autoGrow, the rows attribute stays at the fixed baseline - height is governed by inline style, not rows", () => {
+  render(<Textarea value={"a\nb\nc\nd"} onChange={() => {}} autoGrow />);
+  expect(screen.getByRole("textbox").getAttribute("rows")).toBe("2");
+});
+
+test("with autoGrow, height is set from the native scrollHeight after mount", () => {
+  render(<Textarea value="hi" onChange={() => {}} autoGrow />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight("hi")}px`);
+});
+
+test("with autoGrow, height grows to track a long single unbroken line with no literal newlines at all - the wrapped-line case the old row-count heuristic could not handle", async () => {
+  const user = userEvent.setup();
+  render(<ControlledTextarea autoGrow />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  const longLine = "x".repeat(400);
+
+  await user.type(textarea, longLine);
+
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight(longLine)}px`);
+});
+
+test("with autoGrow, height recomputes (shrinks back down) as the controlled value shrinks", async () => {
+  const user = userEvent.setup();
+  render(<ControlledTextarea autoGrow />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  await user.type(textarea, "x".repeat(200));
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight("x".repeat(200))}px`);
+
+  await user.clear(textarea);
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight("")}px`);
+});
+
+test("with autoGrow, height clamps at MAX_HEIGHT_VIEWPORT_FRACTION of the viewport height for very tall content", () => {
+  const longLine = "x".repeat(4000); // simulated scrollHeight comfortably exceeds any real viewport
+  render(<Textarea value={longLine} onChange={() => {}} autoGrow />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+  const expectedMax = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
+  expect(simulatedScrollHeight(longLine)).toBeGreaterThan(expectedMax); // the fixture actually exercises the clamp
+  expect(textarea.style.height).toBe(`${expectedMax}px`);
 });
