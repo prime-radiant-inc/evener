@@ -1,9 +1,10 @@
 # Wave 3 Task 6 report — `serf/tree/changed` hub broadcast + tree-wire gaps
 
-Branch `w3-treepush`, off `0996d8afb`. 10 commits (4th/6th/9th are post-review fix rounds — see
-"Review-fix round", "Invariant round", "Tree-wire gaps round" below; the last is this report). Full
-mandated suite green (`go test ./cmd/serf-hub/... ./appwire/... ./internal/appwirets/...
-./internal/appwiredoc/...`, exit 0), `make generate` idempotent (zero further diff), `gofmt -l`/
+Branch `w3-treepush`, off `0996d8afb`. 12 commits (4th/6th/9th/11th are post-review fix rounds —
+see "Review-fix round", "Invariant round", "Tree-wire gaps round" below; the odd ones out are
+report-doc commits). Full mandated suite green (`go test ./cmd/serf-hub/... ./appwire/...
+./internal/appwirets/... ./internal/appwiredoc/...`, exit 0), `make generate` idempotent (zero
+further diff), `gofmt -l`/
 `go vet` clean on every touched file, `golangci-lint run --max-issues-per-linter 0
 --max-same-issues 0` on the touched packages clean (0 issues), `serf-namingcheck`/
 `serf-internalcheck`/`serf-docscheck` all clean. `go build -tags serffuzz ./cmd/serf-hub/...`,
@@ -27,6 +28,7 @@ regenerated `types.gen.ts`).
 | `b8577f66b` | hub: stamp Tier/Favorite/Rename on live tree rows (tree-wire gaps round) |
 | `41923b6ab` | hub: expose project favorite state on the tree wire (tree-wire gaps round) |
 | `d08bd8a42` | hub: document the PastIndex seed-before-wire ordering hazard (tree-wire gaps round) |
+| `d259cddd2` | hub: orphan-live rows carry tier/favorite/rename too (tree-wire gaps round, follow-up) |
 
 ## Design
 
@@ -298,6 +300,38 @@ a delta (the empty-content fingerprint is a non-zero FNV constant, never equal t
 initial fingerprint), so calling `SetOnChange` before an initial `Rebuild` fires a spurious
 "change" on nothing — the exact hazard a test caught in the Invariant round. Doc-only, no
 behavior change; `go build`/`go vet` confirm.
+
+**Follow-up — the same bypass survived at a second call site (`d259cddd2`).** Review caught that
+Gap 1's fix was incomplete: `handleAPITree` projects a live session TWICE — once unconditionally
+into the flat `resp.Live` array (fixed above), and again into `resp.Projects` via a separate
+"orphan-live" fallback loop (web_api_tree.go, then-line 181) whenever the PastIndex walk hasn't
+seen that session yet (no meta.json indexed — e.g. spawned moments ago). That second call site
+still called `apiTreeNode` directly. Reviewer-probe-confirmed consequence: a live session
+archived+favorited immediately after spawn (before its meta lands) got a correctly-stamped
+`resp.Live` row but an unstamped `resp.Projects` row for the identical session. Fix: the same
+one-line swap, `s.apiTreeNodeTier("project", key, "live", favs, node)` — controller ruling: an
+orphan-live row IS a live session, so it reuses the "live" tier rather than inventing a second
+vocabulary term. Confirmed `apiTreeNodeTier`'s own live-recomputation
+(`treeNodeCanActLive(n) && s.isLive(n.ID)`) doesn't silently flip `Live` to `false` for these rows
+in the process: `treeNodeCanActLive` only excludes `state == "ended"`, and every row here comes
+from a live roster entry, so its state can't be `"ended"`.
+
+`TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename` mirrors
+`TestWeb_APITreeLiveRowsCarryTierFavoriteRename`'s exact setup (a live, favorited, local session
+with no PastIndex entry) but asserts against the `resp.Projects[...].Sessions[...]` row instead
+of `resp.Live[0]` — RED first (`Tier="" ... Favorite:false Rename:false` in the failure output,
+identical shape to Gap 1's), GREEN after. Full suite (including serffuzz) green; zero legacy-test
+edits; `make generate` idempotent; `golangci-lint` clean.
+
+**Deferred — reviewer Minors, no action taken (per controller ruling):**
+- The narrow `isLive` TOCTOU on `resp.Live`/orphan-live rows (the roster could theoretically
+  change between tree-build and per-node projection) — matches every other tier's existing
+  behavior (NeedsYou, Pinned already have the identical race), not a regression this work
+  introduces.
+- `handleAPIFavorite` lacks the project-ID validation `handleAPIArchive` has (rejecting
+  `"no-project"`, cross-checking `working_dir` against the resolved project) — pre-existing gap,
+  unrelated to the tree-wire read side this round touched. Fix whenever favorite's write side is
+  next touched.
 
 ## Files
 
