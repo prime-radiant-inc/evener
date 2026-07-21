@@ -158,7 +158,7 @@ function handleNotification(n: AnyNotification): void {
     nextFrameTimes ??= new Map(frameTimes);
     nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
   }
-  if (nextThreads && nextFrameTimes) threadsStore.setState({ threads: nextThreads, frameTimes: nextFrameTimes });
+  if (nextThreads) threadsStore.setState({ threads: nextThreads, frameTimes: nextFrameTimes! });
 }
 
 // handleReady re-subscribes every currently-tracked ref, additively, and

@@ -1,6 +1,7 @@
 import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { RawItemView } from "./RawItemView";
+import { TurnBlock } from "./TurnBlock";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 
 afterEach(cleanup);
@@ -53,4 +54,32 @@ test("incremental growth: re-rendering with more pendingText chunks grows the st
 test("tags the root with the item's raw type for styling/testing hooks", () => {
   const { container } = render(<RawItemView item={item({ type: "customType" })} turn={turn} live={false} />);
   expect(container.querySelector('[data-item-type="customType"]')).toBeTruthy();
+});
+
+test("live streaming settles on the same instance without residue", () => {
+  const liveItem = item({ pendingText: ["hel", "lo"] });
+  const { rerender } = render(<RawItemView item={liveItem} turn={turn} live={true} />);
+  expect(screen.getByTestId("streaming-text")).toBeTruthy();
+  expect(screen.getByTestId("streaming-text").textContent).toBe("hello");
+
+  const settledItem = { ...liveItem, text: "hello", pendingText: undefined };
+  rerender(<RawItemView item={settledItem} turn={turn} live={false} />);
+
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
+  const settledTexts = screen.queryAllByText("hello");
+  expect(settledTexts.length).toBe(1);
+});
+
+test("a reset discards the live item's DOM entirely", () => {
+  const itemA = item({ id: "item_A", status: "inProgress", pendingText: ["chunk", "A"] });
+  const turnWithA = { ...turn, items: [itemA] };
+  const { rerender } = render(<TurnBlock turn={turnWithA} />);
+  expect(screen.getByTestId("streaming-text").textContent).toBe("chunkA");
+
+  const itemB = item({ id: "item_B", status: "inProgress", pendingText: ["chunk", "B"] });
+  const turnWithB = { ...turn, items: [itemB] };
+  rerender(<TurnBlock turn={turnWithB} />);
+
+  expect(screen.queryByText("chunkA")).toBeNull();
+  expect(screen.getByTestId("streaming-text").textContent).toBe("chunkB");
 });

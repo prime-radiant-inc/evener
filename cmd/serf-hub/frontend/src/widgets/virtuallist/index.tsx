@@ -15,10 +15,10 @@ export interface VirtualListProps {
    * Opt in to post-mount remeasurement (@tanstack/react-virtual's
    * `measureElement`): each rendered row's real DOM height corrects its
    * cached size instead of `estimateSize` staying authoritative forever.
-   * Off by default so every fixed/known-height consumer (e.g. Rail's tree
-   * rows) is completely unaffected - only a consumer whose rows vary
-   * unpredictably (e.g. transcript turns: one tool call vs. a long streamed
-   * response) needs this.
+   * Off by default so every fixed/known-height consumer (e.g. the gallery
+   * demo) is completely unaffected - only a consumer whose rows vary
+   * unpredictably (e.g. the session transcript's turn list: one tool call
+   * vs. a long streamed response) needs this.
    */
   dynamic?: boolean;
   ref?: Ref<VirtualListHandle>;
