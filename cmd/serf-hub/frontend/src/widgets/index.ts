@@ -21,6 +21,8 @@ export type { DialogProps } from "./dialog";
 export { Dialog } from "./dialog";
 export type { DiffBlockProps } from "./diffblock";
 export { DiffBlock } from "./diffblock";
+export type { DropzoneProps } from "./dropzone";
+export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
 export { EmptyState } from "./emptystate";
 export type { FocusScopeProps } from "./focusscope";

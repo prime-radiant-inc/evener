@@ -12,8 +12,7 @@ import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useLayoutEffe
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { Button, Chip, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
-import { Dropzone } from "../../../widgets/dropzone";
+import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
