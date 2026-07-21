@@ -114,6 +114,28 @@ test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", ()
   expect(details.open).toBe(false); // the user's own collapse wins
 });
 
+// --- outputImages: rendered through ImageGallery -----------------------
+
+test("a tool call's outputImages render as gallery thumbnails", () => {
+  registerToolRenderer({ match: "tci_images", summary: () => "s", body: () => <div>body</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_images", outputImages: ["a", "b"] })} turn={turn} live={false} />);
+  expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
+});
+
+test("an empty outputImages array renders no gallery thumbnails", () => {
+  registerToolRenderer({ match: "tci_no_images", summary: () => "s", body: () => <div>body</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_no_images", outputImages: [] })} turn={turn} live={false} />);
+  expect(screen.queryAllByTestId("image-gallery-thumb")).toHaveLength(0);
+});
+
+test("outputImages render even for a body-less descriptor (the row still becomes expandable)", () => {
+  registerToolRenderer({ match: "tci_images_no_body", summary: () => "s" });
+  render(<ToolCallItem item={item({ toolName: "tci_images_no_body", outputImages: ["a"] })} turn={turn} live={false} />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.tagName).toBe("DETAILS");
+  expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
+});
+
 test("live -> settled transition applies autoExpand exactly once", () => {
   const autoExpand = vi.fn((it: ItemModel) => it.output === "[exit 1]");
   registerToolRenderer({ match: "tci_once", summary: () => "s", body: () => <div>b</div>, autoExpand });

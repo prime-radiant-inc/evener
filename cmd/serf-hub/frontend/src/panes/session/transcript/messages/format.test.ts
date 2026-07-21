@@ -1,27 +1,5 @@
 import { test, expect } from "vitest";
-import { imagePlaceholder, formatTokenCount, formatDurationMs, firstLine } from "./format";
-
-// --- imagePlaceholder ----------------------------------------------------
-// Parity: renderer-format.js:41-45 (imagePlaceholderForCount). Wave-4 T2 is
-// deliberately text-only here - real thumbnails are T4's job (transcript/
-// flow/** media work); this is the honest placeholder line in the meantime.
-
-test("imagePlaceholder: zero images renders nothing", () => {
-  expect(imagePlaceholder(0)).toBe("");
-});
-
-test("imagePlaceholder: a negative count also renders nothing (defensive)", () => {
-  expect(imagePlaceholder(-1)).toBe("");
-});
-
-test("imagePlaceholder: exactly one image", () => {
-  expect(imagePlaceholder(1)).toBe("[image]");
-});
-
-test("imagePlaceholder: more than one image shows the count", () => {
-  expect(imagePlaceholder(2)).toBe("[2 images]");
-  expect(imagePlaceholder(5)).toBe("[5 images]");
-});
+import { formatTokenCount, formatDurationMs, firstLine } from "./format";
 
 // --- formatTokenCount -----------------------------------------------------
 // Parity: renderer-format.js:582-587. Below 1000 is a plain rounded

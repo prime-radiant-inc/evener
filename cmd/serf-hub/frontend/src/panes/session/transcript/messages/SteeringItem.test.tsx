@@ -29,9 +29,9 @@ test('source "user" renders as a normal user message bubble (the "You" tag), not
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
 
-test('source "user" steering with images shows the same image placeholder line a real user message would', () => {
+test('source "user" steering with images renders the same gallery thumbnails a real user message would', () => {
   render(<SteeringItem item={item({ text: "look", source: "user", images: ["a", "b"] })} turn={turn} live={false} />);
-  expect(screen.getByTestId("user-message-image-placeholder").textContent).toBe("[2 images]");
+  expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
 
 // --- daemon-sourced (no source, or any non-"user" source) -> quiet divider --

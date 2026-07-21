@@ -24,9 +24,3 @@
   line-height: var(--line-height-body);
   color: var(--ink-mid);
 }
-
-.images {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-}

@@ -2,16 +2,6 @@
 // this directory. Kept dependency-free (no React, no ItemModel/TurnModel)
 // so each is trivially unit-testable in isolation - see format.test.ts.
 
-// imagePlaceholder is the honest stand-in for a message's image content
-// this wave: real thumbnails are T4's job (transcript/flow/** media work),
-// so a message with images shows only a count line. Mirrors legacy's
-// imagePlaceholderForCount (renderer-format.js:41-45) exactly.
-export function imagePlaceholder(count: number): string {
-  if (count === 1) return "[image]";
-  if (count > 1) return `[${count} images]`;
-  return "";
-}
-
 // formatTokenCount mirrors legacy's own token formatter
 // (renderer-format.js:582-587): plain integer under 1000, "Nk" (rounded, no
 // decimal) at/above 1000 - deliberately never scales past "k" (1,000,000

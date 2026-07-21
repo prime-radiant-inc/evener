@@ -8,6 +8,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { registerItemRenderer, type ItemRenderProps } from "./types";
 import { toolRendererFor } from "./toolRenderers";
+import { ImageGallery } from "./flow/ImageGallery";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./toolcallitem.module.css";
 
@@ -19,6 +20,11 @@ const CLASS = {
 export function ToolCallItem({ item, live }: ItemRenderProps) {
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
+  // outputImages is a generic ItemModel field any tool call can carry (the
+  // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
+  // owned by any one descriptor - rendered here, once, so every current and
+  // future tool gets it for free rather than each body wiring it in itself.
+  const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
@@ -41,7 +47,7 @@ export function ToolCallItem({ item, live }: ItemRenderProps) {
     // re-run this and re-fight a manual toggle.
   }, [live]);
 
-  if (!Body) {
+  if (!Body && !hasOutputImages) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <span className={CLASS.summary}>{descriptor.summary(item)}</span>
@@ -66,7 +72,8 @@ export function ToolCallItem({ item, live }: ItemRenderProps) {
       >
         {descriptor.summary(item)}
       </summary>
-      <Body item={item} live={live} />
+      {Body && <Body item={item} live={live} />}
+      <ImageGallery images={item.outputImages} />
     </details>
   );
 }

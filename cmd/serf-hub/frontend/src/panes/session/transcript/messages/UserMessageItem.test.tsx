@@ -31,17 +31,17 @@ test('carries a quiet "You" tag as a sibling of the text, not mixed into it', ()
   expect(container.querySelector('[data-testid="user-message-item"]')).toBeTruthy();
 });
 
-test("no image placeholder line when the item carries no images", () => {
+test("no gallery thumbnails when the item carries no images", () => {
   render(<UserMessageItem item={item({ text: "no pictures here" })} turn={turn} live={false} />);
-  expect(screen.queryByTestId("user-message-image-placeholder")).toBeNull();
+  expect(screen.queryAllByTestId("image-gallery-thumb")).toHaveLength(0);
 });
 
-test("a single image renders the singular placeholder text", () => {
+test("a single image renders one gallery thumbnail", () => {
   render(<UserMessageItem item={item({ text: "look", images: ["data:image/png;base64,x"] })} turn={turn} live={false} />);
-  expect(screen.getByTestId("user-message-image-placeholder").textContent).toBe("[image]");
+  expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
 });
 
-test("multiple images render the plural count placeholder text", () => {
+test("multiple images each render their own gallery thumbnail", () => {
   render(
     <UserMessageItem
       item={item({ text: "look", images: ["a", "b", "c"] })}
@@ -49,7 +49,7 @@ test("multiple images render the plural count placeholder text", () => {
       live={false}
     />,
   );
-  expect(screen.getByTestId("user-message-image-placeholder").textContent).toBe("[3 images]");
+  expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(3);
 });
 
 test("renders identically regardless of live/settled - the user's own words never stream", () => {
