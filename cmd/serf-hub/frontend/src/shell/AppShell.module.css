@@ -1,0 +1,15 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--surface-0);
+}
+
+.content {
+  flex: 1 1 auto;
+  /* min-height: 0 is required for a flex child to scroll/fill correctly
+   * instead of stretching this column to fit its content (PaneScaffold's
+   * own .pane relies on a parent with a real height: 100% chain). */
+  min-height: 0;
+  padding: var(--space-4);
+}
