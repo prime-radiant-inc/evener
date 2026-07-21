@@ -195,8 +195,13 @@ describe("loadProjectDetail", () => {
 });
 
 describe("REFRESH_NOTIFICATIONS", () => {
-  test("lists exactly the notifications this task wires up, ready for serf/tree/changed to join later", () => {
-    expect(REFRESH_NOTIFICATIONS).toEqual(["thread/started", "thread/closed", "serf/attention/changed"]);
+  test("lists exactly the wired notifications, including the hub's dedicated tree push", () => {
+    expect(REFRESH_NOTIFICATIONS).toEqual([
+      "thread/started",
+      "thread/closed",
+      "serf/attention/changed",
+      "serf/tree/changed",
+    ]);
   });
 });
 
