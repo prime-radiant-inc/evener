@@ -118,10 +118,10 @@ test("needs-you also tints the fresh ticks with the attention family (trailing e
   expect(document.querySelector("rect")!.classList.contains(styles.attention)).toBe(true);
 });
 
-test("renders an SVG trace with a <=24x10 viewBox", () => {
+test("renders an SVG trace with a <=64x10 viewBox", () => {
   render(<Cadence state="working" frameTimes={[]} now={0} />);
   const svg = document.querySelector("svg")!;
-  expect(svg.getAttribute("viewBox")).toBe("0 0 24 10");
+  expect(svg.getAttribute("viewBox")).toBe("0 0 64 10");
 });
 
 test("provides an accessible title naming the state", () => {

@@ -16,7 +16,7 @@ export interface CadenceProps {
 const WINDOW_MS = 60_000; // "the last ~60s of frame arrivals"
 const BUCKET_COUNT = 4;
 const BUCKET_MS = WINDOW_MS / BUCKET_COUNT;
-const VIEWBOX_WIDTH = 24;
+const VIEWBOX_WIDTH = 64;
 const VIEWBOX_HEIGHT = 10;
 const TICK_WIDTH = 1.2;
 
@@ -89,7 +89,7 @@ function ticksFor(frameTimes: number[], now: number): Tick[] {
 }
 
 /**
- * The signature widget: a state dot plus a 24x10px trace of the last ~60s
+ * The signature widget: a state dot plus a 64x10px trace of the last ~60s
  * of frame arrivals as fading vertical ticks. Rendered everywhere a
  * session appears (tree row, pane header, mobile card).
  *
