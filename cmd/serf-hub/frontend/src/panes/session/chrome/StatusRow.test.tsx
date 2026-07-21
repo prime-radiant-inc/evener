@@ -99,6 +99,29 @@ test("shows provider/model once a live thread/model/changed has actually split t
   expect(screen.getByText("anthropic/claude-opus-5")).toBeTruthy();
 });
 
+// composition proof only - ModelSwitch.test.tsx owns the full picker
+// behavior (loading/filter/pick/failure); this just confirms StatusRow
+// actually wires the ModelSwitch trigger in, for the SAME sessionRef.
+test("wires the model-switch trigger in, acting on the SAME sessionRef passed to StatusRow", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  let called: unknown;
+  fake.on("thread/model/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  const combobox = await screen.findByRole("combobox");
+  await user.type(combobox, "gpt");
+  await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
+});
+
 // --- reasoning effort switcher ----------------------------------------------
 
 test("renders no reasoning-effort control when the model doesn't support reasoning and has no current value", () => {

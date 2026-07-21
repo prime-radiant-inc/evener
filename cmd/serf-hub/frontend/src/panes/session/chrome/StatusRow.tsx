@@ -17,11 +17,12 @@
 import type { ChangeEvent } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { Chip, Meter, Select, StatusDot, useToasts } from "../../../widgets";
+import { Meter, Select, StatusDot, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
-import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { ModelSwitch } from "./ModelSwitch";
+import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -111,7 +112,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       <span className={CLASS.item}>
         <StatusDot state={cadenceState} />
       </span>
-      <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
+      <ModelSwitch sessionRef={sessionRef} model={model} />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       <span className={CLASS.item} data-testid="status-row-work-time">
         {formatWorkDuration(workMs)}
