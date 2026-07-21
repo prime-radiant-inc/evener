@@ -1,16 +1,17 @@
-# Wave 3 Task 6 report — `serf/tree/changed` hub broadcast
+# Wave 3 Task 6 report — `serf/tree/changed` hub broadcast + tree-wire gaps
 
-Branch `w3-treepush`, off `0996d8afb`. 6 commits (the 4th and 6th are post-review fix rounds — see
-"Review-fix round" and "Invariant round" below). Full mandated suite green (`go test
-./cmd/serf-hub/... ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/...`, exit 0),
-`make generate` idempotent (zero further diff), `gofmt -l`/`go vet` clean on every touched file,
-`golangci-lint run --max-issues-per-linter 0 --max-same-issues 0` on the touched packages clean
-(0 issues), `serf-namingcheck`/`serf-internalcheck`/`serf-docscheck` all clean. `go build -tags
-serffuzz ./cmd/serf-hub/...`, `go vet -tags serffuzz ./cmd/serf-hub/...`, and `go test -tags
-serffuzz ./cmd/serf-hub/...` (seed corpus) all clean (belt and suspenders — that tag isn't part
-of the mandated verification, but the PastIndex signature change in the Invariant round touched
-main.go/main_background.go adjacency, making it worth the extra check). Zero touches to
-hand-written frontend src, templates, or assets (`git diff --stat 0996d8afb..HEAD --
+Branch `w3-treepush`, off `0996d8afb`. 10 commits (4th/6th/9th are post-review fix rounds — see
+"Review-fix round", "Invariant round", "Tree-wire gaps round" below; the last is this report). Full
+mandated suite green (`go test ./cmd/serf-hub/... ./appwire/... ./internal/appwirets/...
+./internal/appwiredoc/...`, exit 0), `make generate` idempotent (zero further diff), `gofmt -l`/
+`go vet` clean on every touched file, `golangci-lint run --max-issues-per-linter 0
+--max-same-issues 0` on the touched packages clean (0 issues), `serf-namingcheck`/
+`serf-internalcheck`/`serf-docscheck` all clean. `go build -tags serffuzz ./cmd/serf-hub/...`,
+`go vet -tags serffuzz ./cmd/serf-hub/...`, and `go test -tags serffuzz ./cmd/serf-hub/...` (seed
+corpus) all clean throughout (belt and suspenders — that tag isn't part of the mandated
+verification, but the PastIndex signature change in the Invariant round touched
+main.go/main_background.go adjacency, making it worth the extra check on every round since). Zero
+touches to hand-written frontend src, templates, or assets (`git diff --stat 0996d8afb..HEAD --
 cmd/serf-hub/templates/ cmd/serf-hub/assets/ cmd/serf-hub/frontend/src/` shows only the
 regenerated `types.gen.ts`).
 
@@ -23,6 +24,9 @@ regenerated `types.gen.ts`).
 | `91b8c8900` | hub: broadcast after archive/favorite/rename/project-delete |
 | `25b5bbdfe` | hub: single tree-changed broadcast per mutation — PastIndex routing already notifies (review-fix round) |
 | `754c87daa` | hub: successful mutations always broadcast tree-changed exactly once (invariant round) |
+| `b8577f66b` | hub: stamp Tier/Favorite/Rename on live tree rows (tree-wire gaps round) |
+| `41923b6ab` | hub: expose project favorite state on the tree wire (tree-wire gaps round) |
+| `d08bd8a42` | hub: document the PastIndex seed-before-wire ordering hazard (tree-wire gaps round) |
 
 ## Design
 
@@ -237,20 +241,81 @@ Full suite exit 0; `make generate` idempotent; `golangci-lint` 0 issues; `go bui
 corpus) all clean — worth the extra check given the signature change's reach into
 main.go/main_background.go adjacency.
 
+## Tree-wire gaps round (commits `b8577f66b`, `41923b6ab`, `d08bd8a42`)
+
+A third coordinator-relayed ruling, this time from the rail stream's review of `/api/tree`'s wire
+shape: two gaps plus a documentation fold, unrelated to the broadcast plumbing above but touching
+the same `web_api_tree.go`/`hubapi` surface. All TDD, same verification bar.
+
+**Gap 1 — live rows never stamped (`b8577f66b`).** `handleAPITree`'s Live loop called
+`apiTreeNode("live", "", n, true)` directly (web_api_tree.go, pre-fix line 116), bypassing
+`apiTreeNodeTier` — the only path that stamps `Tier`/`Branch`/`ClusterCount`/`Favorite`/`Rename`.
+Reviewer-verified consequence: a session both live and archived showed `tier=""` (undefined) on
+the wire, so the sidebar's archive toggle had no signal to render "unarchive"; live rows also
+never carried favorite state or the rename affordance regardless of the session's actual
+decisions. Fix is the one-line swap the task specified: `s.apiTreeNodeTier("live", "", "live",
+favs, n)`. Verified against `hubcore`'s `liveNodes` construction
+(`internal/hubcore/tree.go:748-783`) that everything `apiTreeNodeTier` needs is present: `ID` is
+always set (from `le.SessionID`), which is what the `Favorite`/`Rename` lookups key on;
+`Branch`/`ClusterCount` stay zero-valued on live nodes (no fork-tree hierarchy computed for the
+flat Live tier), which is fine — `omitempty` just omits them, identical to how the NeedsYou/Pinned
+tiers already behave for nodes without that data.
+
+Test: `TestWeb_APITreeLiveRowsCarryTierFavoriteRename` — a live, favorited, local session; asserts
+`Tier=="live"`, `Favorite==true`, `Rename==true`. RED first (`Tier="", ... Favorite:false
+Rename:false` in the failure output), GREEN after the one-line fix.
+
+**No legacy-test conflict** (the task's explicit STOP condition never triggered): searched every
+`/api/tree`-touching assertion in `web_test.go` (`grep -n "resp.Live\|got.Live\|api/tree"`) — all
+are field-specific (`got.Live[0].Ref != ...`, `len(got.Live) != ...`), none do an exact-struct or
+exact-JSON match the new additive fields could break. Ran the full suite (153 `TestWeb_*` cases)
+plus the serffuzz-tagged suite after the fix: all green, zero edits to `web_test.go`.
+
+**Gap 2 — project favorites unreadable (`41923b6ab`).** `POST /api/favorite` already accepted
+`kind:"project"` (`handleAPIFavorite` validates `Kind != "session" && Kind != "project"`, no
+`"project"`-specific rejection), but `hubapi.TreeProject` had no `Favorite` field to carry the
+decision back out on `GET /api/tree`. Added `Favorite bool` `json:"favorite,omitempty"`
+(additive; confirmed TUI-safe with a full repo `go build`/`go vet`, not just `cmd/serf-hub`) and
+stamped it in `apiTreeProject` from the same per-request `favs` map `apiTreeNodeTier` already
+uses: `favs[hubcore.ArchiveKey{Kind: "project", ID: p.Key}]` — `p.Key` is documented in
+`hubcore.TreeProject` as "the canonical `identifier.Project.ID`", the exact value `POST
+/api/favorite` validates `kind:"project"` IDs against, and the same key shape every existing
+`ArchiveKey{Kind: "project", ...}` call site in the codebase already uses (checked all of them
+before writing this).
+
+Tests assert both halves at the **raw JSON** level via a small helper
+(`projectRawFromResponse`), not just the unmarshaled Go struct — an `omitempty bool` can't
+distinguish "false because absent" from "false because decoded" once it's back in a Go value:
+`TestWeb_APITreeProjectFavoriteStampedOnWire` (favorited → raw `"favorite":true` present) and
+`TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited` (unfavorited → key absent from the raw
+object entirely). Both RED-first (compile error: `Favorite undefined` before the field existed),
+GREEN after. `make generate` confirmed producing no diff — `hubapi` is a separate package from
+the `appwire` catalog, unaffected by this change.
+
+**Fold — ordering-hazard doc comment (`d08bd8a42`).** Added to `PastIndex.SetOnChange`'s doc
+comment in `internal/hubcore/past.go`: an unseeded index's first-ever `Rebuild` always looks like
+a delta (the empty-content fingerprint is a non-zero FNV constant, never equal to the zero-value
+initial fingerprint), so calling `SetOnChange` before an initial `Rebuild` fires a spurious
+"change" on nothing — the exact hazard a test caught in the Invariant round. Doc-only, no
+behavior change; `go build`/`go vet` confirm.
+
 ## Files
 
 - `appwire/types.go`, `appwire/protocol.go` — catalog entry.
 - `appwire/wiretypes_fuzz_test.go` — nil-payload count update (see Design note above).
 - `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts` — regenerated,
   not hand-edited.
-- `cmd/serf-hub/internal/hubcore/past.go` — `Rebuild`/`UpdateMeta` signature change.
-- `cmd/serf-hub/web_api_tree.go` — `notifyTreeChanged` + `notifyMutation` helpers.
+- `cmd/serf-hub/internal/hubcore/past.go` — `Rebuild`/`UpdateMeta` signature change (Invariant
+  round) + `SetOnChange` ordering-hazard doc comment (Tree-wire gaps round).
+- `cmd/serf-hub/web_api_tree.go` — `notifyTreeChanged` + `notifyMutation` helpers; Live loop routed
+  through `apiTreeNodeTier`; `apiTreeProject` stamps `Favorite`.
+- `hubapi/types.go` — `TreeProject.Favorite` field (Tree-wire gaps round).
 - `cmd/serf-hub/main.go` — roster/past-index composed wiring + corrected comment (both rounds).
 - `cmd/serf-hub/web_api_archive.go`, `web_api_favorite.go` — use `s.notifyMutation()`.
 - `cmd/serf-hub/web_api_rename.go`, `web_api_project_delete.go` — compensating-broadcast logic.
 - `cmd/serf-hub/app_rpc_test.go` — `newHubRPCTestServerWithWeb` helper.
 - `cmd/serf-hub/web_api_tree_test.go`, `web_api_archive_test.go`, `web_api_favorite_test.go`,
-  `web_api_rename_test.go`, `web_api_project_delete_test.go` — tests (all three rounds).
+  `web_api_rename_test.go`, `web_api_project_delete_test.go` — tests (all rounds).
 - ~30 more `cmd/serf-hub/**/*_test.go` files — mechanical `Rebuild()` call-site signature fixes
   only, no behavior change (see Invariant round).
 
