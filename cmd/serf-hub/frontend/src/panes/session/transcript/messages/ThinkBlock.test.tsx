@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { TurnBlock } from "../TurnBlock";
-import { itemRendererFor } from "../types";
+import { ignoringTurn, itemRendererFor } from "../types";
 import { ThinkBlock } from "./ThinkBlock";
 
 afterEach(cleanup);
@@ -15,6 +15,11 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 
 test('self-registers under the wire\'s reasoning item type ("reasoning")', () => {
   expect(itemRendererFor("reasoning")).toBe(ThinkBlock);
+});
+
+test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled think block", () => {
+  expect(ThinkBlock.$$typeof).toBe(Symbol.for("react.memo"));
+  expect((ThinkBlock as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
 // --- live: open, StreamingText, "Thinking…" ---------------------------------

@@ -7,8 +7,9 @@
 // default divider instead - the reader never authored it, so it stays out
 // of the way unless opened.
 
+import { memo } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./steeringitem.module.css";
 import { UserMessageView } from "./UserMessageItem";
 
@@ -18,7 +19,11 @@ const CLASS = {
   body: requireClass(styles.body, "steeringitem.module.css", "body"),
 };
 
-export function SteeringItem({ item }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`, destructured below), so
+// a fresh turn object on every streaming delta targeting a DIFFERENT item
+// must not re-render an already-settled steering row.
+export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps) {
   if (item.source === "user") return <UserMessageView item={item} />;
   if (!item.text) return null; // no text, no images path here (daemon steering never gets thumbnails - see below) - nothing to show
   return (
@@ -31,6 +36,6 @@ export function SteeringItem({ item }: ItemRenderProps) {
       <pre className={CLASS.body}>{item.text}</pre>
     </details>
   );
-}
+}, ignoringTurn);
 
 registerItemRenderer("steering", SteeringItem);

@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
-import { itemRendererFor } from "../types";
+import { ignoringTurn, itemRendererFor } from "../types";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 
 afterEach(cleanup);
@@ -14,6 +14,11 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 
 test('self-registers under the wire\'s user-message item type ("userMessage")', () => {
   expect(itemRendererFor("userMessage")).toBe(UserMessageItem);
+});
+
+test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled user message", () => {
+  expect(UserMessageItem.$$typeof).toBe(Symbol.for("react.memo"));
+  expect((UserMessageItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
 test("renders the prompt text", () => {

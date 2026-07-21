@@ -5,19 +5,25 @@
 // ItemModel.toolName: T1 ships only the registry + the raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR), T3 fills in the real
 // per-tool descriptors.
-import { useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState } from "react";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ImageGallery } from "./flow/ImageGallery";
 import styles from "./toolcallitem.module.css";
 import { toolRendererFor } from "./toolRenderers";
-import { type ItemRenderProps, registerItemRenderer } from "./types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
 };
 
-export function ToolCallItem({ item, live }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`/`live`, destructured
+// below - the descriptor's Body only ever gets `item`/`live` too, see
+// toolRenderers.ts's ToolRenderProps), so a fresh turn object on every
+// streaming delta targeting a DIFFERENT item must not re-render an
+// already-settled tool call.
+export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRenderProps) {
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   // outputImages is a generic ItemModel field any tool call can carry (the
@@ -78,6 +84,6 @@ export function ToolCallItem({ item, live }: ItemRenderProps) {
       <ImageGallery images={item.outputImages} />
     </details>
   );
-}
+}, ignoringTurn);
 
 registerItemRenderer("commandExecution", ToolCallItem);

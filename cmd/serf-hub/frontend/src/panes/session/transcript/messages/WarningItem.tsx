@@ -12,9 +12,10 @@
 // quiet below - each piece renders only when present/non-empty, and the
 // whole row renders nothing at all when there is truly nothing to show.
 
+import { memo } from "react";
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./warningitem.module.css";
 
 const CLASS = {
@@ -23,7 +24,11 @@ const CLASS = {
   hint: requireClass(styles.hint, "warningitem.module.css", "hint"),
 };
 
-export function WarningItem({ item }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`, destructured below), so
+// a fresh turn object on every streaming delta targeting a DIFFERENT item
+// must not re-render an already-settled warning row.
+export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) {
   const title = item.warning?.title;
   const hint = item.warning?.hint;
   const message = item.text;
@@ -44,6 +49,6 @@ export function WarningItem({ item }: ItemRenderProps) {
       )}
     </div>
   );
-}
+}, ignoringTurn);
 
 registerItemRenderer("warning", WarningItem);

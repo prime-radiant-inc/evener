@@ -5,10 +5,11 @@
 // straight to item/completed with no item/started leg), so unlike
 // agentMessage/reasoning there is no live/settled branch here at all.
 
+import { memo } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ImageGallery } from "../flow/ImageGallery";
-import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./usermessageitem.module.css";
 
 const CLASS = {
@@ -33,8 +34,13 @@ export function UserMessageView({ item }: { item: ItemModel }) {
   );
 }
 
-export function UserMessageItem({ item }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (or even `live` - a user message
+// never streams, see the file-top comment), so a fresh turn object on every
+// streaming delta targeting a DIFFERENT item must not re-render an
+// already-settled user message.
+export const UserMessageItem = memo(function UserMessageItem({ item }: ItemRenderProps) {
   return <UserMessageView item={item} />;
-}
+}, ignoringTurn);
 
 registerItemRenderer("userMessage", UserMessageItem);

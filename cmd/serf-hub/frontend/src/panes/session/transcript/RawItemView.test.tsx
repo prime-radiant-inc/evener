@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { RawItemView } from "./RawItemView";
 import { TurnBlock } from "./TurnBlock";
+import { ignoringTurn } from "./types";
 
 afterEach(cleanup);
 
@@ -11,6 +12,11 @@ const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "somethingUnregistered", text: "", ...overrides };
 }
+
+test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled fallback row", () => {
+  expect(RawItemView.$$typeof).toBe(Symbol.for("react.memo"));
+  expect((RawItemView as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
+});
 
 test("shows the item's raw type as a label", () => {
   render(<RawItemView item={item({ type: "systemMessage" })} turn={turn} live={false} />);

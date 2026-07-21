@@ -19,9 +19,10 @@
 // own chunk array is safe in isolation, regardless of what any other index
 // does.
 
+import { memo } from "react";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
-import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { joinedReasoningParagraphs, reasoningPreview, thoughtSeconds } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
 
@@ -43,7 +44,11 @@ function thoughtLabel(seconds: number | undefined, preview: string): string {
   return [durationText, preview].filter(Boolean).join(" · ");
 }
 
-export function ThinkBlock({ item, live }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`/`live`, destructured
+// below), so a fresh turn object on every streaming delta targeting a
+// DIFFERENT item must not re-render an already-settled think block.
+export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderProps) {
   if (live) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-live="true">
@@ -94,6 +99,6 @@ export function ThinkBlock({ item, live }: ItemRenderProps) {
       </details>
     </div>
   );
-}
+}, ignoringTurn);
 
 registerItemRenderer("reasoning", ThinkBlock);

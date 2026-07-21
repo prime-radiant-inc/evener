@@ -1,7 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
-import { itemRendererFor } from "../types";
+import { ignoringTurn, itemRendererFor } from "../types";
 import { WarningItem } from "./WarningItem";
 
 afterEach(cleanup);
@@ -14,6 +14,11 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 
 test('self-registers under the wire\'s warning item type ("warning"), exactly once', () => {
   expect(itemRendererFor("warning")).toBe(WarningItem);
+});
+
+test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled warning row", () => {
+  expect(WarningItem.$$typeof).toBe(Symbol.for("react.memo"));
+  expect((WarningItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
 test("a full payload (title, message, hint) renders all three", () => {

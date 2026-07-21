@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { ToolCallItem } from "./ToolCallItem";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
-import { itemRendererFor } from "./types";
+import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 
@@ -16,6 +16,11 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 
 test('self-registers under the wire\'s tool-call item type ("commandExecution")', () => {
   expect(itemRendererFor("commandExecution")).toBe(ToolCallItem);
+});
+
+test("is memoized ignoring turn identity - a fresh turn object on every streaming delta must not re-render an unrelated settled tool call", () => {
+  expect(ToolCallItem.$$typeof).toBe(Symbol.for("react.memo"));
+  expect((ToolCallItem as unknown as { compare: unknown }).compare).toBe(ignoringTurn);
 });
 
 test("renders the resolved descriptor's summary", () => {

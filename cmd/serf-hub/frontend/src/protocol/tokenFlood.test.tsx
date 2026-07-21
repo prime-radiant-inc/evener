@@ -8,9 +8,10 @@
 // docs/superpowers/plans/wave4-report.md for the measured frame-budget
 // numbers this half's sibling produced.
 import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import Session from "../panes/session/Session";
-import { type ItemRenderProps, registerItemRenderer } from "../panes/session/transcript/types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../panes/session/transcript/types";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
@@ -181,7 +182,7 @@ describe("token-flood: 500-delta streaming fast path through a mounted Session",
     }
   });
 
-  test("500 deltas on a live item do not re-render an already-settled sibling item in the same turn more than once per delta the store actually commits - render-count probe", async () => {
+  test("500 deltas on a live item do not re-render an already-settled sibling item in the same turn - render-count probe", async () => {
     // Established pattern for observing per-item render behavior:
     // TurnBlock.test.tsx registers a synthetic item type via
     // registerItemRenderer and asserts against ITS OWN render output/props
@@ -192,11 +193,17 @@ describe("token-flood: 500-delta streaming fast path through a mounted Session",
     // StreamingText path (registered by SessionPane's own `import
     // "./transcript/messages"` side effect), so the flood still exercises
     // the genuine end-to-end streaming fast path this test is named for.
+    //
+    // Wrapped with the same `memo(Component, ignoringTurn)` treatment T5c
+    // gives every registered production renderer except SystemNoticeItem
+    // (types.ts's own comment) - a settled sibling registered this way is
+    // exactly what a real settled row (a tool call, an agent message, a
+    // think block, ...) now does.
     let renderCount = 0;
-    function RenderCountProbe(_props: ItemRenderProps) {
+    const RenderCountProbe = memo(function RenderCountProbe(_props: ItemRenderProps) {
       renderCount += 1;
       return <div data-testid="settled-probe">settled sibling content</div>;
-    }
+    }, ignoringTurn);
     registerItemRenderer("tokenflood-render-probe", RenderCountProbe);
 
     const fake = new FakeClient("ready");
@@ -242,20 +249,21 @@ describe("token-flood: 500-delta streaming fast path through a mounted Session",
 
     const rerendersDuringFlood = renderCount - renderCountAfterMount;
     // THIS IS A DOCUMENTED PIN OF CURRENTLY-OBSERVED BEHAVIOR, NOT AN
-    // ASPIRATIONAL BOUND: neither TurnBlock nor any item renderer in this
-    // tree is wrapped in React.memo (verified: zero `memo(` call sites
-    // under panes/session/ or widgets/virtuallist/), and TurnBlock passes
-    // the WHOLE enclosing `turn` object through to every item renderer
-    // (types.ts's locked ItemRenderProps) - a `turn` prop object created
-    // fresh on every mapTurn call (reducer.ts's item/agentMessage/delta
-    // case). The settled sibling's OWN `item` prop stays reference-stable,
-    // but its `turn` prop does not, so React re-invokes its render function
-    // on every delta despite nothing about the sibling's own content
-    // changing. See wave4-report.md's punch list for the finding this pin
-    // exists to make visible and non-silent; a future fix (per-turn
-    // subscription scoping, or React.memo with a comparator that ignores
-    // `turn` identity) should LOWER this number, and lowering it is exactly
-    // the kind of change that should require touching this assertion.
-    expect(rerendersDuringFlood).toBe(SESSION_FLOOD_SIZE);
+    // ASPIRATIONAL BOUND (wave-4 T5c, post-fix): TurnBlock still passes the
+    // WHOLE enclosing `turn` object through to every item renderer (types.ts's
+    // locked ItemRenderProps) - a `turn` prop object created fresh on every
+    // mapTurn call (reducer.ts's item/agentMessage/delta case) - but the
+    // settled sibling above is registered wrapped in `memo(Component,
+    // ignoringTurn)`, exactly like every production renderer this wave
+    // memoizes (ToolCallItem, RawItemView, and every messages/ renderer
+    // except SystemNoticeItem). `ignoringTurn` compares `item` by reference
+    // and `live` by value, deliberately IGNORING `turn`'s identity - the
+    // settled sibling's `item` prop stays reference-stable across every
+    // delta (reducer.ts's immutable-update discipline only replaces the item
+    // a delta actually targets), so React bails out of re-rendering it every
+    // time, regardless of how many times the enclosing turn object is
+    // rebuilt. Before this fix, this same probe (unwrapped) measured exactly
+    // 500 - see wave4-report.md's punch list and its T5c addendum.
+    expect(rerendersDuringFlood).toBe(0);
   });
 });

@@ -76,6 +76,17 @@ function SystemGroup({ run }: { run: SystemRun }) {
   );
 }
 
+// Deliberately NOT memoized with types.ts's ignoringTurn, unlike every
+// other registered item renderer (wave-4 T5c): this component reads
+// turn.items (systemRunFor, above) to compute its own consecutive-run
+// grouping, so its correct output depends on turn identity - a sibling
+// system item joining or leaving this item's run changes turn.items
+// without changing THIS item's own reference or live status, and ignoring
+// turn identity would leave an already-mounted run stale (still showing as
+// standalone lines, or the wrong count) when that happens. Streaming
+// deltas (the case ignoringTurn optimizes for) never add/remove/reorder
+// items, so this only costs a render on a genuine turn.items membership
+// change - not on every delta.
 export function SystemNoticeItem({ item, turn }: ItemRenderProps) {
   const run = systemRunFor(turn.items, item.id);
   if (!run) return null; // defensive - the registry only dispatches systemMessage items here

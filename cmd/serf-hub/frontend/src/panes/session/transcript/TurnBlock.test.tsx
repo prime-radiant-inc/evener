@@ -1,8 +1,9 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { memo } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { isItemLive, TurnBlock } from "./TurnBlock";
-import { type ItemRenderProps, registerItemRenderer } from "./types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 afterEach(cleanup);
 
@@ -94,4 +95,35 @@ test("passes the owning turn through to each item renderer", () => {
   const items = [item({ id: "a", type: "tb-turn-echo" })];
   render(<TurnBlock turn={turn(items, { id: "turn_owner" })} />);
   expect(screen.getByTestId("turn-echo").textContent).toBe("turn_owner");
+});
+
+// The exact mechanism wave-4 T5c wraps most registered item renderers with
+// (ToolCallItem, RawItemView, and every registered messages/ renderer except
+// SystemNoticeItem - see each's own registerItemRenderer call site): a
+// renderer memoized with `memo(Component, ignoringTurn)` must not re-render
+// when TurnBlock re-renders with a NEW turn object but the SAME item
+// reference and the same live-determining status - exactly what a streaming
+// delta targeting a DIFFERENT item in the same turn produces (reducer.ts's
+// immutable-update discipline: only the delta's own item gets a new
+// reference, every sibling item keeps its exact reference, but the
+// enclosing TurnModel is rebuilt every time).
+test("a renderer memoized with ignoringTurn does not re-render when only the enclosing turn object changes (same item, same live)", () => {
+  let renderCount = 0;
+  const MemoEcho = memo(function MemoEcho({ item: i }: ItemRenderProps) {
+    renderCount += 1;
+    return <span data-testid="memo-echo">{i.text}</span>;
+  }, ignoringTurn);
+  registerItemRenderer("tb-memo-echo", MemoEcho);
+
+  const sharedItem = item({ id: "a", type: "tb-memo-echo", text: "stable", status: "completed" });
+  const { rerender } = render(<TurnBlock turn={turn([sharedItem], { id: "turn_1" })} />);
+  expect(renderCount).toBe(1);
+  expect(screen.getByTestId("memo-echo").textContent).toBe("stable");
+
+  // A brand-new turn object (different id, different reference) - the SAME
+  // item reference and thus the same computed `live` - must not re-invoke
+  // MemoEcho's render function.
+  rerender(<TurnBlock turn={turn([sharedItem], { id: "turn_2" })} />);
+  expect(renderCount).toBe(1);
+  expect(screen.getByTestId("memo-echo").textContent).toBe("stable");
 });

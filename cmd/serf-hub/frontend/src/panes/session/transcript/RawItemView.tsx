@@ -7,10 +7,11 @@
 // nicer per-type views); once settled (or if there's nothing to stream), it
 // shows the plain settled text field.
 
+import { memo } from "react";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./rawitemview.module.css";
 import { StreamingText } from "./StreamingText";
-import type { ItemRenderProps } from "./types";
+import { type ItemRenderProps, ignoringTurn } from "./types";
 
 const CLASS = {
   item: requireClass(styles.item, "rawitemview.module.css", "item"),
@@ -18,7 +19,11 @@ const CLASS = {
   text: requireClass(styles.text, "rawitemview.module.css", "text"),
 };
 
-export function RawItemView({ item, live }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`/`live`, destructured
+// below), so a fresh turn object on every streaming delta targeting a
+// DIFFERENT item must not re-render an already-settled fallback row.
+export const RawItemView = memo(function RawItemView({ item, live }: ItemRenderProps) {
   const chunks = item.pendingText;
   const streaming = live && chunks !== undefined && chunks.length > 0;
   return (
@@ -27,4 +32,4 @@ export function RawItemView({ item, live }: ItemRenderProps) {
       {streaming ? <StreamingText chunks={chunks} /> : <span className={CLASS.text}>{item.text}</span>}
     </div>
   );
-}
+}, ignoringTurn);

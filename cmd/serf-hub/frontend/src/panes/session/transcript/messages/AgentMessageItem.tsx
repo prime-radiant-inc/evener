@@ -9,17 +9,22 @@
 // comment) specifically so there is no gap for a live/settled mismatch to
 // live in.
 
+import { memo } from "react";
 import { Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
-import { type ItemRenderProps, registerItemRenderer } from "../types";
+import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import styles from "./agentmessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
 };
 
-export function AgentMessageItem({ item, live }: ItemRenderProps) {
+// Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
+// component never reads `turn` at all (only `item`/`live`, destructured
+// below), so a fresh turn object on every streaming delta targeting a
+// DIFFERENT item must not re-render an already-settled agent message.
+export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: ItemRenderProps) {
   if (live) {
     const chunks = item.pendingText;
     // Nothing streamed yet (item just started, zero deltas so far) - an
@@ -43,6 +48,6 @@ export function AgentMessageItem({ item, live }: ItemRenderProps) {
       <Markdown source={item.text} />
     </div>
   );
-}
+}, ignoringTurn);
 
 registerItemRenderer("agentMessage", AgentMessageItem);
