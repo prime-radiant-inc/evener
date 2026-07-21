@@ -5,11 +5,11 @@
 // (parity-m7-settings.md §10). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
-import { useEffect } from "react";
 import type { SettingsCodexLaunchEntry } from "../../../protocol/types.gen";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./launchCodex.module.css";
 import { useSettingsOverview } from "./overviewSeam";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "launchCodex.module.css", "root"),
@@ -86,12 +86,10 @@ export interface CodexLaunchSectionProps {
 export function CodexLaunchSection({ useOverview = useSettingsOverview }: CodexLaunchSectionProps) {
   const { data, loading, error, fetch } = useOverview();
 
-  useEffect(() => {
-    // fetch caches internally (overviewSeam.ts's own contract) - see
-    // agents.tsx's identical effect for why depending on it honestly is
-    // both correct and safe.
-    void fetch();
-  }, [fetch]);
+  // useConnectedEffect (not a bare useEffect) - see agents.tsx's identical
+  // call for why: the real store this fronts onto (T4) needs a connected
+  // client, same as credentialsStore/launchConfigStore.
+  useConnectedEffect(fetch, [fetch]);
 
   const entries = data?.codexLaunches ?? [];
 

@@ -27,6 +27,7 @@ import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
 import styles from "./project.module.css";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "project.module.css", "root"),
@@ -75,26 +76,28 @@ export function ProjectSection(_props: ProjectSectionProps) {
   const cwd = useQueryCwd();
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
 
-  useEffect(() => {
-    if (!cwd) return;
-    let cancelled = false;
-    setLoad({ phase: "loading" });
-    async function run() {
+  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // /settings/project?cwd= can mount this section before AppShell's own
+  // connect() handshake finishes, and schema()/getLayer() both require a
+  // connected client (throw otherwise) - see that hook's own doc comment.
+  // isCancelled guards the same "component unmounted (or cwd changed)
+  // mid-load" case the legacy local `cancelled` flag did.
+  useConnectedEffect(
+    async (isCancelled) => {
+      if (!cwd) return;
+      setLoad({ phase: "loading" });
       try {
         const schema = await launchConfigStore.getState().schema();
         const current = await launchConfigStore.getState().getLayer(cwd, "project");
         const globalDefaults = await launchConfigStore.getState().getLayer(cwd, "global");
-        if (cancelled) return;
+        if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
       } catch (err) {
-        if (!cancelled) setLoad({ phase: "error", message: errorMessage(err) });
+        if (!isCancelled()) setLoad({ phase: "error", message: errorMessage(err) });
       }
-    }
-    void run();
-    return () => {
-      cancelled = true;
-    };
-  }, [cwd]);
+    },
+    [cwd],
+  );
 
   if (!cwd) {
     return (

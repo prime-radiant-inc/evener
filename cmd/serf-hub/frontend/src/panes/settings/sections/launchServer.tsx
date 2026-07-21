@@ -3,12 +3,13 @@
 // then getLayer("/","global")) into a 2-state contract - unlike project.tsx's
 // 3-state contract, a load failure has no distinct recoverable state, just a
 // permanent failure message (parity-m7-settings.md §9).
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { LaunchConfigDiagnostic, LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./launchServer.module.css";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "launchServer.module.css", "root"),
@@ -61,28 +62,27 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function run() {
+  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // /settings/launch-serf can mount this section before AppShell's own
+  // connect() handshake finishes, and schema()/getLayer() both require a
+  // connected client (throw otherwise) - see that hook's own doc comment.
+  // isCancelled guards the same "component unmounted mid-load" case the
+  // legacy local `cancelled` flag did.
+  useConnectedEffect(async (isCancelled) => {
+    try {
+      const schema = await launchConfigStore.getState().schema();
+      const current = await launchConfigStore.getState().getLayer("/", "global");
+      if (isCancelled()) return;
+      setLoad({ phase: "ready", options: schema.options, current });
       try {
-        const schema = await launchConfigStore.getState().schema();
-        const current = await launchConfigStore.getState().getLayer("/", "global");
-        if (cancelled) return;
-        setLoad({ phase: "ready", options: schema.options, current });
-        try {
-          const resolved = await launchConfigStore.getState().resolve("/");
-          if (!cancelled) setDiagnostics(resolved.diagnostics ?? []);
-        } catch {
-          // non-fatal: the form is fully usable without the diagnostics hint
-        }
-      } catch (err) {
-        if (!cancelled) setLoad({ phase: "error", message: errorMessage(err) });
+        const resolved = await launchConfigStore.getState().resolve("/");
+        if (!isCancelled()) setDiagnostics(resolved.diagnostics ?? []);
+      } catch {
+        // non-fatal: the form is fully usable without the diagnostics hint
       }
+    } catch (err) {
+      if (!isCancelled()) setLoad({ phase: "error", message: errorMessage(err) });
     }
-    void run();
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   return (

@@ -6,11 +6,12 @@
 // value (a discriminated union), so opening a second editor always replaces
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./CredentialsSection.module.css";
 import { groupByType } from "./credentialLabels";
 import { InstanceRow } from "./InstanceRow";
@@ -55,9 +56,11 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
   const [confirmBusy, setConfirmBusy] = useState(false);
   const toast = useToasts();
 
-  useEffect(() => {
-    void fetch();
-  }, [fetch]);
+  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // /credentials can mount this section before AppShell's own connect()
+  // handshake finishes, and credentialsStore.fetch() requires a connected
+  // client (throws otherwise) - see that hook's own doc comment.
+  useConnectedEffect(fetch, [fetch]);
 
   // handleOAuthStart is shared by a row's own "Sign in…"/"Refresh OAuth"
   // button and the device editor's "Start again" - always begins with

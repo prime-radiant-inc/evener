@@ -10,12 +10,13 @@
 // up needs no widget API change. Unlike every other free-text path input in
 // this settings cluster, this field intentionally gets no directory-picker
 // assist (parity floor's own note - matches the legacy exactly).
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { type KeyboardEvent, useState } from "react";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { Button, FormRow, Input } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./inrepo.module.css";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "inrepo.module.css", "root"),
@@ -74,10 +75,13 @@ export function InRepoSection(_props: InRepoSectionProps) {
   // Runs once, on mount, with the localStorage-seeded value - later
   // re-resolves are driven by blur/Enter (handleCommit below), never by
   // this effect re-running, so `cwd`/`refresh` are deliberately not deps.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only resolve of the localStorage-seeded value; see this file's own top comment
-  useEffect(() => {
-    void refresh(cwd);
-  }, []);
+  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // /settings/inrepo can mount this section before AppShell's own connect()
+  // handshake finishes; without this, the initial resolve() would fail with
+  // "no client connected" and (unlike a later blur/Enter commit, which
+  // would by then succeed) there is no automatic retry - see that hook's
+  // own doc comment.
+  useConnectedEffect(() => refresh(cwd), []);
 
   function handleCommit(): void {
     void refresh(cwd);

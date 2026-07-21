@@ -4,11 +4,11 @@
 // (parity-m7-settings.md §8). See overviewSeam.ts's own top comment for why
 // `useOverview` is injected rather than importing stores/settingsOverview.ts
 // directly.
-import { useEffect } from "react";
 import { EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
 import { useSettingsOverview } from "./overviewSeam";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "agents.module.css", "root"),
@@ -31,13 +31,14 @@ export interface AgentsSectionProps {
 export function AgentsSection({ useOverview = useSettingsOverview }: AgentsSectionProps) {
   const { data, loading, error, fetch } = useOverview();
 
-  useEffect(() => {
-    // fetch caches internally (overviewSeam.ts's own contract), so it's
-    // safe to depend on it honestly - a re-mount or an unstable fetch
-    // reference from a future real store re-runs this harmlessly rather
-    // than needing an exhaustive-deps suppression.
-    void fetch();
-  }, [fetch]);
+  // fetch caches internally (overviewSeam.ts's own contract), so it's safe
+  // to depend on it honestly - a re-mount or an unstable fetch reference
+  // from a future real store re-runs this harmlessly. useConnectedEffect
+  // (not a bare useEffect) because the real store this will front onto
+  // (stores/settingsOverview.ts, T4) requires a connected client the same
+  // way credentialsStore/launchConfigStore do - see that hook's own doc
+  // comment for the direct-deep-link race this guards against.
+  useConnectedEffect(fetch, [fetch]);
 
   const agents = data?.agents ?? [];
 

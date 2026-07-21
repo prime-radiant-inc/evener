@@ -1,10 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
+import { connectionStore } from "../../../stores/connection";
 import { CodexLaunchSection } from "./launchCodex";
 import type { SettingsOverviewStore } from "./overviewSeam";
 
-afterEach(cleanup);
+afterEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  cleanup();
+});
 
 function fixture(overrides: Partial<SettingsOverviewStore> = {}): () => SettingsOverviewStore {
   return () => ({ data: null, loading: false, error: null, fetch: async () => {}, ...overrides });
@@ -12,6 +16,11 @@ function fixture(overrides: Partial<SettingsOverviewStore> = {}): () => Settings
 
 describe("CodexLaunchSection", () => {
   test("calls fetch() once on mount", () => {
+    // useConnectedEffect gates the mount-time fetch on the connection being
+    // ready (see that hook's own doc comment) - true of the real store this
+    // section will front onto once T4 lands, even though this placeholder's
+    // own fetch is a no-op that doesn't itself touch the wire.
+    connectionStore.setState({ state: "ready" });
     const fetchFn = vi.fn().mockResolvedValue(undefined);
     render(<CodexLaunchSection sectionId="launch-codex" useOverview={fixture({ fetch: fetchFn })} />);
     expect(fetchFn).toHaveBeenCalledTimes(1);
