@@ -1,11 +1,13 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, test, expect, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import Session, { cadenceStateForStatus } from "./Session";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
+import { requireClass } from "../../widgets/internal/requireClass";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -346,4 +348,86 @@ test("cadenceStateForStatus: idle, notLoaded, and any unknown value are idle", (
   expect(cadenceStateForStatus("idle")).toBe("idle");
   expect(cadenceStateForStatus("notLoaded")).toBe("idle");
   expect(cadenceStateForStatus("something-future-and-unknown")).toBe("idle");
+});
+
+// --- transcript/flow integration (wave 4 T4) -----------------------------
+//
+// useTranscriptScroll.test.ts proves the scroll-decision LOGIC exhaustively
+// against a fully fake VirtualListHandle; none of that proves Session.tsx
+// actually wires virtualListRef into the REAL VirtualList correctly (a
+// wrong prop name, a ref that never reaches the widget, etc. would slip
+// past every test in that file, and past every OTHER test in this file,
+// which never touch scroll state at all). These two tests close that gap
+// against the real component tree, using the same real-DOM property-stub
+// technique virtuallist.test.tsx's own scrollToIndex test already
+// establishes as this project's way to fake geometry jsdom won't compute.
+const ROOT_CLASS = requireClass(virtualListStyles.root, "virtuallist.module.css", "root");
+
+function scrollRootOf(container: HTMLElement): HTMLElement {
+  return container.querySelector(`.${ROOT_CLASS}`) as HTMLElement;
+}
+
+function stubScrolledAway(el: HTMLElement) {
+  Object.defineProperty(el, "scrollTop", { configurable: true, value: 0 });
+  Object.defineProperty(el, "scrollHeight", { configurable: true, value: 5000 });
+  Object.defineProperty(el, "clientHeight", { configurable: true, value: 500 });
+}
+
+test("scrolled away: a live item arriving shows the real NewContentPill, wired through the real VirtualList", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }] }],
+    }),
+  );
+
+  const { container } = render(<Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />);
+  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        ref: "ref_a",
+        turn: { id: "turn_2", status: "completed", itemsView: "full", items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }] },
+      },
+    } as AnyNotification);
+  });
+
+  const pill = await screen.findByTestId("new-content-pill");
+  expect(pill.textContent).toContain("1");
+});
+
+test("clicking the real NewContentPill clears it", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }] }],
+    }),
+  );
+
+  const { container } = render(<Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />);
+  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: {
+        ref: "ref_a",
+        turn: { id: "turn_2", status: "completed", itemsView: "full", items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }] },
+      },
+    } as AnyNotification);
+  });
+  await screen.findByTestId("new-content-pill");
+
+  fireEvent.click(screen.getByTestId("new-content-pill"));
+
+  expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
