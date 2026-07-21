@@ -22,6 +22,17 @@ export interface ItemModel {
   reasoningSummaries?: string[][]; // per summaryIndex chunk lists
   startedAt?: string;
   completedAt?: string;
+  // Client-observed arrival times stamped by the reducer from its `now`
+  // parameter (never a clock read) — NOT wire truth: the wire never carries
+  // reasoning timestamps at all (reasoning ThreadItems get no StartedAt/
+  // CompletedAt on either the live projector or the historical reader; see
+  // reducer.ts's appendReasoningDelta comment for the file:line receipts).
+  // Consumers should prefer the wire startedAt/completedAt pair above when
+  // present and fall back to these only when it is absent. Hydrated/
+  // historical items never carry these — only a reducer that has actually
+  // observed the item live stamps them.
+  observedStartedAt?: string;
+  observedCompletedAt?: string;
 }
 
 export interface TurnModel {

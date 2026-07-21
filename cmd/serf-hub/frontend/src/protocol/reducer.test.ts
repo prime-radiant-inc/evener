@@ -689,3 +689,148 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   );
   expect(model.reasoningEffort).toBe("high");
 });
+
+// Observed reasoning timing: the wire never carries reasoning timestamps at
+// all (neither the live projector nor the historical reader sets
+// ThreadItem.StartedAt/CompletedAt for reasoning items), so the reducer
+// stamps its own client-observed arrival times from `now` — see
+// ItemModel.observedStartedAt/observedCompletedAt's doc comment in
+// model.ts and the reducer's appendReasoningDelta/mergeObservedTiming/
+// settleItem comments for the full rationale.
+
+test("first reasoning delta stamps observedStartedAt; a later delta does not move it", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1002,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString());
+
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: " more" } } as AnyNotification,
+    1050,
+  );
+  expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString()); // unchanged by the second delta
+});
+
+test("item/completed stamps observedCompletedAt when observation began; the wire's own (absent) timestamps stay absent", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    1003,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "item/completed", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" } } } as AnyNotification,
+    1010,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.observedStartedAt).toBe(new Date(1003).toISOString());
+  expect(item.observedCompletedAt).toBe(new Date(1010).toISOString());
+  expect(item.startedAt).toBeUndefined();
+  expect(item.completedAt).toBeUndefined();
+});
+
+test("a reasoning item still in-flight at a bare turn/completed settle gets observedCompletedAt from the settle (composition with R1's preserve path)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    1003,
+  );
+
+  // Settle arrives mid-stream — no item/completed ever landed for item_r.
+  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } } } as AnyNotification, 1020);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.observedStartedAt).toBe(new Date(1003).toISOString());
+  expect(item.observedCompletedAt).toBe(new Date(1020).toISOString());
+});
+
+test("hydrated items never carry observed timing fields", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ type: "reasoning", id: "item_r", turnId: "turn_1", text: "done thinking", status: "completed" }],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.observedStartedAt).toBeUndefined();
+  expect(item.observedCompletedAt).toBeUndefined();
+});
+
+test("wire startedAt/completedAt, when present, coexist untouched alongside observed stamps", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    1003,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed", startedAt: 5000, completedAt: 6000 } },
+    } as AnyNotification,
+    1004,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.startedAt).toBe(new Date(5000).toISOString());
+  expect(item.completedAt).toBe(new Date(6000).toISOString());
+  expect(item.observedStartedAt).toBe(new Date(1003).toISOString());
+  expect(item.observedCompletedAt).toBe(new Date(1004).toISOString());
+});

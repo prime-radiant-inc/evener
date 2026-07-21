@@ -103,6 +103,23 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
   return settled;
 }
 
+// item/completed's settled wire item never carries observedStartedAt/
+// observedCompletedAt — those are model-only client observations (see
+// ItemModel's doc comment in model.ts), never present on a wire ThreadItem,
+// so wireItemToModel never sets them and a fresh `settled` object has
+// already lost whatever appendReasoningDelta stamped. Carries the existing
+// item's observedStartedAt forward, and — if observation began but never
+// got a completion stamp — stamps observedCompletedAt from `now` (purity:
+// only ever from the now argument, never a clock read).
+function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined, now: number): ItemModel {
+  if (existing?.observedStartedAt === undefined) return settled;
+  return {
+    ...settled,
+    observedStartedAt: existing.observedStartedAt,
+    observedCompletedAt: existing.observedCompletedAt ?? epochMsToISO(now),
+  };
+}
+
 // Folds a PRESERVED item (one carried over from before settlement, not
 // replaced by wire-authoritative data — see the "turn/completed" case) into
 // its settled shape. The live wire's settle stamp carries no items at all,
@@ -114,16 +131,22 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
 // one of its own items unfinished (e.g. an interrupt or session-end cut a
 // stream short before its own item/completed arrived) — so its status is
 // promoted to completed. reasoningSummaries pass through untouched (they are
-// already the model's own accumulated chunks, not wire data to merge).
-function settleItem(item: ItemModel): ItemModel {
+// already the model's own accumulated chunks, not wire data to merge). An
+// item still under reasoning-timing observation (observedStartedAt set, no
+// observedCompletedAt yet) gets observedCompletedAt stamped from `now` — the
+// turn ending is the honest end of observation (see ItemModel's doc comment
+// in model.ts).
+function settleItem(item: ItemModel, now: number): ItemModel {
   const pending = item.pendingText;
   const stale = item.status === "inProgress";
-  if (pending === undefined && !stale) return item;
+  const needsObservedCompletion = item.observedStartedAt !== undefined && item.observedCompletedAt === undefined;
+  if (pending === undefined && !stale && !needsObservedCompletion) return item;
   return {
     ...item,
     text: pending === undefined ? item.text : item.text + pending.join(""),
     pendingText: undefined,
     status: stale ? "completed" : item.status,
+    observedCompletedAt: needsObservedCompletion ? epochMsToISO(now) : item.observedCompletedAt,
   };
 }
 
@@ -233,12 +256,17 @@ function resolveInsertTurnId(model: ThreadModel, turnIdHint: string | undefined,
   return candidate !== undefined && model.turns.some((t) => t.id === candidate) ? candidate : undefined;
 }
 
-function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: string): ItemModel {
+// Accumulates one reasoning delta chunk and, first delta only, stamps
+// observedStartedAt as a client observation of when reasoning began (the
+// wire carries no reasoning timestamps at all — see ItemModel's doc comment
+// in model.ts). `now` is the reducer's own now parameter, never a clock
+// read (purity).
+function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: string, now: number): ItemModel {
   const summaries = item.reasoningSummaries ? item.reasoningSummaries.slice() : [];
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
   summaries[summaryIndex] = [...chunks, delta];
-  return { ...item, reasoningSummaries: summaries };
+  return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
 }
 
 // True for the tool call the daemon tracks as StatusInfo.PendingAsk
@@ -307,7 +335,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         // already accumulated via item/started + deltas + item/completed,
         // folding any item still mid-stream through settleItem (a just-
         // settled turn cannot legitimately still have a pending item).
-        settledTurn = { ...wireToTurnScalars(stamp), items: (oldTurn?.items ?? []).map(settleItem) };
+        settledTurn = { ...wireToTurnScalars(stamp), items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)) };
       }
       return {
         ...model,
@@ -340,7 +368,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) => mergeReasoning(wireItemToModel(item), old)),
+            items: mapItem(turn.items, item.id, (old) => mergeObservedTiming(mergeReasoning(wireItemToModel(item), old), old, now)),
           })),
           askPending,
           lastFrameAt: now,
@@ -398,7 +426,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => appendReasoningDelta(item, params.summaryIndex, params.delta)),
+          items: mapItem(turn.items, params.itemId, (item) => appendReasoningDelta(item, params.summaryIndex, params.delta, now)),
         })),
         lastFrameAt: now,
       };
