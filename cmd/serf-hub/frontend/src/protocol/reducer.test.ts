@@ -1036,7 +1036,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
 
 // Settled tool calls keep their arguments: the live projector's
 // EventToolCallEnd (internal/appprojector/appwire_projection.go:414-442)
-// resolves argsJSON at :424-427 but uses it only to derive Description -
+// resolves argsJSON at :424-427 but uses it only to derive Description —
 // the settled ThreadItem it emits carries no ArgumentsJSON, even though the
 // streamed item/started item (:373) had it. Historical items DO carry it
 // (internal/apptranscript/apptranscript.go:284,312), so this is a
