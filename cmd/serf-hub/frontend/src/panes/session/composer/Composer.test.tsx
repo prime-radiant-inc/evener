@@ -110,8 +110,14 @@ function submitButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: /^(send|queue)\b/i }) as HTMLButtonElement;
 }
 
+// The negative lookahead excludes QueueStrip's own "Steer now" button (T3's
+// separate drain-as-steer affordance, wired into this component's tree at
+// the wave integration merge - w5-integration-wiring-report.md) - both
+// buttons' accessible names start with "Steer", and a couple of tests below
+// hydrate with a non-empty queue, which renders QueueStrip's button
+// alongside this component's own.
 function steerButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /^steer\b/i }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }) as HTMLButtonElement;
 }
 
 // --- basic surface ---------------------------------------------------------

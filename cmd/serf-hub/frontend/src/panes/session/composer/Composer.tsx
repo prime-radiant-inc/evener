@@ -18,6 +18,7 @@ import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { readEnterToSendPref } from "./enterToSendPref";
+import { QueueStrip } from "./queue";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -189,6 +190,67 @@ export function Composer({ ref }: ComposerProps) {
     }
   }
 
+  // handleDrainSuccess is QueueStrip's own onDrainSuccess seam (its "Steer
+  // now" button, a SEPARATE trigger from this component's own classic
+  // steer/drain path below): mirrors the legacy "the textarea clears" rule
+  // on a successful drain. Unlike clearIfUnchanged, the callback carries no
+  // snapshot of what was drained (QueueStripProps.onDrainSuccess takes no
+  // arguments), so there is no "unchanged since submit" check possible here
+  // - this unconditionally clears whatever is CURRENTLY present. A real,
+  // narrow asymmetry with this component's own drain path (submitAction
+  // below DOES check clearIfUnchanged) - see w5-integration-wiring-report.md.
+  function handleDrainSuccess(): void {
+    updateText("");
+    clearDraft(ref);
+    attachments.clearSubmitted(new Set(attachments.items.map((item) => item.marker)));
+  }
+
+  // restoreTextToComposer implements the shared "put text back into the
+  // composer without clobbering what's already typed there" merge (parity-
+  // m5-composer.md line 101, byte-ported from renderer.js:6823-6837's own
+  // restoreTextToComposer): existing text is right-trimmed then kept, the
+  // incoming text is appended after a blank line, textEditor.write() keeps
+  // the draft in sync (mirrors the legacy synthetic `input` event) and
+  // parks the cursor at the very end, and the textarea is refocused - same
+  // as legacy's own ta.focus() call.
+  //
+  // Both wave-5 "restore to composer" seams share this exact behavior:
+  // QueueStrip's own onRestoreToComposer (a queued-entry edit) AND AskDock's
+  // onFallbackToComposer (a turn/start Conflict on the ask-answers path).
+  // Legacy's OWN two equivalent functions actually diverge here -
+  // dropComposedTextIntoComposer (renderer.js:6238-6245) unconditionally
+  // overwrites `ta.value = text`, dropping whatever was already typed -
+  // but legacy never had to contend with a hidden composer whose own React
+  // state survives underneath (this rewrite's AskDock only hides/inerts the
+  // input row via useAskDockPending below; it never clears Composer's own
+  // `text` state). Overwriting here would silently discard a draft the user
+  // started before an unrelated question ever arrived, so this wave's own
+  // integration deliberately reuses the queue-edit merge behavior for both
+  // seams rather than porting the overwrite - a considered choice, not a
+  // parity citation.
+  function restoreTextToComposer(restoredText: string): void {
+    const existing = textRef.current;
+    const merged = existing.trim() === "" ? restoredText : `${existing.replace(/\s+$/, "")}\n\n${restoredText}`;
+    textEditor.write(merged, merged.length);
+    textareaRef.current?.focus();
+  }
+
+  // getComposerText is QueueStrip's own seam for reading this composer's
+  // CURRENT text/attachments at the moment its drain affordance is used -
+  // textRef.current (not the `text` state closure) for the identical
+  // liveness reason textEditor.read() above reads it, and
+  // toInputAttachments() for the same wire shape submitAction's own payload
+  // already uses. Attachments still mid-encode are silently omitted by
+  // toInputAttachments() itself (its own doc comment: callers should only
+  // invoke it once hasPending is false) - QueueStrip's "Steer now" button
+  // has no hasPending guard of its own (unlike this component's classic
+  // submit paths), a narrow, pre-existing gap flagged in
+  // w5-integration-wiring-report.md rather than fixed here (QueueStrip.tsx
+  // is outside this integration's manifest).
+  function getComposerText() {
+    return { text: textRef.current, attachments: attachments.toInputAttachments() };
+  }
+
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = text;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
@@ -311,8 +373,16 @@ export function Composer({ ref }: ComposerProps) {
           inerting the input row below while a question is pending (see
           askDock's own future contract - this file has no ask-pending
           state to gate on). */}
-      {/* T3: queue strip - renders the queue preview (model.queue) above
-          the input row. */}
+      {/* T3: queue strip - the queue preview (model.queue) above the input
+          row; getComposerText/onRestoreToComposer/onDrainSuccess are this
+          integration's own seam implementations, see each one's own doc
+          comment above. */}
+      <QueueStrip
+        ref={ref}
+        getComposerText={getComposerText}
+        onRestoreToComposer={restoreTextToComposer}
+        onDrainSuccess={handleDrainSuccess}
+      />
       {hasAttachments && (
         <div className={styles.chips}>
           {attachments.items.map((item) => (
