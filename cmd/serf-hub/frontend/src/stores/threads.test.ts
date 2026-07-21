@@ -564,20 +564,32 @@ describe("client swap (manual retry) rewiring", () => {
 });
 
 describe("useThreadsStore.send", () => {
-  test("calls turn/start with text and image input", async () => {
+  test("calls turn/start with text and a base64 image attachment (wire InputItem.data/mediaType/name - appwire/types.go:561-570)", async () => {
     const fake = connectFakeClient();
     fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
 
-    await threadsStore.getState().send("ref_a", "hello", ["https://example.com/pic.png"]);
+    await threadsStore
+      .getState()
+      .send("ref_a", "hello", [{ mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" }]);
 
     const call = fake.calls.find((c) => c.method === "turn/start");
     expect(call?.params).toEqual({
       ref: "ref_a",
       input: [
         { type: "text", text: "hello" },
-        { type: "image", url: "https://example.com/pic.png" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "pic.png" },
       ],
     });
+  });
+
+  test("send with no attachments sends text-only input", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+
+    await threadsStore.getState().send("ref_a", "hello");
+
+    const call = fake.calls.find((c) => c.method === "turn/start");
+    expect(call?.params).toEqual({ ref: "ref_a", input: [{ type: "text", text: "hello" }] });
   });
 
   test("maps a Conflict wire rejection (serfErrorInfo === conflict) to ConflictError", async () => {
@@ -646,6 +658,24 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
+  test("steer includes a base64 image attachment when provided", async () => {
+    const fake = connectFakeClient();
+    await ensureActiveTurn(fake, "ref_a");
+    fake.on("turn/steer", () => ({}));
+
+    await threadsStore.getState().steer("ref_a", "steer text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+
+    const call = fake.calls.find((c) => c.method === "turn/steer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      expectedTurnId: "turn_1",
+      input: [
+        { type: "text", text: "steer text" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
   test("interrupt sends the tracked model's activeTurnId as expectedTurnId", async () => {
     const fake = connectFakeClient();
     await ensureActiveTurn(fake, "ref_a");
@@ -667,6 +697,22 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     expect(call?.params).toEqual({ ref: "ref_a", input: [{ type: "text", text: "queued text" }] });
   });
 
+  test("queue includes a base64 image attachment when provided", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/queue", () => ({}));
+
+    await threadsStore.getState().queue("ref_a", "", [{ mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }]);
+
+    const call = fake.calls.find((c) => c.method === "turn/queue");
+    // queueText allows empty text when attachments are present (parity
+    // finding §B: "image-only queue entries are valid") - buildInput's
+    // text.trim() guard means an empty string contributes no text item.
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      input: [{ type: "image", mediaType: "image/png", data: "aGVsbG8=", name: "x.png" }],
+    });
+  });
+
   test("steer/queue/interrupt also map a Conflict rejection to ConflictError", async () => {
     const fake = connectFakeClient();
     fake.on("turn/steer", () => {
@@ -682,6 +728,266 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     await expect(threadsStore.getState().steer("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
     await expect(threadsStore.getState().queue("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
     await expect(threadsStore.getState().interrupt("ref_a")).rejects.toBeInstanceOf(ConflictError);
+  });
+});
+
+// drainAsSteer (kata 0bq1 Path B): the plan's terse locked-interfaces block
+// shows `drainAsSteer(ref)`, but the wire method it calls
+// (TurnDrainAsSteerParams, appwire/types.go:769-776) carries an optional
+// Input the daemon appends before draining ("Input lets clients atomically
+// append the current composer payload before the drain"), and the parity
+// floor's Path B row requires exactly that ("anything + non-empty queue ...
+// turn/drainAsSteer carrying the textarea text/items so the daemon
+// appends-then-drains atomically" - parity-m5-composer.md §A). Shipping a
+// bare `drainAsSteer(ref)` would silently drop the composer's pending
+// text/attachments on every Path-B drain, contradicting both the parity
+// floor and the "optimistic pending applies uniformly to
+// send/steer/queue/drain" binding constraint (which needs to know WHAT was
+// submitted to render a pending chip). This store therefore ships
+// `drainAsSteer(ref, text, attachments?)`, mirroring send/steer/queue's own
+// shape exactly - flagged in the T1 report as an interpretation, not a
+// silent deviation.
+describe("useThreadsStore.drainAsSteer", () => {
+  test("sends turn/drainAsSteer with the composer's text and attachments as input", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/drainAsSteer", () => ({}));
+
+    await threadsStore.getState().drainAsSteer("ref_a", "drain text", [{ mediaType: "image/png", data: "aGVsbG8=" }]);
+
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      input: [
+        { type: "text", text: "drain text" },
+        { type: "image", mediaType: "image/png", data: "aGVsbG8=" },
+      ],
+    });
+  });
+
+  test("sends an empty input array when the composer was empty (draining the queue alone)", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/drainAsSteer", () => ({}));
+
+    await threadsStore.getState().drainAsSteer("ref_a", "");
+
+    const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+    expect(call?.params).toEqual({ ref: "ref_a", input: [] });
+  });
+
+  test("maps a Conflict rejection to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/drainAsSteer", () => {
+      throw new WireError("turn is not active", -32013, { serfErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().drainAsSteer("ref_a", "x")).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  test("does not map a queuedDrainPartial rejection to ConflictError (parity §A: distinct 'drained after queueing' outcome)", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/drainAsSteer", () => {
+      throw new WireError("queue drained partially", -32013, { serfErrorInfo: "queuedDrainPartial" });
+    });
+
+    const rejection = threadsStore.getState().drainAsSteer("ref_a", "x");
+    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
+    await expect(rejection).rejects.toBeInstanceOf(WireError);
+  });
+});
+
+describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
+  test("promoteQueuedAsSteer sends turn/promoteQueuedAsSteer with {ref, index, expectedEntryId}", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/promoteQueuedAsSteer", () => ({}));
+
+    await threadsStore.getState().promoteQueuedAsSteer("ref_a", 1, "entry_2");
+
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toEqual({ ref: "ref_a", index: 1, expectedEntryId: "entry_2" });
+  });
+
+  test("promoteQueuedAsSteer maps a Conflict rejection (queue shifted under the snapshot) to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/promoteQueuedAsSteer", () => {
+      throw new WireError("entry id mismatch", -32013, { serfErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().promoteQueuedAsSteer("ref_a", 0, "entry_1")).rejects.toBeInstanceOf(
+      ConflictError,
+    );
+  });
+
+  test("cancelQueued sends turn/cancelQueued with {ref, index, expectedEntryId} and returns {removedText, removedImages}", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/cancelQueued", () => ({ removedText: "queued message", removedImages: 2 }));
+
+    const result = await threadsStore.getState().cancelQueued("ref_a", 0, "entry_1");
+
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "entry_1" });
+    expect(result).toEqual({ removedText: "queued message", removedImages: 2 });
+  });
+
+  test("cancelQueued maps a Conflict rejection (already consumed) to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("turn/cancelQueued", () => {
+      throw new WireError("entry id mismatch", -32013, { serfErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().cancelQueued("ref_a", 0, "entry_1")).rejects.toBeInstanceOf(ConflictError);
+  });
+});
+
+describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/rename/compact/shutdown/clearThread/forkFromTurn)", () => {
+  test("setModel sends thread/model/set with {ref, modelProvider, model}", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/model/set", () => ({}));
+
+    await threadsStore.getState().setModel("ref_a", "anthropic", "claude-opus-4-1");
+
+    const call = fake.calls.find((c) => c.method === "thread/model/set");
+    expect(call?.params).toEqual({ ref: "ref_a", modelProvider: "anthropic", model: "claude-opus-4-1" });
+  });
+
+  test("setReasoningEffort sends thread/reasoning-effort/set with {ref, reasoningEffort: level}", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/reasoning-effort/set", () => ({}));
+
+    await threadsStore.getState().setReasoningEffort("ref_a", "high");
+
+    const call = fake.calls.find((c) => c.method === "thread/reasoning-effort/set");
+    expect(call?.params).toEqual({ ref: "ref_a", reasoningEffort: "high" });
+  });
+
+  test("setGoal sends goal/set with {ref, objective} and returns {started}", async () => {
+    const fake = connectFakeClient();
+    fake.on("goal/set", () => ({ started: true }));
+
+    const result = await threadsStore.getState().setGoal("ref_a", "ship wave 5");
+
+    const call = fake.calls.find((c) => c.method === "goal/set");
+    expect(call?.params).toEqual({ ref: "ref_a", objective: "ship wave 5" });
+    expect(result).toEqual({ started: true });
+  });
+
+  test("rename sends serf/thread/name/set with {ref, name}", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/thread/name/set", () => ({}));
+
+    await threadsStore.getState().rename("ref_a", "New title");
+
+    const call = fake.calls.find((c) => c.method === "serf/thread/name/set");
+    expect(call?.params).toEqual({ ref: "ref_a", name: "New title" });
+  });
+
+  test("compact sends thread/compact/start with {ref}", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/compact/start", () => ({}));
+
+    await threadsStore.getState().compact("ref_a");
+
+    const call = fake.calls.find((c) => c.method === "thread/compact/start");
+    expect(call?.params).toEqual({ ref: "ref_a" });
+  });
+
+  test("shutdown sends thread/shutdown with {ref}", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/shutdown", () => ({}));
+
+    await threadsStore.getState().shutdown("ref_a");
+
+    const call = fake.calls.find((c) => c.method === "thread/shutdown");
+    expect(call?.params).toEqual({ ref: "ref_a" });
+  });
+
+  test("forkFromTurn sends thread/fork with {ref, ...opts} and returns the response verbatim", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/fork", () => ({ thread: testThread("ref_child"), originalInput: undefined }));
+
+    const result = await threadsStore
+      .getState()
+      .forkFromTurn("ref_a", { sourceTurnId: "turn_1", editedInput: "edited text" });
+
+    const call = fake.calls.find((c) => c.method === "thread/fork");
+    expect(call?.params).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "edited text" });
+    expect(result.thread.serf.ref).toBe("ref_child");
+  });
+
+  test("forkFromTurn supports the aside mode's mutually-exclusive param set", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/fork", () => ({ thread: testThread("ref_aside") }));
+
+    await threadsStore.getState().forkFromTurn("ref_a", { aside: true });
+
+    const call = fake.calls.find((c) => c.method === "thread/fork");
+    // sourceTurnId has no `omitempty` on the wire (appwire/types.go:694) -
+    // it is required JSON even when meaningless (aside is mutually
+    // exclusive with it), so the store defaults it to "" rather than
+    // omitting the field.
+    expect(call?.params).toEqual({ ref: "ref_a", aside: true, sourceTurnId: "" });
+  });
+
+  // clearThread has no corresponding live notification (appwire/protocol.go's
+  // Notifications catalog carries no "thread cleared" entry - verified), so
+  // the response's fresh Thread snapshot is the ONLY signal the transcript
+  // is now empty; this store applies it directly rather than leaving the
+  // tracked model stale until some unrelated future notification/reconnect.
+  test("clearThread sends thread/clear with {ref} and replaces the tracked model from the response snapshot", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
+
+    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    await threadsStore.getState().clearThread("ref_a");
+
+    const call = fake.calls.find((c) => c.method === "thread/clear");
+    expect(call?.params).toEqual({ ref: "ref_a" });
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+  });
+
+  test("clearThread updates a watched model tracking the same ref too", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
+    );
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    fake.on("thread/clear", () => ({ thread: testThread("ref_a", { turns: [] }), ref: "ref_a" }));
+    await threadsStore.getState().clearThread("ref_a");
+
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
+  });
+
+  test("clearThread propagates a rejection and leaves the tracked model untouched", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("thread/clear", () => {
+      throw new Error("turn in progress");
+    });
+
+    const before = threadsStore.getState().threads.get("ref_a");
+    await expect(threadsStore.getState().clearThread("ref_a")).rejects.toThrow("turn in progress");
+    expect(threadsStore.getState().threads.get("ref_a")).toBe(before);
+  });
+
+  // One representative Conflict-mapping test standing in for every
+  // thread-level action above - each wraps its client.request in the exact
+  // same mapConflict try/catch as send/steer/queue/interrupt (proven
+  // exhaustively above); repeating it per method would test the identical
+  // wrapper code path over and over rather than add real coverage.
+  test("session actions also map a Conflict rejection to ConflictError (setModel as the representative case)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/model/set", () => {
+      throw new WireError("model unavailable", -32013, { serfErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(ConflictError);
   });
 });
 
