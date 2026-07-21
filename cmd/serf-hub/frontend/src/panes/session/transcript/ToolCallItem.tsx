@@ -5,6 +5,7 @@
 // ItemModel.toolName: T1 ships only the registry + the raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR), T3 fills in the real
 // per-tool descriptors.
+import { useLayoutEffect, useRef, useState } from "react";
 import { registerItemRenderer, type ItemRenderProps } from "./types";
 import { toolRendererFor } from "./toolRenderers";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -18,11 +19,55 @@ const CLASS = {
 export function ToolCallItem({ item, live }: ItemRenderProps) {
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
+
+  // Every row with a body starts collapsed (parity-m4-transcript.md's own
+  // Highlights: "every tool row, including diffs, starts collapsed" - the
+  // only default-expanded state anywhere is a failed shell call once it
+  // settles, via descriptor.autoExpand). autoExpand only means anything
+  // once the call has actually finished (e.g. shell's own exit-code
+  // heuristic can't resolve mid-stream), so this is applied exactly once,
+  // at the live -> settled transition - never on every render, which is
+  // also what lets a user's own manual toggle afterward stick rather than
+  // being fought back open/closed.
+  const [expanded, setExpanded] = useState(false);
+  const userToggledRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (live || userToggledRef.current) return;
+    setExpanded(descriptor.autoExpand?.(item) ?? false);
+    // Edge-triggered on the live -> settled transition (and on an
+    // already-settled initial mount) - deliberately NOT depending on
+    // `item`/`descriptor` too, so a settled row's later re-renders never
+    // re-run this and re-fight a manual toggle.
+  }, [live]);
+
+  if (!Body) {
+    return (
+      <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
+        <span className={CLASS.summary}>{descriptor.summary(item)}</span>
+      </div>
+    );
+  }
+
   return (
-    <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
-      <span className={CLASS.summary}>{descriptor.summary(item)}</span>
-      {Body && <Body item={item} live={live} />}
-    </div>
+    <details className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""} open={expanded}>
+      <summary
+        className={CLASS.summary}
+        onClick={(e) => {
+          // Fully controlled rather than relying on <details>' own native
+          // toggle: preventDefault stops the browser from also flipping
+          // `open` itself, so `expanded` state stays the single source of
+          // truth. The user's own choice, once made, always wins over
+          // autoExpand from here on (see the effect above).
+          e.preventDefault();
+          userToggledRef.current = true;
+          setExpanded((prev) => !prev);
+        }}
+      >
+        {descriptor.summary(item)}
+      </summary>
+      <Body item={item} live={live} />
+    </details>
   );
 }
 
