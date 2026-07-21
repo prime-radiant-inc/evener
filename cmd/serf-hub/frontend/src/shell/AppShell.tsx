@@ -18,6 +18,7 @@ import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
+import "../panes/settings"; // registers the "settings" pane type
 import styles from "./AppShell.module.css";
 
 // dockview (pulled in by DockHost.tsx) is ~636kB of the main bundle on its
@@ -81,11 +82,11 @@ function usePathname(): string {
   return pathname;
 }
 
-// Opens (or focuses) the pane a pathname resolves to. "session" maps
-// directly (params carry the ref straight through); every other resolved
-// type - including "welcome" itself - falls back to opening the plain
-// welcome singleton, exactly as it did before this task ("spawn" keeps its
-// own not-ready note; "transcript"/"settings"/"doc" aren't registered yet
+// Opens (or focuses) the pane a pathname resolves to. "session" and
+// "settings" map directly (their params pass straight through to their own
+// registered pane type); every other resolved type - including "welcome"
+// itself - falls back to opening the plain welcome singleton ("spawn"
+// keeps its own not-ready note; "transcript"/"doc" aren't registered yet
 // this wave, same as "spawn", and get the same untouched fallback rather
 // than a new bespoke treatment). A null route (genuinely unknown path)
 // opens nothing - NotFound renders in DockHost's place instead, see the
@@ -95,6 +96,10 @@ function openRouteAsPane(pathname: string): void {
   if (route === null) return;
   if (route.type === "session") {
     workspaceStore.getState().openPane("session", route.params);
+    return;
+  }
+  if (route.type === "settings") {
+    workspaceStore.getState().openPane("settings", route.params);
     return;
   }
   workspaceStore.getState().openPane("welcome", route.type === "spawn" ? { note: SPAWN_NOT_READY_NOTE } : {});
