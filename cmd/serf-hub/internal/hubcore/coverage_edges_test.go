@@ -200,7 +200,7 @@ func fuzzScenarioCoveragePureEdges(t *testing.T) {
 	}
 
 	i := NewPastIndex("")
-	if err := i.Rebuild(); err != nil {
+	if _, err := i.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	if got := i.mergeSearchResults(nil, nil, 1, 0); got != nil {

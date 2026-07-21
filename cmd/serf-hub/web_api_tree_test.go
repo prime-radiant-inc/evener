@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -138,7 +140,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
@@ -446,7 +448,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -469,5 +471,320 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	}
 	if detail.Title != "my chosen name" {
 		t.Fatalf("Title=%q, want the renamed meta name (not the raw id)", detail.Title)
+	}
+}
+
+// waitForNotification blocks until the client's next notification arrives (or
+// t.Fatal on timeout) and returns its method name.
+func waitForNotification(t *testing.T, client *appwire.Client) string {
+	t.Helper()
+	select {
+	case got := <-client.Notifications():
+		return got.Method
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for a notification")
+		return ""
+	}
+}
+
+// assertSingleNotification waits for the client's next notification and
+// asserts its method is wantMethod, then proves no SECOND notification
+// follows before an ordering sentinel broadcast right after: seeing the
+// sentinel next (rather than a repeat of wantMethod) rules out a
+// double-broadcast without a race-prone sleep-based check.
+func assertSingleNotification(t *testing.T, client *appwire.Client, server *appserver.Server, wantMethod string) {
+	t.Helper()
+	if got := waitForNotification(t, client); got != wantMethod {
+		t.Fatalf("method=%q, want %q", got, wantMethod)
+	}
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got a second notification %q before the sentinel; want exactly one %q", got, wantMethod)
+	}
+}
+
+// assertNoNotification proves nothing has reached client yet: an ordering
+// sentinel is broadcast immediately, so receiving anything else first would
+// mean forbiddenMethod (or something else) was already pending.
+func assertNoNotification(t *testing.T, client *appwire.Client, server *appserver.Server, forbiddenMethod string) {
+	t.Helper()
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got notification %q before the sentinel; must not have broadcast %q here", got, forbiddenMethod)
+	}
+}
+
+func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "sess1", status: "active"})
+	roster.SetOnChange(func() { notifyTreeChanged(server) })
+
+	roster.Refresh() // seed: a daemon appears in the roster — a delta
+	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
+
+	roster.Refresh() // identical snapshot: no delta, must not broadcast again
+	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
+}
+
+func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	stateRoot := t.TempDir()
+	proj := filepath.Join(stateRoot, "project-test-0123456789")
+	meta := schema.SessionMeta{ID: "sess1", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	if err := schema.SaveSessionMeta(proj, meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "*"))
+	past.SetOnChange(func() { notifyTreeChanged(server) })
+
+	if _, err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
+		t.Fatal(err)
+	}
+	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
+
+	if _, err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
+		t.Fatal(err)
+	}
+	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
+}
+
+// TestWeb_APITreeLiveRowsCarryTierFavoriteRename covers a wire gap: the Live
+// loop in handleAPITree used to call apiTreeNode directly, bypassing
+// apiTreeNodeTier — the only path that stamps Tier/Branch/ClusterCount/
+// Favorite/Rename. A session both live and archived would show tier=""
+// (undefined) on the wire, and no live row ever carried favorite state or
+// the rename affordance, regardless of the session's actual decisions.
+func TestWeb_APITreeLiveRowsCarryTierFavoriteRename(t *testing.T) {
+	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 61, Address: "127.0.0.1:4061", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	favStore := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
+	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Live) != 1 {
+		t.Fatalf("live=%d: %+v", len(got.Live), got.Live)
+	}
+	node := got.Live[0]
+	if node.Tier != "live" {
+		t.Fatalf("live row Tier=%q, want %q: %+v", node.Tier, "live", node)
+	}
+	if !node.Favorite {
+		t.Fatalf("live row Favorite=false, want true (session was favorited): %+v", node)
+	}
+	if !node.Rename {
+		t.Fatalf("live row Rename=false, want true (local session): %+v", node)
+	}
+}
+
+// TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename covers the same wire
+// gap surviving at a second call site: handleAPITree's orphan-live fallback
+// loop projects a live session into resp.Projects whenever the PastIndex
+// walk never saw it (e.g. spawned moments ago, before its meta.json is
+// indexed — realistic via the archive-immediately-after-spawn window). That
+// loop called apiTreeNode directly too, so such a session got a
+// correctly-stamped resp.Live row (fixed above) but an unstamped
+// resp.Projects row alongside it.
+func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
+	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 62, Address: "127.0.0.1:4062", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	favStore := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
+	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// No PastIndex entry for this session at all (nothing ever Rebuilt or
+	// seeded) — this is what routes it through the orphan-live fallback loop
+	// instead of the PastIndex-derived project walk.
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	var node *hubapi.TreeNode
+	for i := range got.Projects {
+		for j := range got.Projects[i].Sessions {
+			if got.Projects[i].Sessions[j].SessionID == liveSessionID {
+				node = &got.Projects[i].Sessions[j]
+			}
+		}
+	}
+	if node == nil {
+		t.Fatalf("orphan-live session not found in any project: %+v", got.Projects)
+	}
+	if node.Tier != "live" {
+		t.Fatalf("orphan-live row Tier=%q, want %q: %+v", node.Tier, "live", *node)
+	}
+	if !node.Favorite {
+		t.Fatalf("orphan-live row Favorite=false, want true (session was favorited): %+v", *node)
+	}
+	if !node.Rename {
+		t.Fatalf("orphan-live row Rename=false, want true (local session): %+v", *node)
+	}
+}
+
+// projectRawFromResponse decodes body as raw JSON and returns the sole
+// entry of top-level key arrayKey (e.g. "projects") as a map, so a test can
+// assert a field's exact wire presence/absence — an omitempty field
+// unmarshaled into hubapi.TreeProject can't distinguish "false" from
+// "absent," but the raw JSON can.
+func projectRawFromResponse(t *testing.T, body []byte, arrayKey string) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode raw JSON: %v", err)
+	}
+	arr, _ := raw[arrayKey].([]any)
+	if len(arr) != 1 {
+		t.Fatalf("want 1 entry in raw %q, got %+v", arrayKey, raw[arrayKey])
+	}
+	entry, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("raw %q[0] is not an object: %+v", arrayKey, arr[0])
+	}
+	return entry
+}
+
+// TestWeb_APITreeProjectFavoriteStampedOnWire covers a wire gap: the favorite
+// write side (POST /api/favorite) already accepts kind:"project", but
+// hubapi.TreeProject had no Favorite field, so a favorited project's decision
+// was unreadable from GET /api/tree.
+func TestWeb_APITreeProjectFavoriteStampedOnWire(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+	}
+	favStore := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favStore.Set("project", project.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Favorite: favStore})
+	web.injectMetasForTest(metas)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	if !resp.Projects[0].Favorite {
+		t.Fatalf("favorited project should stamp favorite=true: %+v", resp.Projects[0])
+	}
+	raw := projectRawFromResponse(t, rec.Body.Bytes(), "projects")
+	if fav, ok := raw["favorite"]; !ok || fav != true {
+		t.Fatalf("raw JSON favorite=%v (present=%v), want true", fav, ok)
+	}
+}
+
+// TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited pins the other half:
+// an unfavorited project must omit the favorite key entirely (omitempty),
+// not send an explicit false.
+func TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	if resp.Projects[0].Favorite {
+		t.Fatalf("unfavorited project should not be marked favorite: %+v", resp.Projects[0])
+	}
+	raw := projectRawFromResponse(t, rec.Body.Bytes(), "projects")
+	if _, present := raw["favorite"]; present {
+		t.Fatalf("unfavorited project should omit the favorite key entirely, got %+v", raw)
 	}
 }

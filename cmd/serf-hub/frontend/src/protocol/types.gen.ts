@@ -664,6 +664,9 @@ export interface SerfToolInfo {
   source: string;
 }
 
+export interface SerfTreeChangedPayload {
+}
+
 export interface SerfUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -1152,7 +1155,8 @@ export type NotificationName =
   | "serf/marketplace/updated"
   | "serf/plugin/updated"
   | "serf/task/updated"
-  | "serf/sandbox/escalation/requested";
+  | "serf/sandbox/escalation/requested"
+  | "serf/tree/changed";
 
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
@@ -1249,6 +1253,7 @@ export interface NotificationTypes {
   "serf/plugin/updated": SerfPluginUpdatedPayload;
   "serf/task/updated": TaskUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
+  "serf/tree/changed": SerfTreeChangedPayload;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

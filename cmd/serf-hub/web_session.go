@@ -601,7 +601,7 @@ func (s *WebServer) asideSession(parentID string) (string, error) {
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
-		_ = s.cfg.Past.Rebuild()
+		_, _ = s.cfg.Past.Rebuild()
 	}
 	return childID, nil
 }
@@ -627,7 +627,7 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, stri
 	}
 	// Refresh past index so the new session shows up immediately in the sidebar.
 	if s.cfg.Past != nil {
-		_ = s.cfg.Past.Rebuild()
+		_, _ = s.cfg.Past.Rebuild()
 	}
 	return childID, originalInput, nil
 }

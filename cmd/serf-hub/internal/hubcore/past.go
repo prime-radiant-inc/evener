@@ -103,6 +103,12 @@ func (i *PastIndex) StateGlob() string {
 // SetOnChange registers a callback fired by Rebuild/UpdateMeta only when the
 // indexed content actually changes (a Find-miss rebuild with no delta does not
 // fire — round-3 G5). Nil disables the hook.
+//
+// Ordering hazard: call this after an initial Rebuild, not before. An
+// unseeded index's first-ever Rebuild always looks like a delta — even zero
+// entries fingerprint to a non-zero constant, never equal to the zero-value
+// initial fingerprint — so wiring the hook first fires a spurious "change"
+// on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
 // contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
@@ -121,14 +127,20 @@ func contentFingerprint(all []PastEntry) uint64 {
 	return h.Sum64()
 }
 
-// Rebuild scans every project under stateGlob and reloads the index.
-func (i *PastIndex) Rebuild() error {
+// Rebuild scans every project under stateGlob and reloads the index. The
+// bool return reports whether the reload's content actually differed from
+// what was already indexed AND a registered onChange callback fired for it
+// (false on a no-op reload, a glob error, or when SetOnChange was never
+// called) — so a caller relying on that hook to signal the change elsewhere
+// (e.g. a broadcast) can tell whether that already happened, or whether it
+// needs to compensate.
+func (i *PastIndex) Rebuild() (bool, error) {
 	if i.stateGlob == "" {
-		return nil
+		return false, nil
 	}
 	matches, err := filepath.Glob(i.stateGlob)
 	if err != nil {
-		return err
+		return false, err
 	}
 	var all []PastEntry
 	byID := make(map[string]PastEntry)
@@ -176,7 +188,7 @@ func (i *PastIndex) Rebuild() error {
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
-	return nil
+	return changed && i.onChange != nil, nil
 }
 
 // UpdateMeta targets one existing entry: it replaces the meta, re-inserts the
@@ -193,12 +205,17 @@ func (i *PastIndex) Rebuild() error {
 // slice's backing array (for rebuildFTS/contentFingerprint). An in-place
 // append/copy here would write into a backing array a concurrent, unlocked
 // Rebuild may still be reading, which is a data race.
-func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
+//
+// The bool return reports whether the edit actually differed from what was
+// already indexed AND a registered onChange callback fired for it (false on
+// the untracked-id no-op, a no-op edit, or when SetOnChange was never
+// called) — see Rebuild's return for why a caller needs this.
+func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	i.mu.Lock()
 	old, ok := i.byID[id]
 	if !ok {
 		i.mu.Unlock()
-		return
+		return false
 	}
 	pe := PastEntry{ID: id, Meta: meta, StateDir: old.StateDir}
 	i.byID[id] = pe
@@ -234,6 +251,7 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) {
 	if changed && i.onChange != nil {
 		i.onChange()
 	}
+	return changed && i.onChange != nil
 }
 
 // RefreshOne re-reads one already-indexed session's on-disk meta and folds it
@@ -649,7 +667,7 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if sessionID == "" || i.stateGlob == "" {
 		return PastEntry{}, false
 	}
-	if err := i.Rebuild(); err != nil {
+	if _, err := i.Rebuild(); err != nil {
 		return PastEntry{}, false
 	}
 	return i.findCached(sessionID)

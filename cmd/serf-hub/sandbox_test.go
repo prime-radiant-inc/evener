@@ -95,7 +95,7 @@ func newSandbox(tb testing.TB) *sandbox {
 		tb.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		tb.Fatal(err)
 	}
 

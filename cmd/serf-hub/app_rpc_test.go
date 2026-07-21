@@ -410,7 +410,7 @@ func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
@@ -680,7 +680,7 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 		}
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	sources := appsource.NewRegistry()
@@ -765,7 +765,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		StartedAt: liveStarted,
 	})
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
@@ -835,7 +835,7 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
@@ -931,7 +931,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
@@ -1032,7 +1032,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1089,7 +1089,7 @@ func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testi
 	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1112,7 +1112,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3247,7 +3247,7 @@ func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	sources := appsource.NewRegistry()
@@ -3998,7 +3998,7 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4074,7 +4074,7 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5486,7 +5486,7 @@ func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	return stateDir, past
@@ -5567,7 +5567,7 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6066,7 +6066,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6124,7 +6124,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6181,7 +6181,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6236,7 +6236,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6292,7 +6292,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6366,7 +6366,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6914,7 +6914,7 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6957,7 +6957,7 @@ func TestHubRPCThreadForkDeferInput(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7009,7 +7009,7 @@ func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7275,11 +7275,23 @@ func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
 
 func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	t.Helper()
+	srv, _ := newHubRPCTestServerWithWeb(t, cfg)
+	return srv
+}
+
+// newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
+// returns the constructed *WebServer, for tests that need to wire an
+// onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
+// runMain's composed serf/tree/changed wiring in main.go) before the server
+// starts serving requests.
+func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
-	srv.Config.Handler = NewWebServer(cfg).Handler()
+	web := NewWebServer(cfg)
+	srv.Config.Handler = web.Handler()
 	srv.Start()
-	return srv
+	return srv, web
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods

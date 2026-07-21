@@ -148,7 +148,7 @@ func FuzzWebSettingsPass5(f *testing.F) {
 			}
 		}
 		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		web := NewWebServer(hubcore.WebConfig{PluginDirs: []string{valid, invalid, second}, Past: past, PastIndexPath: file, HubStateRoot: root})

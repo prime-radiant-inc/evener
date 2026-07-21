@@ -23,7 +23,7 @@ func TestHubRPCThreadForkAsideCreatesSideThread(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -70,7 +70,7 @@ func TestHubRPCThreadForkAsideRejectsTurnFields(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,7 +149,7 @@ func TestWeb_Aside_CallsAsideSession(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
 	parentID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 

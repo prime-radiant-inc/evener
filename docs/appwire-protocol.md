@@ -184,6 +184,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
 | `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
+| `serf/tree/changed` | `(inline)` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); inline {}. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
 
 ## Type reference
 

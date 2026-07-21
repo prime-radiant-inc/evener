@@ -133,7 +133,7 @@ func FuzzExactTails(f *testing.F) {
 			t.Fatal(err)
 		}
 		past := hubcore.NewPastIndex(filepath.Join(filepath.Dir(state), "*"))
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		if pe, ok := past.Find("past"); ok {

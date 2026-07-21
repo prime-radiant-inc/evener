@@ -1312,7 +1312,7 @@ func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1629,7 +1629,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -1695,7 +1695,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -1762,7 +1762,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
@@ -2515,7 +2515,7 @@ func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 	past := hubcore.NewPastIndex(stateParent + "/*")
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatalf("past.Rebuild: %v", err)
 	}
 
@@ -2646,7 +2646,7 @@ func TestWeb_ThreadDocument_StateRefreshPreservesCompactLocationMode(t *testing.
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -2880,7 +2880,7 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 		ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2918,7 +2918,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 		ID: "02wMz5Txv47YP64RR3B9YJ", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2965,7 +2965,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3028,7 +3028,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 		EnvInfo:      schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3101,7 +3101,7 @@ func TestWeb_State_RendersCostEstimate(t *testing.T) {
 		},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3260,7 +3260,7 @@ func TestWeb_StatePartialRefreshesGeneratedSessionTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate the async title generator updating the meta file after the past
@@ -3302,7 +3302,7 @@ func TestWeb_WorkspaceInitialMetaDoesNotDuplicateTitleOOB(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3378,7 +3378,7 @@ func TestWeb_WorkspaceDataUsesPersistedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3546,7 +3546,7 @@ func TestWorkspaceData_PastSessionCarriesCostEstimate(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3573,7 +3573,7 @@ func TestWorkspaceData_NoCostWhenUsageNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3609,7 +3609,7 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
 	sessionID := buildRPCParentSession(t, stateDir)
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3696,7 +3696,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3820,7 +3820,7 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3887,7 +3887,7 @@ func TestWeb_Fork_DeferInput(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3973,7 +3973,7 @@ func TestWeb_APIFork_DeferInputParity(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4041,7 +4041,7 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -4088,7 +4088,7 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -4842,7 +4842,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -4883,7 +4883,7 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -5198,7 +5198,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -5258,7 +5258,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5317,7 +5317,7 @@ func TestWeb_Workspace_SubagentParentBreadcrumb(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -5431,7 +5431,7 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -6009,7 +6009,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -6136,7 +6136,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -6180,7 +6180,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -6713,7 +6713,7 @@ func observerWorkspaceFixture(t *testing.T, observedBy []string, liveSessionIDs 
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	entries := make([]hubcore.LiveEntry, 0, len(liveSessionIDs))
@@ -6813,7 +6813,7 @@ func observerGrantWorkspaceFixture(t *testing.T, observerSessID, workerRef strin
 	}
 	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_watched", workerRef, observerSessID)
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	entries := make([]hubcore.LiveEntry, 0, len(liveSessionIDs))
@@ -6870,7 +6870,7 @@ func TestWeb_WorkspaceData_UnionsStampAndGrantHistory(t *testing.T) {
 	writeObserverGrantLog(t, proj, "02wMz5Txv2enqVTitaig6F", "job_w1", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv5aIxgf9yVdd0N")
 	writeObserverGrantLog(t, proj, "02wMz5Txv733WHFsVy66SR", "job_w2", "local:02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv47YP64RR3B9YJ")
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -6991,7 +6991,7 @@ func TestDetailsPanel_EndedSessionShowsWorkTokensCostNoContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7075,7 +7075,7 @@ func TestDetailsPanel_LiveWithPastMetaDeduplicatesFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7129,7 +7129,7 @@ func TestDetailsPanel_GroupsFactsIntoTitledSections(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -7173,7 +7173,7 @@ func TestDetailsPanel_ShowsTranscriptPathWithCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{
@@ -7229,7 +7229,7 @@ func TestDetailsPanel_ShowsAPILogPathWithCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{

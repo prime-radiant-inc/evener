@@ -76,7 +76,7 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 			t.Fatal(err)
 		}
 		past := hubcore.NewPastIndex(filepath.Join(root, "*"))
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		roster := hubcore.NewRosterWithEntries(

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -29,6 +30,47 @@ var (
 	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
 )
+
+// notifyTreeChanged broadcasts serf/tree/changed to every connected client so
+// the sidebar refetches /api/tree (spec §7.3, debounced client-side). It is
+// wired as (part of) the onChange hook for Roster and PastIndex — both
+// already gate their callback on an actual content-fingerprint delta (a
+// daemon appeared/disappeared/changed liveness; a session appeared/ended/
+// changed in the past index), so this fires only on a real change, never on
+// a no-op probe/rebuild cycle.
+//
+// The invariant across every caller of this function (directly or via
+// notifyMutation) is: a successful user-initiated mutation broadcasts
+// exactly once, never zero, never two; a failed or genuinely no-op request
+// broadcasts zero. Archive and favorite call it unconditionally via
+// WebServer.notifyMutation, since ArchiveStore/FavoriteStore never route
+// through PastIndex at all. Rename and project-delete edit PastIndex
+// directly and normally get their one broadcast for free from its composed
+// hook — but PastIndex.UpdateMeta/Rebuild report whether that hook actually
+// fired, and those handlers call this directly, conditionally, as a
+// compensating broadcast on the paths where it didn't (see
+// refreshRenamedMeta, handleAPIRename's ended-session path, and
+// handleAPIProjectDelete) — never unconditionally, which would double-fire
+// on top of the hook.
+func notifyTreeChanged(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfTreeChanged, map[string]string{})
+}
+
+// notifyMutation nudges the attention watcher (if configured) and
+// unconditionally broadcasts serf/tree/changed. It exists for mutations
+// whose store never routes through Roster/PastIndex's own composed onChange
+// hook — archive and favorite decisions live in ArchiveStore/FavoriteStore —
+// so they need an explicit, unconditional broadcast every time. Rename and
+// project-delete do NOT use this: they edit PastIndex directly and call
+// notifyTreeChanged conditionally instead (see its doc comment) — calling
+// this unconditionally would double-broadcast whenever PastIndex's own hook
+// already fired.
+func (s *WebServer) notifyMutation() {
+	if s.cfg.PokeAttention != nil {
+		s.cfg.PokeAttention()
+	}
+	notifyTreeChanged(s.appRPC)
+}
 
 // archiveDecisions returns the current set of user-explicit archive decisions.
 // Returns an empty map (never nil) when cfg.Archive is nil or Decisions() fails.
@@ -71,7 +113,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if !treeNodeCanActLive(n) {
 			continue
 		}
-		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
+		resp.Live = append(resp.Live, s.apiTreeNodeTier("live", "", "live", favs, n))
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
@@ -136,7 +178,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: le.StartedAt,
 			Age:       hubcore.AgeString(le.StartedAt),
 		}
-		apiNode := s.apiTreeNode("project", key, node, true)
+		apiNode := s.apiTreeNodeTier("project", key, "live", favs, node)
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
@@ -584,6 +626,7 @@ func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]boo
 		MoreArchived:    p.MoreArchived,
 		Worktrees:       p.Worktrees,
 		IsArchived:      p.IsArchived,
+		Favorite:        favs[hubcore.ArchiveKey{Kind: "project", ID: p.Key}],
 	}
 	for _, n := range p.Current {
 		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", favs, n))
