@@ -159,7 +159,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	roster := hubcore.NewRoster(runDir, prober)
 
 	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
 	archive := hubcore.NewArchiveStore(pastIndexDB)
@@ -316,11 +316,13 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// into the same hook pushes the sidebar exactly on a daemon appearing/
 	// disappearing/changing liveness, or a session appearing/ending/changing
 	// in the past index. Rename and project-delete both route their session
-	// edits through PastIndex.UpdateMeta/Rebuild, so this hook already covers
-	// them too — those handlers do NOT also call notifyTreeChanged directly
-	// (it would double-broadcast one notification per request). Archive and
-	// favorite decisions live in ArchiveStore/FavoriteStore, which never
-	// route through PastIndex, so those two mutations broadcast explicitly
+	// edits through PastIndex.UpdateMeta/Rebuild, so this hook covers the
+	// common case for them too — those handlers do NOT also call
+	// notifyTreeChanged unconditionally (it would double-broadcast); they
+	// call it conditionally, only when UpdateMeta/Rebuild report the hook
+	// didn't fire (see notifyTreeChanged's doc comment). Archive and favorite
+	// decisions live in ArchiveStore/FavoriteStore, which never route through
+	// PastIndex at all, so those two mutations broadcast unconditionally
 	// instead via WebServer.notifyMutation (web_api_archive.go,
 	// web_api_favorite.go).
 	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
@@ -362,7 +364,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				_ = past.Rebuild()
+				_, _ = past.Rebuild()
 			}
 		}
 	})

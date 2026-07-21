@@ -186,9 +186,20 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		_ = s.cfg.Favorite.Delete("project", project.ID)
 	}
 
-	_ = s.cfg.Past.Rebuild() // also the FTS scrub + serf/tree/changed (composed onChange, main.go)
+	rebuilt, _ := s.cfg.Past.Rebuild() // also the FTS scrub; rebuilt reports whether serf/tree/changed already broadcast (composed onChange, main.go)
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
+	}
+	if !rebuilt {
+		// Reaching here always means the request succeeded (every earlier
+		// error/conflict path returns before this point), but Rebuild's own
+		// composed hook only fires on a PastIndex content delta — which
+		// doesn't happen when every session in the project was skipped
+		// rather than actually removed. The project-level archive/favorite
+		// rows were still cleared above (a different, bump-only store), so
+		// compensate with an explicit broadcast: a successful mutation must
+		// notify exactly once, never zero.
+		notifyTreeChanged(s.appRPC)
 	}
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
 }

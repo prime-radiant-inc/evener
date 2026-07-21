@@ -221,7 +221,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		stateDir := filepath.Join(root, "projects", "past")
 		localID := buildRPCParentSession(t, stateDir)
 		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		runDir := filepath.Join(root, "run")

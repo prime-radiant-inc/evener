@@ -51,7 +51,7 @@ func fuzzScenarioPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	got := idx.All()
@@ -98,7 +98,7 @@ func fuzzScenarioPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T)
 	})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +130,7 @@ func fuzzScenarioPastIndex_Search(t *testing.T) {
 		OriginalPrompt: "refactor auth flow",
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth", 50, 0)
@@ -163,7 +163,7 @@ func fuzzScenarioPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 	})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("cheap model", 50, 0)
@@ -184,7 +184,7 @@ func fuzzScenarioPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 	})
 
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("cheap model", 50, 0)
@@ -212,7 +212,7 @@ func fuzzScenarioPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 
 	dbPath := filepath.Join(root, ".serf", "index.db")
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(dbPath); err != nil {
@@ -255,7 +255,7 @@ func fuzzScenarioPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.
 	})
 
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth", 50, 0)
@@ -287,7 +287,7 @@ func fuzzScenarioPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testi
 	})
 
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth cleanup", 50, 0)
@@ -320,7 +320,7 @@ func fuzzScenarioPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	}
 	dbPath := filepath.Join(indexDir, "index.db")
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	dirInfo, err := os.Stat(indexDir)
@@ -351,7 +351,7 @@ func fuzzScenarioPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	})
 
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), root)
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got := idx.Search("auth", 50, 0)
@@ -371,7 +371,7 @@ func fuzzScenarioPastIndex_Pagination(t *testing.T) {
 		})
 	}
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	page1 := idx.Search("", 2, 0)
@@ -391,7 +391,7 @@ func fuzzScenarioPastIndex_Find(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
@@ -412,7 +412,7 @@ func fuzzScenarioPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := idx.Find("02wMz5Txv8Vo4rqb3QYZuV"); ok {
@@ -438,7 +438,7 @@ func fuzzScenarioPastIndex_FindWithMalformedGlob(t *testing.T) {
 	// Rebuild must propagate the glob compile error rather than swallow it: a
 	// silently-ignored ErrBadPattern leaves the index empty so Find still
 	// reports false, masking the lost error.
-	if err := idx.Rebuild(); !errors.Is(err, filepath.ErrBadPattern) {
+	if _, err := idx.Rebuild(); !errors.Is(err, filepath.ErrBadPattern) {
 		t.Fatalf("expected Rebuild to propagate ErrBadPattern, got %v", err)
 	}
 	got, ok := idx.Find("anything")
@@ -465,7 +465,7 @@ func fuzzScenarioPastIndex_RebuildFTSError(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	// The Rebuild should succeed even though rebuildFTS failed.
@@ -485,7 +485,7 @@ func fuzzScenarioPastIndex_AllMetas(t *testing.T) {
 		UpdatedAt: time.Now(),
 	})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	metas := idx.AllMetas()
@@ -504,7 +504,7 @@ func fuzzScenarioPastIndex_SearchFTSSpecialCharsOnly(t *testing.T) {
 		OriginalPrompt: "fix auth",
 	})
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	// A special-char-only query yields no FTS tokens, so ftsQuery must return ""
@@ -591,16 +591,16 @@ func fuzzScenarioPastIndexOnChangeFiresOnContentDeltaOnly(t *testing.T) {
 	idx := NewPastIndex(filepath.Join(dir, "*"))
 	fired := 0
 	idx.SetOnChange(func() { fired++ })
-	_ = idx.Rebuild() // first content load: delta vs empty → fires
+	_, _ = idx.Rebuild() // first content load: delta vs empty → fires
 	if fired != 1 {
 		t.Fatalf("first rebuild with content should fire once, got %d", fired)
 	}
-	_ = idx.Rebuild() // identical content → no delta → no fire
+	_, _ = idx.Rebuild() // identical content → no delta → no fire
 	if fired != 1 {
 		t.Fatalf("re-rebuild with no delta must not fire, got %d", fired)
 	}
 	writeMeta("02wMz5Txv2enqVTitaig6F")
-	_ = idx.Rebuild() // new meta → delta → fires
+	_, _ = idx.Rebuild() // new meta → delta → fires
 	if fired != 2 {
 		t.Fatalf("rebuild after new content should fire, got %d", fired)
 	}
@@ -616,7 +616,7 @@ func fuzzScenarioUpdateMetaReordersAndPreservesStateDir(t *testing.T) {
 		}
 	}
 	idx := NewPastIndexWithDB(filepath.Join(dir, "*"), filepath.Join(dir, "index.db"))
-	_ = idx.Rebuild()
+	_, _ = idx.Rebuild()
 	before, _ := idx.Find("02wMz5Txv1C3Hut0M8GCeB")
 	renamed := before.Meta
 	renamed.Name = "renamed-title"
@@ -658,7 +658,7 @@ func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 		}
 	}
 	idx := NewPastIndexWithDB(filepath.Join(dir, "*"), filepath.Join(dir, "index.db"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -670,7 +670,7 @@ func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for n := 0; n < iterations; n++ {
-			_ = idx.Rebuild()
+			_, _ = idx.Rebuild()
 		}
 	}()
 	go func() {
@@ -727,7 +727,7 @@ func fuzzScenarioPastIndex_RefreshOneRereadsChangedMetaAndReorders(t *testing.T)
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv2enqVTitaig6F", Name: "02wMz5Txv2enqVTitaig6F", UpdatedAt: base.Add(time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	if all := idx.All(); len(all) != 2 || all[0].ID != "02wMz5Txv2enqVTitaig6F" {
@@ -758,7 +758,7 @@ func fuzzScenarioPastIndex_RefreshOneOnChangeFires(t *testing.T) {
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	fired := 0
@@ -792,7 +792,7 @@ func fuzzScenarioPastIndex_RefreshOneNoOpsOnMissingMetaFile(t *testing.T) {
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
 
 	idx := NewPastIndex(filepath.Join(dir, "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	before, _ := idx.Find("02wMz5Txv1C3Hut0M8GCeB")

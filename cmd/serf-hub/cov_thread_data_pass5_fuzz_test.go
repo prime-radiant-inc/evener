@@ -50,7 +50,7 @@ func pass5Past(t *testing.T) (*hubcore.PastIndex, string, string) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	return past, stateDir, id

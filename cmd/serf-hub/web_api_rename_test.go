@@ -29,7 +29,7 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-	_ = past.Rebuild()
+	_, _ = past.Rebuild()
 	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+renameSessionID+"/rename", strings.NewReader(`{"name":"new title"}`))
@@ -60,7 +60,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(dir, "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -109,7 +109,7 @@ func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-	_ = past.Rebuild()
+	_, _ = past.Rebuild()
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
 	// Mirror runMain's composed wiring (main.go): PastIndex.UpdateMeta's own
@@ -148,7 +148,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past})
@@ -178,4 +178,73 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	web.refreshRenamedMeta(renameSessionID, "new title")
 
 	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+}
+
+// TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
+// covers the miss path: a live-daemon rename for a session PastIndex has
+// never indexed (e.g. renamed within the first Rebuild interval of being
+// spawned). Find's own on-miss self-heal (an internal Rebuild) still can't
+// find it, so UpdateMeta is never called and the composed onChange hook
+// never fires — refreshRenamedMeta's trailing notifyTreeChanged must be the
+// sole, single source of the broadcast for a rename that genuinely
+// succeeded on the daemon side.
+func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed(t *testing.T) {
+	root := t.TempDir()
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	// Seed once, matching runMain's startup rebuild, so Find's internal
+	// self-heal rebuild below sees no further delta (nothing on disk changed
+	// between the two scans) and correctly stays silent.
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past})
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) }) // mirrors runMain's composed wiring
+	hubHTTP := httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	web.refreshRenamedMeta(renameSessionID, "new title") // renameSessionID was never written to disk or indexed
+
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
+}
+
+// TestRenameNotFoundBroadcastsNothing pins the invariant's other half: a
+// request that fails outright (here, a rename for a session absent from both
+// the roster and the past index — a genuine 404, not a mutation) must
+// broadcast zero notifications.
+func TestRenameNotFoundBroadcastsNothing(t *testing.T) {
+	root := t.TempDir()
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	// Seed once, matching runMain's startup rebuild and the miss-case test
+	// above: an UNSEEDED PastIndex's first-ever Rebuild always looks like a
+	// delta (the empty-content fingerprint differs from the zero-value
+	// initial one), which would make Find's internal self-heal rebuild
+	// (triggered below by the 404 lookup) fire a spurious broadcast that has
+	// nothing to do with this test's rename request.
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	defer hub.Close()
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := http.Post(hub.URL+"/api/sessions/local:"+renameRaceSessionID+"/rename", "application/json", strings.NewReader(`{"name":"new title"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404", resp.StatusCode)
+	}
+
+	assertNoNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

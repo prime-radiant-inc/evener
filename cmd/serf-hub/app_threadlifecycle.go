@@ -341,7 +341,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			return appwire.ThreadForkResponse{}, err
 		}
 		if cfg.Past != nil {
-			_ = cfg.Past.Rebuild()
+			_, _ = cfg.Past.Rebuild()
 		}
 		childRef := appwire.Ref{SourceID: "local", ThreadID: childID}.String()
 		return appwire.ThreadForkResponse{Thread: appwire.Thread{
@@ -380,7 +380,7 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		return appwire.ThreadForkResponse{}, err
 	}
 	if cfg.Past != nil {
-		_ = cfg.Past.Rebuild()
+		_, _ = cfg.Past.Rebuild()
 	}
 	childRef := appwire.Ref{SourceID: "local", ThreadID: childID}.String()
 	return appwire.ThreadForkResponse{

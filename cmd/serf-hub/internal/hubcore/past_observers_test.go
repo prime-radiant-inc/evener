@@ -46,7 +46,7 @@ func fuzzScenarioPastIndex_ObserversOf_FromGrantLog(t *testing.T) {
 	writeGrantLog(t, proj, "02wMz5TxvBRJC3228LTWod", "job_watched", "local:02wMz5TxvCu3kdckfnw0Gh", "02wMz5TxvEMoJEDTDGOTil")
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh")
@@ -62,7 +62,7 @@ func fuzzScenarioPastIndex_ObserversOf_NoneWhenUngranted(t *testing.T) {
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvCu3kdckfnw0Gh", UpdatedAt: time.Now()})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh"); len(got) != 0 {
@@ -80,7 +80,7 @@ func fuzzScenarioPastIndex_ObserversOf_SkipsCrossProjectRef(t *testing.T) {
 	writeGrantLog(t, proj, "02wMz5TxvBRJC3228LTWod", "job_watched", "proj:otherbucket:WORKER", "02wMz5TxvEMoJEDTDGOTil")
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if got := idx.ObserversOf("02wMz5TxvCu3kdckfnw0Gh"); len(got) != 0 {
@@ -102,7 +102,7 @@ func fuzzScenarioPastIndex_ObserversOf_MultipleObservers(t *testing.T) {
 	writeGrantLog(t, proj, observer2ID, "job_w2", "local:"+workerID, observer2ID)
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	got := idx.ObserversOf(workerID)
@@ -120,7 +120,7 @@ func fuzzScenarioPastIndex_ObserversOf_DoesNotCreateJobsLog(t *testing.T) {
 	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5TxvCu3kdckfnw0Gh", UpdatedAt: time.Now()})
 
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(proj, "sessions", "02wMz5TxvCu3kdckfnw0Gh", "jobs.jsonl")); !os.IsNotExist(err) {

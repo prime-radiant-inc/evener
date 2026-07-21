@@ -58,7 +58,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 			t.Fatal(err)
 		}
 		past := hubcore.NewPastIndex(filepath.Join(root, "*"))
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		status := daemonStatus{Model: "status-model", State: "active", Turns: 4, WorkingDir: "/status/work", ContextPressure: .5,

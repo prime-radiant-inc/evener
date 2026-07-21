@@ -37,21 +37,34 @@ var (
 // already gate their callback on an actual content-fingerprint delta (a
 // daemon appeared/disappeared/changed liveness; a session appeared/ended/
 // changed in the past index), so this fires only on a real change, never on
-// a no-op probe/rebuild cycle. Rename and project-delete route their edits
-// through PastIndex and get this for free from that hook; archive and
-// favorite call it directly via WebServer.notifyMutation, since their stores
-// never route through PastIndex.
+// a no-op probe/rebuild cycle.
+//
+// The invariant across every caller of this function (directly or via
+// notifyMutation) is: a successful user-initiated mutation broadcasts
+// exactly once, never zero, never two; a failed or genuinely no-op request
+// broadcasts zero. Archive and favorite call it unconditionally via
+// WebServer.notifyMutation, since ArchiveStore/FavoriteStore never route
+// through PastIndex at all. Rename and project-delete edit PastIndex
+// directly and normally get their one broadcast for free from its composed
+// hook — but PastIndex.UpdateMeta/Rebuild report whether that hook actually
+// fired, and those handlers call this directly, conditionally, as a
+// compensating broadcast on the paths where it didn't (see
+// refreshRenamedMeta, handleAPIRename's ended-session path, and
+// handleAPIProjectDelete) — never unconditionally, which would double-fire
+// on top of the hook.
 func notifyTreeChanged(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifySerfTreeChanged, map[string]string{})
 }
 
-// notifyMutation nudges the attention watcher (if configured) and broadcasts
-// serf/tree/changed. It exists for mutations whose store never routes
-// through Roster/PastIndex's own composed onChange hook — archive and
-// favorite decisions live in ArchiveStore/FavoriteStore — so they need an
-// explicit broadcast. Rename and project-delete do NOT use this: they edit
-// PastIndex directly, whose composed hook already broadcasts on delta, so
-// calling this too would double-broadcast one notification per request.
+// notifyMutation nudges the attention watcher (if configured) and
+// unconditionally broadcasts serf/tree/changed. It exists for mutations
+// whose store never routes through Roster/PastIndex's own composed onChange
+// hook — archive and favorite decisions live in ArchiveStore/FavoriteStore —
+// so they need an explicit, unconditional broadcast every time. Rename and
+// project-delete do NOT use this: they edit PastIndex directly and call
+// notifyTreeChanged conditionally instead (see its doc comment) — calling
+// this unconditionally would double-broadcast whenever PastIndex's own hook
+// already fired.
 func (s *WebServer) notifyMutation() {
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()

@@ -82,7 +82,7 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			t.Fatal(err)
 		}
 		past := hubcore.NewPastIndex(state)
-		if err := past.Rebuild(); err != nil {
+		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
 		thread := appwire.Thread{ID: "thread", SessionID: "thread", Source: "remote", Name: "Live", CWD: work, ModelProvider: "openai/gpt-4o", Status: appwire.ThreadStatus{Type: "active"}, Serf: appwire.SerfThread{Ref: "remote:thread", ActiveTurnID: "turn", Capabilities: appwire.ThreadCapabilities{Send: true}}}

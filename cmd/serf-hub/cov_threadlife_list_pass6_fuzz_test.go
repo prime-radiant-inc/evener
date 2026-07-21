@@ -58,7 +58,7 @@ func pass6Past(t *testing.T) *hubcore.PastIndex {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	return idx

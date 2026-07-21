@@ -140,7 +140,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
@@ -448,7 +448,7 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
@@ -555,12 +555,12 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "*"))
 	past.SetOnChange(func() { notifyTreeChanged(server) })
 
-	if err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
+	if _, err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
 		t.Fatal(err)
 	}
 	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
 
-	if err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
+	if _, err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
 		t.Fatal(err)
 	}
 	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)

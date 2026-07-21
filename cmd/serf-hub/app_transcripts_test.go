@@ -35,7 +35,7 @@ func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
 		t.Fatal(err)
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
