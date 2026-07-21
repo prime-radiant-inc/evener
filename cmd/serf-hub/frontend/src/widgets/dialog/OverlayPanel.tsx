@@ -38,12 +38,24 @@ const CLASS = {
  */
 export function OverlayPanel({ open, onClose, title, children, footer, panelClassName }: OverlayPanelProps) {
   const titleId = useId();
-  // A click event's target reflects where the mouse was RELEASED, not
-  // where the press started - selecting text inside the panel and
-  // dragging the release point out onto the scrim produces a click whose
-  // target is the scrim, indistinguishable by target alone from a genuine
-  // backdrop click. Tracking where the press itself landed and requiring
-  // both ends of the gesture to be the scrim closes that gap.
+  // Radix-style pointer-down-outside semantics: the gesture that decides
+  // whether this counts as "outside the panel" is where the PRESS
+  // started, not where it ends. scrimPressStartedOnScrimRef records that
+  // at mousedown; handleScrimClick only needs to confirm the click event
+  // itself also targets the scrim, which - given a real browser computes
+  // a cross-element mousedown/mouseup pair's click target as their
+  // nearest common ancestor, and the scrim contains the entire panel -
+  // it always does whenever the press started on the scrim, regardless of
+  // where the release landed (verified live: press on the scrim, drag
+  // into the panel, release there - the resulting click's target is still
+  // the scrim). So a reverse drag (press on the scrim, release inside the
+  // panel) closes it too, by the same mechanism as a plain scrim click,
+  // not as a special case. What this guard actually rules out is the
+  // FORWARD direction: pressing inside the panel (selecting text, say)
+  // and dragging the release point out onto the scrim produces a click
+  // whose target is also the scrim - indistinguishable from a genuine
+  // backdrop click by target alone - but scrimPressStartedOnScrimRef is
+  // false for it, since the press itself never touched the scrim.
   const scrimPressStartedOnScrimRef = useRef(false);
 
   if (!open) return null;
@@ -53,10 +65,10 @@ export function OverlayPanel({ open, onClose, title, children, footer, panelClas
   }
 
   function handleScrimClick(event: MouseEvent<HTMLDivElement>) {
-    // Only a press-and-release that both land directly on the scrim
-    // itself count as "outside the panel" - a click inside the panel
-    // bubbles up through this same handler, but its event.target is the
-    // descendant that was actually clicked, not the scrim.
+    // The event.target check is what actually reads "outside the panel"
+    // (a click that bubbled up from a descendant has that descendant as
+    // its target, not the scrim); scrimPressStartedOnScrimRef is what
+    // rules out the forward-drag case above.
     if (event.target === event.currentTarget && scrimPressStartedOnScrimRef.current) onClose();
     scrimPressStartedOnScrimRef.current = false;
   }

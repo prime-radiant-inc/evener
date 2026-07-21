@@ -93,7 +93,20 @@ test("clicking inside the panel does not call onClose", async () => {
 // the press started - so selecting body text and dragging the release
 // point out onto the scrim previously produced a click whose target WAS
 // the scrim (indistinguishable from a genuine backdrop click) even though
-// the interaction began inside the panel.
+// the interaction began inside the panel. See OverlayPanel.tsx's own
+// comment on scrimPressStartedOnScrimRef for the fuller picture, including
+// the REVERSE drag (press on the scrim, release inside the panel): a real
+// browser computes that click's target as the nearest common ancestor of
+// the mousedown/mouseup targets, which - since the scrim contains the
+// whole panel - is the scrim itself (verified live in a real browser, not
+// just reasoned about; jsdom's fireEvent does not reproduce this
+// ancestor-collapsing computation, so it can't be exercised as a jsdom
+// test distinct from "mousedown and click both landing on the scrim"
+// below - that test's fireEvent calls ARE what a real reverse-drag
+// produces as input to this component once account for it, by design:
+// the scrim-press-outside-the-panel is what should close it, matching
+// Radix's pointer-down-outside pattern, not requiring the release to
+// symmetrically land on the scrim too).
 
 test("a mousedown inside the panel followed by a click landing on the scrim (a drag out) does not close it", () => {
   const onClose = vi.fn();
@@ -108,7 +121,7 @@ test("a mousedown inside the panel followed by a click landing on the scrim (a d
   expect(onClose).not.toHaveBeenCalled();
 });
 
-test("a mousedown and click both landing on the scrim closes it", () => {
+test("a mousedown and click both landing on the scrim closes it (this is also what a reverse drag - press on the scrim, release inside the panel - produces, per the block comment above)", () => {
   const onClose = vi.fn();
   const { container } = render(
     <Dialog open onClose={onClose} title="t">
