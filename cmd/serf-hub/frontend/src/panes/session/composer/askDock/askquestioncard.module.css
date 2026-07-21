@@ -1,0 +1,120 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+.num {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-mid);
+}
+
+.header {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-hi);
+}
+
+.questionText {
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+}
+
+.why {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* Resets <fieldset>'s default border/margin/padding (the multi_select
+   * branch renders one, for the native grouping semantics an accessibility
+   * lint rule asks for over a bare role="group" div) - a no-op for the
+   * single-select branch's plain <div>, which has none of these by
+   * default. */
+  border: none;
+  margin: 0;
+  padding: 0;
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.optionLabel {
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+.optionDetail {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.optionTag {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.alternativeRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.textInput {
+  flex: 1;
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  background: var(--surface-0);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+}
+
+.altRow {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.toggleButton {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  background: var(--surface-0);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-2);
+}
+
+.toggleButton[aria-pressed="true"] {
+  color: var(--ink-hi);
+  border-color: var(--ink-mid);
+}
+
+.noteRow {
+  display: flex;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
