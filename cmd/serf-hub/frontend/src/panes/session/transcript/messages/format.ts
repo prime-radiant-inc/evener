@@ -35,5 +35,5 @@ export function firstLine(text: string, maxLen: number): string {
     .find((l) => l.length > 0);
   if (!line) return "";
   if (line.length <= maxLen) return line;
-  return line.slice(0, maxLen).trimEnd() + "…";
+  return `${line.slice(0, maxLen).trimEnd()}…`;
 }

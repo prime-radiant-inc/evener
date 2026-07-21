@@ -12,7 +12,7 @@
 // unchanged; over budget, keeps the first `max` chars and appends a single
 // ellipsis character (mirrors renderer-format.js's clip()).
 export function clip(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max) + "…";
+  return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
 // tailSlice keeps the LAST `max` chars, advancing the cut point by one when

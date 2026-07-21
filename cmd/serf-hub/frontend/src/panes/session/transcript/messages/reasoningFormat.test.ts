@@ -55,7 +55,7 @@ test("preview clips a long first line to the given max length", () => {
   // can't coincidentally land on whitespace trimEnd() would also eat.
   const long = "x".repeat(100);
   const preview = reasoningPreview([[long]], 20);
-  expect(preview).toBe("x".repeat(20) + "…");
+  expect(preview).toBe(`${"x".repeat(20)}…`);
 });
 
 // --- thoughtSeconds ----------------------------------------------------------

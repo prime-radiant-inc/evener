@@ -54,7 +54,7 @@ test("tailFold: text under budget passes through with no elision note", () => {
 
 test("tailFold: text over budget gets an honest elision line then the tail slice", () => {
   const text = "a".repeat(20);
-  expect(tailFold(text, 5)).toBe("earlier output not retained — showing the last 5 chars\n" + "a".repeat(5));
+  expect(tailFold(text, 5)).toBe(`earlier output not retained — showing the last 5 chars\n${"a".repeat(5)}`);
 });
 
 // --- formatToolDuration ---------------------------------------------------
