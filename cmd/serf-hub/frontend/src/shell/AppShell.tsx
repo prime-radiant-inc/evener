@@ -1,18 +1,20 @@
 // The application shell: constructs the one AppwireClient per window,
-// drives its connect() handshake, provides it via context, and (Task 1
-// only - Task 2 adds the real dockview/mobile hosts) renders the welcome
-// pane standalone.
-import { Suspense, useEffect, useState } from "react";
+// drives its connect() handshake, provides it via context, and hosts the
+// workspace - DockHost (dockview) on desktop; renders NotFound in its
+// place for a path urlToPane() can't resolve at all.
+import { useEffect, useRef, useState } from "react";
 import { AppwireClient } from "../protocol/client";
 import { rpcURLFromLocation } from "../protocol/transport";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { ClientProvider } from "./clientContext";
 import { ConnectionBanner } from "./ConnectionBanner";
-import { paneFor } from "./paneRegistry";
+import { DockHost } from "./DockHost";
+import { NotFound } from "./NotFound";
 import { urlToPane } from "./routing";
-import type { WelcomePaneParams } from "../panes/welcome/Welcome";
+import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
+import "../panes/session"; // registers the "session" pane type
 import styles from "./AppShell.module.css";
 
 export interface AppShellProps {
@@ -47,14 +49,15 @@ function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
 }
 
 // /new resolves to the "spawn" pane type, which has no registered component
-// yet (spawn panes are Wave 6) - render the welcome pane with a note
-// instead of a broken lookup until then.
+// yet (spawn panes are Wave 6) - open the welcome pane with a note instead
+// of a broken lookup until then.
 const SPAWN_NOT_READY_NOTE = "Starting a new session isn't available yet.";
 
-// Hand-rolled rather than react-router (see this task's report for the
-// justification): Task 1 needs exactly one thing - re-render when the path
-// changes - and pushState doesn't fire popstate on its own, so this listens
-// for the same synthetic popstate routing.ts's navigate() dispatches.
+// Hand-rolled rather than react-router (see Task 1's report for the
+// justification): the routing surface here is still exactly "re-render
+// (and, this task, open a pane) when the path changes" - and pushState
+// doesn't fire popstate on its own, so this listens for the same synthetic
+// popstate routing.ts's navigate() dispatches.
 function usePathname(): string {
   const [pathname, setPathname] = useState(() => window.location.pathname);
   useEffect(() => {
@@ -63,6 +66,25 @@ function usePathname(): string {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   return pathname;
+}
+
+// Opens (or focuses) the pane a pathname resolves to. "session" maps
+// directly (params carry the ref straight through); every other resolved
+// type - including "welcome" itself - falls back to opening the plain
+// welcome singleton, exactly as it did before this task ("spawn" keeps its
+// own not-ready note; "transcript"/"settings"/"doc" aren't registered yet
+// this wave, same as "spawn", and get the same untouched fallback rather
+// than a new bespoke treatment). A null route (genuinely unknown path)
+// opens nothing - NotFound renders in DockHost's place instead, see the
+// component's return below.
+function openRouteAsPane(pathname: string): void {
+  const route = urlToPane(pathname);
+  if (route === null) return;
+  if (route.type === "session") {
+    workspaceStore.getState().openPane("session", route.params);
+    return;
+  }
+  workspaceStore.getState().openPane("welcome", route.type === "spawn" ? { note: SPAWN_NOT_READY_NOTE } : {});
 }
 
 export function AppShell({ client: injectedClient }: AppShellProps) {
@@ -101,18 +123,48 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
 
+  // Opens the INITIAL pathname's pane during render, not a useEffect - a
+  // regular effect here would run AFTER DockHost/dockview's own onReady
+  // (child effects fire before parent effects within a commit), racing its
+  // restore-or-fallback-to-welcome boot sequence and landing a deep-linked
+  // pane ALONGSIDE a spurious extra welcome tab instead of in its place
+  // (see DockHost.tsx's own comment on this for the full reasoning). This
+  // is only safe as a render-phase call because DockHost doesn't exist yet
+  // on AppShell's very first render - nothing is mounted/subscribed to
+  // workspaceStore for openPane()'s update to conflict with. Guarded by
+  // `=== null` (not `!== pathname`) so it runs exactly once, ever; every
+  // pathname change AFTER mount goes through the plain effect below
+  // instead, once DockHost is already up and its own one-time boot
+  // sequence has already resolved - calling openPane() from render on a
+  // LATER update, with DockHost already mounted and subscribed, is exactly
+  // what trips React's "Cannot update a component while rendering a
+  // different component" warning (caught by this task's own test suite,
+  // not by inspection).
+  const openedForPathnameRef = useRef<string | null>(null);
+  if (openedForPathnameRef.current === null) {
+    openedForPathnameRef.current = pathname;
+    openRouteAsPane(pathname);
+  }
+
+  useEffect(() => {
+    if (openedForPathnameRef.current === pathname) return; // the initial pathname: already opened above
+    openedForPathnameRef.current = pathname;
+    openRouteAsPane(pathname);
+  }, [pathname]);
+
   const route = urlToPane(pathname);
-  const welcomeParams: WelcomePaneParams = route?.type === "spawn" ? { note: SPAWN_NOT_READY_NOTE } : {};
-  const WelcomePane = paneFor("welcome").component;
 
   return (
     <ClientProvider client={client}>
       <div className={styles.shell}>
         <ConnectionBanner state={connectionState} />
         <div className={styles.content}>
-          <Suspense fallback={null}>
-            <WelcomePane params={welcomeParams} paneId="welcome" focused={true} />
-          </Suspense>
+          {/* Desktop workspace host. Mobile (<900px) gets its own
+              full-screen stack navigator sharing this same pane registry
+              (Task 4, shell/mobile/** + a useIsMobile() hook) - not built
+              yet, so this always renders DockHost regardless of viewport;
+              Task 4 adds the breakpoint here. */}
+          {route === null ? <NotFound /> : <DockHost />}
         </div>
       </div>
     </ClientProvider>

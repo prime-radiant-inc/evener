@@ -1,6 +1,33 @@
-import { afterEach, beforeAll, test, expect } from "vitest";
+import { afterEach, beforeAll, beforeEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { App } from "./App";
+import { resetWorkspaceStoreForTests } from "./shell/workspace";
+
+// The default route mounts AppShell -> DockHost -> real dockview-react, which
+// needs a ResizeObserver (jsdom has none) and localStorage (Node 26's own
+// global `localStorage` accessor shadows jsdom's real one without
+// --localstorage-file) - both verified via a live probe; see
+// shell/DockHost.test.tsx's own comments for the full detail on each.
+class StubResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
 
 // Await every lazily-loaded route's module ONCE up front so React.lazy
 // resolves from a warm module cache. The slow part of lazy-loading in a
@@ -9,9 +36,19 @@ import { App } from "./App";
 // deadline. A genuinely broken module fails this await with its real error
 // instead of a timeout.
 beforeAll(async () => {
+  globalThis.ResizeObserver = StubResizeObserver;
+  // @ts-expect-error MemoryStorage deliberately implements only the Storage
+  // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
+  // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
+  globalThis.localStorage = new MemoryStorage();
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+  localStorage.clear();
 });
 
 afterEach(() => {
