@@ -247,6 +247,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "badge", // tone prop
   "statusdot", // state color
   "meter", // danger/attention fill tone
+  "diffblock", // add/del line tints via alive/danger -bg companions
   "toast", // tone prop
   "dialog", // danger footer
 ];
