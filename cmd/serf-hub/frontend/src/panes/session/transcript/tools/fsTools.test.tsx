@@ -146,3 +146,18 @@ test("cheap body renders nothing when output is blank", () => {
   const { container } = render(<Body item={item({ toolName: "glob", output: "" })} live={false} />);
   expect(container.textContent).toBe("");
 });
+
+// --- args survive settlement (see helpers.ts's rememberedArgs) -----------
+// Ground truth: internal/appprojector/appwire_projection.go's
+// EventToolCallEnd case never sets argumentsJson on the completed item, so
+// a naive `item.argumentsJSON` read would render a blank target for every
+// settled (the common) case. This proves the fix is actually wired into
+// this descriptor, not just present in the shared helper.
+
+test("read_file: the target survives once the item settles and argumentsJSON goes missing, via rememberedArgs", () => {
+  const d = toolRendererFor("read_file");
+  const callId = "fs_settle_read_1";
+  d.summary(item({ toolName: "read_file", callId, argumentsJSON: JSON.stringify({ file_path: "settled.ts" }) }));
+  const settled = item({ toolName: "read_file", callId, argumentsJSON: undefined, output: "x\n" });
+  expect(d.summary(settled)).toBe("Read settled.ts · lines 1-1");
+});

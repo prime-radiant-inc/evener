@@ -52,6 +52,15 @@ test("edit_file never auto-expands (no autoExpand on this descriptor)", () => {
   expect(d.autoExpand).toBeUndefined();
 });
 
+test("edit_file: old_string/new_string survive settlement when argumentsJSON goes missing, via rememberedArgs", () => {
+  const d = toolRendererFor("edit_file");
+  const callId = "edit_settle_1";
+  const args = JSON.stringify({ file_path: "a.ts", old_string: "one\ntwo", new_string: "uno" });
+  d.summary(item({ toolName: "edit_file", callId, argumentsJSON: args }));
+  const settled = item({ toolName: "edit_file", callId, argumentsJSON: undefined, output: "edited a.ts: 1 replacement" });
+  expect(d.summary(settled)).toBe("Edited a.ts · +1 -2");
+});
+
 // --- write_file -------------------------------------------------------
 // Ground truth: agent/execenv/local.go's WriteFile returns a plain
 // confirmation string ("wrote N bytes to path"), never a diff (there's no

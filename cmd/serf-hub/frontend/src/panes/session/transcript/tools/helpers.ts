@@ -103,6 +103,40 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// rememberedArgs mitigates a confirmed gap in the wire/reducer this
+// directory does not own: internal/appprojector/appwire_projection.go's
+// EventToolCallEnd case never sets ThreadItem.ArgumentsJSON on the
+// item/completed struct literal (only item/started carries it), and
+// protocol/reducer.ts's item/completed handler replaces the whole item via
+// wireItemToModel(item) with no argumentsJSON fallback - verified live
+// against the real reducer (hydrate -> item/started -> item/completed),
+// not assumed. Every descriptor in this directory reads its target/summary
+// fields off argumentsJSON, so without this a settled tool call - the
+// overwhelming majority of what a transcript actually shows - would
+// silently render blank targets. This caches a call's parsed args the
+// first time they're seen non-empty (i.e. while the item/started event's
+// argumentsJSON is intact), keyed by callId (falling back to the item id
+// for the rare item with no callId), and serves that cache once the
+// wire-settled item's own args go missing. This is a same-directory,
+// same-session-lifetime cache: a session opened cold on an already-
+// completed historical turn (which never rendered an item/started for
+// that call) has no entry to fall back to and still degrades to {} - the
+// durable fix belongs in protocol/reducer.ts (preserve argumentsJSON from
+// the prior item the way mergeReasoning already preserves
+// reasoningSummaries), which is outside this stream's file ownership; see
+// the wave-4 task-3 report for the full citation trail.
+const argsCache = new Map<string, Record<string, unknown>>();
+
+export function rememberedArgs(item: { id: string; callId?: string; argumentsJSON?: string }): Record<string, unknown> {
+  const key = item.callId ?? item.id;
+  const parsed = parseArgs(item.argumentsJSON);
+  if (Object.keys(parsed).length > 0) {
+    argsCache.set(key, parsed);
+    return parsed;
+  }
+  return argsCache.get(key) ?? parsed;
+}
+
 // str reads a string-typed field off a parsed-args/output object, undefined
 // for a missing or non-string value - every descriptor's target/summary
 // logic uses this rather than trusting the wire's untyped JSON directly.

@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
-import { clip, tailSlice, tailFold, formatToolDuration, formatByteCount, lineCount, parseArgs, parseJSONObject, str } from "./helpers";
+import { clip, tailSlice, tailFold, formatToolDuration, formatByteCount, lineCount, parseArgs, parseJSONObject, str, rememberedArgs } from "./helpers";
+import type { ItemModel } from "../../../../protocol/model";
 
 // --- clip ---------------------------------------------------------------
 
@@ -125,4 +126,53 @@ test("parseJSONObject: parses well-formed JSON text into an object, mirrors pars
   expect(parseJSONObject("not json")).toBeUndefined();
   expect(parseJSONObject(undefined)).toBeUndefined();
   expect(parseJSONObject("[1]")).toBeUndefined();
+});
+
+// --- rememberedArgs ---------------------------------------------------
+// Ground truth (verified live against the real reducer, not assumed):
+// internal/appprojector/appwire_projection.go's EventToolCallEnd case never
+// sets ThreadItem.ArgumentsJSON on the struct literal it builds for
+// item/completed - only item/started carries it. protocol/reducer.ts's
+// item/completed handler replaces the whole item via wireItemToModel(item)
+// (mergeReasoning only carries over reasoningSummaries from the prior
+// state), so a settled ItemModel's argumentsJSON is undefined even though
+// the SAME call's item/started notification had it. rememberedArgs is a
+// same-file mitigation: cache a call's parsed args the first time they're
+// seen (while live), keyed by callId, and serve that cache once the
+// wire-settled item's own args go missing - this only helps a call
+// observed live at least once; a cold-opened historical transcript that
+// never saw item/started has no cache entry and still degrades to {}.
+
+function tItem(overrides: Partial<ItemModel> = {}): ItemModel {
+  return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
+}
+
+test("rememberedArgs: returns the parsed args when present", () => {
+  const item = tItem({ callId: "call_remember_a", argumentsJSON: '{"pattern":"x"}' });
+  expect(rememberedArgs(item)).toEqual({ pattern: "x" });
+});
+
+test("rememberedArgs: a later call with the SAME callId but no argumentsJSON reuses the cached args", () => {
+  const live = tItem({ callId: "call_remember_b", argumentsJSON: '{"path":"src"}' });
+  rememberedArgs(live); // simulates the item/started render
+  const settled = tItem({ callId: "call_remember_b", argumentsJSON: undefined, output: "done" });
+  expect(rememberedArgs(settled)).toEqual({ path: "src" });
+});
+
+test("rememberedArgs: a different callId never sees another call's cached args", () => {
+  rememberedArgs(tItem({ callId: "call_remember_c1", argumentsJSON: '{"a":1}' }));
+  const other = tItem({ callId: "call_remember_c2", argumentsJSON: undefined });
+  expect(rememberedArgs(other)).toEqual({});
+});
+
+test("rememberedArgs: falls back to the item id when callId is absent", () => {
+  const live = tItem({ id: "item_remember_d", callId: undefined, argumentsJSON: '{"z":9}' });
+  rememberedArgs(live);
+  const settled = tItem({ id: "item_remember_d", callId: undefined, argumentsJSON: undefined });
+  expect(rememberedArgs(settled)).toEqual({ z: 9 });
+});
+
+test("rememberedArgs: never observed live and no argumentsJSON at all degrades to {} (the documented remaining gap)", () => {
+  const neverSeenLive = tItem({ callId: "call_remember_never_live", argumentsJSON: undefined });
+  expect(rememberedArgs(neverSeenLive)).toEqual({});
 });

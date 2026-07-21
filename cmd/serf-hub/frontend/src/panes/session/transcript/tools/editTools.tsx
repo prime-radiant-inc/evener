@@ -18,7 +18,7 @@
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
 import { DiffBlock } from "../../../../widgets";
-import { parseArgs, str } from "./helpers";
+import { rememberedArgs, str } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 
 // diffStats counts add/del lines the same way DiffBlock's own parser does
@@ -49,7 +49,7 @@ function editDiffText(path: string, oldString: string, newString: string): strin
 }
 
 function EditFileBody({ item }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
+  const args = rememberedArgs(item);
   const path = str(args, "file_path") ?? str(args, "path") ?? "";
   const oldString = str(args, "old_string") ?? "";
   const newString = str(args, "new_string") ?? "";
@@ -59,7 +59,7 @@ function EditFileBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "edit_file",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const path = str(args, "file_path") ?? str(args, "path") ?? "";
     const oldString = str(args, "old_string") ?? "";
     const newString = str(args, "new_string") ?? "";
@@ -77,7 +77,7 @@ function WriteFileBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "write_file",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const path = str(args, "file_path") ?? str(args, "path") ?? "";
     return `Wrote ${path}`;
   },
@@ -103,7 +103,7 @@ function patchTargets(patch: string): string[] {
 }
 
 function ApplyPatchBody({ item }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
+  const args = rememberedArgs(item);
   const patch = str(args, "patch") ?? "";
   if (patch === "") return null;
   return <DiffBlock unified={patch} />;
@@ -112,7 +112,7 @@ function ApplyPatchBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "apply_patch",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const patch = str(args, "patch") ?? "";
     return `Patched ${patchTargets(patch).join(", ")} · ${diffResultText(patch)}`;
   },

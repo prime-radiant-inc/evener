@@ -6,7 +6,7 @@
 // target/result slot on the wire like the legacy DOM had).
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
-import { clip, lineCount, parseArgs, str } from "./helpers";
+import { clip, lineCount, rememberedArgs, str } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 
 const GREP_PATTERN_CLIP = 50;
@@ -27,7 +27,7 @@ function readLineRange(args: Record<string, unknown>, output: string): string {
 registerToolRenderer({
   match: "read_file",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const target = str(args, "file_path") ?? str(args, "path") ?? "";
     return `Read ${target} · ${readLineRange(args, item.output ?? "")}`;
   },
@@ -44,7 +44,7 @@ function grepTarget(args: Record<string, unknown>): string {
 const grepDescriptor = {
   match: (name: string) => name === "grep" || name === "grep_files" || name === "grep_search",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     return `Searched ${grepTarget(args)} · ${lineCount(item.output ?? "")} hits`;
   },
   body: HeadClippedOutputBody,
@@ -54,7 +54,7 @@ registerToolRenderer(grepDescriptor);
 const lsDescriptor = {
   match: (name: string) => name === "list_dir" || name === "list_directory",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const path = str(args, "path") ?? ".";
     const pattern = str(args, "pattern");
     return `Listed ${path}${pattern ? ` (${pattern})` : ""} · ${lineCount(item.output ?? "")} entries`;
@@ -66,7 +66,7 @@ registerToolRenderer(lsDescriptor);
 registerToolRenderer({
   match: "glob",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const pattern = str(args, "pattern") ?? str(args, "glob") ?? "";
     return `Matched ${pattern} · ${lineCount(item.output ?? "")} matches`;
   },

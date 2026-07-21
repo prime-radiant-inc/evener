@@ -19,7 +19,7 @@
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
 import { CodeBlock } from "../../../../widgets";
-import { clip, parseArgs, str, tailFold, tailSlice } from "./helpers";
+import { clip, rememberedArgs, str, tailFold, tailSlice } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 import styles from "./shelltool.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -51,7 +51,7 @@ function parseShellExitCode(output: string): number | undefined {
 }
 
 function ShellBody({ item, live }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
+  const args = rememberedArgs(item);
   const output = item.output ?? "";
   const body = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
   return (
@@ -65,7 +65,7 @@ function ShellBody({ item, live }: ToolRenderProps) {
 registerToolRenderer({
   match: (name) => name === "shell" || name === "exec_command" || name === "run_shell_command",
   summary(item: ItemModel) {
-    const args = parseArgs(item.argumentsJSON);
+    const args = rememberedArgs(item);
     const command = clip(shellCommand(args), COMMAND_CLIP);
     const exitCode = parseShellExitCode(item.output ?? "");
     return exitCode ? `Ran ${command} · exit ${exitCode}` : `Ran ${command}`;
