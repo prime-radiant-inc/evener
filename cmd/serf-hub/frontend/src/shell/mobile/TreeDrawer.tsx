@@ -56,8 +56,12 @@ export function TreeDrawer({ children }: TreeDrawerProps) {
           header does not, on a tall phone). */}
       <Sheet side="bottom" open={open} onClose={() => setOpen(false)} title="Sessions">
         {children ?? (
+          // A single descriptive title, no separate hint - same "not built
+          // yet" placeholder convention as panes/session/Session.tsx's own
+          // EmptyState, and avoids repeating "Sessions" right under the
+          // Sheet's own title heading above.
           <div data-testid="rail-slot">
-            <EmptyState title="Sessions" hint="The session tree arrives from a parallel wave-3 stream." />
+            <EmptyState title="Session tree arrives from a parallel wave-3 stream" />
           </div>
         )}
       </Sheet>
