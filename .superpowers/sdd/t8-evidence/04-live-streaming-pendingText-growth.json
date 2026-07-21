@@ -1,0 +1,18 @@
+{
+  "sendStatus": 202,
+  "note": "Captured via a single browser eval that fired POST /s/033t1nPckTepu3Whb7mqEk/send and polled the DOM's <pre> model JSON every ~500ms in the same call, avoiding MCP round-trip latency. item_assistant_37 is the streaming agentMessage item; pendingText chunk count and joined length grow monotonically while lastTurnStatus stays inProgress -- direct evidence of live delta streaming through AppwireClient -> reducer.applyNotification -> useThreadsStore -> DevHarness's <pre> JSON view.",
+  "samples": [
+    {"t":511,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":1,"streaming":[]},
+    {"t":1015,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":1,"streaming":[]},
+    {"t":1526,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":1,"streaming":[]},
+    {"t":2030,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":1,"streaming":[]},
+    {"t":2535,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":1,"streaming":[]},
+    {"t":3045,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":12,"len":55}]},
+    {"t":3548,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":48,"len":220}]},
+    {"t":4049,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":77,"len":386}]},
+    {"t":4552,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":104,"len":506}]},
+    {"t":5054,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":132,"len":644}]},
+    {"t":5556,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":160,"len":808}]},
+    {"t":6058,"turnCount":25,"lastTurnId":"turn_25","lastTurnStatus":"inProgress","itemCount":2,"streaming":[{"id":"item_assistant_37","chunks":188,"len":956}]}
+  ]
+}
