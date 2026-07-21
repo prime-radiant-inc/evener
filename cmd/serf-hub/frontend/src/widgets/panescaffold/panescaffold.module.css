@@ -1,0 +1,67 @@
+.pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  /* clips children to the rounded corners instead of squaring them off */
+  overflow: hidden;
+}
+
+.header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--edge);
+}
+
+.title {
+  flex: 1 1 auto;
+  /* min-width: 0 is required for ellipsis truncation inside a flex row -
+   * without it a flex item won't shrink below its content's natural width. */
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-pane-title);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+  letter-spacing: var(--tracking-display);
+}
+
+.cadenceSlot {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* pushes the cluster to the header's trailing edge regardless of whether
+   * a cadence slot is present between it and the title */
+  margin-left: auto;
+}
+
+.body {
+  flex: 1 1 auto;
+  /* min-height: 0 is required for a flex child to actually be able to
+   * scroll instead of stretching its column parent to fit its content. */
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.footer {
+  flex: none;
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--edge);
+}

@@ -1,0 +1,98 @@
+.root {
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+/* headings: h1-h3 read as "display" text per Direction (semibold, -1%
+ * tracking); h4-h6 step down to body size but stay bold - markdown content
+ * rarely nests past h3, so further distinct sizes aren't worth a token. */
+.root :where(h1, h2, h3, h4, h5, h6) {
+  margin: var(--space-5) 0 var(--space-2);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-title);
+}
+
+.root :where(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+
+.root h1 {
+  font-size: var(--font-size-page-title);
+  letter-spacing: var(--tracking-display);
+}
+
+.root h2 {
+  font-size: var(--font-size-pane-title);
+  letter-spacing: var(--tracking-display);
+}
+
+.root h3 {
+  font-size: var(--font-size-body);
+  letter-spacing: var(--tracking-display);
+}
+
+.root :where(h4, h5, h6) {
+  font-size: var(--font-size-body);
+}
+
+.root p {
+  margin: 0 0 var(--space-3);
+}
+
+.root p:last-child {
+  margin-bottom: 0;
+}
+
+.root :where(ul, ol) {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-5);
+}
+
+.root li + li {
+  margin-top: var(--space-1);
+}
+
+.root blockquote {
+  margin: 0 0 var(--space-3);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--edge);
+  color: var(--ink-mid);
+}
+
+.root hr {
+  margin: var(--space-5) 0;
+  border: none;
+  border-top: 1px solid var(--edge);
+}
+
+.root strong {
+  font-weight: var(--font-weight-semibold);
+}
+
+.root del {
+  color: var(--ink-mid);
+}
+
+.root a {
+  color: var(--accent);
+}
+
+.root a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Fenced code blocks are rendered through codeblock.module.css's own
+ * classes (imported directly in index.tsx) so they're visually identical
+ * to the standalone CodeBlock widget - nothing to style here for those. */
+
+.inlineCode {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}

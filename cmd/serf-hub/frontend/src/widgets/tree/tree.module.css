@@ -1,0 +1,26 @@
+.tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-control);
+  cursor: default;
+}
+
+.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  /* indentation compounds naturally as groups nest, so a row never needs
+   * an inline `paddingLeft: depth * n` style of its own */
+  padding-left: var(--space-4);
+}
