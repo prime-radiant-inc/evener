@@ -1,0 +1,68 @@
+/* Tokens-only layout (no --attention/--alive/--danger literal here - this
+ * directory isn't a widgets/<name> module, so it isn't eligible for the
+ * token-contract allowlist; the cancel action's danger treatment comes
+ * entirely from Button's own "danger" variant instead, exactly like
+ * sandboxescalation.module.css's own comment explains for its Deny button). */
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--edge);
+  background: var(--surface-1);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+}
+
+/* An optimistic row awaiting the daemon's own confirmation - dimmed rather
+ * than colored, since "in flight" isn't one of the four attention-family
+ * meanings this app reserves a hue for. */
+.rowPending {
+  opacity: 0.6;
+}
+
+.rowText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+.rowActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+}
