@@ -1,0 +1,21 @@
+/* Same containing-block trick as dialog.module.css - Sheet's panel is also
+ * position:fixed, scoped here to the demo frame instead of the viewport.
+ * The explicit width is required for the same reason documented there:
+ * this frame's only in-flow child is entirely position:fixed, so it has
+ * no content to size itself from and collapses without one. */
+.demoFrame {
+  position: relative;
+  contain: layout;
+  overflow: hidden;
+  width: 360px;
+  min-height: 280px;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+}
+
+.reopen {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+}

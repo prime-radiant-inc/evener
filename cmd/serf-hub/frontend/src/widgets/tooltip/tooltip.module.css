@@ -1,0 +1,32 @@
+.wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.bubble {
+  position: absolute;
+  bottom: calc(100% + var(--space-2));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1030;
+  padding: var(--space-1) var(--space-2);
+  max-width: 240px;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+  white-space: normal;
+  pointer-events: none;
+}
+
+/* Hidden from touch: a touch-primary device has no hover concept, so a
+ * tap that would otherwise leave the tooltip stuck open (no mouseleave to
+ * dismiss it) never shows it in the first place. */
+@media (hover: none) {
+  .bubble {
+    display: none;
+  }
+}

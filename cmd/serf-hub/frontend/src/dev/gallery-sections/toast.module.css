@@ -1,0 +1,26 @@
+/* Same containing-block trick as dialog.module.css - Toast's region is
+ * also position:fixed, scoped here to the demo frame instead of the
+ * viewport (otherwise every pushed toast would render pinned to the real
+ * browser window's corner, on top of the whole gallery page). The explicit
+ * width is belt-and-suspenders here (the .hint paragraph below happens to
+ * be enough in-flow content to size this frame on its own) for the same
+ * reason it's required in dialog.module.css/sheet.module.css: a frame
+ * whose only content is position:fixed has nothing to size itself from. */
+.demoFrame {
+  position: relative;
+  contain: layout;
+  overflow: hidden;
+  width: 360px;
+  min-height: 220px;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+}
+
+.hint {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}

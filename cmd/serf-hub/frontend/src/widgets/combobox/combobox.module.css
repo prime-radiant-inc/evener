@@ -1,0 +1,61 @@
+.root {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+}
+
+.input {
+  display: block;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--edge);
+  background: var(--surface-1);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* No open/close animation - unlike Menu and Dialog, Combobox's popup isn't
+ * on the app's motion budget (§Direction lists only menu/dialog for the
+ * 120ms fade-scale). */
+.listbox {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  right: 0;
+  z-index: 1020;
+  margin: 0;
+  padding: var(--space-1) 0;
+  max-height: 240px;
+  overflow: auto;
+  list-style: none;
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+}
+
+.option {
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The active option is a virtual (aria-activedescendant), not real DOM
+ * focus - real focus stays on the input the whole time, per the ARIA 1.2
+ * combobox pattern - so this is a plain background wash, not a
+ * :focus-visible rule. */
+.optionActive {
+  background: var(--accent-bg);
+}
