@@ -1,0 +1,49 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 720px;
+}
+
+.help {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+}
+
+.row {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+}
+
+.label {
+  flex: none;
+  width: 110px;
+  color: var(--ink-mid);
+}
+
+.value {
+  color: var(--ink-hi);
+}
+
+.example {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  white-space: pre;
+  overflow-x: auto;
+}
