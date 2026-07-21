@@ -3,6 +3,7 @@ import { IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL } from "../routing";
 import { useWorkspaceStore, workspaceStore, type OpenPaneRecord } from "../workspace";
+import { TreeDrawer } from "./TreeDrawer";
 import styles from "./StackHost.module.css";
 
 function BackIcon() {
@@ -135,6 +136,7 @@ export function StackHost() {
         <div className={styles.leading}>
           {showBack && <IconButton label="Back" icon={<BackIcon />} variant="quiet" onClick={handleBack} />}
         </div>
+        <TreeDrawer />
       </div>
       <div className={styles.body}>
         {focusedPane && (

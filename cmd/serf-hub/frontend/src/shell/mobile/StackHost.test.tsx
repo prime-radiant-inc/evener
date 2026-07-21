@@ -1,4 +1,7 @@
 import { lazy, useState } from "react";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -110,6 +113,13 @@ test("switching away from a pane and back remounts it fresh - local state does n
 
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
   expect(screen.getByRole("button", { name: /clicks: 0/ })).toBeTruthy(); // reset, not preserved
+});
+
+// --- tree drawer trigger ------------------------------------------------
+
+test("hosts the tree drawer trigger in the top bar, regardless of which pane is focused", async () => {
+  render(<StackHost />);
+  expect(await screen.findByRole("button", { name: "Sessions" })).toBeTruthy();
 });
 
 // --- back navigation ---------------------------------------------------
@@ -261,4 +271,16 @@ test("mounting already at the focused pane's own URL does not dispatch a redunda
 
   window.removeEventListener("popstate", handler);
   expect(handler).not.toHaveBeenCalled();
+});
+
+// --- bottom safe-area padding (requirement 4) ------------------------
+//
+// jsdom does not evaluate real CSS (env(), viewport units, etc.), so - same
+// idiom as sheet.test.tsx's own prefers-reduced-motion check - this reads
+// the CSS module's own source rather than asserting on computed style.
+
+test("the stack container reserves the device's bottom safe-area inset", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "StackHost.module.css"), "utf8");
+  expect(css).toContain("env(safe-area-inset-bottom)");
 });
