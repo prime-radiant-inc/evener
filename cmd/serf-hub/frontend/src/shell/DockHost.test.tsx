@@ -134,6 +134,21 @@ test("opens a second pane as a separate dockview tab, both present as tabs", asy
   expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toContain("Doc ref_b");
 });
 
+test("opts.beside splits into a second dockview group instead of stacking as a tab", async () => {
+  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1);
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }, { beside: first });
+
+  await screen.findByText(/doc pane: ref_b/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+  // Still one tab per group (a split, not a stack) - each pane visible at
+  // once side by side, unlike the plain two-tabs-one-group case above.
+  expect(document.querySelectorAll(".dv-tab")).toHaveLength(2);
+});
+
 test("the newly-opened pane is focused (true in props, active dockview tab)", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   workspaceStore.getState().openPane("doc", { ref: "ref_b" });
