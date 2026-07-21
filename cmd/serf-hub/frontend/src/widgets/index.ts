@@ -52,3 +52,17 @@ export { Toast, useToasts } from "./toast";
 export type { ToastKind } from "./toast";
 export { Combobox } from "./combobox";
 export type { ComboboxProps, ComboboxOption } from "./combobox";
+
+// --- data batch (W2T4) ---
+export { PaneScaffold } from "./panescaffold";
+export type { PaneScaffoldProps } from "./panescaffold";
+export { CodeBlock } from "./codeblock";
+export type { CodeBlockProps } from "./codeblock";
+export { Markdown } from "./markdown";
+export type { MarkdownProps } from "./markdown";
+export { DiffBlock } from "./diffblock";
+export type { DiffBlockProps } from "./diffblock";
+export { Tree } from "./tree";
+export type { TreeProps, TreeNode, TreeRowInfo } from "./tree";
+export { VirtualList } from "./virtuallist";
+export type { VirtualListProps, VirtualListHandle } from "./virtuallist";
