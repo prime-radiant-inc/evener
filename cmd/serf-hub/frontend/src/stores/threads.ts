@@ -32,8 +32,20 @@ export interface ThreadsStoreState {
   // hydrate/re-hydrate never seeds or resets it (see handleReady/rewireClient
   // below, which touch `threads` but not this map).
   frameTimes: Map<string, number[]>;
+  // watchedThreads/watchedFrameTimes: the transcript/tools stream's own
+  // sanctioned extension (watched-child subagent-module rows - a leaner,
+  // additive subscription alongside a real ensureThread'd pane, never
+  // replacing it). Deliberately SEPARATE maps from threads/frameTimes,
+  // not a shared one keyed the same way: a ref can legitimately be both
+  // ensureThread'd (a real pane open on it) and watchThread'd (a parent
+  // session's subagent row watching it) at once, and releasing one must
+  // never disturb the other's tracked data or lifecycle.
+  watchedThreads: Map<string, ThreadModel>;
+  watchedFrameTimes: Map<string, number[]>;
   ensureThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
+  watchThread(ref: string): Promise<void>;
+  releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
   send(ref: string, text: string, images?: string[]): Promise<void>;
   steer(ref: string, text: string): Promise<void>;
@@ -53,6 +65,12 @@ let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 
+// watchThread's own refcount/inflight bookkeeping - independent of
+// refCounts/inflightHydrates above, so a watch and a real pane on the
+// same ref never share (or fight over) one counter.
+const watchRefCounts = new Map<string, number>();
+const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
+
 // Every tracked ref gets exactly these params on both the first subscribe
 // (ensureThread) and every re-subscribe (onReady after reconnect):
 // replaceSubscription is always false — additive, layering onto whatever the
@@ -63,6 +81,20 @@ function readParams(ref: string) {
 
 async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
   const resp: ThreadReadResponse = await client.request("thread/read", readParams(ref));
+  return hydrateThread(resp, ref, now);
+}
+
+// watchReadParams mirrors readParams but with includeTurns:false - a
+// watched child only needs live status/liveness (Cadence reads
+// watchedFrameTimes, not turn content), not its full turn/item history,
+// which would be wasted fetch+storage for a subagent row most sessions
+// never expand.
+function watchReadParams(ref: string) {
+  return { ref, includeTurns: false, itemsView: "full", subscribe: true, replaceSubscription: false, turnLimit: 40 } as const;
+}
+
+async function hydrateAndSubscribeWatch(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
+  const resp: ThreadReadResponse = await client.request("thread/read", watchReadParams(ref));
   return hydrateThread(resp, ref, now);
 }
 
@@ -144,21 +176,51 @@ function targetsNotification(n: AnyNotification, model: ThreadModel): boolean {
 // applied frame, not a same-reference reducer no-op) also gets `now`
 // appended to its frameTimes ring, reusing this same `now` rather than
 // reading a second Date.now() for it.
-function handleNotification(n: AnyNotification): void {
-  const now = Date.now();
-  const { threads, frameTimes } = threadsStore.getState();
-  let nextThreads: Map<string, ThreadModel> | null = null;
-  let nextFrameTimes: Map<string, number[]> | null = null;
-  for (const [ref, model] of threads) {
+// applyToMap folds `n` through every model in `map` that targets it,
+// returning the replaced map (or null if nothing in this particular map
+// changed) plus exactly the refs that actually changed - shared by both
+// the threads/frameTimes pass and the watchedThreads/watchedFrameTimes
+// pass below, since the fold-and-detect-a-real-change logic is identical
+// for either map.
+function applyToMap(
+  map: Map<string, ThreadModel>,
+  n: AnyNotification,
+  now: number,
+): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
+  let next: Map<string, ThreadModel> | null = null;
+  const changedRefs: string[] = [];
+  for (const [ref, model] of map) {
     if (!targetsNotification(n, model)) continue;
     const updated = applyNotification(model, n, now);
     if (updated === model) continue;
-    nextThreads ??= new Map(threads);
-    nextThreads.set(ref, updated);
-    nextFrameTimes ??= new Map(frameTimes);
-    nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
+    next ??= new Map(map);
+    next.set(ref, updated);
+    changedRefs.push(ref);
   }
-  if (nextThreads) threadsStore.setState({ threads: nextThreads, frameTimes: nextFrameTimes! });
+  return { next, changedRefs };
+}
+
+function handleNotification(n: AnyNotification): void {
+  const now = Date.now();
+  const { threads, frameTimes, watchedThreads, watchedFrameTimes } = threadsStore.getState();
+  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now);
+  const { next: nextWatchedThreads, changedRefs: changedWatched } = applyToMap(watchedThreads, n, now);
+  if (!nextThreads && !nextWatchedThreads) return;
+
+  const patch: Partial<ThreadsStoreState> = {};
+  if (nextThreads) {
+    patch.threads = nextThreads;
+    const nextFrameTimes = new Map(frameTimes);
+    for (const ref of changedThreads) nextFrameTimes.set(ref, appendFrameTime(frameTimes.get(ref) ?? [], now));
+    patch.frameTimes = nextFrameTimes;
+  }
+  if (nextWatchedThreads) {
+    patch.watchedThreads = nextWatchedThreads;
+    const nextWatchedFrameTimes = new Map(watchedFrameTimes);
+    for (const ref of changedWatched) nextWatchedFrameTimes.set(ref, appendFrameTime(watchedFrameTimes.get(ref) ?? [], now));
+    patch.watchedFrameTimes = nextWatchedFrameTimes;
+  }
+  threadsStore.setState(patch);
 }
 
 // handleReady re-subscribes every currently-tracked ref, additively, and
@@ -174,8 +236,9 @@ function handleNotification(n: AnyNotification): void {
 // rewireClient's own comment).
 async function handleReady(client: AppwireClientLike): Promise<void> {
   const refs = Array.from(threadsStore.getState().threads.keys());
-  await Promise.all(
-    refs.map(async (ref) => {
+  const watchRefs = Array.from(threadsStore.getState().watchedThreads.keys());
+  await Promise.all([
+    ...refs.map(async (ref) => {
       try {
         const model = await hydrateAndSubscribe(client, ref, Date.now());
         // A concurrent releaseThread() may have dropped this ref while the
@@ -192,7 +255,22 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
         // fresh ensureThread() from a remounting pane will retry.
       }
     }),
-  );
+    ...watchRefs.map(async (ref) => {
+      try {
+        const model = await hydrateAndSubscribeWatch(client, ref, Date.now());
+        // A concurrent releaseWatchedThread() may have dropped this ref
+        // while the re-subscribe was in flight; don't resurrect it.
+        if (!threadsStore.getState().watchedThreads.has(ref)) return;
+        threadsStore.setState((s) => {
+          const next = new Map(s.watchedThreads);
+          next.set(ref, model);
+          return { watchedThreads: next };
+        });
+      } catch {
+        // Best-effort, same rationale as the real-pane path above.
+      }
+    }),
+  ]);
 }
 
 // rewireClient is the single place this store's onNotification/onReady
@@ -256,6 +334,8 @@ function requireClient(): AppwireClientLike {
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   frameTimes: new Map(),
+  watchedThreads: new Map(),
+  watchedFrameTimes: new Map(),
 
   async ensureThread(ref) {
     const client = requireClient();
@@ -325,6 +405,66 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       const nextFrameTimes = new Map(s.frameTimes);
       nextFrameTimes.delete(ref);
       return { threads: nextThreads, frameTimes: nextFrameTimes };
+    });
+  },
+
+  // watchThread is the transcript/tools stream's own sanctioned addition:
+  // an additive, leaner (includeTurns:false) subscription to a child
+  // thread for a subagent-module row's live view, refcounted
+  // independently of ensureThread's own counter (watchRefCounts, not
+  // refCounts) and stored in watchedThreads/watchedFrameTimes, not
+  // threads/frameTimes - see this file's own ThreadsStoreState doc
+  // comment for why the two must stay fully independent. Otherwise a
+  // structural mirror of ensureThread above.
+  async watchThread(ref) {
+    const client = requireClient();
+    watchRefCounts.set(ref, (watchRefCounts.get(ref) ?? 0) + 1);
+    if (threadsStore.getState().watchedThreads.has(ref)) return; // already hydrated: no re-read
+
+    let inflight = inflightWatchHydrates.get(ref);
+    if (!inflight) {
+      inflight = hydrateAndSubscribeWatch(client, ref, Date.now());
+      inflightWatchHydrates.set(ref, inflight);
+      void inflight
+        .finally(() => {
+          if (inflightWatchHydrates.get(ref) === inflight) inflightWatchHydrates.delete(ref);
+        })
+        .catch(() => {});
+    }
+    let model: ThreadModel;
+    try {
+      model = await inflight;
+    } catch (err) {
+      // This call's own claim never landed: undo it via releaseWatchedThread,
+      // same rationale as ensureThread's own catch above.
+      threadsStore.getState().releaseWatchedThread(ref);
+      throw err;
+    }
+    // A concurrent releaseWatchedThread() may have dropped this ref to zero
+    // watchers while the hydrate was in flight; don't resurrect it.
+    if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
+    threadsStore.setState((s) => {
+      const next = new Map(s.watchedThreads);
+      next.set(ref, model);
+      return { watchedThreads: next };
+    });
+  },
+
+  releaseWatchedThread(ref) {
+    const count = watchRefCounts.get(ref) ?? 0;
+    if (count <= 0) return; // never tracked, or already released
+    if (count > 1) {
+      watchRefCounts.set(ref, count - 1);
+      return;
+    }
+    watchRefCounts.delete(ref);
+    threadsStore.setState((s) => {
+      if (!s.watchedThreads.has(ref) && !s.watchedFrameTimes.has(ref)) return s;
+      const nextWatchedThreads = new Map(s.watchedThreads);
+      nextWatchedThreads.delete(ref);
+      const nextWatchedFrameTimes = new Map(s.watchedFrameTimes);
+      nextWatchedFrameTimes.delete(ref);
+      return { watchedThreads: nextWatchedThreads, watchedFrameTimes: nextWatchedFrameTimes };
     });
   },
 
@@ -402,10 +542,12 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   inflightHydrates.clear();
+  watchRefCounts.clear();
+  inflightWatchHydrates.clear();
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;
   unwireReady = null;
   wiredClient = null;
-  threadsStore.setState({ threads: new Map(), frameTimes: new Map() });
+  threadsStore.setState({ threads: new Map(), frameTimes: new Map(), watchedThreads: new Map(), watchedFrameTimes: new Map() });
 }
