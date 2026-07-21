@@ -23,6 +23,7 @@ import type {
   AnyNotification,
   GoalSetResponse,
   InputItem,
+  ModelListResponse,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadReadResponse,
@@ -162,6 +163,23 @@ export interface ThreadsStoreState {
   // the parent's own tracked model; the caller (T5) opens the child as its
   // own pane via ensureThread on the returned ref.
   forkFromTurn(ref: string, opts: ForkFromTurnOptions): Promise<ThreadForkResponse>;
+  // Lists available models (model/list) with launch diagnostics, feeding
+  // the chrome stream's model-switch Combobox. Session-lifetime cached
+  // (models don't change mid-session, and no live push exists for them
+  // either - same "no capabilities-changed entry" reasoning as
+  // ThreadModel.capabilities); pass refresh:true to bypass the cache and
+  // force a fresh request. A failed request never poisons the cache with a
+  // rejected promise - the next call (with or without refresh) retries.
+  listModels(refresh?: boolean): Promise<ModelListResponse>;
+  // Lists the session's tasks (serf/tasks/list). TaskListResponse.Data is
+  // `any` on the wire catalog (appwire/types.go:896-898) - this returns
+  // that raw field verbatim, never wrapped, so the store stays shape-
+  // agnostic; the caller owns interpreting it (the chrome stream's own
+  // parseTaskListData). A Codex-source thread rejects this call
+  // (appwire.Unavailable, "actionUnavailable") - that typed error
+  // propagates unchanged, same as every other read-only action here; the
+  // caller renders the empty/unsupported state for it.
+  listTasks(ref: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -187,6 +205,17 @@ const inflightHydrates = new Map<string, Promise<ThreadModel>>();
 let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+
+// listModels' own session-lifetime cache (models are not per-ref, so this
+// is a single slot, not a Map): modelsCache holds the last successful
+// response; inflightModelsList de-dupes concurrent non-refresh callers the
+// same way inflightHydrates does for ensureThread. A rejection is never
+// written to modelsCache (so a prior good cache survives a later failed
+// refresh, and a first-ever failure leaves nothing stale to keep serving),
+// and inflightModelsList is always cleared in a `finally` so a failed call
+// never poisons the next one with a repeated rejection.
+let modelsCache: ModelListResponse | null = null;
+let inflightModelsList: Promise<ModelListResponse> | null = null;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
 // refCounts/inflightHydrates above, so a watch and a real pane on the
@@ -793,6 +822,31 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
   },
 
+  async listModels(refresh) {
+    const client = requireClient();
+    if (!refresh && modelsCache) return modelsCache;
+    if (!refresh && inflightModelsList) return inflightModelsList;
+    // No mapConflict here: model/list is a read-only listing with no
+    // turn-CAS concept (verified against every server-side handler - see
+    // this file's own describe block for the exact citations).
+    const request = client.request("model/list", {});
+    if (!refresh) inflightModelsList = request;
+    try {
+      const resp = await request;
+      modelsCache = resp;
+      return resp;
+    } finally {
+      if (!refresh) inflightModelsList = null;
+    }
+  },
+
+  async listTasks(ref) {
+    const client = requireClient();
+    // No mapConflict here either, same reasoning as listModels above.
+    const resp = await client.request("serf/tasks/list", { ref });
+    return resp.data;
+  },
+
   async resolveEscalation(ref, escalationId, approve) {
     const client = requireClient();
     // No mapConflict here: resolve isn't a turn-CAS method, and the caller
@@ -855,6 +909,8 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
+  modelsCache = null;
+  inflightModelsList = null;
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;
