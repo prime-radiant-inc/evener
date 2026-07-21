@@ -999,6 +999,67 @@ describe("useThreadsStore.watchThread", () => {
   });
 });
 
+// scrollPositions (wave 4 T4): per-ref scroll offset persisted across a
+// PaneHost unmount/remount (dockview unmounts an inactive pane's whole tree
+// - see Session.tsx's own comment). Deliberately NOT wired into the
+// ensureThread/releaseThread refcount lifecycle the way `threads`/
+// `frameTimes` are: those two are cheaply re-derived from a fresh
+// thread/read on the next mount, but a scroll offset has no server-side
+// source of truth to re-derive - it must outlive a ref's refcount dropping
+// to zero, which is exactly the "survives remount" case this field exists
+// for. setScrollPosition is a plain, synchronous, no-network write (unlike
+// every other action on this store) - flow/'s hook calls it directly off a
+// real scroll event, not through requireClient().
+describe("scrollPositions (threads store)", () => {
+  test("starts with no entry for a ref that has never had a position recorded", () => {
+    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBeUndefined();
+  });
+
+  test("setScrollPosition records the position for a ref", () => {
+    threadsStore.getState().setScrollPosition("ref_a", 240);
+
+    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBe(240);
+  });
+
+  test("setScrollPosition overwrites a previous position for the same ref, leaving other refs untouched", () => {
+    threadsStore.getState().setScrollPosition("ref_a", 100);
+    threadsStore.getState().setScrollPosition("ref_b", 999);
+
+    threadsStore.getState().setScrollPosition("ref_a", 300);
+
+    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBe(300);
+    expect(threadsStore.getState().scrollPositions.get("ref_b")).toBe(999);
+  });
+
+  test("does not require the ref to be a tracked/hydrated thread - a pure client-side write", () => {
+    expect(threadsStore.getState().threads.has("ref_never_hydrated")).toBe(false);
+
+    threadsStore.getState().setScrollPosition("ref_never_hydrated", 50);
+
+    expect(threadsStore.getState().scrollPositions.get("ref_never_hydrated")).toBe(50);
+  });
+
+  test("releaseThread does NOT drop the ref's scroll position - it must survive a pane unmount, unlike frameTimes", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    threadsStore.getState().setScrollPosition("ref_a", 1234);
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false); // the model itself IS released
+    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBe(1234); // the scroll position is not
+  });
+
+  test("resetThreadsStoreForTests clears scrollPositions, same as every other store field", () => {
+    threadsStore.getState().setScrollPosition("ref_a", 240);
+
+    resetThreadsStoreForTests();
+
+    expect(threadsStore.getState().scrollPositions.get("ref_a")).toBeUndefined();
+  });
+});
+
 describe("useThreadsStore.loadOlderTurns", () => {
   test("fetches the older page via thread/turns/list using the model's olderCursor, prepends it, and advances the cursor", async () => {
     const fake = connectFakeClient();

@@ -1,0 +1,17 @@
+.line {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+/* stalled reads with more weight/contrast than the merely-quiet line, but
+ * still no color escalation - this file is not on the
+ * --attention/--alive/--danger allowlist (src/styles/token-contract.test.ts
+ * gates that to src/widgets/ only), and the wave's own binding constraints
+ * reserve the attention tone for the new-content pill alone. Honest concern
+ * is conveyed through typography, not a color that would fight the pill's
+ * one attention signal for the reader's eye. */
+.stalled {
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
+}
