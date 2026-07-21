@@ -293,7 +293,7 @@ test("beyond 6 done rows, the extras fold behind a '+N more' control; running/fa
       live={false}
     />,
   );
-  render(<>{bodies}</>);
+  render(bodies);
   // 6 done rows visible + the running row always visible = 7 rows shown;
   // 2 done rows folded behind "+2 more".
   expect(screen.getAllByTestId("subagent-row")).toHaveLength(7);
@@ -320,7 +320,7 @@ test("clicking '+N more' expands to show every done row, and offers a collapse c
       />,
     );
   }
-  render(<>{bodies}</>);
+  render(bodies);
   expect(screen.getAllByTestId("subagent-row")).toHaveLength(6);
 
   await user.click(screen.getByRole("button", { name: /\+2 more/i }));

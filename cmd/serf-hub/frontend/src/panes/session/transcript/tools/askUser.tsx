@@ -57,25 +57,25 @@ const CLASS = {
 function parseOption(raw: unknown): AskUserOption | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
-  if (typeof obj["label"] !== "string" || typeof obj["detail"] !== "string") return undefined;
-  return { label: obj["label"], detail: obj["detail"], recommended: obj["recommended"] === true };
+  if (typeof obj.label !== "string" || typeof obj.detail !== "string") return undefined;
+  return { label: obj.label, detail: obj.detail, recommended: obj.recommended === true };
 }
 
 function parseQuestion(raw: unknown): AskUserQuestion | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
-  if (typeof obj["header"] !== "string" || typeof obj["question"] !== "string" || !Array.isArray(obj["options"])) {
+  if (typeof obj.header !== "string" || typeof obj.question !== "string" || !Array.isArray(obj.options)) {
     return undefined;
   }
-  const options = obj["options"].map(parseOption).filter((o): o is AskUserOption => o !== undefined);
+  const options = obj.options.map(parseOption).filter((o): o is AskUserOption => o !== undefined);
   if (options.length === 0) return undefined;
   return {
-    header: obj["header"],
-    question: obj["question"],
+    header: obj.header,
+    question: obj.question,
     options,
-    multiSelect: obj["multi_select"] === true,
-    why: typeof obj["why"] === "string" ? obj["why"] : undefined,
-    ifUnanswered: typeof obj["if_unanswered"] === "string" ? obj["if_unanswered"] : undefined,
+    multiSelect: obj.multi_select === true,
+    why: typeof obj.why === "string" ? obj.why : undefined,
+    ifUnanswered: typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
   };
 }
 
@@ -89,7 +89,7 @@ function parseQuestion(raw: unknown): AskUserQuestion | undefined {
 // isMalformedArgumentsJSON below.
 function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
   const args = parseArgs(item.argumentsJSON);
-  const raw = args["questions"];
+  const raw = args.questions;
   if (!Array.isArray(raw)) return undefined;
   const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
   return questions.length > 0 ? questions : undefined;

@@ -91,7 +91,7 @@ registerToolRenderer({
   match: "job_list",
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    const status = args["status"];
+    const status = args.status;
     const filter = Array.isArray(status) ? status.filter((s) => typeof s === "string").join(", ") : "";
     return filter ? `Listed jobs (${filter})` : "Listed jobs";
   },

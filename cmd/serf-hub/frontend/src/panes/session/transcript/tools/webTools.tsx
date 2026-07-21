@@ -36,7 +36,7 @@ function nonBlankLines(text: string): string[] {
 // would instead measure the pretty-printed JSON wrapper).
 function webFetchByteCount(output: string): number {
   const parsed = parseJSONObject(output);
-  const sizeBytes = parsed?.["size_bytes"];
+  const sizeBytes = parsed?.size_bytes;
   return typeof sizeBytes === "number" ? sizeBytes : output.length;
 }
 

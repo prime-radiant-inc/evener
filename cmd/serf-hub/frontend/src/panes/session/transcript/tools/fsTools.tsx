@@ -18,9 +18,9 @@ const GREP_PATTERN_CLIP = 50;
 // trailing blank" rule - this counts raw newlines, matching the legacy
 // helper's documented behavior) when no explicit `limit` arg is given.
 function readLineRange(args: Record<string, unknown>, output: string): string {
-  const offsetArg = args["offset"];
+  const offsetArg = args.offset;
   const offset = typeof offsetArg === "number" && offsetArg > 0 ? offsetArg : 1;
-  const limitArg = args["limit"];
+  const limitArg = args.limit;
   const count = typeof limitArg === "number" && limitArg > 0 ? limitArg : (output.match(/\n/g) ?? []).length;
   return count > 0 ? `lines ${offset}-${offset + count - 1}` : `lines ${offset}`;
 }
