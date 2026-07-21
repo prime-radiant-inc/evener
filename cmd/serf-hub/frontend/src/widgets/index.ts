@@ -8,3 +8,31 @@ export type { ButtonProps, ButtonVariant, ButtonSize } from "./button";
 
 export { Cadence } from "./cadence";
 export type { CadenceProps, CadenceState } from "./cadence";
+
+// --- primitives batch (W2T2) ---
+export { IconButton } from "./iconbutton";
+export type { IconButtonProps } from "./iconbutton";
+export { Chip } from "./chip";
+export type { ChipProps, ChipTone } from "./chip";
+export { Badge } from "./badge";
+export type { BadgeProps, BadgeTone } from "./badge";
+export { StatusDot } from "./statusdot";
+export type { StatusDotProps } from "./statusdot";
+export { Input } from "./input";
+export type { InputProps } from "./input";
+export { Textarea } from "./textarea";
+export type { TextareaProps } from "./textarea";
+export { Select } from "./select";
+export type { SelectProps, SelectOption } from "./select";
+export { Switch } from "./switch";
+export type { SwitchProps } from "./switch";
+export { KeyHint } from "./keyhint";
+export type { KeyHintProps } from "./keyhint";
+export { Meter } from "./meter";
+export type { MeterProps, MeterTone } from "./meter";
+export { Skeleton } from "./skeleton";
+export type { SkeletonProps } from "./skeleton";
+export { EmptyState } from "./emptystate";
+export type { EmptyStateProps } from "./emptystate";
+export { Card } from "./card";
+export type { CardProps } from "./card";
