@@ -28,24 +28,26 @@ One rule (`font-family: monospace`) on the harness's wrapper — satisfies the p
 CSS-Modules-only constraint with the smallest possible footprint; `<pre>` is monospace by user-agent
 default already, so this is what makes the connection line and thread rows monospace too.
 
-### `cmd/serf-hub/frontend/src/App.tsx` (one-line delta)
+### `cmd/serf-hub/frontend/src/App.tsx` (one import + one same-line insertion)
 Mounts `<DevHarness />` alongside the existing wave-1 placeholder text (kept in place — a sibling
 worktree, `webui-workspace-shell`, also edits this file, and `App.test.tsx`'s existing
 `getByText(/workspace shell/i)` assertion needed to stay green without touching that test file,
-which is outside this task's ownership):
+which is outside this task's ownership). The original single-line `return` statement stays a
+single line — `<DevHarness />` is inserted before `</main>`, not wrapped into a multi-line JSX
+block — to minimize the collision surface with the sibling branch's own edits to this same
+statement; the only other change is the (unavoidable) import line:
 
 ```tsx
 import { DevHarness } from "./dev/DevHarness";
 
 export function App() {
-  return (
-    <main>
-      serf workspace shell — wave 1
-      <DevHarness />
-    </main>
-  );
+  return <main>serf workspace shell — wave 1<DevHarness /></main>;
 }
 ```
+
+Diff versus the Task 1 placeholder (`git diff c5f944d5f -- .../App.tsx`): `+3 -1` — the import
+line, a blank separator line (matching `main.tsx`'s own import/code separation), and the modified
+return line replacing the original one, with no other structural change.
 
 ## Tests (TDD)
 
@@ -70,8 +72,18 @@ Written first against a not-yet-existing `DevHarness.tsx` (red: `Failed to resol
    empty rather than crashing.
 
 All four pre-wire a `FakeClient` through `connectionStore.getState().connect(fake)` — the same
-seam `threads.test.ts` uses — so `bootstrapClient()`'s no-op guard is exercised for real (not just
-assumed): `connectionStore.getState().client` is already non-null by the time the effect runs.
+seam `threads.test.ts` uses — before rendering, so `DevHarness`'s effects run against a scripted
+fake with no sockets involved. Correction: this is NOT what makes `bootstrapClient()`'s real-client
+construction a no-op under test — `import.meta.env.MODE === "test"` is true for the whole Vitest
+run, so that guard fires first and returns before ever reaching the `connectionStore.getState().client`
+check; the tests never exercise that second (client-already-set) branch at all. Pre-wiring the
+fake first is still necessary (it's what the rest of the component — the `thread/list` and
+selection effects — reads), it just isn't what's exercising `bootstrapClient`'s own no-op path.
+The client-truthy branch is defensive idempotency for a real remount that keeps `connection.ts`'s
+module state intact (e.g. Fast Refresh) — it was not exercised by the unit tests, and the live
+run didn't specifically trigger it either (the reconnect sequence below never remounted the
+component at all: `AppwireClient` handles reconnect internally on the same client instance, no
+React remount involved, so `bootstrapClient`'s effect never re-ran during that test).
 
 ### Gate results
 - `npm run test` → 79 passed (75 pre-existing + 4 new).
