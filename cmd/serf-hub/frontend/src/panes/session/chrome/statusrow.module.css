@@ -1,0 +1,48 @@
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.contextNumbers {
+  font-family: var(--font-mono);
+  color: var(--ink-low);
+}
+
+.meter {
+  width: 64px;
+}
+
+.select {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+/* Standard visually-hidden recipe: keeps a real, focus-order-preserving
+ * <label> in the accessibility tree without taking up any visual footprint
+ * in this compact row - used where a widget's typed props have no
+ * aria-label passthrough of their own (see widgets/select's index.tsx: it
+ * intentionally forwards only value/onChange/options/disabled/id/name, no
+ * rest-spread), so the standard <label htmlFor> association is the only
+ * way left to give such a control an accessible name. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
