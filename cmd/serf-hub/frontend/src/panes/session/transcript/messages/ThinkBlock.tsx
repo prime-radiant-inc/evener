@@ -47,11 +47,18 @@ export function ThinkBlock({ item, live }: ItemRenderProps) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-live="true">
         <span className={CLASS.label}>Thinking…</span>
-        {(item.reasoningSummaries ?? []).map((chunks, i) => (
-          <p key={i} className={CLASS.paragraph}>
-            <StreamingText chunks={chunks} />
-          </p>
-        ))}
+        {(item.reasoningSummaries ?? []).map((chunks, i) =>
+          // A zero-chunk index (a later summaryIndex has started streaming
+          // before this earlier one has) renders nothing rather than an
+          // empty <p> - .paragraph carries its own margin, so an empty one
+          // would still show as a visible gap. It appears in position the
+          // instant its first chunk arrives.
+          chunks.length === 0 ? null : (
+            <p key={i} className={CLASS.paragraph}>
+              <StreamingText chunks={chunks} />
+            </p>
+          ),
+        )}
       </div>
     );
   }

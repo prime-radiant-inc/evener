@@ -61,6 +61,19 @@ test("live incremental growth on one summaryIndex does not disturb another index
   expect(streams.map((s) => s.textContent)).toEqual(["ab", "x"]);
 });
 
+test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-paragraph gap) until it gets content", () => {
+  const { container, rerender } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [[], ["second"]] })} turn={turn} live={true} />,
+  );
+  expect(container.querySelectorAll("p")).toHaveLength(1);
+  expect(screen.getByTestId("streaming-text").textContent).toBe("second");
+
+  rerender(<ThinkBlock item={item({ reasoningSummaries: [["first"], ["second"]] })} turn={turn} live={true} />);
+  expect(container.querySelectorAll("p")).toHaveLength(2);
+  const streams = screen.getAllByTestId("streaming-text");
+  expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
+});
+
 // --- settled: collapse to "Thought" + preview -------------------------------
 
 test("settled collapses to a closed details with a preview of the first paragraph's first line", () => {
