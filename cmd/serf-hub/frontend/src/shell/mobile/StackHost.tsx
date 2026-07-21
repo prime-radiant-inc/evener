@@ -1,3 +1,42 @@
+// The <900px workspace host: exactly one pane, full-screen, with its own
+// slim back/drawer top bar - the mobile counterpart to DockHost's
+// multi-pane dockview desktop layout. Both hosts read the SAME
+// useWorkspaceStore and the SAME pane registry; a pane component never
+// knows which one is showing it (Global Constraints: "panes never ask 'am
+// I mobile?'").
+//
+// MOUNT CONTRACT for AppShell (wired in at merge time - this stream owns
+// only src/shell/mobile/** and shell/useIsMobile.ts, never AppShell.tsx
+// itself, so this is a note for whoever does that wiring, not code this
+// stream can land):
+//
+//   import { useIsMobile } from "./useIsMobile";
+//   import { StackHost } from "./mobile/StackHost";
+//   ...
+//   const isMobile = useIsMobile();
+//   ...
+//   {route === null ? <NotFound /> : isMobile ? <StackHost /> : <DockHost />}
+//
+// StackHost takes NO PROPS, exactly like DockHost - it needs nothing from
+// AppShell beyond being mounted in DockHost's place. A breakpoint crossing
+// (DockHost <-> StackHost) unmounts whichever host was showing and mounts
+// the other fresh: dockview's own layout/geometry does not survive (its
+// DockviewApi is torn down on unmount - see workspace.ts's
+// registerDockviewApi(null) in DockHost's own effect cleanup), which is
+// accepted, not a bug - layout persistence is desktop-only by design (see
+// DockHost.tsx and requirement 5 below). useWorkspaceStore's own
+// panes/focusedPaneId (what BOTH hosts actually render from) live above
+// either host's lifecycle and survive the swap unaffected. Unlike
+// DockHost, StackHost registers no module-level singleton of its own (no
+// registerDockviewApi equivalent), so no explicit tear-down is needed on
+// unmount beyond what React already does.
+//
+// Requirement 5 (layout persistence is desktop-only): StackHost has no
+// dockview instance and persists nothing to localStorage - "the layout"
+// here is just useWorkspaceStore.focusedPaneId, which is not itself saved/
+// restored anywhere. A reload lands wherever the URL says (see the URL-
+// sync effect below), the same as any other fresh navigation - there is no
+// separate "last mobile screen" memory to restore independently of that.
 import { Suspense, useEffect, useRef } from "react";
 import { IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
