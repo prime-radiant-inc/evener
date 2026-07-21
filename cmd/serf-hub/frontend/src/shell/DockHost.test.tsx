@@ -366,6 +366,24 @@ test("debounces saving the layout to localStorage after a change", async () => {
   expect(Object.keys(parsed.panels)).toEqual(["pane_doc_1", "pane_doc_2"]);
 });
 
+test("unmounting clears a pending debounced save instead of writing after teardown", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_a/);
+
+  vi.useFakeTimers();
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  });
+  await Promise.resolve();
+  advance(200); // mid-debounce: a save is pending, not yet fired
+
+  unmount();
+  advance(1000); // long past the debounce window, but nothing is mounted to fire it
+
+  expect(localStorage.getItem(LAYOUT_KEY)).toBeNull();
+});
+
 test("collapses several rapid layout changes into a single debounced save", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
