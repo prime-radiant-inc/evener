@@ -10,7 +10,7 @@
 // up needs no widget API change. Unlike every other free-text path input in
 // this settings cluster, this field intentionally gets no directory-picker
 // assist (parity floor's own note - matches the legacy exactly).
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { Button, FormRow, Input } from "../../../widgets";
@@ -72,16 +72,33 @@ export function InRepoSection(_props: InRepoSectionProps) {
     }
   }
 
-  // Runs once, on mount, with the localStorage-seeded value - later
-  // re-resolves are driven by blur/Enter (handleCommit below), never by
-  // this effect re-running, so `cwd`/`refresh` are deliberately not deps.
+  // cwdRef always holds the LATEST typed value, read at fire-time by the
+  // deferred initial load below - not the mount-time value a plain closure
+  // over `cwd` would capture. Needed specifically because useConnectedEffect
+  // can defer its one attempt past the initial render (waiting for the
+  // connection to become ready): a user who edits the field during that
+  // wait must have the eventual resolve reflect what they're now looking
+  // at, not a stale snapshot from mount - a real bug this ref fixes (a
+  // dep-restart on every `cwd` change was rejected: since the field re-
+  // resolves on blur/Enter only, not per keystroke, restarting the wait on
+  // every keystroke would - once the connection is already ready, the
+  // common case - fire a fresh resolve() per keystroke too, exactly the
+  // per-keystroke behavior this section deliberately avoids).
+  const cwdRef = useRef(cwd);
+  useEffect(() => {
+    cwdRef.current = cwd;
+  }, [cwd]);
+
+  // Runs once, on mount, with whatever value is current AT FIRE TIME (see
+  // cwdRef above) - later re-resolves are driven by blur/Enter (handleCommit
+  // below), never by this effect re-running, so deps stays empty.
   // useConnectedEffect (not a bare useEffect): a direct deep link to
   // /settings/inrepo can mount this section before AppShell's own connect()
   // handshake finishes; without this, the initial resolve() would fail with
   // "no client connected" and (unlike a later blur/Enter commit, which
   // would by then succeed) there is no automatic retry - see that hook's
   // own doc comment.
-  useConnectedEffect(() => refresh(cwd), []);
+  useConnectedEffect(() => refresh(cwdRef.current), []);
 
   function handleCommit(): void {
     void refresh(cwd);

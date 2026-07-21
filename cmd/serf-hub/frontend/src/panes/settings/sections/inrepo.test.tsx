@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -83,6 +83,40 @@ describe("initial load", () => {
     render(<InRepoSection sectionId="inrepo" />);
     expect(screen.getByText("Enter a working directory.")).toBeTruthy();
     expect(called).toBe(false);
+  });
+
+  // Pins the stale-closure bug useConnectedEffect's deferred-fire design can
+  // introduce for any caller closing over mutable local state at mount time:
+  // this section mounts before the connection is ready (a direct deep link
+  // racing AppShell's own connect() handshake - useConnectedEffect's own
+  // rationale), the user edits the field DURING that wait, and the
+  // eventually-deferred initial resolve must reflect what they're now
+  // looking at, not the value the effect closed over at mount.
+  test("editing the cwd field while the connection is still not ready resolves against the latest value at fire-time, not the stale mount-time one", async () => {
+    localStorage.setItem("lastCwd", "/initial");
+    const fake = new FakeClient("idle"); // NOT ready yet - the deferred-fire path
+    connectionStore.getState().connect(fake);
+    const resolvedCwds: string[] = [];
+    fake.on("serf/launch/resolve", (params) => {
+      resolvedCwds.push(params.cwd);
+      return resolvedWithRepo({ path: ".serf/launch.toml", trust: "absent" });
+    });
+    render(<InRepoSection sectionId="inrepo" />);
+    expect(screen.getByLabelText(/working dir/i)).toHaveProperty("value", "/initial");
+
+    // The user edits the field WHILE still waiting for the handshake.
+    const user = userEvent.setup();
+    const input = screen.getByLabelText(/working dir/i);
+    await user.clear(input);
+    await user.type(input, "/edited");
+    expect(resolvedCwds).toEqual([]); // not ready yet - nothing has fired
+
+    // The connection becomes ready - the deferred initial resolve fires now.
+    act(() => {
+      fake.emitReady();
+    });
+
+    await waitFor(() => expect(resolvedCwds).toEqual(["/edited"]));
   });
 });
 
