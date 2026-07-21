@@ -15,5 +15,9 @@ test("renders the shell placeholder", () => {
 test("renders the dev widget gallery at /dev/widgets", async () => {
   window.history.pushState({}, "", "/dev/widgets");
   render(<App />);
-  expect(await screen.findByText(/widget gallery/i)).toBeTruthy();
-});
+  // The gallery is React.lazy and its import.meta.glob pulls in every
+  // gallery section; under a full parallel vitest run that dynamic import
+  // can far exceed findBy's 1s default (passes in ~0.5s in isolation), so
+  // give the lazy chunk a generous ceiling instead of a load-dependent one.
+  expect(await screen.findByText(/widget gallery/i, undefined, { timeout: 15_000 })).toBeTruthy();
+}, 20_000);
