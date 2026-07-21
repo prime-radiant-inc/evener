@@ -14,51 +14,64 @@
 // protects against.
 //
 // The fix is identity, not position: once a batch is marked `sending`, its
-// keys are frozen and immune to the live-set signal entirely (never
-// pruned, never merged into) until ITS OWN submission settles (handled
-// directly by whoever owns that promise - askDockStore.sendBatch - not by
-// this function). Any newly-live key not already tracked by an existing
-// batch joins the single open (non-sending) batch if one exists, or mints
-// a fresh one if every existing batch is currently sending (or none exist
-// yet) - this is what lets a late-arriving question remain independently
-// answerable and independently sendable rather than being folded into
-// whichever batch happens to be mid-flight.
+// own questions are frozen and immune to the live-set signal entirely
+// (never pruned, never merged into) until ITS OWN submission settles
+// (handled directly by whoever owns that promise - askDockStore.sendBatch -
+// not by this function). Any newly-live question not already tracked by an
+// existing batch joins the single open (non-sending) batch if one exists,
+// or mints a fresh one if every existing batch is currently sending (or
+// none exist yet) - this is what lets a late-arriving question remain
+// independently answerable and independently sendable rather than being
+// folded into whichever batch happens to be mid-flight.
+//
+// Batches store the FULL AskQuestionRef (not just its key): a sending
+// batch must keep rendering and composing correctly even in the Conflict
+// race above, where a fresh liveAskQuestions() scan would no longer
+// include its questions at all (the foreign reply moved the transcript
+// boundary past them) - membership comparisons below use `.key`, but the
+// data itself is never re-derived from a live scan once a batch holds it.
+import type { AskQuestionRef } from "./deriveAskQuestions";
+
 export interface AskBatch {
   id: string;
-  keys: string[]; // preserves global posting order within this batch
+  questions: AskQuestionRef[]; // preserves global posting order within this batch
   sending: boolean;
   sendError?: string;
 }
 
-// pruneBatch drops keys no longer present in the live set, but only for a
-// batch that isn't sending (a sending batch's keys are frozen - see this
-// file's header). Returns the SAME object when nothing was actually
-// removed, so the caller's own same-reference check can short-circuit a
-// re-render when reconciliation was a pure no-op.
-function pruneBatch(b: AskBatch, liveSet: ReadonlySet<string>): AskBatch {
+// pruneBatch drops questions no longer present in the live set, but only
+// for a batch that isn't sending (a sending batch's questions are frozen -
+// see this file's header). Returns the SAME object when nothing was
+// actually removed, so the caller's own same-reference check can
+// short-circuit a re-render when reconciliation was a pure no-op.
+function pruneBatch(b: AskBatch, liveKeys: ReadonlySet<string>): AskBatch {
   if (b.sending) return b;
-  const kept = b.keys.filter((k) => liveSet.has(k));
-  return kept.length === b.keys.length ? b : { ...b, keys: kept };
+  const kept = b.questions.filter((q) => liveKeys.has(q.key));
+  return kept.length === b.questions.length ? b : { ...b, questions: kept };
 }
 
 function sameBatches(a: AskBatch[], b: AskBatch[]): boolean {
   return a.length === b.length && a.every((batch, i) => batch === b[i]);
 }
 
-export function reconcileBatches(prevBatches: AskBatch[], liveKeys: string[], mintId: () => string): AskBatch[] {
-  const liveSet = new Set(liveKeys);
-  const pruned = prevBatches.map((b) => pruneBatch(b, liveSet)).filter((b) => b.sending || b.keys.length > 0);
+export function reconcileBatches(
+  prevBatches: AskBatch[],
+  liveQuestions: AskQuestionRef[],
+  mintId: () => string,
+): AskBatch[] {
+  const liveKeys = new Set(liveQuestions.map((q) => q.key));
+  const pruned = prevBatches.map((b) => pruneBatch(b, liveKeys)).filter((b) => b.sending || b.questions.length > 0);
 
-  const tracked = new Set(pruned.flatMap((b) => b.keys));
-  const newKeys = liveKeys.filter((k) => !tracked.has(k));
+  const tracked = new Set(pruned.flatMap((b) => b.questions.map((q) => q.key)));
+  const newQuestions = liveQuestions.filter((q) => !tracked.has(q.key));
 
-  if (newKeys.length === 0) {
+  if (newQuestions.length === 0) {
     return sameBatches(prevBatches, pruned) ? prevBatches : pruned;
   }
 
   const openIndex = pruned.findIndex((b) => !b.sending);
   if (openIndex === -1) {
-    return [...pruned, { id: mintId(), keys: newKeys, sending: false }];
+    return [...pruned, { id: mintId(), questions: newQuestions, sending: false }];
   }
-  return pruned.map((b, i) => (i === openIndex ? { ...b, keys: [...b.keys, ...newKeys] } : b));
+  return pruned.map((b, i) => (i === openIndex ? { ...b, questions: [...b.questions, ...newQuestions] } : b));
 }
