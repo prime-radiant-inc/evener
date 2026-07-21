@@ -87,11 +87,38 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
   return settled;
 }
 
-function wireToTurnModel(turn: Turn): TurnModel {
+// Folds a PRESERVED item (one carried over from before settlement, not
+// replaced by wire-authoritative data — see the "turn/completed" case) into
+// its settled shape. The live wire's settle stamp carries no items at all,
+// so there is no authoritative text to adopt the way item/completed would;
+// any pendingText chunks still sitting on the item are joined into text
+// exactly as item/completed would eventually have finalized them (mirrors
+// item/agentMessage/delta's own chunk accumulation). An item still marked
+// inProgress inside a settled turn is stale — a turn cannot complete with
+// one of its own items unfinished (e.g. an interrupt or session-end cut a
+// stream short before its own item/completed arrived) — so its status is
+// promoted to completed. reasoningSummaries pass through untouched (they are
+// already the model's own accumulated chunks, not wire data to merge).
+function settleItem(item: ItemModel): ItemModel {
+  const pending = item.pendingText;
+  const stale = item.status === "inProgress";
+  if (pending === undefined && !stale) return item;
+  return {
+    ...item,
+    text: pending === undefined ? item.text : item.text + pending.join(""),
+    pendingText: undefined,
+    status: stale ? "completed" : item.status,
+  };
+}
+
+// The turn-level (non-items) fields wireToTurnModel maps — split out so the
+// "turn/completed" bare-stamp path (which has real turn fields but no items
+// worth trusting) can reuse the exact same field mapping without also
+// pulling in wireToTurnModel's item conversion.
+function wireToTurnScalars(turn: Turn): Omit<TurnModel, "items"> {
   return {
     id: turn.id,
     status: turn.status,
-    items: (turn.items ?? []).map(wireItemToModel),
     startedAt: epochMsToISO(turn.startedAt),
     completedAt: epochMsToISO(turn.completedAt),
     durationMs: turn.durationMs,
@@ -99,6 +126,10 @@ function wireToTurnModel(turn: Turn): TurnModel {
     cost: turn.cost,
     error: turn.error,
   };
+}
+
+function wireToTurnModel(turn: Turn): TurnModel {
+  return { ...wireToTurnScalars(turn), items: (turn.items ?? []).map(wireItemToModel) };
 }
 
 // serf.activeTurnId is the primary signal; a turn already marked inProgress
@@ -245,8 +276,23 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       const turnId = params.turnId || params.turn.id;
       if (model.activeTurnId !== turnId) return model;
       const oldTurn = model.turns.find((t) => t.id === turnId);
-      const settledTurn = wireToTurnModel(params.turn);
-      settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn?.items.find((old) => old.id === item.id)));
+      const stamp = params.turn;
+      let settledTurn: TurnModel;
+      if (stamp.itemsView === "full") {
+        settledTurn = wireToTurnModel(stamp);
+        settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn?.items.find((old) => old.id === item.id)));
+      } else {
+        // The live wire's settle stamp never carries items — every live
+        // settle site (EventUserInput, EventGoalContinuation, EventError,
+        // EventSessionEnd in internal/appprojector/appwire_projection.go)
+        // emits a bare Turn{ID,Status[,Error]} with Items nil, ItemsView "".
+        // itemsView !== "full" means "this payload has nothing to say about
+        // items," not "the turn has no items" — keep whatever the model
+        // already accumulated via item/started + deltas + item/completed,
+        // folding any item still mid-stream through settleItem (a just-
+        // settled turn cannot legitimately still have a pending item).
+        settledTurn = { ...wireToTurnScalars(stamp), items: (oldTurn?.items ?? []).map(settleItem) };
+      }
       return {
         ...model,
         turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),

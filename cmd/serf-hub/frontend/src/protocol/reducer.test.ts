@@ -265,6 +265,19 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   );
   expect(modelA.activeTurnId).toBe("turn_1");
 
+  // Stream A's own item BEFORE settling — wire-true: the real turn/completed
+  // never carries items (see the "turn/completed preserves..." test below),
+  // so A's item must already be in the model via item/completed, not
+  // smuggled in through the settle payload.
+  modelA = applyNotification(
+    modelA,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" } },
+    } as AnyNotification,
+    1500,
+  );
+
   const threadB = testThread({
     id: "thr_b",
     serf: { ref: "ref_b", capabilities: CAPABILITIES, queue: {} },
@@ -280,20 +293,17 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   const modelB = hydrateThread({ thread: threadB }, threadB.serf.ref, 1000);
   expect(modelB.activeTurnId).toBeUndefined();
 
+  // The real wire's turn/completed is a bare stamp (see
+  // internal/appprojector/appwire_projection.go: EventUserInput,
+  // EventGoalContinuation, EventError, EventSessionEnd all emit
+  // Turn{ID,Status[,Error]} with Items nil, ItemsView "") — no items key.
   const aTurnCompleted = {
     method: "turn/completed",
-    params: {
-      turnId: "turn_1",
-      turn: {
-        id: "turn_1",
-        status: "completed",
-        itemsView: "",
-        items: [{ type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" }],
-      },
-    },
+    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
   } as AnyNotification;
 
-  // Sanity: the same notification legitimately completes A's own active turn.
+  // Sanity: the same notification legitimately completes A's own active
+  // turn — and A's already-streamed item SURVIVES the bare settle stamp.
   const settledA = applyNotification(modelA, aTurnCompleted, 2000);
   expect(settledA).not.toBe(modelA);
   expect(itemAt(turnAt(settledA, 0), 0).text).toBe("A's answer");
@@ -303,6 +313,293 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   const result = applyNotification(modelB, aTurnCompleted, 2000);
   expect(result).toBe(modelB);
   expect(itemAt(turnAt(result, 0), 0).text).toBe("B's own answer");
+});
+
+// Part A regression coverage: the real wire's turn/completed is a bare
+// status/timing stamp with no items (see the case's own comment in
+// reducer.ts for the full projector-site citation list). A settled turn
+// must KEEP whatever items the model already accumulated via
+// item/started + deltas + item/completed, not wipe them.
+
+test("turn/completed with a bare stamp preserves the turn's already-streamed items", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello, world!", status: "completed" } },
+    } as AnyNotification,
+    1002,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(1);
+
+  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).text).toBe("Hello, world!");
+});
+
+test("turn/completed's bare stamp fields (status, timing, usage, cost) land on the settled turn", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "", startedAt: 5000, completedAt: 6500, durationMs: 1500, usage: { inputTokens: 10, outputTokens: 20 }, cost: "0.01" },
+      },
+    } as AnyNotification,
+    1002,
+  );
+
+  const turn = turnAt(model, 0);
+  expect(turn.status).toBe("completed");
+  expect(turn.startedAt).toBe(new Date(5000).toISOString());
+  expect(turn.completedAt).toBe(new Date(6500).toISOString());
+  expect(turn.durationMs).toBe(1500);
+  expect(turn.usage).toEqual({ inputTokens: 10, outputTokens: 20 });
+  expect(turn.cost).toBe("0.01");
+});
+
+test('turn/completed with itemsView "full" still replaces items, and mergeReasoning still preserves reasoningSummaries', () => {
+  // itemsView "full" is the snapshot/hydration projector's own discriminator
+  // (internal/apptranscript/apptranscript.go:58,520); the one live site that
+  // sends it on turn/completed is systemAnnouncementWithRaw's no-active-turn
+  // branch (internal/appprojector/appwire_projection.go:~963). This payload
+  // shape must still fully replace items, same as before this task's fix.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking..." } } as AnyNotification,
+    1003,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "full", items: [{ type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" }] },
+      },
+    } as AnyNotification,
+    1004,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["thinking..."]]);
+});
+
+test("turn/completed's settle fold joins a mid-stream item's pendingText into text and flips inProgress to completed", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+    } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" } } as AnyNotification,
+    1003,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" } } as AnyNotification,
+    1004,
+  );
+
+  // Settle arrives mid-stream — no item/completed ever landed for item_1
+  // (e.g. an interrupt or session end cut the stream short).
+  model = applyNotification(
+    model,
+    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } } } as AnyNotification,
+    1005,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe("Hello"); // joined chunks — no authoritative item/completed text ever arrived
+  expect(item.pendingText).toBeUndefined();
+  expect(item.status).toBe("completed"); // an in-progress item inside a settled turn is a lie
+});
+
+test("turn/completed's failed-turn stamp (EventError shape) preserves items and carries the error", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "partial answer", status: "completed" } },
+    } as AnyNotification,
+    1002,
+  );
+
+  const error = { message: "rate limited", source: "provider", title: "Provider error" };
+  model = applyNotification(
+    model,
+    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } } } as AnyNotification,
+    1003,
+  );
+
+  const turn = turnAt(model, 0);
+  expect(turn.status).toBe("failed");
+  expect(turn.error).toEqual(error);
+  expect(turn.items).toHaveLength(1);
+  expect(itemAt(turn, 0).text).toBe("partial answer");
+});
+
+// Part B regression coverage: serf/steering/injected's payload is declared
+// `nil` in the AppWire catalog, but the live projector
+// (internal/appprojector/appwire_projection.go:573-593) actually sends
+// {threadId, ref, text, images, source?} — source present ("user") only for
+// human-sent steers, omitted for daemon-originated ones. A live steer into
+// an in-flight turn must become a "steering" transcript item, mirroring how
+// reload already renders persisted steering turns
+// (internal/apptranscript/apptranscript.go:211-229).
+
+test('serf/steering/injected with source "user" appends a steering item to the active turn', () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" } } as AnyNotification,
+    1002,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    id: "item_steering_live_turn_1_0",
+    turnId: "turn_1",
+    type: "steering",
+    text: "please also check X",
+    status: "completed",
+    source: "user",
+  });
+});
+
+test("serf/steering/injected with no source field appends an item with source undefined", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "daemon steer text" } } as AnyNotification, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.source).toBeUndefined();
+  expect(item.text).toBe("daemon steer text");
+});
+
+test("two steers in one turn get distinct ids in arrival order", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } } as AnyNotification, 1002);
+  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "second" } } as AnyNotification, 1003);
+
+  const items = turnAt(model, 0).items;
+  expect(items.map((it) => it.id)).toEqual(["item_steering_live_turn_1_0", "item_steering_live_turn_1_1"]);
+  expect(items.map((it) => it.text)).toEqual(["first", "second"]);
+});
+
+test("serf/steering/injected with no active turn only updates lastFrameAt (no turn fabricated client-side)", () => {
+  const model = testHydrate();
+  expect(model.activeTurnId).toBeUndefined();
+
+  const result = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "orphaned steer" } } as AnyNotification, 2000);
+
+  expect(result).toEqual({ ...model, lastFrameAt: 2000 });
+  expect(result.turns).toBe(model.turns); // same reference: no turn was touched, none fabricated
+});
+
+test("a steering item survives a bare turn/completed settle stamp (composition with Part A)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "mid-turn steer" } } as AnyNotification, 1002);
+
+  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ type: "steering", text: "mid-turn steer", status: "completed" });
+});
+
+test("serf/steering/injected images populate display-ready strings via the same conversion other item paths use", () => {
+  // Steering images use the same appwire.InputItem shape as userMessage
+  // images (internal/appprojector/appwire_projection.go's
+  // projectUserInputImages: Type "image", MediaType, Data, Name — no
+  // Url/Path), so imagesToStrings' url ?? path ?? name fallback resolves to
+  // name here, exactly as it would for any other image-bearing item.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "", images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "screenshot.png" }] },
+    } as AnyNotification,
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.images).toEqual(["screenshot.png"]);
 });
 
 test("prependOlderTurns keeps order and advances olderCursor", () => {
