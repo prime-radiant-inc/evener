@@ -7,9 +7,10 @@
 // onRestoreToComposer/onDrainSuccess/onFallbackToComposer/
 // useAskDockPending) are wired correctly - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
@@ -17,6 +18,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
+import { usePendingTurnEntries } from "./queue";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -223,4 +225,102 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+});
+
+// --- pending-tracking uniformity (send/steer/queue/drain all register) ------
+
+test("a plain send registers an optimistic pending entry, visible until a wire echo confirms it", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+  await user.type(textarea() as HTMLTextAreaElement, "hello agent");
+  await user.click(screen.getByRole("button", { name: /^send\b/i }));
+
+  await waitFor(() => expect(result.current).toHaveLength(1));
+  expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
+});
+
+test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  fake.on("turn/queue", () => ({}));
+  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
+
+  await user.type(textarea() as HTMLTextAreaElement, "queued message");
+  await user.click(screen.getByRole("button", { name: /^queue\b/i }));
+
+  await waitFor(() => expect(result.current).toHaveLength(1));
+});
+
+// Both failure tests below defer their RPC's rejection via a manually-
+// resolved promise (matching Composer.test.tsx's own "text typed while a
+// send is still in flight" idiom) specifically so each can observe the
+// pending entry EXISTING while the request is in flight, before asserting
+// it's gone after the rejection - asserting only the end state (0 entries)
+// would pass just as well if no entry were ever registered at all, proving
+// nothing about removal-on-failure specifically.
+
+test("a send failure surfaces exactly one toast and removes the pending entry", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  let rejectSend: ((err: unknown) => void) | undefined;
+  fake.on(
+    "turn/start",
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectSend = reject;
+      }),
+  );
+  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+
+  await user.type(textarea() as HTMLTextAreaElement, "hello");
+  await user.click(screen.getByRole("button", { name: /^send\b/i }));
+
+  await waitFor(() => expect(result.current).toHaveLength(1)); // registered while in flight
+  rejectSend?.(new Error("daemon unreachable"));
+
+  await waitFor(() => expect(screen.getAllByText(/send failed/i)).toHaveLength(1));
+  expect(result.current).toHaveLength(0); // removed on failure
+});
+
+test("a queuedDrainPartial failure clears the composer, removes the pending entry, and shows exactly one distinct toast", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { depth: 1, ids: ["q1"], texts: ["already queued"], preview: ["already queued"] },
+      activeTurnId: "turn_1",
+    },
+  });
+  let rejectDrain: ((err: unknown) => void) | undefined;
+  fake.on(
+    "turn/drainAsSteer",
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectDrain = reject;
+      }),
+  );
+  const { result } = renderHook(() => usePendingTurnEntries("ref_a", "drain"));
+
+  await user.type(textarea() as HTMLTextAreaElement, "partial");
+  await user.click(screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }));
+
+  await waitFor(() => expect(result.current).toHaveLength(1)); // registered while in flight
+  rejectDrain?.(new WireError("already queued, drain failed", -32013, { serfErrorInfo: "queuedDrainPartial" }));
+
+  await waitFor(() => expect(screen.getAllByText(/drain failed after queueing/i)).toHaveLength(1));
+  expect((textarea() as HTMLTextAreaElement).value).toBe("");
+  expect(result.current).toHaveLength(0); // removed on failure
 });

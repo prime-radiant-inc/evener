@@ -18,7 +18,7 @@ import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { readEnterToSendPref } from "./enterToSendPref";
-import { QueueStrip } from "./queue";
+import { QueueStrip, submitWithPendingTracking } from "./queue";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
 export interface ComposerProps {
@@ -251,27 +251,62 @@ export function Composer({ ref }: ComposerProps) {
     return { text: textRef.current, attachments: attachments.toInputAttachments() };
   }
 
+  // submitAction wraps every method in submitWithPendingTracking (the wave's
+  // own beyond-parity decision - w5-task-3-report.md: "T2's own send/steer
+  // submissions should wrap their threadsStore.send/.steer calls in
+  // submitWithPendingTracking the same way QueueStrip's own drain handler
+  // wraps drainAsSteer... that's what makes optimistic pending genuinely
+  // uniform across all four methods"), exactly mirroring QueueStrip.tsx's
+  // own handleDrain shape.
+  //
+  // Toast/bookkeeping split, reconciled against pendingTurnsStore's own
+  // documented contract (its submitWithPendingTracking doc comment: onFailure
+  // is for toasting, "rethrowing so the caller's OWN catch can still run its
+  // own non-toast bookkeeping"): the toast lives ENTIRELY inside onFailure
+  // (same as QueueStrip's own handleDrain), and the outer catch below only
+  // ever re-runs the isQueuedDrainPartial state-clearing (never a second
+  // toast) - so a failure surfaces exactly once regardless of which branch
+  // it takes. Before this reconciliation, both sides pushed a toast for the
+  // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
     const submittedText = text;
     const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
     const payload = attachments.toInputAttachments();
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
     try {
-      if (kind === "send") await threadsStore.getState().send(ref, submittedText, payload);
-      else if (kind === "queue") await threadsStore.getState().queue(ref, submittedText, payload);
-      else if (kind === "steer") await threadsStore.getState().steer(ref, submittedText, payload);
-      else await threadsStore.getState().drainAsSteer(ref, submittedText, payload);
+      await submitWithPendingTracking(
+        {
+          ref,
+          method: kind,
+          text: submittedText,
+          attachments: payload,
+          onFailure: (err) => {
+            if (kind === "drain" && isQueuedDrainPartial(err)) {
+              toasts.push("error", `Drain failed after queueing: ${errorMessage(err)}`);
+            } else {
+              const label =
+                kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
+              toasts.push("error", `${label} failed: ${errorMessage(err)}`);
+            }
+          },
+        },
+        () => {
+          if (kind === "send") return threadsStore.getState().send(ref, submittedText, payload);
+          if (kind === "queue") return threadsStore.getState().queue(ref, submittedText, payload);
+          if (kind === "steer") return threadsStore.getState().steer(ref, submittedText, payload);
+          return threadsStore.getState().drainAsSteer(ref, submittedText, payload);
+        },
+      );
       clearIfUnchanged(submittedText);
       attachments.clearSubmitted(submittedMarkers);
     } catch (err) {
+      // Already reported via onFailure above. A queuedDrainPartial failure
+      // still clears the composer (the text was already queued before the
+      // drain step itself failed) - every other failure leaves it untouched,
+      // same as before this method was wrapped.
       if (kind === "drain" && isQueuedDrainPartial(err)) {
-        // Already queued before the drain step failed - clears anyway.
         clearIfUnchanged(submittedText);
         attachments.clearSubmitted(submittedMarkers);
-        toasts.push("error", `Drain failed after queueing: ${errorMessage(err)}`);
-      } else {
-        const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-        toasts.push("error", `${label} failed: ${errorMessage(err)}`);
       }
     } finally {
       setBusyAction(null);
