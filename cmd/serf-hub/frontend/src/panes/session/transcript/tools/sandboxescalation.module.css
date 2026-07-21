@@ -1,0 +1,14 @@
+.label {
+  font-weight: var(--font-weight-semibold);
+  color: var(--ink-hi);
+}
+
+.body {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-2);
+}
