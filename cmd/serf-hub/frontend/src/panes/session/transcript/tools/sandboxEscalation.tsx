@@ -1,16 +1,16 @@
 // Sandbox escalation cards (M7): "the tool-exec goroutine blocks until
 // answered via serf/sandbox/escalation/resolve" (docs/appwire-protocol.md).
-// Fully interactive this wave, per the task - approve/deny actually call
-// the wire method - but NOT wired into the live transcript tree. Ground
-// truth (see the wave-4 task-3 report for the full trail, condensed here):
+// Fully interactive - approve/deny actually call the wire method - but NOT
+// wired into the live transcript tree. Ground truth (see the wave-4 task-3
+// report for the full trail, condensed here):
 //
 //   - serf/sandbox/escalation/requested and SerfThread.pendingEscalations
 //     are thread-level (a raw notification + a snapshot list on the
-//     hydrate response), never a ThreadItem. protocol/reducer.ts's
-//     applyNotification has no case for the notification (falls to
-//     `default`, a no-op) and hydrateThread never reads
-//     thread.serf.pendingEscalations - confirmed by reading both
-//     functions directly, not assumed.
+//     hydrate response), never a ThreadItem. R3 projects both into
+//     ThreadModel.pendingEscalations (protocol/reducer.ts's hydrateThread
+//     seeds it from the snapshot; applyNotification's own case keeps it
+//     live-updated) - this file reads that model instead of tracking its
+//     own local copy.
 //   - Neither ItemRenderProps nor ToolRenderProps carries a ref or the
 //     owning ThreadModel (ToolCallItem.tsx receives `turn` but drops it
 //     before calling a descriptor's body), so there is no
@@ -24,21 +24,18 @@
 //
 // Given that, this file ships a fully working, fully tested card + data
 // hook, ready for whoever owns the mount point (a Session.tsx-level slot
-// is outside transcript/tools/**'s ownership - T4 has SessionPane edit
-// rights per the wave-4 plan, or this lands at wave-close integration).
-// Two gaps remain even once mounted, both requiring changes outside this
-// file's ownership: (1) the useSandboxEscalations hook below only ever
-// learns about a LIVE notification - an escalation already pending before
-// this hook mounts (the reconnect/cold-open case) needs
-// thread.serf.pendingEscalations projected into ThreadModel first, which
-// only protocol/reducer.ts can do; (2) resolving inline elsewhere (a
-// different browser tab, the CLI) never reaches THIS hook's local pending
-// list at all - there is no "escalation resolved" notification to react
-// to, only the request/response pair this file drives itself.
-import { useCallback, useEffect, useState } from "react";
+// is outside transcript/tools/**'s ownership).  Reading off the shared
+// threads store (rather than a private subscription) also means a second
+// browser tab/the CLI resolving the SAME escalation converges once this
+// client's own next snapshot or live notification touches that model -
+// still no "escalation resolved" broadcast on the wire (only this client's
+// own successful resolve() removes its local copy - see stores/threads.ts's
+// resolveEscalation), but no worse than before, and the common cold-open
+// case now works without any resolve happening at all.
+import { useCallback, useState } from "react";
 import { Button, Card, Chip } from "../../../../widgets";
-import { useClient } from "../../../../shell/clientContext";
-import type { AnyNotification, SandboxEscalationRequested } from "../../../../protocol/types.gen";
+import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import type { SandboxEscalationRequested } from "../../../../protocol/types.gen";
 import styles from "./sandboxescalation.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 
@@ -95,35 +92,20 @@ export interface UseSandboxEscalationsResult {
   resolve(escalationId: string, approve: boolean): Promise<void>;
 }
 
-function isEscalationRequested(n: AnyNotification): n is AnyNotification & { params: SandboxEscalationRequested } {
-  return n.method === "serf/sandbox/escalation/requested";
-}
+const NO_PENDING_ESCALATIONS: SandboxEscalationRequested[] = [];
 
-// useSandboxEscalations subscribes to LIVE serf/sandbox/escalation/
-// requested notifications for `ref` for as long as it's mounted, and
-// exposes resolve() to answer one via serf/sandbox/escalation/resolve -
-// see this file's own header for the two documented gaps (no snapshot
-// seeding, no cross-tab resolution sync) neither of which this hook can
-// close on its own.
+// useSandboxEscalations reads `ref`'s tracked ThreadModel.pendingEscalations
+// (snapshot-seeded at hydrate, live-updated by serf/sandbox/escalation/
+// requested - both protocol/reducer.ts's job) and delegates resolve() to
+// the threads store's own resolveEscalation action. `ref` must already be
+// ensureThread'd by something else (a real session pane) - this hook only
+// reads the shared model, it does not hydrate one of its own.
 export function useSandboxEscalations(ref: string): UseSandboxEscalationsResult {
-  const client = useClient();
-  const [pending, setPending] = useState<SandboxEscalationRequested[]>([]);
-
-  useEffect(() => {
-    return client.onNotification((n) => {
-      if (!isEscalationRequested(n)) return;
-      const escalation = n.params;
-      if (escalation.ref !== ref) return;
-      setPending((prev) => (prev.some((e) => e.escalationId === escalation.escalationId) ? prev : [...prev, escalation]));
-    });
-  }, [client, ref]);
+  const pending = useThreadsStore((s) => s.threads.get(ref)?.pendingEscalations ?? NO_PENDING_ESCALATIONS);
 
   const resolve = useCallback(
-    async (escalationId: string, approve: boolean) => {
-      await client.request("serf/sandbox/escalation/resolve", { ref, escalationId, approve });
-      setPending((prev) => prev.filter((e) => e.escalationId !== escalationId));
-    },
-    [client, ref],
+    (escalationId: string, approve: boolean) => threadsStore.getState().resolveEscalation(ref, escalationId, approve),
+    [ref],
   );
 
   return { pending, resolve };

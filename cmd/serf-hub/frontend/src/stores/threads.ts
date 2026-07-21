@@ -10,7 +10,7 @@ import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
 import { connectionStore } from "./connection";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import { applyNotification, hydrateThread, notificationTargetsThread, prependOlderTurns } from "../protocol/reducer";
+import { applyNotification, hydrateThread, notificationTargetsThread, prependOlderTurns, resolvePendingEscalation } from "../protocol/reducer";
 import type { ThreadModel } from "../protocol/model";
 import type { AnyNotification, InputItem, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
 import { WireError } from "../protocol/errors";
@@ -62,6 +62,13 @@ export interface ThreadsStoreState {
   steer(ref: string, text: string): Promise<void>;
   queue(ref: string, text: string): Promise<void>;
   interrupt(ref: string): Promise<void>;
+  // Answers one serf/sandbox/escalation/requested via serf/sandbox/
+  // escalation/resolve. On success, removes the escalation from whichever
+  // of threads/watchedThreads currently track `ref` (both, if both do -
+  // see ThreadsStoreState's own doc comment on why they're independent
+  // maps). On rejection, propagates unchanged - the caller (the
+  // escalation rail) owns surfacing the failure.
+  resolveEscalation(ref: string, escalationId: string, approve: boolean): Promise<void>;
   // The one synchronous, no-network action on this store: flow/'s scroll
   // hook calls it directly off a real scroll event, not through
   // requireClient() - there is nothing to request, just client-side UI
@@ -539,6 +546,35 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
+  },
+
+  async resolveEscalation(ref, escalationId, approve) {
+    const client = requireClient();
+    // No mapConflict here: resolve isn't a turn-CAS method, and the caller
+    // (the escalation rail) surfaces whatever rejection reaches it as-is.
+    await client.request("serf/sandbox/escalation/resolve", { ref, escalationId, approve });
+    threadsStore.setState((s) => {
+      const patch: Partial<ThreadsStoreState> = {};
+      const model = s.threads.get(ref);
+      if (model) {
+        const resolved = resolvePendingEscalation(model, escalationId);
+        if (resolved !== model) {
+          const next = new Map(s.threads);
+          next.set(ref, resolved);
+          patch.threads = next;
+        }
+      }
+      const watchedModel = s.watchedThreads.get(ref);
+      if (watchedModel) {
+        const resolved = resolvePendingEscalation(watchedModel, escalationId);
+        if (resolved !== watchedModel) {
+          const next = new Map(s.watchedThreads);
+          next.set(ref, resolved);
+          patch.watchedThreads = next;
+        }
+      }
+      return Object.keys(patch).length > 0 ? patch : s;
+    });
   },
 
   setScrollPosition(ref, position) {

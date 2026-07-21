@@ -649,6 +649,81 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
   });
 });
 
+describe("useThreadsStore.resolveEscalation", () => {
+  function threadWithEscalation(ref: string, escalationId: string): ThreadReadResponse {
+    return readResponse(ref, {
+      serf: {
+        ref,
+        capabilities: CAPABILITIES,
+        queue: {},
+        pendingEscalations: [
+          { ref, threadId: `thr_${ref}`, escalationId, mode: "workspace-write", tool: "shell", kind: "shell", deniedPath: "/etc/hosts" },
+        ],
+      },
+    });
+  }
+
+  test("calls serf/sandbox/escalation/resolve with exact params", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    const call = fake.calls.find((c) => c.method === "serf/sandbox/escalation/resolve");
+    expect(call?.params).toEqual({ ref: "ref_a", escalationId: "esc_1", approve: true });
+  });
+
+  test("a successful resolve removes the escalation from the tracked model", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", false);
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+
+  test("a rejected resolve propagates and leaves the model untouched", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("serf/sandbox/escalation/resolve", () => {
+      throw new Error("sandbox offline");
+    });
+
+    const before = threadsStore.getState().threads.get("ref_a");
+    await expect(threadsStore.getState().resolveEscalation("ref_a", "esc_1", true)).rejects.toThrow("sandbox offline");
+    expect(threadsStore.getState().threads.get("ref_a")).toBe(before); // same reference: untouched
+  });
+
+  test("a resolve for an escalation absent from the model is a same-reference no-op", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+
+    const before = threadsStore.getState().threads;
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_never_pending", true);
+    expect(threadsStore.getState().threads).toBe(before);
+  });
+
+  test("updates BOTH threads and watchedThreads when the same ref is tracked in each", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    fake.on("serf/sandbox/escalation/resolve", () => ({}));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    await threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
+});
+
 describe("useThreadsStore hook", () => {
   test("reflects store state and updates when the tracked threads map changes", async () => {
     const fake = connectFakeClient();

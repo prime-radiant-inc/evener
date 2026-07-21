@@ -1,30 +1,36 @@
-import { afterEach, test, expect, vi } from "vitest";
+import { afterEach, beforeEach, test, expect, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderHook, act } from "@testing-library/react";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import { ClientProvider } from "../../../../shell/clientContext";
+import { connectionStore } from "../../../../stores/connection";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";
-import type { AnyNotification, SandboxEscalationRequested } from "../../../../protocol/types.gen";
-import { type ReactNode } from "react";
+import type {
+  AnyNotification,
+  SandboxEscalationRequested,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "../../../../protocol/types.gen";
 
-afterEach(cleanup);
-
-// Ground truth (see the wave-4 task-3 report for the full trail):
-// serf/sandbox/escalation/requested + SerfThread.pendingEscalations are
-// thread-level, not item-level - protocol/reducer.ts has NO case for the
-// notification (falls to `default`, a no-op) and hydrateThread never
-// reads thread.serf.pendingEscalations. Neither ItemRenderProps nor
-// ToolRenderProps carries a ref or the owning ThreadModel (confirmed by
-// reading ToolCallItem.tsx: it receives `turn` but never forwards it),
-// so there is no registerToolRenderer/registerItemRenderer integration
-// point for this at all - unlike every other T3 surface. This builds the
-// card + the data hook as standalone, fully tested units; wiring them
-// into the live tree needs a Session.tsx-level mount (outside
-// transcript/tools/**'s ownership) and, for the reconnect/already-pending
-// case specifically, a reducer projection of pendingEscalations (also
-// outside this stream's ownership) - both documented as a handoff, not
-// silently skipped.
+// Ground truth: serf/sandbox/escalation/requested + SerfThread.
+// pendingEscalations are thread-level, not item-level - so, unlike every
+// other T3 surface, there is no registerToolRenderer/registerItemRenderer
+// integration point for this at all (confirmed by reading ToolCallItem.tsx:
+// it receives `turn` but never forwards it). This builds the card + the
+// data hook as standalone, fully tested units, ready for a Session.tsx-
+// level mount (outside transcript/tools/**'s ownership).
+//
+// R3 closed both gaps the original version of this file's hook could not:
+// protocol/reducer.ts now projects thread.serf.pendingEscalations into
+// ThreadModel at hydrate (hydrateThread) and live-updates it from the
+// notification (applyNotification's own case + upsertPendingEscalation).
+// This hook now reads that model directly (via the threads store) instead
+// of keeping its own local pending list/notification subscription, so a
+// cold-open/reconnect's already-pending escalations render for free, and
+// resolve() delegates to the threads store's own resolveEscalation action
+// (stores/threads.ts) rather than calling the wire itself.
 
 function requested(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
   return {
@@ -38,6 +44,65 @@ function requested(overrides: Partial<SandboxEscalationRequested> = {}): Sandbox
     ...overrides,
   };
 }
+
+const CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  queue: true,
+  goal: true,
+  rename: true,
+};
+
+function testThread(ref: string, overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: `thr_${ref}`,
+    sessionId: `sess_${ref}`,
+    preview: "test",
+    ephemeral: false,
+    modelProvider: "anthropic/claude-sonnet-4-5",
+    createdAt: 1000,
+    updatedAt: 1000,
+    status: { type: "idle" },
+    cwd: "/tmp/project",
+    cliVersion: "1.0.0",
+    source: "serf",
+    serf: { ref, capabilities: CAPABILITIES, queue: {} },
+    ...overrides,
+  };
+}
+
+function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadResponse {
+  return { thread: testThread(ref, overrides) };
+}
+
+// connectFakeClient wires a fresh FakeClient through connectionStore
+// directly - the threads store's own requireClient() rides that, not React
+// context, so no <ClientProvider> is needed anywhere in this file anymore
+// (mirrors watchedChild.test.tsx's identical setup for the same reason).
+function connectFakeClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+function readResponseWithEscalation(ref: string, escalation: SandboxEscalationRequested): ThreadReadResponse {
+  return readResponse(ref, { serf: { ref, capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+}
+
+beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
+});
+
+afterEach(() => {
+  cleanup();
+});
 
 // --- SandboxEscalationCard (presentational) -------------------------------
 
@@ -70,57 +135,64 @@ test("both buttons are disabled once resolved", () => {
   expect(deny.disabled).toBe(true);
 });
 
-// --- useSandboxEscalations (data hook, TDD with FakeClient) --------------
+// --- useSandboxEscalations (reads ThreadModel.pendingEscalations, resolve
+// delegates to the threads-store action) -----------------------------------
 
-function withClient(client: FakeClient) {
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <ClientProvider client={client}>{children}</ClientProvider>;
-  };
-}
+test("starts with no pending escalations when the tracked model has none", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
 
-test("starts with no pending escalations", () => {
-  const fake = new FakeClient("ready");
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   expect(result.current.pending).toEqual([]);
 });
 
-test("a live serf/sandbox/escalation/requested notification for this ref appears in `pending`", () => {
-  const fake = new FakeClient("ready");
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
+test("a cold-open snapshot's pendingEscalations render immediately - the exact case the old hook could not handle", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
+  expect(result.current.pending).toHaveLength(1);
+  expect(result.current.pending[0]?.escalationId).toBe("esc_1");
+});
+
+test("a live serf/sandbox/escalation/requested notification, folded through the store, appears in `pending`", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
+  expect(result.current.pending).toEqual([]);
 
   act(() => {
-    fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
-      params: requested(),
-    } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
   });
 
   expect(result.current.pending).toHaveLength(1);
   expect(result.current.pending[0]?.escalationId).toBe("esc_1");
 });
 
-test("a notification for a DIFFERENT ref is ignored", () => {
-  const fake = new FakeClient("ready");
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
+test("a notification for a DIFFERENT ref is ignored", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
 
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
-    fake.emitNotification({
-      method: "serf/sandbox/escalation/requested",
-      params: requested({ ref: "ref_other" }),
-    } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ ref: "ref_other" }) } as AnyNotification);
   });
 
   expect(result.current.pending).toEqual([]);
 });
 
-test("resolve(escalationId, true) calls serf/sandbox/escalation/resolve with approve:true and removes it from pending", async () => {
-  const fake = new FakeClient("ready");
+test("resolve(escalationId, true) delegates to the threads store, sending approve:true and removing it from `pending`", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   fake.on("serf/sandbox/escalation/resolve", () => ({}));
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
+  await threadsStore.getState().ensureThread("ref_a");
 
-  act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
-  });
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   expect(result.current.pending).toHaveLength(1);
 
   await act(async () => {
@@ -133,14 +205,12 @@ test("resolve(escalationId, true) calls serf/sandbox/escalation/resolve with app
 });
 
 test("resolve(escalationId, false) sends approve:false", async () => {
-  const fake = new FakeClient("ready");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
   fake.on("serf/sandbox/escalation/resolve", () => ({}));
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
+  await threadsStore.getState().ensureThread("ref_a");
 
-  act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
-  });
-
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   await act(async () => {
     await result.current.resolve("esc_1", false);
   });
@@ -149,15 +219,60 @@ test("resolve(escalationId, false) sends approve:false", async () => {
   expect(call?.params).toEqual({ ref: "ref_a", escalationId: "esc_1", approve: false });
 });
 
+test("a rejected resolve() propagates to the caller and leaves `pending` untouched", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
+  fake.on("serf/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
+  await expect(result.current.resolve("esc_1", true)).rejects.toThrow("sandbox offline");
+  expect(result.current.pending).toHaveLength(1);
+});
+
+test("two distinct escalations both surface independently", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_1" }) } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }) } as AnyNotification);
+  });
+
+  expect(result.current.pending.map((e) => e.escalationId)).toEqual(["esc_1", "esc_2"]);
+});
+
+test("a duplicate notification for the same escalationId is de-duplicated, not appended twice (protocol/reducer.ts's upsertPendingEscalation)", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  const { result } = renderHook(() => useSandboxEscalations("ref_a"));
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+  });
+
+  expect(result.current.pending).toHaveLength(1);
+});
+
 // --- SandboxEscalationRail (hook + card wired together) -------------------
+// The per-escalation "resolving"/"errors" component-local state (disable on
+// click, surface a rejection, clear on retry) is this component's own logic,
+// unrelated to where `pending`/`resolve` come from - preserved verbatim
+// across the store-backed rewrite above, re-verified here.
 
 test("clicking Allow immediately disables that card (before the resolve response arrives), preventing a double-submit", async () => {
-  const fake = new FakeClient("ready");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
   const box: { resolveCall: (() => void) | null } = { resolveCall: null };
   fake.on("serf/sandbox/escalation/resolve", () => new Promise((res) => (box.resolveCall = () => res({}))));
   const user = userEvent.setup();
+  await threadsStore.getState().ensureThread("ref_a");
 
-  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
   });
@@ -182,11 +297,13 @@ test("clicking Allow immediately disables that card (before the resolve response
 // nothing at all. This is the wave's only interactive surface, so a failure
 // has to be visible and the card has to stay answerable (retry possible).
 test("a rejected resolve surfaces an error on the card instead of an unhandled rejection, and re-enables the buttons", async () => {
-  const fake = new FakeClient("ready");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
   fake.on("serf/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
   const user = userEvent.setup();
+  await threadsStore.getState().ensureThread("ref_a");
 
-  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
   });
@@ -197,15 +314,19 @@ test("a rejected resolve surfaces an error on the card instead of an unhandled r
   expect(await screen.findByText(/sandbox offline/)).toBeTruthy();
   expect((screen.getByRole("button", { name: /allow/i }) as HTMLButtonElement).disabled).toBe(false);
   expect((screen.getByRole("button", { name: /deny/i }) as HTMLButtonElement).disabled).toBe(false);
+  // The card stays: a rejection is local UI state, not a store mutation.
+  expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
 });
 
 test("a subsequent successful resolve clears a previously shown error", async () => {
-  const fake = new FakeClient("ready");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
   let shouldFail = true;
   fake.on("serf/sandbox/escalation/resolve", () => (shouldFail ? Promise.reject(new Error("sandbox offline")) : {}));
   const user = userEvent.setup();
+  await threadsStore.getState().ensureThread("ref_a");
 
-  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
   });
@@ -220,36 +341,24 @@ test("a subsequent successful resolve clears a previously shown error", async ()
   await waitFor(() => expect(screen.queryByText(/sandbox offline/)).toBeNull());
 });
 
-test("SandboxEscalationRail renders one card per pending escalation, keyed by escalationId", () => {
-  const fake = new FakeClient("ready");
-  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+test("a cold-open snapshot's pendingEscalations render as cards with no live notification needed", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponseWithEscalation("ref_a", requested()));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
+  expect(await screen.findByText(/sandbox approval/i)).toBeTruthy();
+});
+
+test("SandboxEscalationRail renders one card per pending escalation, keyed by escalationId", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+  await threadsStore.getState().ensureThread("ref_a");
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
     fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_1" }) } as AnyNotification);
     fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_2" }) } as AnyNotification);
   });
   expect(screen.getAllByText(/sandbox approval/i)).toHaveLength(2);
-});
-
-test("two distinct escalations both surface independently", () => {
-  const fake = new FakeClient("ready");
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
-
-  act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_1" }) } as AnyNotification);
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }) } as AnyNotification);
-  });
-
-  expect(result.current.pending.map((e) => e.escalationId)).toEqual(["esc_1", "esc_2"]);
-});
-
-test("a duplicate notification for the same escalationId is de-duplicated, not appended twice", () => {
-  const fake = new FakeClient("ready");
-  const { result } = renderHook(() => useSandboxEscalations("ref_a"), { wrapper: withClient(fake) });
-
-  act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
-  });
-
-  expect(result.current.pending).toHaveLength(1);
 });
