@@ -164,6 +164,87 @@ test("parseCssImports ignores a plain, non-CSS import", () => {
   expect(parseCssImports('import { useState } from "react";')).toEqual([]);
 });
 
+// --- mechanism 2b: what import-shaped .module.css mentions got missed? ---
+//
+// IMPORT_RE only recognizes ONE shape: a plain default import, alone on
+// its line, nothing trailing but an optional `;`. A namespace import, a
+// type-only import, a re-export, or an otherwise-normal import with a
+// same-line trailing comment all still mention a CSS module but don't
+// match that shape - so parseCssImports silently produces NO binding for
+// any of them. Left unchecked, a file whose ONLY css import takes one of
+// these shapes gets `bindings.size === 0` in the production loop below
+// and is skipped ENTIRELY: no test generated, no failure, no signal at
+// all that its classes were never checked - a stray trailing comment
+// added to an import line would quietly turn this whole contract off for
+// that one file.
+//
+// This scan is deliberately loose - anything starting with the bare
+// keyword `import` or `export` that mentions ".module.css" later on the
+// same line - rather than trying to enumerate every unsupported shape.
+// Anchoring to "the TRIMMED line starts with the keyword" (real ES
+// import/export declarations are always top-level; nesting one inside a
+// block is a syntax error) is what keeps this from tripping over its own
+// subject matter: a comment mentioning "import" and ".module.css" in
+// prose never starts the line with the bare keyword (it starts with
+// `//`/`/*`/`*`), and every fixture string in this file's own tests below
+// is either indented inside a test() body or starts with `const`/a quote
+// character, not literally `import`/`export` - both excluded
+// automatically, with no special case needed for "this is my own file."
+// Anything this flags that IMPORT_RE also parsed is excluded via
+// parsedLines, so a normal import stays silent.
+const LOOSE_IMPORT_LINE_RE = /^(?:import|export)\b.*\.module\.css/;
+
+function unparsedModuleCssImportLines(sourceText: string): string[] {
+  const parsedLines = new Set<string>();
+  for (const match of sourceText.matchAll(IMPORT_RE)) parsedLines.add(match[0].trim());
+
+  const offenders: string[] = [];
+  for (const rawLine of sourceText.split("\n")) {
+    if (rawLine !== rawLine.trimStart()) continue; // real import/export declarations are always column-0
+    const line = rawLine.trim();
+    if (LOOSE_IMPORT_LINE_RE.test(line) && !parsedLines.has(line)) offenders.push(line);
+  }
+  return offenders;
+}
+
+test("unparsedModuleCssImportLines is silent for a normal, fully-parsed import", () => {
+  expect(unparsedModuleCssImportLines('import styles from "./radiogroup.module.css";')).toEqual([]);
+});
+
+test("unparsedModuleCssImportLines flags a trailing same-line comment on an otherwise-normal import", () => {
+  const line = 'import styles from "./radiogroup.module.css"; // eslint-disable-line no-unused-vars';
+  expect(unparsedModuleCssImportLines(line)).toEqual([line]);
+});
+
+test("unparsedModuleCssImportLines flags a namespace import", () => {
+  const line = 'import * as styles from "./radiogroup.module.css";';
+  expect(unparsedModuleCssImportLines(line)).toEqual([line]);
+});
+
+test("unparsedModuleCssImportLines flags a type-only import", () => {
+  const line = 'import type styles from "./radiogroup.module.css";';
+  expect(unparsedModuleCssImportLines(line)).toEqual([line]);
+});
+
+test("unparsedModuleCssImportLines flags a re-export", () => {
+  const line = 'export { default as styles } from "./radiogroup.module.css";';
+  expect(unparsedModuleCssImportLines(line)).toEqual([line]);
+});
+
+test("unparsedModuleCssImportLines finds only the offending line when a file mixes a good import and a bad one", () => {
+  const badLine = 'import rawStyles from "./card.module.css"; // trailing comment breaks the strict shape';
+  const sourceText = ['import styles from "./markdown.module.css";', badLine].join("\n");
+  expect(unparsedModuleCssImportLines(sourceText)).toEqual([badLine]);
+});
+
+test("unparsedModuleCssImportLines does not flag prose or fixture text that merely mentions both words", () => {
+  const notAnImport = [
+    "// A comment mentioning an import and a .module.css path is not code.",
+    "  const line = 'import styles from \"./x.module.css\";'; // indented fixture text",
+  ].join("\n");
+  expect(unparsedModuleCssImportLines(notAnImport)).toEqual([]);
+});
+
 // --- mechanism 3: which classes does a source file actually reference? ---
 //
 // Every `<ident>.<name>` access where <ident> is one of THIS file's own
@@ -180,7 +261,13 @@ test("parseCssImports ignores a plain, non-CSS import", () => {
 // semantic test names to tone values - that local `styles.info`-shaped
 // access is not a stylesheet reference at all, and keying strictly off
 // each file's real import identifiers leaves it alone automatically
-// instead of needing a special case (see the poison test below).
+// instead of needing a special case (see the poison test below). This is
+// scope-blind by design, not real lexical-scope analysis: it follows
+// today's rawStyles-rebinding convention specifically, by matching an
+// import-bound name anywhere in the file's text - a hypothetical NESTED
+// shadow of the same bound name would still be attributed to the
+// stylesheet. That's the safe direction: it can only over-include a
+// reference to check, never silently drop one.
 const MEMBER_ACCESS_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b/g;
 
 function parseClassReferences(
@@ -236,6 +323,13 @@ function missingClassMessages(
   bindings: ReadonlyMap<string, string>,
   classesByKey: ReadonlyMap<string, ReadonlySet<string>>,
 ): string[] {
+  const unparsed = unparsedModuleCssImportLines(sourceText);
+  if (unparsed.length > 0) {
+    throw new Error(
+      `requireclass-contract: ${sourceRel} has an import-shaped line mentioning a CSS module that this test's parser did not bind: ${unparsed.map((line) => JSON.stringify(line)).join(", ")} - likely a trailing comment, "import * as", "import type", or a re-export shape parseCssImports doesn't understand; fix the import's shape (or extend parseCssImports) so this file's classes actually get checked instead of silently skipped.`,
+    );
+  }
+
   const messages: string[] = [];
   for (const { ident, name, cssKey } of parseClassReferences(sourceText, bindings)) {
     const classes = classesByKey.get(cssKey);
@@ -283,6 +377,36 @@ test("passes once the referenced class is restored, mirroring the real fix", () 
   expect(missingClassMessages("widgets/radiogroup/index.tsx", sourceText, bindings, classesByKey)).toEqual([]);
 });
 
+test("missingClassMessages throws when a reference resolves to a CSS module this test never parsed", () => {
+  const bindings = new Map([["styles", "widgets/ghost/ghost.module.css"]]);
+  const sourceText = 'requireClass(styles.foo, "ghost.module.css", "foo")';
+  const classesByKey = new Map(); // deliberately empty - "widgets/ghost/ghost.module.css" was never walked
+  expect(() => missingClassMessages("widgets/ghost/index.tsx", sourceText, bindings, classesByKey)).toThrow(
+    /no parsed CSS module/,
+  );
+});
+
+// Pins the "no silent skip" fix: a trailing same-line comment breaks
+// IMPORT_RE's strict shape (see the unparsedModuleCssImportLines poison
+// tests above), so parseCssImports finds no binding for this import at
+// all - bindings ends up empty here exactly as bindingsFor would produce
+// it for this real file. Without the check this pins,
+// missingClassMessages would happily return [] (parseClassReferences has
+// no bound identifier to check "styles.optionLabel" against), and the
+// production loop's own `bindings.size === 0` branch would never even
+// generate a test for this file - a real bug living behind that import
+// would never be reported by ANY test, not even a failing one.
+test("missingClassMessages throws on an unparsed import-shaped line instead of silently reporting nothing missing", () => {
+  const sourceText = [
+    'import styles from "./radiogroup.module.css"; // eslint-disable-line no-unused-vars',
+    "",
+    "styles.optionLabel;",
+  ].join("\n");
+  expect(() => missingClassMessages("widgets/radiogroup/index.tsx", sourceText, new Map(), CSS_CLASSES)).toThrow(
+    /import-shaped line/,
+  );
+});
+
 // --- the actual contract: run it against every real file under src -----
 const SOURCE_PATHS = walkFiles(SRC_ROOT, (name) => name.endsWith(".ts") || name.endsWith(".tsx"));
 
@@ -298,7 +422,12 @@ for (const absPath of SOURCE_PATHS) {
   const sourceRel = relative(SRC_ROOT, absPath);
   const sourceText = readFileSync(absPath, "utf8");
   const bindings = bindingsFor(dirname(absPath), sourceText);
-  if (bindings.size === 0) continue; // no CSS Modules import here - nothing to check
+  // Skip only when there's truly nothing to check: no bindings AND no
+  // import-shaped line that should have produced one. A file whose ONLY
+  // css import took an unrecognized shape must still get a test - one
+  // that throws via missingClassMessages's own check above - rather than
+  // being silently skipped just because bindings.size ended up at 0.
+  if (bindings.size === 0 && unparsedModuleCssImportLines(sourceText).length === 0) continue;
 
   test(`${sourceRel} only references classes that exist in its CSS module(s)`, () => {
     expect(missingClassMessages(sourceRel, sourceText, bindings, CSS_CLASSES)).toEqual([]);
