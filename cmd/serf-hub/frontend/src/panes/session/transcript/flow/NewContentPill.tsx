@@ -10,6 +10,21 @@
 // for --attention (src/styles/token-contract.test.ts) - reusing it here
 // keeps the attention tone confined to this one pill (both its count and
 // needs-you forms), never spilling into this file's own CSS.
+//
+// The error variant (same §5, lines 113-114) is a THIRD tone on the same
+// Chip, danger this time - precedence (error > needs-you > plain count) is
+// resolved right here, as a plain prop-driven if/else-if: this stays ONE
+// component with three renderings, not a second component (useTranscriptScroll.ts
+// exposes pillError/pillNeedsYou/pillCount as independent values for exactly
+// this reason). Legacy rendered a dedicated SVG icon for this pill's tones
+// (parity §16); this codebase's OWN needs-you branch above already dropped
+// that in favor of tone-only + copy (no icon anywhere in this file), so the
+// error variant matches that established sibling precedent rather than
+// reintroducing an icon convention nothing else here uses. Copy modernized
+// from legacy's bare "error" to sentence-case "Failed turn" (more legible
+// as a phrase, consistent with WarningItem's own sentence-case fallback
+// "Warning") - the count itself is never shown once upgraded, same as the
+// needs-you branch.
 import { Badge, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./newcontentpill.module.css";
@@ -19,6 +34,11 @@ export interface NewContentPillProps {
   count: number;
   /** Upgrades the pill to the needs-you tone/label (see useTranscriptScroll.ts). */
   needsYou: boolean;
+  /** Upgrades the pill to the danger tone/label - a failed turn the reader
+   * hasn't seen yet (see useTranscriptScroll.ts's error anchor). Outranks
+   * needsYou when both are true. Defaults to false so an existing caller
+   * that only knows about count/needsYou is unaffected. */
+  error?: boolean;
   /** Scrolls to bottom and clears the pill (also fires on a manual return to bottom, independently). */
   onClick: () => void;
 }
@@ -28,7 +48,7 @@ const CLASS = {
   arrow: requireClass(styles.arrow, "newcontentpill.module.css", "arrow"),
 };
 
-export function NewContentPill({ count, needsYou, onClick }: NewContentPillProps) {
+export function NewContentPill({ count, needsYou, error = false, onClick }: NewContentPillProps) {
   if (count <= 0) return null;
 
   return (
@@ -36,7 +56,9 @@ export function NewContentPill({ count, needsYou, onClick }: NewContentPillProps
       <span className={CLASS.arrow} aria-hidden="true">
         ↓
       </span>
-      {needsYou ? (
+      {error ? (
+        <Chip tone="danger">Failed turn</Chip>
+      ) : needsYou ? (
         <Chip tone="attention">needs you</Chip>
       ) : (
         <>
