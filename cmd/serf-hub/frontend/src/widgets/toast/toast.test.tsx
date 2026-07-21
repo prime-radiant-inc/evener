@@ -113,7 +113,15 @@ test("hovering pauses the auto-dismiss timer", () => {
   expect(screen.getByText("Saved")).toBeTruthy();
 });
 
-test("unhovering resumes a fresh 5s window", () => {
+// fix-wave (item 4 adjudication): unhovering used to resume a fresh
+// AUTO_DISMISS_MS window regardless of how much of it had already
+// elapsed before the hover, so a toast hovered right before it would
+// have dismissed got a full bonus 5s instead of the ~0s it actually had
+// left. True pause/resume (remaining time is tracked and only THAT much
+// is rescheduled) is the standard pattern most toast libraries implement
+// and the less surprising one, so this fixes the behavior rather than
+// documenting the restart as intentional.
+test("unhovering resumes with the time that was actually remaining, not a fresh window", () => {
   vi.useFakeTimers();
   render(
     <>
@@ -124,12 +132,38 @@ test("unhovering resumes a fresh 5s window", () => {
   fireEvent.click(screen.getByRole("button", { name: "Push: Saved" }));
   const toast = screen.getByText("Saved").parentElement!;
 
-  advance(4000);
+  advance(4000); // 1000ms of the 5000ms budget left
   fireEvent.mouseEnter(toast);
-  advance(2000);
-  fireEvent.mouseLeave(toast);
+  advance(2000); // paused - elapsed time here must not count against the budget
+  fireEvent.mouseLeave(toast); // resumes with exactly the 1000ms that was left
 
-  advance(4999);
+  advance(999);
+  expect(screen.getByText("Saved")).toBeTruthy();
+  advance(1);
+  expect(screen.queryByText("Saved")).toBeNull();
+});
+
+test("repeated pause/resume cycles keep subtracting from the same budget, not resetting it", () => {
+  vi.useFakeTimers();
+  render(
+    <>
+      <Toast />
+      <PushButton kind="info" text="Saved" />
+    </>,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Push: Saved" }));
+  const toast = screen.getByText("Saved").parentElement!;
+
+  advance(2000); // 3000ms left
+  fireEvent.mouseEnter(toast);
+  advance(1000); // paused
+  fireEvent.mouseLeave(toast); // resumes with 3000ms left
+  advance(1000); // 2000ms left
+  fireEvent.mouseEnter(toast);
+  advance(5000); // paused for way longer than the remaining budget - must not dismiss while paused
+  fireEvent.mouseLeave(toast); // resumes with 2000ms left
+
+  advance(1999);
   expect(screen.getByText("Saved")).toBeTruthy();
   advance(1);
   expect(screen.queryByText("Saved")).toBeNull();

@@ -43,22 +43,33 @@ export function Toast() {
 
 function ToastItem({ toast }: { toast: ToastRecord }) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // True pause/resume, not restart: hovering right before a toast would
+  // have dismissed must not grant it a fresh full-length reprieve.
+  // remainingMsRef holds what's left of the budget; startedAtRef is when
+  // the currently-running timer (if any) was last (re)started, so pause()
+  // can compute how much of THIS stretch actually elapsed and subtract it.
+  const remainingMsRef = useRef(AUTO_DISMISS_MS);
+  const startedAtRef = useRef(0);
 
-  function schedule() {
-    timerRef.current = setTimeout(() => dismissToast(toast.id), AUTO_DISMISS_MS);
+  function schedule(durationMs: number) {
+    startedAtRef.current = Date.now();
+    timerRef.current = setTimeout(() => dismissToast(toast.id), durationMs);
   }
 
   useEffect(() => {
-    schedule();
+    remainingMsRef.current = AUTO_DISMISS_MS;
+    schedule(AUTO_DISMISS_MS);
     return () => clearTimeout(timerRef.current);
   }, [toast.id]);
 
   function pause() {
     clearTimeout(timerRef.current);
+    const elapsed = Date.now() - startedAtRef.current;
+    remainingMsRef.current = Math.max(0, remainingMsRef.current - elapsed);
   }
 
   function resume() {
-    schedule();
+    schedule(remainingMsRef.current);
   }
 
   return (
