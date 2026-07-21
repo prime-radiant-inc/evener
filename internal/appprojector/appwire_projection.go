@@ -711,6 +711,22 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			OutputSoFar:  data.OutputSoFar,
 			PartiallyRan: data.PartiallyRan,
 		})}
+	case events.EventSandboxEscalationResolved:
+		// The pair to EventSandboxEscalationRequested above: a previously-raised
+		// escalation left the pending set (resolved, turn-interrupted, or cleared by
+		// session close — agent/session_escalation.go's escalateOnSandboxDenial emits
+		// this exactly once per escalation from its convergence-point exit). Every
+		// OTHER subscribed client uses it to clear its own stale copy of the card. It
+		// carries no reason/approved (a review decision, additive later): the sole
+		// consumer clears by id identically regardless of outcome, and the producer
+		// cannot reliably distinguish close-cancel from interrupt anyway. Like
+		// requested, it rides the event stream only and touches no turn/item state.
+		data := eventData[events.SandboxEscalationResolvedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationResolved, appwire.SandboxEscalationResolved{
+			ThreadID:     p.threadID,
+			Ref:          p.ref,
+			EscalationID: data.EscalationID,
+		})}
 	case events.EventSessionNameChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.SessionNameChangedData](event.Data)

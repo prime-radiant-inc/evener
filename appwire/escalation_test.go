@@ -43,3 +43,28 @@ func TestSandboxEscalationWireKeys(t *testing.T) {
 		t.Fatalf("resolve params round-trip lost data: %+v", got)
 	}
 }
+
+// TestSandboxEscalationResolvedWireKeys (wire-honesty spec Part B) pins the
+// camelCase wire spelling of the serf/sandbox/escalation/resolved
+// notification, and — the spec's binding design decision — that it carries
+// NO reason or approved: the sole consumer clears its card by id identically
+// regardless of outcome, and the producer cannot reliably distinguish
+// close-cancel from interrupt anyway. Additive later if a "resolved
+// elsewhere" toast ever wants more.
+func TestSandboxEscalationResolvedWireKeys(t *testing.T) {
+	resolved := SandboxEscalationResolved{ThreadID: "t1", Ref: "local:t1", EscalationID: "esc_1"}
+	b, err := json.Marshal(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"threadId", "ref", "escalationId"} {
+		if !strings.Contains(string(b), `"`+key+`":`) {
+			t.Errorf("SandboxEscalationResolved is missing wire key %q in %s", key, b)
+		}
+	}
+	for _, absent := range []string{"reason", "approved"} {
+		if strings.Contains(string(b), `"`+absent+`"`) {
+			t.Errorf("SandboxEscalationResolved must not carry %q, got %s", absent, b)
+		}
+	}
+}

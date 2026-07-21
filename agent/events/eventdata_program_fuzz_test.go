@@ -112,5 +112,6 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{GoalContinuationData{Text: text}, EventGoalContinuation},
 		{GoalEndedData{Status: text, Reason: text, Iterations: n}, EventGoalEnded},
 		{SandboxEscalationRequestedData{EscalationID: text, Mode: text, Tool: text, PartiallyRan: flag}, EventSandboxEscalationRequested},
+		{SandboxEscalationResolvedData{EscalationID: text}, EventSandboxEscalationResolved},
 	}
 }

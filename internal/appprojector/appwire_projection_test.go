@@ -190,19 +190,56 @@ func TestProject_SandboxEscalationRequested(t *testing.T) {
 	}
 }
 
-func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
-	// The escalation rides the event stream only. It is never a transcript turn:
-	// the projector emits exactly the notification and touches no turn/item state,
-	// so the model can neither observe nor replay it.
+// TestProject_SandboxEscalationResolved (wire-honesty spec Part B) mirrors
+// TestProject_SandboxEscalationRequested above for the pair notification: the
+// projector maps EventSandboxEscalationResolved to
+// serf/sandbox/escalation/resolved, carrying only threadId/ref/escalationId
+// (no reason or approved — a review decision the spec's doc comments explain).
+func TestProject_SandboxEscalationResolved(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
-		Kind: events.EventSandboxEscalationRequested,
-		Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool", DeniedPath: "hosts"},
+		Kind: events.EventSandboxEscalationResolved,
+		Data: events.SandboxEscalationResolvedData{EscalationID: "esc_1"},
 	})
-	for _, n := range out {
-		switch n.Method {
-		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
-			t.Fatalf("escalation must not project a turn/item (transcript) notification, got %s", n.Method)
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSandboxEscalationResolved {
+		t.Fatalf("want one serf/sandbox/escalation/resolved notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.SandboxEscalationResolved)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.SandboxEscalationResolved", out[0].Params)
+	}
+	if params.EscalationID != "esc_1" {
+		t.Fatalf("params = %+v", params)
+	}
+	// Same session-routing requirement as the requested notification.
+	if params.ThreadID != "th1" || params.Ref != "local:th1" {
+		t.Fatalf("resolved notification must carry threadId/ref, got %+v", params)
+	}
+}
+
+// TestProject_SandboxEscalationNotInTranscript covers both directions of the
+// M7 escalation pair (requested and resolved, wire-honesty spec Part B). Both
+// ride the event stream only and are never a transcript turn: the projector
+// emits exactly its own notification and touches no turn/item state, so the
+// model can neither observe nor replay either one. This also stands in for
+// the spec's demoted unknown-notification-tolerance check: an older client
+// that does not yet recognize serf/sandbox/escalation/resolved sees no
+// item/turn notification riding alongside it to react to badly — it drops the
+// unrecognized notification exactly like any other, the established norm in
+// the TUI and legacy web.
+func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
+	cases := []events.SessionEvent{
+		{Kind: events.EventSandboxEscalationRequested, Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool", DeniedPath: "hosts"}},
+		{Kind: events.EventSandboxEscalationResolved, Data: events.SandboxEscalationResolvedData{EscalationID: "esc_1"}},
+	}
+	for _, ev := range cases {
+		p := NewAppEventProjector("th1", "local:th1")
+		out := p.Project(ev)
+		for _, n := range out {
+			switch n.Method {
+			case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
+				t.Fatalf("%s must not project a turn/item (transcript) notification, got %s", ev.Kind, n.Method)
+			}
 		}
 	}
 }

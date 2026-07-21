@@ -107,6 +107,14 @@ const (
 	// nor replay it. The projector maps it to the AppWire escalation-requested
 	// notification.
 	EventSandboxEscalationRequested EventKind = "SANDBOX_ESCALATION_REQUESTED"
+	// EventSandboxEscalationResolved marks a previously-requested sandbox
+	// escalation leaving the pending set — by explicit resolve, turn-interrupt, or
+	// session close (wire-honesty spec Part B). Emitted exactly once per
+	// escalation, from the same convergence point in escalateOnSandboxDenial that
+	// raises EventSandboxEscalationRequested, so every OTHER subscribed client can
+	// clear its now-stale approval card. The projector maps it to the AppWire
+	// escalation-resolved notification.
+	EventSandboxEscalationResolved EventKind = "SANDBOX_ESCALATION_RESOLVED"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,

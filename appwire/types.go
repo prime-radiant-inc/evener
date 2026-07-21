@@ -112,6 +112,13 @@ const (
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
 	NotifySerfSandboxEscalationRequested = "serf/sandbox/escalation/requested"
+	// NotifySerfSandboxEscalationResolved pushes notice that a previously-raised
+	// escalation left the pending set (M7, wire-honesty spec Part B): resolved
+	// explicitly, cleared by turn-interrupt, or cleared by session close. Every
+	// OTHER subscribed client uses it to clear its own now-stale copy of the
+	// card. Emitted exactly once per escalation, from the convergence point in
+	// agent/session_escalation.go's escalateOnSandboxDenial.
+	NotifySerfSandboxEscalationResolved = "serf/sandbox/escalation/resolved"
 )
 
 const (
@@ -360,6 +367,21 @@ type SandboxEscalationRequested struct {
 	Command      string `json:"command,omitempty"`
 	OutputSoFar  string `json:"outputSoFar,omitempty"`
 	PartiallyRan bool   `json:"partiallyRan,omitempty"`
+}
+
+// SandboxEscalationResolved is the payload of a serf/sandbox/escalation/resolved
+// notification (M7, wire-honesty spec Part B): a previously-raised escalation
+// left the pending set. It intentionally carries no reason or approved decision
+// — the sole consumer clears its card by id identically regardless of outcome,
+// and the producer cannot reliably distinguish close-cancel from interrupt
+// anyway (see the spec's round-two finding on the close-path race). Additive
+// later if a "resolved elsewhere" toast ever wants more.
+type SandboxEscalationResolved struct {
+	// ThreadID/Ref identify the SESSION this escalation belongs to, exactly like
+	// SandboxEscalationRequested above.
+	ThreadID     string `json:"threadId,omitempty"`
+	Ref          string `json:"ref,omitempty"`
+	EscalationID string `json:"escalationId"`
 }
 
 // SandboxEscalationResolveParams is the request shape for

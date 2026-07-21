@@ -471,3 +471,113 @@ func TestEscalation_NeverAppendsHistory(t *testing.T) {
 		t.Fatalf("escalation must never append a turn to history: before=%d after=%d", before, len(s.history))
 	}
 }
+
+// startEventDrain starts a goroutine appending every event on s.Events() to
+// *evs (guarded by mu), for tests that need to inspect the raw event stream.
+func startEventDrain(s *Session, mu *sync.Mutex, evs *[]events.SessionEvent) {
+	go func() {
+		for ev := range s.Events() {
+			mu.Lock()
+			*evs = append(*evs, ev)
+			mu.Unlock()
+		}
+	}()
+}
+
+// awaitExactlyOneResolvedEvent polls evs (guarded by mu) until exactly one
+// EventSandboxEscalationResolved for id is observed. It fails immediately on a
+// SECOND resolved event for the same id (over-emission), and fails after a 2s
+// deadline if none ever arrives.
+func awaitExactlyOneResolvedEvent(t *testing.T, mu *sync.Mutex, evs *[]events.SessionEvent, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := 0
+		for _, ev := range *evs {
+			if d, ok := ev.Data.(events.SandboxEscalationResolvedData); ok && d.EscalationID == id {
+				n++
+			}
+		}
+		mu.Unlock()
+		switch {
+		case n == 1:
+			return
+		case n > 1:
+			t.Fatalf("escalation %q emitted %d resolved events, want exactly 1", id, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("escalation %q never emitted exactly one resolved event within the deadline", id)
+}
+
+// TestEscalation_EmitsResolvedEventOnExplicitResolve (wire-honesty spec Part
+// B, clearing path 1 of 3: explicit resolve) proves escalateOnSandboxDenial's
+// convergence-point exit emits EventSandboxEscalationResolved exactly once
+// when ResolveSandboxEscalation delivers the human's decision.
+func TestEscalation_EmitsResolvedEventOnExplicitResolve(t *testing.T) {
+	s := escalatableSession(t)
+	var mu sync.Mutex
+	var evs []events.SessionEvent
+	startEventDrain(s, &mu, &evs)
+
+	res, _ := deniedResult("/etc/hosts")
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
+	}()
+	ids := awaitPending(t, s, 1)
+	if err := s.ResolveSandboxEscalation(ids[0], false); err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	<-done
+	awaitExactlyOneResolvedEvent(t, &mu, &evs, ids[0])
+}
+
+// TestEscalation_EmitsResolvedEventOnTurnInterrupt (wire-honesty spec Part B,
+// clearing path 2 of 3: turn-interrupt) proves the same convergence-point exit
+// emits EventSandboxEscalationResolved exactly once when the tool-exec ctx is
+// cancelled (the select's ctx.Done() arm), independent of any explicit
+// resolve.
+func TestEscalation_EmitsResolvedEventOnTurnInterrupt(t *testing.T) {
+	s := escalatableSession(t)
+	var mu sync.Mutex
+	var evs []events.SessionEvent
+	startEventDrain(s, &mu, &evs)
+
+	res, _ := deniedResult("/etc/hosts")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.escalateOnSandboxDenial(ctx, "write_file", res, noRerun(t))
+	}()
+	ids := awaitPending(t, s, 1)
+	cancel() // turn interrupt
+	<-done
+	awaitExactlyOneResolvedEvent(t, &mu, &evs, ids[0])
+}
+
+// TestEscalation_EmitsResolvedEventOnClose (wire-honesty spec Part B, clearing
+// path 3 of 3: session close) proves the same convergence-point exit emits
+// EventSandboxEscalationResolved exactly once when Close's cancelAllEscalations
+// clears the waiter — the path round two found racy for per-site emission
+// (cancelFunc() in session_lifecycle.go runs before cancelAllEscalations(), so
+// the ctx.Done() arm often wins first), which the single convergence-point
+// emit sidesteps entirely: it fires from the defer regardless of which select
+// arm unblocked it.
+func TestEscalation_EmitsResolvedEventOnClose(t *testing.T) {
+	s := escalatableSession(t)
+	var mu sync.Mutex
+	var evs []events.SessionEvent
+	startEventDrain(s, &mu, &evs)
+
+	res, _ := deniedResult("/etc/hosts")
+	done := make(chan tool.ExecResult, 1)
+	go func() {
+		done <- s.escalateOnSandboxDenial(context.Background(), "write_file", res, noRerun(t))
+	}()
+	ids := awaitPending(t, s, 1)
+	s.Close()
+	<-done
+	awaitExactlyOneResolvedEvent(t, &mu, &evs, ids[0])
+}
