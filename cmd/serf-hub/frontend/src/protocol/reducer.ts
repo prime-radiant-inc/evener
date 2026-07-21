@@ -27,6 +27,22 @@ interface ItemLifecycleInline {
   item: ThreadItem;
 }
 
+// serf/steering/injected's payload is declared `nil` in the AppWire catalog
+// (appwire/protocol.go, NotifySerfSteeringInjected) — codegen therefore emits
+// an empty SerfSteeringInjectedPayload{} with no fields. The live projector
+// (internal/appprojector/appwire_projection.go:573-593, EventSteeringInjected)
+// actually sends {threadId, ref, text, images, source?}: text is pre-
+// substituted server-side with an image placeholder when blank-with-images,
+// and source is present ("user") only for human-sent steers — omitted
+// entirely for daemon-originated ones.
+interface SteeringInjectedInline {
+  threadId?: string;
+  ref?: string;
+  text?: string;
+  images?: InputItem[];
+  source?: string;
+}
+
 function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined ? undefined : new Date(ms).toISOString();
 }
@@ -433,13 +449,46 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       return { ...model, name: n.params.name, lastFrameAt: now };
     }
 
-    // These carry no ThreadModel-tracked state (no job list, no steering
-    // log at this layer) — only their liveness signal (lastFrameAt) applies.
+    // Job lifecycle carries no ThreadModel-tracked state (no job list at
+    // this layer) — only its liveness signal (lastFrameAt) applies. Live
+    // steering (below) is handled separately: unlike jobs, it becomes a
+    // transcript item.
     case "serf/job/started":
-    case "serf/job/finished":
-    case "serf/steering/injected": {
+    case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, lastFrameAt: now };
+    }
+
+    case "serf/steering/injected": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const activeTurnId = model.activeTurnId;
+      // The server only injects steering into an in-flight turn; if the
+      // model has none (e.g. this arrived just after the turn's own settle),
+      // there is nowhere wire-true to put it — a race recovered by the next
+      // snapshot, not a turn to fabricate client-side.
+      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      const params = n.params as SteeringInjectedInline;
+      return {
+        ...model,
+        turns: mapTurn(model.turns, activeTurnId, (turn) => {
+          // id must be unique across multiple steers landing in the same
+          // turn; count what's already there rather than a global counter,
+          // mirroring the historical reload shape's per-turn indexing
+          // (internal/apptranscript/apptranscript.go:211-229, item_steering_<n>).
+          const steeringCount = turn.items.filter((it) => it.type === "steering").length;
+          const item: ItemModel = {
+            id: `item_steering_live_${activeTurnId}_${steeringCount}`,
+            turnId: activeTurnId,
+            type: "steering",
+            text: params.text ?? "",
+            images: imagesToStrings(params.images),
+            status: "completed",
+            source: params.source,
+          };
+          return { ...turn, items: [...turn.items, item] };
+        }),
+        lastFrameAt: now,
+      };
     }
 
     default:
