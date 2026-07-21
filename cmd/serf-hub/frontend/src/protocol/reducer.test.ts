@@ -414,6 +414,47 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
   expect(itemAt(turnAt(model, 0), 0).reasoningSummaries).toEqual([["thinking..."]]);
 });
 
+test('turn/completed with itemsView "full" replaces items outright — a payload carrying a differently-id\'d item drops the streamed one entirely', () => {
+  // The test above reuses the streamed item's id in the settle payload, so
+  // it cannot distinguish a true replace from a preserve-and-merge that
+  // happens to key on id (mergeReasoning's own same-id coverage already
+  // exists there — this test targets the "full" branch's replace semantics
+  // directly, independent of any id coincidence).
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_x", turnId: "turn_1", text: "X's text", status: "completed" } },
+    } as AnyNotification,
+    1002,
+  );
+  expect(turnAt(model, 0).items).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "full", items: [{ type: "agentMessage", id: "item_y", turnId: "turn_1", text: "Y's text", status: "completed" }] },
+      },
+    } as AnyNotification,
+    1003,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  const survivor = itemAt(turnAt(model, 0), 0);
+  expect(survivor.id).toBe("item_y");
+  expect(survivor.text).toBe("Y's text");
+});
+
 test("turn/completed's settle fold joins a mid-stream item's pendingText into text and flips inProgress to completed", () => {
   let model = testHydrate();
   model = applyNotification(
@@ -482,6 +523,55 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
   expect(turn.error).toEqual(error);
   expect(turn.items).toHaveLength(1);
   expect(itemAt(turn, 0).text).toBe("partial answer");
+});
+
+test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText AND carries the error together (real EventError shape)", () => {
+  // The test above uses an item that was already completed before the
+  // error arrived, so it never exercises settleItem's fold — it only
+  // proves items survive and the error lands. EventError's actual shape
+  // (internal/appprojector/appwire_projection.go:507-572) fires while an
+  // item can still be mid-stream (e.g. a rate limit interrupts the agent
+  // mid-message); this test uses that shape, asserting the fold and the
+  // error land together in one settle.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+    } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "partial " } } as AnyNotification,
+    1003,
+  );
+  model = applyNotification(
+    model,
+    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "answer" } } as AnyNotification,
+    1004,
+  );
+
+  const error = { message: "rate limited", source: "provider", title: "Provider error" };
+  model = applyNotification(
+    model,
+    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } } } as AnyNotification,
+    1005,
+  );
+
+  const turn = turnAt(model, 0);
+  expect(turn.status).toBe("failed");
+  expect(turn.error).toEqual(error);
+  const item = itemAt(turn, 0);
+  expect(item.text).toBe("partial answer"); // joined chunks — no authoritative item/completed text ever arrived
+  expect(item.pendingText).toBeUndefined();
+  expect(item.status).toBe("completed"); // an in-progress item inside a settled turn is a lie
 });
 
 // Part B regression coverage: serf/steering/injected's payload is declared
