@@ -1,0 +1,25 @@
+.root {
+  /* fills whatever height its container gives it - a gallery uses a
+   * fixed-height wrapper; a real pane uses PaneScaffold's scrolling body,
+   * flex:1, or similar. */
+  height: 100%;
+  overflow-y: auto;
+  position: relative;
+}
+
+.sizer {
+  /* height is set inline - it's the virtualizer's own live total-content
+   * measurement, not a design value any token could express. */
+  width: 100%;
+  position: relative;
+}
+
+.item {
+  /* top/left are 0 with the position set inline via transform, not a
+   * token - this is raw per-item layout geometry from the virtualizer,
+   * the windowing equivalent of a meter's fill width. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
