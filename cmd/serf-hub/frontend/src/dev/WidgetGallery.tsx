@@ -12,7 +12,14 @@ const SECTION_MODULES = import.meta.glob<GallerySectionModule>("./gallery-sectio
 
 const SECTIONS = Object.keys(SECTION_MODULES)
   .sort()
-  .map((path) => ({ path, Section: SECTION_MODULES[path]!.default }));
+  .map((path) => {
+    // path came from Object.keys(SECTION_MODULES) itself, so the lookup
+    // always hits - but that's this loop's own invariant, invisible to the
+    // indexed-access type. Checked, not asserted.
+    const mod = SECTION_MODULES[path];
+    if (!mod) throw new Error(`missing gallery section module for ${path}`);
+    return { path, Section: mod.default };
+  });
 
 /**
  * `/dev/widgets`: renders every registered widget gallery section. Dev

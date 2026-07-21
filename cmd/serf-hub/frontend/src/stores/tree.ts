@@ -282,7 +282,8 @@ function attachNotifications(client: AppwireClientLike): void {
 connectionStore.subscribe((state) => {
   if (state.client) attachNotifications(state.client);
 });
-if (connectionStore.getState().client) attachNotifications(connectionStore.getState().client!);
+const initialClient = connectionStore.getState().client;
+if (initialClient) attachNotifications(initialClient);
 
 // resetTreeStoreForTests resets every module-private/store field to its
 // initial state, including the pending debounce timer - tree.ts is a

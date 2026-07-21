@@ -43,9 +43,15 @@ function firstEnabledIndex(items: MenuItem[]): number {
   return items.findIndex((item) => !item.disabled);
 }
 
+function itemAt(items: MenuItem[], i: number): MenuItem {
+  const item = items[i];
+  if (!item) throw new Error(`menu item index ${i} out of range for ${items.length} items`);
+  return item;
+}
+
 function lastEnabledIndex(items: MenuItem[]): number {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (!items[i]!.disabled) return i;
+    if (!itemAt(items, i).disabled) return i;
   }
   return -1;
 }
@@ -58,7 +64,7 @@ function stepEnabledIndex(items: MenuItem[], from: number, delta: 1 | -1): numbe
   let i = from;
   for (let step = 0; step < n; step++) {
     i = (i + delta + n) % n;
-    if (!items[i]!.disabled) return i;
+    if (!itemAt(items, i).disabled) return i;
   }
   return from;
 }

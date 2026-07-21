@@ -141,13 +141,16 @@ function openTranscript(ref: string): void {
 
 function SubagentRowView({ row }: { row: SubagentRow }) {
   const duration = durationLabel(row);
+  // Captured once so the onClick closure below references this narrowed
+  // local, not row.transcriptRef re-read through a closure TS can't narrow.
+  const transcriptRef = row.transcriptRef;
   return (
     <div className={CLASS.row} data-testid="subagent-row" data-kind={row.kind}>
       <Chip tone={KIND_TONE[row.kind]}>{KIND_LABEL[row.kind]}</Chip>
       {/* Live watched-child indicator: only while the row is genuinely
           still running AND we know where to watch (transcriptRef) - a
           done/failed/unknown row has nothing live left to show. */}
-      {row.kind === "running" && row.transcriptRef && <WatchedChildIndicator ref={row.transcriptRef} />}
+      {row.kind === "running" && transcriptRef && <WatchedChildIndicator ref={transcriptRef} />}
       <span className={CLASS.task}>{row.task}</span>
       {(duration ?? row.resultPreview) && (
         <span className={CLASS.meta}>
@@ -156,8 +159,8 @@ function SubagentRowView({ row }: { row: SubagentRow }) {
           {row.resultPreview && <span className={CLASS.preview}>{row.resultPreview}</span>}
         </span>
       )}
-      {row.transcriptRef && (
-        <Button variant="quiet" size="sm" onClick={() => openTranscript(row.transcriptRef!)}>
+      {transcriptRef && (
+        <Button variant="quiet" size="sm" onClick={() => openTranscript(transcriptRef)}>
           Open transcript
         </Button>
       )}

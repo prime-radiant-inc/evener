@@ -180,7 +180,12 @@ export function useTranscriptScroll({
     }
 
     function handleScroll() {
-      const m = measure(el!);
+      // el is already narrowed non-null above, but that narrowing doesn't
+      // carry into this nested closure's own type - it's the same `const`,
+      // never reassigned, so re-checking it here is a formality, not a real
+      // possibility.
+      if (!el) return;
+      const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
       if (wasAtBottomRef.current) clearPill();
       // useTranscript.ts's own loadOlder has no internal catch - a rejected

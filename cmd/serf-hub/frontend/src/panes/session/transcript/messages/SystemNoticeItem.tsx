@@ -55,7 +55,13 @@ function SystemLine({ item }: { item: ItemModel }) {
 
 function SystemGroup({ run }: { run: SystemRun }) {
   const count = run.items.length;
-  const first = firstLine(noticeText(run.items[0]!), 60);
+  // Every SystemGroup caller already checked shouldGroup(run), i.e.
+  // count >= MIN_GROUP_SIZE - so items[0] always exists. That guarantee
+  // lives in the caller, not in SystemRun's own type, so check it for real
+  // here rather than asserting past it.
+  const firstItem = run.items[0];
+  if (!firstItem) throw new Error("SystemGroup rendered with an empty run");
+  const first = firstLine(noticeText(firstItem), 60);
   return (
     <details className={CLASS.group} data-testid="system-notice-group">
       <summary className={CLASS.summary}>

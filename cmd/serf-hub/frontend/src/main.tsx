@@ -3,4 +3,6 @@ import { App } from "./App";
 import "./styles/tokens.css";
 import "./styles/global.css";
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = document.getElementById("root");
+if (!root) throw new Error("index.html is missing the #root element");
+createRoot(root).render(<App />);

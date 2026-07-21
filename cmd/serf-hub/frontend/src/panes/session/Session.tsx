@@ -107,6 +107,19 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
 
   const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
 
+  // VirtualList only ever calls getItemKey/renderRow with an index it got
+  // back from its own count-bounded virtualizer (count={model.turns.length}
+  // below), so this index is always in range - but that guarantee crosses a
+  // component boundary TypeScript can't see through. Check it for real
+  // rather than asserting past it, so a future bug here (e.g. turns
+  // shrinking mid-render) fails loudly instead of silently rendering
+  // `undefined`.
+  const turnAt = (index: number) => {
+    const turn = model.turns[index];
+    if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
+    return turn;
+  };
+
   return (
     <PaneScaffold title={model.name || ref} cadence={cadence}>
       <SandboxEscalationRail sessionRef={ref} />
@@ -130,8 +143,8 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               dynamic
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
-              getItemKey={(index) => model.turns[index]!.id}
-              renderRow={(index) => <TurnBlock turn={model.turns[index]!} />}
+              getItemKey={(index) => turnAt(index).id}
+              renderRow={(index) => <TurnBlock turn={turnAt(index)} />}
             />
           </FlowOverlay>
         </div>

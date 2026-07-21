@@ -59,13 +59,14 @@ export function FocusScope({ trap = false, children }: FocusScopeProps) {
       }
       const first = list[0];
       const last = list[list.length - 1];
+      if (!first || !last) return; // list.length >= 1 was just checked above
       const active = document.activeElement;
       if (event.shiftKey && active === first) {
         event.preventDefault();
-        last!.focus();
+        last.focus();
       } else if (!event.shiftKey && active === last) {
         event.preventDefault();
-        first!.focus();
+        first.focus();
       }
     }
 

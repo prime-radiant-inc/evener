@@ -33,12 +33,21 @@ function isSystemMessage(item: ItemModel): boolean {
 // so that's a defensive case, not an expected one.
 export function systemRunFor(turnItems: ItemModel[], itemId: string): SystemRun | undefined {
   const index = turnItems.findIndex((it) => it.id === itemId);
-  if (index === -1 || !isSystemMessage(turnItems[index]!)) return undefined;
+  const item = turnItems[index];
+  if (!item || !isSystemMessage(item)) return undefined;
 
   let start = index;
-  while (start > 0 && isSystemMessage(turnItems[start - 1]!)) start--;
+  while (start > 0) {
+    const prev = turnItems[start - 1];
+    if (!prev || !isSystemMessage(prev)) break;
+    start--;
+  }
   let end = index;
-  while (end < turnItems.length - 1 && isSystemMessage(turnItems[end + 1]!)) end++;
+  while (end < turnItems.length - 1) {
+    const next = turnItems[end + 1];
+    if (!next || !isSystemMessage(next)) break;
+    end++;
+  }
 
   return { items: turnItems.slice(start, end + 1), isFirst: start === index };
 }

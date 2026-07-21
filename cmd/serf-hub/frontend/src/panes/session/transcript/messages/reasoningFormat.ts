@@ -17,8 +17,9 @@ export function joinedReasoningParagraphs(summaries: string[][] | undefined): st
 // clipped - the settled think block's collapsed-summary preview text.
 export function reasoningPreview(summaries: string[][] | undefined, maxLen = 80): string {
   const paragraphs = joinedReasoningParagraphs(summaries);
-  if (paragraphs.length === 0) return "";
-  return firstLine(paragraphs[0]!, maxLen);
+  const first = paragraphs[0];
+  if (!first) return "";
+  return firstLine(first, maxLen);
 }
 
 // thoughtSeconds computes whole elapsed seconds from two REAL ISO

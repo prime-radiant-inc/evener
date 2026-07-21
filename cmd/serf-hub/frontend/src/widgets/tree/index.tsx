@@ -136,7 +136,12 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   });
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, node: T, parent: T | null) {
-    const index = indexById.get(node.id)!;
+    const index = indexById.get(node.id);
+    // renderEntries and flattenVisible walk the same nodes under the same
+    // expanded-branch predicate, so node.id is always a key here in
+    // practice - but that's an invariant between two separate functions,
+    // not something the type system enforces, so it's worth a real check.
+    if (index === undefined) return;
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 
@@ -158,7 +163,9 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
         if (branchClosed) {
           onToggle(node);
         } else if (branchOpen) {
-          moveTo((node.children as T[])[0]!.id);
+          // branchOpen implies hasChildrenOf(node), i.e. children.length > 0.
+          const first = (node.children as T[])[0];
+          if (first) moveTo(first.id);
         }
         break;
       }
