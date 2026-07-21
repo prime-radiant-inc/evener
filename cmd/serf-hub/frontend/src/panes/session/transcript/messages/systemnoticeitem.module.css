@@ -1,0 +1,26 @@
+/* Quiet one-liners (mockup #7 alt A: "quiet --ink-3 one-liner"); a run of
+ * 3+ coalesces into one collapsed toggle so a burst of lifecycle churn
+ * never reads as a wall of dividers. */
+.line {
+  padding: var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.group {
+  padding: var(--space-1) 0;
+}
+
+.summary {
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.groupBody {
+  margin-top: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--edge);
+}
