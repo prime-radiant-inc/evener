@@ -190,6 +190,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
+	notifyTreeChanged(s.appRPC)
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,5 +98,69 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	}
 	if meta.Name == "new" {
 		t.Fatalf("meta was edited despite the live-race daemon failure (T18): %+v", meta)
+	}
+}
+
+func TestRenameEndedSessionBroadcastsTreeChanged(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
+	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	if err := schema.SaveSessionMeta(stateDir, m); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	_ = past.Rebuild()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := http.Post(hub.URL+"/api/sessions/local:"+renameSessionID+"/rename", "application/json", strings.NewReader(`{"name":"new title"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
+		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
+	}
+}
+
+// TestRefreshRenamedMetaBroadcastsTreeChanged covers the live-daemon rename
+// path's success site: handleAPIRename delegates both the live and
+// became-live branches to refreshRenamedMeta after a successful daemon
+// SetThreadName, so this calls it directly rather than scripting a fake
+// daemon through scriptedAppSource (which only models SetThreadName failure
+// today).
+func TestRefreshRenamedMetaBroadcastsTreeChanged(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
+	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	if err := schema.SaveSessionMeta(stateDir, m); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: past})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	web.refreshRenamedMeta(renameSessionID, "new title")
+
+	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
+		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
 	}
 }

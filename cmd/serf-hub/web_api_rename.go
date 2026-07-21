@@ -106,6 +106,7 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
+	notifyTreeChanged(s.appRPC)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -120,6 +121,7 @@ func (s *WebServer) refreshRenamedMeta(id, name string) {
 			if s.cfg.PokeAttention != nil {
 				s.cfg.PokeAttention()
 			}
+			notifyTreeChanged(s.appRPC)
 			return
 		}
 		m := pe.Meta
@@ -130,4 +132,5 @@ func (s *WebServer) refreshRenamedMeta(id, name string) {
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
+	notifyTreeChanged(s.appRPC)
 }

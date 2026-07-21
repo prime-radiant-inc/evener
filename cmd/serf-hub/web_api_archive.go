@@ -71,5 +71,6 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
+	notifyTreeChanged(s.appRPC)
 	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
