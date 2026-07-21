@@ -71,6 +71,29 @@ export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   return "running";
 }
 
+// KNOWN_JOB_STATUSES mirrors the status enum job_list's own tool schema
+// declares (agent/internal/tool/definitions.go's DefJobList: "running",
+// "completed", "failed", "exhausted", "cancelled", "stopped"). Used by
+// statusWordFromText below to read a status back out of a plain-text
+// footer (job_stop/delegate_send) whose field ORDER isn't fixed - see
+// that function's own comment.
+const KNOWN_JOB_STATUSES = ["completed", "failed", "cancelled", "stopped", "exhausted", "running"] as const;
+
+// statusWordFromText finds a known status word anywhere in `text` (a
+// job_stop/delegate_send footer), rather than splitting by position: both
+// formatJobStop's and formatDelegateSend's footer fields are each
+// conditionally present (agent/session_tools_jobs.go - verified directly,
+// e.g. delegate_send's footer omits `status` entirely when the field was
+// empty), so a fixed field index would silently read the wrong segment
+// whenever an earlier field is missing. A word-boundary search is robust
+// to that reordering/omission.
+export function statusWordFromText(text: string): string | undefined {
+  for (const status of KNOWN_JOB_STATUSES) {
+    if (new RegExp(`\\b${status}\\b`).test(text)) return status;
+  }
+  return undefined;
+}
+
 // resolveRowKey prefers delegateId (stable across a delegate's whole
 // lifetime, including across several jobs it may run in sequence), then
 // jobId (a shell job has no delegateId at all), then a fallback (the

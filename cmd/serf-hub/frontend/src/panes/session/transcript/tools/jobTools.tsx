@@ -16,12 +16,40 @@
 // header). job_send_message is a retired/banned tool name (see the
 // report) kept only as a defensive alias reading its own legacy `target`
 // arg, exactly as renderer-tools.js's jobSendMessageRenderer did.
+import { useLayoutEffect } from "react";
 import { registerToolRenderer } from "../toolRenderers";
+import type { ToolRenderProps } from "../toolRenderers";
 import { clip, parseJSONObject, rememberedArgs, str, trailingBracketFooter } from "./helpers";
 import { HeadClippedOutputBody } from "./bodies";
+import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
+import { updateSubagentRowIfExists } from "./subagentModuleStore";
 import type { ItemModel } from "../../../../protocol/model";
 
 const ID_CLIP = 26;
+
+// correlateOnly is the shared shape job_status/job_stop/delegate_send's
+// bodies use to ALSO update an existing subagent-module row for the child
+// they're checking on/messaging, in addition to their own normal output
+// display - never spawning a fresh row (subagentModule.tsx's own
+// updateSubagentRowIfExists already enforces that; this is just the
+// per-tool row-key/kind/preview derivation).
+function CorrelatingBody({
+  item,
+  resolveKey,
+  resolveKind,
+  resolvePreview,
+}: ToolRenderProps & {
+  resolveKey: (item: ItemModel) => string;
+  resolveKind: (item: ItemModel) => ReturnType<typeof classifyJobStatus> | undefined;
+  resolvePreview: (item: ItemModel) => string;
+}) {
+  useLayoutEffect(() => {
+    const kind = resolveKind(item);
+    if (kind === undefined) return; // nothing settled to report yet
+    updateSubagentRowIfExists(item.turnId, resolveKey(item), { kind, resultPreview: resolvePreview(item), completedAt: item.completedAt });
+  });
+  return <HeadClippedOutputBody item={item} live={false} />;
+}
 
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
@@ -32,10 +60,26 @@ registerToolRenderer({
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
     return status ? `Checked ${clip(jobId, ID_CLIP)} · ${status}` : `Checked ${clip(jobId, ID_CLIP)}`;
   },
-  // Output is already JSON text (see this file's own header) - the same
-  // head-clipped raw-text body every other cheap tool in this directory
-  // uses is a fine, honest way to show it.
-  body: HeadClippedOutputBody,
+  body(props: ToolRenderProps) {
+    return (
+      <CorrelatingBody
+        {...props}
+        resolveKey={(item) => {
+          const args = rememberedArgs(item);
+          const jobId = (parseJSONObject(item.output) && str(parseJSONObject(item.output)!, "job_id")) ?? str(args, "job_id") ?? "";
+          return resolveRowKey(undefined, jobId, item.callId ?? item.id);
+        }}
+        resolveKind={(item) => {
+          const parsed = parseJSONObject(item.output);
+          return parsed ? classifyJobStatus(str(parsed, "status")) : undefined;
+        }}
+        resolvePreview={(item) => {
+          const parsed = parseJSONObject(item.output);
+          return (parsed && str(parsed, "reason")) ?? "";
+        }}
+      />
+    );
+  },
 });
 
 registerToolRenderer({
@@ -57,7 +101,19 @@ registerToolRenderer({
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Stopped ${clip(jobId, ID_CLIP)} · ${footer}` : `Stopped ${clip(jobId, ID_CLIP)}`;
   },
-  body: HeadClippedOutputBody,
+  body(props: ToolRenderProps) {
+    return (
+      <CorrelatingBody
+        {...props}
+        resolveKey={(item) => resolveRowKey(undefined, str(rememberedArgs(item), "job_id") ?? "", item.callId ?? item.id)}
+        resolveKind={(item) => {
+          const footer = trailingBracketFooter(item.output ?? "");
+          return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
+        }}
+        resolvePreview={(item) => trailingBracketFooter(item.output ?? "") ?? ""}
+      />
+    );
+  },
 });
 
 function delegateSendTarget(args: Record<string, unknown>): string {
@@ -75,7 +131,19 @@ registerToolRenderer({
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Messaged ${target} · ${footer}` : `Messaged ${target}`;
   },
-  body: HeadClippedOutputBody,
+  body(props: ToolRenderProps) {
+    return (
+      <CorrelatingBody
+        {...props}
+        resolveKey={(item) => resolveRowKey(delegateSendTarget(rememberedArgs(item)), undefined, item.callId ?? item.id)}
+        resolveKind={(item) => {
+          const footer = trailingBracketFooter(item.output ?? "");
+          return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
+        }}
+        resolvePreview={(item) => trailingBracketFooter(item.output ?? "") ?? ""}
+      />
+    );
+  },
 });
 
 // Generic fallback for any other job_*-family tool (e.g. job_watch) not
