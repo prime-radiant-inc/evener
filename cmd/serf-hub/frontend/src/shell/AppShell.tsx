@@ -122,37 +122,43 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
 
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
+  const route = urlToPane(pathname);
 
-  // Opens the INITIAL pathname's pane during render, not a useEffect - a
-  // regular effect here would run AFTER DockHost/dockview's own onReady
-  // (child effects fire before parent effects within a commit), racing its
+  // Opens a pathname's pane during render, not a useEffect, for as long as
+  // DockHost hasn't mounted for the very first time yet - a regular effect
+  // would run AFTER DockHost/dockview's own onReady (child effects fire
+  // before parent effects within a commit), racing its
   // restore-or-fallback-to-welcome boot sequence and landing a deep-linked
   // pane ALONGSIDE a spurious extra welcome tab instead of in its place
   // (see DockHost.tsx's own comment on this for the full reasoning). This
-  // is only safe as a render-phase call because DockHost doesn't exist yet
-  // on AppShell's very first render - nothing is mounted/subscribed to
-  // workspaceStore for openPane()'s update to conflict with. Guarded by
-  // `=== null` (not `!== pathname`) so it runs exactly once, ever; every
-  // pathname change AFTER mount goes through the plain effect below
-  // instead, once DockHost is already up and its own one-time boot
-  // sequence has already resolved - calling openPane() from render on a
-  // LATER update, with DockHost already mounted and subscribed, is exactly
-  // what trips React's "Cannot update a component while rendering a
-  // different component" warning (caught by this task's own test suite,
-  // not by inspection).
+  // is safe as a render-phase call ONLY because nothing is yet
+  // mounted/subscribed to workspaceStore for openPane()'s update to
+  // conflict with - true not just on AppShell's very first render, but on
+  // EVERY render up through whichever one first has route !== null (e.g.
+  // loading directly on an unresolved path, where DockHost never mounts at
+  // all until the user navigates to a real one - dockHostHasMountedRef
+  // tracks this rather than assuming "first AppShell render" and
+  // "DockHost's first mount" always coincide, which they don't). Once
+  // DockHost has mounted at all, every later pathname change goes through
+  // the plain effect below instead - calling openPane() from render with
+  // DockHost already mounted and subscribed is exactly what trips React's
+  // "Cannot update a component while rendering a different component"
+  // warning (caught by this task's own test suite, not by inspection, in
+  // both the "already mounted at the start" and "just mounted for the
+  // first time on a later render" shapes of this race).
+  const dockHostHasMountedRef = useRef(false);
   const openedForPathnameRef = useRef<string | null>(null);
-  if (openedForPathnameRef.current === null) {
+  if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname);
   }
+  if (route !== null) dockHostHasMountedRef.current = true;
 
   useEffect(() => {
-    if (openedForPathnameRef.current === pathname) return; // the initial pathname: already opened above
+    if (openedForPathnameRef.current === pathname) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
     openRouteAsPane(pathname);
   }, [pathname]);
-
-  const route = urlToPane(pathname);
 
   return (
     <ClientProvider client={client}>

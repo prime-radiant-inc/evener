@@ -209,3 +209,23 @@ test("navigating from one session deep link to another, post-mount, opens the ne
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_first", "ref_second"]);
 });
+
+test("navigating from a 404 straight to a session deep link opens only that pane, no spurious welcome tab", async () => {
+  // DockHost never mounts while urlToPane() returns null (NotFound renders
+  // in its place - see AppShell's return), so this is the first time
+  // DockHost mounts at all in this test, and it happens on a LATER render
+  // than AppShell's own initial one - a different case from every deep-
+  // link test above, which all mount DockHost on the very first render.
+  window.history.pushState({}, "", "/not/a/real/route");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("Page not found");
+
+  act(() => {
+    window.history.pushState({}, "", "/s/ref_from_404");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await screen.findByText("Transcript arrives in wave 4");
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_from_404"]);
+});
