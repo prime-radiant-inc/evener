@@ -5,8 +5,8 @@
 //
 //   1. ended/closed              -> send=false, queue=false
 //   2. [DROPPED - see below]
-//   3. busy && capabilities.queue === false explicitly -> both false
-//   4. busy                      -> send=false, queue=true (queue-mode default)
+//   3. active && capabilities.queue === false explicitly -> both false
+//   4. active                    -> send=false, queue=true (queue-mode default)
 //   5. else (idle/awaiting/...)  -> send=true,  queue=false (plain-send default)
 //
 // The legacy tier 2 ("the source already advertised live send/queue
@@ -25,19 +25,30 @@
 // "explicitly known" queue-cap-false branch). Live capability push is a
 // wire-candidate, out of scope this wave.
 //
-// "busy" mirrors the legacy's own centralized predicate exactly (parity §A
-// first bullet: `state === "active" && !!activeTurnId`, never redefined
-// elsewhere) rather than statusType==="active" alone, so a wire
-// inconsistency (a status snapshot saying "active" with no reserved turn
-// id) degrades to the safe plain-send default instead of assuming
-// queue-mode.
+// The active tier checks `statusType === "active"` ALONE - verified directly
+// against the cited renderer.js:479-513 (updateThreadState's sendBtn
+// branches), which key only on the `state` string and `this.liveSendCap`/
+// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId. The
+// stronger `state === "active" && !!activeTurnId` formula lives in a
+// DIFFERENT, deliberately-shared predicate (thread-state.js:16-18,
+// `SerfThreadState.isBusy`) that gates interrupt/steer/model-switch, not
+// send/queue - that file's own header comment lists exactly those three
+// call sites and none of them is the composer's send/queue capability
+// chain. Folding isBusy's activeTurnId check into THIS gate would also add
+// a real race this store must not have: thread/status/changed (which flips
+// ThreadModel.status.type to "active") and turn/started (which populates
+// ThreadModel.activeTurnId) are two separate notifications, so there is a
+// window where status already reads "active" but activeTurnId hasn't
+// arrived yet. The verbatim table queues in that window; requiring
+// activeTurnId would instead fall through to the plain-send default and
+// let a legitimate queue attempt bounce off the daemon as a ConflictError.
+// This helper therefore does not take activeTurnId as an input at all.
 
 import type { ThreadCapabilities } from "./types.gen";
 
 export interface SendQueueAvailabilityInput {
   statusType: string;
   capabilities: ThreadCapabilities;
-  activeTurnId: string | undefined;
 }
 
 export interface SendQueueAvailability {
@@ -52,12 +63,9 @@ const PLAIN_SEND_MODE: SendQueueAvailability = { canSend: true, canQueue: false 
 export function deriveSendQueueAvailability({
   statusType,
   capabilities,
-  activeTurnId,
 }: SendQueueAvailabilityInput): SendQueueAvailability {
   if (statusType === "ended" || statusType === "closed") return BOTH_UNAVAILABLE;
-
-  const busy = statusType === "active" && activeTurnId !== undefined;
-  if (!busy) return PLAIN_SEND_MODE;
+  if (statusType !== "active") return PLAIN_SEND_MODE;
 
   if (capabilities.queue === false) return BOTH_UNAVAILABLE;
   return QUEUE_MODE;

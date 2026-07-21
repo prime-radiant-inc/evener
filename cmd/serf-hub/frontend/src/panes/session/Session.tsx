@@ -6,6 +6,11 @@
 // switch: the live decay clock (nowTick, from ./liveness) and the
 // connection-ready gate's local closure, neither of which loses anything a
 // remount can't immediately reconstruct from the store.
+//
+// Wave 5 T1 carves the <Composer>/<SessionChrome> slots below and then
+// FREEZES this file for the wave: T2-T5 build everything else inside those
+// two components' own subtrees (composer/Composer.tsx, chrome/
+// SessionChrome.tsx) and never edit Session.tsx again this wave.
 import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
