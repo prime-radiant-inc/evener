@@ -114,3 +114,20 @@ test("every composed piece acts on the SAME ref passed to SessionChrome", async 
 
   await waitFor(() => expect(renamedTo).toEqual({ ref: "ref_b", name: "New name" }));
 });
+
+test("the tasks panel fetches for the SAME ref passed to SessionChrome", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_c"));
+  await threadsStore.getState().ensureThread("ref_c");
+  let calledRef: unknown;
+  fake.on("serf/tasks/list", (params) => {
+    calledRef = params.ref;
+    return { data: [] };
+  });
+
+  render(<SessionChrome ref="ref_c" />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  await waitFor(() => expect(calledRef).toBe("ref_c"));
+});

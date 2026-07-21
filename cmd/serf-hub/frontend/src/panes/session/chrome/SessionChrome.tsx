@@ -45,7 +45,7 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         <GoalControl sessionRef={sessionRef} model={model} />
       </div>
       <div className={CLASS.right}>
-        <TasksPanel model={model} />
+        <TasksPanel sessionRef={sessionRef} model={model} />
         <SessionActionsMenu sessionRef={sessionRef} model={model} />
       </div>
     </div>
