@@ -5,6 +5,7 @@ import { ConnectionClosedError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  ModelListResponse,
   Thread,
   ThreadCapabilities,
   ThreadReadResponse,
@@ -988,6 +989,173 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
 
     await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toBeInstanceOf(ConflictError);
+  });
+});
+
+// listModels/listTasks (T1 addendum, sanctioned NEEDS_CONTEXT gap for the
+// chrome stream): both are plain read-only wire calls with no turn-CAS
+// concept - verified against every server-side handler
+// (cmd/serf-hub/app_rpc.go's registerMiscHandlers, cmd/serf-hub/
+// internal/appsource/{local_daemon,codex_source}.go's ListTasks,
+// server/appwire_runtime.go's handleAppTasksList/handleAppModelList): none
+// of them ever construct appwire.Conflict(). Neither action maps errors -
+// a WireError (even one shaped like a Conflict, which cannot actually occur
+// here) passes through unchanged, same as resolveEscalation above.
+describe("useThreadsStore.listModels", () => {
+  function modelListResponse(): ModelListResponse {
+    return {
+      data: [
+        { provider: "anthropic", model: "claude-sonnet-4-5" },
+        { provider: "openai", model: "gpt-5.5" },
+      ],
+      diagnostics: [{ provider: "ollama", message: "ollama: connection refused" }],
+      recent: [{ provider: "anthropic", model: "claude-sonnet-4-5" }],
+    };
+  }
+
+  test("sends model/list with no params and returns the response verbatim", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    const result = await threadsStore.getState().listModels();
+
+    const call = fake.calls.find((c) => c.method === "model/list");
+    expect(call?.params).toEqual({});
+    expect(result).toEqual(modelListResponse());
+  });
+
+  test("caches across calls within the session - a second call does not re-request", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    await threadsStore.getState().listModels();
+    await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+  });
+
+  test("concurrent calls before the first resolves share one request", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+
+    const [a, b] = await Promise.all([threadsStore.getState().listModels(), threadsStore.getState().listModels()]);
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+    expect(a).toEqual(modelListResponse());
+    expect(b).toEqual(modelListResponse());
+  });
+
+  test("refresh:true bypasses the cache and issues a fresh request", async () => {
+    const fake = connectFakeClient();
+    let call = 0;
+    fake.on("model/list", () => {
+      call += 1;
+      return { data: [{ provider: "anthropic", model: `model-${call}` }] };
+    });
+
+    const first = await threadsStore.getState().listModels();
+    const second = await threadsStore.getState().listModels(true);
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(first.data[0]?.model).toBe("model-1");
+    expect(second.data[0]?.model).toBe("model-2");
+  });
+
+  test("a failed call does not cache a rejected promise - the next call retries rather than repeating the same rejection", async () => {
+    const fake = connectFakeClient();
+    let shouldFail = true;
+    fake.on("model/list", () => {
+      if (shouldFail) throw new Error("boom");
+      return modelListResponse();
+    });
+
+    await expect(threadsStore.getState().listModels()).rejects.toThrow("boom");
+
+    shouldFail = false;
+    const result = await threadsStore.getState().listModels();
+
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+    expect(result).toEqual(modelListResponse());
+  });
+
+  test("propagates a rejection unchanged - not mapped to ConflictError even when it is Conflict-shaped (model/list can never actually return one)", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => {
+      throw new WireError("shouldn't happen", -32013, { serfErrorInfo: "conflict" });
+    });
+
+    const rejection = threadsStore.getState().listModels();
+    await expect(rejection).rejects.toBeInstanceOf(WireError);
+    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
+  });
+
+  test("throws when no client has been connected yet", async () => {
+    await expect(threadsStore.getState().listModels()).rejects.toThrow(/no client connected/i);
+  });
+
+  test("resetThreadsStoreForTests clears the models cache, same as every other module-private cache", async () => {
+    const fake = connectFakeClient();
+    fake.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels();
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(1);
+
+    resetThreadsStoreForTests();
+
+    const fake2 = connectFakeClient();
+    fake2.on("model/list", () => modelListResponse());
+    await threadsStore.getState().listModels();
+    expect(fake2.calls.filter((c) => c.method === "model/list")).toHaveLength(1); // fresh fetch, not a stale cache hit
+  });
+});
+
+describe("useThreadsStore.listTasks", () => {
+  // Wire-true shape: TaskListResponse.Data is `any` on the catalog
+  // (appwire/types.go:896-898) - server/server.go's SetTasksFunc doc
+  // comment says the registered function "should return a JSON-serializable
+  // slice (typically []task.Task)"; agent/task/task_store.go:54-74 is that
+  // struct. This fixture mirrors its real JSON field names verbatim.
+  const TASKS_DATA = [
+    { id: 1, type: "implement", description: "Wire up listModels/listTasks", prompt: "…", status: "done" },
+    {
+      id: 2,
+      type: "verify",
+      description: "Confirm tests pass",
+      prompt: "…",
+      status: "in_progress",
+      depends_on: [1],
+    },
+  ];
+
+  test("sends serf/tasks/list with {ref} and returns the raw data field, not the response wrapper", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/tasks/list", () => ({ data: TASKS_DATA }));
+
+    const result = await threadsStore.getState().listTasks("ref_a");
+
+    const call = fake.calls.find((c) => c.method === "serf/tasks/list");
+    expect(call?.params).toEqual({ ref: "ref_a" });
+    expect(result).toEqual(TASKS_DATA);
+  });
+
+  test("propagates a Codex-source rejection (actionUnavailable) unchanged, not mapped to ConflictError", async () => {
+    const fake = connectFakeClient();
+    // Mirrors CodexSource.ListTasks verbatim (cmd/serf-hub/internal/
+    // appsource/codex_source.go:405-407): appwire.Unavailable(...), code
+    // -32014, serfErrorInfo "actionUnavailable" - never a Conflict.
+    fake.on("serf/tasks/list", () => {
+      throw new WireError("codex source does not expose serf tasks", -32014, {
+        serfErrorInfo: "actionUnavailable",
+      });
+    });
+
+    const rejection = threadsStore.getState().listTasks("ref_codex");
+    await expect(rejection).rejects.toBeInstanceOf(WireError);
+    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
+    await expect(rejection).rejects.toMatchObject({ serfErrorInfo: "actionUnavailable" });
+  });
+
+  test("throws when no client has been connected yet", async () => {
+    await expect(threadsStore.getState().listTasks("ref_a")).rejects.toThrow(/no client connected/i);
   });
 });
 
