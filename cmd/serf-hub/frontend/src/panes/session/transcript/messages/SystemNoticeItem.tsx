@@ -83,10 +83,13 @@ function SystemGroup({ run }: { run: SystemRun }) {
 // system item joining or leaving this item's run changes turn.items
 // without changing THIS item's own reference or live status, and ignoring
 // turn identity would leave an already-mounted run stale (still showing as
-// standalone lines, or the wrong count) when that happens. Streaming
-// deltas (the case ignoringTurn optimizes for) never add/remove/reorder
-// items, so this only costs a render on a genuine turn.items membership
-// change - not on every delta.
+// standalone lines, or the wrong count) when that happens. The accepted
+// cost: unmemoized, this component re-renders on EVERY delta whenever its
+// turn is visible (its unmemoized ancestors re-invoke it regardless of
+// props - React only bails out at a memo boundary). That is fine here
+// because its render is cheap - one linear systemRunFor scan plus a few
+// divs, no markdown/diff work - unlike the heavy renderers ignoringTurn
+// exists to protect.
 export function SystemNoticeItem({ item, turn }: ItemRenderProps) {
   const run = systemRunFor(turn.items, item.id);
   if (!run) return null; // defensive - the registry only dispatches systemMessage items here

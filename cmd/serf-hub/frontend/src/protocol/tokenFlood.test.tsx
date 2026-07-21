@@ -263,7 +263,12 @@ describe("token-flood: 500-delta streaming fast path through a mounted Session",
     // a delta actually targets), so React bails out of re-rendering it every
     // time, regardless of how many times the enclosing turn object is
     // rebuilt. Before this fix, this same probe (unwrapped) measured exactly
-    // 500 - see wave4-report.md's punch list and its T5c addendum.
+    // 500 - see wave4-report.md's punch list and its T5c addendum. If this
+    // assertion goes red, something started re-rendering settled items per
+    // delta again: either a renderer prop gained a per-delta-changing value
+    // (fix the prop or teach ignoringTurn about it deliberately) or a memo
+    // wrap was dropped - loosening this number is exactly the kind of
+    // change that must be a conscious decision, not an accommodation.
     expect(rerendersDuringFlood).toBe(0);
   });
 });
