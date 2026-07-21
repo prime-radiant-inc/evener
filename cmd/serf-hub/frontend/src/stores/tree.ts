@@ -229,6 +229,10 @@ export const REFRESH_NOTIFICATIONS: readonly AnyNotification["method"][] = [
   "thread/started",
   "thread/closed",
   "serf/attention/changed",
+  // The hub's dedicated tree push (roster deltas, past-index changes, and
+  // every successful mutation, exactly once each) — the reason the old
+  // UI's 60s sidebar resync poll has no successor here.
+  "serf/tree/changed",
 ];
 
 const REFETCH_DEBOUNCE_MS = 250;
