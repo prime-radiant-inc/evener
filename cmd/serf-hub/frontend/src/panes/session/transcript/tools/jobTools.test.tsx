@@ -50,11 +50,9 @@ test("job_read_output aliases to the same descriptor as job_status", () => {
   expect(toolRendererFor("job_read_output")).toBe(toolRendererFor("job_status"));
 });
 
-test("job_status: job_id survives settlement when argumentsJSON goes missing, via rememberedArgs", () => {
+test("job_status: job_id reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("job_status");
-  const callId = "job_status_settle_1";
-  d.summary(item({ toolName: "job_status", callId, argumentsJSON: JSON.stringify({ job_id: "job_99" }) }));
-  const settled = item({ toolName: "job_status", callId, argumentsJSON: undefined, output: "" });
+  const settled = item({ toolName: "job_status", argumentsJSON: JSON.stringify({ job_id: "job_99" }), output: "" });
   expect(d.summary(settled)).toBe("Checked job_99");
 });
 
@@ -129,9 +127,6 @@ test("an unlisted job_* tool falls to the generic family descriptor, mentioning 
 });
 
 test("the generic job_* descriptor degrades to the bare tool name with no operation arg", () => {
-  // A distinct id from the test above - rememberedArgs' cache is keyed by
-  // callId/id, so two items sharing the default id would otherwise bleed
-  // the previous test's cached args into this one.
   const d = toolRendererFor("job_watch");
   expect(d.summary(item({ id: "jw_2", toolName: "job_watch", argumentsJSON: "{}" }))).toBe("job_watch");
 });

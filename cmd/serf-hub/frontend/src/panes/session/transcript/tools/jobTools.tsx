@@ -19,7 +19,7 @@
 import { useLayoutEffect } from "react";
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
-import { clip, parseJSONObject, rememberedArgs, str, trailingBracketFooter } from "./helpers";
+import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { HeadClippedOutputBody } from "./bodies";
 import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
 import { updateSubagentRowIfExists } from "./subagentModuleStore";
@@ -54,7 +54,7 @@ function CorrelatingBody({
 registerToolRenderer({
   match: (name) => name === "job_status" || name === "job_read_output",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const parsedOutput = parseJSONObject(item.output);
     const jobId = (parsedOutput && str(parsedOutput, "job_id")) ?? str(args, "job_id") ?? "";
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
@@ -65,7 +65,7 @@ registerToolRenderer({
       <CorrelatingBody
         {...props}
         resolveKey={(item) => {
-          const args = rememberedArgs(item);
+          const args = parseArgs(item.argumentsJSON);
           const jobId = (parseJSONObject(item.output) && str(parseJSONObject(item.output)!, "job_id")) ?? str(args, "job_id") ?? "";
           return resolveRowKey(undefined, jobId, item.callId ?? item.id);
         }}
@@ -85,7 +85,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: "job_list",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const status = args["status"];
     const filter = Array.isArray(status) ? status.filter((s) => typeof s === "string").join(", ") : "";
     return filter ? `Listed jobs (${filter})` : "Listed jobs";
@@ -96,7 +96,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: "job_stop",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "job_id") ?? "";
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Stopped ${clip(jobId, ID_CLIP)} · ${footer}` : `Stopped ${clip(jobId, ID_CLIP)}`;
@@ -105,7 +105,7 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) => resolveRowKey(undefined, str(rememberedArgs(item), "job_id") ?? "", item.callId ?? item.id)}
+        resolveKey={(item) => resolveRowKey(undefined, str(parseArgs(item.argumentsJSON), "job_id") ?? "", item.callId ?? item.id)}
         resolveKind={(item) => {
           const footer = trailingBracketFooter(item.output ?? "");
           return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
@@ -126,7 +126,7 @@ function delegateSendTarget(args: Record<string, unknown>): string {
 registerToolRenderer({
   match: (name) => name === "delegate_send" || name === "job_send_message",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const target = clip(delegateSendTarget(args), ID_CLIP);
     const footer = trailingBracketFooter(item.output ?? "");
     return footer ? `Messaged ${target} · ${footer}` : `Messaged ${target}`;
@@ -135,7 +135,7 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) => resolveRowKey(delegateSendTarget(rememberedArgs(item)), undefined, item.callId ?? item.id)}
+        resolveKey={(item) => resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id)}
         resolveKind={(item) => {
           const footer = trailingBracketFooter(item.output ?? "");
           return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
@@ -154,7 +154,7 @@ registerToolRenderer({
 registerToolRenderer({
   match: (name) => name.startsWith("job_"),
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const operation = str(args, "operation");
     return operation ? `${item.toolName}: ${operation}` : (item.toolName ?? "");
   },

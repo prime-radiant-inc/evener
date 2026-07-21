@@ -20,7 +20,7 @@
 // webSearchRenderer's own "don't dump the whole page inline" restraint.
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
-import { clip, formatByteCount, parseJSONObject, rememberedArgs, str } from "./helpers";
+import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 
 const QUERY_CLIP = 120;
@@ -50,7 +50,7 @@ function WebFetchBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "web_fetch",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const url = str(args, "url") ?? "";
     return `Fetched ${url} · ${formatByteCount(webFetchByteCount(item.output ?? ""))}`;
   },
@@ -75,7 +75,7 @@ function WebSearchBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "web_search",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const query = clip(str(args, "query") ?? str(args, "q") ?? "", QUERY_CLIP);
     const resultCount = nonBlankLines(item.output ?? "").length;
     return `Searched the web for "${query}" · ${resultCount} results`;

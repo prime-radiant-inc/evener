@@ -8,8 +8,9 @@
 // if_unanswered?}]}, 1-4 questions. ask_user's own Output is a single
 // FIXED string on success (agent/session_tools_ask.go's askUserAckText,
 // verified directly) - carries no per-call information at all, so this
-// descriptor reads entirely from argumentsJSON (via rememberedArgs, since
-// it settles like every other tool call).
+// descriptor reads entirely from argumentsJSON directly - the model
+// preserves it through settle like every other tool call (protocol/
+// reducer.ts).
 //
 // This wave is read-only: no answer affordance here at all (the composer
 // owns that in Wave 5) - every card just says so. Parsing is defensive
@@ -19,7 +20,7 @@
 // controls the shape of.
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
-import { rememberedArgs } from "./helpers";
+import { parseArgs } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 import styles from "./askuser.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -86,7 +87,7 @@ function parseQuestion(raw: unknown): AskUserQuestion | undefined {
 // its own absent-vs-malformed distinction for its fallback wording; see
 // isMalformedArgumentsJSON below.
 function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
-  const args = rememberedArgs(item);
+  const args = parseArgs(item.argumentsJSON);
   const raw = args["questions"];
   if (!Array.isArray(raw)) return undefined;
   const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
@@ -96,9 +97,9 @@ function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
 // isMalformedArgumentsJSON is true only for a genuine JSON syntax error in
 // THIS item's own argumentsJSON - the one case AskUserBody's fallback below
 // still calls "malformed". Every other reason parseAskUserQuestions can
-// fail (argumentsJSON absent entirely - the common cold-open case for an
-// already-settled historical item rememberedArgs has no item/started cache
-// entry for - or syntactically valid JSON that simply carries no usable
+// fail (argumentsJSON absent entirely - now only a genuinely argless item,
+// since the model preserves real argumentsJSON through both settle and
+// hydration - or syntactically valid JSON that simply carries no usable
 // questions) is honest absence, not corruption, and gets its own wording
 // instead of being misdescribed as malformed.
 function isMalformedArgumentsJSON(argumentsJSON: string | undefined): boolean {
@@ -135,10 +136,9 @@ function AskUserBody({ item }: ToolRenderProps) {
   const questions = parseAskUserQuestions(item);
   if (!questions) {
     // Absence (no argumentsJSON at all, or valid JSON with nothing usable
-    // in it) is the common case - e.g. a cold-opened historical item
-    // rememberedArgs has no item/started cache entry for - and must not be
-    // described as malformed; a genuine JSON syntax error keeps its own,
-    // distinct wording.
+    // in it) is the common case - e.g. a genuinely argless item - and must
+    // not be described as malformed; a genuine JSON syntax error keeps its
+    // own, distinct wording.
     return (
       <div className={CLASS.fallback}>
         {isMalformedArgumentsJSON(item.argumentsJSON)

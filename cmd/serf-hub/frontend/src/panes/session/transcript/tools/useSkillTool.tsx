@@ -9,7 +9,7 @@
 // text), not the tool_state field legacy actually read.
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
-import { rememberedArgs, str } from "./helpers";
+import { parseArgs, str } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 
 function UseSkillBody({ item }: ToolRenderProps) {
@@ -21,7 +21,7 @@ function UseSkillBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "use_skill",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     const skillName = str(args, "skill_name") ?? str(args, "name") ?? "";
     return `Activated skill: ${skillName}`;
   },

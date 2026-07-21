@@ -147,17 +147,16 @@ test("cheap body renders nothing when output is blank", () => {
   expect(container.textContent).toBe("");
 });
 
-// --- args survive settlement (see helpers.ts's rememberedArgs) -----------
+// --- args at settle (protocol/reducer.ts preserves argumentsJSON through
+// item/completed - see R2) -------------------------------------------------
 // Ground truth: internal/appprojector/appwire_projection.go's
-// EventToolCallEnd case never sets argumentsJson on the completed item, so
-// a naive `item.argumentsJSON` read would render a blank target for every
-// settled (the common) case. This proves the fix is actually wired into
-// this descriptor, not just present in the shared helper.
+// EventToolCallEnd case never sets argumentsJson on the completed item
+// itself, but the reducer now carries the prior item's argumentsJSON
+// forward rather than dropping it - so a settled ItemModel's own
+// argumentsJSON is intact by the time it reaches this descriptor.
 
-test("read_file: the target survives once the item settles and argumentsJSON goes missing, via rememberedArgs", () => {
+test("read_file: the target reads straight from a settled item's own argumentsJSON", () => {
   const d = toolRendererFor("read_file");
-  const callId = "fs_settle_read_1";
-  d.summary(item({ toolName: "read_file", callId, argumentsJSON: JSON.stringify({ file_path: "settled.ts" }) }));
-  const settled = item({ toolName: "read_file", callId, argumentsJSON: undefined, output: "x\n" });
+  const settled = item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "settled.ts" }), output: "x\n" });
   expect(d.summary(settled)).toBe("Read settled.ts · lines 1-1");
 });

@@ -52,12 +52,10 @@ test("edit_file never auto-expands (no autoExpand on this descriptor)", () => {
   expect(d.autoExpand).toBeUndefined();
 });
 
-test("edit_file: old_string/new_string survive settlement when argumentsJSON goes missing, via rememberedArgs", () => {
+test("edit_file: old_string/new_string read straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("edit_file");
-  const callId = "edit_settle_1";
   const args = JSON.stringify({ file_path: "a.ts", old_string: "one\ntwo", new_string: "uno" });
-  d.summary(item({ toolName: "edit_file", callId, argumentsJSON: args }));
-  const settled = item({ toolName: "edit_file", callId, argumentsJSON: undefined, output: "edited a.ts: 1 replacement" });
+  const settled = item({ toolName: "edit_file", argumentsJSON: args, output: "edited a.ts: 1 replacement" });
   expect(d.summary(settled)).toBe("Edited a.ts · +1 -2");
 });
 

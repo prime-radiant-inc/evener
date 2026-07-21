@@ -33,10 +33,8 @@ test("body renders nothing when output is blank (the started-before-activated ra
   expect(container.textContent).toBe("");
 });
 
-test("the skill name survives settlement when argumentsJSON goes missing, via rememberedArgs", () => {
+test("the skill name reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("use_skill");
-  const callId = "skill_settle_1";
-  d.summary(item({ toolName: "use_skill", callId, argumentsJSON: JSON.stringify({ skill_name: "brainstorming" }) }));
-  const settled = item({ toolName: "use_skill", callId, argumentsJSON: undefined });
+  const settled = item({ toolName: "use_skill", argumentsJSON: JSON.stringify({ skill_name: "brainstorming" }) });
   expect(d.summary(settled)).toBe("Activated skill: brainstorming");
 });

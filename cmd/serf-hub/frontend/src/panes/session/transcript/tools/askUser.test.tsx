@@ -6,18 +6,8 @@ import type { ItemModel } from "../../../../protocol/model";
 
 afterEach(cleanup);
 
-// A unique id per call (rather than a fixed "item_1"): helpers.ts's
-// rememberedArgs caches parsed args by callId/id, module-scoped for the
-// whole test file's run, so two tests sharing one id can silently read
-// each other's cached args when this file's own malformed/blank-args
-// cases resolve to {} (an empty object also skips the cache write, per
-// rememberedArgs' own contract) - confirmed live: an earlier version of
-// this file's "fallback" tests intermittently read a PRIOR test's cached
-// question data through exactly this path.
-let nextId = 0;
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
-  nextId += 1;
-  return { id: `item_${nextId}`, turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
+  return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
 }
 
 // Ground truth: agent/internal/tool/definitions.go's DefAskUser - exact
@@ -26,8 +16,8 @@ function item(overrides: Partial<ItemModel> = {}): ItemModel {
 // if_unanswered?}]}, 1-4 questions. ask_user's own Output is always the
 // SAME fixed string on success (agent/session_tools_ask.go's
 // askUserAckText) - not useful for rendering, so this descriptor reads
-// entirely from argumentsJSON (rememberedArgs, since it settles like
-// every other tool call - see helpers.ts's own header).
+// entirely from argumentsJSON directly (the model preserves it through
+// settle like every other tool call).
 
 function askUserArgs(questions: unknown[]): string {
   return JSON.stringify({ questions });
@@ -123,10 +113,11 @@ test("body renders multiple question cards in order", () => {
 // Two distinct fallback messages, not one: a genuine JSON syntax error in
 // THIS item's own argumentsJSON is "malformed" (something arrived and it's
 // broken); everything else that still ends up with no usable questions -
-// argumentsJSON absent entirely (the cold-open case: an already-completed
-// historical item rememberedArgs has no item/started cache entry for), or
-// syntactically valid JSON that simply carries no questions - is honest
-// absence, not corruption, and must not be described as "malformed".
+// argumentsJSON absent entirely (now only a genuinely argless item, since
+// the model preserves real argumentsJSON through both settle and
+// hydration), or syntactically valid JSON that simply carries no
+// questions - is honest absence, not corruption, and must not be
+// described as "malformed".
 
 test("body renders the malformed-data fallback for a genuine JSON syntax error", () => {
   const d = toolRendererFor("ask_user");

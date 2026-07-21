@@ -33,7 +33,7 @@ import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
 import { Button, Chip, type ChipTone } from "../../../../widgets";
 import { workspaceStore } from "../../../../shell/workspace";
-import { clip, formatToolDuration, parseJSONObject, rememberedArgs, str } from "./helpers";
+import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
 import {
   claimLeader,
   releaseLeader,
@@ -217,7 +217,7 @@ function SubagentModule({ turnId }: { turnId: string }) {
 }
 
 function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<SubagentRow, "spawnIndex" | "rowKey"> } {
-  const args = rememberedArgs(item);
+  const args = parseArgs(item.argumentsJSON);
   const task = clip(str(args, "task") ?? "", TASK_CLIP);
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
@@ -274,7 +274,7 @@ function DelegateBody({ item }: ToolRenderProps) {
 registerToolRenderer({
   match: "delegate",
   summary(item: ItemModel) {
-    const args = rememberedArgs(item);
+    const args = parseArgs(item.argumentsJSON);
     return `Delegated: ${clip(str(args, "task") ?? "", TASK_CLIP)}`;
   },
   body: DelegateBody,

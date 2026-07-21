@@ -88,15 +88,12 @@ test("web_search: a long query is clipped to 120 chars", () => {
   expect(summary.startsWith(`Searched the web for "${"q".repeat(120)}…"`)).toBe(true);
 });
 
-test("web_fetch: the url survives once the item settles and argumentsJSON goes missing, via rememberedArgs", () => {
+test("web_fetch: the url reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("web_fetch");
-  const callId = "web_settle_1";
   const args = JSON.stringify({ url: "https://settled.example", question: "q" });
-  d.summary(item({ toolName: "web_fetch", callId, argumentsJSON: args }));
   const settled = item({
     toolName: "web_fetch",
-    callId,
-    argumentsJSON: undefined,
+    argumentsJSON: args,
     output: JSON.stringify({ answer: "hi", size_bytes: 2 }),
   });
   expect(d.summary(settled)).toBe("Fetched https://settled.example · 2 bytes");

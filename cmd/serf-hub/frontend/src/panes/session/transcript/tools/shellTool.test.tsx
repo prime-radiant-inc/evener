@@ -87,11 +87,9 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
 
 // --- body -----------------------------------------------------------------
 
-test("the command survives once the item settles and argumentsJSON goes missing, via rememberedArgs", () => {
+test("the command reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("shell");
-  const callId = "shell_settle_1";
-  d.summary(item({ toolName: "shell", callId, argumentsJSON: JSON.stringify({ command: "echo settled" }) }));
-  const settled = item({ toolName: "shell", callId, argumentsJSON: undefined, output: "settled\n[exit 0]" });
+  const settled = item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "echo settled" }), output: "settled\n[exit 0]" });
   expect(d.summary(settled)).toBe("Ran echo settled");
 });
 
