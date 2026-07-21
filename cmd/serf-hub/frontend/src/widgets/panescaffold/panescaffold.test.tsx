@@ -38,7 +38,14 @@ test("renders no actions cluster when the actions prop is omitted", () => {
 
 test("renders the actions cluster when provided", () => {
   render(
-    <PaneScaffold title="Sessions" actions={<button type="button" data-testid="my-action">Go</button>}>
+    <PaneScaffold
+      title="Sessions"
+      actions={
+        <button type="button" data-testid="my-action">
+          Go
+        </button>
+      }
+    >
       content
     </PaneScaffold>,
   );
@@ -64,7 +71,11 @@ test("renders title, cadence, actions and children in that document order", () =
     <PaneScaffold
       title="Sessions"
       cadence={<span data-testid="my-cadence" />}
-      actions={<button type="button" data-testid="my-action">Go</button>}
+      actions={
+        <button type="button" data-testid="my-action">
+          Go
+        </button>
+      }
     >
       content
     </PaneScaffold>,

@@ -27,8 +27,12 @@ test("on mount, focuses the first tabbable descendant", () => {
 test("on mount, skips a disabled or hidden descendant to focus the first real tabbable one", () => {
   render(
     <FocusScope>
-      <button type="button" disabled>Disabled</button>
-      <button type="button" hidden>Hidden</button>
+      <button type="button" disabled>
+        Disabled
+      </button>
+      <button type="button" hidden>
+        Hidden
+      </button>
       <button type="button">Reachable</button>
     </FocusScope>,
   );
@@ -38,7 +42,9 @@ test("on mount, skips a disabled or hidden descendant to focus the first real ta
 test("on mount, skips an element with tabindex=-1", () => {
   render(
     <FocusScope>
-      <button type="button" tabIndex={-1}>Skip me</button>
+      <button type="button" tabIndex={-1}>
+        Skip me
+      </button>
       <button type="button">Land here</button>
     </FocusScope>,
   );

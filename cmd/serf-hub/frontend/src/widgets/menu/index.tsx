@@ -213,10 +213,22 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
       </button>
       {isOpen && (
         <FocusScope trap>
+          {/* <ul role="menu">/<li role="menuitem"> is the WAI-ARIA APG menu
+              pattern's own example markup (w3.org/WAI/ARIA/apg/patterns/menu),
+              not an interactive role on an arbitrary static element. */}
+          {/* biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own menu markup, see above */}
           <ul role="menu" aria-labelledby={triggerId} className={CLASS.popup} onKeyDown={handleMenuKeyDown}>
             {items.map((item, index) => (
+              // Roving tabindex + delegated keydown: exactly one item has
+              // tabIndex 0 at a time (real focus lives here, not via
+              // aria-activedescendant), and handleMenuKeyDown on the ul
+              // above already selects the active item on Enter/Space -
+              // that handler sees every key bubbled up from whichever <li>
+              // is actually focused, so it doesn't need its own onKeyDown.
+              // biome-ignore lint/a11y/useKeyWithClickEvents: keydown is delegated to the ul's handleMenuKeyDown via bubbling, see above
               <li
                 key={item.id}
+                // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG menu markup, see the ul above
                 role="menuitem"
                 tabIndex={!item.disabled && index === activeIndex ? 0 : -1}
                 aria-disabled={item.disabled === true ? true : undefined}

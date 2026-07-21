@@ -68,6 +68,14 @@ function TreeDemo() {
                 {info.expanded ? "▾" : "▸"}
               </button>
             )}
+            {/* Mouse-only shortcut for the same activation Enter already
+                performs on the owning treeitem (see the chevron's own
+                comment above) - matches shell/rail/RailRow.tsx's identical
+                convention for its real production tree. Can't aria-hide
+                this the way the chevron is hidden: this text is the
+                treeitem's accessible name. */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see above */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see above */}
             <span className={styles.label} onClick={info.activate}>
               {node.label}
             </span>

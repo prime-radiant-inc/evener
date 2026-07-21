@@ -78,6 +78,14 @@ export function OverlayPanel({ open, onClose, title, children, footer, panelClas
   }
 
   return (
+    // The scrim's click-to-dismiss is a mouse/touch-only convenience, not a
+    // keyboard target: WAI-ARIA's Dialog (Modal) pattern specifies Escape
+    // (handleKeyDown below, on the panel) as the keyboard dismissal path,
+    // never "Tab to the backdrop, then Enter" - that isn't how any modal
+    // convention works. Both close the same way (onClose), so keyboard
+    // users already have full, more-discoverable equivalence via Escape.
+    // biome-ignore lint/a11y/noStaticElementInteractions: mouse-only scrim dismiss; Escape is the keyboard path, see above
+    // biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only scrim dismiss; Escape is the keyboard path, see above
     <div className={CLASS.scrim} onMouseDown={handleScrimMouseDown} onClick={handleScrimClick}>
       <FocusScope trap>
         <div

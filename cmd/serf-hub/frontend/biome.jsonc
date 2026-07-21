@@ -71,6 +71,16 @@
     },
     "rules": {
       "preset": "recommended",
+      "a11y": {
+        // Input and Combobox (widgets/input, widgets/combobox) both
+        // ultimately render a real native <input> as their DOM root, and
+        // both explicitly document implicit <label>-wrapping as a
+        // supported way to associate one (see each widget's own doc
+        // comment) - Biome's static check can't see through a custom
+        // component to its own eventual native output, hence this allowlist
+        // rather than 7 individual suppressions across Rail.tsx/combobox.test.tsx.
+        "noLabelWithoutControl": { "level": "error", "options": { "inputComponents": ["Input", "Combobox"] } }
+      },
       // --- severity promotions -------------------------------------------
       // "no warns / no info - they rot": every rule below is already part of
       // the `recommended` preset but Biome's own default severity for it is

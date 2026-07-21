@@ -219,6 +219,12 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
       );
       if (branchHasChildren && expanded) {
         out.push(
+          // role="group" here is the WAI-ARIA treeview pattern's own
+          // nested-children container (w3.org/WAI/ARIA/apg/patterns/treeview),
+          // not a form field group - <fieldset> would be semantically wrong
+          // (this isn't a form) and its default browser border/padding
+          // aren't reset anywhere in tree.module.css's .group class.
+          // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate, see above
           <div role="group" key={`${node.id}-group`} className={CLASS.group}>
             {renderEntries(node.children as T[], depth + 1, node)}
           </div>,

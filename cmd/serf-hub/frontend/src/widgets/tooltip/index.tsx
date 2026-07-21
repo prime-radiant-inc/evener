@@ -73,6 +73,13 @@ export function Tooltip({ label, children }: TooltipProps) {
     : children;
 
   return (
+    // Already both mouse- AND keyboard-triggered (onFocus/onBlur mirror
+    // onMouseEnter/onMouseLeave exactly, per this file's own top comment) -
+    // the WAI-ARIA-recommended tooltip pattern. This wrapper isn't becoming
+    // a new interactive control needing a role; it's showing/hiding a
+    // role="tooltip" description already wired to the real trigger element
+    // via aria-describedby (describedChild below).
+    // biome-ignore lint/a11y/noStaticElementInteractions: already dual mouse+keyboard triggered, see above
     <span className={CLASS.wrapper} onMouseEnter={show} onMouseLeave={hide} onFocus={show} onBlur={hide}>
       {describedChild}
       {visible && (

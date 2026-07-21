@@ -23,7 +23,9 @@ function DocFixture({ params, paneId, focused }: PaneProps<{ ref: string }>) {
       <p>
         doc pane: {params.ref} (focused={String(focused)}) (paneId={paneId})
       </p>
-      <button type="button" onClick={() => setClicks((c) => c + 1)}>clicks: {clicks}</button>
+      <button type="button" onClick={() => setClicks((c) => c + 1)}>
+        clicks: {clicks}
+      </button>
     </div>
   );
 }

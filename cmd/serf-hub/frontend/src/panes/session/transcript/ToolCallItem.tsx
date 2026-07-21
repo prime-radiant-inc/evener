@@ -57,6 +57,7 @@ export function ToolCallItem({ item, live }: ItemRenderProps) {
 
   return (
     <details className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""} open={expanded}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable (implicit role="button", Enter/Space already synthesize this same click) */}
       <summary
         className={CLASS.summary}
         onClick={(e) => {

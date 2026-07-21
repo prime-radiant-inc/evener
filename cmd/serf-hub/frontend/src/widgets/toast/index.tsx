@@ -33,11 +33,11 @@ export function useToasts(): { push: (kind: ToastKind, text: string) => void } {
 export function Toast() {
   const toasts = useSyncExternalStore(subscribe, getToasts);
   return (
-    <div className={CLASS.region} role="region" aria-live="polite" aria-label="Notifications">
+    <section className={CLASS.region} aria-live="polite" aria-label="Notifications">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} />
       ))}
-    </div>
+    </section>
   );
 }
 
@@ -73,6 +73,13 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   }
 
   return (
+    // Pointer-only convenience (pause the auto-dismiss clock while a sighted
+    // mouse user is reading), not a new interactive affordance needing a
+    // role: there's nothing to operate here, and a screen reader user isn't
+    // disadvantaged by its absence - the region's aria-live="polite"
+    // (Toast above) announces this toast's text once, on insertion,
+    // independent of how long the DOM node then sticks around for.
+    // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only pause convenience, aria-live already covers AT users, see above
     <div className={`${CLASS.toast} ${KIND_CLASS[toast.kind]}`} onMouseEnter={pause} onMouseLeave={resume}>
       <p className={CLASS.text}>{toast.text}</p>
     </div>

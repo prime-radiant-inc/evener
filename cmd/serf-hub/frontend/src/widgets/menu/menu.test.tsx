@@ -247,6 +247,9 @@ test.each(["{ArrowDown}", "{ArrowUp}", "{Enter}", " "])(
     const user = userEvent.setup();
     const onAncestorKeyDown = vi.fn();
     render(
+      // Test-only bubbling probe, never a real widget: this div exists
+      // purely to detect whether Menu's own key handling escapes upward.
+      // biome-ignore lint/a11y/noStaticElementInteractions: test-only event-bubbling probe, not a rendered widget
       <div onKeyDown={onAncestorKeyDown}>
         <Menu trigger="Actions" items={items()} />
       </div>,

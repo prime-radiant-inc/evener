@@ -35,6 +35,10 @@ export function Meter({ label, value, max, tone = "neutral" }: MeterProps) {
   const fillStyle = { "--fill": `${percent}%` } as CSSProperties;
 
   return (
+    // Native <meter> can't be restyled cross-browser (its fill/track are
+    // closed to CSS) - this div+role IS the deliberate themed-gauge escape
+    // hatch (see this file's top doc comment for the widget's own intent).
+    // biome-ignore lint/a11y/useSemanticElements: div+role is deliberate, see above
     <div
       className={BASE_CLASS.track}
       role="meter"
