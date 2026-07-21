@@ -384,6 +384,93 @@ describe("edit", () => {
   });
 });
 
+// Rows are never index-cached: they are recomputed fresh from model.queue's
+// own arrays on every render, so a surviving row automatically re-keys to
+// its new position once an earlier row is consumed - a contract row named
+// explicitly for BOTH promote (test-queue-promote.js) and cancel
+// (test-queue-edit-cancel.js): "surviving rows re-key their index," and
+// "after a re-render, promoting a row sends that row's CURRENT entry_id,
+// never a stale id carried over from an earlier snapshot."
+describe("re-rendering after the queue shifts", () => {
+  test("after the daemon confirms the head entry is consumed, the surviving row promotes with its NEW index", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          depth: 2,
+          ids: ["q1", "q2"],
+          texts: ["first queued message", "second queued message"],
+          preview: ["first queued message", "second queued message"],
+        },
+      },
+    });
+    fake.on("turn/promoteQueuedAsSteer", () => ({}));
+    renderStrip(defaultProps());
+
+    // The daemon confirms the FIRST entry (q1) was consumed elsewhere (e.g.
+    // popped into a turn) - the surviving entry (originally at index 1)
+    // shifts down to index 0, still carrying its OWN entryId (q2).
+    act(() => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          queue: { depth: 1, ids: ["q2"], texts: ["second queued message"], preview: ["second queued message"] },
+        },
+      });
+    });
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    expect(within(row).getByText("second queued message")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: /send now/i }));
+    });
+
+    const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+  });
+
+  test("after the daemon confirms the head entry is consumed, the surviving row cancels with its NEW index", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: {
+          depth: 2,
+          ids: ["q1", "q2"],
+          texts: ["first queued message", "second queued message"],
+          preview: ["first queued message", "second queued message"],
+        },
+      },
+    });
+    fake.on("turn/cancelQueued", () => ({ removedText: "second queued message" }));
+    renderStrip(defaultProps());
+
+    act(() => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: {
+          threadId: "thr_ref_a",
+          ref: "ref_a",
+          queue: { depth: 1, ids: ["q2"], texts: ["second queued message"], preview: ["second queued message"] },
+        },
+      });
+    });
+
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    await act(async () => {
+      fireEvent.click(within(row).getByRole("button", { name: /remove from queue/i }));
+    });
+
+    const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+    expect(call?.params).toEqual({ ref: "ref_a", index: 0, expectedEntryId: "q2" });
+  });
+});
+
 describe("degraded daemon: no entry ids", () => {
   test("every row action is disabled when the daemon reports no ids array at all", async () => {
     const fake = connectFakeClient();
