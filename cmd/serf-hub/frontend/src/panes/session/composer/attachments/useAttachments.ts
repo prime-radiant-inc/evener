@@ -40,6 +40,21 @@ export interface PendingAttachment {
 // result); write() applies a new value through setText() and separately
 // restores the native cursor position once that commits (its own
 // layout-effect, since only Composer.tsx has that lifecycle hook).
+//
+// Implementer's invariant, learned the hard way: read() must be equally
+// "live" in EVERY field, not just some. A first Composer.tsx implementation
+// read cursor live (off the DOM ref) but text from a plain per-render
+// const - ingestFiles' own decode-failure .catch() can resume long after
+// the render that registered it, so that stale `text` closure, fed back
+// through write()'s (always-stable) setText, silently reverted the whole
+// composer to however old that render's text was - discarding anything
+// typed since. Composer.tsx's fix mirrors BOTH text and cursor through
+// refs updated synchronously the instant write() runs, not waiting for a
+// React commit - see its own textRef/cursorToRestoreRef comments. This
+// hook's own tests use a fake TextEditor backed by one shared closure
+// (see useAttachments.test.ts's makeFakeEditor), which is always-current
+// by construction and therefore can't reproduce that specific staleness
+// class - Composer.test.tsx's own regression test is what has to.
 export interface TextEditor {
   read(): { text: string; cursor: number };
   write(text: string, cursor: number): void;

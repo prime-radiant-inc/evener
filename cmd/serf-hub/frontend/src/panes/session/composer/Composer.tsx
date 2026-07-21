@@ -65,14 +65,64 @@ export function Composer({ ref }: ComposerProps) {
   const [text, setText] = useState(() => readDraft(ref));
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
 
+  // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
+  // unlike `text` itself (a plain per-render const) or the textarea DOM
+  // node's own `.value` (only updated once React actually commits),
+  // textRef.current is correct the INSTANT any text-changing path runs,
+  // regardless of which render's closure is asking or whether React has
+  // had a chance to re-render yet. Both properties matter: useAttachments'
+  // decode-failure callback (useAttachments.ts) can resume long after the
+  // render that registered it - a closure over plain `text` would read
+  // however stale that render's value was, correctly stripping the marker
+  // from it but then overwriting whatever the user has typed SINCE with
+  // that same stale text (a real, reproduced bug: paste an image whose
+  // decode later fails, type before it settles, watch the typed text get
+  // silently reverted - Composer.test.tsx's own regression test). And two
+  // attachment gestures fired back-to-back with no intervening render
+  // (also tested) would see the SAME staleness from a DOM read, since
+  // React hasn't committed the first gesture's `setText` yet by the time
+  // the second one asks.
+  const textRef = useRef(text);
+
+  function updateText(nextText: string): void {
+    textRef.current = nextText;
+    setText(nextText);
+  }
+
   // Bridges useAttachments' pure string-splice logic to this component's
   // own controlled `text` state, instead of a direct DOM `.value` mutation
   // - see useAttachments.ts's TextEditor doc comment for the React
-  // controlled-input restoration bug that direct mutation ran into.
+  // controlled-input restoration bug that direct mutation ran into. Also
+  // keeps the draft in sync with attachment-driven edits (marker insert on
+  // ingest, marker strip on remove/decode-failure), not just typing -
+  // otherwise a decode failure's stripped marker would leave a stale,
+  // now-invalid "[image N]" fragment sitting in the stored draft even
+  // though the visible textarea correctly no longer shows it.
+  //
+  // read()'s cursor prefers cursorToRestoreRef.current (this component's
+  // OWN pending, not-yet-committed cursor intent) over the DOM's live
+  // selectionStart - reusing that ref rather than adding a parallel one,
+  // since it already means exactly "the last write() call's intended
+  // cursor, whenever the layout effect hasn't applied it to the DOM yet".
+  // Needed for the identical reason textRef is: a second ingestFiles call
+  // landing before any render (e.g. two attachment gestures fired back to
+  // back - Composer.test.tsx's own regression test) would otherwise read
+  // the DOM's selectionStart, which the browser hasn't moved yet because
+  // the layout effect that moves it hasn't run - inserting the second
+  // marker at the FIRST marker's stale pre-insertion position instead of
+  // chaining after it. Once the layout effect actually applies a cursor
+  // and clears this ref (back to null), read() correctly falls back to the
+  // live DOM value - which is what must be trusted for genuine user-driven
+  // cursor movement (clicking, arrow keys) that this component has no
+  // other hook into.
   const textEditor: TextEditor = {
-    read: () => ({ text, cursor: textareaRef.current?.selectionStart ?? text.length }),
+    read: () => ({
+      text: textRef.current,
+      cursor: cursorToRestoreRef.current ?? textareaRef.current?.selectionStart ?? textRef.current.length,
+    }),
     write: (nextText, cursor) => {
-      setText(nextText);
+      updateText(nextText);
+      writeDraft(ref, nextText);
       cursorToRestoreRef.current = cursor;
     },
   };
@@ -123,19 +173,19 @@ export function Composer({ ref }: ComposerProps) {
   const submitLabel = availability.canQueue ? "Queue" : "Send";
 
   function handleTextChange(event: { target: { value: string } }): void {
-    setText(event.target.value);
+    updateText(event.target.value);
     writeDraft(ref, event.target.value);
   }
 
   // clearIfUnchanged mirrors clearComposerDraftIfUnchanged (parity-m5-
-  // composer.md §A): reads the LIVE textarea DOM value, not `submittedText`
-  // (a `const` closed over by this async handler at call time, which never
-  // changes after that point regardless of later renders) nor the current
-  // `text` state variable (same reason) - only the real DOM node reflects
-  // whatever the user has actually typed since submit.
+  // composer.md §A): reads textRef.current, not `submittedText` (a `const`
+  // closed over by this async handler at call time, which never changes
+  // after that point regardless of later renders) - textRef.current is
+  // kept synchronously current by updateText() regardless of which
+  // render's closure this particular submitAction call started from.
   function clearIfUnchanged(submittedText: string): void {
-    if (textareaRef.current?.value === submittedText) {
-      setText("");
+    if (textRef.current === submittedText) {
+      updateText("");
       clearDraft(ref);
     }
   }

@@ -73,6 +73,22 @@ function installDecodeErrorStub(): void {
 // own contract (see its header comment) is that it never touches a DOM
 // node directly, so its tests need no real textarea element at all, only
 // something implementing read()/write().
+//
+// Deliberately NOT a regression vector for the per-render-closure
+// staleness class Composer.tsx's own TextEditor implementation once had
+// (read()/write() closing over a specific render's `text` const, so a
+// callback resuming at a LATER render silently reverted everything typed
+// since - see Composer.tsx's textRef/cursorToRestoreRef comments and
+// Composer.test.tsx's "critical" regression test). This fake's read()
+// always sees write()'s latest value, by construction (one shared closure
+// over `text`/`cursor`, not one per render) - useAttachments itself never
+// creates multiple TextEditor instances or holds one across renders, so
+// there is nothing IN THIS MODULE that staleness could come from; it is
+// entirely a property of how a REAL caller wires read()/write() to its own
+// per-render state. Composer.test.tsx is what has to (and does) catch that
+// class - this file's job is only to prove useAttachments' own
+// orchestration (limits, markers, encode, marker bookkeeping) is correct
+// against a TextEditor that behaves exactly to contract.
 interface FakeEditor extends TextEditor {
   getText(): string;
   getCursor(): number;

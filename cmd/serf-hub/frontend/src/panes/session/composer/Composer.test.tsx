@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -162,6 +162,39 @@ test("a successful send clears the textarea and its draft", async () => {
 
   await waitFor(() => expect(textarea().value).toBe(""));
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
+});
+
+test("text typed while a send is still in flight survives (not cleared) - the asymmetric unchanged-since-submit condition", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  let resolveSend: (() => void) | undefined;
+  fake.on(
+    "turn/start",
+    () =>
+      new Promise<{ turn: { id: string; status: string; itemsView: string } }>((resolve) => {
+        resolveSend = () => resolve({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } });
+      }),
+  );
+
+  await user.type(textarea(), "original");
+  await user.click(submitButton()); // fires the request; submitAction awaits the still-pending promise
+
+  // The user keeps typing while the request is in flight - a real,
+  // synchronous DOM change event (not user.type, whose per-keystroke
+  // delays aren't the point here) landing between submit and settlement.
+  fireEvent.change(textarea(), { target: { value: "original plus more" } });
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+
+  resolveSend?.();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+
+  // Give clearIfUnchanged (submitAction's own .then continuation) a chance
+  // to run and settle - if it were going to wrongly clear, it would have
+  // by the time this passes.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  expect(textarea().value).toBe("original plus more"); // NOT cleared - text changed since submit
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more"); // draft untouched
 });
 
 test("a failed send leaves the textarea text untouched and surfaces a toast", async () => {
@@ -538,6 +571,89 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
 
   await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
+});
+
+// installFailingDecodeStub mirrors installCanvasStubs but rejects (via
+// Image.onerror) on a microtask, instead of resolving - so a test gets a
+// window between the synchronous marker-insertion and the decode's
+// eventual rejection in which to make further synchronous changes (typing)
+// before that rejection settles.
+function installFailingDecodeStub(): void {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  class FailingImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      Promise.resolve().then(() => this.onerror?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = FailingImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+}
+
+// CRITICAL regression test (reviewer-reproduced): useAttachments' decode-
+// failure path calls the composer's TextEditor.read()/write() long after
+// the render that registered it. If read() ever mixes a live cursor with a
+// stale per-render `text` closure, write()'s call to the (always-stable)
+// setText silently reverts the ENTIRE composer to that stale value -
+// discarding both the marker insertion and anything typed since, and
+// desyncing the draft (a revert that bypasses writeDraft). Reproduction:
+// paste an image whose decode later fails, then type SYNCHRONOUSLY (no
+// yield to the microtask queue) before that rejection settles.
+test("typing synchronously after a paste whose decode later fails survives - the failed marker alone is stripped (critical)", async () => {
+  installFailingDecodeStub();
+  await mountComposer("ref_a");
+
+  // act() forces React to flush the paste's resulting state update
+  // synchronously (pastePngInto's plain el.dispatchEvent isn't
+  // auto-wrapped the way fireEvent/user-event are) - still entirely
+  // synchronous JS, so this runs before the decode's microtask-deferred
+  // rejection has any chance to fire.
+  act(() => {
+    pastePngInto(textarea());
+  });
+  expect(textarea().value).toBe("[image 1]");
+
+  // Also synchronous (fireEvent, not user.type - no per-keystroke delay
+  // that could yield to the microtask queue): types "hello" at the
+  // (cursor-restored) end of the marker, landing entirely before the
+  // decode's rejection settles.
+  fireEvent.change(textarea(), { target: { value: "[image 1]hello" } });
+  expect(textarea().value).toBe("[image 1]hello");
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("[image 1]hello");
+
+  // Now let the decode's rejection actually settle.
+  await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
+
+  expect(textarea().value).toBe("hello"); // typed text survives; only the failed marker is gone
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hello"); // draft matches, not stale
+});
+
+// Minor (reviewer-requested): two attachment gestures fired back-to-back
+// with NO intervening render (both dispatched inside one `act()` block, so
+// React has no chance to commit the first gesture's setText before the
+// second gesture's own TextEditor.read() runs) must still chain correctly
+// rather than the second clobbering the first.
+test("two attachment gestures fired back-to-back with no intervening render still chain their markers, not clobber", async () => {
+  installCanvasStubs();
+  await mountComposer("ref_a");
+
+  act(() => {
+    pastePngInto(textarea(), "a.png");
+    pastePngInto(textarea(), "b.png");
+  });
+
+  expect(textarea().value).toBe("[image 1][image 2]");
+  await waitFor(() => expect(screen.getAllByRole("button", { name: /remove/i })).toHaveLength(2));
 });
 
 test("removing an attachment chip strips its marker from the textarea", async () => {
