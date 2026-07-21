@@ -1,0 +1,50 @@
+.root {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.line {
+  display: flex;
+  padding: 0 var(--space-2);
+  white-space: pre;
+}
+
+.marker {
+  flex: none;
+  width: 1.5em;
+  color: var(--ink-low);
+  user-select: none;
+}
+
+.content {
+  /* no rules of its own - white-space: pre is inherited from .line. Exists
+   * as a stable hook so a line's stripped content can be queried apart
+   * from its marker glyph (both are text nodes; .line's own textContent
+   * would otherwise concatenate the two). */
+}
+
+/* additions/deletions: tinted via the alive/danger -bg companions (not the
+ * hues directly) - see diffblock's entry in
+ * src/styles/token-contract.test.ts's semantic-use allowlist. */
+.add {
+  background: var(--alive-bg);
+  color: var(--ink-hi);
+}
+
+.del {
+  background: var(--danger-bg);
+  color: var(--ink-hi);
+}
+
+.header {
+  color: var(--ink-mid);
+}
+
+.context {
+  color: var(--ink-hi);
+}
