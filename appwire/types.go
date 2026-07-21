@@ -112,6 +112,11 @@ const (
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodSerfSandboxEscalationResolve.
 	NotifySerfSandboxEscalationRequested = "serf/sandbox/escalation/requested"
+	// NotifySerfTreeChanged pushes a hint that tree-relevant state changed
+	// (roster delta, past-index change, or an archive/favorite/rename/
+	// project-delete mutation) so the web sidebar can refetch /api/tree
+	// instead of polling. Hub-originated; never sent by daemons.
+	NotifySerfTreeChanged = "serf/tree/changed"
 )
 
 const (

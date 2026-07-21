@@ -206,7 +206,7 @@ func roundTrippable(typ reflect.Type) bool {
 
 // TestWireTypeRegistryCoverage is the acceptance check: every method exposes a
 // #params and #result generator, every typed notification a #payload generator,
-// and the 14 nil-payload notifications none.
+// and the 15 nil-payload notifications none.
 func TestWireTypeRegistryCoverage(t *testing.T) {
 	reg, typeFor := buildRegistry()
 
@@ -243,8 +243,8 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 	if typed != 12 {
 		t.Errorf("typed notifications = %d, want 12", typed)
 	}
-	if nilPayload != 14 {
-		t.Errorf("nil-payload notifications = %d, want 14", nilPayload)
+	if nilPayload != 15 {
+		t.Errorf("nil-payload notifications = %d, want 15", nilPayload)
 	}
 	if got, want := len(reg.Names()), 2*len(Methods)+typed; got != want {
 		t.Errorf("registry has %d names, want %d (2×%d methods + %d typed payloads)",

@@ -183,4 +183,5 @@ var Notifications = []NotificationSpec{
 	{NotifySerfPluginUpdated, nil, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list."},
 	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 	{NotifySerfSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve."},
+	{NotifySerfTreeChanged, nil, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); inline {}. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
 }
