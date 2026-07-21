@@ -1510,7 +1510,8 @@ type SettingsOverviewResponse struct {
 // SettingsHubOverview is the Settings → General / Settings → Hub section
 // (cmd/serf-hub/templates/partials/settings/{general,hub}.html). Fields
 // mirror cmd/serf-hub/web_settings.go's renderSettingsPartial settingsData
-// construction.
+// construction. General.html's "State dir" row is not a field here — see
+// SettingsStorageOverview.StateDir, which the frontend reads for it instead.
 type SettingsHubOverview struct {
 	// Version is the running hub's version string.
 	// Source: web_settings.go settingsData.HubVersion (the package Version constant).

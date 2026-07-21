@@ -77,6 +77,10 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 		PastIndexPath: pastIndexPath,
 		PastPerPage:   25,
 		Past:          past,
+		// Hermetic: an empty MCPConfigPath would fall back to the ambient
+		// machine's ~/.config/serf/mcp.json, which this test has no business
+		// touching (this test isn't about MCP at all).
+		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 	}
 
 	hub := newHubRPCTestServer(t, cfg)
@@ -140,7 +144,11 @@ func TestHubRPCSettingsOverview_HubAndStorage(t *testing.T) {
 // no past index configured (cfg.Past == nil, a legitimate minimal config)
 // omits PastIndex rather than reporting a fabricated zero-valued one.
 func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{})
+	// Hermetic: pin MCPConfigPath so this test never falls back to the
+	// ambient machine's ~/.config/serf/mcp.json.
+	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
+	})
 	if resp.Hub == nil {
 		t.Fatal("Hub = nil, want populated")
 	}
@@ -154,7 +162,12 @@ func TestHubRPCSettingsOverview_NilPastIndexWhenNotConfigured(t *testing.T) {
 // reported (web_settings.go's builtinAgentNames), each with no on-disk file
 // to open (EditPath empty).
 func TestHubRPCSettingsOverview_Agents(t *testing.T) {
-	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	// Hermetic: pin MCPConfigPath so this test never falls back to the
+	// ambient machine's ~/.config/serf/mcp.json.
+	resp, _ := requestSettingsOverview(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
+	})
 
 	want := []appwire.SettingsAgentEntry{
 		{Name: "default"},
@@ -180,6 +193,9 @@ func TestHubRPCSettingsOverview_CodexLaunches(t *testing.T) {
 	const secretToken = "sekrit-codex-bearer-token-xyz"
 	cfg := hubcore.WebConfig{
 		Past: hubcore.NewPastIndex(""),
+		// Hermetic: pin MCPConfigPath so this test never falls back to the
+		// ambient machine's ~/.config/serf/mcp.json (this test isn't about MCP).
+		MCPConfigPath: filepath.Join(t.TempDir(), "no-mcp.json"),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{
 			ID:              "codex-managed",
 			Binary:          "/usr/local/bin/codex",
