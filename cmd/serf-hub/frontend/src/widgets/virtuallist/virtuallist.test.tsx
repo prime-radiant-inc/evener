@@ -236,7 +236,7 @@ describe("getItemKey", () => {
     const [ids, setIds] = useState(["a", "b", "c"]);
     return (
       <div>
-        <button onClick={() => setIds((prev) => ["z", ...prev])}>prepend</button>
+        <button type="button" onClick={() => setIds((prev) => ["z", ...prev])}>prepend</button>
         <VirtualList
           count={ids.length}
           estimateSize={() => ROW_HEIGHT}

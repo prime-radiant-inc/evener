@@ -22,7 +22,7 @@ test("omits the hint when not provided", () => {
 });
 
 test("renders the action slot when provided", () => {
-  render(<EmptyState title="No sessions yet" action={<button>New session</button>} />);
+  render(<EmptyState title="No sessions yet" action={<button type="button">New session</button>} />);
   expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
 });
 
@@ -36,7 +36,7 @@ test("renders title, hint, and action together", () => {
     <EmptyState
       title="No sessions yet"
       hint="Start one from the command palette."
-      action={<button>New session</button>}
+      action={<button type="button">New session</button>}
     />,
   );
   expect(screen.getByText("No sessions yet")).toBeTruthy();

@@ -106,20 +106,20 @@ test("the close button calls onClose when clicked", async () => {
 });
 
 test("focus is trapped and restored on close, same as Dialog", () => {
-  render(<button>Open sheet</button>);
+  render(<button type="button">Open sheet</button>);
   const trigger = screen.getByRole("button", { name: "Open sheet" });
   trigger.focus();
 
   const { rerender } = render(
     <Sheet open onClose={vi.fn()} title="t">
-      <button>Field</button>
+      <button type="button">Field</button>
     </Sheet>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Field" }));
 
   rerender(
     <Sheet open={false} onClose={vi.fn()} title="t">
-      <button>Field</button>
+      <button type="button">Field</button>
     </Sheet>,
   );
   expect(document.activeElement).toBe(trigger);

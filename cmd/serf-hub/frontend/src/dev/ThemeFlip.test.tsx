@@ -7,7 +7,7 @@ afterEach(cleanup);
 test("renders its children twice: once ambient (dark), once under data-theme=light", () => {
   render(
     <ThemeFlip>
-      <button>Go</button>
+      <button type="button">Go</button>
     </ThemeFlip>,
   );
   const buttons = screen.getAllByRole("button", { name: "Go" });

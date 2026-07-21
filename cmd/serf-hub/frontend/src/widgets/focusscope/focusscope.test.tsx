@@ -8,7 +8,7 @@ afterEach(cleanup);
 test("renders its children", () => {
   render(
     <FocusScope>
-      <button>Go</button>
+      <button type="button">Go</button>
     </FocusScope>,
   );
   expect(screen.getByRole("button", { name: "Go" })).toBeTruthy();
@@ -17,8 +17,8 @@ test("renders its children", () => {
 test("on mount, focuses the first tabbable descendant", () => {
   render(
     <FocusScope>
-      <button>First</button>
-      <button>Second</button>
+      <button type="button">First</button>
+      <button type="button">Second</button>
     </FocusScope>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "First" }));
@@ -27,9 +27,9 @@ test("on mount, focuses the first tabbable descendant", () => {
 test("on mount, skips a disabled or hidden descendant to focus the first real tabbable one", () => {
   render(
     <FocusScope>
-      <button disabled>Disabled</button>
-      <button hidden>Hidden</button>
-      <button>Reachable</button>
+      <button type="button" disabled>Disabled</button>
+      <button type="button" hidden>Hidden</button>
+      <button type="button">Reachable</button>
     </FocusScope>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Reachable" }));
@@ -38,8 +38,8 @@ test("on mount, skips a disabled or hidden descendant to focus the first real ta
 test("on mount, skips an element with tabindex=-1", () => {
   render(
     <FocusScope>
-      <button tabIndex={-1}>Skip me</button>
-      <button>Land here</button>
+      <button type="button" tabIndex={-1}>Skip me</button>
+      <button type="button">Land here</button>
     </FocusScope>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Land here" }));
@@ -55,14 +55,14 @@ test("with no tabbable descendants, focuses the scope itself as a fallback", () 
 });
 
 test("restores focus to the previously focused element when the scope unmounts", () => {
-  render(<button>Outside trigger</button>);
+  render(<button type="button">Outside trigger</button>);
   const trigger = screen.getByRole("button", { name: "Outside trigger" });
   trigger.focus();
   expect(document.activeElement).toBe(trigger);
 
   const { unmount } = render(
     <FocusScope>
-      <button>Inside</button>
+      <button type="button">Inside</button>
     </FocusScope>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Inside" }));
@@ -72,14 +72,14 @@ test("restores focus to the previously focused element when the scope unmounts",
 });
 
 test("does not throw restoring focus when the previous element was removed from the DOM", () => {
-  const { unmount: unmountTrigger } = render(<button>Gone soon</button>);
+  const { unmount: unmountTrigger } = render(<button type="button">Gone soon</button>);
   const trigger = screen.getByRole("button", { name: "Gone soon" });
   trigger.focus();
   unmountTrigger(); // trigger leaves the document entirely before the scope unmounts
 
   const { unmount } = render(
     <FocusScope>
-      <button>Inside</button>
+      <button type="button">Inside</button>
     </FocusScope>,
   );
   expect(() => unmount()).not.toThrow();
@@ -90,10 +90,10 @@ test("trap=false (default): Tab is not intercepted, focus moves past the scope n
   render(
     <div>
       <FocusScope>
-        <button>First</button>
-        <button>Last</button>
+        <button type="button">First</button>
+        <button type="button">Last</button>
       </FocusScope>
-      <button>Outside</button>
+      <button type="button">Outside</button>
     </div>,
   );
   screen.getByRole("button", { name: "Last" }).focus();
@@ -106,10 +106,10 @@ test("trap=true: Tab from the last tabbable loops back to the first", async () =
   render(
     <div>
       <FocusScope trap>
-        <button>First</button>
-        <button>Last</button>
+        <button type="button">First</button>
+        <button type="button">Last</button>
       </FocusScope>
-      <button>Outside</button>
+      <button type="button">Outside</button>
     </div>,
   );
   screen.getByRole("button", { name: "Last" }).focus();
@@ -122,10 +122,10 @@ test("trap=true: Shift+Tab from the first loops back to the last", async () => {
   render(
     <div>
       <FocusScope trap>
-        <button>First</button>
-        <button>Last</button>
+        <button type="button">First</button>
+        <button type="button">Last</button>
       </FocusScope>
-      <button>Outside</button>
+      <button type="button">Outside</button>
     </div>,
   );
   screen.getByRole("button", { name: "First" }).focus();
@@ -137,9 +137,9 @@ test("trap=true: Tab in the middle of the scope moves naturally between items, n
   const user = userEvent.setup();
   render(
     <FocusScope trap>
-      <button>First</button>
-      <button>Middle</button>
-      <button>Last</button>
+      <button type="button">First</button>
+      <button type="button">Middle</button>
+      <button type="button">Last</button>
     </FocusScope>,
   );
   screen.getByRole("button", { name: "First" }).focus();
@@ -154,7 +154,7 @@ test("trap=true: Tab with zero tabbable descendants keeps focus on the scope its
       <FocusScope trap>
         <p>Nothing focusable here.</p>
       </FocusScope>
-      <button>Outside</button>
+      <button type="button">Outside</button>
     </div>,
   );
   expect(document.activeElement).toBe(container.querySelector("[tabindex='-1']"));

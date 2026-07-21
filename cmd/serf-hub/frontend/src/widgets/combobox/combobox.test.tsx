@@ -210,7 +210,7 @@ test("blurring the input closes the popup", async () => {
         Model
         <Combobox options={MODELS} onQuery={vi.fn()} onPick={vi.fn()} />
       </label>
-      <button>Elsewhere</button>
+      <button type="button">Elsewhere</button>
     </div>,
   );
   const input = screen.getByRole("combobox", { name: "Model" });

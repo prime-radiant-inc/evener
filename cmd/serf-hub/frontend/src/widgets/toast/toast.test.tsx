@@ -17,7 +17,7 @@ function advance(ms: number) {
 
 function PushButton({ kind, text }: { kind: ToastKind; text: string }) {
   const { push } = useToasts();
-  return <button onClick={() => push(kind, text)}>{`Push: ${text}`}</button>;
+  return <button type="button" onClick={() => push(kind, text)}>{`Push: ${text}`}</button>;
 }
 
 test("renders an aria-live=polite region even with no toasts", () => {
