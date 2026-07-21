@@ -834,3 +834,99 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
   expect(item.observedStartedAt).toBe(new Date(1003).toISOString());
   expect(item.observedCompletedAt).toBe(new Date(1004).toISOString());
 });
+
+// Warnings reach the model: the reducer's `case "warning"` (see reducer.ts
+// for the wire receipts — internal/appprojector/appwire_projection.go's
+// EventWarning and EventError's user-cancel branch) folds NotifyWarning
+// notifications into the active turn as ordinary items, mirroring
+// serf/steering/injected's own shape.
+
+test("warning mid-turn appends an item to the active turn with text=message and the meta populated", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "rate limit approaching", source: "provider", title: "Provider warning", hint: "slow down" } } as AnyNotification,
+    1002,
+  );
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    id: "item_warning_live_turn_1_0",
+    turnId: "turn_1",
+    type: "warning",
+    text: "rate limit approaching",
+    status: "completed",
+    warning: { source: "provider", title: "Provider warning", hint: "slow down" },
+  });
+});
+
+test("two warnings in one turn get distinct ids in arrival order", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "first" } } as AnyNotification, 1002);
+  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "second" } } as AnyNotification, 1003);
+
+  const items = turnAt(model, 0).items;
+  expect(items.map((it) => it.id)).toEqual(["item_warning_live_turn_1_0", "item_warning_live_turn_1_1"]);
+  expect(items.map((it) => it.text)).toEqual(["first", "second"]);
+});
+
+test("warning with no active turn only updates lastFrameAt (no turn fabricated client-side)", () => {
+  const model = testHydrate();
+  expect(model.activeTurnId).toBeUndefined();
+
+  const result = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "orphaned warning" } } as AnyNotification, 2000);
+
+  expect(result).toEqual({ ...model, lastFrameAt: 2000 });
+  expect(result.turns).toBe(model.turns); // same reference: no turn was touched, none fabricated
+});
+
+test("a warning item survives a bare turn/completed settle stamp (composition with Part A)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } } as AnyNotification, 1002);
+
+  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+
+  const items = turnAt(model, 0).items;
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ type: "warning", text: "mid-turn warning", status: "completed" });
+});
+
+test("a cancel-shaped warning (cause present) still lands, ignoring cause", () => {
+  // EventError's user-cancel branch sends the same inline shape as
+  // EventWarning plus `cause` (internal/appprojector/appwire_projection.go:
+  // 520-535). cause has no model consumer — assert only that the item
+  // lands with its meta; do not invent a field to carry it.
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "context canceled", source: "user", title: "Cancelled", hint: "", cause: "context canceled" } } as AnyNotification,
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item).toMatchObject({ type: "warning", text: "context canceled", warning: { source: "user", title: "Cancelled", hint: "" } });
+});

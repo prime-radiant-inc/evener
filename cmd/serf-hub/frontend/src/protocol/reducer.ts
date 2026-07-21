@@ -43,6 +43,28 @@ interface SteeringInjectedInline {
   source?: string;
 }
 
+// warning's payload is declared `nil` in the AppWire catalog
+// (appwire/protocol.go: {NotifyWarning, nil, "Non-fatal diagnostic; inline
+// {threadId, ref, message, source, title, hint, warning, cause?}. Also used
+// for cancelled turns and relay-attach failures."}) — codegen therefore
+// emits an empty WarningPayload{} with no fields. The live projector sends
+// exactly that inline shape for EventWarning
+// (internal/appprojector/appwire_projection.go:494-506), and the same shape
+// plus `cause` for EventError's user-cancel branch (:520-535) — a genuine
+// turn failure (the branch after that, :538-572) deliberately emits NO
+// warning, only a failed turn/completed (see that case's own comment on why
+// — double-render avoidance). `warning`/`cause` carry the raw event payload
+// and error-cause chain; neither has a model consumer, so they are left out
+// here rather than invented.
+interface WarningInline {
+  threadId?: string;
+  ref?: string;
+  message?: string;
+  source?: string;
+  title?: string;
+  hint?: string;
+}
+
 function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined ? undefined : new Date(ms).toISOString();
 }
@@ -485,6 +507,37 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, lastFrameAt: now };
+    }
+
+    case "warning": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const activeTurnId = model.activeTurnId;
+      // No active turn: there is nowhere wire-true to put it, and — unlike
+      // serf/steering/injected's race window — warnings are not transcript-
+      // persisted at all (internal/apptranscript has no warning-item
+      // conversion), so the next snapshot would not carry it either. Drop
+      // it client-side; only the liveness signal survives.
+      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      const params = n.params as WarningInline;
+      return {
+        ...model,
+        turns: mapTurn(model.turns, activeTurnId, (turn) => {
+          // Same collision-proofing as serf/steering/injected: count what's
+          // already there rather than a global counter, so multiple
+          // warnings in one turn land with distinct, order-preserving ids.
+          const warningCount = turn.items.filter((it) => it.type === "warning").length;
+          const item: ItemModel = {
+            id: `item_warning_live_${activeTurnId}_${warningCount}`,
+            turnId: activeTurnId,
+            type: "warning",
+            text: params.message ?? "",
+            status: "completed",
+            warning: { source: params.source, title: params.title, hint: params.hint },
+          };
+          return { ...turn, items: [...turn.items, item] };
+        }),
+        lastFrameAt: now,
+      };
     }
 
     case "serf/steering/injected": {

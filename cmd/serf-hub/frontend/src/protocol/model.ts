@@ -33,6 +33,9 @@ export interface ItemModel {
   // observed the item live stamps them.
   observedStartedAt?: string;
   observedCompletedAt?: string;
+  // Populated only by the reducer's `case "warning"` fold (see reducer.ts);
+  // undefined for every other item.
+  warning?: { source?: string; title?: string; hint?: string };
 }
 
 export interface TurnModel {
