@@ -13,8 +13,8 @@ function item(id: string, turnId: string, overrides: Partial<ItemModel> = {}): I
   return { id, turnId, type: "agentMessage", text: "x", status: "completed", ...overrides };
 }
 
-function turn(id: string, itemIds: string[]): TurnModel {
-  return { id, status: "completed", items: itemIds.map((iid) => item(iid, id)) };
+function turn(id: string, itemIds: string[], overrides: Partial<TurnModel> = {}): TurnModel {
+  return { id, status: "completed", items: itemIds.map((iid) => item(iid, id)), ...overrides };
 }
 
 function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -50,7 +50,7 @@ function makeListHandle(): {
 } {
   const el = document.createElement("div");
   const scrollToIndex = vi.fn();
-  // getVisibleRange: scriptable, like makeMeasure above - defaults to null
+  // getVisibleRange: scriptable, like makeMeasure below - defaults to null
   // ("unknown/not visible"), which is exactly what every scenario that
   // doesn't care about visibility wants (VirtualList itself already proves
   // the REAL getVirtualItems()-backed answer - see virtuallist.test.tsx;
@@ -194,6 +194,168 @@ describe("clearing the pill", () => {
     });
 
     expect(result.current.pillCount).toBe(0);
+  });
+});
+
+// The error anchor (contracts-transcript-scroll-liveness.md §5, lines
+// 113-114): a failed turn arriving while the reader is scrolled away is
+// remembered so the pill can point at it and jump straight there, instead
+// of the usual "scroll to bottom" - see NewContentPill.tsx for the danger-
+// tone rendering this state drives (precedence: error > needs-you > plain
+// count, resolved there, not here - the hook exposes independent booleans).
+describe("the error anchor (failed turn)", () => {
+  test("a failed turn appended while scrolled away becomes the error anchor", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+
+    expect(result.current.pillError).toBe(true);
+  });
+
+  test("a turn carrying an error object (status not necessarily 'failed') also anchors", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { error: { message: "rate limited" } })]) });
+
+    expect(result.current.pillError).toBe(true);
+  });
+
+  test("a failed turn arriving while the reader is at the bottom never creates an anchor", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+
+    expect(result.current.pillError).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("the FIRST failed turn is remembered; a later failure does not overwrite the active anchor", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    rerender({
+      m: model([
+        turn("t1", ["i1"]),
+        turn("t2", ["i2"], { status: "failed" }),
+        turn("t3", ["i3"], { status: "failed" }),
+      ]),
+    });
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToBottom());
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" }); // t2 (first), not t3
+  });
+
+  test("clicking with an active error anchor jumps to the failed turn's index (align start), not the bottom, and clears the pill", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToBottom());
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(result.current.pillError).toBe(false);
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("after jumping to an error anchor, the next append does not auto-stick to bottom (the reader is not actually there)", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    act(() => result.current.jumpToBottom());
+    scrollToIndex.mockClear();
+
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" }), turn("t3", ["i3"])]),
+    });
+
+    expect(scrollToIndex).not.toHaveBeenCalled();
+    expect(result.current.pillCount).toBe(1);
+  });
+
+  test("the anchor clears when the failed row scrolls into the visible range on its own, without clearing the rest of the pill", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    // SCROLLED_AWAY's scrollTop (0) is also near-top, so the dispatched
+    // scroll below fires the existing loadOlder call too - mockResolvedValue
+    // (matching the "near-top triggers loadOlder" describe block's own
+    // idiom) so its .catch(() => {}) has a real promise to attach to.
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    act(() => {
+      setVisibleRange({ startIndex: 1, endIndex: 1 }); // t2 (index 1) now on screen
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillError).toBe(false);
+    expect(result.current.pillCount).toBe(1); // still unseen - only the ANCHOR cleared, not the whole pill
+  });
+
+  test("a scroll that does not cover the anchor's index leaves it set", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    // See the loadOlder comment in the previous test - same reason.
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+
+    act(() => {
+      setVisibleRange({ startIndex: 5, endIndex: 9 }); // t2 (index 1) not in range
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillError).toBe(true);
   });
 });
 
@@ -357,6 +519,35 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     // a raw scrollTop write - this proves the PREPEND correction code path
     // specifically didn't also fire and stomp scrollTop on an append.
     expect(el.scrollTop).toBe(111);
+  });
+
+  // Not named in the brief's own test list, but a direct consequence of
+  // storing the error anchor as an absolute turn INDEX (see "the error
+  // anchor" describe block above): a prepend shifts every existing turn's
+  // index by the prepended count, exactly like baselineItemCountRef already
+  // does for the item count above - an anchor left un-shifted would silently
+  // point at the wrong turn (or the wrong row entirely) the next time it's
+  // clicked. Covered here rather than skipped since it's the same file,
+  // same function, same class of staleness bug the existing prepend tests
+  // already guard against for other refs.
+  test("a prepend shifts an active error anchor's index to keep pointing at the same turn", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // loadOlder prepends t0 above t1 - t2 (the anchor, at index 1) must now
+    // read as index 2.
+    rerender({ m: model([turn("t0", ["i0"]), turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToBottom());
+
+    expect(scrollToIndex).toHaveBeenCalledWith(2, { align: "start" });
   });
 });
 
