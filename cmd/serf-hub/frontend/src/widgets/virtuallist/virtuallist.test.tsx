@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -148,6 +148,58 @@ test("ref.current.scrollToIndex computes the align=start offset for the target i
   ref.current!.scrollToIndex(500, { align: "start" });
 
   expect(scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 500 * ROW_HEIGHT, behavior: "auto" });
+});
+
+// dynamic mode (transcript turns have wildly variable height - one tool call
+// vs. a long streamed response - so estimateSize alone is not good enough
+// for that consumer). Opt-in and off by default so every existing
+// fixed-height consumer above is completely unaffected: measureElement's
+// default measurement reads element.offsetHeight, so a per-element getter
+// (rather than the flat stub the tests above use) is what lets these two
+// tests tell "the estimate" and "the real measured height" apart.
+describe("dynamic sizing", () => {
+  const MEASURED_HEIGHT = 120;
+
+  function stubPerElementOffsetHeight(styles: { root: string }) {
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains(styles.root) ? CONTAINER_HEIGHT : MEASURED_HEIGHT;
+      },
+    });
+  }
+
+  test("dynamic omitted (default false) never measures - the estimate stays authoritative even when the real height differs", () => {
+    stubPerElementOffsetHeight(styles);
+    const count = 10; // all 10 fit the 500px viewport at the 50px estimate, so all 10 mount
+    const { container } = render(
+      <VirtualList count={count} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    );
+    const sizer = rootOf(container).firstElementChild as HTMLElement;
+    expect(sizer.style.height).toBe(`${count * ROW_HEIGHT}px`);
+  });
+
+  test("dynamic=true measures each rendered row's real height and corrects the total", () => {
+    stubPerElementOffsetHeight(styles);
+    const count = 10;
+    const { container } = render(
+      <VirtualList dynamic count={count} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    );
+    const sizer = rootOf(container).firstElementChild as HTMLElement;
+    expect(sizer.style.height).toBe(`${count * MEASURED_HEIGHT}px`);
+  });
+
+  test("dynamic=true still positions rows correctly (each translateY reflects the corrected running total, not index * estimate)", () => {
+    stubPerElementOffsetHeight(styles);
+    const { container } = render(
+      <VirtualList dynamic count={5} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    );
+    const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]"));
+    for (const el of rowEls) {
+      const index = Number((el as HTMLElement).dataset.index);
+      expect((el as HTMLElement).style.transform).toBe(`translateY(${index * MEASURED_HEIGHT}px)`);
+    }
+  });
 });
 
 test("declares no :focus-visible rule of its own (rows are consumer content, not this widget's concern)", () => {
