@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Input } from "../../widgets/input";
 import { ThemeFlip } from "../ThemeFlip";
-import styles from "./input.module.css";
+import styles from "../gallery-section.module.css";
 
 function LiveInput({ placeholder }: { placeholder?: string }) {
   const [value, setValue] = useState("");

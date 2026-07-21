@@ -1,6 +1,6 @@
 import { Chip, type ChipTone } from "../../widgets/chip";
 import { ThemeFlip } from "../ThemeFlip";
-import styles from "./chip.module.css";
+import styles from "../gallery-section.module.css";
 
 const TONES: ChipTone[] = ["neutral", "attention", "alive", "danger"];
 

@@ -1,6 +1,6 @@
 import { Button, type ButtonVariant } from "../../widgets/button";
 import { ThemeFlip } from "../ThemeFlip";
-import styles from "./button.module.css";
+import styles from "../gallery-section.module.css";
 
 const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger"];
 

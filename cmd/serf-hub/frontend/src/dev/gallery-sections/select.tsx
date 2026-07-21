@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Select } from "../../widgets/select";
 import { ThemeFlip } from "../ThemeFlip";
-import styles from "./select.module.css";
+import styles from "../gallery-section.module.css";
 
 const OPTIONS = [
   { value: "us-east", label: "US East" },
