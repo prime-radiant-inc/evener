@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { prefsStore, resetPrefsStoreForTests, usePrefsStore } from "./prefs";
+import { initPrefs, prefsStore, resetPrefsStoreForTests, usePrefsStore } from "./prefs";
 
 // See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
 // real window.localStorage with its own (non-functional under vitest)
@@ -307,6 +307,45 @@ describe("localStorage unavailable (e.g. Safari private mode)", () => {
     });
     expect(() => prefsStore.getState().setTheme("dark")).not.toThrow();
     expect(prefsStore.getState().theme).toBe("dark"); // in-memory state still updates
+  });
+});
+
+describe("initPrefs (production entry point)", () => {
+  // initPrefs is what a caller with no visibility into this store's own
+  // internals (the shell's app-root boot sequence, per the wave-7 review's
+  // "prefs hydration reachability" finding) imports and calls to GUARANTEE
+  // hydration+document-application has happened, rather than relying on it
+  // having already fired via whichever section a user happened to open
+  // first. These tests deliberately do NOT call resetPrefsStoreForTests()
+  // and do NOT render any component - initPrefs() itself is the only thing
+  // under test, exercised the same way the shell would call it.
+  test("applies a previously-saved theme to document.documentElement with no component mounted", () => {
+    localStorage.setItem(KEY("theme"), "light");
+    document.documentElement.removeAttribute("data-theme"); // undo whatever this file's own earlier module import already set
+
+    initPrefs();
+
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(prefsStore.getState().theme).toBe("light");
+  });
+
+  test("also applies phoneDensity and fontSize to document.body.dataset", () => {
+    localStorage.setItem(KEY("phoneDensity"), "comfortable");
+    localStorage.setItem(KEY("fontSize"), "xl");
+    delete document.body.dataset.phoneDensity;
+    delete document.body.dataset.fontSize;
+
+    initPrefs();
+
+    expect(document.body.dataset.phoneDensity).toBe("comfortable");
+    expect(document.body.dataset.fontSize).toBe("xl");
+  });
+
+  test("idempotent: calling it again with unchanged localStorage is a harmless no-op re-application", () => {
+    localStorage.setItem(KEY("theme"), "dark");
+    initPrefs();
+    expect(() => initPrefs()).not.toThrow();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 });
 

@@ -43,6 +43,13 @@
 // this-wave boolean collapse toggle of its own, `serf.rail.collapsed.v1`) -
 // wiring a real 3-state auto/pane/rail mode into the shell is out of this
 // store's manifest; persisting the preference is as far as T4 goes.
+//
+// No cross-tab `storage` event sync: deliberately omitted, matching the
+// legacy exactly - none of assets/{theme,settings-appearance,settings-
+// transcript,settings-display,settings-notifications}.js attach a
+// `window.addEventListener("storage", ...)` listener either, so a change
+// in one tab has never live-updated another already-open tab's state in
+// this app. Not a gap this task introduces.
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -308,13 +315,66 @@ export function usePrefsStore<T>(selector?: (state: PrefsStoreState) => T): T | 
   return selector ? useStore(prefsStore, selector) : useStore(prefsStore);
 }
 
-// resetPrefsStoreForTests re-derives every field from whatever's in
-// localStorage right now (loadInitialState, the same function the store's
-// own creator runs once at module load) and overwrites the store with it -
-// letting a test seed localStorage and then observe the hydration a fresh
-// module load would have produced, without actually reloading the module.
-// No production code should ever call this (mirrors threads.ts's
-// resetThreadsStoreForTests / tree.ts's resetTreeStoreForTests precedent).
-export function resetPrefsStoreForTests(): void {
+// hydrate re-derives every field from whatever's in localStorage right now
+// (loadInitialState) and overwrites the store with it, reapplying the
+// document side effects along the way. Shared by initPrefs (production) and
+// resetPrefsStoreForTests (test-only) below - the two exist as separate
+// public names for two different callers' intents (see each one's own doc
+// comment), not because the underlying work differs.
+function hydrate(): void {
   prefsStore.setState(loadInitialState());
+}
+
+// initPrefs is this store's production entry point - the wave-7 review's
+// "prefs hydration reachability" finding: this module's own createStore
+// initializer below already runs loadInitialState() once, synchronously,
+// the moment prefs.ts is first imported (a plain JS module-eval guarantee,
+// same as every other store here) - so in principle nothing further is
+// needed. In practice, NOTHING today imports prefs.ts until a user opens
+// Settings and one of the four prefs-driven sections (Theme/Transcript/
+// Display/Notifications) mounts: panes are React.lazy()'d
+// (shell/AppShell.tsx), and the "Settings" chunk is a separate bundle from
+// the eagerly-loaded app shell (confirmed via `npm run build`'s own chunk
+// list). A saved theme/density/font-size would therefore render wrong
+// (falling through to the un-mirrored defaults) for the entire session
+// until Settings happens to be opened.
+//
+// initPrefs() exists to give the app root (Settings.tsx/AppShell.tsx are
+// frozen this wave, not in this store's manifest - see the wave-7 report
+// for the exact one-line call the controller still needs to add) an
+// explicit, named, guaranteed-not-dead-code call site to import and invoke
+// as its own early-boot step - AppShell.tsx already has exactly this shape
+// for three OTHER "make sure this module's top-level side effect has run"
+// needs (`import "../panes/welcome"; // registers the "welcome" pane type`
+// and its two siblings), but those are bare side-effect imports with no
+// bound name. A bare `import "./stores/prefs"` would work today (this
+// project's package.json declares no `sideEffects: false`, so nothing
+// currently tree-shakes it away) but has no visible "used" binding at the
+// call site, unlike the three pane-registration imports it would sit next
+// to (whose OWN necessity is at least somewhat self-evident from their
+// comment) - a real, if modest, risk of a future cleanup pass or a
+// stricter bundler config silently dropping it. A named function call
+// cannot be mistaken for dead code, and is directly testable without
+// reaching for `vi.resetModules()` + dynamic `import()` gymnastics to
+// simulate "before this module was ever imported" (see this file's own
+// "initPrefs (production entry point)" describe block, which calls
+// exactly this function with no section rendered).
+//
+// Idempotent and safe to call more than once: it just re-derives from
+// localStorage and reapplies the same document attributes, identical to
+// what already happened at module-eval time - calling it again when
+// nothing has changed is a harmless no-op re-application.
+export function initPrefs(): void {
+  hydrate();
+}
+
+// resetPrefsStoreForTests re-derives every field from whatever's in
+// localStorage right now and overwrites the store with it - letting a test
+// seed localStorage and then observe the hydration a fresh module load
+// would have produced, without actually reloading the module. No
+// production code should ever call this (mirrors threads.ts's
+// resetThreadsStoreForTests / tree.ts's resetTreeStoreForTests precedent) -
+// use initPrefs() instead for the production "make sure this ran" case.
+export function resetPrefsStoreForTests(): void {
+  hydrate();
 }
