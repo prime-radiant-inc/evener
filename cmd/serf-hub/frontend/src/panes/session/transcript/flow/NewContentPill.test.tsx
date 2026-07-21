@@ -63,9 +63,20 @@ test("caps a very large count via Badge's own 99+ display, without the pill inve
 // Chip-carries-the-hue pattern WarningItem/NewContentPill's own needsYou
 // branch already use, so this file's own CSS module needs no new
 // --danger reference.
-test("renders nothing when count is 0 even if error is (defensively) true", () => {
+// CORRECTION (review finding): count is 0 whenever a failed turn's own
+// wire settle stamp carries no items (turn/completed's EventError path -
+// itemsView:"", no items array; see reducer.test.ts's own failed-turn
+// coverage and useTranscriptScroll.test.ts's matching wire-true tests) -
+// an unseen failure is itself the news, independent of whether any item
+// ever rendered for that turn. Unlike needsYou (which the hook only ever
+// sets true alongside a nonzero pillCount - see pillNeedsYou's own "&&
+// pillCount > 0" gate - so count=0+needsYou=true can't reach this
+// component from the real hook, hence that case staying (defensively)
+// null below), count=0+error=true is a REAL, reachable combination.
+test("renders the pill when count is 0 but error is true - an itemless failed turn is itself the news", () => {
   render(<NewContentPill count={0} needsYou={false} error={true} onClick={() => {}} />);
-  expect(screen.queryByTestId("new-content-pill")).toBeNull();
+  const pill = screen.getByTestId("new-content-pill");
+  expect(pill.textContent!.toLowerCase()).toContain("failed turn");
 });
 
 test("shows the danger variant when error is true", () => {

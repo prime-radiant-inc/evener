@@ -97,6 +97,26 @@ function isFailedTurn(turn: TurnModel): boolean {
   return turn.status === "failed" || turn.error !== undefined;
 }
 
+// A COUNT (not a boolean, not "the first failed turn's index/id") - failed-
+// ness is terminal (a turn never un-fails) and turns only ever append or
+// get prepended, never removed, so this only ever goes UP. Deliberately a
+// count rather than the first-failed index: a turn's own failure can be
+// resolved (seen live at the bottom, or anchored-then-cleared) while an
+// EARLIER-index turn stays the "first" failed one by array position -
+// pinning the dependency to "the first index" would then never change
+// again and a genuinely new, later failure would never get a chance to be
+// evaluated. Recomputed every render (same O(turns) cost class as
+// totalItemCount above) but its VALUE is identical across a pure streaming
+// delta (which touches item text/pendingText, never turn.status/error), so
+// it doesn't defeat the "per-delta work never re-runs the content-changed
+// effect" property - see that effect's own dependency-array comment.
+function failedTurnCount(model: ThreadModel | undefined): number {
+  if (!model) return 0;
+  let n = 0;
+  for (const turn of model.turns) if (isFailedTurn(turn)) n++;
+  return n;
+}
+
 export function useTranscriptScroll({
   ref,
   model,
@@ -119,14 +139,23 @@ export function useTranscriptScroll({
   const initializedRef = useRef(false);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveRef = useRef<number | null>(null);
-  // How many turns have already been scanned for a failure (mirrors
-  // baselineItemCountRef's role for items, but counting turns - see the
-  // content-changed effect below). Advances on every append effect run,
-  // prepend-shifted alongside the anchor itself on a real prepend, so a
-  // turn that arrived while the reader was already at the bottom (rule:
-  // "a failed turn arriving at the bottom never creates an anchor") is
-  // never later misattributed as "new" once they scroll away.
-  const lastScannedTurnCountRef = useRef(0);
+  // Turn IDs whose failure (if any) has already been accounted for - seen
+  // live while at the bottom, already anchored-and-cleared, or currently
+  // the active anchor (added the moment it's chosen - see the
+  // content-changed effect below). Keyed by ID rather than a scan
+  // POSITION/watermark deliberately: a turn can be observed as
+  // not-yet-failed by one effect run (e.g. triggered by an unrelated
+  // item's growth) and only fail on a LATER run - a position-based "how
+  // far have I scanned" cutoff would already have advanced past it by
+  // then and could never find it again, even after the dependency array
+  // is fixed to notice the failure at all (this was the actual review
+  // finding: the wire's real turn/completed EventError path streams items
+  // normally, THEN settles via a bare stamp with no new items - see
+  // failedTurnCount's own comment for the trigger half of that fix). IDs
+  // are also prepend-safe for free: unlike errorAnchorIndex (a position,
+  // shifted explicitly below), a turn's identity doesn't change when
+  // older turns are prepended in front of it.
+  const resolvedFailedTurnIdsRef = useRef<Set<string>>(new Set());
   // Latest-ref mirror of errorAnchorIndex (state) for the same reason
   // itemCountRef/turnsLengthRef/modelRef exist: handleScroll is a
   // long-lived closure (attached once per mount/hasContent transition, not
@@ -147,6 +176,10 @@ export function useTranscriptScroll({
   const itemCount = totalItemCount(model);
   const turnsLength = model?.turns.length ?? 0;
   const firstTurnId = model?.turns[0]?.id;
+  // Content-changed effect trigger (see that effect's own dependency-array
+  // comment for why itemCount/firstTurnId alone can't reach a bare-stamp
+  // turn failure).
+  const failedTurns = failedTurnCount(model);
   const hasContent = turnsLength > 0;
   // Also kept in refs for the scroll listener/jumpToBottom, which are not
   // re-created on every render (see the effects below).
@@ -241,10 +274,16 @@ export function useTranscriptScroll({
       prevScrollHeightRef.current = m.scrollHeight;
       firstTurnIdRef.current = firstTurnId;
       baselineItemCountRef.current = itemCountRef.current;
-      // Turns present at mount are not "newly appended" - see the
-      // content-changed effect's failed-turn scan below, and
-      // lastScannedTurnCountRef's own doc comment above.
-      lastScannedTurnCountRef.current = turnsLengthRef.current;
+      // Turns present at mount (e.g. a cold-opened session whose history
+      // already contains a failed turn) are not "newly appended" - see the
+      // content-changed effect's failed-turn scan below. model is read
+      // directly (not through modelRef) since this block runs exactly once,
+      // at whichever render actually mounts - same reasoning as firstTurnId
+      // just above, and the same pattern the mount effect's own closing
+      // comment already documents for that field.
+      for (const t of model?.turns ?? []) {
+        if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
+      }
       initializedRef.current = true;
     }
 
@@ -321,10 +360,11 @@ export function useTranscriptScroll({
   }, [flushPendingSave]);
 
   // Content-changed reaction: fires only when the turn/item SHAPE actually
-  // changes (item count or the first turn's identity, both primitives) -
-  // never on a pure streaming-text delta, which changes model.turns's
-  // object reference but neither of these values, so React skips re-running
-  // an effect whose primitive deps didn't change.
+  // changes (item count, the first turn's identity, or the failed-turn
+  // count, all primitives) - never on a pure streaming-text delta, which
+  // changes model.turns's object reference but none of those values, so
+  // React skips re-running an effect whose primitive deps didn't change.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: failedTurns is deliberately trigger-only (never read in the body below) - see its own doc comment above for why a bare-stamp turn failure needs it anyway
   useLayoutEffect(() => {
     if (!initializedRef.current) return;
     const el = listRef.current?.getScrollElement();
@@ -339,9 +379,12 @@ export function useTranscriptScroll({
       if (prevIndex === -1) {
         // Not a simple prepend (e.g. a full resync after reconnect) - don't
         // misattribute; re-baseline entirely rather than guess. An existing
-        // anchor's index can't be trusted to still mean anything either.
+        // anchor's index can't be trusted to still mean anything, and
+        // neither can the resolved-turn bookkeeping (a turn's very identity
+        // may not be stable across an unpredictable resync) - drop it
+        // wholesale rather than risk stale entries.
         baselineItemCountRef.current = itemCount;
-        lastScannedTurnCountRef.current = currentModel.turns.length;
+        resolvedFailedTurnIdsRef.current = new Set();
         setErrorAnchorIndex(null);
       } else {
         const prependedCount = currentModel.turns.slice(0, prevIndex).reduce((sum, t) => sum + t.items.length, 0);
@@ -349,12 +392,22 @@ export function useTranscriptScroll({
         // exactly what loadOlder added so the pill count stays unaffected.
         baselineItemCountRef.current += prependedCount;
         // prevIndex IS the count of turns just prepended (it's where the
-        // old first turn now sits) - the already-scanned boundary and any
-        // active anchor both shift by that same amount, or they'd silently
-        // point at the wrong turn from here on.
-        lastScannedTurnCountRef.current += prevIndex;
+        // old first turn now sits) - an active anchor's INDEX shifts by
+        // that same amount, or it'd silently point at the wrong turn from
+        // here on (resolvedFailedTurnIdsRef needs no such shift - it's
+        // keyed by turn ID, not position).
         if (errorAnchorIndexRef.current !== null) {
           setErrorAnchorIndex(errorAnchorIndexRef.current + prevIndex);
+        }
+        // Prepended (historical) turns are backfill, not new - same
+        // "backfill, not new" reasoning as baselineItemCountRef just above,
+        // applied to failure tracking: a failed turn the reader is only
+        // now paging UP into is already-known history, not a live event to
+        // anchor on. Without this, a later append-triggered scan could find
+        // it as "the first unresolved failed turn" and wrongly anchor on
+        // stale history instead of (or ahead of) a genuinely new failure.
+        for (const t of currentModel.turns.slice(0, prevIndex)) {
+          if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
         }
 
         const prevScrollHeight = prevScrollHeightRef.current;
@@ -364,6 +417,35 @@ export function useTranscriptScroll({
         }
       }
     } else {
+      // Failed-turn tracking runs independent of item growth - the real
+      // wire's turn/completed EventError path settles with a BARE stamp
+      // (no items - see isFailedTurn's own comment), so a failure can
+      // arrive without ever moving `unseen` off zero below. failedTurns
+      // (the dependency that gets this effect to fire at all for that
+      // case) is what makes this reachable; wasAtBottomRef alone then
+      // decides the outcome: at the bottom, every currently-unresolved
+      // failure is "seen" and resolved in bulk (matching "a failed turn
+      // arriving at the bottom never creates an anchor"); scrolled away,
+      // the FIRST unresolved one becomes the anchor, but only while none is
+      // already active (contracts §5's anchor points at a single row - a
+      // later failure doesn't steal it, it stays pending for its own turn
+      // once this one clears).
+      if (currentModel) {
+        if (wasAtBottomRef.current) {
+          for (const t of currentModel.turns) {
+            if (isFailedTurn(t)) resolvedFailedTurnIdsRef.current.add(t.id);
+          }
+        } else if (errorAnchorIndexRef.current === null) {
+          const firstUnresolved = currentModel.turns.find(
+            (t) => isFailedTurn(t) && !resolvedFailedTurnIdsRef.current.has(t.id),
+          );
+          if (firstUnresolved) {
+            resolvedFailedTurnIdsRef.current.add(firstUnresolved.id);
+            setErrorAnchorIndex(currentModel.turns.indexOf(firstUnresolved));
+          }
+        }
+      }
+
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
@@ -372,27 +454,21 @@ export function useTranscriptScroll({
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;
         } else {
-          // A failed turn arriving while scrolled away becomes the error
-          // anchor - but only the FIRST one seen while none is already
-          // active (contracts §5's anchor points at a single row; a later
-          // failure doesn't steal it - it'll get its own turn once this one
-          // clears). Turns arriving while at the bottom (the branch above)
-          // never reach here at all, matching "they saw it".
-          if (errorAnchorIndexRef.current === null && currentModel) {
-            const newlyFailed = currentModel.turns.slice(lastScannedTurnCountRef.current).find(isFailedTurn);
-            if (newlyFailed) setErrorAnchorIndex(currentModel.turns.indexOf(newlyFailed));
-          }
           setPillCount(unseen);
         }
       }
-      if (currentModel) lastScannedTurnCountRef.current = currentModel.turns.length;
     }
 
     firstTurnIdRef.current = firstTurnId;
     prevScrollHeightRef.current = measure(el).scrollHeight;
     // model is read via modelRef.current (see above), not closed over here,
     // specifically so this effect does NOT re-run on every streaming delta.
-  }, [itemCount, firstTurnId, listRef, measure]);
+    // failedTurns is the one exception to "primitives derived from model
+    // don't need model itself in this list" being sufficient: a turn's
+    // failure can flip with NEITHER itemCount NOR firstTurnId changing (the
+    // bare-stamp settle above), so without it this whole failed-turn branch
+    // would silently never run for that real wire shape.
+  }, [itemCount, firstTurnId, failedTurns, listRef, measure]);
 
   return {
     pillCount,

@@ -49,7 +49,14 @@ const CLASS = {
 };
 
 export function NewContentPill({ count, needsYou, error = false, onClick }: NewContentPillProps) {
-  if (count <= 0) return null;
+  // count alone is not the render gate: a turn's failed settle stamp on
+  // the real wire carries no items (turn/completed's EventError path -
+  // itemsView:"", no items array), so a genuinely unseen failure can
+  // arrive with count still 0 - the failure is itself the news, not the
+  // (absent) item count. needsYou has no equivalent gap: the hook only
+  // ever sets it alongside a nonzero pillCount (see pillNeedsYou's own
+  // definition), so needsYou-without-count never reaches here for real.
+  if (count <= 0 && !error) return null;
 
   return (
     <button type="button" data-testid="new-content-pill" className={CLASS.pill} onClick={onClick}>

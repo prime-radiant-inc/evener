@@ -462,6 +462,56 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
   expect(pill.textContent).toContain("1");
 });
 
+test("scrolled away: a turn FAILING while unseen upgrades the real pill to the error variant", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
+      ],
+    }),
+  );
+
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+
+  const root = scrollRootOf(container);
+  stubScrolledAway(root);
+  fireEvent.scroll(root);
+
+  // Wire-true failure shape: the turn opens live, then settles as a bare
+  // failed stamp (no items - the EventError emission, see reducer.test.ts's
+  // own failed-turn coverage). The flow hook's error anchor must reach the
+  // rendered pill through Session's wiring, not just the hook's return.
+  act(() => {
+    fake.emitNotification({
+      method: "turn/started",
+      params: { ref: "ref_a", turn: { id: "turn_2", status: "inProgress", itemsView: "" } },
+    } as AnyNotification);
+  });
+  act(() => {
+    fake.emitNotification({
+      method: "turn/completed",
+      params: {
+        turnId: "turn_2",
+        turn: { id: "turn_2", status: "failed", itemsView: "", error: { message: "boom" } },
+      },
+    } as AnyNotification);
+  });
+
+  const pill = await screen.findByTestId("new-content-pill");
+  expect(pill.textContent).toContain("Failed turn");
+});
+
 test("clicking the real NewContentPill clears it", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>

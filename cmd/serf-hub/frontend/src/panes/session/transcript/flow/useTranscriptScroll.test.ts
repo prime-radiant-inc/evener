@@ -217,6 +217,61 @@ describe("the error anchor (failed turn)", () => {
     expect(result.current.pillError).toBe(true);
   });
 
+  // Wire-true siblings (review finding): the test above constructs t2
+  // already-failed-with-an-item in one step. The REAL turn/completed
+  // EventError path settles with a BARE stamp instead - itemsView:"", no
+  // items array (see reducer.test.ts's own failed-turn coverage) - so
+  // itemCount never grows because of the failing turn itself, either at
+  // all (this first test) or at the moment it actually fails (the second,
+  // which streams a real item first). Both must still anchor.
+  test("a turn that fails via a bare stamp (itemsView:'', no items ever - the real wire's EventError shape) still becomes the error anchor", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({
+      m: model([turn("t1", ["i1"]), { id: "t2", status: "failed", items: [], error: { message: "boom" } }]),
+    });
+
+    expect(result.current.pillError).toBe(true);
+    // No items ever attached to t2 - count stays 0, the failure alone is
+    // the news (NewContentPill's own render gate handles this - see its
+    // test file).
+    expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a turn that streamed an item earlier, then settles via a bare failed stamp (no NEW items at the settle itself), still becomes the error anchor", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    // t2 streams one item while inProgress - itemCount grows, so the
+    // EXISTING itemCount dependency fires the effect here too. This render
+    // must not "use up" its only chance to notice t2's LATER failure - the
+    // regression a position-watermark-based scan would miss (it fires here
+    // once, finds t2 not-yet-failed, and would never look at t2 again).
+    rerender({ m: model([turn("t1", ["i1"]), { id: "t2", status: "inProgress", items: [item("i2", "t2")] }]) });
+    expect(result.current.pillError).toBe(false);
+
+    // t2 settles as failed - the settle stamp itself is bare (itemsView:"",
+    // no items), so itemCount is UNCHANGED from the line above even though
+    // the turn now fails.
+    rerender({
+      m: model([
+        turn("t1", ["i1"]),
+        { id: "t2", status: "failed", items: [item("i2", "t2")], error: { message: "boom" } },
+      ]),
+    });
+
+    expect(result.current.pillError).toBe(true);
+  });
+
   test("a turn carrying an error object (status not necessarily 'failed') also anchors", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
@@ -242,6 +297,21 @@ describe("the error anchor (failed turn)", () => {
 
     expect(result.current.pillError).toBe(false);
     expect(result.current.pillCount).toBe(0);
+  });
+
+  test("a bare-stamp failure (no item growth at all) arriving at the bottom still never anchors", () => {
+    const { ref } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({
+      m: model([turn("t1", ["i1"]), { id: "t2", status: "failed", items: [], error: { message: "boom" } }]),
+    });
+
+    expect(result.current.pillError).toBe(false);
   });
 
   test("the FIRST failed turn is remembered; a later failure does not overwrite the active anchor", () => {
@@ -548,6 +618,51 @@ describe("prepend anchoring (loadOlder resolving)", () => {
     act(() => result.current.jumpToBottom());
 
     expect(scrollToIndex).toHaveBeenCalledWith(2, { align: "start" });
+  });
+
+  // Review finding follow-up: the error-anchor scan tracks "already
+  // accounted for" turns by ID (not a scan position), so a prepend bringing
+  // in ALREADY-failed historical turns must explicitly mark them resolved -
+  // otherwise a later, unrelated append-triggered scan would find that old
+  // history as "the first unresolved failed turn" and wrongly anchor on
+  // stale, already-known history instead of (or ahead of) a genuinely new,
+  // live failure.
+  test("a prepend bringing in an already-failed historical turn does not retroactively anchor it", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) => useTranscriptScroll({ ref: "ref_a", model: m, listRef: ref, loadOlder: vi.fn(), measure }),
+      { initialProps: { m: model([turn("t2", ["i2"])]) } },
+    );
+
+    // loadOlder pages in t0 (already-failed HISTORY) and t1 above t2 - a
+    // past error the reader is only now scrolling up into, not a live event.
+    rerender({
+      m: model([
+        turn("t0", ["i0"], { status: "failed", error: { message: "old" } }),
+        turn("t1", ["i1"]),
+        turn("t2", ["i2"]),
+      ]),
+    });
+    expect(result.current.pillError).toBe(false);
+
+    // A genuinely NEW, live failure afterward must still anchor correctly -
+    // proving the prepend didn't corrupt tracking, just correctly ignored
+    // the historical one.
+    rerender({
+      m: model([
+        turn("t0", ["i0"], { status: "failed", error: { message: "old" } }),
+        turn("t1", ["i1"]),
+        turn("t2", ["i2"]),
+        turn("t3", ["i3"], { status: "failed" }),
+      ]),
+    });
+    expect(result.current.pillError).toBe(true);
+    scrollToIndex.mockClear();
+
+    act(() => result.current.jumpToBottom());
+
+    expect(scrollToIndex).toHaveBeenCalledWith(3, { align: "start" }); // t3, not the historical t0
   });
 });
 

@@ -136,7 +136,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                 <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
               </>
             }
-            pill={<NewContentPill count={flow.pillCount} needsYou={flow.pillNeedsYou} onClick={flow.jumpToBottom} />}
+            pill={
+              <NewContentPill
+                count={flow.pillCount}
+                needsYou={flow.pillNeedsYou}
+                error={flow.pillError}
+                onClick={flow.jumpToBottom}
+              />
+            }
           >
             <VirtualList
               ref={virtualListRef}
