@@ -93,7 +93,7 @@ no router (reserved).
 | `thread/turns/items/list` | unimplemented | `ThreadTurnItemsListParams` | `ThreadTurnItemsListResponse` | Codex-parity: paginated items for one turn. Experimental even in Codex (returns method-not-supported) and served by no serf router. |
 | `thread/start` | hub | `ThreadStartParams` | `ThreadStartResponse` | Starts a new thread and attaches a live-update relay. |
 | `thread/resume` | hub | `ThreadResumeParams` | `ThreadResumeResponse` | Resumes an existing session and attaches its relay. |
-| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput, mutually exclusive with editedInput). With `aside: true` (local serf threads only; mutually exclusive with sourceTurnId/editedInput/deferInput/label), forks the session at its tip into a side thread that inherits the parent's permissions and config. |
+| `thread/fork` | hub | `ThreadForkParams` | `ThreadForkResponse` | Forks a thread from a source turn, either replacing the turn with edited input or deferring the original input back to the client for editing (deferInput). |
 | `thread/clear` | both | `ThreadClearParams` | `ThreadClearResponse` | Clears the thread's conversation (rejected while a turn is processing). |
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `serf/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
@@ -777,6 +777,7 @@ _(no fields)_
 | `modelProvider` | `string` | yes |  |
 | `model` | `string` | yes |  |
 | `deferInput` | `bool` | yes |  |
+| `aside` | `bool` | yes |  |
 
 
 ### `ThreadForkResponse`
