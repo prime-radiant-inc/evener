@@ -2,12 +2,17 @@
  * position:fixed, scoped here to the demo frame instead of the viewport.
  * The explicit width is required for the same reason documented there:
  * this frame's only in-flow child is entirely position:fixed, so it has
- * no content to size itself from and collapses without one. */
+ * no content to size itself from and collapses without one. The
+ * min()-against-100vw width (wave-close fix, see dialog.module.css's own
+ * note for the full derivation) caps it on a narrow viewport - a plain
+ * max-width: 100% doesn't work here, since this frame's ancestor chain
+ * (ThemeFlip's .pane) is shrink-to-fit and never has a definite width for
+ * a percentage to resolve against. */
 .demoFrame {
   position: relative;
   contain: layout;
   overflow: hidden;
-  width: 360px;
+  width: min(360px, calc(100vw - 96px));
   min-height: 280px;
   border: 1px dashed var(--edge);
   border-radius: var(--radius-pane);

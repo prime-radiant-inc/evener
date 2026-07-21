@@ -13,12 +13,24 @@
  * to a sliver a couple pixels wide - which the contained "fixed" scrim
  * then has to size itself against, breaking the whole demo. Caught by
  * actually loading the gallery rather than trusting the CSS by inspection.
+ *
+ * The width is a min() against the viewport (wave-close fix), not a plain
+ * max-width: 100% - this frame sits inside ThemeFlip's .pane, which uses
+ * align-items: flex-start (shrink-to-fit, not stretch), so .pane never
+ * has a definite width of its own for a percentage to resolve against;
+ * max-width: 100% is silently ignored in exactly this shrink-to-fit
+ * ancestor chain. 100vw minus 96px (the gallery's --space-6 padding,
+ * 32px/side, plus .pane's own --space-4 padding, 16px/side) is a length,
+ * not a percentage, so it sizes correctly regardless of the ancestor
+ * chain - verified empirically (this task's report), not just reasoned
+ * about, after max-width: 100% alone measurably failed to stop the
+ * gallery page from overflowing horizontally at 390px.
  */
 .demoFrame {
   position: relative;
   contain: layout;
   overflow: hidden;
-  width: 360px;
+  width: min(360px, calc(100vw - 96px));
   min-height: 280px;
   border: 1px dashed var(--edge);
   border-radius: var(--radius-pane);

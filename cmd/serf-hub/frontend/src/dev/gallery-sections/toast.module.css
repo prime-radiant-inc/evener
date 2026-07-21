@@ -5,12 +5,17 @@
  * width is belt-and-suspenders here (the .hint paragraph below happens to
  * be enough in-flow content to size this frame on its own) for the same
  * reason it's required in dialog.module.css/sheet.module.css: a frame
- * whose only content is position:fixed has nothing to size itself from. */
+ * whose only content is position:fixed has nothing to size itself from.
+ * The min()-against-100vw width (wave-close fix, see dialog.module.css's
+ * own note for the full derivation) caps it on a narrow viewport - a
+ * plain max-width: 100% doesn't work here, since this frame's ancestor
+ * chain (ThemeFlip's .pane) is shrink-to-fit and never has a definite
+ * width for a percentage to resolve against. */
 .demoFrame {
   position: relative;
   contain: layout;
   overflow: hidden;
-  width: 360px;
+  width: min(360px, calc(100vw - 96px));
   min-height: 220px;
   border: 1px dashed var(--edge);
   border-radius: var(--radius-pane);

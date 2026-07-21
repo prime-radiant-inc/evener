@@ -1,8 +1,12 @@
 .frame {
   /* PaneScaffold fills its container (height: 100%), so the gallery gives
    * it a fixed-height box to fill - in real usage that box is a dockview
-   * pane or a sidebar slot. */
-  width: 320px;
+   * pane or a sidebar slot. width is min() against the viewport, not
+   * max-width: 100% - see gallery-sections/dialog.module.css for why
+   * (this frame's ThemeFlip .pane ancestor is shrink-to-fit, so a
+   * percentage max-width silently does nothing; wave-close fix, verified
+   * empirically). */
+  width: min(320px, calc(100vw - 96px));
   height: 360px;
 }
 
