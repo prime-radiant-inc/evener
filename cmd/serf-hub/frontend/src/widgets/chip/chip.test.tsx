@@ -43,6 +43,20 @@ test("renders no remove button when onRemove is not provided", () => {
 
 test("renders an accessible remove button when onRemove is provided", () => {
   render(<Chip onRemove={() => {}}>backend</Chip>);
+  expect(screen.getByRole("button")).toBeTruthy();
+});
+
+test("when children is a plain string, the remove button's accessible name includes it", () => {
+  render(<Chip onRemove={() => {}}>backend</Chip>);
+  expect(screen.getByRole("button", { name: "Remove backend" })).toBeTruthy();
+});
+
+test("when children is not a plain string, the remove button falls back to a bare Remove", () => {
+  render(
+    <Chip onRemove={() => {}}>
+      <span>backend</span>
+    </Chip>,
+  );
   expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
 });
 
@@ -50,7 +64,7 @@ test("clicking the remove button fires onRemove", async () => {
   const user = userEvent.setup();
   const onRemove = vi.fn();
   render(<Chip onRemove={onRemove}>backend</Chip>);
-  await user.click(screen.getByRole("button", { name: "Remove" }));
+  await user.click(screen.getByRole("button"));
   expect(onRemove).toHaveBeenCalledOnce();
 });
 
@@ -59,7 +73,7 @@ test("the remove button is keyboard-focusable and activates on Enter", async () 
   const onRemove = vi.fn();
   render(<Chip onRemove={onRemove}>backend</Chip>);
   await user.tab();
-  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Remove" }));
+  expect(document.activeElement).toBe(screen.getByRole("button"));
   await user.keyboard("{Enter}");
   expect(onRemove).toHaveBeenCalledOnce();
 });
@@ -68,7 +82,7 @@ test("the remove button activates on Space", async () => {
   const user = userEvent.setup();
   const onRemove = vi.fn();
   render(<Chip onRemove={onRemove}>backend</Chip>);
-  screen.getByRole("button", { name: "Remove" }).focus();
+  screen.getByRole("button").focus();
   await user.keyboard(" ");
   expect(onRemove).toHaveBeenCalledOnce();
 });

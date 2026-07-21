@@ -89,6 +89,23 @@ test("disabled blocks toggling", async () => {
   expect(onChange).not.toHaveBeenCalled();
 });
 
+test("clicking the visible label also toggles the switch", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(<ControlledSwitch onChange={onChange} />);
+  await user.click(screen.getByText("Notifications"));
+  expect(onChange).toHaveBeenCalledWith(true);
+  expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true");
+});
+
+test("disabled blocks toggling via the visible label too", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(<ControlledSwitch onChange={onChange} disabled />);
+  await user.click(screen.getByText("Notifications"));
+  expect(onChange).not.toHaveBeenCalled();
+});
+
 test("disabled marks the native control inert (not focusable)", () => {
   render(<Switch label="Notifications" checked={false} onChange={() => {}} disabled />);
   const toggle = screen.getByRole("switch") as HTMLButtonElement;

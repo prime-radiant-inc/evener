@@ -28,6 +28,15 @@ const BASE_CLASS = {
  */
 export function Switch({ checked, onChange, disabled = false, label }: SwitchProps) {
   const labelId = useId();
+
+  // The <button>'s own disabled attribute already blocks its native click
+  // (and Space/Enter, which activate via that same click) - but the label
+  // span is a plain <span>, not a form control, so it has no native
+  // disabled concept and needs the guard here instead.
+  function toggle() {
+    if (!disabled) onChange(!checked);
+  }
+
   return (
     <span className={BASE_CLASS.wrapper}>
       <button
@@ -37,11 +46,11 @@ export function Switch({ checked, onChange, disabled = false, label }: SwitchPro
         aria-labelledby={labelId}
         disabled={disabled}
         className={BASE_CLASS.track}
-        onClick={() => onChange(!checked)}
+        onClick={toggle}
       >
         <span className={BASE_CLASS.thumb} />
       </button>
-      <span id={labelId} className={BASE_CLASS.label}>
+      <span id={labelId} className={BASE_CLASS.label} onClick={toggle}>
         {label}
       </span>
     </span>

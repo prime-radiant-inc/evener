@@ -7,8 +7,11 @@ export interface TextareaProps {
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** Grow the visible row count to fit `value`'s content, up to
-   * MAX_ROWS. When false/omitted, `rows` (or the 2-row default) is fixed. */
+  /** Grow the visible row count to fit `value`'s line breaks, up to
+   * MAX_ROWS - it counts "\n" occurrences, not rendered/wrapped lines, so a
+   * long line that wraps visually without a literal line break does NOT
+   * grow the box (see computeRows below for why). When false/omitted,
+   * `rows` (or the 2-row default) is fixed. */
   autoGrow?: boolean;
   rows?: number;
   id?: string;

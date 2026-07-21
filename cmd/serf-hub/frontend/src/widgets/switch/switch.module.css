@@ -53,4 +53,13 @@
   color: var(--ink-hi);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
+  cursor: pointer;
+}
+
+/* the label is a <span>, not a form control, so it has no native :disabled
+ * of its own - matched off the track's disabled state instead (they're
+ * siblings, track first). */
+.track:disabled ~ .label {
+  cursor: not-allowed;
+  opacity: 0.5;
 }

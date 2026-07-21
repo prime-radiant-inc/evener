@@ -30,6 +30,15 @@ function RemoveIcon() {
   );
 }
 
+// children is arbitrary ReactNode (the locked API's exact shape), not
+// guaranteed to be a string, so it can only be safely folded into the
+// remove button's accessible name in the one case where it unambiguously
+// IS text - everything else (an element, a fragment, a number on its own)
+// falls back to a bare "Remove" rather than guessing at a label.
+function removeLabelFor(children: ReactNode): string {
+  return typeof children === "string" ? `Remove ${children}` : "Remove";
+}
+
 /** A small labeled pill, optionally removable. tone maps to the four
  * semantic families (chip is pre-allowlisted in token-contract.test.ts). */
 export function Chip({ children, tone = "neutral", onRemove }: ChipProps) {
@@ -37,7 +46,12 @@ export function Chip({ children, tone = "neutral", onRemove }: ChipProps) {
     <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}`}>
       {children}
       {onRemove !== undefined && (
-        <button type="button" className={BASE_CLASS.remove} aria-label="Remove" onClick={onRemove}>
+        <button
+          type="button"
+          className={BASE_CLASS.remove}
+          aria-label={removeLabelFor(children)}
+          onClick={onRemove}
+        >
           <RemoveIcon />
         </button>
       )}

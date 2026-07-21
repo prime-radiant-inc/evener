@@ -210,3 +210,63 @@ export type { CardProps } from "./card";
 - `git status` clean at the end (a `npm run build` run transiently deleted the gitignore-carve-out
   file `dist/PLACEHOLDER` via `emptyOutDir: true`; restored via `git checkout --` since it's an
   artifact of running verification, not a real change).
+
+## Fix wave (review verdict: 1 Important + 3 folds)
+
+Applied on top of `2270c8a7f` (Jesse's direct fix to `token-contract.test.ts` exempting
+`--accent` from the semantic allowlist — resolved this report's earlier-documented concern;
+confirmed baseline was 243/243 green before starting this fix wave). All four addressed via
+TDD (test updated/added first, confirmed red against the pre-fix code, then implementation).
+One commit: `<SHA filled in below>`.
+
+1. **Meter gains a required `label: string` prop** (Important — `role="meter"` needs an
+   accessible name and the locked shape gave consumers no hook). Rendered as `aria-label`.
+   - `meter/index.tsx`: `MeterProps.label` added (required, documented inline as compile-time
+     accessibility enforcement); `<div role="meter" aria-label={label} ...>`.
+   - `meter/meter.test.tsx`: every existing render call updated to pass `label="Context used"`
+     (required prop); new test `"label is the meter's accessible name (aria-label)"` asserts via
+     `getByRole("meter", { name: "Context used" })`. Confirmed red beforehand (only this new
+     assertion failed — `getByRole` couldn't find an accessibly-named meter).
+   - `dev/gallery-sections/meter.tsx`: the 4 tone rows now pass realistic, distinct labels
+     ("Tokens", "Context used", "Sync progress", "Storage over quota") instead of a repeated
+     placeholder, so the gallery demonstrates the prop carrying real meaning.
+
+2. **Chip's remove button: `"Remove {children}"` when `children` is a plain string, bare
+   `"Remove"` otherwise.** `removeLabelFor()` in `chip/index.tsx` does the
+   `typeof children === "string"` check. `chip.test.tsx`: added
+   `"when children is a plain string, the remove button's accessible name includes it"`
+   (`getByRole("button", { name: "Remove backend" })`) and
+   `"when children is not a plain string, the remove button falls back to a bare Remove"`
+   (children = `<span>backend</span>`, asserts bare `"Remove"`). The pre-existing click/keyboard
+   tests were loosened from `getByRole("button", { name: "Remove" })` to plain
+   `getByRole("button")` — there's only ever one button in a Chip with `onRemove` set, and
+   coupling those interaction tests to the exact label text was incidental, not load-bearing.
+
+3. **Switch's visible label span is now click-toggle**, `aria-labelledby` wiring unchanged.
+   `switch/index.tsx`: extracted a shared `toggle()` closure (`if (!disabled) onChange(!checked)`)
+   used by both the track button's `onClick` and the label span's new `onClick` — the button
+   already gets disabled-blocks-click for free from its native `disabled` attribute, but the
+   label is a plain `<span>` with no native disabled concept, hence the explicit guard.
+   `switch.module.css`: `.label` gained `cursor: pointer`, plus `.track:disabled ~ .label` for
+   the disabled dim/not-allowed treatment (siblings under `.wrapper`, track before label) — a
+   clickable label that still looked fully enabled while disabled would be a bad affordance.
+   `switch.test.tsx`: added `"clicking the visible label also toggles the switch"` and
+   `"disabled blocks toggling via the visible label too"`.
+
+4. **Textarea JSDoc accuracy fix** (no behavior change). `TextareaProps.autoGrow`'s comment said
+   "grow ... to fit `value`'s content", which reads as "fits however it visually wraps" — it
+   actually only counts literal `\n` occurrences (see `computeRows`'s own doc comment, already
+   accurate), so a long single line that wraps on screen without a literal line break does NOT
+   grow the box. Reworded to state that explicitly, so a later wave consuming this widget isn't
+   surprised by that edge case.
+
+**Verification**: 248/248 tests green (243 + 5 new: 1 Meter + 2 Chip + 2 Switch), stable across
+2 full reruns. `tsc --noEmit`, `npm run lint`, `npm run build` all clean, no output, exit 0.
+`git status` confirmed exactly the 9 expected files touched, nothing else.
+
+**No action taken** (per explicit ruling): `EmptyState.action`'s optionality stays as shipped
+(plan-author sign-off overrides this report's earlier "read as a typo" guess — same outcome,
+now confirmed intentional rather than inferred). Gallery-section CSS duplication across the 13
+`dev/gallery-sections/*.module.css` files (the `row`/`rowLabel` pattern repeated per file,
+following the Button/Cadence exemplar's own precedent) is left as-is, deferred to W2T5's
+controller-owned structural extraction.
