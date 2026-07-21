@@ -358,3 +358,201 @@ npm run build                             # tsc --noEmit && vite build — clean
 No file outside `cmd/serf-hub/frontend/src/panes/session/transcript/tools/**`
 and the two sanctioned `stores/threads.ts`/`stores/threads.test.ts` files was
 touched (`git diff --stat` against every other path in the tree is empty).
+
+## Fix addendum: adversarial review round (2026-07-21)
+
+Three findings from an adversarial code review, fixed on this branch via
+strict TDD (one commit per finding, all four gates green before each
+commit). Scope held to `transcript/tools/**` throughout — confirmed via
+`git diff --stat cad8543d8..HEAD` after all three commits: every touched
+path is under this directory, nothing else. Two other findings from the same
+review round were explicitly out of scope (depend on unmerged parallel work)
+and were not attempted: the `rememberedArgs` cache stays as-is, and
+`ToolCallItem`/`autoExpand`/`stores/threads.ts` were not touched.
+
+### Finding 1 (Important) — leader election not StrictMode-safe
+
+`DelegateBody` claimed leadership inside a `useState(() => claimLeader(...))`
+lazy initializer (render phase) but released it inside a `useLayoutEffect`
+cleanup (effect phase). Store mutation during render is an impure-render
+anti-pattern on its own; combined with StrictMode's dev-only mount ->
+cleanup -> remount double-invoke of effects, the asymmetry corrupts the
+store: the interim cleanup pass frees the leader slot in the store while the
+leader component stays mounted with its own `isLeader` local state frozen
+`true` forever (nothing ever recomputes it), and the remount pass never
+re-claims (the old code only ever claimed once, from the initializer, which
+doesn't run again). A later-mounting delegate item in the same turn then
+finds the slot vacant and also claims it — two subagent modules for one
+turn.
+
+**RED evidence** — added
+`StrictMode's mount-cleanup-remount double-invoke keeps leadership with the
+first item; a later-mounting delegate in the same turn must not also claim
+it` to `subagentModule.test.tsx`: renders two delegate items in one turn
+inside `<StrictMode>`, asserts one module, then `rerender()`s a third
+delegate item into the same turn and re-asserts one module. Run in isolation
+against the pre-fix code:
+
+```
+$ npx vitest run src/panes/session/transcript/tools/subagentModule.test.tsx -t "StrictMode's mount-cleanup-remount"
+AssertionError: expected [ <div …(3)>…(2)</div>, …(1) ] to have a length of 1 but got 2
+ ❯ subagentModule.test.tsx:195:52
+```
+Exactly the failure mode described: the third item's mount produced a
+second `subagent-module`.
+
+**Fix** — `subagentModule.tsx`'s `DelegateBody`: replaced the lazy
+`useState` claim with a plain `useState(false)`, and merged the claim into
+the SAME `useLayoutEffect` that releases (`claimLeader` -> `setIsLeader` ->
+conditionally register a `releaseLeader` cleanup). This makes the claim
+self-healing across the double-invoke: the remount pass re-runs the same
+effect body and re-claims before anything else can. Updated the file's own
+header comment, which had described the old (now-inaccurate) "claims via a
+lazy useState initializer" mechanism.
+
+**Covering tests** — the new StrictMode test plus all 12 pre-existing
+`subagentModule.test.tsx` leader-election/row/fold/open-transcript tests and
+all 18 `subagentModuleStore.test.ts` store tests:
+
+```
+$ npx vitest run src/panes/session/transcript/tools/subagentModule.test.tsx src/panes/session/transcript/tools/subagentModuleStore.test.ts
+Test Files  2 passed (2)
+     Tests  30 passed (30)
+```
+
+Commit `733b142d6`.
+
+### Finding 2 (Important) — escalation resolve rejection unsurfaced
+
+`SandboxEscalationRail.handleResolve` awaited the
+`serf/sandbox/escalation/resolve` request in try/finally with no catch, and
+its call sites (`onApprove`/`onDeny`) invoke it fire-and-forget
+(`() => void handleResolve(...)`). A rejection became an unhandled promise
+rejection; `finally` silently re-enabled the card with no indication
+anything had failed.
+
+**RED evidence** — added two tests to `sandboxEscalation.test.tsx`
+(FakeClient scripting a rejection for `serf/sandbox/escalation/resolve`).
+Run against the pre-fix code:
+
+```
+$ npx vitest run src/panes/session/transcript/tools/sandboxEscalation.test.tsx -t "a rejected resolve|a subsequent successful resolve"
+Tests  2 failed | 12 skipped (14)
+Errors  2 errors
+
+⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯
+Error: sandbox offline
+ ❯ sandboxEscalation.tsx:113:7
+ ❯ handleResolve sandboxEscalation.tsx:140:7
+```
+Vitest's own default unhandled-error detection caught the rejection
+(`dangerouslyIgnoreUnhandledErrors` is not set, so this fails the run on its
+own); the `findByText` assertion for the error copy also timed out since
+nothing rendered it — both failure modes match the finding exactly.
+
+**Fix** — `sandboxEscalation.tsx`: `handleResolve` now catches the
+rejection, stores `Couldn't resolve: <message>` (via a local `errorMessage`
+helper, matching the `err instanceof Error ? err.message : String(err)`
+idiom already used in `stores/tree.ts`/`shell/rail/Rail.tsx`) in a new
+per-escalation `errors` Map, and clears any prior entry at the start of each
+new attempt so a retry never shows a stale message while in flight. The
+`finally` block (unchanged) still always re-enables the card, so retry stays
+possible. A successful resolve needs no explicit clear: `resolve()` already
+drops the escalation from `pending`, unmounting the card entirely.
+`SandboxEscalationCard` gained an optional `error` prop, rendered with a
+`<Chip tone="danger">Failed</Chip>` plus the message text. Danger tone comes
+entirely from `Chip`'s own `tone` prop — `Chip` is already allowlisted in
+`token-contract.test.ts` (and already used this way for status labels in
+`subagentModule.tsx`), so `sandboxescalation.module.css`'s new `.error` rule
+stays tokens-only with no bare `--danger` reference of its own (verified:
+`token-contract.test.ts` passes unchanged, 148/148).
+
+**Covering tests** — the two new tests plus all 12 pre-existing
+`sandboxEscalation.test.tsx` tests:
+
+```
+$ npx vitest run src/panes/session/transcript/tools/sandboxEscalation.test.tsx
+Test Files  1 passed (1)
+     Tests  14 passed (14)
+```
+No unhandled-rejection errors reported. Also re-ran the token-contract gate
+directly:
+```
+$ npx vitest run src/styles/token-contract.test.ts
+Test Files  1 passed (1)
+     Tests  148 passed (148)
+```
+
+Commit `e6cbabb10`.
+
+### Finding 3 (Minor) — ask_user fallback misdescribes absence as malformation
+
+`AskUserBody` showed "Couldn't read this question - the data looks
+malformed" whenever `parseAskUserQuestions` returned `undefined`, which
+conflates two different situations: a genuine JSON syntax error in the
+item's own `argumentsJSON`, versus `argumentsJSON` being absent entirely
+(the common cold-open case — an already-settled historical item
+`rememberedArgs` has no `item/started` cache entry for) or syntactically
+valid JSON that simply carries no usable `questions`. Only the first is
+actually "malformed."
+
+**RED evidence** — reworded one existing test's assertion
+(`"body renders a fallback when questions is missing entirely"`, args
+`"{}"`) to expect the new absent-data wording instead of "malformed," and
+added a new test for `argumentsJSON` being absent entirely (the literal
+cold-open case). Run against the pre-fix code:
+
+```
+$ npx vitest run src/panes/session/transcript/tools/askUser.test.tsx
+Tests  2 failed | 10 passed (12)
+TestingLibraryElementError: Unable to find an element with the text: /question data unavailable/i
+  <div class="_fallback_9146c6">Couldn't read this question - the data looks malformed.</div>
+```
+(both new/reworded tests failed this way; the pre-existing genuine-syntax-
+error test kept passing unchanged, confirming it wasn't touched by the RED
+step).
+
+**Fix** — `askUser.tsx`: added `isMalformedArgumentsJSON(argumentsJSON)`,
+true only when `argumentsJSON` is defined and `JSON.parse` throws on it.
+`AskUserBody`'s fallback now branches on that: the existing malformed
+wording stays for a genuine parse failure; every other reason
+`parseAskUserQuestions` returned nothing shows "Question data unavailable."
+(sentence case). Updated `parseAskUserQuestions`'s own doc comment, which
+had previously conflated "malformed" and "no questions array" under one
+"couldn't read this at all" framing — the same misconception the review
+flagged.
+
+**Covering tests** — the reworded + new test plus all 10 other
+`askUser.test.tsx` tests (summary, body rendering, multi-question, defensive
+parsing of a malformed individual question):
+
+```
+$ npx vitest run src/panes/session/transcript/tools/askUser.test.tsx
+Test Files  1 passed (1)
+     Tests  12 passed (12)
+```
+
+Commit `a763fec58`.
+
+### Final verification (all four gates, combined state)
+
+```
+$ npx vitest run
+Test Files  82 passed (82)
+     Tests  1184 passed (1184)
+
+$ npx tsc --noEmit
+(0 errors)
+
+$ npm run lint
+(0 findings)
+
+$ npm run build
+✓ built in 111ms
+```
+
+`git diff --stat cad8543d8..HEAD` touches exactly 7 files, all under
+`cmd/serf-hub/frontend/src/panes/session/transcript/tools/`:
+`askUser.tsx`, `askUser.test.tsx`, `sandboxEscalation.tsx`,
+`sandboxEscalation.test.tsx`, `sandboxescalation.module.css`,
+`subagentModule.tsx`, `subagentModule.test.tsx`.
