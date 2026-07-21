@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import { useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
@@ -6,7 +7,13 @@ import { PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
+import { AgentsSection } from "./sections/agents";
+import { CredentialsSection } from "./sections/credentials/CredentialsSection";
+import { InRepoSection } from "./sections/inrepo";
+import { CodexLaunchSection } from "./sections/launchCodex";
+import { LaunchServerSection } from "./sections/launchServer";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
+import { ProjectSection } from "./sections/project";
 import styles from "./settings.module.css";
 
 export interface SettingsPaneParams {
@@ -17,6 +24,25 @@ const CLASS = {
   shell: requireClass(styles.shell, "settings.module.css", "shell"),
   content: requireClass(styles.content, "settings.module.css", "content"),
   back: requireClass(styles.back, "settings.module.css", "back"),
+};
+
+// SECTION_COMPONENTS: the per-section dispatch seam T1b's own placeholder
+// wiring deliberately left unbuilt ("a lookup mechanism this task
+// deliberately doesn't guess at - see the wave-7 report" - PlaceholderSection.
+// tsx's own doc comment). Controller-merged, single-line-append discipline,
+// same as the pane registry/route table/widgets barrel (wave-7 plan's own
+// "Shared collision surfaces" note) - each of T2/T3/T4 adds its own import
+// line(s) plus map entries here; a section id with no entry falls back to
+// PlaceholderSection. "project" is deliberately absent from
+// SETTINGS_SECTIONS (sections.ts's own comment - no nav entry) but IS a
+// valid dispatch target here, reached via /settings/project?cwd=.
+const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> = {
+  credentials: CredentialsSection,
+  agents: AgentsSection,
+  "launch-serf": LaunchServerSection,
+  "launch-codex": CodexLaunchSection,
+  inrepo: InRepoSection,
+  project: ProjectSection,
 };
 
 /**
@@ -49,6 +75,7 @@ export default function Settings({ params }: PaneProps<SettingsPaneParams>) {
   const activeId = params.section ?? DEFAULT_SECTION_ID;
   const isMobile = useIsMobile();
   const [mobileShowingNav, setMobileShowingNav] = useState(false);
+  const SectionComponent = SECTION_COMPONENTS[activeId] ?? PlaceholderSection;
 
   function handleNavigate(sectionId: string) {
     setMobileShowingNav(false);
@@ -75,7 +102,7 @@ export default function Settings({ params }: PaneProps<SettingsPaneParams>) {
                 ‹ Settings
               </button>
             )}
-            <PlaceholderSection sectionId={activeId} />
+            <SectionComponent sectionId={activeId} />
           </div>
         )}
       </div>
