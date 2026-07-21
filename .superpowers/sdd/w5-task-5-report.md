@@ -175,7 +175,7 @@ that file).
   `aside` capability field on the wire) — a documented, reasonable proxy,
   not independently verified against every possible source type.
 
-## Concerns
+## Concerns (as of the initial submission, superseded below)
 
 - The two NEEDS_CONTEXT gaps above are the main open items — both are
   small, well-specified store additions.
@@ -186,3 +186,107 @@ that file).
 - I did not touch `Session.tsx` (frozen for the wave, per T1) — confirmed
   the header-vs-footer mount question never came up: the task only ever
   needed the footer slot T1 already carved.
+
+---
+
+## Addendum: both NEEDS_CONTEXT gaps unblocked and closed
+
+The coordinator landed the sanctioned T1 addendum on `w5-interaction`
+(commit `da1b43f85`): `listModels(refresh?: boolean): Promise<ModelListResponse>`
+(session-lifetime cache + concurrent-call dedup + refresh bypass, never
+Conflict-mapped) and `listTasks(ref: string): Promise<unknown>` (returns
+`TaskListResponse.Data` verbatim, this stream's own `parseTaskListData`
+owns interpretation; a Codex-source thread rejects with
+`appwire.Unavailable`, code `-32014`, `serfErrorInfo: "actionUnavailable"`).
+
+**Step 1 — distribution.** `git cherry-pick da1b43f85` onto `w5-chrome`
+applied clean (no conflicts: this stream never touched `stores/threads.ts`
+or its test file). Landed as commit `1ee3ab60f`, content-identical to the
+`w5-interaction` original; the wave merge will reconcile the duplicate
+patch across the two branches, as the coordinator noted.
+
+**Step 2 — the two blocked surfaces, now built:**
+
+- **Model-switch Combobox** (`chrome/ModelSwitch.tsx`, new file): shows
+  the current model as a passive chip with a "Change model" trigger
+  (gated on `capabilities.changeModel`) that reveals a `Combobox` loaded
+  from `listModels()`. Re-fetches on every open rather than caching in
+  component state — `listModels()` is already session-lifetime cached in
+  the store, so a repeat call is effectively free, and a second local
+  cache would only risk a stale "Loading models…" flash on a dockview
+  remount that the store already has the answer for. Picking an option
+  closes the picker optimistically and calls `setModel`, no rollback on
+  failure (matches the legacy picker's own documented convention,
+  `parity-m5-composer.md` §H) — toast either way. Wired into `StatusRow`
+  in place of the old passive-only Chip; `reasoningEffortLevels`/
+  `supportsReasoning` needed zero extra wiring, since `StatusRow` already
+  re-renders from the live `ThreadModel` and `thread/model/changed`'s own
+  reasoning-ladder update flows through to the existing
+  `ReasoningEffortControl` for free.
+
+- **TasksPanel per-task rows**: fetches via `listTasks(ref)` on every
+  open, and again automatically whenever the live `model.tasks` aggregate
+  changes WHILE the panel stays open (the plan's push-driven-plus-fetch-
+  on-open model) — the aggregate's object reference only changes when the
+  reducer's own `serf/task/updated` case re-assigns it, verified this
+  never refires on an unrelated model update (a dedicated test covers
+  "does not fetch while closed, even if the aggregate changes"). Rows
+  render in the exact order the wire returns them — no client-side
+  re-sort, matching the legacy panel's own behavior (verified: `renderTasksInto`,
+  `cmd/serf-hub/assets/renderer-panels.js:341-358`, has no `.sort()` call).
+  Status glyph/tone per row is the legacy grammar
+  (`planGlyphForStatus`/`planStateClass`, `renderer-format.js:496-521`)
+  translated onto this app's own `Chip`-tone vocabulary rather than the
+  legacy's `window.SerfIcons` SVG fragments (no equivalent exists in this
+  client): done/open stay neutral, in\_progress reads as the "agent
+  working" hue (alive), cancelled reads the same as a failure (danger) —
+  matching that file's own stated reasoning verbatim ("a plan item that
+  will not happen reads the same as a failure").
+
+  Failure handling, exactly as instructed: a Codex-source
+  `actionUnavailable` rejection shows an honest "Task list isn't
+  available" inline state with **no toast** (it's a capability gap, not a
+  bug). I additionally folded a resolved-but-uninterpretable response
+  (`parseTaskListData` returning `null` — e.g. an old daemon with no
+  `tasksFn` registered, which resolves with `null` data rather than
+  rejecting, per `server/appwire_runtime.go:713-721`) into that SAME
+  unsupported state, for the identical reason: nothing actually failed at
+  the transport level in either case. Any other rejection toasts (the
+  wave's convention) AND shows an inline error state, since there's
+  nothing else left to show. A confirmed-empty fetch (genuinely zero
+  tasks) now shows the legacy panel's own definitive copy ("No tasks yet"
+  / "The agent's task list is empty for this session") in place of the
+  old ambiguous aggregate-only "no activity yet" text, since a real fetch
+  now backs that claim.
+
+**New commit range**: `e299f4803..ed00fce64` (10 commits total on
+`w5-chrome`, 4 new since the initial submission):
+
+- `1ee3ab60f` — cherry-picked T1 addendum (`listModels`/`listTasks`)
+- `2b5eae134` — T5(G): model-switch Combobox
+- `ed00fce64` — T5(H): tasks panel per-task rows
+
+**Test summary**: 115 test files, 1681 tests, all passing (up from
+114/1653 — `+11` from the cherry-picked `threads.test.ts` extension,
+`+8` from a new `ModelSwitch.test.tsx`, and `TasksPanel.test.tsx` grew
+from 5 to 10 tests reflecting the redesigned fetch-on-open behavior).
+`npx tsc --noEmit` clean, `biome ci src` clean, `npm run build` clean, on
+both new commits, re-verified fresh at HEAD after the last commit.
+TDD followed throughout: `ModelSwitch.test.tsx` written and confirmed red
+before `ModelSwitch.tsx` existed; `TasksPanel.test.tsx` rewritten to
+cover the new fetch lifecycle and confirmed red (7 of 10 failing) against
+the prior aggregate-only implementation before the rewrite.
+
+**Concerns (current)**:
+
+- None blocking. Both previously-open NEEDS_CONTEXT gaps are closed.
+- The status-glyph-to-Chip-tone translation (see above) is a documented,
+  reasonable but independent re-derivation of the legacy's icon grammar,
+  not a byte-for-byte visual port (no visual-pixel parity is a stated
+  non-goal of the rewrite) — worth a design-review glance, not a
+  correctness concern.
+- The `panes/session/index.test.tsx` transient timeout noted in the
+  original submission did not recur during any of this addendum's gate
+  runs.
+
+This stream is now a finished unit, ready for review.
