@@ -1,8 +1,8 @@
-import { useMemo } from "react";
 import DOMPurify from "dompurify";
 import { Marked, type RendererObject, type Tokens } from "marked";
-import { requireClass } from "../internal/requireClass";
+import { useMemo } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
+import { requireClass } from "../internal/requireClass";
 import styles from "./markdown.module.css";
 
 export interface MarkdownProps {
@@ -147,5 +147,15 @@ export function Markdown({ source }: MarkdownProps) {
     return DOMPurify.sanitize(rawHtml, SANITIZE_CONFIG);
   }, [source]);
 
+  // Reviewed: this is the narrow, legitimate case for dangerouslySetInnerHTML
+  // (rendering markdown-to-HTML has no alternative in React without a full
+  // HTML-to-element parser) - defense in depth above: marked's html()
+  // override escapes raw source HTML to text before it's ever markup,
+  // every custom renderer escapes its own string interpolations, and
+  // DOMPurify.sanitize() re-checks the generated output against a fixed
+  // allowlist as a second, independent layer (its default safe-URI-scheme
+  // filtering for href/src is untouched - SANITIZE_CONFIG never sets
+  // ALLOWED_URI_REGEXP). See this file's own comments above for the rest.
+  // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized via DOMPurify + escaped renderer overrides, see above
   return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html }} />;
 }

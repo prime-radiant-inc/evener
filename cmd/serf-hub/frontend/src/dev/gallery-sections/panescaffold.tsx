@@ -32,7 +32,9 @@ function FullChromePane() {
       }
     >
       <div className={styles.longBody}>
+        {/* Fixed-count (12), deterministic filler content - never reorders/resizes. */}
         {Array.from({ length: 12 }, (_, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-count static filler, see above
           <p key={i}>Body line {i + 1} - enough of these to make the body scroll independently.</p>
         ))}
       </div>

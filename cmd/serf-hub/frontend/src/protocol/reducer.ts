@@ -5,7 +5,17 @@
 // (possibly reference-equal, for no-op cases) output.
 
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import type { AnyNotification, InputItem, OutputImage, Thread, ThreadItem, ThreadReadResponse, ThreadTurnsListResponse, Turn } from "./types.gen";
+import type {
+  AnyNotification,
+  InputItem,
+  OutputImage,
+  SandboxEscalationRequested,
+  Thread,
+  ThreadItem,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+  Turn,
+} from "./types.gen";
 
 // The following notification param types are "(inline)" in the AppWire
 // catalog (appwire/protocol.go / docs/appwire-protocol.md): the codegen
@@ -25,6 +35,44 @@ interface ItemLifecycleInline {
   ref?: string;
   turnId?: string;
   item: ThreadItem;
+}
+
+// serf/steering/injected's payload is declared `nil` in the AppWire catalog
+// (appwire/protocol.go, NotifySerfSteeringInjected) — codegen therefore emits
+// an empty SerfSteeringInjectedPayload{} with no fields. The live projector
+// (internal/appprojector/appwire_projection.go:573-593, EventSteeringInjected)
+// actually sends {threadId, ref, text, images, source?}: text is pre-
+// substituted server-side with an image placeholder when blank-with-images,
+// and source is present ("user") only for human-sent steers — omitted
+// entirely for daemon-originated ones.
+interface SteeringInjectedInline {
+  threadId?: string;
+  ref?: string;
+  text?: string;
+  images?: InputItem[];
+  source?: string;
+}
+
+// warning's payload is declared `nil` in the AppWire catalog
+// (appwire/protocol.go: {NotifyWarning, nil, "Non-fatal diagnostic; inline
+// {threadId, ref, message, source, title, hint, warning, cause?}. Also used
+// for cancelled turns and relay-attach failures."}) — codegen therefore
+// emits an empty WarningPayload{} with no fields. The live projector sends
+// exactly that inline shape for EventWarning
+// (internal/appprojector/appwire_projection.go:494-506), and the same shape
+// plus `cause` for EventError's user-cancel branch (:520-535) — a genuine
+// turn failure (the branch after that, :538-572) deliberately emits NO
+// warning, only a failed turn/completed (see that case's own comment on why
+// — double-render avoidance). `warning`/`cause` carry the raw event payload
+// and error-cause chain; neither has a model consumer, so they are left out
+// here rather than invented.
+interface WarningInline {
+  threadId?: string;
+  ref?: string;
+  message?: string;
+  source?: string;
+  title?: string;
+  hint?: string;
 }
 
 function epochMsToISO(ms: number | undefined): string | undefined {
@@ -87,11 +135,77 @@ function mergeReasoning(settled: ItemModel, existing: ItemModel | undefined): It
   return settled;
 }
 
-function wireToTurnModel(turn: Turn): TurnModel {
+// item/completed's settled wire item never carries observedStartedAt/
+// observedCompletedAt — those are model-only client observations (see
+// ItemModel's doc comment in model.ts), never present on a wire ThreadItem,
+// so wireItemToModel never sets them and a fresh `settled` object has
+// already lost whatever appendReasoningDelta stamped. Carries the existing
+// item's observedStartedAt forward, and — if observation began but never
+// got a completion stamp — stamps observedCompletedAt from `now` (purity:
+// only ever from the now argument, never a clock read).
+function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined, now: number): ItemModel {
+  if (existing?.observedStartedAt === undefined) return settled;
+  return {
+    ...settled,
+    observedStartedAt: existing.observedStartedAt,
+    observedCompletedAt: existing.observedCompletedAt ?? epochMsToISO(now),
+  };
+}
+
+// The live tool-settle site drops ArgumentsJSON: EventToolCallEnd
+// (internal/appprojector/appwire_projection.go:414-442) resolves it into
+// argsJSON at :424-427 but uses that only to derive Description, never
+// attaching it to the emitted ThreadItem — so the settled wire item's
+// argumentsJson is empty even though the streamed item/started item (:373)
+// had it. Historical items don't lose it
+// (internal/apptranscript/apptranscript.go:284,312), so this is a
+// live-settle-only gap the model corrects: keep the existing item's
+// argumentsJSON when the settled payload didn't bring its own. A settled
+// payload that DOES carry argumentsJson wins — wire truth over memory.
+function mergeArguments(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (settled.argumentsJSON !== undefined) return settled;
+  if (existing?.argumentsJSON === undefined) return settled;
+  return { ...settled, argumentsJSON: existing.argumentsJSON };
+}
+
+// Folds a PRESERVED item (one carried over from before settlement, not
+// replaced by wire-authoritative data — see the "turn/completed" case) into
+// its settled shape. The live wire's settle stamp carries no items at all,
+// so there is no authoritative text to adopt the way item/completed would;
+// any pendingText chunks still sitting on the item are joined into text
+// exactly as item/completed would eventually have finalized them (mirrors
+// item/agentMessage/delta's own chunk accumulation). An item still marked
+// inProgress inside a settled turn is stale — a turn cannot complete with
+// one of its own items unfinished (e.g. an interrupt or session-end cut a
+// stream short before its own item/completed arrived) — so its status is
+// promoted to completed. reasoningSummaries pass through untouched (they are
+// already the model's own accumulated chunks, not wire data to merge). An
+// item still under reasoning-timing observation (observedStartedAt set, no
+// observedCompletedAt yet) gets observedCompletedAt stamped from `now` — the
+// turn ending is the honest end of observation (see ItemModel's doc comment
+// in model.ts).
+function settleItem(item: ItemModel, now: number): ItemModel {
+  const pending = item.pendingText;
+  const stale = item.status === "inProgress";
+  const needsObservedCompletion = item.observedStartedAt !== undefined && item.observedCompletedAt === undefined;
+  if (pending === undefined && !stale && !needsObservedCompletion) return item;
+  return {
+    ...item,
+    text: pending === undefined ? item.text : item.text + pending.join(""),
+    pendingText: undefined,
+    status: stale ? "completed" : item.status,
+    observedCompletedAt: needsObservedCompletion ? epochMsToISO(now) : item.observedCompletedAt,
+  };
+}
+
+// The turn-level (non-items) fields wireToTurnModel maps — split out so the
+// "turn/completed" bare-stamp path (which has real turn fields but no items
+// worth trusting) can reuse the exact same field mapping without also
+// pulling in wireToTurnModel's item conversion.
+function wireToTurnScalars(turn: Turn): Omit<TurnModel, "items"> {
   return {
     id: turn.id,
     status: turn.status,
-    items: (turn.items ?? []).map(wireItemToModel),
     startedAt: epochMsToISO(turn.startedAt),
     completedAt: epochMsToISO(turn.completedAt),
     durationMs: turn.durationMs,
@@ -99,6 +213,10 @@ function wireToTurnModel(turn: Turn): TurnModel {
     cost: turn.cost,
     error: turn.error,
   };
+}
+
+function wireToTurnModel(turn: Turn): TurnModel {
+  return { ...wireToTurnScalars(turn), items: (turn.items ?? []).map(wireItemToModel) };
 }
 
 // serf.activeTurnId is the primary signal; a turn already marked inProgress
@@ -124,6 +242,8 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     model: thread.modelProvider,
     reasoningEffort: thread.serf.reasoningEffort,
     askPending: thread.serf.askPending ?? false,
+    // Go wire-nullable-array rule: omitempty absent means empty, not missing.
+    pendingEscalations: thread.serf.pendingEscalations ?? [],
     turns: (thread.turns ?? []).map(wireToTurnModel),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.serf.queue,
@@ -134,12 +254,28 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 }
 
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const older = resp.data.map(wireToTurnModel);
+  const older = (resp.data ?? []).map(wireToTurnModel);
   return {
     ...model,
     turns: [...older, ...model.turns],
     olderCursor: resp.nextCursor,
   };
+}
+
+// Removes one pending escalation by id, returning the same reference when
+// the id is absent (the no-op-same-reference idiom used throughout this
+// file). Consumed by the threads store's resolve action (a later task)
+// after a successful serf/sandbox/escalation/resolve call — the wire has no
+// resolved broadcast (appwire/protocol.go's M7 catalog has only
+// NotifySerfSandboxEscalationRequested and the resolve method itself; the
+// legacy client, cmd/serf-hub/assets/appwire.js, only ever handles
+// "requested"), so removing this client's own copy after a successful
+// resolve is local-only. A different client watching the same session stays
+// stale until its next snapshot — a known wire limitation, not something to
+// paper over here.
+export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
+  if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
+  return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
 }
 
 export function notificationTargetsThread(n: AnyNotification, model: ThreadModel): boolean {
@@ -181,17 +317,26 @@ function findItemTurnId(model: ThreadModel, turnIdHint: string | undefined, item
 // Resolves which turn a brand-new item belongs to (turnId hint, then the
 // item's own turnId, then the model's active turn), verifying that turn
 // actually exists in the model.
-function resolveInsertTurnId(model: ThreadModel, turnIdHint: string | undefined, itemTurnId: string | undefined): string | undefined {
+function resolveInsertTurnId(
+  model: ThreadModel,
+  turnIdHint: string | undefined,
+  itemTurnId: string | undefined,
+): string | undefined {
   const candidate = turnIdHint ?? itemTurnId ?? model.activeTurnId;
   return candidate !== undefined && model.turns.some((t) => t.id === candidate) ? candidate : undefined;
 }
 
-function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: string): ItemModel {
+// Accumulates one reasoning delta chunk and, first delta only, stamps
+// observedStartedAt as a client observation of when reasoning began (the
+// wire carries no reasoning timestamps at all — see ItemModel's doc comment
+// in model.ts). `now` is the reducer's own now parameter, never a clock
+// read (purity).
+function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: string, now: number): ItemModel {
   const summaries = item.reasoningSummaries ? item.reasoningSummaries.slice() : [];
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
   summaries[summaryIndex] = [...chunks, delta];
-  return { ...item, reasoningSummaries: summaries };
+  return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
 }
 
 // True for the tool call the daemon tracks as StatusInfo.PendingAsk
@@ -201,6 +346,20 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
 // internal/appprojector/appwire_projection.go and internal/apptranscript).
 function isAskUserItem(item: ThreadItem): boolean {
   return item.type === "commandExecution" && item.toolName === "ask_user";
+}
+
+// Appends `incoming` to pendingEscalations, or — if an entry with the same
+// escalationId is already present — replaces it in place rather than
+// growing the list. Dedup exists because hydration's surface-on-entry
+// snapshot (thread.serf.pendingEscalations) and this live notification can
+// legitimately race and both deliver the same card; last write wins.
+function upsertPendingEscalation(
+  escalations: SandboxEscalationRequested[],
+  incoming: SandboxEscalationRequested,
+): SandboxEscalationRequested[] {
+  const idx = escalations.findIndex((e) => e.escalationId === incoming.escalationId);
+  if (idx === -1) return [...escalations, incoming];
+  return escalations.map((e, i) => (i === idx ? incoming : e));
 }
 
 // Folds one live wire notification into model. Most notifications carry
@@ -245,8 +404,35 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       const turnId = params.turnId || params.turn.id;
       if (model.activeTurnId !== turnId) return model;
       const oldTurn = model.turns.find((t) => t.id === turnId);
-      const settledTurn = wireToTurnModel(params.turn);
-      settledTurn.items = settledTurn.items.map((item) => mergeReasoning(item, oldTurn?.items.find((old) => old.id === item.id)));
+      const stamp = params.turn;
+      let settledTurn: TurnModel;
+      if (stamp.itemsView === "full") {
+        settledTurn = wireToTurnModel(stamp);
+        // Same three-helper composition as item/completed's existing-item
+        // branch below (mergeReasoning/mergeArguments/mergeObservedTiming
+        // read/write disjoint fields off the same `old` reference, so
+        // composition order is free) — this branch has its own settled
+        // items rather than item/completed's single one, so it maps instead
+        // of a single mapItem call.
+        settledTurn.items = settledTurn.items.map((item) => {
+          const old = oldTurn?.items.find((o) => o.id === item.id);
+          return mergeObservedTiming(mergeArguments(mergeReasoning(item, old), old), old, now);
+        });
+      } else {
+        // The live wire's settle stamp never carries items — every live
+        // settle site (EventUserInput, EventGoalContinuation, EventError,
+        // EventSessionEnd in internal/appprojector/appwire_projection.go)
+        // emits a bare Turn{ID,Status[,Error]} with Items nil, ItemsView "".
+        // itemsView !== "full" means "this payload has nothing to say about
+        // items," not "the turn has no items" — keep whatever the model
+        // already accumulated via item/started + deltas + item/completed,
+        // folding any item still mid-stream through settleItem (a just-
+        // settled turn cannot legitimately still have a pending item).
+        settledTurn = {
+          ...wireToTurnScalars(stamp),
+          items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)),
+        };
+      }
       return {
         ...model,
         turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),
@@ -262,7 +448,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!targetTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, targetTurnId, (turn) => ({ ...turn, items: [...turn.items, wireItemToModel(item)] })),
+        turns: mapTurn(model.turns, targetTurnId, (turn) => ({
+          ...turn,
+          items: [...turn.items, wireItemToModel(item)],
+        })),
         askPending: isAskUserItem(item) ? true : model.askPending,
         lastFrameAt: now,
       };
@@ -278,7 +467,9 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) => mergeReasoning(wireItemToModel(item), old)),
+            items: mapItem(turn.items, item.id, (old) =>
+              mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
+            ),
           })),
           askPending,
           lastFrameAt: now,
@@ -294,7 +485,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!insertTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, insertTurnId, (turn) => ({ ...turn, items: [...turn.items, wireItemToModel(item)] })),
+        turns: mapTurn(model.turns, insertTurnId, (turn) => ({
+          ...turn,
+          items: [...turn.items, wireItemToModel(item)],
+        })),
         askPending,
         lastFrameAt: now,
       };
@@ -309,7 +503,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({ ...item, pendingText: [...(item.pendingText ?? []), params.delta] })),
+          items: mapItem(turn.items, params.itemId, (item) => ({
+            ...item,
+            pendingText: [...(item.pendingText ?? []), params.delta],
+          })),
         })),
         lastFrameAt: now,
       };
@@ -322,7 +519,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!targetTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, targetTurnId, (turn) => ({ ...turn, items: turn.items.filter((it) => it.id !== params.itemId) })),
+        turns: mapTurn(model.turns, targetTurnId, (turn) => ({
+          ...turn,
+          items: turn.items.filter((it) => it.id !== params.itemId),
+        })),
         lastFrameAt: now,
       };
     }
@@ -336,7 +536,9 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => appendReasoningDelta(item, params.summaryIndex, params.delta)),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            appendReasoningDelta(item, params.summaryIndex, params.delta, now),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -351,7 +553,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({ ...item, output: (item.output ?? "") + params.delta })),
+          items: mapItem(turn.items, params.itemId, (item) => ({
+            ...item,
+            output: (item.output ?? "") + params.delta,
+          })),
         })),
         lastFrameAt: now,
       };
@@ -387,13 +592,94 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       return { ...model, name: n.params.name, lastFrameAt: now };
     }
 
-    // These carry no ThreadModel-tracked state (no job list, no steering
-    // log at this layer) — only their liveness signal (lastFrameAt) applies.
+    // PendingEscalations is THREAD-level human-client state, never a
+    // transcript item (appwire/types.go's ThreadSerf.PendingEscalations doc
+    // comment: "a HUMAN-CLIENT field only ... never part of the model's
+    // transcript or any model-visible projection"). The catalog entry
+    // (appwire/protocol.go:185) declares this notification with its real
+    // generated payload type (SandboxEscalationRequested), used verbatim
+    // here rather than a local "(inline)" interface. See
+    // upsertPendingEscalation for the dedup rationale.
+    case "serf/sandbox/escalation/requested": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return {
+        ...model,
+        pendingEscalations: upsertPendingEscalation(model.pendingEscalations, n.params),
+        lastFrameAt: now,
+      };
+    }
+
+    // Job lifecycle carries no ThreadModel-tracked state (no job list at
+    // this layer) — only its liveness signal (lastFrameAt) applies. Live
+    // steering (below) is handled separately: unlike jobs, it becomes a
+    // transcript item.
     case "serf/job/started":
-    case "serf/job/finished":
-    case "serf/steering/injected": {
+    case "serf/job/finished": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, lastFrameAt: now };
+    }
+
+    case "warning": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const activeTurnId = model.activeTurnId;
+      // No active turn: there is nowhere wire-true to put it, and — unlike
+      // serf/steering/injected's race window — warnings are not transcript-
+      // persisted at all (internal/apptranscript has no warning-item
+      // conversion), so the next snapshot would not carry it either. Drop
+      // it client-side; only the liveness signal survives.
+      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      const params = n.params as WarningInline;
+      return {
+        ...model,
+        turns: mapTurn(model.turns, activeTurnId, (turn) => {
+          // Same collision-proofing as serf/steering/injected: count what's
+          // already there rather than a global counter, so multiple
+          // warnings in one turn land with distinct, order-preserving ids.
+          const warningCount = turn.items.filter((it) => it.type === "warning").length;
+          const item: ItemModel = {
+            id: `item_warning_live_${activeTurnId}_${warningCount}`,
+            turnId: activeTurnId,
+            type: "warning",
+            text: params.message ?? "",
+            status: "completed",
+            warning: { source: params.source, title: params.title, hint: params.hint },
+          };
+          return { ...turn, items: [...turn.items, item] };
+        }),
+        lastFrameAt: now,
+      };
+    }
+
+    case "serf/steering/injected": {
+      if (!notificationTargetsThread(n, model)) return model;
+      const activeTurnId = model.activeTurnId;
+      // The server only injects steering into an in-flight turn; if the
+      // model has none (e.g. this arrived just after the turn's own settle),
+      // there is nowhere wire-true to put it — a race recovered by the next
+      // snapshot, not a turn to fabricate client-side.
+      if (!activeTurnId) return { ...model, lastFrameAt: now };
+      const params = n.params as SteeringInjectedInline;
+      return {
+        ...model,
+        turns: mapTurn(model.turns, activeTurnId, (turn) => {
+          // id must be unique across multiple steers landing in the same
+          // turn; count what's already there rather than a global counter,
+          // mirroring the historical reload shape's per-turn indexing
+          // (internal/apptranscript/apptranscript.go:211-229, item_steering_<n>).
+          const steeringCount = turn.items.filter((it) => it.type === "steering").length;
+          const item: ItemModel = {
+            id: `item_steering_live_${activeTurnId}_${steeringCount}`,
+            turnId: activeTurnId,
+            type: "steering",
+            text: params.text ?? "",
+            images: imagesToStrings(params.images),
+            status: "completed",
+            source: params.source,
+          };
+          return { ...turn, items: [...turn.items, item] };
+        }),
+        lastFrameAt: now,
+      };
     }
 
     default:

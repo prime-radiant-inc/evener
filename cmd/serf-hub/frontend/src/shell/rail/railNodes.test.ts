@@ -73,7 +73,10 @@ describe("projectNodes", () => {
   });
 
   test("children come directly from project.sessions, mapped to session rail nodes", () => {
-    const [rail] = projectNodes([project({ sessions: [node({ row_id: "r1" }), node({ row_id: "r2" })] })], NEVER_EXPANDED);
+    const [rail] = projectNodes(
+      [project({ sessions: [node({ row_id: "r1" }), node({ row_id: "r2" })] })],
+      NEVER_EXPANDED,
+    );
     expect(rail?.children?.map((c) => c.id)).toEqual(["r1", "r2"]);
   });
 
@@ -114,7 +117,11 @@ describe("archivedProjectNodes", () => {
 
   test("a project present in projectDetails renders its real, hydrated sessions instead of a placeholder", () => {
     const detail = project({ key: "p1", session_count: 2, sessions: [node({ row_id: "r1" }), node({ row_id: "r2" })] });
-    const [rail] = archivedProjectNodes([project({ key: "p1", session_count: 2 })], new Map([["p1", detail]]), NEVER_EXPANDED);
+    const [rail] = archivedProjectNodes(
+      [project({ key: "p1", session_count: 2 })],
+      new Map([["p1", detail]]),
+      NEVER_EXPANDED,
+    );
     expect(rail?.children?.map((c) => c.id)).toEqual(["r1", "r2"]);
   });
 
@@ -137,7 +144,12 @@ describe("archivedProjectNodes", () => {
 
 describe("overrideLookup", () => {
   test("returns the override when present, otherwise the given default", () => {
-    const isExpanded = overrideLookup(new Map([["a", true], ["b", false]]));
+    const isExpanded = overrideLookup(
+      new Map([
+        ["a", true],
+        ["b", false],
+      ]),
+    );
     expect(isExpanded("a", false)).toBe(true);
     expect(isExpanded("b", true)).toBe(false);
     expect(isExpanded("c", true)).toBe(true);

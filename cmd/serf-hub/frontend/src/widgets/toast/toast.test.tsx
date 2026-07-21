@@ -1,6 +1,6 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { Toast, useToasts, type ToastKind } from "./index";
+import { afterEach, expect, test, vi } from "vitest";
+import { Toast, type ToastKind, useToasts } from "./index";
 import { resetToastStoreForTests } from "./store";
 
 afterEach(() => {
@@ -17,7 +17,7 @@ function advance(ms: number) {
 
 function PushButton({ kind, text }: { kind: ToastKind; text: string }) {
   const { push } = useToasts();
-  return <button onClick={() => push(kind, text)}>{`Push: ${text}`}</button>;
+  return <button type="button" onClick={() => push(kind, text)}>{`Push: ${text}`}</button>;
 }
 
 test("renders an aria-live=polite region even with no toasts", () => {

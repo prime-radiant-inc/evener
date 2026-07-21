@@ -1,0 +1,8 @@
+/* Compact, chrome-only row - never machine-mono (this is UI furniture
+ * summarizing a turn, not authored/machine content itself). */
+.row {
+  padding: var(--space-1) 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}

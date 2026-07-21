@@ -1,9 +1,9 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
 import { Menu, type MenuItem } from "./index";
 
@@ -172,7 +172,7 @@ test("clicking outside the menu closes it", async () => {
   render(
     <div>
       <Menu trigger="Actions" items={items()} />
-      <button>Elsewhere</button>
+      <button type="button">Elsewhere</button>
     </div>,
   );
   await user.click(screen.getByRole("button", { name: "Actions" }));
@@ -186,7 +186,7 @@ test("Tab is trapped within the open menu", async () => {
   render(
     <div>
       <Menu trigger="Actions" items={items()} />
-      <button>Elsewhere</button>
+      <button type="button">Elsewhere</button>
     </div>,
   );
   await user.click(screen.getByRole("button", { name: "Actions" }));
@@ -247,6 +247,9 @@ test.each(["{ArrowDown}", "{ArrowUp}", "{Enter}", " "])(
     const user = userEvent.setup();
     const onAncestorKeyDown = vi.fn();
     render(
+      // Test-only bubbling probe, never a real widget: this div exists
+      // purely to detect whether Menu's own key handling escapes upward.
+      // biome-ignore lint/a11y/noStaticElementInteractions: test-only event-bubbling probe, not a rendered widget
       <div onKeyDown={onAncestorKeyDown}>
         <Menu trigger="Actions" items={items()} />
       </div>,

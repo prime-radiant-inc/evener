@@ -1,7 +1,7 @@
+import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";
-import type { DockviewApi } from "dockview-core";
-import { registerPane, type PaneDescriptor, type PaneProps } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Fixture pane types, registered once for the whole file. "settings" is the
@@ -11,7 +11,10 @@ import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from
 // yet); "transcript" is deliberately left UNREGISTERED, as this file's
 // stand-in for "a syntactically valid PaneTypeId that isn't actually
 // registered" (restoreLayout's own-registration-check tests below).
-function fixtureDescriptor<P>(id: PaneDescriptor<P>["id"], overrides: Partial<PaneDescriptor<P>> = {}): PaneDescriptor<P> {
+function fixtureDescriptor<P>(
+  id: PaneDescriptor<P>["id"],
+  overrides: Partial<PaneDescriptor<P>> = {},
+): PaneDescriptor<P> {
   return {
     id,
     title: () => `title for ${id}`,

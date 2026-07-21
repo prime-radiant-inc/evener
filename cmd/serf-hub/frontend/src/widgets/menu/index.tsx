@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import styles from "./menu.module.css";
@@ -43,9 +43,15 @@ function firstEnabledIndex(items: MenuItem[]): number {
   return items.findIndex((item) => !item.disabled);
 }
 
+function itemAt(items: MenuItem[], i: number): MenuItem {
+  const item = items[i];
+  if (!item) throw new Error(`menu item index ${i} out of range for ${items.length} items`);
+  return item;
+}
+
 function lastEnabledIndex(items: MenuItem[]): number {
   for (let i = items.length - 1; i >= 0; i--) {
-    if (!items[i]!.disabled) return i;
+    if (!itemAt(items, i).disabled) return i;
   }
   return -1;
 }
@@ -58,7 +64,7 @@ function stepEnabledIndex(items: MenuItem[], from: number, delta: 1 | -1): numbe
   let i = from;
   for (let step = 0; step < n; step++) {
     i = (i + delta + n) % n;
-    if (!items[i]!.disabled) return i;
+    if (!itemAt(items, i).disabled) return i;
   }
   return from;
 }
@@ -86,9 +92,13 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
     setIsOpen(true);
   }
 
-  function closeMenu() {
+  // useCallback (not a plain function like openMenu) so the outside-click
+  // effect below can depend on it honestly without re-attaching its
+  // document listener on every render: closeMenu closes over nothing but
+  // the setIsOpen setter, which React itself guarantees is stable.
+  const closeMenu = useCallback(() => {
     setIsOpen(false);
-  }
+  }, []);
 
   function focusIndex(index: number) {
     if (index === -1) return;
@@ -189,7 +199,7 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
     }
     document.addEventListener("mousedown", onDocumentMouseDown);
     return () => document.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [isOpen]);
+  }, [isOpen, closeMenu]);
 
   return (
     <div ref={rootRef} className={CLASS.root}>
@@ -207,10 +217,22 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
       </button>
       {isOpen && (
         <FocusScope trap>
+          {/* <ul role="menu">/<li role="menuitem"> is the WAI-ARIA APG menu
+              pattern's own example markup (w3.org/WAI/ARIA/apg/patterns/menu),
+              not an interactive role on an arbitrary static element. */}
+          {/* biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own menu markup, see above */}
           <ul role="menu" aria-labelledby={triggerId} className={CLASS.popup} onKeyDown={handleMenuKeyDown}>
             {items.map((item, index) => (
+              // Roving tabindex + delegated keydown: exactly one item has
+              // tabIndex 0 at a time (real focus lives here, not via
+              // aria-activedescendant), and handleMenuKeyDown on the ul
+              // above already selects the active item on Enter/Space -
+              // that handler sees every key bubbled up from whichever <li>
+              // is actually focused, so it doesn't need its own onKeyDown.
+              // biome-ignore lint/a11y/useKeyWithClickEvents: keydown is delegated to the ul's handleMenuKeyDown via bubbling, see above
               <li
                 key={item.id}
+                // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG menu markup, see the ul above
                 role="menuitem"
                 tabIndex={!item.disabled && index === activeIndex ? 0 : -1}
                 aria-disabled={item.disabled === true ? true : undefined}

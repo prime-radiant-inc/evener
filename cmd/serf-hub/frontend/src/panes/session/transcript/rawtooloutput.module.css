@@ -1,0 +1,9 @@
+.output {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-body);
+  color: var(--ink-mid);
+}

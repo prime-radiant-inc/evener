@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
+import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
+import { AppwireClient, type ConnectionState } from "../protocol/client";
+import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import { rpcURLFromLocation } from "../protocol/transport";
+import { connectionStore, useConnectionStore } from "../stores/connection";
 import { Button } from "../widgets";
 import { requireClass } from "../widgets/internal/requireClass";
-import { AppwireClient, type ConnectionState } from "../protocol/client";
-import { rpcURLFromLocation } from "../protocol/transport";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import { connectionStore, useConnectionStore } from "../stores/connection";
-import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
-import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import styles from "./ConnectionBanner.module.css";
+import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 
 export interface ConnectionBannerProps {
   state: ConnectionState;
@@ -75,7 +75,10 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
   // while still closed (a retry whose fresh client also ends up closed -
   // e.g. still unauthenticated - must re-check, not keep showing whatever
   // the PREVIOUS client's probe found; `state` alone can't detect that,
-  // since the string can stay "closed" across the swap).
+  // since the string can stay "closed" across the swap). `client` is
+  // deliberately a trigger-only dependency here - never read inside the
+  // effect body, purely so a client swap re-runs the probe.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: client is a deliberate trigger-only dep, see above
   useEffect(() => {
     if (state !== "closed") {
       setClosedReason(null);
@@ -154,7 +157,12 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
 
   if (state !== "closed") return null;
 
-  const message = closedReason === "auth" ? SIGN_IN_PROMPT_MESSAGE : closedReason === "not-built" ? NOT_BUILT_MESSAGE : CLOSED_MESSAGE;
+  const message =
+    closedReason === "auth"
+      ? SIGN_IN_PROMPT_MESSAGE
+      : closedReason === "not-built"
+        ? NOT_BUILT_MESSAGE
+        : CLOSED_MESSAGE;
 
   return (
     <div className={CLASS.banner}>

@@ -1,7 +1,7 @@
-import { test, expect } from "vitest";
 import { readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { expect, test } from "vitest";
 
 // node:fs, not import.meta.glob: this project has no @types/node, and under
 // vitest's default test.css: false a raw-content glob returns "" for CSS

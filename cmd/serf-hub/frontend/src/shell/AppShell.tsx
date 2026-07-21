@@ -4,12 +4,12 @@
 // place for a path urlToPane() can't resolve at all.
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AppwireClient } from "../protocol/client";
-import { rpcURLFromLocation } from "../protocol/transport";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import { rpcURLFromLocation } from "../protocol/transport";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { ClientProvider } from "./clientContext";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
+import { ClientProvider } from "./clientContext";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
 import { Rail } from "./rail";

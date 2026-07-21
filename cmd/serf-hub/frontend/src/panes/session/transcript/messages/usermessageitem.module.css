@@ -1,0 +1,26 @@
+/* Quiet, demoted treatment (design-system.md mockup #3: "the user knows
+ * what they said" - the prompt never out-shouts the agent's own prose that
+ * follows it). No bubble, no right-alignment: a small "You" tag, then the
+ * text at reduced contrast (ink-mid, not ink-hi). */
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0;
+}
+
+.tag {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-low);
+}
+
+.text {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  color: var(--ink-mid);
+}

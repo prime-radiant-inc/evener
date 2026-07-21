@@ -44,16 +44,7 @@ function computeRows(value: string, autoGrow: boolean | undefined, rowsProp: num
 }
 
 /** A multi-line text field. Controlled only, mirroring Input. */
-export function Textarea({
-  value,
-  onChange,
-  placeholder,
-  disabled = false,
-  autoGrow,
-  rows,
-  id,
-  name,
-}: TextareaProps) {
+export function Textarea({ value, onChange, placeholder, disabled = false, autoGrow, rows, id, name }: TextareaProps) {
   return (
     <textarea
       id={id}

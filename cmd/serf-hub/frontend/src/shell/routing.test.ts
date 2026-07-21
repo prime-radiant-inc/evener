@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, test, expect, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { navigate, paneToURL, urlToPane } from "./routing";
 
 beforeEach(() => {

@@ -1,6 +1,6 @@
 import { Cadence, type CadenceState } from "../../widgets/cadence";
-import { ThemeFlip } from "../ThemeFlip";
 import styles from "../gallery-section.module.css";
+import { ThemeFlip } from "../ThemeFlip";
 
 // A fixed anchor instant, not Date.now(): the gallery is a design review
 // tool, and Cadence itself is pure, so there's no reason for its sample

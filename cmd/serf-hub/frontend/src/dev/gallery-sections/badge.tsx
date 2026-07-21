@@ -1,6 +1,6 @@
 import { Badge, type BadgeTone } from "../../widgets/badge";
-import { ThemeFlip } from "../ThemeFlip";
 import styles from "../gallery-section.module.css";
+import { ThemeFlip } from "../ThemeFlip";
 
 const TONES: BadgeTone[] = ["neutral", "attention", "alive", "danger"];
 

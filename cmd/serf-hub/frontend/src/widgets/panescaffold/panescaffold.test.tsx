@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { PaneScaffold } from "./index";
 
 afterEach(cleanup);
@@ -38,7 +38,14 @@ test("renders no actions cluster when the actions prop is omitted", () => {
 
 test("renders the actions cluster when provided", () => {
   render(
-    <PaneScaffold title="Sessions" actions={<button data-testid="my-action">Go</button>}>
+    <PaneScaffold
+      title="Sessions"
+      actions={
+        <button type="button" data-testid="my-action">
+          Go
+        </button>
+      }
+    >
       content
     </PaneScaffold>,
   );
@@ -64,14 +71,16 @@ test("renders title, cadence, actions and children in that document order", () =
     <PaneScaffold
       title="Sessions"
       cadence={<span data-testid="my-cadence" />}
-      actions={<button data-testid="my-action">Go</button>}
+      actions={
+        <button type="button" data-testid="my-action">
+          Go
+        </button>
+      }
     >
       content
     </PaneScaffold>,
   );
-  const positions = ["Sessions", "my-cadence", "my-action"].map((needle) =>
-    container.innerHTML.indexOf(needle),
-  );
+  const positions = ["Sessions", "my-cadence", "my-action"].map((needle) => container.innerHTML.indexOf(needle));
   expect(positions[0]).toBeLessThan(positions[1]!);
   expect(positions[1]).toBeLessThan(positions[2]!);
 });

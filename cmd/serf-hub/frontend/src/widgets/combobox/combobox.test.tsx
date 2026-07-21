@@ -1,9 +1,9 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { Dialog } from "../dialog";
 import { Combobox, type ComboboxOption } from "./index";
 
@@ -48,7 +48,12 @@ function renderCombobox(props: Partial<Parameters<typeof Combobox>[0]> = {}) {
   return render(
     <label>
       Model
-      <Combobox options={props.options ?? []} onQuery={props.onQuery ?? vi.fn()} onPick={props.onPick ?? vi.fn()} renderOption={props.renderOption} />
+      <Combobox
+        options={props.options ?? []}
+        onQuery={props.onQuery ?? vi.fn()}
+        onPick={props.onPick ?? vi.fn()}
+        renderOption={props.renderOption}
+      />
     </label>,
   );
 }
@@ -205,7 +210,7 @@ test("blurring the input closes the popup", async () => {
         Model
         <Combobox options={MODELS} onQuery={vi.fn()} onPick={vi.fn()} />
       </label>
-      <button>Elsewhere</button>
+      <button type="button">Elsewhere</button>
     </div>,
   );
   const input = screen.getByRole("combobox", { name: "Model" });

@@ -5,7 +5,7 @@
 // reaching into connectionStore.getState().client, which exists only as a
 // seam for stores that have no connect() path of their own (see
 // stores/connection.ts).
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, type ReactNode, useContext } from "react";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 
 const ClientContext = createContext<AppwireClientLike | null>(null);

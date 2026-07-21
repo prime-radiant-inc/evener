@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { DevHarness } from "./DevHarness";
 
 // Mirrors the fixture helpers in ../stores/threads.test.ts (duplicated

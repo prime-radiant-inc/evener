@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { ThemeFlip } from "./ThemeFlip";
 
 afterEach(cleanup);
@@ -7,7 +7,7 @@ afterEach(cleanup);
 test("renders its children twice: once ambient (dark), once under data-theme=light", () => {
   render(
     <ThemeFlip>
-      <button>Go</button>
+      <button type="button">Go</button>
     </ThemeFlip>,
   );
   const buttons = screen.getAllByRole("button", { name: "Go" });

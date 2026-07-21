@@ -1,0 +1,27 @@
+.wrap {
+  position: relative;
+  height: 100%;
+}
+
+.top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none; /* only its own interactive children (LoadOlderRow) opt back in */
+}
+
+.top > * {
+  pointer-events: auto;
+}
+
+.pillSlot {
+  position: absolute;
+  bottom: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1;
+}

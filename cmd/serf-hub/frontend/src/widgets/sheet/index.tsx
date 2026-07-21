@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import { OverlayPanel } from "../dialog/OverlayPanel";
 import dialogStyles from "../dialog/dialog.module.css";
+import { OverlayPanel } from "../dialog/OverlayPanel";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 

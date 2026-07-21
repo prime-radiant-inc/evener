@@ -1,30 +1,161 @@
-import { EmptyState, PaneScaffold } from "../../widgets";
+// The real transcript pane (wave 4 T1), replacing the wave-3 placeholder.
+// dockview UNMOUNTS a pane's whole tree when its tab isn't active (see
+// PaneHost's own comment in shell/DockHost.tsx), so every durable piece of
+// state here lives in the threads store (ThreadModel, frameTimes) - this
+// component's own state is limited to what may honestly die on a tab
+// switch: the live decay clock (nowTick, from ./liveness) and the
+// connection-ready gate's local closure, neither of which loses anything a
+// remount can't immediately reconstruct from the store.
+import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { connectionStore } from "../../stores/connection";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
+import { TurnBlock } from "./transcript/TurnBlock";
+import { useTranscript } from "./transcript/useTranscript";
+// Side-effect barrels: registering every message item renderer (T2) and
+// every tool descriptor (T3) the moment the pane module loads, so the
+// registries are full regardless of import order elsewhere (same
+// principle as TurnBlock.tsx's own ToolCallItem import).
+import "./transcript/messages";
+import "./transcript/tools";
+import styles from "./session.module.css";
+import { FlowOverlay } from "./transcript/flow/FlowOverlay";
+import { LivenessLine } from "./transcript/flow/LivenessLine";
+import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
+import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 
 export interface SessionPaneParams {
   ref: string;
 }
 
-/**
- * Placeholder for the real transcript pane (Wave 4). Shows the ref it was
- * opened with - proving routing and workspace mechanics (deep-link ->
- * openPane -> a dockview panel with the right params) work end to end -
- * without any of the real session content those come with. The dockview
- * tab's own title (shell/paneRegistry.ts's "session" descriptor, computed
- * by DockHost) separately tracks the live ThreadModel name via
- * PaneTitleCtx; this component stays a simple, literal proof rather than
- * duplicating that lookup for a view Wave 4 replaces outright.
- *
- * This placeholder has nothing to lose on a tab switch, but its real
- * replacement will: dockview unmounts a pane's whole tree when its tab
- * isn't active (see PaneHost's own comment in shell/DockHost.tsx), so the
- * real transcript view must keep anything durable (thread state, an
- * in-progress draft) in a store, not component-local state.
- */
+const EMPTY_FRAME_TIMES: number[] = [];
+
+// A reasonable average-turn guess for VirtualList's `dynamic` mode to
+// correct post-mount from each turn's real rendered height (turns vary
+// wildly: a one-line tool call vs. a long streamed response) - see
+// widgets/virtuallist's own `dynamic` prop doc comment.
+const ESTIMATED_TURN_HEIGHT = 96;
+
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
+  const { ref } = params;
+
+  // ensureThread on mount / releaseThread on unmount, exactly once each.
+  // AppShell mounts DockHost (and therefore this pane) unconditionally,
+  // independent of whether the one AppwireClient has finished its
+  // connect() handshake yet (see AppShell.tsx: the connect effect and the
+  // pane tree are siblings, not sequenced) - a direct deep link to /s/{ref}
+  // routinely reaches this effect before the client is "ready", and
+  // AppwireClient.request() rejects any non-exempt method until then. This
+  // defers the ONE ensureThread attempt until a client is actually usable
+  // (immediately, if one already is - the common case for a pane opened
+  // into an already-connected app) rather than failing fast and never
+  // retrying; once that attempt has fired (success or failure), it is
+  // never repeated - a later reconnect blip is threads.ts's own
+  // handleReady's job for whatever is already tracked, not this effect's.
+  useEffect(() => {
+    let started = false;
+
+    const tryStart = () => {
+      if (started || connectionStore.getState().state !== "ready") return;
+      started = true;
+      // Best-effort: a failed hydrate (network error, or - as in some
+      // pane-routing tests - a client with no thread/read handler scripted
+      // at all) leaves the pane showing its loading state; there is
+      // nothing further to do with the rejection here, but it must be
+      // observed so it never surfaces as an unhandled rejection.
+      // ensureThread's own catch already rolled back this attempt's
+      // refcount claim (stores/threads.ts), so there is no leak to clean
+      // up on top of that.
+      threadsStore
+        .getState()
+        .ensureThread(ref)
+        .catch(() => {});
+    };
+
+    tryStart();
+    const unsubscribe = connectionStore.subscribe(tryStart);
+
+    return () => {
+      unsubscribe();
+      if (started) threadsStore.getState().releaseThread(ref);
+    };
+  }, [ref]);
+
+  const { model, loadOlder, loadingOlder } = useTranscript(ref);
+  const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
+  const now = useNowTick(NOW_TICK_MS);
+
+  // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
+  // the seam useTranscriptScroll needs for every scroll-behavior concern
+  // (T4's own scope) - called unconditionally, same as every other hook
+  // here, even though the ref only ever populates once turns.length > 0
+  // (see useTranscriptScroll's own "hasContent" handling for that).
+  const virtualListRef = useRef<VirtualListHandle>(null);
+  const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+
+  if (!model) {
+    return (
+      <PaneScaffold title={ref}>
+        <EmptyState title="Loading transcript…" />
+      </PaneScaffold>
+    );
+  }
+
+  const cadence = <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
+
+  // VirtualList only ever calls getItemKey/renderRow with an index it got
+  // back from its own count-bounded virtualizer (count={model.turns.length}
+  // below), so this index is always in range - but that guarantee crosses a
+  // component boundary TypeScript can't see through. Check it for real
+  // rather than asserting past it, so a future bug here (e.g. turns
+  // shrinking mid-render) fails loudly instead of silently rendering
+  // `undefined`.
+  const turnAt = (index: number) => {
+    const turn = model.turns[index];
+    if (!turn) throw new Error(`VirtualList index ${index} out of range for ${model.turns.length} turns`);
+    return turn;
+  };
+
   return (
-    <PaneScaffold title={params.ref}>
-      <EmptyState title="Transcript arrives in wave 4" />
+    <PaneScaffold title={model.name || ref} cadence={cadence}>
+      <SandboxEscalationRail sessionRef={ref} />
+      {model.turns.length === 0 ? (
+        <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
+      ) : (
+        <div className={styles.transcript}>
+          <FlowOverlay
+            top={
+              <>
+                {model.olderCursor && (
+                  <LoadOlderRow onClick={() => void loadOlder().catch(() => {})} loading={loadingOlder} />
+                )}
+                <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
+              </>
+            }
+            pill={
+              <NewContentPill
+                count={flow.pillCount}
+                needsYou={flow.pillNeedsYou}
+                error={flow.pillError}
+                onClick={flow.jumpToBottom}
+              />
+            }
+          >
+            <VirtualList
+              ref={virtualListRef}
+              dynamic
+              count={model.turns.length}
+              estimateSize={() => ESTIMATED_TURN_HEIGHT}
+              getItemKey={(index) => turnAt(index).id}
+              renderRow={(index) => <TurnBlock turn={turnAt(index)} />}
+            />
+          </FlowOverlay>
+        </div>
+      )}
     </PaneScaffold>
   );
 }

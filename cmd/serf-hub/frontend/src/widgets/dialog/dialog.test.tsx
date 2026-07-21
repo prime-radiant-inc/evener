@@ -1,9 +1,9 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { Dialog } from "./index";
 
 afterEach(cleanup);
@@ -149,7 +149,7 @@ test("the close button calls onClose when clicked", async () => {
 test("focus starts inside the dialog on open, on the first tabbable element", () => {
   render(
     <Dialog open onClose={vi.fn()} title="t">
-      <button>First field</button>
+      <button type="button">First field</button>
     </Dialog>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "First field" }));
@@ -159,7 +159,7 @@ test("Tab is trapped within the dialog", async () => {
   const user = userEvent.setup();
   render(
     <Dialog open onClose={vi.fn()} title="t">
-      <button>Only field</button>
+      <button type="button">Only field</button>
     </Dialog>,
   );
   // Only tabbable elements: "Only field" then the close button (which is
@@ -172,7 +172,7 @@ test("Tab is trapped within the dialog", async () => {
 });
 
 test("closing returns focus to whatever triggered the dialog", () => {
-  render(<button>Open dialog</button>);
+  render(<button type="button">Open dialog</button>);
   const trigger = screen.getByRole("button", { name: "Open dialog" });
   trigger.focus();
 

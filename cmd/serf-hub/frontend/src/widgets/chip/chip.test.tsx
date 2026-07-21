@@ -1,12 +1,12 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
-import { Chip, type ChipTone } from "./index";
 import rawStyles from "./chip.module.css";
+import { Chip, type ChipTone } from "./index";
 
 afterEach(cleanup);
 

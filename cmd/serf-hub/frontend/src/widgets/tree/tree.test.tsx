@@ -1,9 +1,9 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { afterEach, expect, test, vi } from "vitest";
 import { Tree, type TreeNode } from "./index";
 
 afterEach(cleanup);

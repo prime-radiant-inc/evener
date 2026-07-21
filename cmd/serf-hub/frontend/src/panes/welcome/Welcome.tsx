@@ -1,6 +1,6 @@
-import { Button, EmptyState, PaneScaffold } from "../../widgets";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
+import { Button, EmptyState, PaneScaffold } from "../../widgets";
 
 export interface WelcomePaneParams {
   // Shown as the empty state's hint - e.g. the note /new renders while the

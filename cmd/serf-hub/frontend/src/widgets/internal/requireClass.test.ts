@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { expect, test } from "vitest";
 import { requireClass } from "./requireClass";
 
 test("returns the value when it is defined", () => {

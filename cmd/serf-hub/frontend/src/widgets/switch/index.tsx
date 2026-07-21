@@ -50,6 +50,14 @@ export function Switch({ checked, onChange, disabled = false, label }: SwitchPro
       >
         <span className={BASE_CLASS.thumb} />
       </button>
+      {/* Mouse-only convenience mirroring a native <label for=...> click
+          target for the switch above (see this file's own top comment for
+          why a real <label> wrapper isn't used instead) - the actual
+          control is the fully keyboard-operable button; this span gives
+          mouse/touch users the same larger, click-anywhere-on-the-label
+          hit target a native form control's label would. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: mouse-only label click target, the real control is the button above */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: mouse-only label click target, the real control is the button above */}
       <span id={labelId} className={BASE_CLASS.label} onClick={toggle}>
         {label}
       </span>

@@ -5,4 +5,4 @@
 {"method":"item/agentMessage/delta","params":{"threadId":"thr_1001","ref":"ref_1001","turnId":"turn_1001","itemId":"item_1001a","delta":"lo, "}}
 {"method":"item/agentMessage/delta","params":{"threadId":"thr_1001","ref":"ref_1001","turnId":"turn_1001","itemId":"item_1001a","delta":"world"}}
 {"method":"item/completed","params":{"threadId":"thr_1001","ref":"ref_1001","turnId":"turn_1001","item":{"type":"agentMessage","id":"item_1001a","turnId":"turn_1001","text":"Hello, world!","status":"completed","startedAt":20100,"completedAt":21000}}}
-{"method":"turn/completed","params":{"turnId":"turn_1001","turn":{"id":"turn_1001","status":"completed","itemsView":"","items":[{"type":"agentMessage","id":"item_1001a","turnId":"turn_1001","text":"Hello, world!","status":"completed","startedAt":20100,"completedAt":21000}],"startedAt":20000,"completedAt":21000,"durationMs":1000}}}
+{"method":"turn/completed","params":{"turnId":"turn_1001","turn":{"id":"turn_1001","status":"completed","itemsView":"","startedAt":20000,"completedAt":21000,"durationMs":1000}}}

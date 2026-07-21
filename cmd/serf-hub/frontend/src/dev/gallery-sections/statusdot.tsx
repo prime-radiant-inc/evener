@@ -1,7 +1,7 @@
-import { StatusDot } from "../../widgets/statusdot";
 import type { CadenceState } from "../../widgets/cadence";
-import { ThemeFlip } from "../ThemeFlip";
+import { StatusDot } from "../../widgets/statusdot";
 import styles from "../gallery-section.module.css";
+import { ThemeFlip } from "../ThemeFlip";
 
 const STATES: CadenceState[] = ["idle", "working", "needs-you", "failed", "ended"];
 

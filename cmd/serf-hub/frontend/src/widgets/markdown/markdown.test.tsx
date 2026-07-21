@@ -1,10 +1,10 @@
-import { afterEach, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
-import { requireClass } from "../internal/requireClass";
+import { afterEach, expect, test } from "vitest";
 import codeblockStyles from "../codeblock/codeblock.module.css";
+import { requireClass } from "../internal/requireClass";
 import { Markdown } from "./index";
 
 afterEach(cleanup);
@@ -84,9 +84,7 @@ test("a fenced code block without a language shows no language label", () => {
 // work, plus the two other realistic markdown-specific injection vectors.
 
 test("strips a literal <script> tag embedded in the source, showing it as inert text instead", () => {
-  const { container } = render(
-    <Markdown source={'Before <script>window.__markdownXss = true;</script> after'} />,
-  );
+  const { container } = render(<Markdown source={"Before <script>window.__markdownXss = true;</script> after"} />);
   expect(container.querySelector("script")).toBeNull();
   expect((window as unknown as { __markdownXss?: boolean }).__markdownXss).toBeUndefined();
   // "no raw HTML passthrough by default": the literal tag text is shown,
@@ -108,9 +106,7 @@ test("neutralizes a javascript: URL scheme on a markdown-syntax link", () => {
 });
 
 test("strips an event-handler attribute from raw HTML embedded in the source", () => {
-  const { container } = render(
-    <Markdown source={'<img src="x" onerror="window.__markdownPwned = true">'} />,
-  );
+  const { container } = render(<Markdown source={'<img src="x" onerror="window.__markdownPwned = true">'} />);
   expect(container.querySelector("img")).toBeNull();
   expect((window as unknown as { __markdownPwned?: boolean }).__markdownPwned).toBeUndefined();
 });

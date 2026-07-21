@@ -19,6 +19,9 @@ export function Skeleton({ lines = DEFAULT_LINES }: SkeletonProps) {
   return (
     <div className={BASE_CLASS.skeleton} role="status" aria-label="Loading">
       {Array.from({ length: lines }, (_, i) => (
+        // Interchangeable, content-free, aria-hidden placeholder bars - the
+        // textbook case the React docs themselves cite for a safe index key.
+        // biome-ignore lint/suspicious/noArrayIndexKey: interchangeable decorative placeholders, see above
         <div key={i} data-testid="skeleton-line" aria-hidden="true" className={BASE_CLASS.line} />
       ))}
     </div>

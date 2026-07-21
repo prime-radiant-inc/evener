@@ -1,0 +1,6 @@
+.header {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+  padding-bottom: var(--space-1);
+}

@@ -1,13 +1,13 @@
-import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { SIGN_IN_PROMPT_MESSAGE } from "../auth";
-import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 
 const ALL_FEATURES_OFF = {
   threadList: false,

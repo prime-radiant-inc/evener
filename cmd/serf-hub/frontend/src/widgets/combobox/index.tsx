@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ChangeEvent, type KeyboardEvent, type ReactNode } from "react";
+import { type ChangeEvent, type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./combobox.module.css";
 
@@ -84,6 +84,9 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
   // activeIndex against the new (possibly shorter) options, must not
   // dereference out of bounds either. activeOption below is what actually
   // guards that; this effect just formalizes the reset for next render.
+  // options is deliberately trigger-only: the reset itself doesn't need
+  // its value, only needs to fire when it changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: options is a deliberate trigger-only dep, see above
   useEffect(() => {
     setActiveIndex(-1);
   }, [options]);
@@ -184,7 +187,13 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
         aria-labelledby={ariaLabelledBy}
       />
       {showPopup && (
+        // <ul role="listbox">/<li role="option"> is the WAI-ARIA APG
+        // combobox-with-listbox-popup pattern's own example markup
+        // (w3.org/WAI/ARIA/apg/patterns/combobox) - not an interactive
+        // role bolted onto an arbitrary static element, Biome's role-vs-
+        // element heuristic just doesn't special-case ul/li for it.
         <ul
+          // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ul/li is the ARIA APG's own listbox markup, see above
           role="listbox"
           id={listboxId}
           aria-label={ariaLabel}
@@ -192,9 +201,17 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
           className={CLASS.listbox}
         >
           {options.map((option, index) => (
+            // Real focus never leaves the input (ARIA 1.2 activedescendant
+            // pattern): aria-activedescendant above tracks the "virtual"
+            // active option, and handleKeyDown's own Enter case already
+            // calls this same pick(activeOption) - so this <li> is
+            // deliberately not focusable and needs no onKeyDown of its own.
+            // biome-ignore lint/a11y/useFocusableInteractive: activedescendant pattern, real focus stays on the input, see above
+            // biome-ignore lint/a11y/useKeyWithClickEvents: activedescendant pattern, Enter on the input already does this, see above
             <li
               key={option.id}
               id={optionId(option)}
+              // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: ARIA APG listbox markup, see the ul above
               role="option"
               aria-selected={index === activeIndex}
               className={`${CLASS.option} ${index === activeIndex ? CLASS.optionActive : ""}`}

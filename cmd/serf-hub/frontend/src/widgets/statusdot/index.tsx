@@ -1,5 +1,5 @@
-import { requireClass } from "../internal/requireClass";
 import type { CadenceState } from "../cadence";
+import { requireClass } from "../internal/requireClass";
 import styles from "./statusdot.module.css";
 
 export interface StatusDotProps {
@@ -47,7 +47,5 @@ const BASE_CLASS = {
  * accessible name since (unlike Cadence's dot) nothing else labels it. */
 export function StatusDot({ state }: StatusDotProps) {
   const family = STATE_FAMILY[state];
-  return (
-    <span role="img" aria-label={STATE_LABEL[state]} className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}`} />
-  );
+  return <span role="img" aria-label={STATE_LABEL[state]} className={`${BASE_CLASS.dot} ${FAMILY_CLASS[family]}`} />;
 }

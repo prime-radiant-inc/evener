@@ -11,11 +11,12 @@
 // field-access path to either the REST baseline or the live notification" -
 // reasoning that only makes sense if the frontend consumes wire JSON
 // directly, with no renaming layer to make the two line up on its own.
-import { createStore } from "zustand/vanilla";
+
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
+import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification } from "../protocol/types.gen";
+import { connectionStore } from "./connection";
 
 export interface Source {
   id: string;
@@ -106,7 +107,10 @@ interface WireTreeProject extends Omit<TreeProject, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
 interface WireTreeResponse
-  extends Omit<TreeResponse, "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"> {
+  extends Omit<
+    TreeResponse,
+    "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"
+  > {
   sources: Source[] | null;
   live: WireTreeNode[] | null;
   needs_you: WireTreeNode[] | null;
@@ -222,6 +226,10 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
 export function useTreeStore(): TreeStoreState;
 export function useTreeStore<T>(selector: (state: TreeStoreState) => T): T;
 export function useTreeStore<T>(selector?: (state: TreeStoreState) => T): T | TreeStoreState {
+  // Not a real conditional hook call - see stores/connection.ts's own
+  // useConnectionStore for the full explanation (zustand's useStore has a
+  // `selector = identity` JS default param, so both arms run identically).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(treeStore, selector) : useStore(treeStore);
 }
 
@@ -278,7 +286,8 @@ function attachNotifications(client: AppwireClientLike): void {
 connectionStore.subscribe((state) => {
   if (state.client) attachNotifications(state.client);
 });
-if (connectionStore.getState().client) attachNotifications(connectionStore.getState().client!);
+const initialClient = connectionStore.getState().client;
+if (initialClient) attachNotifications(initialClient);
 
 // resetTreeStoreForTests resets every module-private/store field to its
 // initial state, including the pending debounce timer - tree.ts is a

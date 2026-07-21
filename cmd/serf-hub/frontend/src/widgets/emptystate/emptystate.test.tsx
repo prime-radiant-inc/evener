@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { EmptyState } from "./index";
 
 afterEach(cleanup);
@@ -22,7 +22,7 @@ test("omits the hint when not provided", () => {
 });
 
 test("renders the action slot when provided", () => {
-  render(<EmptyState title="No sessions yet" action={<button>New session</button>} />);
+  render(<EmptyState title="No sessions yet" action={<button type="button">New session</button>} />);
   expect(screen.getByRole("button", { name: "New session" })).toBeTruthy();
 });
 
@@ -33,7 +33,11 @@ test("omits the action slot when not provided", () => {
 
 test("renders title, hint, and action together", () => {
   render(
-    <EmptyState title="No sessions yet" hint="Start one from the command palette." action={<button>New session</button>} />,
+    <EmptyState
+      title="No sessions yet"
+      hint="Start one from the command palette."
+      action={<button type="button">New session</button>}
+    />,
   );
   expect(screen.getByText("No sessions yet")).toBeTruthy();
   expect(screen.getByText("Start one from the command palette.")).toBeTruthy();

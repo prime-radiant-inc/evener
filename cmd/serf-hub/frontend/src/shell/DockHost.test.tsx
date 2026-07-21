@@ -1,12 +1,14 @@
-import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { registerPane, type PaneProps } from "./paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
-import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { lazy } from "react";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../protocol/model";
+import { FakeClient } from "../protocol/testing/fakeClient";
+import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
+import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
+import { type PaneProps, registerPane } from "./paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
 // auto-resizing - see this task's report for the live probe that found
@@ -72,7 +74,11 @@ beforeAll(async () => {
   // @ts-expect-error see MemoryStorage's own comment for why this is needed
   globalThis.localStorage = new MemoryStorage();
 
-  registerPane({ id: "doc", title: (params: { ref: string }) => `Doc ${params.ref}`, component: lazy(() => Promise.resolve({ default: DocFixture })) });
+  registerPane({
+    id: "doc",
+    title: (params: { ref: string }) => `Doc ${params.ref}`,
+    component: lazy(() => Promise.resolve({ default: DocFixture })),
+  });
   registerPane({
     id: "settings",
     singleton: true,
@@ -260,6 +266,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     modelProvider: "anthropic",
     model: "claude",
     askPending: false,
+    pendingEscalations: [],
     turns: [],
     queue: null,
     tasks: null,
@@ -271,9 +278,15 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
 test("a session pane's tab title prefers the live ThreadModel name over the raw ref", async () => {
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Debug the flaky test" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
-  render(<DockHost />);
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
 
-  await screen.findByText("ref_x"); // the placeholder pane's own body, per Session.tsx
+  // The real session pane's own body (wave 4): synced against the
+  // pre-seeded model, whose fixture turns default to [].
+  await screen.findByText(/no turns yet/i);
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Debug the flaky test");
 });
 
@@ -295,8 +308,14 @@ test("a session pane's tab falls back to the raw ref when no thread name is know
 test("a session pane's tab title live-updates when the thread is renamed, with no remount", async () => {
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Original name" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
-  render(<DockHost />);
-  await screen.findByText("ref_x");
+  render(
+    <ClientProvider client={new FakeClient("ready")}>
+      <DockHost />
+    </ClientProvider>,
+  );
+  // The real session pane's own body (wave 4): synced against the
+  // pre-seeded model, whose fixture turns default to [].
+  await screen.findByText(/no turns yet/i);
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
   threadsStore.setState((s) => {
@@ -308,9 +327,10 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   await vi.waitFor(() => {
     expect(document.querySelector(".dv-tab")?.textContent).toBe("Renamed");
   });
-  // Still the same pane, not a fresh one - the placeholder body (which
-  // reads only params.ref, not the thread name) is untouched throughout.
-  expect(screen.getByText("ref_x")).toBeTruthy();
+  // Still the same pane, not a fresh one - the session pane's own body
+  // (which doesn't read the thread name at all, only its turns) is
+  // untouched throughout the rename.
+  expect(screen.getByText(/no turns yet/i)).toBeTruthy();
 });
 
 // --- layout persistence -----------------------------------------------

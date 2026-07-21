@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./tree.module.css";
 
@@ -136,7 +136,12 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   });
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, node: T, parent: T | null) {
-    const index = indexById.get(node.id)!;
+    const index = indexById.get(node.id);
+    // renderEntries and flattenVisible walk the same nodes under the same
+    // expanded-branch predicate, so node.id is always a key here in
+    // practice - but that's an invariant between two separate functions,
+    // not something the type system enforces, so it's worth a real check.
+    if (index === undefined) return;
     const branchOpen = hasChildrenOf(node) && node.expanded === true;
     const branchClosed = hasChildrenOf(node) && node.expanded !== true;
 
@@ -158,7 +163,9 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
         if (branchClosed) {
           onToggle(node);
         } else if (branchOpen) {
-          moveTo((node.children as T[])[0]!.id);
+          // branchOpen implies hasChildrenOf(node), i.e. children.length > 0.
+          const first = (node.children as T[])[0];
+          if (first) moveTo(first.id);
         }
         break;
       }
@@ -212,6 +219,12 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
       );
       if (branchHasChildren && expanded) {
         out.push(
+          // role="group" here is the WAI-ARIA treeview pattern's own
+          // nested-children container (w3.org/WAI/ARIA/apg/patterns/treeview),
+          // not a form field group - <fieldset> would be semantically wrong
+          // (this isn't a form) and its default browser border/padding
+          // aren't reset anywhere in tree.module.css's .group class.
+          // biome-ignore lint/a11y/useSemanticElements: role="group" is deliberate, see above
           <div role="group" key={`${node.id}-group`} className={CLASS.group}>
             {renderEntries(node.children as T[], depth + 1, node)}
           </div>,

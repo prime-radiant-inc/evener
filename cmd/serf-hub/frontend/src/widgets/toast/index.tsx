@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { requireClass } from "../internal/requireClass";
 import { dismissToast, getToasts, pushToast, subscribe, type ToastKind, type ToastRecord } from "./store";
 import styles from "./toast.module.css";
@@ -33,11 +33,11 @@ export function useToasts(): { push: (kind: ToastKind, text: string) => void } {
 export function Toast() {
   const toasts = useSyncExternalStore(subscribe, getToasts);
   return (
-    <div className={CLASS.region} role="region" aria-live="polite" aria-label="Notifications">
+    <section className={CLASS.region} aria-live="polite" aria-label="Notifications">
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} />
       ))}
-    </div>
+    </section>
   );
 }
 
@@ -51,16 +51,23 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   const remainingMsRef = useRef(AUTO_DISMISS_MS);
   const startedAtRef = useRef(0);
 
-  function schedule(durationMs: number) {
-    startedAtRef.current = Date.now();
-    timerRef.current = setTimeout(() => dismissToast(toast.id), durationMs);
-  }
+  // useCallback so the mount effect below can depend on it honestly: its
+  // only real dependency is toast.id, which - list is keyed by toast.id
+  // (Toast above) - never actually changes within one ToastItem instance's
+  // lifetime anyway (a different id remounts a fresh instance instead).
+  const schedule = useCallback(
+    (durationMs: number) => {
+      startedAtRef.current = Date.now();
+      timerRef.current = setTimeout(() => dismissToast(toast.id), durationMs);
+    },
+    [toast.id],
+  );
 
   useEffect(() => {
     remainingMsRef.current = AUTO_DISMISS_MS;
     schedule(AUTO_DISMISS_MS);
     return () => clearTimeout(timerRef.current);
-  }, [toast.id]);
+  }, [schedule]);
 
   function pause() {
     clearTimeout(timerRef.current);
@@ -73,6 +80,13 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   }
 
   return (
+    // Pointer-only convenience (pause the auto-dismiss clock while a sighted
+    // mouse user is reading), not a new interactive affordance needing a
+    // role: there's nothing to operate here, and a screen reader user isn't
+    // disadvantaged by its absence - the region's aria-live="polite"
+    // (Toast above) announces this toast's text once, on insertion,
+    // independent of how long the DOM node then sticks around for.
+    // biome-ignore lint/a11y/noStaticElementInteractions: pointer-only pause convenience, aria-live already covers AT users, see above
     <div className={`${CLASS.toast} ${KIND_CLASS[toast.kind]}`} onMouseEnter={pause} onMouseLeave={resume}>
       <p className={CLASS.text}>{toast.text}</p>
     </div>

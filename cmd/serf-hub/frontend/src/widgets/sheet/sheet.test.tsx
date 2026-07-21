@@ -1,9 +1,9 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test, vi } from "vitest";
 import { Sheet } from "./index";
 
 afterEach(cleanup);
@@ -106,20 +106,20 @@ test("the close button calls onClose when clicked", async () => {
 });
 
 test("focus is trapped and restored on close, same as Dialog", () => {
-  render(<button>Open sheet</button>);
+  render(<button type="button">Open sheet</button>);
   const trigger = screen.getByRole("button", { name: "Open sheet" });
   trigger.focus();
 
   const { rerender } = render(
     <Sheet open onClose={vi.fn()} title="t">
-      <button>Field</button>
+      <button type="button">Field</button>
     </Sheet>,
   );
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "Field" }));
 
   rerender(
     <Sheet open={false} onClose={vi.fn()} title="t">
-      <button>Field</button>
+      <button type="button">Field</button>
     </Sheet>,
   );
   expect(document.activeElement).toBe(trigger);

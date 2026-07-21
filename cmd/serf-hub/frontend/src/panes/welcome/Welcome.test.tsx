@@ -1,6 +1,6 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, expect, test } from "vitest";
 import Welcome from "./Welcome";
 
 afterEach(() => {

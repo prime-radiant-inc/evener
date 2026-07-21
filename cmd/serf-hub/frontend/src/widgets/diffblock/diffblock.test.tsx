@@ -1,11 +1,11 @@
-import { afterEach, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { requireClass } from "../internal/requireClass";
-import { DiffBlock } from "./index";
 import rawStyles from "./diffblock.module.css";
+import { DiffBlock } from "./index";
 
 afterEach(cleanup);
 
@@ -39,7 +39,7 @@ const SIMPLE_DIFF = [
   " package main",
   "-func greet() string {",
   "+func greet(name string) string {",
-  " \treturn \"hi\"",
+  ' \treturn "hi"',
 ].join("\n");
 
 test("renders one line per input line", () => {
@@ -103,9 +103,7 @@ test("preserves a tab character in the stripped content", () => {
 // mistaken for a second file-header pair - only content before the first
 // @@ of a file block can be a --- / +++ header.
 test("a hunk line that itself starts with --- is a deletion, not a second header", () => {
-  const diff = ["--- a/f", "+++ b/f", "@@ -1,2 +1,2 @@", "-normal line", "---divider---"].join(
-    "\n",
-  );
+  const diff = ["--- a/f", "+++ b/f", "@@ -1,2 +1,2 @@", "-normal line", "---divider---"].join("\n");
   const { container } = render(<DiffBlock unified={diff} />);
   const lines = lineElements(container);
   expect(lines[4]!.classList.contains(styles.del)).toBe(true);
@@ -113,9 +111,7 @@ test("a hunk line that itself starts with --- is a deletion, not a second header
 });
 
 test("a hunk line that itself starts with +++ is an addition, not a second header", () => {
-  const diff = ["--- a/f", "+++ b/f", "@@ -1,2 +1,2 @@", "-old", "+++new-marker-in-content"].join(
-    "\n",
-  );
+  const diff = ["--- a/f", "+++ b/f", "@@ -1,2 +1,2 @@", "-old", "+++new-marker-in-content"].join("\n");
   const { container } = render(<DiffBlock unified={diff} />);
   const lines = lineElements(container);
   expect(lines[4]!.classList.contains(styles.add)).toBe(true);
@@ -169,9 +165,7 @@ test("a genuinely blank context line (no marker at all) still renders as context
 });
 
 test("strips a trailing \\r from every line for CRLF-style diffs", () => {
-  const diff = ["--- a/f\r", "+++ b/f\r", "@@ -1,2 +1,2 @@\r", "-old\r", "+new\r", " same\r"].join(
-    "\n",
-  );
+  const diff = ["--- a/f\r", "+++ b/f\r", "@@ -1,2 +1,2 @@\r", "-old\r", "+new\r", " same\r"].join("\n");
   const { container } = render(<DiffBlock unified={diff} />);
   const lines = lineElements(container);
   // The exact-match "---"/"+++" header check would itself fail to

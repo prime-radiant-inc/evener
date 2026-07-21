@@ -1,0 +1,4 @@
+.turn {
+  display: flex;
+  flex-direction: column;
+}

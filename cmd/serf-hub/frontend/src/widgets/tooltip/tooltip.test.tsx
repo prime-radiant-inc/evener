@@ -1,11 +1,11 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Tooltip } from "./index";
+import { afterEach, expect, test, vi } from "vitest";
 import { Button } from "../button";
+import { Tooltip } from "./index";
 
 afterEach(() => {
   cleanup();
@@ -24,7 +24,7 @@ function advance(ms: number) {
 test("renders its trigger children", () => {
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
@@ -33,7 +33,7 @@ test("renders its trigger children", () => {
 test("the tooltip is not shown initially", () => {
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   expect(screen.queryByRole("tooltip")).toBeNull();
@@ -43,7 +43,7 @@ test("hovering shows the tooltip only after a 300ms delay", () => {
   vi.useFakeTimers();
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   fireEvent.mouseEnter(screen.getByRole("button", { name: "Save" }));
@@ -60,7 +60,7 @@ test("moving the mouse away before the delay elapses cancels the show", () => {
   vi.useFakeTimers();
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   const trigger = screen.getByRole("button", { name: "Save" });
@@ -75,7 +75,7 @@ test("moving the mouse away after the tooltip is showing hides it immediately", 
   vi.useFakeTimers();
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   const trigger = screen.getByRole("button", { name: "Save" });
@@ -91,7 +91,7 @@ test("keyboard focus shows the tooltip after the same delay, blur hides it immed
   vi.useFakeTimers();
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   const trigger = screen.getByRole("button", { name: "Save" });
@@ -108,7 +108,7 @@ test("associates a single native-element trigger with the tooltip via aria-descr
   vi.useFakeTimers();
   render(
     <Tooltip label="Save your changes">
-      <button>Save</button>
+      <button type="button">Save</button>
     </Tooltip>,
   );
   const trigger = screen.getByRole("button", { name: "Save" });
@@ -186,11 +186,11 @@ test("never traps focus: Tab moves through and past the trigger normally", async
   const user = userEvent.setup();
   render(
     <div>
-      <button>Before</button>
+      <button type="button">Before</button>
       <Tooltip label="Save your changes">
-        <button>Save</button>
+        <button type="button">Save</button>
       </Tooltip>
-      <button>After</button>
+      <button type="button">After</button>
     </div>,
   );
   screen.getByRole("button", { name: "Before" }).focus();

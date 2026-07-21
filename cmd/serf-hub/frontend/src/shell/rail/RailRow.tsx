@@ -7,11 +7,11 @@
 // the `actions` prop, which Rail.tsx implements against actions.ts + the
 // tree store's refresh().
 import type { ReactNode } from "react";
-import { Badge, Cadence, Menu, type CadenceState, type MenuItem, type TreeRowInfo } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
+import { Badge, Cadence, type CadenceState, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./Rail.module.css";
+import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
@@ -188,6 +188,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     <span className={CLASS.row}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
       <Cadence state={cadenceStateFor(session.state)} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
+      {/* Mouse-only shortcut for the same activation Enter already performs
+          on the owning treeitem (see Chevron's own comment above) - can't
+          use aria-hidden the way Chevron does, since this text IS the
+          treeitem's accessible name (no separate aria-label on the row). */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see above */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see above */}
       <span className={CLASS.label} onClick={info.activate}>
         {session.title}
       </span>
@@ -212,6 +218,9 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
     <span className={CLASS.row}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
       <Cadence state={cadenceStateFor(project.rollup_state ?? "idle")} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
+      {/* Same reasoning as SessionRow's own label above. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
       <span className={CLASS.label} onClick={info.activate}>
         {project.name}
       </span>

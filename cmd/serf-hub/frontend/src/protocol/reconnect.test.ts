@@ -6,11 +6,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   AppwireClient,
+  type ConnectionState,
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
-  type ConnectionState,
 } from "./client";
 import { ConnectionClosedError } from "./errors";
 import { FakeSocket } from "./testing/fakeSocket";

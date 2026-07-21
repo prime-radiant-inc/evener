@@ -8,10 +8,11 @@
 // initiated a change. Keeping the pane list independent of any particular
 // host (rather than reading it back out of a live DockviewApi) is also what
 // lets a future mobile host (Task 4) share it without dockview at all.
-import { createStore } from "zustand/vanilla";
-import { useStore } from "zustand";
+
 import type { DockviewApi, IDockviewPanel, SerializedDockview } from "dockview-core";
-import { paneFor, type PaneTypeId } from "./paneRegistry";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
+import { type PaneTypeId, paneFor } from "./paneRegistry";
 
 export interface OpenPaneRecord {
   id: string;
@@ -219,6 +220,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 export function useWorkspaceStore(): WorkspaceStoreState;
 export function useWorkspaceStore<T>(selector: (state: WorkspaceStoreState) => T): T;
 export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => T): T | WorkspaceStoreState {
+  // Not a real conditional hook call - see stores/connection.ts's own
+  // useConnectionStore for the full explanation (zustand's useStore has a
+  // `selector = identity` JS default param, so both arms run identically).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(workspaceStore, selector) : useStore(workspaceStore);
 }
 
