@@ -399,6 +399,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "toast", // tone prop
   "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
+  "collectioneditor", // inline add-validation error text (wave 7)
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
