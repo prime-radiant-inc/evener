@@ -12,10 +12,22 @@ export interface StreamingTextProps {
   /** Called after new chunks are flushed, with the full joined text so far.
    * Not called when a re-render carries no new chunks. */
   onCommit?(text: string): void;
+  /** True while this leaf can still receive further deltas - shows the
+   * design system's one reserved "streaming" motion, a blinking caret
+   * glyph (docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-
+   * system.md, Motion: "streaming caret blink"). Defaults to true, since
+   * every current caller (RawItemView/AgentMessageItem/ThinkBlock) only
+   * ever mounts this component while genuinely live in the first place -
+   * they swap to a settled view entirely rather than flipping this prop.
+   * Honest by construction: the caret exists only while `live` says so,
+   * never as an idle/decorative animation - see streamingtext.module.css's
+   * own comment for the CSS side of that contract. */
+  live?: boolean;
 }
 
 const CLASS = {
   root: requireClass(styles.root, "streamingtext.module.css", "root"),
+  live: requireClass(styles.live, "streamingtext.module.css", "live"),
 };
 
 /**
@@ -40,7 +52,7 @@ const CLASS = {
  * reconciliation, so a parent re-render can never clobber (or redundantly
  * diff) content already committed here.
  */
-export function StreamingText({ chunks, onCommit }: StreamingTextProps) {
+export function StreamingText({ chunks, onCommit, live = true }: StreamingTextProps) {
   const rootRef = useRef<HTMLSpanElement | null>(null);
   const textNodeRef = useRef<Text | null>(null);
   const renderedCountRef = useRef(0);
@@ -58,5 +70,6 @@ export function StreamingText({ chunks, onCommit }: StreamingTextProps) {
     }
   }, [chunks, onCommit]);
 
-  return <span ref={rootRef} className={CLASS.root} data-testid="streaming-text" />;
+  const className = live ? `${CLASS.root} ${CLASS.live}` : CLASS.root;
+  return <span ref={rootRef} className={className} data-testid="streaming-text" />;
 }

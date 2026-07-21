@@ -1,8 +1,17 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { StreamingText } from "./StreamingText";
+import rawStyles from "./streamingtext.module.css";
 
 afterEach(cleanup);
+
+const styles = {
+  live: requireClass(rawStyles.live, "streamingtext.module.css", "live"),
+};
 
 test("renders empty when chunks is empty", () => {
   const { container } = render(<StreamingText chunks={[]} />);
@@ -91,4 +100,55 @@ test("declares no JSX children of its own - every character arrives imperatively
   // redundant text node here and re-render risk would be back in play.
   expect(root.childNodes).toHaveLength(1);
   expect(root.childNodes[0]!.nodeType).toBe(Node.TEXT_NODE);
+});
+
+// The streaming caret (design system's one reserved "live" motion - see
+// docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md,
+// Motion: "streaming caret blink"): CSS-only, gated to a `live` class this
+// leaf carries only while it can still receive deltas - honest, no idle
+// motion. jsdom evaluates neither real CSS animations nor media queries,
+// so - like the button/cadence/dialog exemplars - the class CONTRACT is
+// asserted at the DOM level here, and the blink/reduced-motion mechanics
+// are asserted by reading the CSS module's own source, the same way
+// dialog.test.tsx/token-contract.test.ts do.
+test("the caret class is present while live (the default)", () => {
+  const { container } = render(<StreamingText chunks={["a"]} />);
+  const root = container.firstElementChild!;
+  expect(root.classList.contains(styles.live)).toBe(true);
+});
+
+test("the caret class is absent once live is false (settled)", () => {
+  const { container } = render(<StreamingText chunks={["a"]} live={false} />);
+  const root = container.firstElementChild!;
+  expect(root.classList.contains(styles.live)).toBe(false);
+});
+
+test("the caret class disappears when live flips to false on the same mounted instance (settle)", () => {
+  const { container, rerender } = render(<StreamingText chunks={["a"]} live={true} />);
+  const root = container.firstElementChild!;
+  expect(root.classList.contains(styles.live)).toBe(true);
+
+  rerender(<StreamingText chunks={["a"]} live={false} />);
+
+  expect(root.classList.contains(styles.live)).toBe(false);
+});
+
+test("live flipping does not disturb the already-committed text content", () => {
+  const { container, rerender } = render(<StreamingText chunks={["a", "b"]} live={true} />);
+  rerender(<StreamingText chunks={["a", "b"]} live={false} />);
+  expect(container.textContent).toBe("ab");
+});
+
+test("the caret is CSS-only motion: a blink animation on the live class, disabled (not just paused) under prefers-reduced-motion", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "streamingtext.module.css"), "utf8");
+  expect(css).toContain("::after");
+  expect(css).toContain("animation:");
+  expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("the caret rides the text ink, not a semantic accent - streaming is not an attention state", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "streamingtext.module.css"), "utf8");
+  expect(css).not.toMatch(/var\(\s*--(attention|alive|danger|accent)\b/);
 });

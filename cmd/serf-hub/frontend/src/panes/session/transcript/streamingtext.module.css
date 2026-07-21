@@ -10,3 +10,41 @@
   line-height: var(--line-height-body);
   color: var(--ink-hi);
 }
+
+/* The streaming caret - the design system's one reserved "live" motion
+ * (docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md,
+ * Motion: "streaming caret blink"). A `::after` bar exists ONLY while the
+ * `live` class is applied (StreamingText's own `live` prop) - gone
+ * entirely once the leaf settles, never an idle/decorative animation
+ * (the honest-liveness rule the rest of the motion budget already follows -
+ * see Cadence/StatusDot's own "never animates on its own" comments).
+ * currentColor rather than restating var(--ink-hi): the caret rides
+ * whatever ink color is in effect, not a semantic accent - streaming is
+ * not an attention state, so --attention/--alive/--danger/--accent are
+ * deliberately never referenced here (also enforced by
+ * token-contract.test.ts's widget-only semantic-var allowlist, which this
+ * non-widget file isn't even on).
+ */
+.live::after {
+  content: "";
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: var(--space-1);
+  background: currentColor;
+  animation: streamingCaretBlink 1s step-end infinite;
+}
+
+@keyframes streamingCaretBlink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .live::after {
+    /* Disables the blink but keeps the static caret - the glyph itself
+     * still honestly reflects "still live", only the motion is removed. */
+    animation: none;
+  }
+}
