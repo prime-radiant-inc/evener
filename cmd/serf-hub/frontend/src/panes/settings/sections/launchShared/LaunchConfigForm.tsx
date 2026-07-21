@@ -247,6 +247,15 @@ export function LaunchConfigForm({
     // warning) and risks a stray Enter keypress in one collection's add
     // field bubbling into a submit of the whole page. Save is therefore a
     // plain button click, not a form submission.
+    //
+    // Unremarked side effect of that fix, worth being explicit about: since
+    // this root is no longer a <form> at all, pressing Enter in a plain
+    // scalar text/integer field (Agent, Base URL, a system-prompt path, ...)
+    // no longer submits the whole page the way a native <form> would - the
+    // legacy engine got that for free from the browser; this port doesn't
+    // reintroduce it. The Save button remains reachable by keyboard
+    // (Tab-then-Enter/Space on the button itself) - only the "Enter from
+    // any field submits" shortcut is gone.
     <div className={CLASS.root}>
       {groups.map((group, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see schema.ts's groupOptions) - the segment's position is the only stable identity.

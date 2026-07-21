@@ -3,10 +3,29 @@
 // (widgets/collectioneditor) parameterized by its own add-value parsing/
 // validation. CollectionEditor's own add-input is a single plain text field
 // (see its own source), so envMap/mcpServerList parse a delimited string
-// ("NAME=value" / "name command args...") instead of the legacy's separate
-// per-sub-field inputs - a deliberate, documented simplification (this
-// task's own report) that stays within CollectionEditor's real, already-
-// built contract rather than forking it (out of this stream's manifest).
+// instead of the legacy's separate per-sub-field inputs - stays within
+// CollectionEditor's real, already-built contract rather than forking it
+// (out of this stream's manifest). Itemized in the wave-7 task-2 report's
+// "Deliberate scope/parity decisions" list - two DIFFERENT tradeoffs, not
+// one:
+//   - envMap ("NAME=value"): a genuine UX step-down from the legacy's
+//     separate name/value inputs - a value containing "=" still round-trips
+//     correctly (split on the FIRST "=" only), but typing is less
+//     ergonomic than two plain fields.
+//   - mcpServerList ("name command args..."): expressiveness-equivalent,
+//     not a step-down - the legacy's own 3 separate inputs (name/command/
+//     args) are themselves just concatenated back into one command line by
+//     the user's own shell-argument mental model; a single "name command
+//     args..." field asks for the exact same information in one line
+//     instead of three boxes.
+//
+// Also out of scope here (and in fields.tsx's own scalar path-kind
+// rendering): the legacy engine's Constraint Validation API integration
+// (validatePathInput/validateMCPCommandInput's setCustomValidity() +
+// reportValidity() calls, which additionally surface the browser's own
+// native validation-bubble UI alongside the custom inline error this port
+// already shows). Not ported - the custom inline error is the only
+// validation UI surfaced here.
 
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
 import type { CollectionAddResult } from "../../../../widgets";

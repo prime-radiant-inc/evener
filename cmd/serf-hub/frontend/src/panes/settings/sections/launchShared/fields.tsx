@@ -19,6 +19,15 @@
 //     renders as a validated free-text input instead (validation still
 //     happens - see collectionFields.tsx and LaunchConfigForm's own
 //     validate step).
+//
+// A third, smaller one, also not ported: the legacy engine's Constraint
+// Validation API integration (validatePathInput/validateMCPCommandInput's
+// setCustomValidity() + reportValidity() calls), which additionally pops
+// the browser's own native validation-bubble UI alongside the custom
+// inline error. This port's scalar path-kind fields (via
+// LaunchConfigForm's own submit-time validate step) and collectionFields.
+// tsx's add-time validation both surface ONLY the custom inline error -
+// no native browser validation bubble.
 
 import type { LaunchOption } from "../../../../protocol/types.gen";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
