@@ -40,12 +40,13 @@ interface DescribableProps {
  * regardless of whether the trigger element itself forwards extra props.
  * The aria-describedby association, by contrast, has to land on the
  * trigger element itself to be announced correctly - so it's applied via
- * cloneElement, and only when children is exactly one element. This means
- * a native element (<button>, <a>, ...) gets full description wiring, but
- * this project's own Button widget does not (its prop list is fixed and
- * does not spread extra props through to its DOM node) - visible show/hide
- * behavior is unaffected either way, only the screen-reader association is
- * skipped for it. See this task's report.
+ * cloneElement, and only when children is exactly one element. This works
+ * for a native element (<button>, <a>, ...) or any widget that forwards a
+ * ref and spreads unrecognized props onto its own DOM node - Button and
+ * IconButton both do (see their own index.tsx); a single-child trigger
+ * that does neither still gets the visible show/hide behavior via the
+ * wrapper span, just not the aria-describedby association, since
+ * cloneElement has nowhere for the extra prop to land.
  */
 export function Tooltip({ label, children }: TooltipProps) {
   const [visible, setVisible] = useState(false);

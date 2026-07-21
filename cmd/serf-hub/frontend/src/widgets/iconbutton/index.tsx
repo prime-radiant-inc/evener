@@ -1,10 +1,14 @@
-import type { MouseEvent, ReactNode } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type MouseEvent, type ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
 import type { ButtonVariant, ButtonSize } from "../button";
 import buttonStyles from "../button/button.module.css";
 import styles from "./iconbutton.module.css";
 
-export interface IconButtonProps {
+export interface IconButtonProps
+  extends Omit<
+    ButtonHTMLAttributes<HTMLButtonElement>,
+    "type" | "onClick" | "disabled" | "children" | "className" | "aria-label"
+  > {
   label: string;
   icon: ReactNode;
   variant?: ButtonVariant;
@@ -39,27 +43,30 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
   md: requireClass(styles.md, "iconbutton.module.css", "md"),
 };
 
-/** An icon-only Button: same variants/sizes/states, square instead of
+/**
+ * An icon-only Button: same variants/sizes/states, square instead of
  * padded for a text label. label is required and becomes the button's
- * only accessible name (aria-label) - there is no visible text. */
-export function IconButton({
-  label,
-  icon,
-  variant = "primary",
-  size = "md",
-  onClick,
-  disabled = false,
-  type = "button",
-}: IconButtonProps) {
+ * only accessible name (aria-label) - there is no visible text. Forwards
+ * its ref and spreads any other native button attribute onto the
+ * underlying <button>, mirroring Button (see that widget's index.tsx) -
+ * class-reuse between the two is CSS-only and doesn't carry this over on
+ * its own.
+ */
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
+  { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       aria-label={label}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
       onClick={onClick}
       disabled={disabled}
+      {...rest}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
     </button>
   );
-}
+});

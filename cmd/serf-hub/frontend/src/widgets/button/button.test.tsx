@@ -1,5 +1,6 @@
 import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { createRef } from "react";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -94,6 +95,30 @@ test("clicking an enabled button fires onClick", async () => {
   render(<Button onClick={onClick}>Go</Button>);
   await user.click(screen.getByRole("button"));
   expect(onClick).toHaveBeenCalledOnce();
+});
+
+// --- fix-wave: forwardRef + rest-prop spread (Important) ---------------
+// Button previously accepted a fixed prop list and rendered its own
+// <button> from scratch, so anything composing it via cloneElement (e.g.
+// Tooltip's aria-describedby wiring) or via a ref had no way to reach the
+// real DOM node - the extra prop was silently dropped, the ref silently
+// unfilled. See tooltip.test.tsx for the cross-widget integration proof.
+
+test("forwards a ref to the underlying button element", () => {
+  const ref = createRef<HTMLButtonElement>();
+  render(<Button ref={ref}>Go</Button>);
+  expect(ref.current).toBe(screen.getByRole("button"));
+});
+
+test("spreads unrecognized props onto the underlying button element", () => {
+  render(
+    <Button aria-describedby="hint-id" data-testid="my-button">
+      Go
+    </Button>,
+  );
+  const button = screen.getByRole("button");
+  expect(button.getAttribute("aria-describedby")).toBe("hint-id");
+  expect(button.getAttribute("data-testid")).toBe("my-button");
 });
 
 // jsdom does not compute :focus-visible-triggered styles, so the exemplar's

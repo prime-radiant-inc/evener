@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Tooltip } from "./index";
+import { Button } from "../button";
 
 afterEach(() => {
   cleanup();
@@ -119,6 +120,52 @@ test("associates a single native-element trigger with the tooltip via aria-descr
   expect(trigger.getAttribute("aria-describedby")).toBe(tooltip.id);
 
   fireEvent.blur(trigger);
+  expect(trigger.getAttribute("aria-describedby")).toBeNull();
+});
+
+// --- fix-wave: integration test with the real Button widget (Important) ---
+// Before Button forwarded its ref and spread rest props onto its own
+// <button> (see button.test.tsx), the cloneElement aria-describedby prop
+// below still reached Button's props object but had nowhere to go once
+// there - Button's render body only ever used its fixed, explicit prop
+// list, so the description was silently dropped. This exercises the real
+// cross-widget composition, not a synthetic stand-in, so a regression in
+// either widget breaks it.
+
+test("wrapping the real Button widget: focusing shows the tooltip and associates it via aria-describedby", () => {
+  vi.useFakeTimers();
+  render(
+    <Tooltip label="Save your changes">
+      <Button>Save</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Save" });
+  expect(trigger.getAttribute("aria-describedby")).toBeNull();
+
+  fireEvent.focus(trigger);
+  advance(300);
+  const tooltip = screen.getByRole("tooltip");
+  expect(trigger.getAttribute("aria-describedby")).toBe(tooltip.id);
+
+  fireEvent.blur(trigger);
+  expect(trigger.getAttribute("aria-describedby")).toBeNull();
+});
+
+test("wrapping the real Button widget: hovering shows the tooltip and associates it via aria-describedby", () => {
+  vi.useFakeTimers();
+  render(
+    <Tooltip label="Save your changes">
+      <Button>Save</Button>
+    </Tooltip>,
+  );
+  const trigger = screen.getByRole("button", { name: "Save" });
+
+  fireEvent.mouseEnter(trigger);
+  advance(300);
+  const tooltip = screen.getByRole("tooltip");
+  expect(trigger.getAttribute("aria-describedby")).toBe(tooltip.id);
+
+  fireEvent.mouseLeave(trigger);
   expect(trigger.getAttribute("aria-describedby")).toBeNull();
 });
 

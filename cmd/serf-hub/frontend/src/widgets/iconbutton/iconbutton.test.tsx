@@ -1,5 +1,6 @@
 import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { createRef } from "react";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -85,6 +86,24 @@ test("clicking an enabled button fires onClick", async () => {
 test("defaults to type=button so it never accidentally submits a form", () => {
   render(<IconButton label="Go" icon={<DotIcon />} />);
   expect(screen.getByRole("button").getAttribute("type")).toBe("button");
+});
+
+// --- fix-wave: forwardRef + rest-prop spread (Important) ---------------
+// Same gap Button had (see button.test.tsx): IconButton renders its own
+// <button> and reuses Button's CSS classes, but that class-reuse is
+// CSS-only - it does not inherit Button's ref-forwarding or prop-spreading,
+// which live in Button's component code, not its stylesheet. Verified and
+// fixed independently here.
+
+test("forwards a ref to the underlying button element", () => {
+  const ref = createRef<HTMLButtonElement>();
+  render(<IconButton ref={ref} label="Go" icon={<DotIcon />} />);
+  expect(ref.current).toBe(screen.getByRole("button"));
+});
+
+test("spreads unrecognized props onto the underlying button element", () => {
+  render(<IconButton label="Go" icon={<DotIcon />} data-testid="my-icon-button" />);
+  expect(screen.getByRole("button").getAttribute("data-testid")).toBe("my-icon-button");
 });
 
 // IconButton reuses Button's own base class (not a duplicate CSS rule) so
