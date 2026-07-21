@@ -36,3 +36,19 @@ export { EmptyState } from "./emptystate";
 export type { EmptyStateProps } from "./emptystate";
 export { Card } from "./card";
 export type { CardProps } from "./card";
+
+// --- overlays batch (W2T3) ---
+export { FocusScope } from "./focusscope";
+export type { FocusScopeProps } from "./focusscope";
+export { Dialog } from "./dialog";
+export type { DialogProps } from "./dialog";
+export { Sheet } from "./sheet";
+export type { SheetProps, SheetSide } from "./sheet";
+export { Menu } from "./menu";
+export type { MenuProps, MenuItem } from "./menu";
+export { Tooltip } from "./tooltip";
+export type { TooltipProps } from "./tooltip";
+export { Toast, useToasts } from "./toast";
+export type { ToastKind } from "./toast";
+export { Combobox } from "./combobox";
+export type { ComboboxProps, ComboboxOption } from "./combobox";
