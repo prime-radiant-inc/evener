@@ -64,3 +64,11 @@ test('a non-"user", non-empty source (defensive - only "user" is special-cased) 
   render(<SteeringItem item={item({ text: "daemon nudge", source: "system" })} turn={turn} live={false} />);
   expect(screen.getByTestId("steering-item")).toBeTruthy();
 });
+
+test("a daemon-sourced steering item with BOTH real text and images renders the text and drops the image count (documented limitation, matches legacy §8 - pinned so a future change is deliberate)", () => {
+  render(<SteeringItem item={item({ text: "daemon nudge with a picture", images: ["a", "b"] })} turn={turn} live={false} />);
+  const el = screen.getByTestId("steering-item");
+  expect(el.textContent).toContain("daemon nudge with a picture");
+  expect(screen.queryByTestId("user-message-image-placeholder")).toBeNull();
+  expect(el.textContent).not.toMatch(/\[\d+ images?\]/);
+});
