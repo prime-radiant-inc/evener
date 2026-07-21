@@ -67,10 +67,7 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag
-	// behind the sidebar until the next tick.
-	if s.cfg.PokeAttention != nil {
-		s.cfg.PokeAttention()
-	}
-	notifyTreeChanged(s.appRPC)
+	// behind the sidebar until the next tick, and push the sidebar to refetch.
+	s.notifyMutation()
 	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

@@ -101,7 +101,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	}
 }
 
-func TestRenameEndedSessionBroadcastsTreeChanged(t *testing.T) {
+func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
 	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
@@ -110,8 +110,12 @@ func TestRenameEndedSessionBroadcastsTreeChanged(t *testing.T) {
 	}
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
 	_ = past.Rebuild()
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
+	// Mirror runMain's composed wiring (main.go): PastIndex.UpdateMeta's own
+	// onChange hook is the sole broadcast source for this path — the handler
+	// no longer calls notifyTreeChanged directly (it would double-broadcast).
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
@@ -127,18 +131,16 @@ func TestRenameEndedSessionBroadcastsTreeChanged(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }
 
-// TestRefreshRenamedMetaBroadcastsTreeChanged covers the live-daemon rename
-// path's success site: handleAPIRename delegates both the live and
-// became-live branches to refreshRenamedMeta after a successful daemon
-// SetThreadName, so this calls it directly rather than scripting a fake
-// daemon through scriptedAppSource (which only models SetThreadName failure
-// today).
-func TestRefreshRenamedMetaBroadcastsTreeChanged(t *testing.T) {
+// TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce covers the
+// live-daemon rename path's success site: handleAPIRename delegates both the
+// live and became-live branches to refreshRenamedMeta after a successful
+// daemon SetThreadName, so this calls it directly rather than scripting a
+// fake daemon through scriptedAppSource (which only models SetThreadName
+// failure today).
+func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
 	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
@@ -150,6 +152,8 @@ func TestRefreshRenamedMetaBroadcastsTreeChanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past})
+	// Mirror runMain's composed wiring (main.go) — see comment above.
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	hubHTTP := httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
 	defer hubHTTP.Close()
 	client := dialHubRPC(t, hubHTTP)
@@ -158,9 +162,20 @@ func TestRefreshRenamedMetaBroadcastsTreeChanged(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 
+	// Simulate the daemon's out-of-process meta rewrite (the real
+	// SetThreadName handler) that refreshRenamedMeta re-reads: without an
+	// actual on-disk change, loadSessionMetaForRename reloads the identical
+	// meta already indexed, UpdateMeta sees no delta, and PastIndex's
+	// onChange correctly never fires — this write is what makes the reload a
+	// genuine change instead of a no-op.
+	m.Name = "new title"
+	m.NameSource = "user"
+	m.UpdatedAt = time.Unix(1_700_000_100, 0)
+	if err := schema.SaveSessionMeta(stateDir, m); err != nil {
+		t.Fatal(err)
+	}
+
 	web.refreshRenamedMeta(renameSessionID, "new title")
 
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

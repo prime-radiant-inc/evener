@@ -7275,11 +7275,23 @@ func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
 
 func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	t.Helper()
+	srv, _ := newHubRPCTestServerWithWeb(t, cfg)
+	return srv
+}
+
+// newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
+// returns the constructed *WebServer, for tests that need to wire an
+// onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
+// runMain's composed serf/tree/changed wiring in main.go) before the server
+// starts serving requests.
+func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()
-	srv.Config.Handler = NewWebServer(cfg).Handler()
+	web := NewWebServer(cfg)
+	srv.Config.Handler = web.Handler()
 	srv.Start()
-	return srv
+	return srv, web
 }
 
 // TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods

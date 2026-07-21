@@ -583,7 +583,7 @@ func TestProjectDeleteSkipsOnRemoveFailure(t *testing.T) {
 	}
 }
 
-func TestProjectDeleteBroadcastsTreeChanged(t *testing.T) {
+func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -599,8 +599,12 @@ func TestProjectDeleteBroadcastsTreeChanged(t *testing.T) {
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
+	// Mirror runMain's composed wiring (main.go): PastIndex.Rebuild's own
+	// onChange hook is the sole broadcast source for this path — the handler
+	// no longer calls notifyTreeChanged directly (it would double-broadcast).
+	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
@@ -617,7 +621,5 @@ func TestProjectDeleteBroadcastsTreeChanged(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

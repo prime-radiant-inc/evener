@@ -186,11 +186,10 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		_ = s.cfg.Favorite.Delete("project", project.ID)
 	}
 
-	_ = s.cfg.Past.Rebuild() // also the FTS scrub
+	_ = s.cfg.Past.Rebuild() // also the FTS scrub + serf/tree/changed (composed onChange, main.go)
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
-	notifyTreeChanged(s.appRPC)
 	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": deleted, "skipped": skipped})
 }
 

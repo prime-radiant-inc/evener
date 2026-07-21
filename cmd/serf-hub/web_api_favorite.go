@@ -38,9 +38,6 @@ func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
 		return
 	}
-	if s.cfg.PokeAttention != nil {
-		s.cfg.PokeAttention()
-	}
-	notifyTreeChanged(s.appRPC)
+	s.notifyMutation()
 	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }

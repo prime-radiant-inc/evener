@@ -487,6 +487,33 @@ func waitForNotification(t *testing.T, client *appwire.Client) string {
 	}
 }
 
+// assertSingleNotification waits for the client's next notification and
+// asserts its method is wantMethod, then proves no SECOND notification
+// follows before an ordering sentinel broadcast right after: seeing the
+// sentinel next (rather than a repeat of wantMethod) rules out a
+// double-broadcast without a race-prone sleep-based check.
+func assertSingleNotification(t *testing.T, client *appwire.Client, server *appserver.Server, wantMethod string) {
+	t.Helper()
+	if got := waitForNotification(t, client); got != wantMethod {
+		t.Fatalf("method=%q, want %q", got, wantMethod)
+	}
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got a second notification %q before the sentinel; want exactly one %q", got, wantMethod)
+	}
+}
+
+// assertNoNotification proves nothing has reached client yet: an ordering
+// sentinel is broadcast immediately, so receiving anything else first would
+// mean forbiddenMethod (or something else) was already pending.
+func assertNoNotification(t *testing.T, client *appwire.Client, server *appserver.Server, forbiddenMethod string) {
+	t.Helper()
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got notification %q before the sentinel; must not have broadcast %q here", got, forbiddenMethod)
+	}
+}
+
 func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
@@ -503,18 +530,10 @@ func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	roster.SetOnChange(func() { notifyTreeChanged(server) })
 
 	roster.Refresh() // seed: a daemon appears in the roster — a delta
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
 
 	roster.Refresh() // identical snapshot: no delta, must not broadcast again
-	// A sentinel notification, broadcast after the no-op refresh, arrives after
-	// anything the refresh wrongly sent — so seeing it first proves the refresh
-	// broadcast nothing, without a race-prone sleep-based negative check.
-	server.BroadcastAll("test/sentinel", nil)
-	if got := waitForNotification(t, client); got != "test/sentinel" {
-		t.Fatalf("got notification %q before the sentinel; a no-op roster refresh must not broadcast %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
 }
 
 func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
@@ -539,15 +558,10 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	if err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
 		t.Fatal(err)
 	}
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, server, appwire.NotifySerfTreeChanged)
 
 	if err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
 		t.Fatal(err)
 	}
-	server.BroadcastAll("test/sentinel", nil)
-	if got := waitForNotification(t, client); got != "test/sentinel" {
-		t.Fatalf("got notification %q before the sentinel; a no-op past-index rebuild must not broadcast %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
 }

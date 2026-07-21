@@ -37,10 +37,26 @@ var (
 // already gate their callback on an actual content-fingerprint delta (a
 // daemon appeared/disappeared/changed liveness; a session appeared/ended/
 // changed in the past index), so this fires only on a real change, never on
-// a no-op probe/rebuild cycle — and is called directly after each of the
-// four tree-affecting web mutations (archive/favorite/rename/project-delete).
+// a no-op probe/rebuild cycle. Rename and project-delete route their edits
+// through PastIndex and get this for free from that hook; archive and
+// favorite call it directly via WebServer.notifyMutation, since their stores
+// never route through PastIndex.
 func notifyTreeChanged(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifySerfTreeChanged, map[string]string{})
+}
+
+// notifyMutation nudges the attention watcher (if configured) and broadcasts
+// serf/tree/changed. It exists for mutations whose store never routes
+// through Roster/PastIndex's own composed onChange hook — archive and
+// favorite decisions live in ArchiveStore/FavoriteStore — so they need an
+// explicit broadcast. Rename and project-delete do NOT use this: they edit
+// PastIndex directly, whose composed hook already broadcasts on delta, so
+// calling this too would double-broadcast one notification per request.
+func (s *WebServer) notifyMutation() {
+	if s.cfg.PokeAttention != nil {
+		s.cfg.PokeAttention()
+	}
+	notifyTreeChanged(s.appRPC)
 }
 
 // archiveDecisions returns the current set of user-explicit archive decisions.

@@ -65,10 +65,10 @@ func TestUnarchiveProjectUsesCanonicalID(t *testing.T) {
 	}
 }
 
-func TestFavoriteEndpointBroadcastsTreeChanged(t *testing.T) {
+func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex("")})
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -85,7 +85,5 @@ func TestFavoriteEndpointBroadcastsTreeChanged(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

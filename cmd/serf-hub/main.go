@@ -315,10 +315,14 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
 	// into the same hook pushes the sidebar exactly on a daemon appearing/
 	// disappearing/changing liveness, or a session appearing/ending/changing
-	// in the past index. The four web mutations (archive/favorite/rename/
-	// project-delete) broadcast explicitly at their own handlers instead
-	// (web_api_*.go) — their stores don't all route back through Roster or
-	// PastIndex.
+	// in the past index. Rename and project-delete both route their session
+	// edits through PastIndex.UpdateMeta/Rebuild, so this hook already covers
+	// them too — those handlers do NOT also call notifyTreeChanged directly
+	// (it would double-broadcast one notification per request). Archive and
+	// favorite decisions live in ArchiveStore/FavoriteStore, which never
+	// route through PastIndex, so those two mutations broadcast explicitly
+	// instead via WebServer.notifyMutation (web_api_archive.go,
+	// web_api_favorite.go).
 	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
 	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
 

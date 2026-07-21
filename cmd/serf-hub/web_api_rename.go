@@ -102,17 +102,18 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		writeAPIError(w, http.StatusInternalServerError, "save meta: "+err.Error())
 		return
 	}
-	s.cfg.Past.UpdateMeta(pe.ID, meta) // re-sort + FTS + inputs bump
+	s.cfg.Past.UpdateMeta(pe.ID, meta) // re-sort + FTS + inputs bump + serf/tree/changed (composed onChange, main.go)
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
-	notifyTreeChanged(s.appRPC)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // refreshRenamedMeta re-reads the persisted meta after a live rename and pushes
 // it into the past index so the next tree resync shows the new name without a
-// full Rebuild.
+// full Rebuild. Every UpdateMeta call below already broadcasts serf/tree/changed
+// via PastIndex's composed onChange hook (main.go) when it detects a delta, so
+// nothing further is needed here.
 func (s *WebServer) refreshRenamedMeta(id, name string) {
 	rid := canonicalRouteID(id)
 	if pe, ok := s.cfg.Past.Find(rid); ok {
@@ -121,7 +122,6 @@ func (s *WebServer) refreshRenamedMeta(id, name string) {
 			if s.cfg.PokeAttention != nil {
 				s.cfg.PokeAttention()
 			}
-			notifyTreeChanged(s.appRPC)
 			return
 		}
 		m := pe.Meta
@@ -132,5 +132,4 @@ func (s *WebServer) refreshRenamedMeta(id, name string) {
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
-	notifyTreeChanged(s.appRPC)
 }

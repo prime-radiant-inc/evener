@@ -188,10 +188,10 @@ func TestArchiveUnarchiveUsesCanonicalProjectID(t *testing.T) {
 	}
 }
 
-func TestArchiveEndpointBroadcastsTreeChanged(t *testing.T) {
+func TestArchiveEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	dir := t.TempDir()
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -208,7 +208,5 @@ func TestArchiveEndpointBroadcastsTreeChanged(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
-		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
-	}
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }
