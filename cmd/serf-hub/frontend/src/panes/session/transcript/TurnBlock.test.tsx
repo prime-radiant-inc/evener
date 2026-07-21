@@ -43,12 +43,15 @@ test("renders items in order via the item-renderer registry", () => {
     item({ id: "c", type: "userMessage", text: "third" }),
   ];
   render(<TurnBlock turn={turn(items)} />);
-  const rendered = screen.getAllByTestId("raw-item").map((el) => el.textContent);
-  expect(rendered).toEqual([
-    expect.stringContaining("first"),
-    expect.stringContaining("second"),
-    expect.stringContaining("third"),
-  ]);
+  // With the messages renderers registered (TurnBlock imports "./messages"
+  // for TurnSeparator, whose module registers them as a side effect), these
+  // types no longer fall back to the raw view - so assert ordering on the
+  // block's text, renderer-agnostic: the registry must dispatch each item
+  // in wire order regardless of which component won the type.
+  const text = screen.getByTestId("turn-block").textContent ?? "";
+  const positions = ["first", "second", "third"].map((t) => text.indexOf(t));
+  expect(positions.every((p) => p >= 0)).toBe(true);
+  expect([...positions]).toEqual([...positions].sort((a, b) => a - b));
 });
 
 test("dispatches a registered item type to its own renderer instead of the raw fallback", () => {

@@ -7,6 +7,7 @@
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
 import "./ToolCallItem";
+import { TurnSeparator } from "./messages";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { itemRendererFor } from "./types";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -43,6 +44,7 @@ export function TurnBlock({ turn }: TurnBlockProps) {
         const ItemRenderer = itemRendererFor(item.type);
         return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} />;
       })}
+      <TurnSeparator turn={turn} />
     </div>
   );
 }

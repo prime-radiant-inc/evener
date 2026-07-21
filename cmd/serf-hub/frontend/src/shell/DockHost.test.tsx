@@ -6,6 +6,8 @@ import { registerPane, type PaneProps } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import type { ThreadModel } from "../protocol/model";
+import { ClientProvider } from "./clientContext";
+import { FakeClient } from "../protocol/testing/fakeClient";
 import { DockHost } from "./DockHost";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -272,7 +274,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
 test("a session pane's tab title prefers the live ThreadModel name over the raw ref", async () => {
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Debug the flaky test" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
-  render(<DockHost />);
+  render(<ClientProvider client={new FakeClient("ready")}><DockHost /></ClientProvider>);
 
   // The real session pane's own body (wave 4): synced against the
   // pre-seeded model, whose fixture turns default to [].
@@ -298,7 +300,7 @@ test("a session pane's tab falls back to the raw ref when no thread name is know
 test("a session pane's tab title live-updates when the thread is renamed, with no remount", async () => {
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Original name" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
-  render(<DockHost />);
+  render(<ClientProvider client={new FakeClient("ready")}><DockHost /></ClientProvider>);
   // The real session pane's own body (wave 4): synced against the
   // pre-seeded model, whose fixture turns default to [].
   await screen.findByText(/no turns yet/i);

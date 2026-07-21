@@ -13,6 +13,13 @@ import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useTranscript } from "./transcript/useTranscript";
 import { TurnBlock } from "./transcript/TurnBlock";
+// Side-effect barrels: registering every message item renderer (T2) and
+// every tool descriptor (T3) the moment the pane module loads, so the
+// registries are full regardless of import order elsewhere (same
+// principle as TurnBlock.tsx's own ToolCallItem import).
+import "./transcript/messages";
+import "./transcript/tools";
+import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { FlowOverlay } from "./transcript/flow/FlowOverlay";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
@@ -147,6 +154,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
 
   return (
     <PaneScaffold title={model.name || ref} cadence={cadence}>
+      <SandboxEscalationRail sessionRef={ref} />
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
       ) : (
