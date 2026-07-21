@@ -3,8 +3,9 @@
 // notifications into the reducer for whichever tracked model(s) they target.
 // It rides the single AppwireClientLike connection.ts wires via
 // useConnectionStore.getState().connect(client) — this store has no
-// connect() of its own — and lazily attaches its own onNotification/onReady
-// handlers to that client the first time any of its methods run.
+// connect() of its own — and reactively re-attaches its onNotification/onReady
+// handlers to whatever client connectionStore currently holds, via a
+// connectionStore.subscribe() wired at module load (see rewireClient).
 import { createStore } from "zustand/vanilla";
 import { useStore } from "zustand";
 import { connectionStore } from "./connection";
