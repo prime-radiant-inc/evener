@@ -1203,18 +1203,27 @@ test('"serf/sandbox/escalation/requested" appends a new card with full field map
   expect(model.lastFrameAt).toBe(2000);
 });
 
-test('"serf/sandbox/escalation/requested" with an already-present escalationId replaces that entry instead of growing the list', () => {
+test('"serf/sandbox/escalation/requested" with an already-present escalationId replaces that entry IN PLACE, index-preserving — not a filter-then-append', () => {
   // Snapshot-then-subscribe overlap: hydration's pendingEscalations snapshot
   // and a live requested notification can race and both deliver the same
   // card (appwire/types.go's PendingEscalations doc comment). Last write
   // wins — replace in place, don't drop the update or duplicate the entry.
-  const first = testEscalation({ mode: "exempt_denied_path" });
-  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [first] } });
+  //
+  // A single seeded entry can't tell an index-preserving replace apart from
+  // "filter the old one out, then append the update" - both produce the
+  // same one-element array. Seeding TWO entries and updating the FIRST is
+  // what actually distinguishes them: filter+append would put the update
+  // LAST ([second, updatedFirst]); this asserts it stays first instead.
+  const first = testEscalation({ escalationId: "esc_1", mode: "exempt_denied_path" });
+  const second = testEscalation({ escalationId: "esc_2", mode: "exempt_command" });
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [first, second] },
+  });
 
-  const updated = testEscalation({ mode: "exempt_command", partiallyRan: true });
-  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updated } as AnyNotification, 2000);
+  const updatedFirst = testEscalation({ escalationId: "esc_1", mode: "exempt_path_prefix", partiallyRan: true });
+  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updatedFirst } as AnyNotification, 2000);
 
-  expect(model.pendingEscalations).toEqual([updated]);
+  expect(model.pendingEscalations).toEqual([updatedFirst, second]);
 });
 
 test('"serf/sandbox/escalation/requested" for a different thread is a same-reference no-op', () => {
