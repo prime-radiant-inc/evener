@@ -46,12 +46,30 @@ function makeListHandle(): {
   ref: React.RefObject<VirtualListHandle | null>;
   el: HTMLDivElement;
   scrollToIndex: ReturnType<typeof vi.fn>;
+  setVisibleRange: (range: { startIndex: number; endIndex: number } | null) => void;
 } {
   const el = document.createElement("div");
   const scrollToIndex = vi.fn();
+  // getVisibleRange: scriptable, like makeMeasure above - defaults to null
+  // ("unknown/not visible"), which is exactly what every scenario that
+  // doesn't care about visibility wants (VirtualList itself already proves
+  // the REAL getVirtualItems()-backed answer - see virtuallist.test.tsx;
+  // this suite proves what the HOOK does with whatever answer it gets).
+  let visibleRange: { startIndex: number; endIndex: number } | null = null;
   const ref = createRef<VirtualListHandle>() as React.RefObject<VirtualListHandle | null>;
-  (ref as { current: VirtualListHandle }).current = { scrollToIndex, getScrollElement: () => el };
-  return { ref, el, scrollToIndex };
+  (ref as { current: VirtualListHandle }).current = {
+    scrollToIndex,
+    getScrollElement: () => el,
+    getVisibleRange: () => visibleRange,
+  };
+  return {
+    ref,
+    el,
+    scrollToIndex,
+    setVisibleRange: (range) => {
+      visibleRange = range;
+    },
+  };
 }
 
 // The injectable measurement seam (this task's own binding constraint:

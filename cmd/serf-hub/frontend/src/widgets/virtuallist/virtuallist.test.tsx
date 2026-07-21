@@ -298,3 +298,48 @@ test("ref.current.getScrollElement() returns null before mount (no ref attached)
   const ref = createRef<VirtualListHandle>();
   expect(ref.current).toBeNull();
 });
+
+// getVisibleRange (wave 4 T5a): the session transcript's error-anchor pill
+// needs to know whether a given turn index is currently rendered, to clear
+// a stale anchor once its failed turn scrolls into view on its own (see
+// useTranscriptScroll.ts). Derived from @tanstack/react-virtual's own
+// getVirtualItems() (already called by this widget's render, just never
+// surfaced past it) rather than reimplementing any range math - this test
+// cross-checks the handle's answer against the actually-rendered
+// [data-index] rows rather than hardcoding react-virtual's own overscan
+// algorithm, which is exactly the "assert the HANDLE's contract with the
+// established stubs" the brief calls for.
+test("ref.current.getVisibleRange() reflects the actually-rendered index range", () => {
+  const ref = createRef<VirtualListHandle>();
+  const { container } = render(
+    <VirtualList
+      ref={ref}
+      count={10_000}
+      estimateSize={() => ROW_HEIGHT}
+      renderRow={(i) => <div key={i}>row {i}</div>}
+    />,
+  );
+
+  const rendered = Array.from(rootOf(container).querySelectorAll("[data-index]")).map((el) =>
+    Number((el as HTMLElement).dataset.index),
+  );
+  const range = ref.current?.getVisibleRange();
+
+  expect(range).not.toBeNull();
+  expect(range?.startIndex).toBe(Math.min(...rendered));
+  expect(range?.endIndex).toBe(Math.max(...rendered));
+});
+
+test("ref.current.getVisibleRange() returns null when count=0 (nothing rendered)", () => {
+  const ref = createRef<VirtualListHandle>();
+  render(
+    <VirtualList ref={ref} count={0} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+  );
+
+  expect(ref.current?.getVisibleRange()).toBeNull();
+});
+
+test("ref.current.getVisibleRange() returns null before mount (no ref attached)", () => {
+  const ref = createRef<VirtualListHandle>();
+  expect(ref.current).toBeNull();
+});

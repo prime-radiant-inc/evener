@@ -14,6 +14,18 @@ export interface VirtualListHandle {
    * before mount, same as any ref.
    */
   getScrollElement: () => HTMLDivElement | null;
+  /**
+   * The index range currently rendered (including overscan - the same
+   * window `renderRow` is called over, per this widget's own top-of-file
+   * comment), derived from @tanstack/react-virtual's own getVirtualItems()
+   * (already called by this widget's render; just never surfaced past it
+   * before now). null when nothing has been measured/rendered yet (e.g.
+   * before mount, or `count === 0`) - a consumer that needs "is index N
+   * currently visible" (the session transcript's error-anchor pill - see
+   * flow/useTranscriptScroll.ts) treats null as "don't know, assume not
+   * visible" rather than crashing.
+   */
+  getVisibleRange: () => { startIndex: number; endIndex: number } | null;
 }
 
 export interface VirtualListProps {
@@ -79,6 +91,13 @@ export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKe
     () => ({
       scrollToIndex: (index, options) => virtualizer.scrollToIndex(index, options),
       getScrollElement: () => scrollRef.current,
+      getVisibleRange: () => {
+        const items = virtualizer.getVirtualItems();
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (!first || !last) return null;
+        return { startIndex: first.index, endIndex: last.index };
+      },
     }),
     [virtualizer],
   );
