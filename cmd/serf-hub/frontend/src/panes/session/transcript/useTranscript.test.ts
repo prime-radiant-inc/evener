@@ -178,3 +178,25 @@ test("loadOlder() is a harmless no-op when the model has no olderCursor (nothing
   expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(0);
   expect(result.current.loadingOlder).toBe(false);
 });
+
+// Pins the `finally` block's own behavior (useTranscript.ts's loadOlder has
+// no catch of its own - a rejection propagates to the caller) rather than
+// leaving loadingOlder stuck true forever, and does so without ever
+// becoming an unhandled rejection (vitest fails the run on those).
+test("a rejected loadOlder() propagates to the caller and still resets loadingOlder to false", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  fake.on("thread/turns/list", () => Promise.reject(new Error("network error")));
+
+  const { result } = renderHook(() => useTranscript("ref_a"));
+  expect(result.current.loadingOlder).toBe(false);
+
+  await act(async () => {
+    await expect(result.current.loadOlder()).rejects.toThrow("network error");
+  });
+
+  expect(result.current.loadingOlder).toBe(false);
+});
