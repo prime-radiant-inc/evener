@@ -145,13 +145,13 @@ function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined
 // The live tool-settle site drops ArgumentsJSON: EventToolCallEnd
 // (internal/appprojector/appwire_projection.go:414-442) resolves it into
 // argsJSON at :424-427 but uses that only to derive Description, never
-// attaching it to the emitted ThreadItem - so the settled wire item's
+// attaching it to the emitted ThreadItem — so the settled wire item's
 // argumentsJson is empty even though the streamed item/started item (:373)
 // had it. Historical items don't lose it
 // (internal/apptranscript/apptranscript.go:284,312), so this is a
 // live-settle-only gap the model corrects: keep the existing item's
 // argumentsJSON when the settled payload didn't bring its own. A settled
-// payload that DOES carry argumentsJson wins - wire truth over memory.
+// payload that DOES carry argumentsJson wins — wire truth over memory.
 function mergeArguments(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (settled.argumentsJSON !== undefined) return settled;
   if (existing?.argumentsJSON === undefined) return settled;
