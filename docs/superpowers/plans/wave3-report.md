@@ -119,13 +119,13 @@ live-reproduced via a CDP-driven back against a built hub, not by inspection).
 - **Gate hygiene: `make build-hub`'s own target order embeds a stale frontend.**
   `build-hub: build-runtime build-web` runs the Go build (which `//go:embed all:frontend/dist`
   captures at compile time) *before* the frontend rebuild that would have refreshed `dist/` — so
-  a single `make build-hub` invocation always embeds a `dist/` that's one build cycle behind
+  a single `make build-hub` invocation always embedded a `dist/` one build cycle behind
   source. Confirmed by tracing served bytes directly (`curl` with the auth Bearer token,
   bypassing any browser cache entirely) after a live gesture-back fix appeared not to take
-  effect. To verify a frontend change against a live hub: build the frontend first
-  (`npm run build`), *then* the Go binary — never rely on one `make build-hub` call picking up
-  same-session source edits. Not fixed here (build tooling, outside this task's scope) — flagging
-  for whoever next touches the Makefile.
+  effect. **FIXED in `d0ce65e27`** (prerequisite order flipped to `build-web build-runtime`
+  with a load-bearing-order comment) — one `make build-hub` now embeds a fresh frontend. The
+  durable lesson that remains: when a live change "doesn't take," verify the served bytes
+  server-side before debugging the client.
 - **A client-side cache-bust proves nothing about server-side embed staleness.** A `?_cachebust=`
   query parameter forces the browser to skip its own cache, but the server still returned the
   same stale bytes — the giveaway was `document.scripts[0].src` still naming the old build's
