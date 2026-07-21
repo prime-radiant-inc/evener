@@ -90,9 +90,14 @@ const md = new Marked({ gfm: true, renderer });
 // The allowlist is deliberately small: every tag/attribute marked's
 // defaults or the overrides above can produce, and nothing else. Notably
 // absent: img/table and friends - GFM tables and images tokenize fine but
-// aren't allowlisted yet (no consumer needs them this wave; DOMPurify
-// degrades a disallowed element to its text content, so they fail safe
-// rather than break).
+// aren't allowlisted yet (no consumer needs them this wave). Disallowed
+// elements don't uniformly "degrade to their text content" though -
+// verified directly against this exact config: a <thead>'s content
+// (including its <th> cells) is dropped entirely, while a <tbody>'s
+// <td> content survives as unwrapped text; a bare <img> has no text
+// content to keep in the first place, so it just vanishes. Whichever way
+// a given element behaves, nothing dangerous survives - they fail safe,
+// just not via one single mechanism.
 const SANITIZE_CONFIG = {
   ALLOWED_TAGS: [
     "p",
@@ -117,6 +122,15 @@ const SANITIZE_CONFIG = {
     "div",
     "span",
   ],
+  // "class" is allowlisted globally (not scoped to specific tags) but is
+  // currently inert against anything a markdown AUTHOR controls: the only
+  // class attributes this pipeline ever produces are the ones the code
+  // above writes itself (CODEBLOCK_CLASS/CLASS.inlineCode) - html() above
+  // escapes all raw source HTML to text before DOMPurify ever sees it, so
+  // there's no path today for a class value to originate from user input.
+  // If a future change widens ALLOWED_TAGS to let raw source HTML through
+  // in some form, that safety stops being automatic - re-check whether
+  // "class" should stay this permissive at that point.
   ALLOWED_ATTR: ["href", "title", "target", "rel", "class"],
 };
 

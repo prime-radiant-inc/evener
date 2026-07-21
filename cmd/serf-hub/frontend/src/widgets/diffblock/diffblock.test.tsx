@@ -14,6 +14,7 @@ const styles = {
   del: requireClass(rawStyles.del, "diffblock.module.css", "del"),
   header: requireClass(rawStyles.header, "diffblock.module.css", "header"),
   context: requireClass(rawStyles.context, "diffblock.module.css", "context"),
+  meta: requireClass(rawStyles.meta, "diffblock.module.css", "meta"),
   line: requireClass(rawStyles.line, "diffblock.module.css", "line"),
   content: requireClass(rawStyles.content, "diffblock.module.css", "content"),
 };
@@ -165,6 +166,49 @@ test("a genuinely blank context line (no marker at all) still renders as context
   expect(lines).toHaveLength(4);
   expect(lines[2]!.classList.contains(styles.context)).toBe(true);
   expect(contentTextOf(lines[2]!)).toBe("");
+});
+
+test("strips a trailing \\r from every line for CRLF-style diffs", () => {
+  const diff = ["--- a/f\r", "+++ b/f\r", "@@ -1,2 +1,2 @@\r", "-old\r", "+new\r", " same\r"].join(
+    "\n",
+  );
+  const { container } = render(<DiffBlock unified={diff} />);
+  const lines = lineElements(container);
+  // The exact-match "---"/"+++" header check would itself fail to
+  // recognize a CRLF line ("---\r" !== "---") if stripping happened only
+  // on already-classified content instead of before classification -
+  // this fixture uses the " a/f" trailer form, so it isn't exercising
+  // that exact-match path, but every content assertion below still
+  // proves no \r survived into what's rendered.
+  expect(contentTextOf(lines[0]!)).toBe("--- a/f");
+  expect(contentTextOf(lines[1]!)).toBe("+++ b/f");
+  expect(contentTextOf(lines[2]!)).toBe("@@ -1,2 +1,2 @@");
+  expect(contentTextOf(lines[3]!)).toBe("old");
+  expect(contentTextOf(lines[4]!)).toBe("new");
+  expect(contentTextOf(lines[5]!)).toBe("same");
+});
+
+test("strips a trailing \\r before the ---/+++ exact-match check, not just from already-classified content", () => {
+  // The bare "---"/"+++" form matches via an exact `raw === "---"` check,
+  // which would fail on an un-stripped "---\r" and misclassify the header
+  // as a deletion instead (content "--" after stripping just the leading
+  // "-").
+  const diff = ["---\r", "+++\r", "@@ -1 +1 @@\r", "-old\r", "+new\r"].join("\n");
+  const { container } = render(<DiffBlock unified={diff} />);
+  const lines = lineElements(container);
+  expect(lines[0]!.classList.contains(styles.header)).toBe(true);
+  expect(contentTextOf(lines[0]!)).toBe("---");
+  expect(lines[1]!.classList.contains(styles.header)).toBe(true);
+  expect(contentTextOf(lines[1]!)).toBe("+++");
+});
+
+test('renders a "\\ No newline at end of file" marker with the meta tone, not context', () => {
+  const diff = ["@@ -1 +1 @@", "-old", "+new", "\\ No newline at end of file"].join("\n");
+  const { container } = render(<DiffBlock unified={diff} />);
+  const lines = lineElements(container);
+  expect(lines[3]!.classList.contains(styles.meta)).toBe(true);
+  expect(lines[3]!.classList.contains(styles.context)).toBe(false);
+  expect(contentTextOf(lines[3]!)).toBe("\\ No newline at end of file");
 });
 
 test("declares no external diff-parsing dependency (no import beyond React)", () => {

@@ -48,3 +48,9 @@
 .context {
   color: var(--ink-hi);
 }
+
+/* the "\ No newline at end of file" marker: it describes the diff, not
+ * either file's content, so it reads as quieter than even a header line. */
+.meta {
+  color: var(--ink-low);
+}

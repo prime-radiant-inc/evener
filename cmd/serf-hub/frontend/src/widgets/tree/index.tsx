@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./tree.module.css";
 
@@ -84,6 +84,8 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   const flat = flattenVisible(nodes);
   const indexById = new Map(flat.map((entry, i) => [entry.node.id, i]));
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
+  const treeRef = useRef<HTMLDivElement>(null);
+  const pendingRefocusRef = useRef<string | null>(null);
 
   const [currentId, setCurrentId] = useState<string | null>(flat[0]?.node.id ?? null);
   const effectiveCurrentId = currentId !== null && indexById.has(currentId) ? currentId : (flat[0]?.node.id ?? null);
@@ -96,6 +98,42 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   function moveTo(id: string) {
     rowRefs.current.get(id)?.focus();
   }
+
+  // Recovers real focus when the row `currentId` was tracking just fell
+  // out of the visible set for a reason OTHER than this row's own
+  // Left/Right handling above (which calls moveTo itself and so never
+  // loses focus): an ancestor collapsed via a DIFFERENT row's chevron, or
+  // the caller pushed new `nodes` that drop it entirely. Left alone, the
+  // browser defocuses the removed row to <body> once the DOM update
+  // commits, and nothing inside the tree is focused afterward - Tab, not
+  // an arrow key, would be the only way back in.
+  //
+  // The check runs here, in the render body, because this is the one
+  // moment "was focus actually inside the tree right before this update"
+  // is answerable at all: React only touches the real DOM at commit,
+  // after render returns, so `document.activeElement` here still reflects
+  // the PREVIOUS commit (the about-to-be-removed row, if it was focused).
+  // Only a ref write happens now (no real side effect during render);
+  // actually moving focus happens in the layout effect below, once the
+  // removal has actually committed and the fallback row's DOM node
+  // exists. If focus was already somewhere else entirely (the user
+  // clicked away before this update, unrelated to it), this correctly
+  // does nothing - Tree must never steal focus back into itself.
+  if (
+    currentId !== null &&
+    !indexById.has(currentId) &&
+    effectiveCurrentId !== null &&
+    treeRef.current?.contains(document.activeElement)
+  ) {
+    pendingRefocusRef.current = effectiveCurrentId;
+  }
+
+  useLayoutEffect(() => {
+    if (pendingRefocusRef.current === null) return;
+    const id = pendingRefocusRef.current;
+    pendingRefocusRef.current = null;
+    rowRefs.current.get(id)?.focus();
+  });
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>, node: T, parent: T | null) {
     const index = indexById.get(node.id)!;
@@ -184,7 +222,7 @@ export function Tree<T extends TreeNode = TreeNode>({ nodes, onActivate, onToggl
   }
 
   return (
-    <div role="tree" className={CLASS.tree}>
+    <div ref={treeRef} role="tree" className={CLASS.tree}>
       {renderEntries(nodes, 0, null)}
     </div>
   );

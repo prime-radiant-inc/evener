@@ -2,6 +2,7 @@ import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Tree, type TreeNode } from "./index";
 
@@ -210,4 +211,104 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "tree.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+// --- focus recovery when the focused row is unmounted by something OTHER
+// than its own Left/Right key handling (which already calls moveTo itself
+// and so never loses focus) - a non-keyboard ancestor collapse, or an
+// external nodes-prop push. Left unhandled, the browser defocuses the
+// removed row to <body> once the DOM update commits, and nothing inside
+// the tree is focused afterward - Tab/Shift+Tab, not arrow keys, would be
+// the only way back in. Flattened visible order for this fixture with
+// both branches expanded: a, b, b1, b1a.
+const DEEP_NODES: TreeNode[] = [
+  { id: "a" },
+  {
+    id: "b",
+    expanded: true,
+    children: [{ id: "b1", expanded: true, children: [{ id: "b1a" }] }],
+  },
+];
+
+function withNodeExpanded(nodes: TreeNode[], id: string, expanded: boolean): TreeNode[] {
+  return nodes.map((node) => {
+    if (node.id === id) return { ...node, expanded };
+    if (node.children) return { ...node, children: withNodeExpanded(node.children, id, expanded) };
+    return node;
+  });
+}
+
+// A stateful wrapper, since Tree is controlled: renderRow wires a real
+// chevron button to info.toggle (mouse-driven, deliberately NOT the
+// focused row's own key handling) so a click on a DIFFERENT row's chevron
+// can collapse an ANCESTOR of whichever row currently has focus.
+function StatefulTree({ initialNodes }: { initialNodes: TreeNode[] }) {
+  const [nodes, setNodes] = useState(initialNodes);
+  return (
+    <Tree
+      nodes={nodes}
+      onActivate={() => {}}
+      onToggle={(node) => setNodes((prev) => withNodeExpanded(prev, node.id, node.expanded !== true))}
+      renderRow={(node, info) => (
+        <span>
+          {info.hasChildren && (
+            <button type="button" data-testid={`chevron-${node.id}`} onClick={info.toggle}>
+              {info.expanded ? "-" : "+"}
+            </button>
+          )}
+          {node.id}
+        </span>
+      )}
+    />
+  );
+}
+
+test("focus recovers within the tree when a non-keyboard ancestor collapse unmounts the focused row", () => {
+  render(<StatefulTree initialNodes={DEEP_NODES} />);
+  act(() => row("b1a").focus());
+  expect(document.activeElement).toBe(row("b1a"));
+
+  // Collapses b (b1a's grandparent) via b's OWN chevron - not b1a's key
+  // handling, which never runs here at all.
+  fireEvent.click(screen.getByTestId("chevron-b"));
+
+  // b1a (and b1) are gone; the new visible order is [a, b], so the
+  // fallback is "a" - and crucially, focus must have actually MOVED there
+  // (not just the tabIndex bookkeeping), not fallen through to <body>.
+  expect(document.activeElement).toBe(row("a"));
+});
+
+test("focus recovers when an external nodes-prop push removes the focused row (not via onToggle at all)", () => {
+  const { rerender } = render(
+    <Tree nodes={DEEP_NODES} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={(node) => node.id} />,
+  );
+  act(() => row("b1a").focus());
+  expect(document.activeElement).toBe(row("b1a"));
+
+  // Simulates a completely external state change (a filter, a deletion) -
+  // collapsing b1 without this component's onToggle ever firing.
+  const collapsed = withNodeExpanded(DEEP_NODES, "b1", false);
+  rerender(<Tree nodes={collapsed} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={(node) => node.id} />);
+
+  expect(document.activeElement).toBe(row("a"));
+});
+
+test("does not steal focus back into the tree when it was already elsewhere before the removing update", () => {
+  const outside = document.createElement("button");
+  document.body.appendChild(outside);
+
+  const { rerender } = render(
+    <Tree nodes={DEEP_NODES} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={(node) => node.id} />,
+  );
+  act(() => row("b1a").focus());
+  act(() => outside.focus());
+  expect(document.activeElement).toBe(outside);
+
+  const collapsed = withNodeExpanded(DEEP_NODES, "b1", false);
+  rerender(<Tree nodes={collapsed} onActivate={vi.fn()} onToggle={vi.fn()} renderRow={(node) => node.id} />);
+
+  // The user had already moved on before this update - Tree must not grab
+  // focus back into itself.
+  expect(document.activeElement).toBe(outside);
+  outside.remove();
 });
