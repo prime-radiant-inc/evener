@@ -6,13 +6,18 @@
 // switch: the live decay clock (nowTick, below) and the connection-ready
 // gate's local closure, neither of which loses anything a remount can't
 // immediately reconstruct from the store.
-import { useEffect, useState } from "react";
-import { PaneScaffold, VirtualList, Cadence, EmptyState, type CadenceState } from "../../widgets";
+import { useEffect, useRef, useState } from "react";
+import { PaneScaffold, VirtualList, Cadence, EmptyState, type CadenceState, type VirtualListHandle } from "../../widgets";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { useTranscript } from "./transcript/useTranscript";
 import { TurnBlock } from "./transcript/TurnBlock";
+import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import { FlowOverlay } from "./transcript/flow/FlowOverlay";
+import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { LivenessLine } from "./transcript/flow/LivenessLine";
+import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import styles from "./session.module.css";
 
 export interface SessionPaneParams {
@@ -118,9 +123,17 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     };
   }, [ref]);
 
-  const { model } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder } = useTranscript(ref);
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+
+  // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
+  // the seam useTranscriptScroll needs for every scroll-behavior concern
+  // (T4's own scope) - called unconditionally, same as every other hook
+  // here, even though the ref only ever populates once turns.length > 0
+  // (see useTranscriptScroll's own "hasContent" handling for that).
+  const virtualListRef = useRef<VirtualListHandle>(null);
+  const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
 
   if (!model) {
     return (
@@ -138,12 +151,24 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
         <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
       ) : (
         <div className={styles.transcript}>
-          <VirtualList
-            dynamic
-            count={model.turns.length}
-            estimateSize={() => ESTIMATED_TURN_HEIGHT}
-            renderRow={(index) => <TurnBlock turn={model.turns[index]!} />}
-          />
+          <FlowOverlay
+            top={
+              <>
+                {model.olderCursor && <LoadOlderRow onClick={() => void loadOlder()} loading={loadingOlder} />}
+                <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
+              </>
+            }
+            pill={<NewContentPill count={flow.pillCount} needsYou={flow.pillNeedsYou} onClick={flow.jumpToBottom} />}
+          >
+            <VirtualList
+              ref={virtualListRef}
+              dynamic
+              count={model.turns.length}
+              estimateSize={() => ESTIMATED_TURN_HEIGHT}
+              getItemKey={(index) => model.turns[index]!.id}
+              renderRow={(index) => <TurnBlock turn={model.turns[index]!} />}
+            />
+          </FlowOverlay>
         </div>
       )}
     </PaneScaffold>
