@@ -619,6 +619,71 @@ func TestWeb_APITreeLiveRowsCarryTierFavoriteRename(t *testing.T) {
 	}
 }
 
+// TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename covers the same wire
+// gap surviving at a second call site: handleAPITree's orphan-live fallback
+// loop projects a live session into resp.Projects whenever the PastIndex
+// walk never saw it (e.g. spawned moments ago, before its meta.json is
+// indexed — realistic via the archive-immediately-after-spawn window). That
+// loop called apiTreeNode directly too, so such a session got a
+// correctly-stamped resp.Live row (fixed above) but an unstamped
+// resp.Projects row alongside it.
+func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
+	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 62, Address: "127.0.0.1:4062", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	favStore := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
+	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// No PastIndex entry for this session at all (nothing ever Rebuilt or
+	// seeded) — this is what routes it through the orphan-live fallback loop
+	// instead of the PastIndex-derived project walk.
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	var node *hubapi.TreeNode
+	for i := range got.Projects {
+		for j := range got.Projects[i].Sessions {
+			if got.Projects[i].Sessions[j].SessionID == liveSessionID {
+				node = &got.Projects[i].Sessions[j]
+			}
+		}
+	}
+	if node == nil {
+		t.Fatalf("orphan-live session not found in any project: %+v", got.Projects)
+	}
+	if node.Tier != "live" {
+		t.Fatalf("orphan-live row Tier=%q, want %q: %+v", node.Tier, "live", *node)
+	}
+	if !node.Favorite {
+		t.Fatalf("orphan-live row Favorite=false, want true (session was favorited): %+v", *node)
+	}
+	if !node.Rename {
+		t.Fatalf("orphan-live row Rename=false, want true (local session): %+v", *node)
+	}
+}
+
 // projectRawFromResponse decodes body as raw JSON and returns the sole
 // entry of top-level key arrayKey (e.g. "projects") as a map, so a test can
 // assert a field's exact wire presence/absence — an omitempty field

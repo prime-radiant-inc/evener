@@ -178,7 +178,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: le.StartedAt,
 			Age:       hubcore.AgeString(le.StartedAt),
 		}
-		apiNode := s.apiTreeNode("project", key, node, true)
+		apiNode := s.apiTreeNodeTier("project", key, "live", favs, node)
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
