@@ -1,0 +1,5 @@
+.summary {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+}
