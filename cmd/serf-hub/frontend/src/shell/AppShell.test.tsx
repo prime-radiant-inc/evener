@@ -167,18 +167,18 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   window.history.pushState({}, "", "/s/ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  // The session placeholder pane (Wave 4 builds the real transcript view)
-  // shows the ref it was opened with - proving the deep link actually
-  // threaded through openPane into a real dockview panel, not just that
-  // urlToPane() parsed the URL correctly in isolation (routing.test.ts
-  // already covers that). The tab title renders synchronously (addPanel's
-  // own title option) but the pane's own content is a lazy-loaded
-  // component behind Suspense - findAllByText returns as soon as it finds
-  // ANY match, not once a specific count stabilizes, so this waits for the
-  // pane body's own text FIRST (it exists only once Suspense resolves),
-  // THEN checks the ref appears twice (tab + pane body, no thread name
-  // known so both fall back to the raw ref - see Session.tsx).
-  expect(await screen.findByText("Transcript arrives in wave 4")).toBeTruthy();
+  // The real session pane (wave 4) shows the ref it was opened with while
+  // loading - proving the deep link actually threaded through openPane
+  // into a real dockview panel, not just that urlToPane() parsed the URL
+  // correctly in isolation (routing.test.ts already covers that). No
+  // thread/read handler is scripted on this FakeClient, so the pane settles
+  // into (and stays in) its loading state - the tab title renders
+  // synchronously (addPanel's own title option) but the pane's own content
+  // is a lazy-loaded component behind Suspense, so this waits for the pane
+  // body's own loading text FIRST (it exists only once Suspense resolves),
+  // THEN checks the ref appears twice (tab + pane body title, no thread
+  // name known so both fall back to the raw ref - see Session.tsx).
+  expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
   expect(screen.getAllByText("ref_abc123")).toHaveLength(2);
 });
 
@@ -234,7 +234,7 @@ test("navigating from a 404 straight to a session deep link opens only that pane
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
-  await screen.findByText("Transcript arrives in wave 4");
+  await screen.findByText(/loading transcript/i);
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_from_404"]);
 });
@@ -264,7 +264,7 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   window.history.pushState({}, "", "/s/ref_new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(await screen.findByText("Transcript arrives in wave 4")).toBeTruthy();
+  expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
   const tabs = document.querySelectorAll(".dv-tab");
   // The restored "Welcome" tab (phase 1's whole saved layout) is still
   // there - a merge, not a replacement - with the routed deep link

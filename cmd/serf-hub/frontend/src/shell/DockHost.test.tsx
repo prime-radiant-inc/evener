@@ -273,7 +273,9 @@ test("a session pane's tab title prefers the live ThreadModel name over the raw 
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
   render(<DockHost />);
 
-  await screen.findByText("ref_x"); // the placeholder pane's own body, per Session.tsx
+  // The real session pane's own body (wave 4): synced against the
+  // pre-seeded model, whose fixture turns default to [].
+  await screen.findByText(/no turns yet/i);
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Debug the flaky test");
 });
 
@@ -296,7 +298,9 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   threadsStore.setState({ threads: new Map([["ref_x", fixtureThread("ref_x", { name: "Original name" })]]) });
   workspaceStore.getState().openPane("session", { ref: "ref_x" });
   render(<DockHost />);
-  await screen.findByText("ref_x");
+  // The real session pane's own body (wave 4): synced against the
+  // pre-seeded model, whose fixture turns default to [].
+  await screen.findByText(/no turns yet/i);
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
   threadsStore.setState((s) => {
@@ -308,9 +312,10 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   await vi.waitFor(() => {
     expect(document.querySelector(".dv-tab")?.textContent).toBe("Renamed");
   });
-  // Still the same pane, not a fresh one - the placeholder body (which
-  // reads only params.ref, not the thread name) is untouched throughout.
-  expect(screen.getByText("ref_x")).toBeTruthy();
+  // Still the same pane, not a fresh one - the session pane's own body
+  // (which doesn't read the thread name at all, only its turns) is
+  // untouched throughout the rename.
+  expect(screen.getByText(/no turns yet/i)).toBeTruthy();
 });
 
 // --- layout persistence -----------------------------------------------
