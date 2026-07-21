@@ -119,8 +119,8 @@ describe("hydration from existing localStorage", () => {
   });
 
   test("reads previously stored transcript toggles independently", () => {
-    localStorage.setItem(KEY("transcriptRoundTimings"), "true");
-    localStorage.setItem(KEY("transcriptHookExitsNormal"), "true");
+    localStorage.setItem(KEY("transcriptRoundTimings"), "1");
+    localStorage.setItem(KEY("transcriptHookExitsNormal"), "1");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().transcript).toEqual({
       roundTimings: true,
@@ -131,15 +131,15 @@ describe("hydration from existing localStorage", () => {
   });
 
   test("reads a previously stored enterToSend/showCost", () => {
-    localStorage.setItem(KEY("enterToSend"), "true");
-    localStorage.setItem(KEY("showCost"), "false");
+    localStorage.setItem(KEY("enterToSend"), "1");
+    localStorage.setItem(KEY("showCost"), "0");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().enterToSend).toBe(true);
     expect(prefsStore.getState().showCost).toBe(false);
   });
 
   test("reads previously stored notification toggles and loud scope", () => {
-    localStorage.setItem(KEY("notificationsOs"), "true");
+    localStorage.setItem(KEY("notificationsOs"), "1");
     localStorage.setItem(KEY("notificationsLoudScope"), "all");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().notifications.os).toBe(true);
@@ -160,28 +160,47 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
     expect(prefsStore.getState().fontSize).toBe("m");
   });
 
-  test("a non-'true'/'false' boolean pref falls back to its default rather than reading as false", () => {
+  test("a non-'1'/'0' boolean pref falls back to its default rather than reading as false", () => {
     // showCost's default is true - a corrupted value must not silently
-    // collapse to false the way a naive `=== "true"` read would.
+    // collapse to false the way a naive `=== "1"` read would.
     localStorage.setItem(KEY("showCost"), "yes");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().showCost).toBe(true);
   });
+
+  // Pins the exact regression this store must never reintroduce: the
+  // literal string "true" is NOT a valid encoding of true under the "1"/"0"
+  // contract (see pinned-key-contract describe block below) - a stray
+  // "true"/"false" value (e.g. left over from some other app's differently-
+  // encoded write to the same localStorage origin) must read as the
+  // default, not as true.
+  test("the literal string 'true' is not a valid boolean encoding - falls back to default, does not read as true", () => {
+    localStorage.setItem(KEY("enterToSend"), "true");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().enterToSend).toBe(false); // default, not true
+  });
 });
 
 describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", () => {
-  // W5's interim hook (a different, parallel wave worktree) already reads
-  // these two exact keys directly - see the wave-7 plan's own binding
-  // constraints. This store MUST write through those same literal names so
-  // the two converge at merge, not just "a" key of the store's own choosing.
-  test("setEnterToSend writes the literal key serf.prefs.enterToSend", () => {
+  // W5's interim hook (webui-w5-composer/.../composer/enterToSendPref.ts,
+  // already shipped) reads serf.prefs.enterToSend with a strict `=== "1"`
+  // check - its own test asserts the literal string "true" reads as FALSE.
+  // Both the key NAME and the "1"/"0" VALUE ENCODING must match for the two
+  // waves to converge at merge (this codebase's own established precedent
+  // for a single persisted boolean - see shell/rail/Rail.tsx's
+  // COLLAPSED_STORAGE_KEY - is "1"/"0", not JS's "true"/"false").
+  test("setEnterToSend writes the literal key serf.prefs.enterToSend with '1'/'0' encoding", () => {
     prefsStore.getState().setEnterToSend(true);
-    expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("true");
+    expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("1");
+    prefsStore.getState().setEnterToSend(false);
+    expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("0");
   });
 
-  test("setShowCost writes the literal key serf.prefs.showCost", () => {
+  test("setShowCost writes the literal key serf.prefs.showCost with '1'/'0' encoding", () => {
     prefsStore.getState().setShowCost(false);
-    expect(localStorage.getItem("serf.prefs.showCost")).toBe("false");
+    expect(localStorage.getItem("serf.prefs.showCost")).toBe("0");
+    prefsStore.getState().setShowCost(true);
+    expect(localStorage.getItem("serf.prefs.showCost")).toBe("1");
   });
 });
 
@@ -241,7 +260,7 @@ describe("setFontSize", () => {
 describe("setTranscriptStatus", () => {
   test("persists under a per-key name and updates only the targeted field", () => {
     prefsStore.getState().setTranscriptStatus("hookExitsAll", true);
-    expect(localStorage.getItem(KEY("transcriptHookExitsAll"))).toBe("true");
+    expect(localStorage.getItem(KEY("transcriptHookExitsAll"))).toBe("1");
     expect(prefsStore.getState().transcript).toEqual({
       roundTimings: false,
       hookExitsAll: true,
@@ -254,7 +273,7 @@ describe("setTranscriptStatus", () => {
 describe("setNotification", () => {
   test("persists under a per-key name and updates only the targeted field", () => {
     prefsStore.getState().setNotification("favicon", true);
-    expect(localStorage.getItem(KEY("notificationsFavicon"))).toBe("true");
+    expect(localStorage.getItem(KEY("notificationsFavicon"))).toBe("1");
     expect(prefsStore.getState().notifications).toEqual({
       title: false,
       favicon: true,

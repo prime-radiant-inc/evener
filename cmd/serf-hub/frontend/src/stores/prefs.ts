@@ -112,15 +112,25 @@ function removeRaw(name: string): void {
   }
 }
 
+// "1"/"0", not JS's "true"/"false": this codebase's own established
+// precedent for a single persisted boolean (shell/rail/Rail.tsx's
+// COLLAPSED_STORAGE_KEY: `localStorage.getItem(...) === "1"` /
+// `collapsed ? "1" : "0"`), and the encoding W5's already-shipped interim
+// composer hook (webui-w5-composer/.../composer/enterToSendPref.ts) reads
+// on this exact serf.prefs.enterToSend key with a strict `=== "1"` check -
+// its own test asserts the literal string "true" reads as false. Using
+// "true"/"false" here would silently break that convergence: both waves
+// writing/reading the SAME key with different encodings corrupts each
+// other's value rather than erroring.
 function readBool(name: string, fallback: boolean): boolean {
   const raw = readRaw(name);
-  if (raw === "true") return true;
-  if (raw === "false") return false;
+  if (raw === "1") return true;
+  if (raw === "0") return false;
   return fallback; // absent, or corrupted - never silently coerce to false
 }
 
 function writeBool(name: string, value: boolean): void {
-  writeRaw(name, value ? "true" : "false");
+  writeRaw(name, value ? "1" : "0");
 }
 
 function readEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {

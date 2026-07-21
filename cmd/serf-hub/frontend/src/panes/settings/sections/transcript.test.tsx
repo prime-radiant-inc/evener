@@ -99,5 +99,5 @@ test("toggling Prompt loaded persists under its own key", async () => {
   await user.click(screen.getByRole("switch", { name: "Prompt loaded" }));
 
   expect(prefsStore.getState().transcript.promptLoaded).toBe(true);
-  expect(localStorage.getItem("serf.prefs.transcriptPromptLoaded")).toBe("true");
+  expect(localStorage.getItem("serf.prefs.transcriptPromptLoaded")).toBe("1");
 });
