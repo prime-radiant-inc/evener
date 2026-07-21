@@ -12,7 +12,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
@@ -115,6 +115,51 @@ afterEach(() => {
 
 function textarea(): HTMLTextAreaElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLTextAreaElement | null;
+}
+
+// --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
+
+function askArgs(questions: Array<Record<string, unknown>>): string {
+  return JSON.stringify({ questions });
+}
+
+const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
+
+function startTurn(fake: FakeClient, ref: string, turnId: string): void {
+  fake.emitNotification({
+    method: "turn/started",
+    params: { ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+  } as AnyNotification);
+}
+
+function ackAskUserCall(
+  fake: FakeClient,
+  ref: string,
+  turnId: string,
+  itemId: string,
+  callId: string,
+  questions: Array<Record<string, unknown>> = ONE_QUESTION,
+): void {
+  const base = {
+    ref,
+    turnId,
+    item: {
+      type: "commandExecution",
+      id: itemId,
+      turnId,
+      toolName: "ask_user",
+      callId,
+      argumentsJson: askArgs(questions),
+    },
+  };
+  fake.emitNotification({
+    method: "item/started",
+    params: { ...base, item: { ...base.item, status: "inProgress" } },
+  } as AnyNotification);
+  fake.emitNotification({
+    method: "item/completed",
+    params: { ...base, item: { ...base.item, status: "completed" } },
+  } as AnyNotification);
 }
 
 // --- T3: queue strip wiring --------------------------------------------------
@@ -323,4 +368,71 @@ test("a queuedDrainPartial failure clears the composer, removes the pending entr
   await waitFor(() => expect(screen.getAllByText(/drain failed after queueing/i)).toHaveLength(1));
   expect((textarea() as HTMLTextAreaElement).value).toBe("");
   expect(result.current).toHaveLength(0); // removed on failure
+});
+
+// --- T4: ask dock wiring ------------------------------------------------------
+
+// Ask-dock scenarios mount idle with NO pre-existing turn (unlike this
+// file's own default testThread, seeded with an already-open turn_1 for the
+// queue/steer scenarios above) - startTurn below is the ONE place turn_1
+// gets created, exactly like AskDock.test.tsx's own hydrateWithOneAsk.
+// Reusing this file's default fixture and re-firing turn/started for the
+// SAME id it already pre-seeded would append a second, colliding turn_1.
+function idleNoTurnOverrides(): Partial<Thread> {
+  return { status: { type: "idle" }, serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} }, turns: [] };
+}
+
+test("the ask dock renders once a question is pending, and the composer's input row becomes hidden and inert", async () => {
+  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
+  expect(textarea()).toBeTruthy(); // sanity: visible before any ask arrives
+
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+
+  expect(await screen.findByText("Deploy?")).toBeTruthy();
+  expect(screen.getByText("Ship now?")).toBeTruthy();
+  // Excluded from the accessibility tree by the `hidden` attribute (RTL's
+  // byRole queries respect it, matching real assistive-tech behavior) -
+  // a stronger, more meaningful signal than probing the `inert` IDL
+  // property directly, and it also proves the textarea can't be tabbed to.
+  expect(textarea()).toBeNull();
+});
+
+test("sending an answer submits through the normal send path and restores the composer once resolved", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
+  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  await screen.findByText("Deploy?");
+
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  const call = fake.calls.find((c) => c.method === "turn/start");
+  expect(call?.params).toMatchObject({
+    input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
+  });
+  expect(await screen.findByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
+});
+
+test("a Conflict on the ask-answers path falls back into the composer, preserving any draft typed before the question arrived", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
+
+  await user.type(textarea() as HTMLTextAreaElement, "my own note");
+
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  await screen.findByText("Deploy?");
+  expect(textarea()).toBeNull(); // input row hidden while the question is pending
+
+  fake.on("turn/start", () => {
+    throw new WireError("input buffer full", -32013, { serfErrorInfo: "conflict" });
+  });
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+
+  await waitFor(() => expect(screen.queryByText("Deploy?")).toBeNull());
+  const restored = await screen.findByRole("textbox", { name: /message/i });
+  expect((restored as HTMLTextAreaElement).value).toBe("my own note\n\n[answers]\n1. [Deploy?] → skipped (no answer)");
 });

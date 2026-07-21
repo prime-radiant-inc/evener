@@ -13,6 +13,7 @@ import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
+import { AskDock, useAskDockPending } from "./askDock";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -127,6 +128,13 @@ export function Composer({ ref }: ComposerProps) {
     },
   };
   const attachments = useAttachments(textEditor);
+
+  // askPending gates hiding/inerting the input row below (AskDock's own
+  // seam - see AskDock.tsx's header comment: "that is the composer's own
+  // surface to show/hide, and T2 owns it") - read unconditionally alongside
+  // the rest of this component's hooks, ahead of the `!model` early return
+  // below, per the rules of hooks.
+  const askPending = useAskDockPending(ref);
 
   // Runs after `text`'s new value has committed to the DOM (via React's own
   // controlled-value reconciliation) - only then is it safe to move the
@@ -404,10 +412,13 @@ export function Composer({ ref }: ComposerProps) {
 
   return (
     <div className={styles.composer}>
-      {/* T4: ask dock - renders above the queue strip; T4 also owns hiding/
-          inerting the input row below while a question is pending (see
-          askDock's own future contract - this file has no ask-pending
-          state to gate on). */}
+      {/* T4: ask dock - renders above the queue strip; onFallbackToComposer
+          reuses the same restoreTextToComposer merge as QueueStrip's own
+          onRestoreToComposer above (see that function's own doc comment for
+          why both seams share it). useAskDockPending(ref) (askPending,
+          above) hides/inerts the input row below while a question is
+          pending - AskDock owns answering while questions pend. */}
+      <AskDock ref={ref} onFallbackToComposer={restoreTextToComposer} />
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
@@ -419,7 +430,7 @@ export function Composer({ ref }: ComposerProps) {
         onDrainSuccess={handleDrainSuccess}
       />
       {hasAttachments && (
-        <div className={styles.chips}>
+        <div className={styles.chips} hidden={askPending} inert={askPending}>
           {attachments.items.map((item) => (
             <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
               {/* A single template-literal string, not several sibling
@@ -434,7 +445,7 @@ export function Composer({ ref }: ComposerProps) {
       )}
       <form ref={formRef} onSubmit={handleFormSubmit}>
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={styles.inputCard}>
+          <div className={styles.inputCard} hidden={askPending} inert={askPending}>
             <Textarea
               ref={textareaRef}
               value={text}
