@@ -1,0 +1,38 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-left: var(--space-3);
+  border-left: 2px solid transparent;
+}
+
+/* errorRow: --danger is allowlisted for this widget in
+ * src/styles/token-contract.test.ts (a field validation error is exactly
+ * the "genuine semantic state", not decoration, that allowlist exists for).
+ */
+.errorRoot {
+  border-left-color: var(--danger-edge);
+}
+
+.label {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+}
+
+.help {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.errorText {
+  margin: 0;
+  font-size: var(--font-size-caption);
+  color: var(--danger);
+}
