@@ -217,7 +217,7 @@ Applied on top of `2270c8a7f` (Jesse's direct fix to `token-contract.test.ts` ex
 `--accent` from the semantic allowlist — resolved this report's earlier-documented concern;
 confirmed baseline was 243/243 green before starting this fix wave). All four addressed via
 TDD (test updated/added first, confirmed red against the pre-fix code, then implementation).
-One commit: `<SHA filled in below>`.
+One commit: `f43f08ae8`.
 
 1. **Meter gains a required `label: string` prop** (Important — `role="meter"` needs an
    accessible name and the locked shape gave consumers no hook). Rendered as `aria-label`.
