@@ -129,6 +129,25 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
     return (
       <div className={CLASS.banner}>
         <span>{RECONNECTING_MESSAGE}</span>
+        {/* Reads the CURRENTLY-wired client from connectionStore, not
+            useClient()'s React context: the context value is fixed to
+            whatever AppShell constructed at mount (Global Constraints:
+            "one AppwireClient per window, owned by the shell, injected via
+            context"), but this component's OWN handleRetry below can swap
+            connectionStore's client to a fresh instance - after which the
+            context client is a dead, permanently-closed orphan that would
+            never reach the client actually reconnecting. "Retry now" must
+            reach whichever client the "reconnecting" state this banner is
+            currently showing actually BELONGS to, which is always
+            connectionStore's, never necessarily the context's - the same
+            reason the closedReason re-probe effect above already keys off
+            this exact `client` value instead of context. retryNow() itself
+            is a no-op unless the client is actually "reconnecting" (see
+            protocol/client.ts), so a stray click while the state prop and
+            the store have briefly diverged is harmless either way. */}
+        <Button variant="quiet" size="sm" onClick={() => client?.retryNow()}>
+          Retry now
+        </Button>
       </div>
     );
   }

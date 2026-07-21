@@ -57,12 +57,41 @@ describe('state "reconnecting"', () => {
   });
 
   // The client's OWN auto-reconnect (protocol/client.ts's exponential
-  // backoff) is already handling this - a manual action here would be
-  // redundant at best, and could race a second attempt against the one
-  // already in flight at worst.
-  test("offers no action - the client is already retrying on its own", () => {
+  // backoff) is already handling this - "Retry now" is a quiet nudge that
+  // short-circuits the current wait via AppwireClient.retryNow(), not a
+  // second, independent reconnect mechanism racing the one already in
+  // flight (retryNow() itself is a no-op while a dial it started, or the
+  // backoff timer's own, is already in flight - see
+  // protocol/reconnect.test.ts).
+  test('offers a quiet "Retry now" action, wired to the currently-connected client', async () => {
+    const fake = new FakeClient("reconnecting");
+    connectionStore.getState().connect(fake);
+    const user = userEvent.setup();
+
     render(<ConnectionBanner state="reconnecting" />);
-    expect(screen.queryByRole("button")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry now" }));
+
+    expect(fake.retryNowCalls).toBe(1);
+  });
+
+  // connectionStore's wired client can be SWAPPED mid-session (this very
+  // component's own handleRetry does exactly that from "closed", below) -
+  // "Retry now" must reach whichever client is wired at CLICK time, not one
+  // captured when this component first mounted or rendered.
+  test('"Retry now" targets whichever client is currently wired, not a stale one from an earlier render', async () => {
+    const stale = new FakeClient("closed");
+    connectionStore.getState().connect(stale);
+    const { rerender } = render(<ConnectionBanner state="closed" />);
+
+    const fresh = new FakeClient("reconnecting");
+    connectionStore.getState().connect(fresh);
+    rerender(<ConnectionBanner state="reconnecting" />);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Retry now" }));
+
+    expect(fresh.retryNowCalls).toBe(1);
+    expect(stale.retryNowCalls).toBe(0);
   });
 });
 

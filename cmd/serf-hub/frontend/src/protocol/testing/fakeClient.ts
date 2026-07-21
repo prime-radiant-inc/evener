@@ -14,6 +14,7 @@ export interface AppwireClientLike {
   onNotification: AppwireClient["onNotification"];
   onReady: AppwireClient["onReady"];
   onStateChange: AppwireClient["onStateChange"];
+  retryNow: AppwireClient["retryNow"];
   get state(): ConnectionState;
 }
 
@@ -136,6 +137,16 @@ export class FakeClient implements AppwireClientLike {
   onStateChange(cb: (s: ConnectionState) => void): () => void {
     this.stateChangeHandlers.add(cb);
     return () => this.stateChangeHandlers.delete(cb);
+  }
+
+  // retryNow records that it was called, for a consumer's wiring test
+  // (ConnectionBanner.test.tsx) to assert against - AppwireClient's own
+  // backoff/in-flight-dial semantics are exhaustively covered against the
+  // real class in protocol/reconnect.test.ts, so this fake doesn't attempt
+  // to model them (no timers, no sockets, nothing to short-circuit).
+  retryNowCalls = 0;
+  retryNow(): void {
+    this.retryNowCalls += 1;
   }
 
   // --- test-side injection: simulates the server/transport side ---
