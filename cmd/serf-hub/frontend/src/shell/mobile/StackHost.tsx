@@ -75,15 +75,58 @@ function StackedPane({ pane }: { pane: OpenPaneRecord }) {
 }
 
 // Pops backStack until it finds an id still present in panes (a pane
-// stacked earlier may since have been closed), discarding any stale ones
-// along the way. Returns undefined once the stack is exhausted - the
-// caller's cue to fall back to welcome.
-function popValidBackTarget(backStack: string[], panes: OpenPaneRecord[]): string | undefined {
+// stacked earlier may since have been closed) AND different from
+// currentFocusedPaneId, discarding anything else along the way. Returns
+// undefined once the stack is exhausted - the caller's cue to fall back to
+// welcome. The currentFocusedPaneId check exists for the same reason a real
+// browser back/forward doesn't push onto the stack (see
+// lastPopstateWasTrusted below): after one real back/forward step, the
+// stack's own top entry can be left equal to wherever that step actually
+// landed - without this check, the FIRST tap of Back would silently pop
+// that stale, already-current entry and do nothing visible, requiring an
+// extra tap before Back does anything at all.
+function popValidBackTarget(backStack: string[], panes: OpenPaneRecord[], currentFocusedPaneId: string | null): string | undefined {
   while (backStack.length > 0) {
     const candidate = backStack.pop();
-    if (candidate !== undefined && panes.some((p) => p.id === candidate)) return candidate;
+    if (candidate !== undefined && candidate !== currentFocusedPaneId && panes.some((p) => p.id === candidate)) return candidate;
   }
   return undefined;
+}
+
+// Module-level, not component state: popstate is a window-level browser
+// event, not owned by any one StackHost instance (only one is ever mounted
+// at a time in practice, the same one-active-host precedent as DockHost's
+// own module-level dockviewApi in workspace.ts). Set by the popstate
+// listener StackHost installs on mount below; read-and-consumed by the
+// bookkeeping effect the first time it sees a focusedPaneId change after
+// being set, so a stale `true` can only ever affect the SINGLE next focus
+// change, never a later, unrelated one (see that effect's own comment).
+//
+// KNOWN, DISCLOSED LIMITATION (narrowed by this fix, not eliminated - see
+// the wave 3 task 7 report for the live CDP reproduction this is based on):
+// this flag only knows "the immediately preceding popstate was real", not
+// how many steps of real history navigation actually happened. A SINGLE
+// real back/forward composes correctly with the in-app Back button; a
+// SECOND, consecutive real back/forward is indistinguishable from this
+// component's own vantage point from any other focus change, so the
+// stack's stale top entry from the ORIGINAL forward walk can resurface -
+// fully eliminating that residual would mean replacing this local stack
+// with one driven off window.history's own position, a bigger seam than a
+// component-local fix, same conclusion the ORIGINAL version of this
+// comment already reached for the whole problem before this fix narrowed
+// it to just the multi-step case.
+let lastPopstateWasTrusted = false;
+
+// setLastPopstateWasTrustedForTests lets a test simulate a REAL browser
+// back/forward's one distinguishing signal - isTrusted - without needing a
+// genuinely trusted Event: no script, in jsdom or any real browser, can
+// construct one (the DOM spec makes isTrusted a non-configurable own
+// accessor on every Event instance specifically so it can never be forged
+// - confirmed directly against this exact jsdom version while building
+// this fix). No production code should ever call this (mirrors
+// workspace.ts's resetWorkspaceStoreForTests precedent).
+export function setLastPopstateWasTrustedForTests(value: boolean): void {
+  lastPopstateWasTrusted = value;
 }
 
 export interface StackHostProps {
@@ -123,28 +166,45 @@ export function StackHost({ railSlot }: StackHostProps = {}) {
   // two panes forever instead of walking back through real history).
   const wentBackRef = useRef(false);
 
-  // KNOWN, DISCLOSED COMPOSITION GAP (not fixed this wave - see requirement
-  // 2's own "history back/forward works via the existing popstate wiring"
-  // and this stream's report): wentBackRef is set ONLY by this component's
-  // OWN handleBack below. A REAL browser back/forward action (the
-  // hardware/gesture button, not this in-app one) also changes
-  // focusedPaneId - via a popstate -> AppShell's routing glue ->
-  // openPane()/focusPane() - but with no way for THIS effect to learn that
-  // the change was itself already a "backward" step from the user's point
-  // of view. The result: this effect pushes the pane the user just used
-  // real-back to LEAVE onto backStackRef, same as any ordinary forward
-  // navigation would - so tapping this component's OWN back button right
-  // afterward pops that pane back into focus, i.e. moves the user FORWARD
-  // again instead of continuing backward. Fixing this needs either
-  // reading real vs. synthetic popstate events apart (PopStateEvent itself
-  // carries no such flag) or replacing this local stack with one driven by
-  // window.history's own position - a bigger seam than this task's own
-  // component-local design calls for. Flagging for the wave gate's device
-  // check (Task 7) to decide fix-vs-document, not guessing at a fix here.
+  // Installs the ONE popstate listener that feeds lastPopstateWasTrusted
+  // (module-level - see its own comment above for why). A REAL browser
+  // back/forward gesture (the hardware/gesture button, not this
+  // component's own in-app one) changes focusedPaneId via a DIFFERENT path
+  // than handleBack below - a popstate -> AppShell's routing glue ->
+  // openPane()/focusPane() - and isTrusted is the one signal on that event
+  // telling the two apart from each other (verified live: a genuine CDP-
+  // driven browser back reports isTrusted=true; routing.ts's own
+  // navigate(), a same-tab `new PopStateEvent()` + dispatchEvent(), always
+  // reports false - see setLastPopstateWasTrustedForTests's own comment).
+  useEffect(() => {
+    const onPopState = (e: PopStateEvent) => {
+      lastPopstateWasTrusted = e.isTrusted;
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // wentBackRef (set only by this component's own handleBack, below) and
+  // lastPopstateWasTrusted (set only by a REAL browser back/forward, above)
+  // are the two distinct reasons a focus change must NOT be recorded as an
+  // ordinary forward step - tapping this component's own Back button, or
+  // the browser doing the equivalent via real history, must never make the
+  // pane just left available to pop right back into focus (that would move
+  // the user FORWARD, not continue backward - see popValidBackTarget's own
+  // currentFocusedPaneId check for the other half of what a real
+  // back/forward needs: the stack's own top can be left matching wherever
+  // that step just landed, which needs skipping too, not just not pushed
+  // twice). Consumed (read then reset to false) on every actual
+  // focusedPaneId change, win or lose, so a stale `true` can only ever
+  // affect the SINGLE next change - see lastPopstateWasTrusted's own
+  // comment for the one narrow case (a popstate that doesn't end up
+  // changing focus at all) this doesn't fully close.
   useEffect(() => {
     const prev = prevFocusedIdRef.current;
     if (prev !== focusedPaneId) {
-      if (!wentBackRef.current && prev !== null) backStackRef.current.push(prev);
+      const realBrowserNav = lastPopstateWasTrusted;
+      lastPopstateWasTrusted = false;
+      if (!wentBackRef.current && !realBrowserNav && prev !== null) backStackRef.current.push(prev);
       wentBackRef.current = false;
       prevFocusedIdRef.current = focusedPaneId;
     }
@@ -179,7 +239,7 @@ export function StackHost({ railSlot }: StackHostProps = {}) {
   }, [focusedPane]);
 
   function handleBack(): void {
-    const target = popValidBackTarget(backStackRef.current, panes);
+    const target = popValidBackTarget(backStackRef.current, panes, focusedPaneId);
     wentBackRef.current = true;
     if (target) {
       workspaceStore.getState().focusPane(target);

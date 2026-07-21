@@ -7,7 +7,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { registerPane, type PaneProps } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { StackHost } from "./StackHost";
+import { setLastPopstateWasTrustedForTests, StackHost } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
 // "doc"/{ref} with different refs are distinct panes (same dedup rule
@@ -48,11 +48,13 @@ beforeAll(async () => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  setLastPopstateWasTrustedForTests(false);
 });
 
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  setLastPopstateWasTrustedForTests(false); // defensive: no test should leak this into the next
 });
 
 test("falls back to opening welcome when nothing is focused at mount", async () => {
@@ -204,6 +206,135 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // tap must go straight to welcome, not bounce forward to ref_b.
   await user.click(screen.getByRole("button", { name: "Back" }));
   expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+// --- real browser back/forward composing with the in-app Back button -----
+//
+// A REAL back/forward gesture reaches this component the same way as any
+// other focus change AppShell's routing glue drives (via openPane/focusPane
+// - not exercised by this standalone render, so these tests do that part by
+// hand, same as every other test in this file stands in for "the tree rail
+// did this" via a direct openPane() call). What's DIFFERENT about a real
+// gesture is the popstate event that precedes it: a genuinely trusted one
+// (isTrusted=true) cannot be constructed from script at all - the DOM spec
+// makes isTrusted a non-configurable own accessor on every Event instance,
+// in jsdom and every real browser alike, specifically so no script can
+// forge one (confirmed directly: Object.defineProperty(event, "isTrusted",
+// ...) throws "Cannot redefine property"). setLastPopstateWasTrustedForTests
+// is StackHost.tsx's own escape hatch for this - it drives the exact
+// downstream decision a real trusted popstate would, without needing an
+// unforgeable event; the one line that actually reads a real event's
+// isTrusted (StackHost.tsx's own popstate listener) was instead verified
+// against a REAL trusted event via a live CDP-driven browser back (see this
+// task's report), not a jsdom probe.
+test("a REAL back/forward gesture does not stack the pane it left, unlike an ordinary forward navigation", async () => {
+  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // ordinary forward nav: stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+
+  // Simulates a real browser back landing on ref_a.
+  act(() => {
+    setLastPopstateWasTrustedForTests(true);
+    workspaceStore.getState().focusPane(first);
+  });
+  await screen.findByText(/doc pane: ref_a \(focused=true\)/);
+
+  // Without the fix, ref_b would now be sitting on top of the stack (an
+  // ordinary forward-navigation push) - tapping Back from here would move
+  // the user FORWARD to ref_b instead of continuing backward to welcome.
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test("an ORDINARY (untrusted) synthetic popstate - routing.ts's own navigate() - still stacks normally", async () => {
+  // Exercises the real listener wiring end to end (a genuinely dispatched
+  // event, not the test-only setter): routing.ts's navigate() dispatches
+  // exactly this shape (new PopStateEvent() + window.dispatchEvent()),
+  // always isTrusted=false, so it must compose as an ORDINARY forward step,
+  // not be mistaken for a real back/forward.
+  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+
+  act(() => {
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    workspaceStore.getState().focusPane(first);
+  });
+  await screen.findByText(/doc pane: ref_a \(focused=true\)/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  // ref_b is still on the stack (pushed by the ordinary forward nav above,
+  // NOT skipped - the untrusted popstate must not suppress it).
+  expect(await screen.findByText(/doc pane: ref_b \(focused=true\)/)).toBeTruthy();
+});
+
+test("a REAL back/forward gesture landing back on the stack's own top does not require an extra, invisible tap to clear it", async () => {
+  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+
+  // Real back to ref_a, then real FORWARD back to ref_b - both real, both
+  // skip the push (see the test above), so the stack still names ref_a as
+  // its one entry, matching ref_a's OWN position relative to ref_b in the
+  // original forward walk (not a stale duplicate of the CURRENT pane).
+  act(() => {
+    setLastPopstateWasTrustedForTests(true);
+    workspaceStore.getState().focusPane(first);
+  });
+  await screen.findByText(/doc pane: ref_a \(focused=true\)/);
+  act(() => {
+    setLastPopstateWasTrustedForTests(true);
+    workspaceStore.getState().focusPane(second);
+  });
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+});
+
+test("KNOWN, DISCLOSED LIMITATION: two consecutive real back gestures still confuse the local stack (see StackHost.tsx's own comment)", async () => {
+  // The fix only knows "the immediately preceding popstate was real", not
+  // how many steps of real history navigation actually happened - a SECOND
+  // consecutive real back is indistinguishable, from this component's own
+  // vantage point, from any other focus change that isn't itself a
+  // popstate-driven one, so the stack's stale top entry from the ORIGINAL
+  // forward walk resurfaces. Pinned here as the honest boundary of what
+  // this task's fix actually covers, not silently left unproven.
+  const a = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  const b = workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_c" }); // stacks ref_b
+  await screen.findByText(/doc pane: ref_c/);
+
+  act(() => {
+    setLastPopstateWasTrustedForTests(true);
+    workspaceStore.getState().focusPane(b);
+  });
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+  act(() => {
+    setLastPopstateWasTrustedForTests(true);
+    workspaceStore.getState().focusPane(a);
+  });
+  await screen.findByText(/doc pane: ref_a \(focused=true\)/);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText(/doc pane: ref_b \(focused=true\)/)).toBeTruthy();
 });
 
 test("back skips a stacked pane that has since been closed, falling to welcome when nothing else is left", async () => {
