@@ -77,16 +77,38 @@ function parseQuestion(raw: unknown): AskUserQuestion | undefined {
   };
 }
 
-// parseAskUserQuestions returns undefined for "couldn't read this at all"
-// (malformed JSON, no questions array) - distinct from an empty array,
-// which can't legitimately occur (DefAskUser requires minItems:1) but is
-// treated the same as undefined defensively either way.
+// parseAskUserQuestions returns undefined whenever there's nothing usable to
+// render - argumentsJSON absent entirely, a JSON syntax error, valid JSON
+// with no questions array, or every individual question in that array
+// failing its own shape check - without distinguishing WHY here. An empty
+// array can't legitimately occur (DefAskUser requires minItems:1) but is
+// treated the same as undefined defensively either way. AskUserBody draws
+// its own absent-vs-malformed distinction for its fallback wording; see
+// isMalformedArgumentsJSON below.
 function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
   const args = rememberedArgs(item);
   const raw = args["questions"];
   if (!Array.isArray(raw)) return undefined;
   const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
   return questions.length > 0 ? questions : undefined;
+}
+
+// isMalformedArgumentsJSON is true only for a genuine JSON syntax error in
+// THIS item's own argumentsJSON - the one case AskUserBody's fallback below
+// still calls "malformed". Every other reason parseAskUserQuestions can
+// fail (argumentsJSON absent entirely - the common cold-open case for an
+// already-settled historical item rememberedArgs has no item/started cache
+// entry for - or syntactically valid JSON that simply carries no usable
+// questions) is honest absence, not corruption, and gets its own wording
+// instead of being misdescribed as malformed.
+function isMalformedArgumentsJSON(argumentsJSON: string | undefined): boolean {
+  if (argumentsJSON === undefined) return false;
+  try {
+    JSON.parse(argumentsJSON);
+    return false;
+  } catch {
+    return true;
+  }
 }
 
 function QuestionCard({ q }: { q: AskUserQuestion }) {
@@ -112,7 +134,18 @@ function QuestionCard({ q }: { q: AskUserQuestion }) {
 function AskUserBody({ item }: ToolRenderProps) {
   const questions = parseAskUserQuestions(item);
   if (!questions) {
-    return <div className={CLASS.fallback}>Couldn't read this question - the data looks malformed.</div>;
+    // Absence (no argumentsJSON at all, or valid JSON with nothing usable
+    // in it) is the common case - e.g. a cold-opened historical item
+    // rememberedArgs has no item/started cache entry for - and must not be
+    // described as malformed; a genuine JSON syntax error keeps its own,
+    // distinct wording.
+    return (
+      <div className={CLASS.fallback}>
+        {isMalformedArgumentsJSON(item.argumentsJSON)
+          ? "Couldn't read this question - the data looks malformed."
+          : "Question data unavailable."}
+      </div>
+    );
   }
   return (
     <div>

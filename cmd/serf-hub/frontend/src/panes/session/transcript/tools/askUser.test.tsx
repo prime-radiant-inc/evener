@@ -119,8 +119,16 @@ test("body renders multiple question cards in order", () => {
 });
 
 // --- defensive parsing: malformed input never crashes ---------------------
+//
+// Two distinct fallback messages, not one: a genuine JSON syntax error in
+// THIS item's own argumentsJSON is "malformed" (something arrived and it's
+// broken); everything else that still ends up with no usable questions -
+// argumentsJSON absent entirely (the cold-open case: an already-completed
+// historical item rememberedArgs has no item/started cache entry for), or
+// syntactically valid JSON that simply carries no questions - is honest
+// absence, not corruption, and must not be described as "malformed".
 
-test("body renders a fallback (not a crash) for malformed argumentsJSON", () => {
+test("body renders the malformed-data fallback for a genuine JSON syntax error", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   expect(() =>
@@ -129,11 +137,20 @@ test("body renders a fallback (not a crash) for malformed argumentsJSON", () => 
   expect(screen.getByText(/couldn.t read/i)).toBeTruthy();
 });
 
-test("body renders a fallback when questions is missing entirely", () => {
+test("body renders the absent-data fallback (not malformed) when questions is missing from otherwise-valid JSON", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: "{}" })} live={false} />);
-  expect(screen.getByText(/couldn.t read/i)).toBeTruthy();
+  expect(screen.getByText(/question data unavailable/i)).toBeTruthy();
+  expect(screen.queryByText(/malformed/i)).toBeNull();
+});
+
+test("body renders the absent-data fallback (not malformed) when argumentsJSON is missing entirely - the cold-open case", () => {
+  const d = toolRendererFor("ask_user");
+  const Body = d.body!;
+  render(<Body item={item({ toolName: "ask_user" })} live={false} />);
+  expect(screen.getByText(/question data unavailable/i)).toBeTruthy();
+  expect(screen.queryByText(/malformed/i)).toBeNull();
 });
 
 test("body skips a malformed individual question (missing required fields) rather than crashing the whole card", () => {
