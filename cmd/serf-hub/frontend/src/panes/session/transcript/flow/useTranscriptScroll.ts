@@ -313,11 +313,6 @@ export function useTranscriptScroll({
       // thread/turns/list request propagates through its returned promise
       // uncaught unless the caller handles it; best-effort here, matching
       // Session.tsx's own ensureThread(ref).catch(() => {}) precedent for
-      // the exact same shape of gap.
-      // useTranscript.ts's own loadOlder has no internal catch - a rejected
-      // thread/turns/list request propagates through its returned promise
-      // uncaught unless the caller handles it; best-effort here, matching
-      // Session.tsx's own ensureThread(ref).catch(() => {}) precedent for
       // the exact same shape of gap. (A dedicated unit test asserting "no
       // unhandledRejection fires" was attempted and abandoned - vitest's
       // own runner appears to intercept process-level unhandledRejection

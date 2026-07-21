@@ -321,15 +321,16 @@ STOP threshold.
 
 ## Deferred / punch items (owners TBD — Jesse's call)
 
-1. **`VirtualList` dynamic-height remeasurement is broken** (live-proof finding #1, above) — the
-   single highest-priority item from this whole close: it affects the visual legibility of nearly
-   every real transcript turn. Fix is scoped (stop double-controlling the measured element's own
-   height) but is real production code, out of this task's remit.
+1. ~~**`VirtualList` dynamic-height remeasurement is broken**~~ **FIXED in T5c** (see the T5c
+   addendum below: the measured element no longer receives the virtualizer's inline height;
+   live-re-verified with zero row overlap from 63px to 2798px). Kept here so the close's finding
+   trail stays honest; no longer open.
 2. **Reducer's `pendingText` accumulation is super-linear** (benchmark finding) — real but low
-   urgency at realistic stream sizes; a straightforward fix exists.
-3. **No React.memo anywhere in the item-render tree** — 1:1 re-render cost per delta on every
-   mounted sibling item, confirmed via the benchmark's render-count probe. Related to #1 but a
-   distinct fix (memoization / subscription scoping vs. the height-measurement bug).
+   urgency at realistic stream sizes; a straightforward fix exists. STILL OPEN; the committed
+   benchmark is the tripwire.
+3. ~~**No React.memo anywhere in the item-render tree**~~ **FIXED in T5c** (addendum below:
+   `ignoringTurn` memo comparator on 7 of 8 renderers; the flood probe's sibling re-renders went
+   500 → 0, pinned by a permanent test). Kept for trail honesty; no longer open.
 4. **Task/plan-card feature is entirely unbuilt** (parity sweep's largest finding) — not scoped
    into any wave-4 task; needs an owner and a wave.
 5. **Steering/notification classification is entirely unbuilt** (parity sweep's second-largest
