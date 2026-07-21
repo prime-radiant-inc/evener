@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { hydrateThread, applyNotification, prependOlderTurns, notificationTargetsThread } from "./reducer";
+import { hydrateThread, applyNotification, prependOlderTurns, notificationTargetsThread, resolvePendingEscalation } from "./reducer";
 import type { ThreadModel, TurnModel, ItemModel } from "./model";
 import type { AnyNotification, SandboxEscalationRequested, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "./types.gen";
 // Vite's `?raw` import (declared ambiently by the "vite/client" lib already
@@ -1222,6 +1222,24 @@ test('"serf/sandbox/escalation/requested" for a different thread is a same-refer
   const escalation = testEscalation({ ref: "some_other_ref", threadId: "thr_other" });
 
   const result = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification, 2000);
+
+  expect(result).toBe(model);
+});
+
+test("resolvePendingEscalation removes the entry with a matching escalationId", () => {
+  const escalation = testEscalation();
+  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+
+  const result = resolvePendingEscalation(model, escalation.escalationId);
+
+  expect(result.pendingEscalations).toEqual([]);
+});
+
+test("resolvePendingEscalation on an unknown escalationId is a same-reference no-op", () => {
+  const escalation = testEscalation();
+  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+
+  const result = resolvePendingEscalation(model, "esc_does_not_exist");
 
   expect(result).toBe(model);
 });

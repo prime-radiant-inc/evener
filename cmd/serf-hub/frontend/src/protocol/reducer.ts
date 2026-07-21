@@ -252,6 +252,22 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
   };
 }
 
+// Removes one pending escalation by id, returning the same reference when
+// the id is absent (the no-op-same-reference idiom used throughout this
+// file). Consumed by the threads store's resolve action (a later task)
+// after a successful serf/sandbox/escalation/resolve call — the wire has no
+// resolved broadcast (appwire/protocol.go's M7 catalog has only
+// NotifySerfSandboxEscalationRequested and the resolve method itself; the
+// legacy client, cmd/serf-hub/assets/appwire.js, only ever handles
+// "requested"), so removing this client's own copy after a successful
+// resolve is local-only. A different client watching the same session stays
+// stale until its next snapshot — a known wire limitation, not something to
+// paper over here.
+export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
+  if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
+  return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
+}
+
 export function notificationTargetsThread(n: AnyNotification, model: ThreadModel): boolean {
   const params = n.params as { ref?: string; threadId?: string };
   if (params.ref !== undefined) return params.ref === model.ref;
