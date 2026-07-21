@@ -11,6 +11,8 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { Cadence, EmptyState, PaneScaffold, useToasts, VirtualList, type VirtualListHandle } from "../../widgets";
+import { SessionChrome } from "./chrome/SessionChrome";
+import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { TurnBlock } from "./transcript/TurnBlock";
 import { useTranscript } from "./transcript/useTranscript";
@@ -134,7 +136,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   };
 
   return (
-    <PaneScaffold title={model.name || ref} cadence={cadence}>
+    <PaneScaffold title={model.name || ref} cadence={cadence} footer={<SessionChrome ref={ref} />}>
       <SandboxEscalationRail sessionRef={ref} />
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
@@ -176,6 +178,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           </FlowOverlay>
         </div>
       )}
+      <Composer ref={ref} />
     </PaneScaffold>
   );
 }

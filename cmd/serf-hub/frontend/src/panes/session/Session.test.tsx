@@ -11,6 +11,21 @@ import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import Session from "./Session";
 
+// The two wave-5 T1 slots are swapped for a visible stub here ONLY to prove
+// Session.tsx actually mounts them with the right ref prop - their own
+// placeholder behavior (renders nothing) is covered by
+// composer/Composer.test.tsx and chrome/SessionChrome.test.tsx directly.
+// This mock is file-scoped (vi.mock hoists), so every test below renders
+// these inert stub divs instead of the real (currently null-returning)
+// components - harmless to every other assertion in this file, which all
+// query for their own specific text/testid.
+vi.mock("./composer/Composer", () => ({
+  Composer: ({ ref }: { ref: string }) => <div data-testid="composer-slot">{ref}</div>,
+}));
+vi.mock("./chrome/SessionChrome", () => ({
+  SessionChrome: ({ ref }: { ref: string }) => <div data-testid="session-chrome-slot">{ref}</div>,
+}));
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,
@@ -596,4 +611,38 @@ test("a failed loadOlder surfaces an error toast instead of failing silently", a
   fireEvent.click(loadOlderButton);
 
   await screen.findByText(/couldn't load older messages: boom/i);
+});
+
+// --- Composer / SessionChrome slots (wave 5 T1) --------------------------
+
+test("mounts Composer below the transcript and SessionChrome at the PaneScaffold footer, both with the pane's ref", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a"));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("composer-slot").textContent).toBe("ref_a"));
+  expect(screen.getByTestId("session-chrome-slot").textContent).toBe("ref_a");
+  // SessionChrome is mounted at PaneScaffold's real footer surface, not
+  // just anywhere in the tree - its slot must be a descendant of the
+  // footer's own testid.
+  expect(within(screen.getByTestId("pane-footer")).getByTestId("session-chrome-slot")).toBeTruthy();
+});
+
+test("mounts Composer even when the transcript is empty (no turns yet) - the composer is always available to send the first message", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a")); // testThread's default has no turns
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await screen.findByText(/no turns yet/i);
+  expect(screen.getByTestId("composer-slot")).toBeTruthy();
 });
