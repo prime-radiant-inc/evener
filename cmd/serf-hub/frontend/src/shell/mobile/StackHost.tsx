@@ -37,7 +37,7 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { Suspense, useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef, type ReactNode } from "react";
 import { IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL } from "../routing";
@@ -86,7 +86,15 @@ function popValidBackTarget(backStack: string[], panes: OpenPaneRecord[]): strin
   return undefined;
 }
 
-export function StackHost() {
+export interface StackHostProps {
+  // The rail content for the tree drawer, threaded through to TreeDrawer's
+  // children slot (children ARE TreeDrawer's whole rail contract). AppShell
+  // — the integrator — passes <Rail/> here; StackHost itself stays
+  // rail-agnostic, exactly like TreeDrawer.
+  railSlot?: ReactNode;
+}
+
+export function StackHost({ railSlot }: StackHostProps = {}) {
   const panes = useWorkspaceStore((s) => s.panes);
   const focusedPaneId = useWorkspaceStore((s) => s.focusedPaneId);
   const focusedPane = panes.find((p) => p.id === focusedPaneId) ?? null;
@@ -193,7 +201,7 @@ export function StackHost() {
         <div className={styles.leading}>
           {showBack && <IconButton label="Back" icon={<BackIcon />} variant="quiet" onClick={handleBack} />}
         </div>
-        <TreeDrawer />
+        <TreeDrawer>{railSlot}</TreeDrawer>
       </div>
       <div className={styles.body}>
         {focusedPane && (

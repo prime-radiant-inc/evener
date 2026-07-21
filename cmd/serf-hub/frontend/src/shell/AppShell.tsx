@@ -9,9 +9,13 @@ import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { ClientProvider } from "./clientContext";
 import { ConnectionBanner } from "./ConnectionBanner";
+import { ToastRegion } from "./chrome/ToastRegion";
 import { DockHost } from "./DockHost";
+import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
+import { Rail } from "./rail";
 import { urlToPane } from "./routing";
+import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
@@ -123,6 +127,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
   const route = urlToPane(pathname);
+  const isMobile = useIsMobile();
 
   // Opens a pathname's pane during render, not a useEffect, for as long as
   // DockHost hasn't mounted for the very first time yet - a regular effect
@@ -164,13 +169,16 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     <ClientProvider client={client}>
       <div className={styles.shell}>
         <ConnectionBanner state={connectionState} />
+        <ToastRegion />
         <div className={styles.content}>
-          {/* Desktop workspace host. Mobile (<900px) gets its own
-              full-screen stack navigator sharing this same pane registry
-              (Task 4, shell/mobile/** + a useIsMobile() hook) - not built
-              yet, so this always renders DockHost regardless of viewport;
-              Task 4 adds the breakpoint here. */}
-          {route === null ? <NotFound /> : <DockHost />}
+          {/* Desktop: the rail sits as a flex sibling of DockHost and
+              collapses itself. Mobile (<900px): StackHost owns the whole
+              region and hosts the rail inside its tree drawer instead
+              (TreeDrawer's children slot, threaded via railSlot), so the
+              flex sibling renders only on desktop. Both hosts read the
+              same pane registry and workspace store. */}
+          {!isMobile && route !== null && <Rail />}
+          {route === null ? <NotFound /> : isMobile ? <StackHost railSlot={<Rail />} /> : <DockHost />}
         </div>
       </div>
     </ClientProvider>
