@@ -103,6 +103,12 @@ func (i *PastIndex) StateGlob() string {
 // SetOnChange registers a callback fired by Rebuild/UpdateMeta only when the
 // indexed content actually changes (a Find-miss rebuild with no delta does not
 // fire — round-3 G5). Nil disables the hook.
+//
+// Ordering hazard: call this after an initial Rebuild, not before. An
+// unseeded index's first-ever Rebuild always looks like a delta — even zero
+// entries fingerprint to a non-zero constant, never equal to the zero-value
+// initial fingerprint — so wiring the hook first fires a spurious "change"
+// on nothing (runMain always seeds via the startup Rebuild before wiring).
 func (i *PastIndex) SetOnChange(fn func()) { i.onChange = fn }
 
 // contentFingerprint hashes the (id, UpdatedAt) pairs of the sorted entries so
