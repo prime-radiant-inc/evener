@@ -1,0 +1,8 @@
+.hint {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.frame {
+  max-width: 320px;
+}
