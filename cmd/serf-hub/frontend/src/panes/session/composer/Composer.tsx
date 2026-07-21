@@ -227,10 +227,12 @@ export function Composer({ ref }: ComposerProps) {
         <div className={styles.chips}>
           {attachments.items.map((item) => (
             <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
-              {item.name}
-              {typeof item.width === "number" && typeof item.height === "number"
-                ? ` (${item.width}×${item.height})`
-                : ""}
+              {/* A single template-literal string, not several sibling
+                  expressions: Chip's own removeLabelFor only folds children
+                  into the remove button's accessible name ("Remove <text>")
+                  when children is unambiguously a string - multiple child
+                  nodes would silently fall back to a bare "Remove". */}
+              {`${item.name}${typeof item.width === "number" && typeof item.height === "number" ? ` (${item.width}×${item.height})` : ""}`}
             </Chip>
           ))}
         </div>

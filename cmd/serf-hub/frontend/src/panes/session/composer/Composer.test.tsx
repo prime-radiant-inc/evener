@@ -467,6 +467,16 @@ test("pasting an image renders a removable attachment chip and inserts its marke
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
+test("the chip's remove button names the specific attachment (filename + dimensions), not a bare 'Remove'", async () => {
+  installCanvasStubs();
+  await mountComposer("ref_a");
+
+  pastePngInto(textarea(), "shot.png");
+  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+
+  expect(screen.getByRole("button", { name: "Remove shot.png (4×4)" })).toBeTruthy();
+});
+
 test("a successful submit includes the pasted image as a base64 InputAttachment", async () => {
   installCanvasStubs();
   const user = userEvent.setup();
