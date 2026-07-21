@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -71,6 +71,34 @@ describe("initial load", () => {
     });
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText(/Failed to load: network down/);
+  });
+
+  // The integration-level proof of useConnectedEffect: a direct deep link
+  // to /credentials can mount this section before AppShell's own connect()
+  // handshake finishes (see that hook's own doc comment) - the initial
+  // fetch must defer until the connection is actually ready, then fire
+  // exactly once, rather than throwing (unhandled) or never firing at all.
+  test("mounting before the connection is ready defers the initial load, which then fires exactly once it becomes ready", async () => {
+    const fake = new FakeClient("idle"); // NOT ready at mount
+    connectionStore.getState().connect(fake);
+    let calls = 0;
+    fake.on("serf/instance/list", () => {
+      calls += 1;
+      return LIST;
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    // Give any (wrongly) eager fetch attempt every chance to fire before
+    // asserting it hasn't - a real bug here would throw synchronously into
+    // an unhandled rejection, not silently pass this check.
+    await act(() => Promise.resolve());
+    expect(calls).toBe(0);
+
+    act(() => {
+      fake.emitReady();
+    });
+
+    await screen.findByText("work");
+    expect(calls).toBe(1);
   });
 });
 
@@ -151,6 +179,70 @@ describe("OAuth start branches", () => {
     await user.click(screen.getByRole("button", { name: "Sign in…" }));
     await screen.findByText("Sign-in failed: provider unavailable");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // Proves the key={flowId} teardown DeviceCodeDialog's own doc comment
+  // claims: expiring flow A, then "Start again" (a fresh serf/auth/device/
+  // start -> a NEW flowId, same openEditor.kind==="device" throughout) must
+  // both (a) reset DeviceCodeDialog's own local UI state (copied/expired/
+  // error) rather than leaking flow A's "expired" straight into flow B's
+  // first render, and (b) leave flow A's poll timer genuinely dead. Neither
+  // holds for free: DeviceCodeDialog's internal poll effect already
+  // restarts on a bare flowId prop change (flowId is one of its own deps),
+  // which is enough to make (b) true even WITHOUT the key - only (a)
+  // actually depends on key forcing a real remount (a mere prop update
+  // would keep the same component instance, and therefore its stale local
+  // state, across the transition).
+  test("abandoning an expired device flow and starting a new one resets to a fresh state, not flow A's leftover 'expired' UI - and flow A's timer stays dead", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    let deviceStartCalls = 0;
+    fake.on("serf/auth/device/start", () => {
+      deviceStartCalls += 1;
+      return deviceStartCalls === 1
+        ? {
+            provider: "personal",
+            flowId: "flow-A",
+            userCode: "AAAA-1111",
+            verificationUrl: "https://verify",
+            intervalSeconds: 1,
+          }
+        : {
+            provider: "personal",
+            flowId: "flow-B",
+            userCode: "BBBB-2222",
+            verificationUrl: "https://verify",
+            intervalSeconds: 1,
+          };
+    });
+    const pollCalls: string[] = [];
+    fake.on("serf/auth/device/poll", (params) => {
+      pollCalls.push(params.flowId);
+      return params.flowId === "flow-A" ? { state: "expired" } : { state: "pending" };
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    await screen.findByText("AAAA-1111");
+
+    // Flow A expires.
+    await screen.findByText(/Code expired/, {}, { timeout: 3000 });
+    await user.click(screen.getByRole("button", { name: "Start again" }));
+
+    // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
+    await screen.findByText("BBBB-2222", {}, { timeout: 3000 });
+    expect(screen.queryByText(/Code expired/)).toBeNull();
+    expect(screen.getByRole("button", { name: /copy code/i })).toBeTruthy();
+
+    // Flow B is genuinely polling under its own flowId.
+    await waitFor(() => expect(pollCalls).toContain("flow-B"), { timeout: 3000 });
+    const flowACallsAtSwitch = pollCalls.filter((id) => id === "flow-A").length;
+
+    // Flow A's timer must be dead - give it every chance it would have had
+    // to fire again if it weren't.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 2200)));
+    expect(pollCalls.filter((id) => id === "flow-A").length).toBe(flowACallsAtSwitch);
   });
 });
 
