@@ -40,6 +40,7 @@ import {
   type SubagentRow,
   type SubagentRowKind,
 } from "./subagentModuleStore";
+import { WatchedChildIndicator } from "./watchedChild";
 import type { ItemModel } from "../../../../protocol/model";
 import styles from "./subagentmodule.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -141,6 +142,10 @@ function SubagentRowView({ row }: { row: SubagentRow }) {
   return (
     <div className={CLASS.row} data-testid="subagent-row" data-kind={row.kind}>
       <Chip tone={KIND_TONE[row.kind]}>{KIND_LABEL[row.kind]}</Chip>
+      {/* Live watched-child indicator: only while the row is genuinely
+          still running AND we know where to watch (transcriptRef) - a
+          done/failed/unknown row has nothing live left to show. */}
+      {row.kind === "running" && row.transcriptRef && <WatchedChildIndicator ref={row.transcriptRef} />}
       <span className={CLASS.task}>{row.task}</span>
       {(duration ?? row.resultPreview) && (
         <span className={CLASS.meta}>

@@ -1,4 +1,4 @@
-import { afterEach, test, expect } from "vitest";
+import { afterEach, beforeEach, test, expect } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
@@ -8,6 +8,9 @@ import { classifyJobStatus, resolveRowKey } from "./subagentModule";
 import "./subagentModule";
 import { registerPane } from "../../../../shell/paneRegistry";
 import { workspaceStore, resetWorkspaceStoreForTests } from "../../../../shell/workspace";
+import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import { connectionStore } from "../../../../stores/connection";
+import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { ItemModel } from "../../../../protocol/model";
 
 // A minimal, test-only "session" pane registration - real registerPane/
@@ -19,6 +22,11 @@ registerPane({
   id: "session",
   title: () => "test session",
   component: lazy(() => Promise.resolve({ default: () => null })),
+});
+
+beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
 });
 
 afterEach(() => {
@@ -150,6 +158,39 @@ test("a running row shows the task and a running status", () => {
   const row = screen.getByTestId("subagent-row");
   expect(within(row).getByText("still working")).toBeTruthy();
   expect(row.dataset.kind).toBe("running");
+});
+
+test("a running row with a transcriptRef watches the child and shows a live Cadence indicator", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => ({
+    thread: {
+      id: "thr_child",
+      sessionId: "sess_child",
+      preview: "",
+      ephemeral: false,
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      createdAt: 1000,
+      updatedAt: 1000,
+      status: { type: "active" },
+      cwd: "/tmp",
+      cliVersion: "1.0.0",
+      source: "serf",
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+    },
+  }));
+  connectionStore.getState().connect(fake);
+
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const running = delegateItem({
+    id: "d_watch",
+    callId: "call_watch",
+    argumentsJSON: JSON.stringify({ task: "watched task" }),
+    output: JSON.stringify({ job_id: "job_w", status: "running", transcript_ref: "ref_watched_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  await screen.findByTestId("cadence-dot");
 });
 
 test("a failed row is flagged at module level via data-has-failure, not averaged away", () => {
