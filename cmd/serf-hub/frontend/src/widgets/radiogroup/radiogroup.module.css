@@ -65,3 +65,9 @@
 .option[aria-checked="true"] .dotInner {
   background: var(--accent);
 }
+
+.optionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
