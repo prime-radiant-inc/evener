@@ -37,13 +37,13 @@
 // restored anywhere. A reload lands wherever the URL says (see the URL-
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
-import { Suspense, useEffect, useRef, type ReactNode } from "react";
+import { type ReactNode, Suspense, useEffect, useRef } from "react";
 import { IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL } from "../routing";
-import { useWorkspaceStore, workspaceStore, type OpenPaneRecord } from "../workspace";
-import { TreeDrawer } from "./TreeDrawer";
+import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
 import styles from "./StackHost.module.css";
+import { TreeDrawer } from "./TreeDrawer";
 
 function BackIcon() {
   return (
@@ -85,10 +85,15 @@ function StackedPane({ pane }: { pane: OpenPaneRecord }) {
 // landed - without this check, the FIRST tap of Back would silently pop
 // that stale, already-current entry and do nothing visible, requiring an
 // extra tap before Back does anything at all.
-function popValidBackTarget(backStack: string[], panes: OpenPaneRecord[], currentFocusedPaneId: string | null): string | undefined {
+function popValidBackTarget(
+  backStack: string[],
+  panes: OpenPaneRecord[],
+  currentFocusedPaneId: string | null,
+): string | undefined {
   while (backStack.length > 0) {
     const candidate = backStack.pop();
-    if (candidate !== undefined && candidate !== currentFocusedPaneId && panes.some((p) => p.id === candidate)) return candidate;
+    if (candidate !== undefined && candidate !== currentFocusedPaneId && panes.some((p) => p.id === candidate))
+      return candidate;
   }
   return undefined;
 }

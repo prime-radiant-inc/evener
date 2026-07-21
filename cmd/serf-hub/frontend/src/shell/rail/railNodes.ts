@@ -4,8 +4,9 @@
 // flag. No React, no fetching - Rail.tsx owns the state these functions are
 // pure functions OF (the expand-override map, the lazily-loaded archived
 // project detail map) and wires the results into <Tree>.
-import type { TreeNode as WidgetTreeNode } from "../../widgets";
+
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { TreeNode as WidgetTreeNode } from "../../widgets";
 
 export interface SessionRailNode extends WidgetTreeNode {
   kind: "session";

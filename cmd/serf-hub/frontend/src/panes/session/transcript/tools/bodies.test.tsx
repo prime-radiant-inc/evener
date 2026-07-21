@@ -1,7 +1,7 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel } from "../../../../protocol/model";
+import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 
 afterEach(cleanup);
 
@@ -50,7 +50,9 @@ test("TailFoldedOutputBody: once settled, folds with an honest elision note", ()
   const { container } = render(<TailFoldedOutputBody item={item({ output: longOutput })} live={false} />);
   // getByText's default normalizer collapses the embedded newline to a
   // space, so this checks raw textContent instead of using the matcher.
-  expect(container.textContent).toContain(`earlier output not retained — showing the last 8,000 chars\n${"z".repeat(8000)}`);
+  expect(container.textContent).toContain(
+    `earlier output not retained — showing the last 8,000 chars\n${"z".repeat(8000)}`,
+  );
 });
 
 test("TailFoldedOutputBody: renders nothing for blank output", () => {

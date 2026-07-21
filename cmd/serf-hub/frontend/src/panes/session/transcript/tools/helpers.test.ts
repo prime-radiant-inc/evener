@@ -1,14 +1,14 @@
-import { test, expect } from "vitest";
+import { expect, test } from "vitest";
 import {
   clip,
-  tailSlice,
-  tailFold,
-  formatToolDuration,
   formatByteCount,
+  formatToolDuration,
   lineCount,
   parseArgs,
   parseJSONObject,
   str,
+  tailFold,
+  tailSlice,
   trailingBracketFooter,
 } from "./helpers";
 

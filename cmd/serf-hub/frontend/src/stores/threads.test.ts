@@ -1,9 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import { ConnectionClosedError, WireError } from "../protocol/errors";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../protocol/client";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
+import { ConnectionClosedError, WireError } from "../protocol/errors";
+import { FakeClient } from "../protocol/testing/fakeClient";
+import type {
+  AnyNotification,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
 import {
   appendFrameTime,
@@ -287,7 +293,10 @@ describe("useThreadsStore.ensureThread", () => {
 
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().ensureThread("ref_b");
-    await threadsStore.getState().send("ref_a", "hi").catch(() => {}); // no turn/start handler scripted; rejection irrelevant here
+    await threadsStore
+      .getState()
+      .send("ref_a", "hi")
+      .catch(() => {}); // no turn/start handler scripted; rejection irrelevant here
 
     expect(onNotificationSpy).toHaveBeenCalledTimes(1);
     expect(onReadySpy).toHaveBeenCalledTimes(1);
@@ -344,7 +353,9 @@ describe("notification routing", () => {
             id: "turn_1",
             status: "completed",
             itemsView: "full",
-            items: [{ type: "agentMessage", id: "item_b1", turnId: "turn_1", text: "B's own answer", status: "completed" }],
+            items: [
+              { type: "agentMessage", id: "item_b1", turnId: "turn_1", text: "B's own answer", status: "completed" },
+            ],
           },
         ],
       });
@@ -366,11 +377,21 @@ describe("notification routing", () => {
     // through the settle payload.
     fake.emitNotification({
       method: "item/started",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" },
+      },
     } as AnyNotification);
     fake.emitNotification({
       method: "item/completed",
-      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" } },
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
+      },
     } as AnyNotification);
 
     fake.emitNotification({
@@ -415,7 +436,9 @@ describe("reconnect resubscribe", () => {
     fake.emitReady(); // simulated reconnect
 
     await flushUntil(
-      () => threadsStore.getState().threads.get("ref_a")?.turns.length === 0 && threadsStore.getState().threads.get("ref_b")?.turns.length === 0,
+      () =>
+        threadsStore.getState().threads.get("ref_a")?.turns.length === 0 &&
+        threadsStore.getState().threads.get("ref_b")?.turns.length === 0,
     );
 
     const readCallsAfterReconnect = fake.calls.filter((c) => c.method === "thread/read").slice(2);
@@ -423,7 +446,14 @@ describe("reconnect resubscribe", () => {
 
     const forA = readCallsAfterReconnect.find((c) => (c.params as { ref: string }).ref === "ref_a");
     const forB = readCallsAfterReconnect.find((c) => (c.params as { ref: string }).ref === "ref_b");
-    const expectedParams = (ref: string) => ({ ref, includeTurns: true, itemsView: "full", subscribe: true, replaceSubscription: false, turnLimit: 40 });
+    const expectedParams = (ref: string) => ({
+      ref,
+      includeTurns: true,
+      itemsView: "full",
+      subscribe: true,
+      replaceSubscription: false,
+      turnLimit: 40,
+    });
     expect(forA?.params).toEqual(expectedParams("ref_a"));
     expect(forB?.params).toEqual(expectedParams("ref_b"));
   });
@@ -464,7 +494,9 @@ describe("client swap (manual retry) rewiring", () => {
   // client reference itself, not piggybacked on some later action.
   test("swapping to a fresh client re-hydrates tracked refs, routes its notifications, and detaches the dead client's handlers (no double delivery)", async () => {
     const a = connectFakeClient();
-    a.on("thread/read", () => readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }));
+    a.on("thread/read", () =>
+      readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }),
+    );
     await threadsStore.getState().ensureThread("ref_a");
     expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
 
@@ -607,7 +639,11 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     await threadsStore.getState().steer("ref_a", "steer text");
 
     const call = fake.calls.find((c) => c.method === "turn/steer");
-    expect(call?.params).toEqual({ ref: "ref_a", expectedTurnId: "turn_1", input: [{ type: "text", text: "steer text" }] });
+    expect(call?.params).toEqual({
+      ref: "ref_a",
+      expectedTurnId: "turn_1",
+      input: [{ type: "text", text: "steer text" }],
+    });
   });
 
   test("interrupt sends the tracked model's activeTurnId as expectedTurnId", async () => {
@@ -657,7 +693,15 @@ describe("useThreadsStore.resolveEscalation", () => {
         capabilities: CAPABILITIES,
         queue: {},
         pendingEscalations: [
-          { ref, threadId: `thr_${ref}`, escalationId, mode: "workspace-write", tool: "shell", kind: "shell", deniedPath: "/etc/hosts" },
+          {
+            ref,
+            threadId: `thr_${ref}`,
+            escalationId,
+            mode: "workspace-write",
+            tool: "shell",
+            kind: "shell",
+            deniedPath: "/etc/hosts",
+          },
         ],
       },
     });

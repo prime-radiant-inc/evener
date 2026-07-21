@@ -29,23 +29,23 @@
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
 import { useLayoutEffect, useState } from "react";
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { Button, Chip, type ChipTone } from "../../../../widgets";
+import type { ItemModel } from "../../../../protocol/model";
 import { workspaceStore } from "../../../../shell/workspace";
+import { Button, Chip, type ChipTone } from "../../../../widgets";
+import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
 import {
   claimLeader,
   releaseLeader,
-  upsertSubagentRow,
-  useSubagentRows,
   type SubagentRow,
   type SubagentRowKind,
+  upsertSubagentRow,
+  useSubagentRows,
 } from "./subagentModuleStore";
-import { WatchedChildIndicator } from "./watchedChild";
-import type { ItemModel } from "../../../../protocol/model";
 import styles from "./subagentmodule.module.css";
-import { requireClass } from "../../../../widgets/internal/requireClass";
+import { WatchedChildIndicator } from "./watchedChild";
 
 const TASK_CLIP = 80;
 const DONE_VISIBLE_CAP = 6;
@@ -187,9 +187,7 @@ function SubagentModule({ turnId }: { turnId: string }) {
 
   const doneRows = rows.filter((r) => r.kind === "done");
   const foldedCount = expanded ? 0 : Math.max(0, doneRows.length - DONE_VISIBLE_CAP);
-  const hiddenKeys = new Set(
-    expanded ? [] : doneRows.slice(DONE_VISIBLE_CAP).map((r) => r.rowKey),
-  );
+  const hiddenKeys = new Set(expanded ? [] : doneRows.slice(DONE_VISIBLE_CAP).map((r) => r.rowKey));
   const visibleRows = rows.filter((r) => !hiddenKeys.has(r.rowKey));
 
   if (rows.length === 0) return null;

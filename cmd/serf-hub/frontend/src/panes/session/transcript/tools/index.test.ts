@@ -1,7 +1,7 @@
-import { test, expect } from "vitest";
+import { expect, test } from "vitest";
 import "./index";
-import { toolRendererFor } from "../toolRenderers";
 import { RawToolOutput } from "../RawToolOutput";
+import { toolRendererFor } from "../toolRenderers";
 
 // A single import of this barrel must be enough to register every T3
 // descriptor - the smoke test every registration file's own test already

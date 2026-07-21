@@ -4,10 +4,11 @@
 // arrives settled - see internal/appprojector's EventUserInput, which emits
 // straight to item/completed with no item/started leg), so unlike
 // agentMessage/reasoning there is no live/settled branch here at all.
-import { registerItemRenderer, type ItemRenderProps } from "../types";
+
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ImageGallery } from "../flow/ImageGallery";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import styles from "./usermessageitem.module.css";
 
 const CLASS = {

@@ -1,14 +1,27 @@
-import { test, expect } from "vitest";
-import { hydrateThread, applyNotification, prependOlderTurns, notificationTargetsThread, resolvePendingEscalation } from "./reducer";
-import type { ThreadModel, TurnModel, ItemModel } from "./model";
-import type { AnyNotification, SandboxEscalationRequested, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "./types.gen";
+import { expect, test } from "vitest";
 // Vite's `?raw` import (declared ambiently by the "vite/client" lib already
 // in tsconfig.json) loads each fixture's text at build time — this project
 // has no @types/node, so node:fs is not an option here.
 import basicTurnFixture from "./fixtures/basic-turn.jsonl?raw";
+import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
 import streamingWithResetFixture from "./fixtures/streaming-with-reset.jsonl?raw";
 import toolAndJobsFixture from "./fixtures/tool-and-jobs.jsonl?raw";
-import queueAndStatusFixture from "./fixtures/queue-and-status.jsonl?raw";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import {
+  applyNotification,
+  hydrateThread,
+  notificationTargetsThread,
+  prependOlderTurns,
+  resolvePendingEscalation,
+} from "./reducer";
+import type {
+  AnyNotification,
+  SandboxEscalationRequested,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+} from "./types.gen";
 
 // Each fixture is newline-delimited JSON: the first line is
 // {"hydrate": ThreadReadResponse, "ref": string}, every following line is a
@@ -112,25 +125,39 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/started",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
     } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" },
+    } as AnyNotification,
     1003,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" },
+    } as AnyNotification,
     1004,
   );
 
@@ -142,7 +169,12 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello!", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello!", status: "completed" },
+      },
     } as AnyNotification,
     1005,
   );
@@ -160,7 +192,10 @@ test("item/completed inserts an item that had no preceding item/started", () => 
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   expect(turnAt(model, 0).items).toHaveLength(0);
@@ -169,7 +204,12 @@ test("item/completed inserts an item that had no preceding item/started", () => 
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "Hi there", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "Hi there", status: "completed" },
+      },
     } as AnyNotification,
     1002,
   );
@@ -183,14 +223,22 @@ test("agentMessage/reset discards the in-flight item", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/started",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
     } as AnyNotification,
     1002,
   );
@@ -198,7 +246,10 @@ test("agentMessage/reset discards the in-flight item", () => {
 
   model = applyNotification(
     model,
-    { method: "item/agentMessage/reset", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1" } } as AnyNotification,
+    {
+      method: "item/agentMessage/reset",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1" },
+    } as AnyNotification,
     1003,
   );
   expect(turnAt(model, 0).items).toHaveLength(0);
@@ -208,7 +259,10 @@ test("notification for a different thread is ignored (same object returned)", ()
   const model = testHydrate();
   const result = applyNotification(
     model,
-    { method: "thread/status/changed", params: { threadId: "thr_t", ref: "some_other_ref", status: { type: "active" } } } as AnyNotification,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "some_other_ref", status: { type: "active" } },
+    } as AnyNotification,
     2000,
   );
   expect(result).toBe(model);
@@ -226,14 +280,36 @@ test("notification method with no handler leaves the model unchanged", () => {
 test("notificationTargetsThread matches on ref, falls back to threadId, else false", () => {
   const model = testHydrate();
   expect(
-    notificationTargetsThread({ method: "thread/status/changed", params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } } } as AnyNotification, model),
+    notificationTargetsThread(
+      {
+        method: "thread/status/changed",
+        params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
+      } as AnyNotification,
+      model,
+    ),
   ).toBe(true);
   expect(
-    notificationTargetsThread({ method: "thread/status/changed", params: { threadId: "thr_t", ref: "not_ref_t", status: { type: "active" } } } as AnyNotification, model),
+    notificationTargetsThread(
+      {
+        method: "thread/status/changed",
+        params: { threadId: "thr_t", ref: "not_ref_t", status: { type: "active" } },
+      } as AnyNotification,
+      model,
+    ),
   ).toBe(false);
   // serf/task/updated's ref is optional; when absent, threadId is the fallback key.
-  expect(notificationTargetsThread({ method: "serf/task/updated", params: { threadId: "thr_t", total: 1, done: 0 } } as AnyNotification, model)).toBe(true);
-  expect(notificationTargetsThread({ method: "serf/task/updated", params: { threadId: "not_thr_t", total: 1, done: 0 } } as AnyNotification, model)).toBe(false);
+  expect(
+    notificationTargetsThread(
+      { method: "serf/task/updated", params: { threadId: "thr_t", total: 1, done: 0 } } as AnyNotification,
+      model,
+    ),
+  ).toBe(true);
+  expect(
+    notificationTargetsThread(
+      { method: "serf/task/updated", params: { threadId: "not_thr_t", total: 1, done: 0 } } as AnyNotification,
+      model,
+    ),
+  ).toBe(false);
   // Neither field present (e.g. serf/auth/updated) targets no thread model.
   expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} } as AnyNotification, model)).toBe(false);
 });
@@ -248,11 +324,17 @@ test("turn/completed applies even though its payload carries no ref or threadId"
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   const beforeCompletion = model;
-  const turnCompleted = { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "", items: [] } } } as AnyNotification;
+  const turnCompleted = {
+    method: "turn/completed",
+    params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "", items: [] } },
+  } as AnyNotification;
 
   expect(notificationTargetsThread(turnCompleted, model)).toBe(false);
   model = applyNotification(model, turnCompleted, 1002);
@@ -273,7 +355,10 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   let modelA = hydrateThread({ thread: threadA }, threadA.serf.ref, 1000);
   modelA = applyNotification(
     modelA,
-    { method: "turn/started", params: { threadId: "thr_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   expect(modelA.activeTurnId).toBe("turn_1");
@@ -286,7 +371,12 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
     modelA,
     {
       method: "item/completed",
-      params: { threadId: "thr_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" } },
+      params: {
+        threadId: "thr_a",
+        ref: "ref_a",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
+      },
     } as AnyNotification,
     1500,
   );
@@ -338,20 +428,35 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello, world!", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello, world!", status: "completed" },
+      },
     } as AnyNotification,
     1002,
   );
   expect(turnAt(model, 0).items).toHaveLength(1);
 
-  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    } as AnyNotification,
+    1003,
+  );
 
   const items = turnAt(model, 0).items;
   expect(items).toHaveLength(1);
@@ -362,7 +467,10 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
@@ -372,7 +480,16 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
       method: "turn/completed",
       params: {
         turnId: "turn_1",
-        turn: { id: "turn_1", status: "completed", itemsView: "", startedAt: 5000, completedAt: 6500, durationMs: 1500, usage: { inputTokens: 10, outputTokens: 20 }, cost: "0.01" },
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "",
+          startedAt: 5000,
+          completedAt: 6500,
+          durationMs: 1500,
+          usage: { inputTokens: 10, outputTokens: 20 },
+          cost: "0.01",
+        },
       },
     } as AnyNotification,
     1002,
@@ -396,17 +513,38 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking..." } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking...",
+      },
+    } as AnyNotification,
     1003,
   );
 
@@ -416,7 +554,12 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
       method: "turn/completed",
       params: {
         turnId: "turn_1",
-        turn: { id: "turn_1", status: "completed", itemsView: "full", items: [{ type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" }] },
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" }],
+        },
       },
     } as AnyNotification,
     1004,
@@ -436,14 +579,22 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_x", turnId: "turn_1", text: "X's text", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_x", turnId: "turn_1", text: "X's text", status: "completed" },
+      },
     } as AnyNotification,
     1002,
   );
@@ -455,7 +606,12 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
       method: "turn/completed",
       params: {
         turnId: "turn_1",
-        turn: { id: "turn_1", status: "completed", itemsView: "full", items: [{ type: "agentMessage", id: "item_y", turnId: "turn_1", text: "Y's text", status: "completed" }] },
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ type: "agentMessage", id: "item_y", turnId: "turn_1", text: "Y's text", status: "completed" }],
+        },
       },
     } as AnyNotification,
     1003,
@@ -472,25 +628,39 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/started",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
     } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" },
+    } as AnyNotification,
     1003,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" },
+    } as AnyNotification,
     1004,
   );
 
@@ -498,7 +668,10 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
   // (e.g. an interrupt or session end cut the stream short).
   model = applyNotification(
     model,
-    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
+    } as AnyNotification,
     1005,
   );
 
@@ -512,14 +685,22 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "partial answer", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "partial answer", status: "completed" },
+      },
     } as AnyNotification,
     1002,
   );
@@ -527,7 +708,10 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
   const error = { message: "rate limited", source: "provider", title: "Provider error" };
   model = applyNotification(
     model,
-    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } } } as AnyNotification,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
+    } as AnyNotification,
     1003,
   );
 
@@ -549,32 +733,49 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
     {
       method: "item/started",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
     } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "partial " } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "partial " },
+    } as AnyNotification,
     1003,
   );
   model = applyNotification(
     model,
-    { method: "item/agentMessage/delta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "answer" } } as AnyNotification,
+    {
+      method: "item/agentMessage/delta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "answer" },
+    } as AnyNotification,
     1004,
   );
 
   const error = { message: "rate limited", source: "provider", title: "Provider error" };
   model = applyNotification(
     model,
-    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } } } as AnyNotification,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
+    } as AnyNotification,
     1005,
   );
 
@@ -600,13 +801,19 @@ test('serf/steering/injected with source "user" appends a steering item to the a
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" } } as AnyNotification,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
+    } as AnyNotification,
     1002,
   );
 
@@ -626,11 +833,21 @@ test("serf/steering/injected with no source field appends an item with source un
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
-  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "daemon steer text" } } as AnyNotification, 1002);
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "daemon steer text" },
+    } as AnyNotification,
+    1002,
+  );
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.source).toBeUndefined();
@@ -641,12 +858,26 @@ test("two steers in one turn get distinct ids in arrival order", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
-  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } } as AnyNotification, 1002);
-  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "second" } } as AnyNotification, 1003);
+  model = applyNotification(
+    model,
+    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "second" },
+    } as AnyNotification,
+    1003,
+  );
 
   const items = turnAt(model, 0).items;
   expect(items.map((it) => it.id)).toEqual(["item_steering_live_turn_1_0", "item_steering_live_turn_1_1"]);
@@ -657,7 +888,14 @@ test("serf/steering/injected with no active turn only updates lastFrameAt (no tu
   const model = testHydrate();
   expect(model.activeTurnId).toBeUndefined();
 
-  const result = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "orphaned steer" } } as AnyNotification, 2000);
+  const result = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "orphaned steer" },
+    } as AnyNotification,
+    2000,
+  );
 
   expect(result).toEqual({ ...model, lastFrameAt: 2000 });
   expect(result.turns).toBe(model.turns); // same reference: no turn was touched, none fabricated
@@ -667,12 +905,29 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
-  model = applyNotification(model, { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "mid-turn steer" } } as AnyNotification, 1002);
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "mid-turn steer" },
+    } as AnyNotification,
+    1002,
+  );
 
-  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    } as AnyNotification,
+    1003,
+  );
 
   const items = turnAt(model, 0).items;
   expect(items).toHaveLength(1);
@@ -688,7 +943,10 @@ test("serf/steering/injected images populate display-ready strings via the same 
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
@@ -696,7 +954,12 @@ test("serf/steering/injected images populate display-ready strings via the same 
     model,
     {
       method: "serf/steering/injected",
-      params: { threadId: "thr_t", ref: "ref_t", text: "", images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "screenshot.png" }] },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        text: "",
+        images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "screenshot.png" }],
+      },
     } as AnyNotification,
     1002,
   );
@@ -748,7 +1011,10 @@ test("askPending flips from thread snapshot and item lifecycle", () => {
 
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
@@ -759,7 +1025,14 @@ test("askPending flips from thread snapshot and item lifecycle", () => {
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_ask", turnId: "turn_1", toolName: "ask_user", callId: "call_ask", status: "inProgress" },
+        item: {
+          type: "commandExecution",
+          id: "item_ask",
+          turnId: "turn_1",
+          toolName: "ask_user",
+          callId: "call_ask",
+          status: "inProgress",
+        },
       },
     } as AnyNotification,
     1002,
@@ -774,7 +1047,14 @@ test("askPending flips from thread snapshot and item lifecycle", () => {
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_ask", turnId: "turn_1", toolName: "ask_user", callId: "call_ask", status: "completed" },
+        item: {
+          type: "commandExecution",
+          id: "item_ask",
+          turnId: "turn_1",
+          toolName: "ask_user",
+          callId: "call_ask",
+          status: "completed",
+        },
       },
     } as AnyNotification,
     1003,
@@ -787,7 +1067,10 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   expect(model.reasoningEffort).toBeUndefined();
   model = applyNotification(
     model,
-    { method: "thread/reasoning-effort/changed", params: { threadId: "thr_t", ref: "ref_t", reasoningEffort: "high" } } as AnyNotification,
+    {
+      method: "thread/reasoning-effort/changed",
+      params: { threadId: "thr_t", ref: "ref_t", reasoningEffort: "high" },
+    } as AnyNotification,
     2000,
   );
   expect(model.reasoningEffort).toBe("high");
@@ -805,25 +1088,49 @@ test("first reasoning delta stamps observedStartedAt; a later delta does not mov
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1002,
   );
 
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking",
+      },
+    } as AnyNotification,
     1003,
   );
   expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString());
 
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: " more" } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: " more" },
+    } as AnyNotification,
     1050,
   );
   expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString()); // unchanged by the second delta
@@ -833,23 +1140,52 @@ test("item/completed stamps observedCompletedAt when observation began; the wire
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking",
+      },
+    } as AnyNotification,
     1003,
   );
 
   model = applyNotification(
     model,
-    { method: "item/completed", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" } } } as AnyNotification,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" },
+      },
+    } as AnyNotification,
     1010,
   );
 
@@ -864,22 +1200,50 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking",
+      },
+    } as AnyNotification,
     1003,
   );
 
   // Settle arrives mid-stream — no item/completed ever landed for item_r.
-  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } } } as AnyNotification, 1020);
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
+    } as AnyNotification,
+    1020,
+  );
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.observedStartedAt).toBe(new Date(1003).toISOString());
@@ -908,17 +1272,38 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1002,
   );
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking" } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking",
+      },
+    } as AnyNotification,
     1003,
   );
 
@@ -926,7 +1311,19 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed", startedAt: 5000, completedAt: 6000 } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "reasoning",
+          id: "item_r",
+          turnId: "turn_1",
+          status: "completed",
+          startedAt: 5000,
+          completedAt: 6000,
+        },
+      },
     } as AnyNotification,
     1004,
   );
@@ -948,13 +1345,26 @@ test("warning mid-turn appends an item to the active turn with text=message and 
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "rate limit approaching", source: "provider", title: "Provider warning", hint: "slow down" } } as AnyNotification,
+    {
+      method: "warning",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        message: "rate limit approaching",
+        source: "provider",
+        title: "Provider warning",
+        hint: "slow down",
+      },
+    } as AnyNotification,
     1002,
   );
 
@@ -974,12 +1384,23 @@ test("two warnings in one turn get distinct ids in arrival order", () => {
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
-  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "first" } } as AnyNotification, 1002);
-  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "second" } } as AnyNotification, 1003);
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "first" } } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "second" } } as AnyNotification,
+    1003,
+  );
 
   const items = turnAt(model, 0).items;
   expect(items.map((it) => it.id)).toEqual(["item_warning_live_turn_1_0", "item_warning_live_turn_1_1"]);
@@ -990,7 +1411,11 @@ test("warning with no active turn only updates lastFrameAt (no turn fabricated c
   const model = testHydrate();
   expect(model.activeTurnId).toBeUndefined();
 
-  const result = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "orphaned warning" } } as AnyNotification, 2000);
+  const result = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "orphaned warning" } } as AnyNotification,
+    2000,
+  );
 
   expect(result).toEqual({ ...model, lastFrameAt: 2000 });
   expect(result.turns).toBe(model.turns); // same reference: no turn was touched, none fabricated
@@ -1000,12 +1425,26 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
-  model = applyNotification(model, { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } } as AnyNotification, 1002);
+  model = applyNotification(
+    model,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } } as AnyNotification,
+    1002,
+  );
 
-  model = applyNotification(model, { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification, 1003);
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    } as AnyNotification,
+    1003,
+  );
 
   const items = turnAt(model, 0).items;
   expect(items).toHaveLength(1);
@@ -1020,18 +1459,36 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "context canceled", source: "user", title: "Cancelled", hint: "", cause: "context canceled" } } as AnyNotification,
+    {
+      method: "warning",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        message: "context canceled",
+        source: "user",
+        title: "Cancelled",
+        hint: "",
+        cause: "context canceled",
+      },
+    } as AnyNotification,
     1002,
   );
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(item).toMatchObject({ type: "warning", text: "context canceled", warning: { source: "user", title: "Cancelled", hint: "" } });
+  expect(item).toMatchObject({
+    type: "warning",
+    text: "context canceled",
+    warning: { source: "user", title: "Cancelled", hint: "" },
+  });
 });
 
 // Settled tool calls keep their arguments: the live projector's
@@ -1046,7 +1503,10 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
@@ -1057,7 +1517,15 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_1",
+          argumentsJson: '{"command":"ls"}',
+          status: "inProgress",
+        },
       },
     } as AnyNotification,
     1002,
@@ -1071,7 +1539,15 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", output: "file1\nfile2", status: "completed" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_1",
+          output: "file1\nfile2",
+          status: "completed",
+        },
       },
     } as AnyNotification,
     1003,
@@ -1087,7 +1563,10 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
@@ -1098,7 +1577,15 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_1",
+          argumentsJson: '{"command":"ls"}',
+          status: "inProgress",
+        },
       },
     } as AnyNotification,
     1002,
@@ -1112,7 +1599,15 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls -la"}', status: "completed" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_1",
+          argumentsJson: '{"command":"ls -la"}',
+          status: "completed",
+        },
       },
     } as AnyNotification,
     1003,
@@ -1126,7 +1621,10 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
@@ -1134,7 +1632,12 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
     model,
     {
       method: "item/completed",
-      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "hi", status: "completed" } },
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "hi", status: "completed" },
+      },
     } as AnyNotification,
     1002,
   );
@@ -1153,7 +1656,9 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
 
 test("hydrateThread maps serf.pendingEscalations verbatim into pendingEscalations", () => {
   const escalation = testEscalation();
-  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  const model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
   expect(model.pendingEscalations).toEqual([escalation]);
 });
 
@@ -1164,11 +1669,16 @@ test("hydrateThread defaults pendingEscalations to an empty array when serf.pend
 
 test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
-  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
 
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
@@ -1177,16 +1687,24 @@ test("pendingEscalations survives a turn/started notification — thread-level s
 
 test("pendingEscalations survives a turn/completed bare-stamp settle — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
-  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    } as AnyNotification,
     1002,
   );
 
@@ -1197,7 +1715,11 @@ test('"serf/sandbox/escalation/requested" appends a new card with full field map
   let model = testHydrate();
   const escalation = testEscalation({ command: "rm -rf /tmp/x", outputSoFar: "partial output", partiallyRan: true });
 
-  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification, 2000);
+  model = applyNotification(
+    model,
+    { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification,
+    2000,
+  );
 
   expect(model.pendingEscalations).toEqual([escalation]);
   expect(model.lastFrameAt).toBe(2000);
@@ -1221,7 +1743,11 @@ test('"serf/sandbox/escalation/requested" with an already-present escalationId r
   });
 
   const updatedFirst = testEscalation({ escalationId: "esc_1", mode: "exempt_path_prefix", partiallyRan: true });
-  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updatedFirst } as AnyNotification, 2000);
+  model = applyNotification(
+    model,
+    { method: "serf/sandbox/escalation/requested", params: updatedFirst } as AnyNotification,
+    2000,
+  );
 
   expect(model.pendingEscalations).toEqual([updatedFirst, second]);
 });
@@ -1230,14 +1756,20 @@ test('"serf/sandbox/escalation/requested" for a different thread is a same-refer
   const model = testHydrate();
   const escalation = testEscalation({ ref: "some_other_ref", threadId: "thr_other" });
 
-  const result = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification, 2000);
+  const result = applyNotification(
+    model,
+    { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification,
+    2000,
+  );
 
   expect(result).toBe(model);
 });
 
 test("resolvePendingEscalation removes the entry with a matching escalationId", () => {
   const escalation = testEscalation();
-  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  const model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
 
   const result = resolvePendingEscalation(model, escalation.escalationId);
 
@@ -1246,7 +1778,9 @@ test("resolvePendingEscalation removes the entry with a matching escalationId", 
 
 test("resolvePendingEscalation on an unknown escalationId is a same-reference no-op", () => {
   const escalation = testEscalation();
-  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  const model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
 
   const result = resolvePendingEscalation(model, "esc_does_not_exist");
 
@@ -1265,7 +1799,10 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
   let model = testHydrate();
   model = applyNotification(
     model,
-    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
     1001,
   );
   model = applyNotification(
@@ -1276,7 +1813,15 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_1",
+          argumentsJson: '{"command":"ls"}',
+          status: "inProgress",
+        },
       },
     } as AnyNotification,
     1002,
@@ -1289,19 +1834,45 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
         threadId: "thr_t",
         ref: "ref_t",
         turnId: "turn_1",
-        item: { type: "commandExecution", id: "item_tool2", turnId: "turn_1", toolName: "bash", callId: "call_2", argumentsJson: '{"command":"stale"}', status: "inProgress" },
+        item: {
+          type: "commandExecution",
+          id: "item_tool2",
+          turnId: "turn_1",
+          toolName: "bash",
+          callId: "call_2",
+          argumentsJson: '{"command":"stale"}',
+          status: "inProgress",
+        },
       },
     } as AnyNotification,
     1003,
   );
   model = applyNotification(
     model,
-    { method: "item/started", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" } } } as AnyNotification,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
+      },
+    } as AnyNotification,
     1004,
   );
   model = applyNotification(
     model,
-    { method: "item/reasoning/summaryTextDelta", params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: "thinking..." } } as AnyNotification,
+    {
+      method: "item/reasoning/summaryTextDelta",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        itemId: "item_r",
+        summaryIndex: 0,
+        delta: "thinking...",
+      },
+    } as AnyNotification,
     1005,
   );
 
@@ -1316,8 +1887,24 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
           status: "completed",
           itemsView: "full",
           items: [
-            { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", output: "file1\nfile2", status: "completed" },
-            { type: "commandExecution", id: "item_tool2", turnId: "turn_1", toolName: "bash", callId: "call_2", argumentsJson: '{"command":"pwd"}', status: "completed" },
+            {
+              type: "commandExecution",
+              id: "item_tool",
+              turnId: "turn_1",
+              toolName: "bash",
+              callId: "call_1",
+              output: "file1\nfile2",
+              status: "completed",
+            },
+            {
+              type: "commandExecution",
+              id: "item_tool2",
+              turnId: "turn_1",
+              toolName: "bash",
+              callId: "call_2",
+              argumentsJson: '{"command":"pwd"}',
+              status: "completed",
+            },
             { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" },
           ],
         },

@@ -15,11 +15,12 @@
 // line classifier still colors it usefully, exactly as the legacy
 // patchRenderer rendered from state.args.patch through the same
 // classifier it uses for real diffs.
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { DiffBlock } from "../../../../widgets";
-import { parseArgs, str } from "./helpers";
+
 import type { ItemModel } from "../../../../protocol/model";
+import { DiffBlock } from "../../../../widgets";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
+import { parseArgs, str } from "./helpers";
 
 // diffStats counts add/del lines the same way DiffBlock's own parser does
 // (a "+++"/"---" file-header line never counts as content).

@@ -2,12 +2,12 @@ import {
   Children,
   cloneElement,
   isValidElement,
+  type ReactElement,
+  type ReactNode,
   useEffect,
   useId,
   useRef,
   useState,
-  type ReactElement,
-  type ReactNode,
 } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./tooltip.module.css";

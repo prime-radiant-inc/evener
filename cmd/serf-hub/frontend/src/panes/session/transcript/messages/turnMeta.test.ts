@@ -1,6 +1,6 @@
-import { test, expect } from "vitest";
-import { turnMetaParts } from "./turnMeta";
+import { expect, test } from "vitest";
 import type { TurnModel } from "../../../../protocol/model";
+import { turnMetaParts } from "./turnMeta";
 
 function turn(overrides: Partial<TurnModel> = {}): TurnModel {
   return { id: "turn_1", status: "completed", items: [], ...overrides };

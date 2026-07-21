@@ -1,8 +1,8 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { ToolCallItem } from "./ToolCallItem";
-import { itemRendererFor } from "./types";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
+import { itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 
@@ -25,7 +25,9 @@ test("renders the resolved descriptor's summary", () => {
 });
 
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
-  render(<ToolCallItem item={item({ toolName: "tci_unregistered", output: "raw bytes here" })} turn={turn} live={false} />);
+  render(
+    <ToolCallItem item={item({ toolName: "tci_unregistered", output: "raw bytes here" })} turn={turn} live={false} />,
+  );
   expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
   expect(screen.getByText("raw bytes here")).toBeTruthy(); // default body = raw output
 });
@@ -130,7 +132,9 @@ test("an empty outputImages array renders no gallery thumbnails", () => {
 
 test("outputImages render even for a body-less descriptor (the row still becomes expandable)", () => {
   registerToolRenderer({ match: "tci_images_no_body", summary: () => "s" });
-  render(<ToolCallItem item={item({ toolName: "tci_images_no_body", outputImages: ["a"] })} turn={turn} live={false} />);
+  render(
+    <ToolCallItem item={item({ toolName: "tci_images_no_body", outputImages: ["a"] })} turn={turn} live={false} />,
+  );
   const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
   expect(details.tagName).toBe("DETAILS");
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);

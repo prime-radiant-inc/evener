@@ -46,12 +46,7 @@ export function Chip({ children, tone = "neutral", onRemove }: ChipProps) {
     <span className={`${BASE_CLASS.chip} ${TONE_CLASS[tone]}`}>
       {children}
       {onRemove !== undefined && (
-        <button
-          type="button"
-          className={BASE_CLASS.remove}
-          aria-label={removeLabelFor(children)}
-          onClick={onRemove}
-        >
+        <button type="button" className={BASE_CLASS.remove} aria-label={removeLabelFor(children)} onClick={onRemove}>
           <RemoveIcon />
         </button>
       )}

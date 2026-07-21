@@ -57,7 +57,12 @@ export function ImageGallery({ images }: ImageGalleryProps) {
 
       {openIndex !== null && (
         <Dialog open onClose={() => setOpenIndex(null)} title={altFor(openIndex, total)}>
-          <img data-testid="image-gallery-lightbox-img" className={CLASS.lightboxImg} src={images[openIndex]} alt={altFor(openIndex, total)} />
+          <img
+            data-testid="image-gallery-lightbox-img"
+            className={CLASS.lightboxImg}
+            src={images[openIndex]}
+            alt={altFor(openIndex, total)}
+          />
           {total > 1 && (
             <div className={CLASS.nav}>
               <Button variant="quiet" size="sm" data-testid="image-gallery-prev" onClick={() => step(-1)}>

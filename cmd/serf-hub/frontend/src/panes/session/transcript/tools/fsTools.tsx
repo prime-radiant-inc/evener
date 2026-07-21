@@ -4,10 +4,11 @@
 // bounded row) - target/result folded into one purpose-first summary string
 // per this file's own ToolRendererDescriptor contract (there is no separate
 // target/result slot on the wire like the legacy DOM had).
+
+import type { ItemModel } from "../../../../protocol/model";
 import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody, TailFoldedOutputBody } from "./bodies";
 import { clip, lineCount, parseArgs, str } from "./helpers";
-import type { ItemModel } from "../../../../protocol/model";
 
 const GREP_PATTERN_CLIP = 50;
 

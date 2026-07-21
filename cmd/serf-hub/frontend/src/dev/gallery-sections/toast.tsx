@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Button } from "../../widgets/button";
-import { Toast, useToasts, type ToastKind } from "../../widgets/toast";
+import { Toast, type ToastKind, useToasts } from "../../widgets/toast";
 import { ThemeFlip } from "../ThemeFlip";
 import styles from "./toast.module.css";
 

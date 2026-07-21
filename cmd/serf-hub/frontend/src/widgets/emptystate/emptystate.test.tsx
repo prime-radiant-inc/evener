@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { EmptyState } from "./index";
 
 afterEach(cleanup);
@@ -33,7 +33,11 @@ test("omits the action slot when not provided", () => {
 
 test("renders title, hint, and action together", () => {
   render(
-    <EmptyState title="No sessions yet" hint="Start one from the command palette." action={<button>New session</button>} />,
+    <EmptyState
+      title="No sessions yet"
+      hint="Start one from the command palette."
+      action={<button>New session</button>}
+    />,
   );
   expect(screen.getByText("No sessions yet")).toBeTruthy();
   expect(screen.getByText("Start one from the command palette.")).toBeTruthy();

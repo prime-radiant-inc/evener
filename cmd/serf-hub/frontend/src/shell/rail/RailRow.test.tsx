@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Tree, type TreeRowInfo } from "../../widgets";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
+import { Tree, type TreeRowInfo } from "../../widgets";
 import { cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
+import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
 
 afterEach(cleanup);
 
@@ -281,7 +281,13 @@ describe("project row", () => {
   });
 
   test("the synthetic '(no project)' bucket gets no actions menu at all - archive/delete always 400 for it server-side", () => {
-    render(<RailRow node={projectRailNode(apiProject({ key: "no-project", name: "(no project)" }))} info={info()} actions={actions()} />);
+    render(
+      <RailRow
+        node={projectRailNode(apiProject({ key: "no-project", name: "(no project)" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
     expect(screen.queryByRole("button")).toBeNull();
   });
 });

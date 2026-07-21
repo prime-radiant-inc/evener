@@ -1,6 +1,6 @@
-import { Suspense } from "react";
-import { afterEach, beforeAll, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { Suspense } from "react";
+import { afterEach, beforeAll, expect, test } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
 
 // Await the module ONCE up front so React.lazy resolves from a warm module

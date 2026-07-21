@@ -7,8 +7,9 @@
 // nothing while level is "none" (fresh/inactive), and deliberately carries
 // no animation of its own - Cadence's trace already conveys activity; this
 // line's entire job is to say something honest when that activity stops.
-import { describeLiveness } from "./liveness";
+
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { describeLiveness } from "./liveness";
 import styles from "./livenessline.module.css";
 
 export interface LivenessLineProps {

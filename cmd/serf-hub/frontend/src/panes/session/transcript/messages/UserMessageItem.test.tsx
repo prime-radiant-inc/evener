@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { UserMessageItem, UserMessageView } from "./UserMessageItem";
-import { itemRendererFor } from "../types";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { itemRendererFor } from "../types";
+import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 
 afterEach(cleanup);
 
@@ -37,18 +37,14 @@ test("no gallery thumbnails when the item carries no images", () => {
 });
 
 test("a single image renders one gallery thumbnail", () => {
-  render(<UserMessageItem item={item({ text: "look", images: ["data:image/png;base64,x"] })} turn={turn} live={false} />);
+  render(
+    <UserMessageItem item={item({ text: "look", images: ["data:image/png;base64,x"] })} turn={turn} live={false} />,
+  );
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
 });
 
 test("multiple images each render their own gallery thumbnail", () => {
-  render(
-    <UserMessageItem
-      item={item({ text: "look", images: ["a", "b", "c"] })}
-      turn={turn}
-      live={false}
-    />,
-  );
+  render(<UserMessageItem item={item({ text: "look", images: ["a", "b", "c"] })} turn={turn} live={false} />);
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(3);
 });
 

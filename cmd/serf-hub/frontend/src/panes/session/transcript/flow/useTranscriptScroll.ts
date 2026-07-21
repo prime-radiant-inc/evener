@@ -22,10 +22,10 @@
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ThreadModel } from "../../../../protocol/model";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { threadsStore } from "../../../../stores/threads";
+import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
 
 export interface UseTranscriptScrollOptions {

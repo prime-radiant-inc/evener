@@ -7,11 +7,11 @@
 // the `actions` prop, which Rail.tsx implements against actions.ts + the
 // tree store's refresh().
 import type { ReactNode } from "react";
-import { Badge, Cadence, Menu, type CadenceState, type MenuItem, type TreeRowInfo } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
+import { Badge, Cadence, type CadenceState, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./Rail.module.css";
+import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),

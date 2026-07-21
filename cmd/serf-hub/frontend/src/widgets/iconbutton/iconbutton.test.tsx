@@ -1,10 +1,10 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { createRef } from "react";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
+import { afterEach, expect, test, vi } from "vitest";
 import { IconButton, type IconButtonProps } from "./index";
 
 afterEach(cleanup);

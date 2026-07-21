@@ -16,13 +16,14 @@
 // here and in the wave-4 task-3 report rather than invented silently. It
 // intentionally only looks inside the FINAL bracketed segment (never the
 // command's own stdout/stderr body) to keep false positives unlikely.
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { CodeBlock } from "../../../../widgets";
-import { clip, parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
+
 import type { ItemModel } from "../../../../protocol/model";
-import styles from "./shelltool.module.css";
+import { CodeBlock } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
+import { clip, parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
+import styles from "./shelltool.module.css";
 
 const COMMAND_CLIP = 80;
 const TAIL_MAX_CHARS = 8000;

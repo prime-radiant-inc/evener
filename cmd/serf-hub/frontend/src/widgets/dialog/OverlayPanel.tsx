@@ -1,4 +1,4 @@
-import { useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { type KeyboardEvent, type MouseEvent, type ReactNode, useId, useRef } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";

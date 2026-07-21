@@ -1,13 +1,13 @@
-import { lazy, useState } from "react";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { registerPane, type PaneProps } from "../paneRegistry";
+import { lazy, useState } from "react";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { type PaneProps, registerPane } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { setLastPopstateWasTrustedForTests, StackHost } from "./StackHost";
+import { StackHost, setLastPopstateWasTrustedForTests } from "./StackHost";
 
 // Fixture pane type for the bulk of this file's tests - non-singleton, so
 // "doc"/{ref} with different refs are distinct panes (same dedup rule

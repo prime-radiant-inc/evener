@@ -1,7 +1,7 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { TurnSeparator } from "./TurnSeparator";
+import { afterEach, expect, test } from "vitest";
 import type { TurnModel } from "../../../../protocol/model";
+import { TurnSeparator } from "./TurnSeparator";
 
 afterEach(cleanup);
 
@@ -26,9 +26,7 @@ test("renders the duration alone when only durationMs is present", () => {
 
 test("renders duration, tokens, and cost joined with the standard separator", () => {
   render(
-    <TurnSeparator
-      turn={turn({ durationMs: 65432, usage: { inputTokens: 500, outputTokens: 120 }, cost: "$1.00" })}
-    />,
+    <TurnSeparator turn={turn({ durationMs: 65432, usage: { inputTokens: 500, outputTokens: 120 }, cost: "$1.00" })} />,
   );
   expect(screen.getByTestId("turn-separator").textContent).toBe("65s · ↑500 ↓120 · $1.00");
 });

@@ -1,5 +1,5 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { NewContentPill } from "./NewContentPill";
 
 afterEach(() => {
@@ -35,7 +35,7 @@ test("reads 'needs you' instead of the plain count when needsYou is true, per th
   expect(pill.textContent).not.toContain("5");
 });
 
-test("is a real, keyboard-focusable <button type=\"button\">, not a clickable span", () => {
+test('is a real, keyboard-focusable <button type="button">, not a clickable span', () => {
   render(<NewContentPill count={3} needsYou={false} onClick={() => {}} />);
   const pill = screen.getByTestId("new-content-pill");
   expect(pill.tagName).toBe("BUTTON");

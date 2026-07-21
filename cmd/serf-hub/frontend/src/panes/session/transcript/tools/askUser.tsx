@@ -18,12 +18,13 @@
 // an individual malformed question all degrade to a fallback rather than
 // throwing, since this is untrusted wire JSON, not a value this file
 // controls the shape of.
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { parseArgs } from "./helpers";
+
 import type { ItemModel } from "../../../../protocol/model";
-import styles from "./askuser.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
+import styles from "./askuser.module.css";
+import { parseArgs } from "./helpers";
 
 interface AskUserOption {
   label: string;

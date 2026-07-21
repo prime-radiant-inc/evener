@@ -18,9 +18,10 @@
 // independent StreamingText per index sidesteps this entirely: each index's
 // own chunk array is safe in isolation, regardless of what any other index
 // does.
-import { registerItemRenderer, type ItemRenderProps } from "../types";
-import { StreamingText } from "../StreamingText";
+
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { StreamingText } from "../StreamingText";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { joinedReasoningParagraphs, reasoningPreview, thoughtSeconds } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
 

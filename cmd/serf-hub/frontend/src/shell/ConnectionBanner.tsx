@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
+import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
+import { AppwireClient, type ConnectionState } from "../protocol/client";
+import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import { rpcURLFromLocation } from "../protocol/transport";
+import { connectionStore, useConnectionStore } from "../stores/connection";
 import { Button } from "../widgets";
 import { requireClass } from "../widgets/internal/requireClass";
-import { AppwireClient, type ConnectionState } from "../protocol/client";
-import { rpcURLFromLocation } from "../protocol/transport";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import { connectionStore, useConnectionStore } from "../stores/connection";
-import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "../auth";
-import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 import styles from "./ConnectionBanner.module.css";
+import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./chrome/webNotBuilt";
 
 export interface ConnectionBannerProps {
   state: ConnectionState;
@@ -154,7 +154,12 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
 
   if (state !== "closed") return null;
 
-  const message = closedReason === "auth" ? SIGN_IN_PROMPT_MESSAGE : closedReason === "not-built" ? NOT_BUILT_MESSAGE : CLOSED_MESSAGE;
+  const message =
+    closedReason === "auth"
+      ? SIGN_IN_PROMPT_MESSAGE
+      : closedReason === "not-built"
+        ? NOT_BUILT_MESSAGE
+        : CLOSED_MESSAGE;
 
   return (
     <div className={CLASS.banner}>

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, test, expect } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";

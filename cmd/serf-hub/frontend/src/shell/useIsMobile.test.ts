@@ -1,5 +1,5 @@
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import { cleanup, renderHook, act } from "@testing-library/react";
 import { useIsMobile } from "./useIsMobile";
 
 // jsdom does not implement window.matchMedia at all (verified directly:

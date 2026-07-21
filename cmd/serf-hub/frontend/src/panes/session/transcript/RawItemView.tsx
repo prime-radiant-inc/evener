@@ -6,10 +6,11 @@
 // proving the whole live pipeline end to end even before T2/T3 register
 // nicer per-type views); once settled (or if there's nothing to stream), it
 // shows the plain settled text field.
-import type { ItemRenderProps } from "./types";
-import { StreamingText } from "./StreamingText";
+
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./rawitemview.module.css";
+import { StreamingText } from "./StreamingText";
+import type { ItemRenderProps } from "./types";
 
 const CLASS = {
   item: requireClass(styles.item, "rawitemview.module.css", "item"),

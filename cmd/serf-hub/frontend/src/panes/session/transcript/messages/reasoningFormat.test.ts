@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { expect, test } from "vitest";
 import { joinedReasoningParagraphs, reasoningPreview, thoughtSeconds } from "./reasoningFormat";
 
 // --- joinedReasoningParagraphs ---------------------------------------------
@@ -16,7 +16,12 @@ test("an empty summaries array yields no paragraphs", () => {
 });
 
 test("joins each summaryIndex's chunks into one paragraph", () => {
-  expect(joinedReasoningParagraphs([["Hel", "lo "], ["wor", "ld"]])).toEqual(["Hello ", "world"]);
+  expect(
+    joinedReasoningParagraphs([
+      ["Hel", "lo "],
+      ["wor", "ld"],
+    ]),
+  ).toEqual(["Hello ", "world"]);
 });
 
 test("drops a paragraph whose chunks join to an empty string", () => {

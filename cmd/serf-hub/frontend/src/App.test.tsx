@@ -1,5 +1,5 @@
-import { afterEach, beforeAll, beforeEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { App } from "./App";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 

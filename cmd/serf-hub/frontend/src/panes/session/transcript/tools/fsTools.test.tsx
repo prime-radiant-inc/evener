@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./fsTools";
 import type { ItemModel } from "../../../../protocol/model";
@@ -157,6 +157,10 @@ test("cheap body renders nothing when output is blank", () => {
 
 test("read_file: the target reads straight from a settled item's own argumentsJSON", () => {
   const d = toolRendererFor("read_file");
-  const settled = item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "settled.ts" }), output: "x\n" });
+  const settled = item({
+    toolName: "read_file",
+    argumentsJSON: JSON.stringify({ file_path: "settled.ts" }),
+    output: "x\n",
+  });
   expect(d.summary(settled)).toBe("Read settled.ts · lines 1-1");
 });

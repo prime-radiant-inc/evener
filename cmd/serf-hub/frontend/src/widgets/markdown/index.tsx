@@ -1,8 +1,8 @@
-import { useMemo } from "react";
 import DOMPurify from "dompurify";
 import { Marked, type RendererObject, type Tokens } from "marked";
-import { requireClass } from "../internal/requireClass";
+import { useMemo } from "react";
 import codeblockStyles from "../codeblock/codeblock.module.css";
+import { requireClass } from "../internal/requireClass";
 import styles from "./markdown.module.css";
 
 export interface MarkdownProps {

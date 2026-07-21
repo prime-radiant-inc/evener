@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./askUser";
 import type { ItemModel } from "../../../../protocol/model";
@@ -38,16 +38,28 @@ const ONE_QUESTION = [
 
 test("summary lists each question's header, bracketed and comma-joined", () => {
   const d = toolRendererFor("ask_user");
-  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) }))).toBe(
-    "Asked: [Deploy?]",
-  );
+  expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(ONE_QUESTION) }))).toBe("Asked: [Deploy?]");
 });
 
 test("summary joins multiple question headers", () => {
   const d = toolRendererFor("ask_user");
   const questions = [
-    { header: "A", question: "q1", options: [{ label: "x", detail: "y" }, { label: "z", detail: "w" }] },
-    { header: "B", question: "q2", options: [{ label: "x", detail: "y" }, { label: "z", detail: "w" }] },
+    {
+      header: "A",
+      question: "q1",
+      options: [
+        { label: "x", detail: "y" },
+        { label: "z", detail: "w" },
+      ],
+    },
+    {
+      header: "B",
+      question: "q2",
+      options: [
+        { label: "x", detail: "y" },
+        { label: "z", detail: "w" },
+      ],
+    },
   ];
   expect(d.summary(item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) }))).toBe("Asked: [A], [B]");
 });
@@ -100,8 +112,22 @@ test("body renders multiple question cards in order", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
   const questions = [
-    { header: "First", question: "question one", options: [{ label: "a", detail: "b" }, { label: "c", detail: "d" }] },
-    { header: "Second", question: "question two", options: [{ label: "e", detail: "f" }, { label: "g", detail: "h" }] },
+    {
+      header: "First",
+      question: "question one",
+      options: [
+        { label: "a", detail: "b" },
+        { label: "c", detail: "d" },
+      ],
+    },
+    {
+      header: "Second",
+      question: "question two",
+      options: [
+        { label: "e", detail: "f" },
+        { label: "g", detail: "h" },
+      ],
+    },
   ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   expect(screen.getByText("question one")).toBeTruthy();
@@ -147,7 +173,17 @@ test("body renders the absent-data fallback (not malformed) when argumentsJSON i
 test("body skips a malformed individual question (missing required fields) rather than crashing the whole card", () => {
   const d = toolRendererFor("ask_user");
   const Body = d.body!;
-  const questions = [{ header: "Good", question: "a real question", options: [{ label: "a", detail: "b" }, { label: "c", detail: "d" }] }, { header: "Bad" /* missing question/options */ }];
+  const questions = [
+    {
+      header: "Good",
+      question: "a real question",
+      options: [
+        { label: "a", detail: "b" },
+        { label: "c", detail: "d" },
+      ],
+    },
+    { header: "Bad" /* missing question/options */ },
+  ];
   render(<Body item={item({ toolName: "ask_user", argumentsJSON: askUserArgs(questions) })} live={false} />);
   expect(screen.getByText("a real question")).toBeTruthy();
   expect(screen.queryByText("Bad")).toBeNull();

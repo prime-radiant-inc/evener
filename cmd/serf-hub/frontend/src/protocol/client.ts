@@ -5,8 +5,9 @@
 // reconnect semantics of the legacy cmd/serf-hub/assets/appwire.js
 // (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
 // backs off exponentially up to a cap.
-import type { WebSocketLike } from "./transport";
+
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
 
 export type { AnyNotification };
@@ -432,8 +433,7 @@ export class AppwireClient {
       this.handshakeReject = (err) => settle(err);
       socket.onopen = () => settle(null);
       socket.onerror = () => settle(new Error("AppwireClient: socket error while connecting"));
-      socket.onclose = (ev) =>
-        settle(new Error(`AppwireClient: socket closed while connecting (code ${ev.code})`));
+      socket.onclose = (ev) => settle(new Error(`AppwireClient: socket closed while connecting (code ${ev.code})`));
     });
   }
 

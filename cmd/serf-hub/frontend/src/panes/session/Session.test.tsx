@@ -1,14 +1,14 @@
-import { StrictMode } from "react";
-import { afterEach, beforeEach, test, expect, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import Session from "./Session";
+import { StrictMode } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import { ClientProvider } from "../../shell/clientContext";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
+import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import { requireClass } from "../../widgets/internal/requireClass";
+import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
+import Session from "./Session";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -87,7 +87,11 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   const box: { resolve: ((r: ThreadReadResponse) => void) | null } = { resolve: null };
   fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolve = resolve)));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   expect(screen.getByText(/loading/i)).toBeTruthy();
   // request()'s handler invocation (which captures the resolver) is
@@ -101,7 +105,11 @@ test("shows the thread's live name once hydrated, not the raw ref", async () => 
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { name: "My session" }));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   await waitFor(() => expect(screen.getByText("My session")).toBeTruthy());
 });
@@ -110,7 +118,11 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
@@ -119,7 +131,11 @@ test('shows "no turns yet" for a freshly-started thread with an empty transcript
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a")); // testThread's default has no turns
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   await waitFor(() => expect(screen.getByText(/no turns yet/i)).toBeTruthy());
 });
@@ -129,12 +145,21 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   fake.on("thread/read", () =>
     readResponse("ref_a", {
       turns: [
-        { id: "turn_1", status: "completed", itemsView: "full", items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }] },
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
       ],
     }),
   );
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   expect(screen.getByText("hi")).toBeTruthy();
@@ -144,7 +169,11 @@ test("ensureThread fires exactly once when the client is already ready at mount 
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
 
   await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1));
 });
@@ -154,7 +183,11 @@ test("ensureThread is deferred until the client becomes ready, not attempted whi
   connectionStore.getState().connect(fake);
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await act(async () => {
     await Promise.resolve(); // let any (wrongly) eager attempt surface before asserting it didn't
   });
@@ -171,7 +204,11 @@ test("unmounting before the client ever becomes ready calls neither ensureThread
   connectionStore.getState().connect(fake);
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  const { unmount } = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  const { unmount } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   unmount();
   act(() => {
     fake.emitReady(); // too late - the pane is already gone
@@ -188,7 +225,11 @@ test("releaseThread fires exactly once on unmount", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  const { unmount } = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  const { unmount } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(true));
 
   unmount();
@@ -237,8 +278,16 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   // some component-local accumulator" (this test's actual subject) from
   // "does releasing the LAST pane stop tracking a ref" (a separate concern
   // stores/threads.ts's own test suite already covers exhaustively).
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p2-keepalive" focused={false} /></ClientProvider>);
-  const paneA = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p2-keepalive" focused={false} />
+    </ClientProvider>,
+  );
+  const paneA = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await waitFor(() => expect(within(paneA.container).getByTestId("turn-block")).toBeTruthy());
 
   act(() => {
@@ -265,15 +314,25 @@ test("survives unmount/remount mid-stream: durable state lives in the store, not
   // Remount pane A - a fresh component instance (StreamingText's own
   // internal ref/text node from before are gone; if the rendered content
   // depended on THAT instead of the store, this would render blank or stale).
-  const paneARemounted = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
-  await waitFor(() => expect(within(paneARemounted.container).getByTestId("streaming-text").textContent).toBe("hello world"));
+  const paneARemounted = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() =>
+    expect(within(paneARemounted.container).getByTestId("streaming-text").textContent).toBe("hello world"),
+  );
 });
 
 test("Cadence's dot reflects the thread's live status via cadenceStateForStatus, and updates on a live status change", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } }));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await waitFor(() => expect(screen.getByTestId("cadence-dot")).toBeTruthy());
 
   act(() => {
@@ -300,7 +359,11 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 
-  render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await act(async () => {
     await flushUntil(() => threadsStore.getState().threads.has("ref_a"));
   });
@@ -357,11 +420,22 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
-      turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }] }],
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
+      ],
     }),
   );
 
-  const { container } = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
 
@@ -374,7 +448,12 @@ test("scrolled away: a live item arriving shows the real NewContentPill, wired t
       method: "turn/started",
       params: {
         ref: "ref_a",
-        turn: { id: "turn_2", status: "completed", itemsView: "full", items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }] },
+        turn: {
+          id: "turn_2",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
+        },
       },
     } as AnyNotification);
   });
@@ -387,11 +466,22 @@ test("clicking the real NewContentPill clears it", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
     readResponse("ref_a", {
-      turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }] }],
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
+      ],
     }),
   );
 
-  const { container } = render(<ClientProvider client={fake}><Session params={{ ref: "ref_a" }} paneId="p1" focused={true} /></ClientProvider>);
+  const { container } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   const root = scrollRootOf(container);
   stubScrolledAway(root);
@@ -401,7 +491,12 @@ test("clicking the real NewContentPill clears it", async () => {
       method: "turn/started",
       params: {
         ref: "ref_a",
-        turn: { id: "turn_2", status: "completed", itemsView: "full", items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }] },
+        turn: {
+          id: "turn_2",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "new", status: "completed" }],
+        },
       },
     } as AnyNotification);
   });

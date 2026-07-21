@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./editTools";
 import type { ItemModel } from "../../../../protocol/model";
@@ -90,9 +90,15 @@ test("write_file: body shows the tool's own confirmation output verbatim", () =>
 
 test("apply_patch: summary lists the touched files from the v4a patch envelope", () => {
   const d = toolRendererFor("apply_patch");
-  const patch = ["*** Begin Patch", "*** Update File: a.ts", "@@", "-old", "+new", "*** Delete File: b.ts", "*** End Patch"].join(
-    "\n",
-  );
+  const patch = [
+    "*** Begin Patch",
+    "*** Update File: a.ts",
+    "@@",
+    "-old",
+    "+new",
+    "*** Delete File: b.ts",
+    "*** End Patch",
+  ].join("\n");
   expect(d.summary(item({ toolName: "apply_patch", argumentsJSON: JSON.stringify({ patch }) }))).toBe(
     "Patched a.ts, b.ts · +1 -1",
   );
@@ -117,7 +123,9 @@ test("apply_patch: preserves first-seen file order and de-duplicates repeats", (
 test("apply_patch: body renders the raw v4a patch text through DiffBlock", () => {
   const d = toolRendererFor("apply_patch");
   const Body = d.body!;
-  const patch = ["*** Begin Patch", "*** Update File: a.ts", "@@", "-old line", "+new line", "*** End Patch"].join("\n");
+  const patch = ["*** Begin Patch", "*** Update File: a.ts", "@@", "-old line", "+new line", "*** End Patch"].join(
+    "\n",
+  );
   render(<Body item={item({ toolName: "apply_patch", argumentsJSON: JSON.stringify({ patch }) })} live={false} />);
   expect(screen.getByText("old line")).toBeTruthy();
   expect(screen.getByText("new line")).toBeTruthy();

@@ -1,5 +1,5 @@
-import { test, expect } from "vitest";
-import { formatTokenCount, formatDurationMs, firstLine } from "./format";
+import { expect, test } from "vitest";
+import { firstLine, formatDurationMs, formatTokenCount } from "./format";
 
 // --- formatTokenCount -----------------------------------------------------
 // Parity: renderer-format.js:582-587. Below 1000 is a plain rounded

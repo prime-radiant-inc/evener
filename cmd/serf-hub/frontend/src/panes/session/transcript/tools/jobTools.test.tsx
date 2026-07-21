@@ -1,10 +1,10 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./subagentModule"; // registers `delegate` too - needed for the row-correlation tests below
-import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import type { ItemModel } from "../../../../protocol/model";
+import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 
 afterEach(() => {
   cleanup();
@@ -27,9 +27,7 @@ test("job_status: summary reads job_id and status from the parsed JSON output", 
   const d = toolRendererFor("job_status");
   const args = JSON.stringify({ job_id: "job_42" });
   const output = JSON.stringify({ job_id: "job_42", status: "running", kind: "shell" });
-  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe(
-    "Checked job_42 · running",
-  );
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: args, output }))).toBe("Checked job_42 · running");
 });
 
 test("job_status: falls back to the job_id arg with no status suffix when output isn't parseable yet (still running)", () => {
@@ -76,7 +74,12 @@ test("job_list: a status filter is mentioned in the summary", () => {
 test("job_list: body shows the tool's own formatted listing text", () => {
   const d = toolRendererFor("job_list");
   const Body = d.body!;
-  render(<Body item={item({ toolName: "job_list", output: "# job_id  type  status\njob_1  shell  running\n1 job(s)." })} live={false} />);
+  render(
+    <Body
+      item={item({ toolName: "job_list", output: "# job_id  type  status\njob_1  shell  running\n1 job(s)." })}
+      live={false}
+    />,
+  );
   expect(screen.getByText(/1 job\(s\)\./)).toBeTruthy();
 });
 
@@ -214,7 +217,12 @@ test("delegate_send checking on a delegate (by delegate_id) updates its existing
         callId: "call_spawn_dlg",
         toolName: "delegate",
         argumentsJSON: JSON.stringify({ task: "spawn" }),
-        output: JSON.stringify({ delegate_id: "dlg_wired", job_id: "job_x", status: "running", transcript_ref: "ref_x" }),
+        output: JSON.stringify({
+          delegate_id: "dlg_wired",
+          job_id: "job_x",
+          status: "running",
+          transcript_ref: "ref_x",
+        }),
       })}
       live={false}
     />,

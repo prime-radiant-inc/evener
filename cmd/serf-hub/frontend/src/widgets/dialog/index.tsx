@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
-import { OverlayPanel } from "./OverlayPanel";
 import styles from "./dialog.module.css";
+import { OverlayPanel } from "./OverlayPanel";
 
 export interface DialogProps {
   open: boolean;

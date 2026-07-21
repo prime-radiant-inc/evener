@@ -5,15 +5,32 @@
 // state, and the rename/delete-project confirmation dialogs; every mutation
 // goes through actions.ts, refetching the tree on success and toasting on
 // failure (no optimistic UI - out of this task's scope).
-import { useEffect, useState, type ChangeEvent } from "react";
-import { Badge, Button, Dialog, EmptyState, IconButton, Input, Skeleton, Tree, useToasts, type TreeRowInfo } from "../../widgets";
+import { type ChangeEvent, useEffect, useState } from "react";
+import {
+  type TreeNode as ApiTreeNode,
+  type TreeProject as ApiTreeProject,
+  type TreeResponse,
+  treeStore,
+  useTreeStore,
+} from "../../stores/tree";
+import {
+  Badge,
+  Button,
+  Dialog,
+  EmptyState,
+  IconButton,
+  Input,
+  Skeleton,
+  Tree,
+  type TreeRowInfo,
+  useToasts,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
-import { treeStore, useTreeStore, type TreeNode as ApiTreeNode, type TreeProject as ApiTreeProject, type TreeResponse } from "../../stores/tree";
 import { workspaceStore } from "../workspace";
-import { archivedProjectNodes, overrideLookup, projectNodes, sessionNodes, type RailNode } from "./railNodes";
-import { RailRow, type RailRowActions } from "./RailRow";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
+import { RailRow, type RailRowActions } from "./RailRow";
+import { archivedProjectNodes, overrideLookup, projectNodes, type RailNode, sessionNodes } from "./railNodes";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -144,7 +161,12 @@ export function Rail() {
     // expand is what triggers the lazy load. Already-loaded / already
     // in-flight is naturally deduped by projectDetails already having the
     // key, so a second expand never re-fetches.
-    if (willExpand && node.kind === "project" && node.project.is_archived === true && !projectDetails.has(node.project.key)) {
+    if (
+      willExpand &&
+      node.kind === "project" &&
+      node.project.is_archived === true &&
+      !projectDetails.has(node.project.key)
+    ) {
       void treeStore.getState().loadProjectDetail(node.project.key);
     }
   }
@@ -172,7 +194,10 @@ export function Rail() {
       void runAction(() => setFavorite("session", session.ref, !session.favorite), "Couldn't update favorite");
     },
     onToggleArchiveSession: (session) => {
-      void runAction(() => setArchived("session", session.ref, session.tier !== "archived"), "Couldn't update archive state");
+      void runAction(
+        () => setArchived("session", session.ref, session.tier !== "archived"),
+        "Couldn't update archive state",
+      );
     },
     onRenameRequest: (session) => {
       setRenameTarget(session);
@@ -338,7 +363,10 @@ export function Rail() {
         >
           <label className={CLASS.dialogField}>
             Name
-            <Input value={renameValue} onChange={(e: ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value)} />
+            <Input
+              value={renameValue}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setRenameValue(e.target.value)}
+            />
           </label>
         </Dialog>
       )}

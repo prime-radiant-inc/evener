@@ -15,7 +15,7 @@
 // AppShell's routing glue, DockHost's dockview interactions) - the
 // auto-close effect below already reacts to that, for free, with no
 // bespoke integration code required on the rail's side.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { EmptyState, IconButton, Sheet } from "../../widgets";
 import { useWorkspaceStore } from "../workspace";
 

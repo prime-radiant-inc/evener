@@ -1,4 +1,4 @@
-import { forwardRef, type ButtonHTMLAttributes, type MouseEvent, type ReactNode } from "react";
+import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./button.module.css";
 

@@ -1,8 +1,8 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Toast } from "../../widgets";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { resetTreeStoreForTests } from "../../stores/tree";
+import { Toast } from "../../widgets";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { Rail } from "./Rail";
 
@@ -67,9 +67,19 @@ function wireProject(overrides: Record<string, unknown> = {}) {
   return { key: "p", name: "Proj", sessions: [], ...overrides };
 }
 
-const NEEDS_YOU_NODE = wireNode({ row_id: "needsyou:local:ny1", ref: "local:ny1", title: "Needs you session", state: "awaiting" });
+const NEEDS_YOU_NODE = wireNode({
+  row_id: "needsyou:local:ny1",
+  ref: "local:ny1",
+  title: "Needs you session",
+  state: "awaiting",
+});
 const LIVE_NODE = wireNode({ row_id: "live:local:live1", ref: "local:live1", title: "Live session", state: "active" });
-const PINNED_NODE = wireNode({ row_id: "pinned:local:pin1", ref: "local:pin1", title: "Pinned session", favorite: true });
+const PINNED_NODE = wireNode({
+  row_id: "pinned:local:pin1",
+  ref: "local:pin1",
+  title: "Pinned session",
+  favorite: true,
+});
 const PROJECT_SESSION = wireNode({
   row_id: "project:proj1:local:s1",
   ref: "local:s1",
@@ -147,7 +157,7 @@ function defaultPostResponses(): Record<string, { status: number; body: unknown 
     "/api/favorite": { status: 200, body: { ok: true } },
     "/api/archive": { status: 200, body: { ok: true } },
     "/api/project/delete": { status: 200, body: { deleted: ["local:old1"], skipped: [] } },
-    "rename": { status: 204, body: undefined },
+    rename: { status: 204, body: undefined },
   };
 }
 
@@ -397,7 +407,10 @@ describe("favorite action", () => {
     await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
     await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
 
-    expect(postCalls).toContainEqual({ path: "/api/favorite", body: { kind: "session", id: "local:s1", favorited: true } });
+    expect(postCalls).toContainEqual({
+      path: "/api/favorite",
+      body: { kind: "session", id: "local:s1", favorited: true },
+    });
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
   });
 
@@ -429,7 +442,10 @@ describe("favorite action", () => {
     await user.click(within(row).getByRole("button", { name: /actions for prime-radiant/i }));
     await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
 
-    expect(postCalls).toContainEqual({ path: "/api/favorite", body: { kind: "project", id: "proj1", favorited: true } });
+    expect(postCalls).toContainEqual({
+      path: "/api/favorite",
+      body: { kind: "project", id: "proj1", favorited: true },
+    });
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
   });
 });

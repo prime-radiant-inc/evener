@@ -1,12 +1,12 @@
-import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { resetWorkspaceStoreForTests } from "./workspace";
 import { AppShell } from "./AppShell";
+import { resetWorkspaceStoreForTests } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same

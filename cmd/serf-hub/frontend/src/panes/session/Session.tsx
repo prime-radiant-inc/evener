@@ -7,26 +7,26 @@
 // connection-ready gate's local closure, neither of which loses anything a
 // remount can't immediately reconstruct from the store.
 import { useEffect, useRef } from "react";
-import { PaneScaffold, VirtualList, Cadence, EmptyState, type VirtualListHandle } from "../../widgets";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { cadenceStateForStatus, useNowTick, NOW_TICK_MS } from "./liveness";
-import { useTranscript } from "./transcript/useTranscript";
+import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { TurnBlock } from "./transcript/TurnBlock";
+import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
 // every tool descriptor (T3) the moment the pane module loads, so the
 // registries are full regardless of import order elsewhere (same
 // principle as TurnBlock.tsx's own ToolCallItem import).
 import "./transcript/messages";
 import "./transcript/tools";
-import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
-import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import styles from "./session.module.css";
 import { FlowOverlay } from "./transcript/flow/FlowOverlay";
-import { NewContentPill } from "./transcript/flow/NewContentPill";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
-import styles from "./session.module.css";
+import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
+import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 
 export interface SessionPaneParams {
   ref: string;
@@ -70,7 +70,10 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
       // ensureThread's own catch already rolled back this attempt's
       // refcount claim (stores/threads.ts), so there is no leak to clean
       // up on top of that.
-      threadsStore.getState().ensureThread(ref).catch(() => {});
+      threadsStore
+        .getState()
+        .ensureThread(ref)
+        .catch(() => {});
     };
 
     tryStart();

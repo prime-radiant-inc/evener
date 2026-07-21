@@ -5,7 +5,17 @@
 // (possibly reference-equal, for no-op cases) output.
 
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import type { AnyNotification, InputItem, OutputImage, SandboxEscalationRequested, Thread, ThreadItem, ThreadReadResponse, ThreadTurnsListResponse, Turn } from "./types.gen";
+import type {
+  AnyNotification,
+  InputItem,
+  OutputImage,
+  SandboxEscalationRequested,
+  Thread,
+  ThreadItem,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+  Turn,
+} from "./types.gen";
 
 // The following notification param types are "(inline)" in the AppWire
 // catalog (appwire/protocol.go / docs/appwire-protocol.md): the codegen
@@ -307,7 +317,11 @@ function findItemTurnId(model: ThreadModel, turnIdHint: string | undefined, item
 // Resolves which turn a brand-new item belongs to (turnId hint, then the
 // item's own turnId, then the model's active turn), verifying that turn
 // actually exists in the model.
-function resolveInsertTurnId(model: ThreadModel, turnIdHint: string | undefined, itemTurnId: string | undefined): string | undefined {
+function resolveInsertTurnId(
+  model: ThreadModel,
+  turnIdHint: string | undefined,
+  itemTurnId: string | undefined,
+): string | undefined {
   const candidate = turnIdHint ?? itemTurnId ?? model.activeTurnId;
   return candidate !== undefined && model.turns.some((t) => t.id === candidate) ? candidate : undefined;
 }
@@ -339,7 +353,10 @@ function isAskUserItem(item: ThreadItem): boolean {
 // growing the list. Dedup exists because hydration's surface-on-entry
 // snapshot (thread.serf.pendingEscalations) and this live notification can
 // legitimately race and both deliver the same card; last write wins.
-function upsertPendingEscalation(escalations: SandboxEscalationRequested[], incoming: SandboxEscalationRequested): SandboxEscalationRequested[] {
+function upsertPendingEscalation(
+  escalations: SandboxEscalationRequested[],
+  incoming: SandboxEscalationRequested,
+): SandboxEscalationRequested[] {
   const idx = escalations.findIndex((e) => e.escalationId === incoming.escalationId);
   if (idx === -1) return [...escalations, incoming];
   return escalations.map((e, i) => (i === idx ? incoming : e));
@@ -411,7 +428,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         // already accumulated via item/started + deltas + item/completed,
         // folding any item still mid-stream through settleItem (a just-
         // settled turn cannot legitimately still have a pending item).
-        settledTurn = { ...wireToTurnScalars(stamp), items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)) };
+        settledTurn = {
+          ...wireToTurnScalars(stamp),
+          items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)),
+        };
       }
       return {
         ...model,
@@ -428,7 +448,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!targetTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, targetTurnId, (turn) => ({ ...turn, items: [...turn.items, wireItemToModel(item)] })),
+        turns: mapTurn(model.turns, targetTurnId, (turn) => ({
+          ...turn,
+          items: [...turn.items, wireItemToModel(item)],
+        })),
         askPending: isAskUserItem(item) ? true : model.askPending,
         lastFrameAt: now,
       };
@@ -444,7 +467,9 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) => mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now)),
+            items: mapItem(turn.items, item.id, (old) =>
+              mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
+            ),
           })),
           askPending,
           lastFrameAt: now,
@@ -460,7 +485,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!insertTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, insertTurnId, (turn) => ({ ...turn, items: [...turn.items, wireItemToModel(item)] })),
+        turns: mapTurn(model.turns, insertTurnId, (turn) => ({
+          ...turn,
+          items: [...turn.items, wireItemToModel(item)],
+        })),
         askPending,
         lastFrameAt: now,
       };
@@ -475,7 +503,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({ ...item, pendingText: [...(item.pendingText ?? []), params.delta] })),
+          items: mapItem(turn.items, params.itemId, (item) => ({
+            ...item,
+            pendingText: [...(item.pendingText ?? []), params.delta],
+          })),
         })),
         lastFrameAt: now,
       };
@@ -488,7 +519,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       if (!targetTurnId) return { ...model, lastFrameAt: now };
       return {
         ...model,
-        turns: mapTurn(model.turns, targetTurnId, (turn) => ({ ...turn, items: turn.items.filter((it) => it.id !== params.itemId) })),
+        turns: mapTurn(model.turns, targetTurnId, (turn) => ({
+          ...turn,
+          items: turn.items.filter((it) => it.id !== params.itemId),
+        })),
         lastFrameAt: now,
       };
     }
@@ -502,7 +536,9 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => appendReasoningDelta(item, params.summaryIndex, params.delta, now)),
+          items: mapItem(turn.items, params.itemId, (item) =>
+            appendReasoningDelta(item, params.summaryIndex, params.delta, now),
+          ),
         })),
         lastFrameAt: now,
       };
@@ -517,7 +553,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: mapTurn(model.turns, targetTurnId, (turn) => ({
           ...turn,
-          items: mapItem(turn.items, params.itemId, (item) => ({ ...item, output: (item.output ?? "") + params.delta })),
+          items: mapItem(turn.items, params.itemId, (item) => ({
+            ...item,
+            output: (item.output ?? "") + params.delta,
+          })),
         })),
         lastFrameAt: now,
       };
@@ -563,7 +602,11 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     // upsertPendingEscalation for the dedup rationale.
     case "serf/sandbox/escalation/requested": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, pendingEscalations: upsertPendingEscalation(model.pendingEscalations, n.params), lastFrameAt: now };
+      return {
+        ...model,
+        pendingEscalations: upsertPendingEscalation(model.pendingEscalations, n.params),
+        lastFrameAt: now,
+      };
     }
 
     // Job lifecycle carries no ThreadModel-tracked state (no job list at

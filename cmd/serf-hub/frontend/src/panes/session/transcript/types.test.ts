@@ -1,6 +1,6 @@
-import { test, expect } from "vitest";
-import { itemRendererFor, registerItemRenderer } from "./types";
+import { expect, test } from "vitest";
 import { RawItemView } from "./RawItemView";
+import { itemRendererFor, registerItemRenderer } from "./types";
 
 // Dummy stand-ins - these tests are about registry MECHANICS (does a
 // registration resolve, does it override, does it stay scoped to its own

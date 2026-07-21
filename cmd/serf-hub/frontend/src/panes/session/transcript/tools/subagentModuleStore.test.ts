@@ -1,13 +1,13 @@
-import { afterEach, test, expect } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import {
   claimLeader,
   releaseLeader,
-  upsertSubagentRow,
-  updateSubagentRowIfExists,
-  useSubagentRows,
   resetSubagentModuleStoreForTests,
+  updateSubagentRowIfExists,
+  upsertSubagentRow,
+  useSubagentRows,
 } from "./subagentModuleStore";
-import { renderHook } from "@testing-library/react";
 
 afterEach(resetSubagentModuleStoreForTests);
 

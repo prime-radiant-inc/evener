@@ -64,13 +64,7 @@ function TreeDemo() {
               // arrow already performs on the treeitem itself - hidden
               // from assistive tech (and out of tab order) so it isn't a
               // second, redundant "toggle" announcement.
-              <button
-                type="button"
-                className={styles.chevron}
-                aria-hidden="true"
-                tabIndex={-1}
-                onClick={info.toggle}
-              >
+              <button type="button" className={styles.chevron} aria-hidden="true" tabIndex={-1} onClick={info.toggle}>
                 {info.expanded ? "▾" : "▸"}
               </button>
             )}

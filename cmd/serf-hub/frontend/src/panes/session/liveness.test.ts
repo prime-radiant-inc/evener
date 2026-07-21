@@ -1,4 +1,4 @@
-import { test, expect } from "vitest";
+import { expect, test } from "vitest";
 import { cadenceStateForStatus } from "./liveness";
 
 // cadenceStateForStatus: direct unit tests, mirroring shell/rail/RailRow.tsx's

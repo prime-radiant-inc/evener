@@ -1,11 +1,11 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Tooltip } from "./index";
+import { afterEach, expect, test, vi } from "vitest";
 import { Button } from "../button";
+import { Tooltip } from "./index";
 
 afterEach(() => {
   cleanup();

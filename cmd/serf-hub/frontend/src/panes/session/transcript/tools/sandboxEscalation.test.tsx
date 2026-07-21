@@ -1,11 +1,7 @@
-import { afterEach, beforeEach, test, expect, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderHook, act } from "@testing-library/react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import { connectionStore } from "../../../../stores/connection";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
-import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";
 import type {
   AnyNotification,
   SandboxEscalationRequested,
@@ -13,6 +9,9 @@ import type {
   ThreadCapabilities,
   ThreadReadResponse,
 } from "../../../../protocol/types.gen";
+import { connectionStore } from "../../../../stores/connection";
+import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { SandboxEscalationCard, SandboxEscalationRail, useSandboxEscalations } from "./sandboxEscalation";
 
 // Ground truth: serf/sandbox/escalation/requested + SerfThread.
 // pendingEscalations are thread-level, not item-level - so, unlike every
@@ -180,7 +179,10 @@ test("a notification for a DIFFERENT ref is ignored", async () => {
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ ref: "ref_other" }) } as AnyNotification);
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ ref: "ref_other" }),
+    } as AnyNotification);
   });
 
   expect(result.current.pending).toEqual([]);
@@ -237,8 +239,14 @@ test("two distinct escalations both surface independently", async () => {
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_1" }) } as AnyNotification);
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }) } as AnyNotification);
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_1" }),
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }),
+    } as AnyNotification);
   });
 
   expect(result.current.pending.map((e) => e.escalationId)).toEqual(["esc_1", "esc_2"]);
@@ -357,8 +365,14 @@ test("SandboxEscalationRail renders one card per pending escalation, keyed by es
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_1" }) } as AnyNotification);
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested({ escalationId: "esc_2" }) } as AnyNotification);
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_1" }),
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/requested",
+      params: requested({ escalationId: "esc_2" }),
+    } as AnyNotification);
   });
   expect(screen.getAllByText(/sandbox approval/i)).toHaveLength(2);
 });

@@ -11,9 +11,10 @@
 // "Warning" label when absent), item.text is the body, warning.hint sits
 // quiet below - each piece renders only when present/non-empty, and the
 // whole row renders nothing at all when there is truly nothing to show.
-import { registerItemRenderer, type ItemRenderProps } from "../types";
+
 import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import styles from "./warningitem.module.css";
 
 const CLASS = {

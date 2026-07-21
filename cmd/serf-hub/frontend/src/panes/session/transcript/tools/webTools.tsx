@@ -18,10 +18,11 @@
 // server tool that never becomes a live commandExecution item) - its body
 // stays a short line-oriented preview, matching the legacy
 // webSearchRenderer's own "don't dump the whole page inline" restraint.
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "./helpers";
+
 import type { ItemModel } from "../../../../protocol/model";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
+import { clip, formatByteCount, parseArgs, parseJSONObject, str } from "./helpers";
 
 const QUERY_CLIP = 120;
 const RESULT_LINE_CLIP = 200;

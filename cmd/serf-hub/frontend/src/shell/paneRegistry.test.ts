@@ -1,6 +1,6 @@
 import { lazy } from "react";
-import { test, expect } from "vitest";
-import { paneFor, registerPane, type PaneDescriptor, type PaneProps } from "./paneRegistry";
+import { expect, test } from "vitest";
+import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
 
 // A minimal descriptor fixture. `component` must be a LazyExoticComponent
 // per the locked PaneDescriptor shape (see the wave-3 plan's Locked

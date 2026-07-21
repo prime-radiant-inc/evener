@@ -23,9 +23,7 @@ const SECTIONS = Object.keys(SECTION_MODULES)
 export default function WidgetGallery() {
   return (
     <div className={styles.gallery}>
-      <p className={styles.intro}>
-        Widget gallery — every widget, every documented state, both themes side by side.
-      </p>
+      <p className={styles.intro}>Widget gallery — every widget, every documented state, both themes side by side.</p>
       {SECTIONS.map(({ path, Section }) => (
         <Section key={path} />
       ))}

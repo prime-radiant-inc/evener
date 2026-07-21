@@ -20,11 +20,12 @@
 // its content already appears inside the first member's group). A run
 // under 3 renders each item as its own standalone line, matching parity
 // (contracts-transcript-scroll-liveness.md #12).
-import { registerItemRenderer, type ItemRenderProps } from "../types";
+
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { firstLine } from "./format";
-import { systemRunFor, shouldGroup, type SystemRun } from "./systemGrouping";
+import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 
 const CLASS = {

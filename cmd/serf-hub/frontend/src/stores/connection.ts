@@ -2,11 +2,12 @@
 // through: it mirrors the client's ConnectionState reactively for the UI,
 // and holds the client reference other stores (threads.ts) ride, since only
 // this store's connect() ever receives one.
-import { createStore } from "zustand/vanilla";
+
 import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import type { ConnectionState } from "../protocol/client";
-import type { ServerInfo } from "../protocol/types.gen";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { ServerInfo } from "../protocol/types.gen";
 
 export interface ConnectionStoreState {
   state: ConnectionState;

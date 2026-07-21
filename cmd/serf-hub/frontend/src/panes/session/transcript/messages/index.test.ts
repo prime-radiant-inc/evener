@@ -1,4 +1,4 @@
-import { beforeAll, test, expect } from "vitest";
+import { beforeAll, expect, test } from "vitest";
 import { itemRendererFor } from "../types";
 
 // Mirrors panes/session/index.test.tsx's own beforeAll pattern: await the

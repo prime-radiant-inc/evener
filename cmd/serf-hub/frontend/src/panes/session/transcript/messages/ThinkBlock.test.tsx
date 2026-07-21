@@ -1,9 +1,9 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { ThinkBlock } from "./ThinkBlock";
-import { itemRendererFor } from "../types";
-import { TurnBlock } from "../TurnBlock";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { TurnBlock } from "../TurnBlock";
+import { itemRendererFor } from "../types";
+import { ThinkBlock } from "./ThinkBlock";
 
 afterEach(cleanup);
 
@@ -20,7 +20,9 @@ test('self-registers under the wire\'s reasoning item type ("reasoning")', () =>
 // --- live: open, StreamingText, "Thinking…" ---------------------------------
 
 test("live shows a Thinking label and streams the reasoning text open (not collapsed)", () => {
-  render(<ThinkBlock item={item({ reasoningSummaries: [["thinking about ", "the problem"]] })} turn={turn} live={true} />);
+  render(
+    <ThinkBlock item={item({ reasoningSummaries: [["thinking about ", "the problem"]] })} turn={turn} live={true} />,
+  );
   expect(screen.getByText("Thinking…")).toBeTruthy();
   expect(screen.getByTestId("streaming-text").textContent).toBe("thinking about the problem");
   // Open while live: no collapsed <details> present at all.
@@ -35,7 +37,12 @@ test("live with zero chunks so far still shows the open Thinking label (a reason
 test("live renders one independent StreamingText per summaryIndex, joined per-index (not flattened across indices)", () => {
   render(
     <ThinkBlock
-      item={item({ reasoningSummaries: [["first ", "paragraph"], ["second ", "paragraph"]] })}
+      item={item({
+        reasoningSummaries: [
+          ["first ", "paragraph"],
+          ["second ", "paragraph"],
+        ],
+      })}
       turn={turn}
       live={true}
     />,

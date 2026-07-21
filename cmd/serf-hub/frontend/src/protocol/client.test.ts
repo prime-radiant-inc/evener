@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { AppwireClient, RECONNECT_BASE_MS, type AnyNotification, type ConnectionState } from "./client";
+import { type AnyNotification, AppwireClient, type ConnectionState, RECONNECT_BASE_MS } from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
-import { rpcURLFromLocation } from "./transport";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
+import { rpcURLFromLocation } from "./transport";
 
 const DEFAULT_CLIENT_INFO = { name: "serf-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -319,23 +319,19 @@ describe("AppwireClient", () => {
   // forever (state flips to "closed" but nothing ever resolves/rejects the
   // caller's promise). A short per-test timeout makes a reintroduced hang
   // fail fast instead of burning the whole suite's default timeout.
-  test(
-    "close() before the socket ever opens still rejects the pending connect() promise",
-    async () => {
-      const fake = new FakeSocket({ autoInitialize: false });
-      const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+  test("close() before the socket ever opens still rejects the pending connect() promise", async () => {
+    const fake = new FakeSocket({ autoInitialize: false });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
 
-      const connecting = client.connect();
-      // Deliberately never call fake.open().
-      const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
+    const connecting = client.connect();
+    // Deliberately never call fake.open().
+    const rejection = expect(connecting).rejects.toBeInstanceOf(ConnectionClosedError);
 
-      client.close();
+    client.close();
 
-      await rejection;
-      expect(client.state).toBe("closed");
-    },
-    1000,
-  );
+    await rejection;
+    expect(client.state).toBe("closed");
+  }, 1000);
 
   // Regression test: setState()'s dispatch loops had no per-handler
   // try/catch (unlike notification dispatch), so a throwing subscriber on

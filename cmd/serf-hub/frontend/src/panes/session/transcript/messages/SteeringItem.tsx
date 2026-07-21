@@ -6,10 +6,11 @@
 // steering (no source, or anything else) renders as a quiet, collapsed-by-
 // default divider instead - the reader never authored it, so it stays out
 // of the way unless opened.
-import { registerItemRenderer, type ItemRenderProps } from "../types";
-import { UserMessageView } from "./UserMessageItem";
+
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import styles from "./steeringitem.module.css";
+import { UserMessageView } from "./UserMessageItem";
 
 const CLASS = {
   details: requireClass(styles.details, "steeringitem.module.css", "details"),

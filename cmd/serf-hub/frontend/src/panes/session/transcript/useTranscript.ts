@@ -4,8 +4,8 @@
 // (see its own comment), so this hook stays a plain, side-effect-free
 // selector a caller can use without implicitly acquiring the ref.
 import { useCallback, useState } from "react";
-import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import type { ThreadModel } from "../../../protocol/model";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
 export interface UseTranscriptResult {
   model: ThreadModel | undefined;

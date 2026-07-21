@@ -6,11 +6,11 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR), T3 fills in the real
 // per-tool descriptors.
 import { useLayoutEffect, useRef, useState } from "react";
-import { registerItemRenderer, type ItemRenderProps } from "./types";
-import { toolRendererFor } from "./toolRenderers";
-import { ImageGallery } from "./flow/ImageGallery";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { ImageGallery } from "./flow/ImageGallery";
 import styles from "./toolcallitem.module.css";
+import { toolRendererFor } from "./toolRenderers";
+import { type ItemRenderProps, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),

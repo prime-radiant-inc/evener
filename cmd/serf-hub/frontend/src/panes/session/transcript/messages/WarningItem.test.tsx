@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { WarningItem } from "./WarningItem";
-import { itemRendererFor } from "../types";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { itemRendererFor } from "../types";
+import { WarningItem } from "./WarningItem";
 
 afterEach(cleanup);
 
@@ -19,7 +19,10 @@ test('self-registers under the wire\'s warning item type ("warning"), exactly on
 test("a full payload (title, message, hint) renders all three", () => {
   render(
     <WarningItem
-      item={item({ text: "the sandbox blocked write access", warning: { title: "Sandbox blocked", hint: "retry with --sandbox off" } })}
+      item={item({
+        text: "the sandbox blocked write access",
+        warning: { title: "Sandbox blocked", hint: "retry with --sandbox off" },
+      })}
       turn={turn}
       live={false}
     />,

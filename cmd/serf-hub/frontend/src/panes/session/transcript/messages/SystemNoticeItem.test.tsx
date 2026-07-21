@@ -1,9 +1,9 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { SystemNoticeItem } from "./SystemNoticeItem";
-import { itemRendererFor } from "../types";
-import { TurnBlock } from "../TurnBlock";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { TurnBlock } from "../TurnBlock";
+import { itemRendererFor } from "../types";
+import { SystemNoticeItem } from "./SystemNoticeItem";
 
 afterEach(cleanup);
 
@@ -72,7 +72,13 @@ test("expanding the group reveals every individual line", () => {
 // --- a non-systemMessage entry between two runs breaks them apart ----------
 
 test("a non-lifecycle entry between two systemMessage items breaks the run into two sub-threshold groups", () => {
-  const items = [item("a"), item("b"), { id: "prose", turnId: "turn_1", type: "agentMessage", text: "hi" }, item("c"), item("d")];
+  const items = [
+    item("a"),
+    item("b"),
+    { id: "prose", turnId: "turn_1", type: "agentMessage", text: "hi" },
+    item("c"),
+    item("d"),
+  ];
   render(<TurnBlock turn={turnWith(items)} />);
   // Neither side reaches 3, so no group renders at all - all four notices
   // stand alone.

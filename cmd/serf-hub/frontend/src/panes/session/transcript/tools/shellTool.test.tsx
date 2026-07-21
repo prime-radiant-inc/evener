@@ -1,5 +1,5 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
 import "./shellTool";
 import type { ItemModel } from "../../../../protocol/model";
@@ -89,7 +89,11 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
 
 test("the command reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
   const d = toolRendererFor("shell");
-  const settled = item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "echo settled" }), output: "settled\n[exit 0]" });
+  const settled = item({
+    toolName: "shell",
+    argumentsJSON: JSON.stringify({ command: "echo settled" }),
+    output: "settled\n[exit 0]",
+  });
   expect(d.summary(settled)).toBe("Ran echo settled");
 });
 

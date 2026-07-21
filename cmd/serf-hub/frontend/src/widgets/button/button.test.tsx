@@ -1,13 +1,13 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { createRef } from "react";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Button, type ButtonProps } from "./index";
+import { createRef } from "react";
+import { afterEach, expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
 import rawStyles from "./button.module.css";
+import { Button, type ButtonProps } from "./index";
 
 const styles = {
   button: requireClass(rawStyles.button, "button.module.css", "button"),

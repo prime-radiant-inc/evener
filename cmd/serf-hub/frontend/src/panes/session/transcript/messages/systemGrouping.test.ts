@@ -1,6 +1,6 @@
-import { test, expect } from "vitest";
-import { systemRunFor, shouldGroup } from "./systemGrouping";
+import { expect, test } from "vitest";
 import type { ItemModel } from "../../../../protocol/model";
+import { shouldGroup, systemRunFor } from "./systemGrouping";
 
 function item(id: string, type: string): ItemModel {
   return { id, turnId: "turn_1", type, text: `text-${id}` };
@@ -65,9 +65,7 @@ test("a run at the very start or end of the items array is bounded correctly (no
 
 test("shouldGroup: runs of 1 or 2 do not group", () => {
   expect(shouldGroup({ items: [item("a", "systemMessage")], isFirst: true })).toBe(false);
-  expect(
-    shouldGroup({ items: [item("a", "systemMessage"), item("b", "systemMessage")], isFirst: true }),
-  ).toBe(false);
+  expect(shouldGroup({ items: [item("a", "systemMessage"), item("b", "systemMessage")], isFirst: true })).toBe(false);
 });
 
 test("shouldGroup: a run of exactly 3 groups", () => {

@@ -8,9 +8,9 @@
 // wants richer detail already has "open transcript" (subagentModule.tsx)
 // for that.
 import { useEffect } from "react";
-import { Cadence } from "../../../../widgets";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
-import { cadenceStateForStatus, useNowTick, NOW_TICK_MS } from "../../liveness";
+import { Cadence } from "../../../../widgets";
+import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
 
 export interface WatchedChildIndicatorProps {
   ref: string;
@@ -24,7 +24,10 @@ export function WatchedChildIndicator({ ref: childRef }: WatchedChildIndicatorPr
     // rather than crashing the whole subagent module over a live-status
     // nicety - the row's own task/kind/preview (subagentModuleStore, not
     // this watch) still reflect whatever the last known-good state was.
-    threadsStore.getState().watchThread(childRef).catch(() => {});
+    threadsStore
+      .getState()
+      .watchThread(childRef)
+      .catch(() => {});
     return () => threadsStore.getState().releaseWatchedThread(childRef);
   }, [childRef]);
 

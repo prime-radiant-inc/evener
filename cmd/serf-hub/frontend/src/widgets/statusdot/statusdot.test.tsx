@@ -1,7 +1,7 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { requireClass } from "../internal/requireClass";
+import { afterEach, expect, test } from "vitest";
 import type { CadenceState } from "../cadence";
+import { requireClass } from "../internal/requireClass";
 import { StatusDot } from "./index";
 import rawStyles from "./statusdot.module.css";
 

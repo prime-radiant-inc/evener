@@ -1,5 +1,5 @@
-import { useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
-import { useVirtualizer, type ScrollToOptions } from "@tanstack/react-virtual";
+import { type ScrollToOptions, useVirtualizer } from "@tanstack/react-virtual";
+import { type ReactNode, type Ref, useImperativeHandle, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./virtuallist.module.css";
 

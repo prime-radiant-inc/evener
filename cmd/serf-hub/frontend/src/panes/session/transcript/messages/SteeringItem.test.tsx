@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { SteeringItem } from "./SteeringItem";
-import { itemRendererFor } from "../types";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { itemRendererFor } from "../types";
+import { SteeringItem } from "./SteeringItem";
 
 afterEach(cleanup);
 
@@ -66,7 +66,9 @@ test('a non-"user", non-empty source (defensive - only "user" is special-cased) 
 });
 
 test("a daemon-sourced steering item with BOTH real text and images renders the text and drops the image count (documented limitation, matches legacy §8 - pinned so a future change is deliberate)", () => {
-  render(<SteeringItem item={item({ text: "daemon nudge with a picture", images: ["a", "b"] })} turn={turn} live={false} />);
+  render(
+    <SteeringItem item={item({ text: "daemon nudge with a picture", images: ["a", "b"] })} turn={turn} live={false} />,
+  );
   const el = screen.getByTestId("steering-item");
   expect(el.textContent).toContain("daemon nudge with a picture");
   expect(screen.queryByTestId("user-message-image-placeholder")).toBeNull();

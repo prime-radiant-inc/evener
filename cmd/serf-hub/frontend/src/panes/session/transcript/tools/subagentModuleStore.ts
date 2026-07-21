@@ -15,8 +15,9 @@
 // nothing observes a turnId anymore; this intentionally does not evict
 // entries (turns.length only grows for a session's lifetime in the
 // threads store too - same trade-off, not a new one).
-import { createStore } from "zustand/vanilla";
+
 import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 
 export type SubagentRowKind = "running" | "done" | "failed" | "unknown";
 

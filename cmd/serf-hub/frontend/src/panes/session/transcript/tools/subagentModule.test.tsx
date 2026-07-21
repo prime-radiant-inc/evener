@@ -1,17 +1,17 @@
-import { afterEach, beforeEach, test, expect } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { toolRendererFor } from "../toolRenderers";
-import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
+import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
-import { registerPane } from "../../../../shell/paneRegistry";
-import { workspaceStore, resetWorkspaceStoreForTests } from "../../../../shell/workspace";
+import type { ItemModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import { registerPane } from "../../../../shell/paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
-import type { ItemModel } from "../../../../protocol/model";
 
 // A minimal, test-only "session" pane registration - real registerPane/
 // paneFor/openPane machinery, just without pulling in the actual

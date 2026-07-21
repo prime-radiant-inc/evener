@@ -1,7 +1,7 @@
-import { lazy } from "react";
-import { afterEach, beforeAll, beforeEach, test, expect } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { lazy } from "react";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import { registerPane } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";

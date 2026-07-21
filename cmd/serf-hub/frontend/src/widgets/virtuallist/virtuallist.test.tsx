@@ -1,12 +1,12 @@
-import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRef, useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { createRef, useState } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { requireClass } from "../internal/requireClass";
 import { VirtualList, type VirtualListHandle } from "./index";
 import rawStyles from "./virtuallist.module.css";
-import { requireClass } from "../internal/requireClass";
 
 // jsdom performs no real layout: every element's offsetHeight/offsetWidth
 // is 0 and it has no ResizeObserver at all (@tanstack/react-virtual reads
@@ -63,9 +63,7 @@ test("renders a windowed subset of rows, not all of a large count", () => {
 });
 
 test("the initial window starts at index 0 and is contiguous", () => {
-  render(
-    <VirtualList count={10_000} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
-  );
+  render(<VirtualList count={10_000} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />);
   const rendered = screen.getAllByText(/^row \d+$/).map((el) => Number(el.textContent!.replace("row ", "")));
   expect(rendered[0]).toBe(0);
   for (let i = 1; i < rendered.length; i++) {
@@ -74,9 +72,7 @@ test("the initial window starts at index 0 and is contiguous", () => {
 });
 
 test("renderRow is called with the row's own index, not a window-relative one", () => {
-  render(
-    <VirtualList count={20} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
-  );
+  render(<VirtualList count={20} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />);
   expect(screen.getByText("row 0")).toBeTruthy();
 });
 
@@ -103,7 +99,7 @@ test("each rendered row is positioned at index * row height for a uniform estima
   const { container } = render(
     <VirtualList count={10_000} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
   );
-  const rowEls = Array.from(rootOf(container).querySelectorAll('[data-index]'));
+  const rowEls = Array.from(rootOf(container).querySelectorAll("[data-index]"));
   for (const el of rowEls) {
     const index = Number((el as HTMLElement).dataset.index);
     expect((el as HTMLElement).style.transform).toBe(`translateY(${index * ROW_HEIGHT}px)`);
@@ -111,16 +107,16 @@ test("each rendered row is positioned at index * row height for a uniform estima
 });
 
 test("uses a sane nonzero overscan (renders more than exactly the visible count)", () => {
-  render(
-    <VirtualList count={10_000} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
-  );
+  render(<VirtualList count={10_000} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />);
   const rendered = screen.getAllByText(/^row \d+$/);
   const exactlyVisible = CONTAINER_HEIGHT / ROW_HEIGHT; // 10
   expect(rendered.length).toBeGreaterThan(exactlyVisible);
 });
 
 test("count=0 renders no rows and does not crash", () => {
-  const { container } = render(<VirtualList count={0} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />);
+  const { container } = render(
+    <VirtualList count={0} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+  );
   expect(rootOf(container).querySelectorAll("[data-index]")).toHaveLength(0);
 });
 
@@ -128,7 +124,12 @@ test("ref.current.scrollToIndex computes the align=start offset for the target i
   const count = 10_000;
   const ref = createRef<VirtualListHandle>();
   const { container } = render(
-    <VirtualList ref={ref} count={count} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+    <VirtualList
+      ref={ref}
+      count={count}
+      estimateSize={() => ROW_HEIGHT}
+      renderRow={(i) => <div key={i}>row {i}</div>}
+    />,
   );
   const root = rootOf(container);
   // jsdom has no Element.scrollTo of its own to spy on; installing one is
@@ -183,7 +184,12 @@ describe("dynamic sizing", () => {
     stubPerElementOffsetHeight(styles);
     const count = 10;
     const { container } = render(
-      <VirtualList dynamic count={count} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+      <VirtualList
+        dynamic
+        count={count}
+        estimateSize={() => ROW_HEIGHT}
+        renderRow={(i) => <div key={i}>row {i}</div>}
+      />,
     );
     const sizer = rootOf(container).firstElementChild as HTMLElement;
     expect(sizer.style.height).toBe(`${count * MEASURED_HEIGHT}px`);

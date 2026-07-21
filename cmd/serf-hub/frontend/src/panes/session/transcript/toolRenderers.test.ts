@@ -1,7 +1,7 @@
-import { test, expect } from "vitest";
-import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
-import { RawToolOutput } from "./RawToolOutput";
+import { expect, test } from "vitest";
 import type { ItemModel } from "../../../protocol/model";
+import { RawToolOutput } from "./RawToolOutput";
+import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };

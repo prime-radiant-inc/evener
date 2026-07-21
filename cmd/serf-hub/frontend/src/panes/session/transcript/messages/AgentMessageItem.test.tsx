@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { AgentMessageItem } from "./AgentMessageItem";
-import { itemRendererFor } from "../types";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { itemRendererFor } from "../types";
+import { AgentMessageItem } from "./AgentMessageItem";
 
 afterEach(cleanup);
 
@@ -100,7 +100,9 @@ test("rapid-settle: settling WITHOUT ever having rendered live (turn/completed a
 });
 
 test("both live and settled render inside the same stable wrapper testid", () => {
-  const { container, rerender } = render(<AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />);
+  const { container, rerender } = render(
+    <AgentMessageItem item={item({ pendingText: ["x"] })} turn={turn} live={true} />,
+  );
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
   rerender(<AgentMessageItem item={item({ text: "x", pendingText: undefined })} turn={turn} live={false} />);
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();

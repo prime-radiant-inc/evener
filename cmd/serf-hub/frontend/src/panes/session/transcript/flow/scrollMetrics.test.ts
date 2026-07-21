@@ -1,5 +1,11 @@
-import { test, expect } from "vitest";
-import { AT_BOTTOM_THRESHOLD_PX, isAtBottom, isNearTop, NEAR_TOP_THRESHOLD_PX, readScrollMetrics } from "./scrollMetrics";
+import { expect, test } from "vitest";
+import {
+  AT_BOTTOM_THRESHOLD_PX,
+  isAtBottom,
+  isNearTop,
+  NEAR_TOP_THRESHOLD_PX,
+  readScrollMetrics,
+} from "./scrollMetrics";
 
 // isAtBottom: legacy parity threshold (docs/web-ui/parity/parity-m4-transcript.md
 // §15) - "within 50px of true bottom counts as at bottom".

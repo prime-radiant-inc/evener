@@ -42,13 +42,19 @@ describe("setFavorite", () => {
   test("POSTs /api/favorite with exact kind/id/favorited body", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await setFavorite("session", "local:abc", true);
-    expect(fetchMock).toHaveBeenCalledWith("/api/favorite", JSON_INIT({ kind: "session", id: "local:abc", favorited: true }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/favorite",
+      JSON_INIT({ kind: "session", id: "local:abc", favorited: true }),
+    );
   });
 
   test("works for kind=project", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await setFavorite("project", "proj-key", false);
-    expect(fetchMock).toHaveBeenCalledWith("/api/favorite", JSON_INIT({ kind: "project", id: "proj-key", favorited: false }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/favorite",
+      JSON_INIT({ kind: "project", id: "proj-key", favorited: false }),
+    );
   });
 
   test("rejects with the server's error message on failure", async () => {

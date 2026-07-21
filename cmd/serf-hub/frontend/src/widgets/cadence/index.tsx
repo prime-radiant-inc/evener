@@ -71,21 +71,23 @@ interface Tick {
 }
 
 function ticksFor(frameTimes: number[], now: number): Tick[] {
-  return frameTimes
-    .map((frameTime, i): Tick | null => {
-      const age = now - frameTime;
-      if (age < 0 || age > WINDOW_MS) return null; // outside the trace window
-      return {
-        key: `${frameTime}-${i}`,
-        // oldest at the left edge, "now" at the right edge
-        x: (VIEWBOX_WIDTH - TICK_WIDTH) * (1 - age / WINDOW_MS),
-        bucket: bucketOf(age),
-      };
-    })
-    .filter((tick): tick is Tick => tick !== null)
-    // ascending x = oldest (smallest x) first, freshest (largest x) last,
-    // so the freshest tick paints on top and a dense burst reads clearly
-    .sort((a, b) => a.x - b.x);
+  return (
+    frameTimes
+      .map((frameTime, i): Tick | null => {
+        const age = now - frameTime;
+        if (age < 0 || age > WINDOW_MS) return null; // outside the trace window
+        return {
+          key: `${frameTime}-${i}`,
+          // oldest at the left edge, "now" at the right edge
+          x: (VIEWBOX_WIDTH - TICK_WIDTH) * (1 - age / WINDOW_MS),
+          bucket: bucketOf(age),
+        };
+      })
+      .filter((tick): tick is Tick => tick !== null)
+      // ascending x = oldest (smallest x) first, freshest (largest x) last,
+      // so the freshest tick paints on top and a dense burst reads clearly
+      .sort((a, b) => a.x - b.x)
+  );
 }
 
 /**

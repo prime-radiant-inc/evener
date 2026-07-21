@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { TurnBlock, isItemLive } from "./TurnBlock";
-import { registerItemRenderer, type ItemRenderProps } from "./types";
+import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { isItemLive, TurnBlock } from "./TurnBlock";
+import { type ItemRenderProps, registerItemRenderer } from "./types";
 
 afterEach(cleanup);
 

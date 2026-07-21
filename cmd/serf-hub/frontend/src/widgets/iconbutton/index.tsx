@@ -1,7 +1,7 @@
-import { forwardRef, type ButtonHTMLAttributes, type MouseEvent, type ReactNode } from "react";
-import { requireClass } from "../internal/requireClass";
-import type { ButtonVariant, ButtonSize } from "../button";
+import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode } from "react";
+import type { ButtonSize, ButtonVariant } from "../button";
 import buttonStyles from "../button/button.module.css";
+import { requireClass } from "../internal/requireClass";
 import styles from "./iconbutton.module.css";
 
 export interface IconButtonProps

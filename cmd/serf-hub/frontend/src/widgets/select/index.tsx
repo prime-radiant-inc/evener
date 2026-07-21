@@ -25,14 +25,7 @@ const BASE_CLASS = {
  * mirroring Input. */
 export function Select({ value, onChange, options, disabled = false, id, name }: SelectProps) {
   return (
-    <select
-      id={id}
-      name={name}
-      className={BASE_CLASS.select}
-      value={value}
-      onChange={onChange}
-      disabled={disabled}
-    >
+    <select id={id} name={name} className={BASE_CLASS.select} value={value} onChange={onChange} disabled={disabled}>
       {options.map((option) => (
         <option key={option.value} value={option.value}>
           {option.label}

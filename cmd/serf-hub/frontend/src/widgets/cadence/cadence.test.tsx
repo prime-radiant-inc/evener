@@ -1,8 +1,8 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { requireClass } from "../internal/requireClass";
-import { Cadence, type CadenceState } from "./index";
 import rawStyles from "./cadence.module.css";
+import { Cadence, type CadenceState } from "./index";
 
 afterEach(() => {
   cleanup();

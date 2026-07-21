@@ -1,5 +1,5 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { StreamingText } from "./StreamingText";
 
 afterEach(cleanup);

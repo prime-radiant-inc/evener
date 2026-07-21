@@ -7,10 +7,11 @@
 // legacy useSkillRenderer's own "body hidden when nothing to show" rule
 // still applies cleanly here since it keys off the same signal (blank
 // text), not the tool_state field legacy actually read.
-import { registerToolRenderer } from "../toolRenderers";
-import type { ToolRenderProps } from "../toolRenderers";
-import { parseArgs, str } from "./helpers";
+
 import type { ItemModel } from "../../../../protocol/model";
+import type { ToolRenderProps } from "../toolRenderers";
+import { registerToolRenderer } from "../toolRenderers";
+import { parseArgs, str } from "./helpers";
 
 function UseSkillBody({ item }: ToolRenderProps) {
   const output = item.output ?? "";

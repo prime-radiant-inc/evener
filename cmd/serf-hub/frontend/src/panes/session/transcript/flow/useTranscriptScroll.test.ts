@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
-import type { VirtualListHandle } from "../../../../widgets/virtuallist";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
 import { useTranscriptScroll } from "./useTranscriptScroll";
 
@@ -42,7 +42,11 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
 // see VirtualList's own test suite doc comment). scrollToIndex is a spy -
 // this suite proves WHAT the hook asks the widget to do, not react-virtual's
 // own offset math (already covered by virtuallist.test.tsx).
-function makeListHandle(): { ref: React.RefObject<VirtualListHandle | null>; el: HTMLDivElement; scrollToIndex: ReturnType<typeof vi.fn> } {
+function makeListHandle(): {
+  ref: React.RefObject<VirtualListHandle | null>;
+  el: HTMLDivElement;
+  scrollToIndex: ReturnType<typeof vi.fn>;
+} {
   const el = document.createElement("div");
   const scrollToIndex = vi.fn();
   const ref = createRef<VirtualListHandle>() as React.RefObject<VirtualListHandle | null>;
@@ -212,7 +216,13 @@ describe("the needs-you upgrade", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
     const { result } = renderHook(() =>
-      useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])], { askPending: true }), listRef: ref, loadOlder: vi.fn(), measure }),
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { askPending: true }),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+      }),
     );
 
     expect(result.current.pillCount).toBe(0);
@@ -225,7 +235,15 @@ describe("near-top triggers loadOlder", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(SCROLLED_AWAY);
     const loadOlder = vi.fn().mockResolvedValue(undefined);
-    renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }), listRef: ref, loadOlder, measure }));
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+        listRef: ref,
+        loadOlder,
+        measure,
+      }),
+    );
 
     act(() => {
       set({ scrollTop: 50 });
@@ -255,7 +273,15 @@ describe("near-top triggers loadOlder", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(SCROLLED_AWAY);
     const loadOlder = vi.fn().mockResolvedValue(undefined);
-    renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }), listRef: ref, loadOlder, measure }));
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])], { olderCursor: "cursor" }),
+        listRef: ref,
+        loadOlder,
+        measure,
+      }),
+    );
 
     act(() => {
       set({ scrollTop: 500 });
@@ -320,7 +346,15 @@ describe("mount positioning", () => {
   test("a fresh ref with no saved scroll position starts at the bottom", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
-    renderHook(() => useTranscriptScroll({ ref: "ref_never_seen", model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]), listRef: ref, loadOlder: vi.fn(), measure }));
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_never_seen",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+      }),
+    );
 
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
   });
@@ -329,7 +363,15 @@ describe("mount positioning", () => {
     threadsStore.getState().setScrollPosition("ref_a", 777);
     const { ref, el, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
-    renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])]), listRef: ref, loadOlder: vi.fn(), measure }));
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+      }),
+    );
 
     expect(el.scrollTop).toBe(777);
     expect(scrollToIndex).not.toHaveBeenCalled();
@@ -341,7 +383,15 @@ describe("persisting scroll position", () => {
     vi.useFakeTimers();
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(SCROLLED_AWAY);
-    renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])]), listRef: ref, loadOlder: vi.fn(), measure }));
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+      }),
+    );
 
     act(() => {
       set({ scrollTop: 321 });
@@ -359,7 +409,15 @@ describe("persisting scroll position", () => {
     vi.useFakeTimers();
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(SCROLLED_AWAY);
-    const { unmount } = renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([turn("t1", ["i1"])]), listRef: ref, loadOlder: vi.fn(), measure }));
+    const { unmount } = renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+      }),
+    );
 
     act(() => {
       set({ scrollTop: 654 });
@@ -376,7 +434,9 @@ describe("no-model / not-yet-mounted safety", () => {
   test("model undefined (thread still loading): no crash, empty result", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
-    const { result } = renderHook(() => useTranscriptScroll({ ref: "ref_a", model: undefined, listRef: ref, loadOlder: vi.fn(), measure }));
+    const { result } = renderHook(() =>
+      useTranscriptScroll({ ref: "ref_a", model: undefined, listRef: ref, loadOlder: vi.fn(), measure }),
+    );
 
     expect(result.current.pillCount).toBe(0);
     expect(result.current.pillNeedsYou).toBe(false);
@@ -385,7 +445,9 @@ describe("no-model / not-yet-mounted safety", () => {
 
   test("listRef.current null (VirtualList not yet mounted, e.g. an empty transcript): no crash", () => {
     const notMountedRef = createRef<VirtualListHandle>() as React.RefObject<VirtualListHandle | null>;
-    const { result } = renderHook(() => useTranscriptScroll({ ref: "ref_a", model: model([]), listRef: notMountedRef, loadOlder: vi.fn() }));
+    const { result } = renderHook(() =>
+      useTranscriptScroll({ ref: "ref_a", model: model([]), listRef: notMountedRef, loadOlder: vi.fn() }),
+    );
 
     expect(result.current.pillCount).toBe(0);
   });

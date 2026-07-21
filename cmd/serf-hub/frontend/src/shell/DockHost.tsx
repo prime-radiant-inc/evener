@@ -5,15 +5,16 @@
 // list. This component is the ONE place that talks to the real dockview
 // library; everything else in the app touches panes only through the
 // registry/store's own React-shaped surface.
-import { Suspense, useEffect, useRef, useState } from "react";
-import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
+
 import type { DockviewApi } from "dockview-core";
+import { DockviewReact, type DockviewReadyEvent, type IDockviewPanelProps } from "dockview-react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
-import { paneFor, type PaneTitleCtx } from "./paneRegistry";
-import { registerDockviewApi, useWorkspaceStore, workspaceStore, type PanePanelParams } from "./workspace";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import styles from "./DockHost.module.css";
+import { type PaneTitleCtx, paneFor } from "./paneRegistry";
+import { type PanePanelParams, registerDockviewApi, useWorkspaceStore, workspaceStore } from "./workspace";
 
 const LAYOUT_STORAGE_KEY = "serf.workspace.layout.v1";
 // Coalesces a whole user gesture (a drag-resize fires onDidLayoutChange

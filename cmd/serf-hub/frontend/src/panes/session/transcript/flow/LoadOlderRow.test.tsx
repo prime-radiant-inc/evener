@@ -1,5 +1,5 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, test, vi } from "vitest";
 import { LoadOlderRow } from "./LoadOlderRow";
 
 afterEach(() => {

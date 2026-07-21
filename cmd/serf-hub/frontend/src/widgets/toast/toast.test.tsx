@@ -1,6 +1,6 @@
-import { afterEach, test, expect, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { Toast, useToasts, type ToastKind } from "./index";
+import { afterEach, expect, test, vi } from "vitest";
+import { Toast, type ToastKind, useToasts } from "./index";
 import { resetToastStoreForTests } from "./store";
 
 afterEach(() => {

@@ -6,14 +6,21 @@
 // connect() of its own — and reactively re-attaches its onNotification/onReady
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
-import { createStore } from "zustand/vanilla";
+
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
-import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import { applyNotification, hydrateThread, notificationTargetsThread, prependOlderTurns, resolvePendingEscalation } from "../protocol/reducer";
-import type { ThreadModel } from "../protocol/model";
-import type { AnyNotification, InputItem, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
+import { createStore } from "zustand/vanilla";
 import { WireError } from "../protocol/errors";
+import type { ThreadModel } from "../protocol/model";
+import {
+  applyNotification,
+  hydrateThread,
+  notificationTargetsThread,
+  prependOlderTurns,
+  resolvePendingEscalation,
+} from "../protocol/reducer";
+import type { AppwireClientLike } from "../protocol/testing/fakeClient";
+import type { AnyNotification, InputItem, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
+import { connectionStore } from "./connection";
 
 export class ConflictError extends Error {
   constructor(message: string) {
@@ -99,7 +106,14 @@ const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
 // replaceSubscription is always false — additive, layering onto whatever the
 // daemon already tracks for this client rather than resetting it.
 function readParams(ref: string) {
-  return { ref, includeTurns: true, itemsView: "full", subscribe: true, replaceSubscription: false, turnLimit: 40 } as const;
+  return {
+    ref,
+    includeTurns: true,
+    itemsView: "full",
+    subscribe: true,
+    replaceSubscription: false,
+    turnLimit: 40,
+  } as const;
 }
 
 async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
@@ -113,7 +127,14 @@ async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: 
 // which would be wasted fetch+storage for a subagent row most sessions
 // never expand.
 function watchReadParams(ref: string) {
-  return { ref, includeTurns: false, itemsView: "full", subscribe: true, replaceSubscription: false, turnLimit: 40 } as const;
+  return {
+    ref,
+    includeTurns: false,
+    itemsView: "full",
+    subscribe: true,
+    replaceSubscription: false,
+    turnLimit: 40,
+  } as const;
 }
 
 async function hydrateAndSubscribeWatch(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
@@ -240,7 +261,8 @@ function handleNotification(n: AnyNotification): void {
   if (nextWatchedThreads) {
     patch.watchedThreads = nextWatchedThreads;
     const nextWatchedFrameTimes = new Map(watchedFrameTimes);
-    for (const ref of changedWatched) nextWatchedFrameTimes.set(ref, appendFrameTime(watchedFrameTimes.get(ref) ?? [], now));
+    for (const ref of changedWatched)
+      nextWatchedFrameTimes.set(ref, appendFrameTime(watchedFrameTimes.get(ref) ?? [], now));
     patch.watchedFrameTimes = nextWatchedFrameTimes;
   }
   threadsStore.setState(patch);
@@ -496,7 +518,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     const model = threadsStore.getState().threads.get(ref);
     if (!model?.olderCursor) return; // untracked, or no more history to page in
-    const resp: ThreadTurnsListResponse = await client.request("thread/turns/list", olderTurnsParams(ref, model.olderCursor));
+    const resp: ThreadTurnsListResponse = await client.request(
+      "thread/turns/list",
+      olderTurnsParams(ref, model.olderCursor),
+    );
     // A concurrent releaseThread() may have dropped this ref while the page
     // was in flight; don't resurrect it. Re-read (rather than reusing
     // `model`) so a live notification that arrived during the await isn't
@@ -611,5 +636,11 @@ export function resetThreadsStoreForTests(): void {
   unwireNotification = null;
   unwireReady = null;
   wiredClient = null;
-  threadsStore.setState({ threads: new Map(), frameTimes: new Map(), watchedThreads: new Map(), watchedFrameTimes: new Map(), scrollPositions: new Map() });
+  threadsStore.setState({
+    threads: new Map(),
+    frameTimes: new Map(),
+    watchedThreads: new Map(),
+    watchedFrameTimes: new Map(),
+    scrollPositions: new Map(),
+  });
 }

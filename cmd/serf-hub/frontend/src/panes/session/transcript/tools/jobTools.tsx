@@ -17,13 +17,13 @@
 // report) kept only as a defensive alias reading its own legacy `target`
 // arg, exactly as renderer-tools.js's jobSendMessageRenderer did.
 import { useLayoutEffect } from "react";
-import { registerToolRenderer } from "../toolRenderers";
+import type { ItemModel } from "../../../../protocol/model";
 import type { ToolRenderProps } from "../toolRenderers";
-import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
+import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
+import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
 import { updateSubagentRowIfExists } from "./subagentModuleStore";
-import type { ItemModel } from "../../../../protocol/model";
 
 const ID_CLIP = 26;
 
@@ -46,7 +46,11 @@ function CorrelatingBody({
   useLayoutEffect(() => {
     const kind = resolveKind(item);
     if (kind === undefined) return; // nothing settled to report yet
-    updateSubagentRowIfExists(item.turnId, resolveKey(item), { kind, resultPreview: resolvePreview(item), completedAt: item.completedAt });
+    updateSubagentRowIfExists(item.turnId, resolveKey(item), {
+      kind,
+      resultPreview: resolvePreview(item),
+      completedAt: item.completedAt,
+    });
   });
   return <HeadClippedOutputBody item={item} live={false} />;
 }
@@ -106,7 +110,9 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) => resolveRowKey(undefined, str(parseArgs(item.argumentsJSON), "job_id") ?? "", item.callId ?? item.id)}
+        resolveKey={(item) =>
+          resolveRowKey(undefined, str(parseArgs(item.argumentsJSON), "job_id") ?? "", item.callId ?? item.id)
+        }
         resolveKind={(item) => {
           const footer = trailingBracketFooter(item.output ?? "");
           return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;
@@ -136,7 +142,9 @@ registerToolRenderer({
     return (
       <CorrelatingBody
         {...props}
-        resolveKey={(item) => resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id)}
+        resolveKey={(item) =>
+          resolveRowKey(delegateSendTarget(parseArgs(item.argumentsJSON)), undefined, item.callId ?? item.id)
+        }
         resolveKind={(item) => {
           const footer = trailingBracketFooter(item.output ?? "");
           return footer ? classifyJobStatus(statusWordFromText(footer)) : undefined;

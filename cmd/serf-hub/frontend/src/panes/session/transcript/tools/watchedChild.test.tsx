@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, test, expect } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { WatchedChildIndicator } from "./watchedChild";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { WatchedChildIndicator } from "./watchedChild";
 
 // WatchedChildIndicator is the subagent module's live view into a running
 // child (subagentModule.tsx wires it into a "running" row that has a

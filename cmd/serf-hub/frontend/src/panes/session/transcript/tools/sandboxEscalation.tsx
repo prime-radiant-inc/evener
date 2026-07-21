@@ -33,11 +33,11 @@
 // resolveEscalation), but no worse than before, and the common cold-open
 // case now works without any resolve happening at all.
 import { useCallback, useState } from "react";
-import { Button, Card, Chip } from "../../../../widgets";
-import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import type { SandboxEscalationRequested } from "../../../../protocol/types.gen";
-import styles from "./sandboxescalation.module.css";
+import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { Button, Card, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import styles from "./sandboxescalation.module.css";
 
 const CLASS = {
   label: requireClass(styles.label, "sandboxescalation.module.css", "label"),

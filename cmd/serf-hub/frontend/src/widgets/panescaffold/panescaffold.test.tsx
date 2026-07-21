@@ -1,8 +1,8 @@
-import { afterEach, test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "vitest";
 import { PaneScaffold } from "./index";
 
 afterEach(cleanup);
@@ -69,9 +69,7 @@ test("renders title, cadence, actions and children in that document order", () =
       content
     </PaneScaffold>,
   );
-  const positions = ["Sessions", "my-cadence", "my-action"].map((needle) =>
-    container.innerHTML.indexOf(needle),
-  );
+  const positions = ["Sessions", "my-cadence", "my-action"].map((needle) => container.innerHTML.indexOf(needle));
   expect(positions[0]).toBeLessThan(positions[1]!);
   expect(positions[1]).toBeLessThan(positions[2]!);
 });

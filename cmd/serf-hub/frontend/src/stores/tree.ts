@@ -11,11 +11,12 @@
 // field-access path to either the REST baseline or the live notification" -
 // reasoning that only makes sense if the frontend consumes wire JSON
 // directly, with no renaming layer to make the two line up on its own.
-import { createStore } from "zustand/vanilla";
+
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
+import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification } from "../protocol/types.gen";
+import { connectionStore } from "./connection";
 
 export interface Source {
   id: string;
@@ -106,7 +107,10 @@ interface WireTreeProject extends Omit<TreeProject, "sessions"> {
   sessions: WireTreeNode[] | null;
 }
 interface WireTreeResponse
-  extends Omit<TreeResponse, "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"> {
+  extends Omit<
+    TreeResponse,
+    "sources" | "live" | "needs_you" | "favorites" | "projects" | "archived_projects" | "test_runs"
+  > {
   sources: Source[] | null;
   live: WireTreeNode[] | null;
   needs_you: WireTreeNode[] | null;

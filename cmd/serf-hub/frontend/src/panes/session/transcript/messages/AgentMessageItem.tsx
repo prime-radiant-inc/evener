@@ -8,10 +8,11 @@
 // this file re-declares typography (see agentmessageitem.module.css's own
 // comment) specifically so there is no gap for a live/settled mismatch to
 // live in.
-import { registerItemRenderer, type ItemRenderProps } from "../types";
-import { StreamingText } from "../StreamingText";
+
 import { Markdown } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { StreamingText } from "../StreamingText";
+import { type ItemRenderProps, registerItemRenderer } from "../types";
 import styles from "./agentmessageitem.module.css";
 
 const CLASS = {

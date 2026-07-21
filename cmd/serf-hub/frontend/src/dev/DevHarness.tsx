@@ -5,9 +5,9 @@
 import { useEffect, useState } from "react";
 import { AppwireClient } from "../protocol/client";
 import { rpcURLFromLocation } from "../protocol/transport";
+import type { Thread } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import { useThreadsStore } from "../stores/threads";
-import type { Thread } from "../protocol/types.gen";
 import styles from "./DevHarness.module.css";
 
 // bootstrapClient wires a real AppwireClient into connectionStore exactly
