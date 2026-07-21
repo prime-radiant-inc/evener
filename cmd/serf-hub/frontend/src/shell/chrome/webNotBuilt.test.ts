@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { checkWebNotBuilt } from "./webNotBuilt";
+import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./webNotBuilt";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -46,5 +46,11 @@ describe("checkWebNotBuilt", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 503 }));
     await expect(checkWebNotBuilt()).resolves.toBe("not-built");
     expect(fetchSpy).toHaveBeenCalledWith("/", { credentials: "same-origin" });
+  });
+});
+
+describe("NOT_BUILT_MESSAGE", () => {
+  test("is a quiet, sentence-case, actionable instruction", () => {
+    expect(NOT_BUILT_MESSAGE).toBe("The hub's web app isn't built. Ask the operator to run the build, then retry.");
   });
 });

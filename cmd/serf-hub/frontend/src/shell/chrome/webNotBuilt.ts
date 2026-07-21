@@ -50,3 +50,10 @@ export async function checkWebNotBuilt(fetchImpl: typeof fetch = fetch): Promise
   }
   return response.status === 503 ? "not-built" : "ok";
 }
+
+// The quiet, sentence-case message shown instead of the generic "connection
+// closed" banner once checkWebNotBuilt resolves "not-built". Retry stays
+// offered alongside it (shell/ConnectionBanner.tsx) - reconnecting the /rpc
+// socket doesn't depend on dist/ at all (see the module comment above), so
+// it can still genuinely help even while this message is showing.
+export const NOT_BUILT_MESSAGE = "The hub's web app isn't built. Ask the operator to run the build, then retry.";
