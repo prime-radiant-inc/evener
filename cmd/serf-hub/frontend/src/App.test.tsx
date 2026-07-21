@@ -1,6 +1,15 @@
-import { afterEach, test, expect } from "vitest";
+import { afterEach, beforeAll, test, expect } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { App } from "./App";
+
+// Await the gallery module ONCE up front so React.lazy resolves from a warm
+// module cache. The slow part of lazy-loading in a full parallel vitest run
+// is the transform/import work, which is an awaitable completion — not
+// something to race with a widened findBy deadline. A genuinely broken
+// gallery module fails this await with its real error instead of a timeout.
+beforeAll(async () => {
+  await import("./dev/WidgetGallery");
+});
 
 afterEach(() => {
   cleanup();
@@ -15,9 +24,7 @@ test("renders the shell placeholder", () => {
 test("renders the dev widget gallery at /dev/widgets", async () => {
   window.history.pushState({}, "", "/dev/widgets");
   render(<App />);
-  // The gallery is React.lazy and its import.meta.glob pulls in every
-  // gallery section; under a full parallel vitest run that dynamic import
-  // can far exceed findBy's 1s default (passes in ~0.5s in isolation), so
-  // give the lazy chunk a generous ceiling instead of a load-dependent one.
-  expect(await screen.findByText(/widget gallery/i, undefined, { timeout: 15_000 })).toBeTruthy();
-}, 20_000);
+  // Module pre-awaited in beforeAll, so this only waits out React's own
+  // lazy/Suspense commit cycle — deterministic within findBy's default.
+  expect(await screen.findByText(/widget gallery/i)).toBeTruthy();
+});
