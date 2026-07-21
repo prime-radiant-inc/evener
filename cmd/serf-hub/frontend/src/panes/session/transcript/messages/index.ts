@@ -9,6 +9,7 @@ import "./UserMessageItem";
 import "./SteeringItem";
 import "./SystemNoticeItem";
 import "./ThinkBlock";
+import "./WarningItem";
 
 // TurnSeparator is NOT an item renderer (it takes a TurnModel, not an
 // ItemModel) so it has no registerItemRenderer call to run as a side
