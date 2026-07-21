@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -29,6 +30,18 @@ var (
 	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
 )
+
+// notifyTreeChanged broadcasts serf/tree/changed to every connected client so
+// the sidebar refetches /api/tree (spec §7.3, debounced client-side). It is
+// wired as (part of) the onChange hook for Roster and PastIndex — both
+// already gate their callback on an actual content-fingerprint delta (a
+// daemon appeared/disappeared/changed liveness; a session appeared/ended/
+// changed in the past index), so this fires only on a real change, never on
+// a no-op probe/rebuild cycle — and is called directly after each of the
+// four tree-affecting web mutations (archive/favorite/rename/project-delete).
+func notifyTreeChanged(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfTreeChanged, map[string]string{})
+}
 
 // archiveDecisions returns the current set of user-explicit archive decisions.
 // Returns an empty map (never nil) when cfg.Archive is nil or Decisions() fails.

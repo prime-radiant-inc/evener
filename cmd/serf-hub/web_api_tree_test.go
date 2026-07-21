@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/identifier"
+	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -469,5 +471,83 @@ func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	}
 	if detail.Title != "my chosen name" {
 		t.Fatalf("Title=%q, want the renamed meta name (not the raw id)", detail.Title)
+	}
+}
+
+// waitForNotification blocks until the client's next notification arrives (or
+// t.Fatal on timeout) and returns its method name.
+func waitForNotification(t *testing.T, client *appwire.Client) string {
+	t.Helper()
+	select {
+	case got := <-client.Notifications():
+		return got.Method
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for a notification")
+		return ""
+	}
+}
+
+func TestRosterOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "sess1", status: "active"})
+	roster.SetOnChange(func() { notifyTreeChanged(server) })
+
+	roster.Refresh() // seed: a daemon appears in the roster — a delta
+	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
+		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
+	}
+
+	roster.Refresh() // identical snapshot: no delta, must not broadcast again
+	// A sentinel notification, broadcast after the no-op refresh, arrives after
+	// anything the refresh wrongly sent — so seeing it first proves the refresh
+	// broadcast nothing, without a race-prone sleep-based negative check.
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got notification %q before the sentinel; a no-op roster refresh must not broadcast %q", got, appwire.NotifySerfTreeChanged)
+	}
+}
+
+func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	hubHTTP := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hubHTTP.Close()
+	client := dialHubRPC(t, hubHTTP)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	stateRoot := t.TempDir()
+	proj := filepath.Join(stateRoot, "project-test-0123456789")
+	meta := schema.SessionMeta{ID: "sess1", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
+	if err := schema.SaveSessionMeta(proj, meta); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(stateRoot, "*"))
+	past.SetOnChange(func() { notifyTreeChanged(server) })
+
+	if err := past.Rebuild(); err != nil { // seed: a session appears in the past index — a delta
+		t.Fatal(err)
+	}
+	if got := waitForNotification(t, client); got != appwire.NotifySerfTreeChanged {
+		t.Fatalf("method=%q, want %q", got, appwire.NotifySerfTreeChanged)
+	}
+
+	if err := past.Rebuild(); err != nil { // identical snapshot: no delta, must not broadcast again
+		t.Fatal(err)
+	}
+	server.BroadcastAll("test/sentinel", nil)
+	if got := waitForNotification(t, client); got != "test/sentinel" {
+		t.Fatalf("got notification %q before the sentinel; a no-op past-index rebuild must not broadcast %q", got, appwire.NotifySerfTreeChanged)
 	}
 }

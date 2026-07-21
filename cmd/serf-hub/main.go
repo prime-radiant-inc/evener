@@ -240,12 +240,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// recomputes instead of serving a stale memoized tree.
 	inputs := &hubcore.InputsVersion{}
 
-	// Wire each input source's content-delta-gated onChange hook (Task 10) to
-	// the shared inputs-version counter, so only a real change to the past
-	// index, roster, or archive/favorite decisions busts the tree memo.
+	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
+	// the shared inputs-version counter, so a decision busts the tree memo.
+	// Past/roster get the same bump below, composed with the
+	// serf/tree/changed broadcast once web (and its appRPC) exists.
 	bump := inputs.Bump
-	past.SetOnChange(bump)
-	roster.SetOnChange(bump)
 	archive.SetOnChange(bump)
 	favorite.SetOnChange(bump)
 
@@ -310,6 +309,19 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		Inputs:              inputs,
 		RemoteThreadCache:   remoteCache,
 	})
+
+	// serf/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
+	// hook already gates on an actual content-fingerprint delta (never a
+	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
+	// into the same hook pushes the sidebar exactly on a daemon appearing/
+	// disappearing/changing liveness, or a session appearing/ending/changing
+	// in the past index. The four web mutations (archive/favorite/rename/
+	// project-delete) broadcast explicitly at their own handlers instead
+	// (web_api_*.go) — their stores don't all route back through Roster or
+	// PastIndex.
+	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
 	}
