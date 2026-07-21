@@ -3,9 +3,17 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { ConnectionClosedError, WireError } from "../protocol/errors";
 import type { ConnectionState } from "../protocol/client";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
-import { ConflictError, resetThreadsStoreForTests, threadsStore, useThreadsStore } from "./threads";
+import {
+  appendFrameTime,
+  ConflictError,
+  FRAME_TIMES_MAX_ENTRIES,
+  FRAME_TIMES_WINDOW_MS,
+  resetThreadsStoreForTests,
+  threadsStore,
+  useThreadsStore,
+} from "./threads";
 
 // flushUntil drains microtask turns until `done()` reports true (or a bounded
 // number of turns elapse, so a genuine hang fails fast instead of silently).
@@ -646,5 +654,213 @@ describe("useThreadsStore hook", () => {
     });
 
     expect(result.current).toBe(true);
+  });
+});
+
+// appendFrameTime is the pure ring-buffer step behind the frameTimes
+// tracking below: expiry (evict anything older than the 60s trace window
+// widgets/cadence's own Cadence renders) and the 64-entry cap are both unit
+// tested directly here, with no client/store machinery involved.
+describe("appendFrameTime", () => {
+  test("appends to an empty ring", () => {
+    expect(appendFrameTime([], 1000)).toEqual([1000]);
+  });
+
+  test("appends after existing entries, preserving order", () => {
+    expect(appendFrameTime([100, 200], 300)).toEqual([100, 200, 300]);
+  });
+
+  test("keeps an entry exactly at the 60s window boundary (matches Cadence's own age>WINDOW_MS exclusion)", () => {
+    const now = 100_000;
+    expect(appendFrameTime([now - FRAME_TIMES_WINDOW_MS], now)).toEqual([now - FRAME_TIMES_WINDOW_MS, now]);
+  });
+
+  test("evicts entries older than the 60s window relative to now", () => {
+    const now = 100_000;
+    const times = [now - FRAME_TIMES_WINDOW_MS - 1, now - 60_000, now - 1000];
+    expect(appendFrameTime(times, now)).toEqual([now - 60_000, now - 1000, now]);
+  });
+
+  test("caps the ring at 64 entries, dropping the oldest to make room", () => {
+    const now = 100_000;
+    // 64 entries, all well within the window, oldest first.
+    const times = Array.from({ length: FRAME_TIMES_MAX_ENTRIES }, (_, i) => now - (FRAME_TIMES_MAX_ENTRIES - i));
+    const result = appendFrameTime(times, now);
+    expect(result).toHaveLength(FRAME_TIMES_MAX_ENTRIES);
+    expect(result[0]).toBe(times[1]); // the single oldest entry was evicted
+    expect(result[result.length - 1]).toBe(now); // the new entry always survives
+  });
+
+  test("does not cap below 64 entries", () => {
+    expect(appendFrameTime([1, 2, 3], 4)).toEqual([1, 2, 3, 4]);
+  });
+
+  test("unsorted input is accepted as-is (no re-sort) - Cadence's own contract already tolerates that", () => {
+    expect(appendFrameTime([300, 100, 200], 400)).toEqual([300, 100, 200, 400]);
+  });
+});
+
+describe("frameTimes tracking (threads store)", () => {
+  test("starts with no entry for a freshly-hydrated ref - only live notifications populate it", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
+  });
+
+  test("appends the notification's own timestamp on every applied notification - not a fresh Date.now() read", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    vi.spyOn(Date, "now").mockReturnValue(5_000_000);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([5_000_000]);
+  });
+
+  test("accumulates across multiple applied notifications, in arrival order", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const dateNowSpy = vi.spyOn(Date, "now");
+    for (const t of [1000, 2000, 3000]) {
+      dateNowSpy.mockReturnValue(t);
+      fake.emitNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+      } as AnyNotification);
+    }
+
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000, 2000, 3000]);
+  });
+
+  test("a notification for an untracked ref creates no frameTimes entry", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_tracked"));
+    await threadsStore.getState().ensureThread("ref_tracked");
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_untracked", ref: "ref_untracked", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().frameTimes.has("ref_untracked")).toBe(false);
+  });
+
+  test("a matched notification the reducer treats as a same-reference no-op does not append a frame time", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // An unrecognized method still carries a matching ref (passes
+    // notificationTargetsThread) but falls through the reducer's `default:`
+    // case, which returns the exact same model reference - handleNotification
+    // must not treat that as "applied" for frameTimes purposes either.
+    fake.emitNotification({ method: "totally/unknown", params: { ref: "ref_a" } } as unknown as AnyNotification);
+
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
+  });
+
+  test("releaseThread drops the ref's frameTimes entry along with its model", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
+
+    threadsStore.getState().releaseThread("ref_a");
+
+    expect(threadsStore.getState().frameTimes.has("ref_a")).toBe(false);
+  });
+
+  test("a reconnect re-hydrate does not reset or otherwise touch existing frameTimes", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    vi.spyOn(Date, "now").mockReturnValue(1000);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => fake.calls.filter((c) => c.method === "thread/read").length > 1);
+
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
+  });
+});
+
+describe("useThreadsStore.loadOlderTurns", () => {
+  test("fetches the older page via thread/turns/list using the model's olderCursor, prepends it, and advances the cursor", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({
+      thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
+      olderCursor: "cursor_1",
+    }));
+    fake.on("thread/turns/list", (params) => {
+      expect(params).toEqual({ ref: "ref_a", cursor: "cursor_1", itemsView: "full", limit: 30 });
+      return {
+        data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
+        nextCursor: "cursor_0",
+      };
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await threadsStore.getState().loadOlderTurns("ref_a");
+
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.turns.map((t) => t.id)).toEqual(["turn_1", "turn_2"]);
+    expect(model?.olderCursor).toBe("cursor_0");
+  });
+
+  test("is a no-op when the tracked model has no olderCursor (nothing more to load)", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a")); // no olderCursor override -> undefined
+    await threadsStore.getState().ensureThread("ref_a");
+
+    await threadsStore.getState().loadOlderTurns("ref_a");
+
+    expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(0);
+  });
+
+  test("is a no-op when the ref is not tracked at all", async () => {
+    const fake = connectFakeClient();
+
+    await threadsStore.getState().loadOlderTurns("ref_never_tracked");
+
+    expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(0);
+  });
+
+  test("throws when no client has been connected yet, same as every other action", async () => {
+    await expect(threadsStore.getState().loadOlderTurns("ref_a")).rejects.toThrow(/no client connected/i);
+  });
+
+  test("a ref released while the older-turns request is in flight is not resurrected", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    const box: { resolve: ((r: ThreadTurnsListResponse) => void) | null } = { resolve: null };
+    fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (box.resolve = resolve)));
+
+    const loading = threadsStore.getState().loadOlderTurns("ref_a");
+    await flushUntil(() => box.resolve !== null);
+    threadsStore.getState().releaseThread("ref_a");
+    box.resolve?.({ data: [], nextCursor: undefined });
+    await loading;
+
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 });
