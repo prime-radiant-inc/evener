@@ -70,6 +70,10 @@ beforeAll(async () => {
   globalThis.localStorage = new MemoryStorage();
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
+  // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
+  // dockview is dead weight on the mobile path) - pre-warmed for the same
+  // reason as the two panes above.
+  await import("./DockHost");
 });
 
 beforeEach(() => {

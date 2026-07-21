@@ -2,7 +2,7 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { AppwireClient } from "../protocol/client";
 import { rpcURLFromLocation } from "../protocol/transport";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
@@ -10,7 +10,6 @@ import { connectionStore, useConnectionStore } from "../stores/connection";
 import { ClientProvider } from "./clientContext";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
-import { DockHost } from "./DockHost";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
 import { Rail } from "./rail";
@@ -20,6 +19,16 @@ import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import styles from "./AppShell.module.css";
+
+// dockview (pulled in by DockHost.tsx) is ~636kB of the main bundle on its
+// own (see Task 2's own report) - dead weight for the mobile path, which
+// renders StackHost instead and never touches dockview at all. Lazy-loading
+// DockHost here, rather than importing it eagerly like every other shell
+// module, moves that weight into its own chunk that only a desktop session
+// ever fetches. DockHost is a named export (not default), so the import()
+// promise is adapted the same way App.tsx's own DevHarnessRoute already
+// does for dev/DevHarness.tsx.
+const DockHost = lazy(() => import("./DockHost").then((m) => ({ default: m.DockHost })));
 
 export interface AppShellProps {
   // Test seam: production (main.tsx) omits this, and AppShell constructs +
@@ -178,7 +187,21 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
           {!isMobile && route !== null && <Rail />}
-          {route === null ? <NotFound /> : isMobile ? <StackHost railSlot={<Rail />} /> : <DockHost />}
+          {route === null ? (
+            <NotFound />
+          ) : isMobile ? (
+            <StackHost railSlot={<Rail />} />
+          ) : (
+            // fallback={null}: DockHost's own boot sequence (handleReady)
+            // already produces the very first meaningful paint (a routed
+            // pane, or welcome) synchronously once its chunk resolves -
+            // there is no useful intermediate state to show while just the
+            // dockview chunk itself is still loading, only this app's
+            // existing blank-shell moment stretched slightly longer.
+            <Suspense fallback={null}>
+              <DockHost />
+            </Suspense>
+          )}
         </div>
       </div>
     </ClientProvider>

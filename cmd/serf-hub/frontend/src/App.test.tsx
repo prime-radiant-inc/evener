@@ -44,6 +44,11 @@ beforeAll(async () => {
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
+  // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
+  // dockview is dead weight on the mobile path); the default-route test
+  // below renders through AppShell -> DockHost, same reasoning as the
+  // three imports above.
+  await import("./shell/DockHost");
 });
 
 beforeEach(() => {
