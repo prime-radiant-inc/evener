@@ -9,12 +9,17 @@ export type PaneTypeId = "session" | "transcript" | "doc" | "spawn" | "settings"
 
 // Context passed to PaneDescriptor.title() alongside a pane's own params -
 // e.g. a thread ref -> display name lookup for session/transcript panes.
-// Empty for now: the only pane registered in this task (welcome) has a
-// constant title that needs no lookup. Record<string, never> (rather than
-// an empty `interface {}`, which is equivalent to `unknown` and trips
-// @typescript-eslint/no-empty-object-type) types "no fields yet" precisely;
-// add fields here as soon as a pane's title() actually needs them (YAGNI).
-export type PaneTitleCtx = Record<string, never>;
+// threadName is the first (and so far only) field: DockHost calls title()
+// with a ctx backed by the threads store, so a session pane's tab title
+// tracks the live ThreadModel.name (falling back to the ref itself when the
+// thread hasn't hydrated a name yet, or isn't tracked at all) instead of a
+// static ref string. Optional - a pane whose title doesn't need a lookup
+// (welcome's is constant) can be called with `{}`, as the existing welcome
+// pane test already does - add more fields here, optional or not, only when
+// another pane's title() needs a different kind of lookup (YAGNI).
+export interface PaneTitleCtx {
+  threadName?(ref: string): string | undefined;
+}
 
 export interface PaneProps<P = unknown> {
   params: P;
