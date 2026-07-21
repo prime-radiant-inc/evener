@@ -35,10 +35,13 @@ export interface ThreadsStoreState {
 // refcounts per ref, the hydrate promise currently in flight for a ref (so
 // two panes racing to ensureThread() the same ref share one thread/read
 // instead of sending two), and which client this store has already wired
-// its notification/ready handlers onto.
+// its notification/ready handlers onto (plus that wiring's own unsubscribe
+// functions - see rewireClient below).
 const refCounts = new Map<string, number>();
 const inflightHydrates = new Map<string, Promise<ThreadModel>>();
 let wiredClient: AppwireClientLike | null = null;
+let unwireNotification: (() => void) | null = null;
+let unwireReady: (() => void) | null = null;
 
 // Every tracked ref gets exactly these params on both the first subscribe
 // (ensureThread) and every re-subscribe (onReady after reconnect):
@@ -115,7 +118,12 @@ function handleNotification(n: AnyNotification): void {
 // snapshot recovery, since notifications published while the socket was down
 // were missed. Fires on every client.onReady transition into "ready",
 // including the very first — a no-op in practice, since nothing is tracked
-// yet that early in the app's lifecycle — and every reconnect after it.
+// yet that early in the app's lifecycle — and every reconnect after it. Also
+// called directly (not via onReady) from rewireClient below, for the case
+// where a client swap lands on a client that is ALREADY ready — onReady only
+// fires on a FUTURE transition, never retroactively for a client that
+// reached "ready" before this store ever subscribed to it (see
+// rewireClient's own comment).
 async function handleReady(client: AppwireClientLike): Promise<void> {
   const refs = Array.from(threadsStore.getState().threads.keys());
   await Promise.all(
@@ -139,23 +147,61 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
   );
 }
 
+// rewireClient is the single place this store's onNotification/onReady
+// handlers move to a new client. It is idempotent (a no-op once `client` is
+// already the wired one) and is triggered two ways:
+//   - reactively, by the connectionStore.subscribe() call below, the moment
+//     connectionStore's own client reference changes — this is what fixes
+//     the bug this whole describe block in threads.test.ts is named after:
+//     a manual retry (shell/ConnectionBanner.tsx) that swaps in a fresh
+//     AppwireClient used to leave this store's handlers attached to the now-
+//     dead client until some pane happened to call an action, silently
+//     starving every already-open pane of live deltas in the meantime.
+//   - defensively, from requireClient() below, for the (never exercised in
+//     practice, since this module's own top-level subscribe() call below
+//     runs at import time, before any action can possibly run) case where
+//     an action reaches requireClient() before that subscription has taken
+//     effect.
+function rewireClient(client: AppwireClientLike): void {
+  if (client === wiredClient) return;
+  unwireNotification?.();
+  unwireReady?.();
+  wiredClient = client;
+  unwireNotification = client.onNotification(handleNotification);
+  unwireReady = client.onReady(() => {
+    void handleReady(client);
+  });
+  // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
+  // FakeClient both dispatch it from within setState/emitStateChange) — it
+  // does NOT fire retroactively for a client that is already ready by the
+  // time we subscribe. A manual retry's fresh client is typically already
+  // ready at this point (ConnectionBanner awaits the new client's own
+  // connect() before ever handing it to connectionStore.connect()), so
+  // without this, swapping to an already-ready client would never
+  // re-subscribe/re-hydrate this store's tracked refs at all.
+  if (client.state === "ready") void handleReady(client);
+}
+
+// The single reactive trigger for rewireClient: every connectionStore
+// change is checked for a (possibly new) client, and rewireClient itself
+// no-ops unless the reference actually changed — so this fires harmlessly
+// on state-only changes (e.g. a client's own onStateChange mirroring) too.
+// Registered once, at module load, same lifetime as this module's other
+// singleton bookkeeping (refCounts, wiredClient, ...).
+connectionStore.subscribe((state) => {
+  if (state.client) rewireClient(state.client);
+});
+
 // requireClient reads the client connection.ts wired via
 // useConnectionStore.getState().connect(client) — threads.ts has no
 // connect() of its own in the locked interface, so it rides connection.ts's
-// single wiring point — and lazily (idempotently) attaches this store's own
-// onNotification/onReady handlers to it the first time it's seen.
+// single wiring point.
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
   if (!client) {
     throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
   }
-  if (client !== wiredClient) {
-    wiredClient = client;
-    client.onNotification(handleNotification);
-    client.onReady(() => {
-      void handleReady(client);
-    });
-  }
+  rewireClient(client);
   return client;
 }
 
@@ -277,10 +323,17 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // initial state. threads.ts is a singleton store (one Map, one refcount
 // table, one wired-client marker) shared by the whole app, so
 // threads.test.ts must reset it between tests to keep them isolated — no
-// production code should ever call this.
+// production code should ever call this. Calls the previous wiring's own
+// unwire functions (rather than just dropping the references) so the next
+// test's first rewireClient() call never fires a stale unwire closure from
+// an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   refCounts.clear();
   inflightHydrates.clear();
+  unwireNotification?.();
+  unwireReady?.();
+  unwireNotification = null;
+  unwireReady = null;
   wiredClient = null;
   threadsStore.setState({ threads: new Map() });
 }
