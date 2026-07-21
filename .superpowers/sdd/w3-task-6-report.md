@@ -1,16 +1,18 @@
 # Wave 3 Task 6 report — `serf/tree/changed` hub broadcast
 
-Branch `w3-treepush`, off `0996d8afb`. 4 commits (the 4th is a post-review fix — see "Review-fix
-round" below). Full mandated suite green (`go test ./cmd/serf-hub/... ./appwire/...
-./internal/appwirets/... ./internal/appwiredoc/...`, exit 0), `make generate` idempotent (zero
-further diff), `gofmt -l`/`go vet` clean on every touched file, `golangci-lint run
---max-issues-per-linter 0 --max-same-issues 0` on the touched packages clean (0 issues),
-`serf-namingcheck`/`serf-internalcheck`/`serf-docscheck` all clean. `go build -tags serffuzz
-./cmd/serf-hub/...` and `go vet -tags serffuzz ./cmd/serf-hub/...` also clean (belt and
-suspenders — that tag isn't part of the mandated verification, but main.go/main_background.go
-adjacency made it worth a check). Zero touches to hand-written frontend src, templates, or
-assets (`git diff --stat 0996d8afb..HEAD -- cmd/serf-hub/templates/ cmd/serf-hub/assets/
-cmd/serf-hub/frontend/src/` shows only the regenerated `types.gen.ts`).
+Branch `w3-treepush`, off `0996d8afb`. 6 commits (the 4th and 6th are post-review fix rounds — see
+"Review-fix round" and "Invariant round" below). Full mandated suite green (`go test
+./cmd/serf-hub/... ./appwire/... ./internal/appwirets/... ./internal/appwiredoc/...`, exit 0),
+`make generate` idempotent (zero further diff), `gofmt -l`/`go vet` clean on every touched file,
+`golangci-lint run --max-issues-per-linter 0 --max-same-issues 0` on the touched packages clean
+(0 issues), `serf-namingcheck`/`serf-internalcheck`/`serf-docscheck` all clean. `go build -tags
+serffuzz ./cmd/serf-hub/...`, `go vet -tags serffuzz ./cmd/serf-hub/...`, and `go test -tags
+serffuzz ./cmd/serf-hub/...` (seed corpus) all clean (belt and suspenders — that tag isn't part
+of the mandated verification, but the PastIndex signature change in the Invariant round touched
+main.go/main_background.go adjacency, making it worth the extra check). Zero touches to
+hand-written frontend src, templates, or assets (`git diff --stat 0996d8afb..HEAD --
+cmd/serf-hub/templates/ cmd/serf-hub/assets/ cmd/serf-hub/frontend/src/` shows only the
+regenerated `types.gen.ts`).
 
 ## Commits
 
@@ -20,6 +22,7 @@ cmd/serf-hub/frontend/src/` shows only the regenerated `types.gen.ts`).
 | `1f996da5b` | hub: broadcast on roster and past-index deltas |
 | `91b8c8900` | hub: broadcast after archive/favorite/rename/project-delete |
 | `25b5bbdfe` | hub: single tree-changed broadcast per mutation — PastIndex routing already notifies (review-fix round) |
+| `754c87daa` | hub: successful mutations always broadcast tree-changed exactly once (invariant round) |
 
 ## Design
 
@@ -62,21 +65,21 @@ the existing `if s.cfg.PokeAttention != nil { s.cfg.PokeAttention() }` pattern a
 call site. **This was wrong for rename/project-delete — see "Review-fix round" below**; the table
 below reflects the corrected, current state.
 
-## Trigger-site inventory (file:line, current)
+## Trigger-site inventory (file:line, current after the Invariant round)
 
 | Trigger | Site | Mechanism |
 |---|---|---|
 | 1. Roster delta | `main.go:323` (`roster.SetOnChange`) | composed hook, fires from `Roster.Refresh` only on fingerprint delta |
 | 2. Past-index change | `main.go:322` (`past.SetOnChange`) | composed hook, fires from `PastIndex.Rebuild`/`UpdateMeta` only on fingerprint delta |
-| 3. Archive mutation | `web_api_archive.go:70` (`s.notifyMutation()`) | explicit, after `Archive.Set` succeeds — ArchiveStore never routes through PastIndex |
-| 3. Favorite mutation | `web_api_favorite.go:41` (`s.notifyMutation()`) | explicit, after `Favorite.Set` succeeds — FavoriteStore never routes through PastIndex |
-| 3. Rename (ended-session path) | `web_api_rename.go:105` (`Past.UpdateMeta` call itself) | **via trigger 2's composed hook**, not an explicit call — see below |
-| 3. Rename (live-daemon path, both the live and became-live branches) | `web_api_rename.go:120` and `:130` (both inside `refreshRenamedMeta`'s `Past.UpdateMeta` calls) | **via trigger 2's composed hook** |
-| 3. Project-delete | `web_api_project_delete.go:189` (`Past.Rebuild` call itself) | **via trigger 2's composed hook** |
+| 3. Archive mutation | `web_api_archive.go:70` (`s.notifyMutation()`) | explicit, unconditional, after `Archive.Set` succeeds — ArchiveStore never routes through PastIndex |
+| 3. Favorite mutation | `web_api_favorite.go:41` (`s.notifyMutation()`) | explicit, unconditional, after `Favorite.Set` succeeds — FavoriteStore never routes through PastIndex |
+| 3. Rename (ended-session path) | `web_api_rename.go:107` (`Past.UpdateMeta`'s return) + `:115` (compensating `notifyTreeChanged`, conditional on `!notified`) | via trigger 2's composed hook in the common case; explicit compensating call when it didn't fire |
+| 3. Rename (live-daemon path, all three reachable states inside `refreshRenamedMeta`) | `web_api_rename.go:134`/`:139` (`Past.UpdateMeta` calls) + `:146` (compensating `notifyTreeChanged`, conditional on `!notified`) | same pattern; the compensating call is the sole source when `Find` misses (session not yet indexed) |
+| 3. Project-delete | `web_api_project_delete.go:189` (`Past.Rebuild`'s return) + `:202` (compensating `notifyTreeChanged`, conditional on `!rebuilt`) | via trigger 2's composed hook when a session was actually removed; explicit compensating call when every session was skipped (only archive/favorite rows changed) |
 
-Helpers: `web_api_tree.go:42` (`func notifyTreeChanged`), `web_api_tree.go:52`
-(`func (s *WebServer) notifyMutation`, folds the PokeAttention+notifyTreeChanged pair for archive/
-favorite).
+Helpers: `web_api_tree.go:55` (`func notifyTreeChanged`, doc comment states the exactly-once
+invariant), `web_api_tree.go:68` (`func (s *WebServer) notifyMutation`, unconditional — archive/
+favorite only).
 
 ## TDD evidence
 
@@ -161,20 +164,95 @@ Full suite (`go test ./cmd/serf-hub/... ./appwire/... ./internal/appwirets/...
 ./internal/appwiredoc/...`) exit 0 after the fix; `make generate` still idempotent; `golangci-lint
 run --max-issues-per-linter 0 --max-same-issues 0` on the same four packages: 0 issues.
 
+## Invariant round (commit `754c87daa`)
+
+A second coordinator-relayed ruling: close the two residual gaps flagged above rather than accept
+them, under an explicit invariant — a successful mutation broadcasts exactly once (never zero,
+never two); a failed/no-op request broadcasts zero. Suggested shape: surface whether
+`PastIndex.UpdateMeta`/`Rebuild`'s internal delta computation actually fired `onChange`, and
+compensate with an explicit broadcast on the paths where it didn't.
+
+**Signature change, mechanically propagated.** `Rebuild() error` → `Rebuild() (bool, error)`;
+`UpdateMeta(id, meta)` → `UpdateMeta(id, meta) bool`. Both bools mean "onChange fired" (delta
+found AND a callback is registered), not just "delta found" — a caller compensates exactly when
+this is false. `Find`'s own internal self-healing `Rebuild()` call (on a cache miss) and
+`RefreshOne`'s `UpdateMeta` call were updated too, though neither needed new compensating logic —
+`Find`/`RefreshOne` aren't user-mutation success paths. Blast radius: 8 non-test production call
+sites (fixed by hand: `main.go` x2, `app_threadlifecycle.go` x2, `app_transcripts.go`,
+`web_session.go` x2, `web_api_project_delete.go`) plus roughly 130 test call sites across ~30
+files, all one of two mechanical discard patterns (`_ = X.Rebuild()` → `_, _ = X.Rebuild()`;
+`if err := X.Rebuild(); err != nil` → `if _, err := X.Rebuild(); err != nil`) — fixed with a
+scripted `perl -pi -e` substitution over both patterns, then driven to zero remaining errors via
+`go vet ./...` and `go vet -tags serffuzz ./...` (compiler-as-completeness-net, not grep).
+
+**Compensating logic**, applied only where a path genuinely succeeded but PastIndex's hook didn't
+fire — never on a genuine failure or no-op:
+- `refreshRenamedMeta`: restructured from two exit points (an early `return` inside the found
+  branch, plus a shared trailing block for the other two) into a single trailing check. Every one
+  of its three reachable states — Find hit + reload succeeded, Find hit + reload failed
+  (fallback edit), Find missed entirely — now funnels through one `notified` flag, so the
+  compensating call covers all of them, not just the specifically-named "session not indexed"
+  case. `refreshRenamedMeta` is only ever invoked after the daemon already confirmed the rename,
+  so every one of these states is a genuine success.
+- `handleAPIRename`'s ended-session path: same one-flag pattern, single call site (only one
+  `UpdateMeta` call exists on this path).
+- `handleAPIProjectDelete`: compensates when `Rebuild()` found no delta. Reaching that line always
+  means the request succeeded (every error/conflict path returns earlier), so `!rebuilt` there
+  unconditionally means "compensate" — no further no-op/error branching needed at that call site.
+
+**Tests**, each verified against its broken condition (temporarily reverted/reintroduced, watched
+fail for the stated reason, restored — same technique as the prior round):
+- `TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed`: a session never
+  written to disk. Seeds `past.Rebuild()` once before wiring `SetOnChange` (mirrors `runMain`'s
+  actual ordering — see the bug this caught, below) so `Find`'s internal self-heal `Rebuild` finds
+  nothing further and stays silent, isolating the compensating call as the sole source. Broke by
+  disabling the compensating branch (`if false && !notified`): failed with "timed out waiting for
+  a notification" (zero instead of one).
+- `TestProjectDeleteBroadcastsTreeChangedExactlyOnceWhenNothingRemoved`: reuses
+  `TestProjectDeleteSkipsSessionThatBecomesLive`'s technique (override `projectSessionLive` to
+  force the project's one session to "become live" mid-request, so it's skipped, not removed) and
+  asserts `deleted` is empty before checking the broadcast. Same break/confirm/restore.
+- `TestRenameNotFoundBroadcastsNothing`: a rename for a session in neither the roster nor the past
+  index — a genuine 404. Verified in **both** directions: disabling the (nonexistent, correct)
+  broadcast isn't applicable here since there's no compensating call on this path by design, so I
+  instead injected an *errant* `notifyTreeChanged` call right before the 404 response and confirmed
+  the test caught it ("got notification ... before the sentinel"), then reverted — proving
+  `assertNoNotification` genuinely detects a wrongly-added broadcast, not just a coincidentally
+  quiet run.
+
+**A test bug the reintroduction technique caught, not a production one:** `TestRenameNotFoundBroadcastsNothing`'s
+first draft didn't seed `past.Rebuild()` before wiring `SetOnChange`, so `Find`'s internal
+self-healing `Rebuild()` (triggered by the 404 lookup itself) was the *first-ever* `Rebuild()` on
+that `PastIndex` — and an unseeded index's first `Rebuild()` always looks like a delta, because
+`contentFingerprint(nil)` (the empty-content hash) is a specific non-zero FNV constant, never
+equal to the zero-value initial `i.fingerprint`. That produced a real, reproducible spurious
+broadcast in the test, caught by the new `assertNoNotification` check on the very first run —
+before I'd have needed to break anything intentionally. Not a production bug: `runMain` always
+calls the seeding `Rebuild()` (main.go:162) *before* `SetOnChange` is ever wired (main.go:322-323
+runs after `web` is constructed), so this ordering hazard can't occur outside a test that gets the
+sequencing wrong. Fixed by seeding first, matching the other two new tests.
+
+Full suite exit 0; `make generate` idempotent; `golangci-lint` 0 issues; `go build -tags serffuzz
+./...`, `go vet -tags serffuzz ./...`, and `go test -tags serffuzz ./cmd/serf-hub/...` (seed
+corpus) all clean — worth the extra check given the signature change's reach into
+main.go/main_background.go adjacency.
+
 ## Files
 
 - `appwire/types.go`, `appwire/protocol.go` — catalog entry.
 - `appwire/wiretypes_fuzz_test.go` — nil-payload count update (see Design note above).
 - `docs/appwire-protocol.md`, `cmd/serf-hub/frontend/src/protocol/types.gen.ts` — regenerated,
   not hand-edited.
+- `cmd/serf-hub/internal/hubcore/past.go` — `Rebuild`/`UpdateMeta` signature change.
 - `cmd/serf-hub/web_api_tree.go` — `notifyTreeChanged` + `notifyMutation` helpers.
-- `cmd/serf-hub/main.go` — roster/past-index composed wiring + corrected comment.
+- `cmd/serf-hub/main.go` — roster/past-index composed wiring + corrected comment (both rounds).
 - `cmd/serf-hub/web_api_archive.go`, `web_api_favorite.go` — use `s.notifyMutation()`.
-- `cmd/serf-hub/web_api_rename.go`, `web_api_project_delete.go` — explicit calls removed
-  (double-broadcast fix); rely on `Past.UpdateMeta`/`Rebuild`'s composed hook.
+- `cmd/serf-hub/web_api_rename.go`, `web_api_project_delete.go` — compensating-broadcast logic.
 - `cmd/serf-hub/app_rpc_test.go` — `newHubRPCTestServerWithWeb` helper.
 - `cmd/serf-hub/web_api_tree_test.go`, `web_api_archive_test.go`, `web_api_favorite_test.go`,
-  `web_api_rename_test.go`, `web_api_project_delete_test.go` — tests (original + review-fix round).
+  `web_api_rename_test.go`, `web_api_project_delete_test.go` — tests (all three rounds).
+- ~30 more `cmd/serf-hub/**/*_test.go` files — mechanical `Rebuild()` call-site signature fixes
+  only, no behavior change (see Invariant round).
 
 ## Concerns / things worth a second look
 
@@ -190,21 +268,7 @@ run --max-issues-per-linter 0 --max-same-issues 0` on the same four packages: 0 
 3. Legacy UI: checked `cmd/serf-tui/hub_notifications.go` (switches on known methods, silently
    ignores unhandled ones — safe) and `cmd/serf-hub/jstest/` (grepped for exhaustive
    notification-set assertions; found none). Nothing legacy asserts an exact notification set.
-4. **Two narrow residual gaps I found while fixing the double-broadcast, and deliberately did NOT
-   patch**, since the reviewer's ask was specifically to *remove* the redundant calls and this is
-   a "refetch hint" over an always-authoritative REST endpoint (`/api/tree`), not a
-   correctness-critical data path — flagging so this judgment call is visible rather than silent:
-   - `refreshRenamedMeta`: if `Past.Find(rid)` misses entirely (session not yet indexed — though
-     `Find` itself self-heals via an internal `Rebuild()` on a cache miss, so this needs the
-     session to also be absent from a *fresh* disk scan, e.g. a rename raced within the same
-     instant as spawn, before its meta.json even exists), no `UpdateMeta` call happens at all on
-     that path, so nothing broadcasts. Self-heals on the next periodic `Rebuild` tick regardless.
-   - `handleAPIProjectDelete`: the project-level `Archive.Delete`/`Favorite.Delete` calls run
-     unconditionally, but those stores are bump-only (never routed through PastIndex per this
-     design). If every session in the target project is skipped (none actually removed from
-     disk), `Past.Rebuild()` finds no delta and its hook doesn't fire, so a project-delete that
-     only cleared archive/favorite decisions (nothing physically deleted) broadcasts nothing.
-   Both are eventually consistent (any later unrelated trigger, or the requester's own optimistic
-   client-side update from the response body, catches it up) — I judged them out of scope for a
-   "single broadcast per mutation" bug fix rather than building conditional-guard logic for two
-   more edge cases on top of it, but a reviewer who wants these closed too should say so.
+4. ~~Two narrow residual gaps~~ **Closed in the Invariant round** (commit `754c87daa`): both
+   `refreshRenamedMeta`'s "session not yet indexed" case and `handleAPIProjectDelete`'s "nothing
+   actually removed" case now compensate with an explicit broadcast when `PastIndex`'s composed
+   hook didn't fire, each pinned by a dedicated exactly-one test. See "Invariant round" above.
