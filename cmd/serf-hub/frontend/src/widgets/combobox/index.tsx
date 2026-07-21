@@ -40,7 +40,17 @@ const CLASS = {
  * Has no label prop (not in the locked API) - give it an accessible name
  * by wrapping it in a native <label>, which works via descendant
  * containment regardless of the wrapper <div> in between:
- * `<label>Model<Combobox .../></label>`.
+ * `<label>Model<Combobox .../></label>`. Caveat worth verifying before
+ * this pattern is relied on widely: name-from-content computation walks
+ * the label's full subtree, which - while the popup is open - includes
+ * the rendered option text too. This may make the accessible name noisier
+ * than intended while browsing (exact behavior depends on how a given
+ * browser/AT's accname implementation treats the nested listbox; not
+ * fully verified here). If that turns out to matter in practice, the
+ * clean fix is an internal aria-labelledby wired to a caller-supplied id
+ * instead of relying on containment - not done here to avoid growing the
+ * locked prop shape without confirming the containment approach actually
+ * needs replacing. See this task's report.
  */
 export function Combobox<T extends ComboboxOption = ComboboxOption>({
   options,
