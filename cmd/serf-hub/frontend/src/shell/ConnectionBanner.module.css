@@ -1,0 +1,16 @@
+/* Quiet inline strip - neutral surface/edge/ink tokens only. This lives
+   outside src/widgets/, so it is deliberately NOT on the
+   --attention/--alive/--danger allowlist (src/styles/token-contract.test.ts)
+   - a connection hiccup gets the same understated treatment either state,
+   not a loud color. */
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--edge);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}

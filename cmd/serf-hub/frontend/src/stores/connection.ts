@@ -20,15 +20,20 @@ export interface ConnectionStoreState {
   // Idempotent: calling it again with the same client instance no-ops,
   // rather than attaching a second onStateChange listener.
   //
-  // serverInfo is part of the locked shape but has no path to a value here:
-  // AppwireClientLike exposes no way to read back the InitializeResponse a
-  // successful handshake already produced (AppwireClient doesn't retain it
-  // beyond the resolved connect() promise), and re-requesting "initialize"
-  // to get it again is rejected server-side once a connection is already
-  // initialized (internal/appserver/server.go: "already initialized"). It
-  // stays undefined here; populating it needs a path this task's locked
-  // interface doesn't provide — e.g. whoever owns the real client.connect()
-  // promise setting it directly via connectionStore.setState({serverInfo}).
+  // serverInfo is part of the locked shape, but this function never
+  // populates it: AppwireClientLike DOES expose a connect() that resolves
+  // with the InitializeResponse (protocol/testing/fakeClient.ts) - but
+  // connect(client) here only mirrors ConnectionState, so it stays safe to
+  // call before any handshake has even started (a real client is typically
+  // still "idle" the moment a caller wires it in). Instead, each caller that
+  // actually drives a handshake (AppShell.tsx's initial boot;
+  // ConnectionBanner.tsx's manual retry) sets serverInfo itself, directly,
+  // via connectionStore.setState({serverInfo}) once its own client.connect()
+  // promise resolves. Re-requesting "initialize" a second time to get the
+  // same value some other way is rejected server-side once a connection is
+  // already initialized (internal/appserver/server.go: "already
+  // initialized"), so there isn't a second path for this function to use
+  // instead.
   connect: (client: AppwireClientLike) => void;
 }
 

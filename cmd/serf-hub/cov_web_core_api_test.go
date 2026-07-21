@@ -186,7 +186,7 @@ func TestCovWebCoreAPIDecisionValidation(t *testing.T) {
 
 func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
 	emptyPast := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if err := emptyPast.Rebuild(); err != nil {
+	if _, err := emptyPast.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: emptyPast})
@@ -211,7 +211,7 @@ func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
 	// An indexed entry with no meta file reaches the deterministic load error.
 	stateDir := t.TempDir()
 	past := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	past.SeedForTest([]schema.SessionMeta{{ID: "gone", UpdatedAt: time.Unix(1, 0)}})
@@ -226,7 +226,7 @@ func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(stateDir, "missing-glob"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	idx.SeedForTest([]schema.SessionMeta{meta})

@@ -204,6 +204,131 @@ describe("AppwireClient reconnect", () => {
   });
 });
 
+// retryNow is the manual counterpart to the automatic backoff above (wired
+// to ConnectionBanner's "Retry now" affordance, shown only while
+// "reconnecting" - the client is already retrying on its own, so this just
+// lets an impatient user short-circuit the current wait rather than
+// starting a second, independent reconnect mechanism).
+describe("AppwireClient retryNow", () => {
+  test("is a no-op while ready - there is no backoff to short-circuit", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    client.retryNow();
+
+    expect(sockets).toHaveLength(1); // no new dial
+    expect(client.state).toBe("ready");
+  });
+
+  test("is a no-op once closed", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    client.close();
+
+    client.retryNow();
+
+    expect(sockets).toHaveLength(1); // no new dial
+    expect(client.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("dials immediately mid-backoff, without waiting out the remaining delay", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+    expect(vi.getTimerCount()).toBeGreaterThan(0); // backoff timer armed
+
+    client.retryNow();
+
+    // No time advanced at all: the dial (and the socketFactory call it
+    // makes, before its own first await) runs synchronously inside
+    // retryNow() itself, not on the next backoff tick.
+    expect(sockets).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0); // the pending backoff timer was cleared, no new one armed yet
+
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+    expect(client.state).toBe("ready");
+    expect(sentFrames(socketAt(sockets, 1)).map((f) => f.method)).toEqual(["initialize", "initialized"]);
+  });
+
+  test("a successful retryNow reaches ready, refires onReady, and resumes heartbeat - same as an ordinary reconnect", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    let readyCount = 0;
+    client.onReady(() => {
+      readyCount += 1;
+    });
+    const states: ConnectionState[] = [];
+    client.onStateChange((s) => states.push(s));
+    socketAt(sockets, 0).closeFromServer(1006);
+
+    client.retryNow();
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+
+    expect(client.state).toBe("ready");
+    expect(readyCount).toBe(1); // subscribed after the first ready; this is the refire
+    expect(states).toEqual(["reconnecting", "ready"]);
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+    expect(sentFrames(socketAt(sockets, 1)).filter((f) => f.method === "ping")).toHaveLength(1);
+  });
+
+  test("does not stack a second dial when called again while the first attempt is still in flight", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    expect(client.state).toBe("reconnecting");
+
+    client.retryNow(); // dials socket #1, still waiting on its own open()
+    expect(sockets).toHaveLength(2);
+
+    client.retryNow(); // called again before socket #1 ever opens
+
+    expect(sockets).toHaveLength(2); // still just the one attempt in flight, not a second
+
+    // The one in-flight attempt is still live, not abandoned by the second
+    // call - opening it completes a normal reconnect.
+    socketAt(sockets, 1).open();
+    await flushUntil(() => client.state === "ready");
+    expect(client.state).toBe("ready");
+  });
+
+  test("a failed retryNow attempt falls back to the ordinary backoff sequence, continuing from where it left off", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+
+    socketAt(sockets, 0).closeFromServer(1006);
+    client.retryNow(); // attempt #1 (manual)
+    expect(sockets).toHaveLength(2);
+    socketAt(sockets, 1).closeFromServer(1006); // fails before ever opening
+
+    await flushUntil(() => vi.getTimerCount() > 0); // the next backoff timer arms
+    expect(client.state).toBe("reconnecting");
+
+    // reconnectAttempts wasn't reset by the manual attempt failing (only a
+    // SUCCESSFUL handshake resets it) - the next automatic delay is
+    // RECONNECT_BASE_MS * 2 (attempt #1 already consumed the base delay's
+    // own slot when scheduleReconnect first armed it after the initial
+    // drop), not back to the base delay as if retryNow had never happened.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS * 2 - 1);
+    expect(sockets).toHaveLength(2); // not yet
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sockets).toHaveLength(3); // now
+  });
+});
+
 describe("AppwireClient close() during heartbeat/reconnect", () => {
   test("stops heartbeat and reconnection permanently, leaving no timers armed", async () => {
     const { factory, sockets } = dialer();

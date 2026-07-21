@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
 )
@@ -61,4 +63,27 @@ func TestUnarchiveProjectUsesCanonicalID(t *testing.T) {
 	if v := got[hubcore.ArchiveKey{Kind: "project", ID: project.ID}]; v {
 		t.Fatalf("canonical project row should be false, got true")
 	}
+}
+
+func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := http.Post(hub.URL+"/api/favorite", "application/json", strings.NewReader(`{"kind":"session","id":"01A","favorited":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

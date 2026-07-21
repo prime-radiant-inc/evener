@@ -108,7 +108,13 @@ describe("useConnectionStore", () => {
     expect(setStateSpy).toHaveBeenCalledTimes(1); // one onStateChange listener, not two
   });
 
-  test("serverInfo stays undefined: AppwireClientLike exposes no way to read it back after the handshake", () => {
+  // AppwireClientLike DOES expose connect() (it resolves with the
+  // InitializeResponse - see protocol/testing/fakeClient.ts) - this store's
+  // own connect(client) just never calls it: it only mirrors
+  // ConnectionState, so it stays safe to call before any handshake has even
+  // started. AppShell.tsx is the caller that actually drives client.connect()
+  // and sets serverInfo directly from its resolved value.
+  test("serverInfo stays undefined: connect(client) only mirrors ConnectionState, it never calls the client's own connect()", () => {
     connectFakeClient();
     expect(connectionStore.getState().serverInfo).toBeUndefined();
   });
@@ -251,11 +257,25 @@ describe("useThreadsStore.ensureThread", () => {
     expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
   });
 
-  test("wires onNotification/onReady on the client exactly once across multiple store calls", async () => {
-    const fake = connectFakeClient();
+  // Pre-Task-5, wiring was lazy (attached inside requireClient(), the first
+  // time some store action ran) - so this test used to connect the client
+  // FIRST, attach spies second, and prove idempotency only across
+  // subsequent action calls. Wiring is now reactive to connectionStore's
+  // own client reference (see rewireClient/connectionStore.subscribe in
+  // threads.ts) precisely so an already-open pane keeps receiving deltas
+  // through a manual-retry client swap with no action call required at
+  // all - so the spies must be attached BEFORE connect() to observe that,
+  // and the test asserts wiring happens exactly once right there, staying
+  // at exactly once through every action call that follows.
+  test("wires onNotification/onReady on the client exactly once, at connect time - not per store action", async () => {
+    const fake = new FakeClient();
     const onNotificationSpy = vi.spyOn(fake, "onNotification");
     const onReadySpy = vi.spyOn(fake, "onReady");
     fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+
+    connectionStore.getState().connect(fake);
+    expect(onNotificationSpy).toHaveBeenCalledTimes(1);
+    expect(onReadySpy).toHaveBeenCalledTimes(1);
 
     await threadsStore.getState().ensureThread("ref_a");
     await threadsStore.getState().ensureThread("ref_b");
@@ -408,6 +428,90 @@ describe("reconnect resubscribe", () => {
       .slice(2)
       .map((c) => (c.params as { ref: string }).ref);
     expect(refsReRead).toEqual(["ref_b"]); // ref_a was released before the reconnect; only ref_b re-subscribes
+  });
+});
+
+describe("client swap (manual retry) rewiring", () => {
+  // The trap this covers (see docs/superpowers/plans/
+  // 2026-07-20-webui-rewrite-wave3-shell.md, Task 5): before this
+  // describe block existed, wiredClient was only ever updated lazily,
+  // inside requireClient(), the first time some ACTION (ensureThread/send/
+  // steer/queue/interrupt) ran. Swapping connectionStore's client
+  // reference alone (shell/ConnectionBanner.tsx's retry, which mints a
+  // FRESH AppwireClient rather than reusing the dead one) left
+  // onNotification/onReady still attached to the dead client - the banner
+  // would report "ready" while every open pane silently stopped receiving
+  // deltas, since nothing forces a store action to run just because the
+  // connection recovered. This test drives the swap through NOTHING but
+  // connectionStore.getState().connect(b) - no ensureThread/send/etc call
+  // follows it - so it only passes if the rewiring is reactive to the
+  // client reference itself, not piggybacked on some later action.
+  test("swapping to a fresh client re-hydrates tracked refs, routes its notifications, and detaches the dead client's handlers (no double delivery)", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () => readResponse("ref_a", { turns: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] }));
+    await threadsStore.getState().ensureThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(1);
+
+    // Kill A for good (a terminal drop, not a same-client reconnect - see
+    // the "reconnect resubscribe" tests above for that separate case).
+    a.emitStateChange("closed");
+
+    // The manual retry: a FRESH client, already "ready" by the time it's
+    // handed to connectionStore.connect() - mirrors the real sequence
+    // ConnectionBanner's retry follows (construct, await connect(), THEN
+    // wire the store), not an in-flight handshake. Its own thread/read
+    // response deliberately differs from A's (empty turns, not one) so a
+    // passing assertion below can only mean the re-hydrate actually ran
+    // against B, not a stale snapshot left over from A.
+    const b = new FakeClient("ready");
+    b.on("thread/read", () => readResponse("ref_a", { turns: [] }));
+    connectionStore.getState().connect(b);
+
+    // Re-hydration is async (a thread/read round trip against B) with
+    // nothing else in this test driving it forward.
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.turns.length === 0);
+    expect(threadsStore.getState().threads.get("ref_a")?.turns).toHaveLength(0);
+
+    // B's own live notification reaches the tracked model...
+    b.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+
+    // ...while A's handlers were detached at the swap: the same
+    // notification shape, injected via the now-dead client, must NOT be
+    // delivered - proof of no lingering double-subscription, not just
+    // that B independently works.
+    a.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
+    } as AnyNotification);
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" }); // unchanged - A's emit was a no-op
+  });
+
+  test("swapping to a fresh client that is not yet ready waits for its own onReady, same as the initial connection", async () => {
+    const a = connectFakeClient();
+    a.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    a.emitStateChange("closed");
+
+    const b = new FakeClient("connecting"); // still mid-handshake when wired in
+    b.on("thread/read", () => readResponse("ref_a"));
+    connectionStore.getState().connect(b);
+
+    // b isn't ready yet, so no eager hydrate should have fired against it -
+    // asserted directly on b's own call log (not on `threads` content,
+    // which can't distinguish "not re-hydrated yet" from "re-hydrated to
+    // an identical snapshot").
+    await Promise.resolve(); // let any (wrongly) eager work settle before asserting it didn't happen
+    expect(b.calls.filter((c) => c.method === "thread/read")).toHaveLength(0);
+
+    b.emitReady(); // completes B's own handshake
+    await flushUntil(() => b.calls.filter((c) => c.method === "thread/read").length > 0);
+
+    expect(b.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
   });
 });
 

@@ -108,6 +108,15 @@ export class AppwireClient {
   // the doubling delay; it resets to 0 on every successful re-handshake.
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
+  // True for the duration of one attemptReconnect() call (dial through
+  // settle). Only ever one attempt is normally in flight at a time - the
+  // timer callback that starts one always nulls reconnectTimer first, and
+  // scheduleReconnect() is only ever called after the previous attempt has
+  // already settled - but retryNow() is a SECOND caller of attemptReconnect,
+  // so this guards against a caller invoking it again while one it already
+  // started is still waiting on its socket to open or its handshake to
+  // finish.
+  private reconnectInFlight = false;
 
   constructor(opts: AppwireClientOptions) {
     this.url = opts.url;
@@ -215,6 +224,22 @@ export class AppwireClient {
     };
   }
 
+  // retryNow lets a caller (ConnectionBanner's manual "Retry now"
+  // affordance, shown only while "reconnecting") short-circuit the current
+  // backoff wait and dial immediately, rather than starting a second,
+  // independent reconnect mechanism. No-op unless a backoff is actually
+  // pending (state isn't "reconnecting") or an attempt - from an earlier
+  // retryNow() call or the backoff timer itself - is already in flight.
+  // Deliberately does NOT reset reconnectAttempts: this is "try the next
+  // attempt now instead of after the wait," not "start the whole backoff
+  // sequence over" - if this attempt also fails, scheduleReconnect()
+  // computes its delay from the same count it would have anyway.
+  retryNow(): void {
+    if (this.connectionState !== "reconnecting" || this.reconnectInFlight) return;
+    this.disarmReconnect();
+    void this.attemptReconnect();
+  }
+
   private async performHandshake(): Promise<InitializeResponse> {
     this.setState("connecting");
     try {
@@ -315,8 +340,13 @@ export class AppwireClient {
   // way too, via handshakeReject). A failure here never surfaces to a
   // caller — there is no pending connect() promise to reject once already
   // past the first "ready" — it just schedules the next backoff attempt.
+  // Two callers can reach this: the backoff timer firing, and retryNow() -
+  // reconnectInFlight (set for this call's whole duration) is what keeps a
+  // second, concurrent call from either caller from dialing a second socket
+  // on top of this one.
   private async attemptReconnect(): Promise<void> {
     if (this.isClosed()) return;
+    this.reconnectInFlight = true;
     try {
       await this.dialAndHandshake();
       this.reconnectAttempts = 0;
@@ -327,6 +357,8 @@ export class AppwireClient {
       if (this.isClosed()) return;
       this.teardownFailedSocket();
       this.scheduleReconnect();
+    } finally {
+      this.reconnectInFlight = false;
     }
   }
 

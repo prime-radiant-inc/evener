@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/identifier"
 )
@@ -184,4 +186,27 @@ func TestArchiveUnarchiveUsesCanonicalProjectID(t *testing.T) {
 	if d[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
 		t.Fatalf("un-archive must clear the row; decisions=%v", d)
 	}
+}
+
+func TestArchiveEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+	dir := t.TempDir()
+	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := http.Post(hub.URL+"/api/archive", "application/json", strings.NewReader(`{"kind":"session","id":"s1","archived":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d", resp.StatusCode)
+	}
+
+	assertSingleNotification(t, client, web.appRPC, appwire.NotifySerfTreeChanged)
 }

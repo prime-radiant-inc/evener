@@ -32,7 +32,7 @@ func covThreadreadServer(t *testing.T) (*WebServer, string, string) {
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	return NewWebServer(hubcore.WebConfig{Past: idx}), cwd, "02wMz5Txv1C3Hut0M8GCeB"

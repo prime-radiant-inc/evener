@@ -79,7 +79,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources
 		}
 	}
 	if cfg.Past != nil {
-		_ = cfg.Past.Rebuild()
+		_, _ = cfg.Past.Rebuild()
 		for _, entry := range cfg.Past.All() {
 			thread, err := pastEntryThread(cfg, entry, false)
 			if err != nil {

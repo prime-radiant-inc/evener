@@ -186,7 +186,7 @@ func TestPastThreadReadReconcilesDelegateRawWithTerminalJobstoreState(t *testing
 	writeHistoricalJobLog(t, filepath.Join(stateDir, "sessions", parentID, "jobs.jsonl"), now, "job_A")
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + parentID, IncludeTurns: true})
@@ -249,7 +249,7 @@ func TestPastThreadReadProjectsThinkingFromTranscript(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
@@ -319,7 +319,7 @@ func TestPastThreadReadProjectsToolResultOutputImages(t *testing.T) {
 	}
 
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	thread, ok := requirePastThreadForRead(t, hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true})
@@ -437,7 +437,7 @@ func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 		}
 	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
@@ -496,7 +496,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 		t.Fatal(err)
 	}
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if err := idx.Rebuild(); err != nil {
+	if _, err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40}

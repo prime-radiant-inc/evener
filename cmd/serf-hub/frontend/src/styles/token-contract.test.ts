@@ -46,12 +46,41 @@ function basenameOf(path: string): string {
 // Guards the file-naming half of the widget convention (one dir per widget:
 // index.tsx + <name>.module.css + <name>.test.tsx) that the rest of this
 // contract - and every stream after this one - assumes holds.
-test("every non-token stylesheet under src is named global.css or <name>.module.css", () => {
-  const offenders = OTHER_STYLESHEETS.map(([path]) => path).filter((path) => {
-    const base = basenameOf(path);
-    return base !== "global.css" && !base.endsWith(".module.css");
-  });
+//
+// shell/dockview-theme.css is the one deliberate exception: it restyles a
+// third-party library (dockview) via a plain, UNSCOPED class selector
+// (.dockview-theme-serf, passed to DockviewReact's own className prop -
+// see DockHost.tsx), which a `.module.css` file cannot do (CSS Modules
+// hash every class name, and dockview needs to see the literal class it's
+// told to apply). The wave-3 plan's Global Constraints name this file
+// explicitly as being "on the token-contract allowlist for referencing
+// --surface/--edge/--ink vars only" - every OTHER mechanism in this
+// contract (no chromatic literal, the attention/alive/danger allowlist)
+// still applies to it unchanged, exactly like every other stylesheet; only
+// the naming rule gets a named exception, here.
+//
+// Keyed by the EXACT path (not the basename): a same-named decoy file
+// anywhere else in the tree (e.g. widgets/dockview-theme.css) must NOT
+// ride along on this one file's exception - see the poison test below.
+const NAMING_EXCEPTIONS = new Set(["shell/dockview-theme.css"]);
+
+function isNamingViolation(path: string): boolean {
+  const base = basenameOf(path);
+  return base !== "global.css" && !base.endsWith(".module.css") && !NAMING_EXCEPTIONS.has(path);
+}
+
+test("every non-token stylesheet under src is named global.css, <name>.module.css, or a named exception", () => {
+  const offenders = OTHER_STYLESHEETS.map(([path]) => path).filter(isNamingViolation);
   expect(offenders).toEqual([]);
+});
+
+test("the dockview-theme.css naming exception is scoped to its exact path, not just its basename", () => {
+  expect(isNamingViolation("shell/dockview-theme.css")).toBe(false);
+  // A same-named decoy anywhere else still violates the naming rule - the
+  // exception must not become "any file called dockview-theme.css".
+  expect(isNamingViolation("widgets/dockview-theme.css")).toBe(true);
+  expect(isNamingViolation("dev/dockview-theme.css")).toBe(true);
+  expect(isNamingViolation("dockview-theme.css")).toBe(true);
 });
 
 // --- (a) no chromatic literal outside tokens.css -----------------------

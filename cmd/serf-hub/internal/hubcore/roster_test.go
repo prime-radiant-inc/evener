@@ -622,7 +622,7 @@ func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *test
 	})
 
 	past := NewPastIndex(filepath.Join(stateRoot, "*"))
-	if err := past.Rebuild(); err != nil {
+	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 

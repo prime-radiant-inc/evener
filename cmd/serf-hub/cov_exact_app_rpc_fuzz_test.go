@@ -289,7 +289,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			pastState := filepath.Join(pastRoot, "projects", "saved")
 			pastID := buildRPCParentSession(t, pastState)
 			past := hubcore.NewPastIndex(filepath.Join(pastRoot, "projects", "*"))
-			if err := past.Rebuild(); err != nil {
+			if _, err := past.Rebuild(); err != nil {
 				t.Fatal(err)
 			}
 			pastServer := newHubAppServer(hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, PluginRoot: t.TempDir()}, appsource.NewRegistry())

@@ -1,0 +1,28 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--surface-0);
+}
+
+.content {
+  flex: 1 1 auto;
+  /* A row: the rail (desktop only, self-collapsing) beside the workspace
+   * host. min-height/min-width: 0 are required for the flex children to
+   * scroll/fill correctly instead of stretching this box to fit content
+   * (PaneScaffold's own .pane relies on a parent with a real height
+   * chain; dockview needs a real width to lay panels out in). */
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  min-width: 0;
+  padding: var(--space-4);
+  gap: var(--space-3);
+}
+
+.content > :last-child {
+  /* The workspace host (DockHost/StackHost/NotFound) takes all remaining
+   * width beside the rail. */
+  flex: 1 1 auto;
+  min-width: 0;
+}

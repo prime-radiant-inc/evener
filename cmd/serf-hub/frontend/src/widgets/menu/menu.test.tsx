@@ -224,6 +224,40 @@ test("the popup's open animation honors prefers-reduced-motion, using only token
 
 // --- fix-wave: nested-overlay Escape containment (Important) -----------
 
+// --- fix-wave: triggerTabIndex + consume-then-stop key handling --------
+// A Menu nested inside another roving-tabindex widget's row (see
+// shell/rail/RailRow.tsx) must not add its trigger as a SECOND,
+// always-focusable Tab stop alongside that widget's own single roving one,
+// and a key this trigger already gives meaning to (open the menu) must not
+// also reach that widget's own key handling for the same keypress.
+
+test("triggerTabIndex, when given, overrides the trigger's own tabIndex", () => {
+  render(<Menu trigger="Actions" items={items()} triggerTabIndex={-1} />);
+  expect(screen.getByRole("button", { name: "Actions" }).tabIndex).toBe(-1);
+});
+
+test("omitting triggerTabIndex leaves the trigger at its native default (a normal Tab stop) - every existing consumer is unaffected", () => {
+  render(<Menu trigger="Actions" items={items()} />);
+  expect(screen.getByRole("button", { name: "Actions" }).tabIndex).toBe(0);
+});
+
+test.each(["{ArrowDown}", "{ArrowUp}", "{Enter}", " "])(
+  "%s on the trigger opens the menu but never bubbles to an ancestor's own key handling",
+  async (key) => {
+    const user = userEvent.setup();
+    const onAncestorKeyDown = vi.fn();
+    render(
+      <div onKeyDown={onAncestorKeyDown}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    screen.getByRole("button", { name: "Actions" }).focus();
+    await user.keyboard(key);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(onAncestorKeyDown).not.toHaveBeenCalled();
+  },
+);
+
 test("Escape closes only the menu when nested in a Dialog; a second Escape then closes the Dialog", async () => {
   const user = userEvent.setup();
   const onDialogClose = vi.fn();

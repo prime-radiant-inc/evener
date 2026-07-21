@@ -1,0 +1,79 @@
+/*
+ * Restyles dockview's own stylesheet (imported once, unmodified, by
+ * DockHost.tsx) via its CSS custom properties - never a chromatic literal
+ * of our own (src/styles/token-contract.test.ts enforces this the same as
+ * every other stylesheet under src/, plus a naming exception for this one
+ * file - see that test's own comment). Scoped deliberately to the
+ * surface/edge/ink token families only, per the wave-3 plan's Global
+ * Constraints: no --accent, no --attention/--alive/--danger (dockview's
+ * chrome stays neutral; a pane's own content carries whatever state it
+ * needs via Cadence/Chip/Badge, which already own those hues).
+ *
+ * Only the color-bearing custom properties dockview actually exposes are
+ * set below - structural ones (tab height, border-radius, margins, the
+ * multi-hue "tab group color" chips feature we don't use, and the
+ * genuinely transient drag-over/active-sash colors) are left at dockview's
+ * own defaults; this file restyles color, not geometry.
+ *
+ * Mirrors PaneScaffold's own header/body precedent (panescaffold.module.css:
+ * both surface-1, divided by an --edge border, not a background-color
+ * change) rather than inventing a different visual language for dockview's
+ * external tab-strip/content split: the tab strip and the pane content
+ * below it sit on the SAME surface, and the currently-active tab is the
+ * one that "lifts" via surface-2 - the same raised/hover token every other
+ * widget in this app already uses (see button.module.css's
+ * .quiet:hover { background: var(--surface-2) }).
+ */
+
+.dockview-theme-serf {
+  /* Content area behind a panel's own PaneScaffold card - rarely visible
+   * (PaneScaffold fills its panel edge to edge) but matches the pane
+   * surface rather than leaving dockview's own default gray peeking
+   * through on resize/mount. */
+  --dv-group-view-background-color: var(--surface-1);
+
+  /* Tab strip: same surface as the content it sits above - the divider
+   * below does the separating, not a background step. */
+  --dv-tabs-and-actions-container-background-color: var(--surface-1);
+
+  /* The active tab in the globally-focused group "lifts" via surface-2,
+   * the same raised/hover token every other widget uses. */
+  --dv-activegroup-visiblepanel-tab-background-color: var(--surface-2);
+  --dv-activegroup-visiblepanel-tab-color: var(--ink-hi);
+
+  /* The active tab of a group that ISN'T the globally-focused one (visible
+   * once a second group exists, e.g. via dockview's own drag-to-split) -
+   * still real, shown content, so it keeps ink-hi text, but blends into the
+   * strip rather than lifting like the truly-focused tab does. */
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface-1);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--ink-hi);
+
+  /* Overflow-hidden tabs (too many to fit the strip, listed in dockview's
+   * own overflow dropdown instead) - a rarely-seen state, kept legible but
+   * quieter than any visible tab. */
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--surface-1);
+  --dv-activegroup-hiddenpanel-tab-color: var(--ink-mid);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--surface-1);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--ink-low);
+
+  /* Hairlines: between adjacent tabs, between the strip and the content
+   * below it, and the sash/splitter between groups - all --edge, matching
+   * every other border in the app ("depth = --edge borders + surface
+   * steps", design-system.md §1). */
+  --dv-tab-divider-color: var(--edge);
+  --dv-separator-border: var(--edge);
+  --dv-paneview-header-border-color: var(--edge);
+
+  /* Close-button hover wash - same token button.module.css's own
+   * .quiet:hover uses for an identical "quiet control, subtle hover"
+   * affordance. */
+  --dv-icon-hover-background-color: var(--surface-2);
+
+  /* dockview's custom scrollbar overlay (the tab strip, once there are too
+   * many tabs to fit) and native-scrollbar fallback thumb color - both
+   * ink-based washes rather than dockview's own default white-alpha/gray,
+   * composed via color-mix() from token-contract-allowed vars only (no new
+   * literal - see that test's own comment on color-mix()). */
+  --dv-scrollbar-background-color: color-mix(in oklab, var(--ink-hi) 25%, transparent);
+  --dv-tabs-container-scrollbar-color: var(--ink-low);
+}
