@@ -1,5 +1,5 @@
 import { afterEach, test, expect, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderHook, act } from "@testing-library/react";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -173,6 +173,51 @@ test("clicking Allow immediately disables that card (before the resolve response
     await Promise.resolve();
   });
   expect(screen.queryByRole("button", { name: /allow/i })).toBeNull(); // resolved -> removed entirely
+});
+
+// handleResolve's onApprove/onDeny call sites fire-and-forget
+// (`() => void handleResolve(...)`), so a rejection MUST be caught inside
+// handleResolve itself - an uncaught one becomes an unhandled promise
+// rejection (vitest fails the run on those by default) and the user sees
+// nothing at all. This is the wave's only interactive surface, so a failure
+// has to be visible and the card has to stay answerable (retry possible).
+test("a rejected resolve surfaces an error on the card instead of an unhandled rejection, and re-enables the buttons", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("serf/sandbox/escalation/resolve", () => Promise.reject(new Error("sandbox offline")));
+  const user = userEvent.setup();
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+  });
+
+  const allow = await screen.findByRole("button", { name: /allow/i });
+  await user.click(allow);
+
+  expect(await screen.findByText(/sandbox offline/)).toBeTruthy();
+  expect((screen.getByRole("button", { name: /allow/i }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: /deny/i }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a subsequent successful resolve clears a previously shown error", async () => {
+  const fake = new FakeClient("ready");
+  let shouldFail = true;
+  fake.on("serf/sandbox/escalation/resolve", () => (shouldFail ? Promise.reject(new Error("sandbox offline")) : {}));
+  const user = userEvent.setup();
+
+  render(<SandboxEscalationRail sessionRef="ref_a" />, { wrapper: withClient(fake) });
+  act(() => {
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+  });
+
+  const allow = await screen.findByRole("button", { name: /allow/i });
+  await user.click(allow);
+  expect(await screen.findByText(/sandbox offline/)).toBeTruthy();
+
+  shouldFail = false;
+  await user.click(screen.getByRole("button", { name: /allow/i }));
+
+  await waitFor(() => expect(screen.queryByText(/sandbox offline/)).toBeNull());
 });
 
 test("SandboxEscalationRail renders one card per pending escalation, keyed by escalationId", () => {

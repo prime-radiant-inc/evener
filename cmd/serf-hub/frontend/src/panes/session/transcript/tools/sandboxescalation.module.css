@@ -8,6 +8,18 @@
   color: var(--ink-mid);
 }
 
+/* Danger treatment lives entirely on the Chip inside this (tone prop,
+ * already allowlisted in token-contract.test.ts) - this class only lays
+ * the row out, so it stays on neutral/ink tokens like every other rule in
+ * this file. */
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
 .actions {
   display: flex;
   gap: var(--space-2);

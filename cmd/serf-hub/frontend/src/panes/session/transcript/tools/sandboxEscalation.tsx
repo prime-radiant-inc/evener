@@ -36,7 +36,7 @@
 // list at all - there is no "escalation resolved" notification to react
 // to, only the request/response pair this file drives itself.
 import { useCallback, useEffect, useState } from "react";
-import { Button, Card } from "../../../../widgets";
+import { Button, Card, Chip } from "../../../../widgets";
 import { useClient } from "../../../../shell/clientContext";
 import type { AnyNotification, SandboxEscalationRequested } from "../../../../protocol/types.gen";
 import styles from "./sandboxescalation.module.css";
@@ -45,6 +45,7 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 const CLASS = {
   label: requireClass(styles.label, "sandboxescalation.module.css", "label"),
   body: requireClass(styles.body, "sandboxescalation.module.css", "body"),
+  error: requireClass(styles.error, "sandboxescalation.module.css", "error"),
   actions: requireClass(styles.actions, "sandboxescalation.module.css", "actions"),
 };
 
@@ -53,6 +54,7 @@ export interface SandboxEscalationCardProps {
   onApprove(): void;
   onDeny(): void;
   resolved: boolean;
+  error?: string;
 }
 
 // SandboxEscalationCard is deliberately styled and labeled as a HARNESS
@@ -60,7 +62,7 @@ export interface SandboxEscalationCardProps {
 // intent (renderer.js's appendSandboxEscalation comment): the model can
 // neither emit nor influence this card, so a human reading it should
 // never mistake it for something the agent said.
-export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved }: SandboxEscalationCardProps) {
+export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved, error }: SandboxEscalationCardProps) {
   return (
     <Card>
       <div className={CLASS.label}>Sandbox approval — requested by serf, not the agent</div>
@@ -68,6 +70,14 @@ export function SandboxEscalationCard({ escalation, onApprove, onDeny, resolved 
         The sandbox blocked {escalation.tool} from accessing {escalation.deniedPath} [--sandbox {escalation.mode}].
         Allow this one action?
       </div>
+      {/* Danger treatment comes entirely from Chip's own tone prop (already
+          allowlisted in token-contract.test.ts) - this file's own CSS module
+          stays tokens-only with no bare --danger reference of its own. */}
+      {error !== undefined && (
+        <div className={CLASS.error}>
+          <Chip tone="danger">Failed</Chip> {error}
+        </div>
+      )}
       <div className={CLASS.actions}>
         <Button variant="primary" size="sm" onClick={onApprove} disabled={resolved}>
           Allow
@@ -125,6 +135,10 @@ export function useSandboxEscalations(ref: string): UseSandboxEscalationsResult 
 // <SandboxEscalationRail sessionRef={sessionRef} />. The prop is
 // `sessionRef`, not `ref` - the latter is reserved (React would try to
 // interpret a plain string value as an actual ref attempt).
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   const { pending, resolve } = useSandboxEscalations(sessionRef);
   // Tracks escalations with a resolve() request currently in flight, so a
@@ -133,11 +147,27 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   // from `pending` entirely, so "in flight" is the only state this needs
   // to track locally.
   const [resolving, setResolving] = useState<Set<string>>(new Set());
+  // Tracks the last resolve() failure per escalation, so a rejection - the
+  // sandbox unreachable, the wire request itself failing - surfaces on the
+  // card instead of becoming an unhandled rejection (onApprove/onDeny below
+  // call handleResolve fire-and-forget). Cleared at the start of every new
+  // attempt so a retry never shows a stale message while it's in flight, and
+  // a SUCCESSFUL resolve never has to clear it explicitly: resolve() itself
+  // drops the escalation from `pending`, which unmounts the card.
+  const [errors, setErrors] = useState<Map<string, string>>(new Map());
 
   async function handleResolve(escalationId: string, approve: boolean) {
     setResolving((prev) => new Set(prev).add(escalationId));
+    setErrors((prev) => {
+      if (!prev.has(escalationId)) return prev;
+      const next = new Map(prev);
+      next.delete(escalationId);
+      return next;
+    });
     try {
       await resolve(escalationId, approve);
+    } catch (err) {
+      setErrors((prev) => new Map(prev).set(escalationId, `Couldn't resolve: ${errorMessage(err)}`));
     } finally {
       setResolving((prev) => {
         const next = new Set(prev);
@@ -156,6 +186,7 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
           onApprove={() => void handleResolve(escalation.escalationId, true)}
           onDeny={() => void handleResolve(escalation.escalationId, false)}
           resolved={resolving.has(escalation.escalationId)}
+          error={errors.get(escalation.escalationId)}
         />
       ))}
     </>
