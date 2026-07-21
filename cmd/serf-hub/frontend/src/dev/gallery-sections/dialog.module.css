@@ -1,0 +1,44 @@
+/* Dialog's scrim is position:fixed (relative to the viewport) so it can
+ * cover the whole app in real usage. In the gallery that would blow past
+ * this demo box and cover the whole page - `contain: layout` makes this
+ * element a new containing block for fixed-position descendants (a
+ * standard CSS containment behavior), scoping the scrim to this box
+ * instead. `overflow: hidden` then clips anything that still runs past the
+ * frame's edges (relevant states/animations only, not steady-state here).
+ *
+ * An explicit width is required, not cosmetic: this frame's only in-flow
+ * child is the Dialog, and the Dialog itself is entirely position:fixed
+ * (out of flow), so the frame has no content to size itself from. Left at
+ * width:auto inside ThemeFlip's align-items:flex-start pane, it collapses
+ * to a sliver a couple pixels wide - which the contained "fixed" scrim
+ * then has to size itself against, breaking the whole demo. Caught by
+ * actually loading the gallery rather than trusting the CSS by inspection.
+ *
+ * The width is a min() against the viewport (wave-close fix), not a plain
+ * max-width: 100% - this frame sits inside ThemeFlip's .pane, which uses
+ * align-items: flex-start (shrink-to-fit, not stretch), so .pane never
+ * has a definite width of its own for a percentage to resolve against;
+ * max-width: 100% is silently ignored in exactly this shrink-to-fit
+ * ancestor chain. 100vw minus 96px (the gallery's --space-6 padding,
+ * 32px/side, plus .pane's own --space-4 padding, 16px/side) is a length,
+ * not a percentage, so it sizes correctly regardless of the ancestor
+ * chain - verified empirically (this task's report), not just reasoned
+ * about, after max-width: 100% alone measurably failed to stop the
+ * gallery page from overflowing horizontally at 390px.
+ */
+.demoFrame {
+  position: relative;
+  contain: layout;
+  overflow: hidden;
+  width: min(360px, calc(100vw - 96px));
+  min-height: 280px;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+}
+
+.reopen {
+  position: absolute;
+  top: var(--space-3);
+  left: var(--space-3);
+}

@@ -1,0 +1,22 @@
+/* width is min() against the viewport, not max-width: 100% - this row
+ * sits inside ThemeFlip's .pane, which is shrink-to-fit (align-items:
+ * flex-start) and never has a definite width for a percentage to resolve
+ * against, so max-width: 100% is silently ignored here. 100vw minus 96px
+ * (gallery padding 32px/side + .pane padding 16px/side) is a length, so
+ * it sizes correctly regardless - see gallery-sections/dialog.module.css
+ * for the full derivation (wave-close fix, verified empirically after
+ * max-width: 100% alone measurably failed to stop this row from pushing
+ * the gallery into horizontal scroll at 390px). */
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(420px, calc(100vw - 96px));
+}
+
+.rowLabel {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
+  font-size: var(--font-size-caption);
+}

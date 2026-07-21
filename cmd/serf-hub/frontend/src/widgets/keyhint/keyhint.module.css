@@ -1,0 +1,31 @@
+.keyHint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4em;
+  height: 18px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--ink-mid);
+  /* A kbd glyph is a verbatim rendering of a literal keystroke, not a
+   * designer-authored chrome label - the same category Direction reserves
+   * mono for (code, tool output, paths, timings), and the universal
+   * convention for keyboard-shortcut hints elsewhere (VS Code, GitHub, …). */
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  font-style: normal; /* kbd is italic by default in most UAs */
+  line-height: 1;
+}
+
+.separator {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}

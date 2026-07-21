@@ -23,6 +23,8 @@
     "zustand": "^5.0.14"
   },
   "devDependencies": {
+    "@ibm/plex-mono": "^2.5.0",
+    "@ibm/plex-sans": "^1.1.0",
     "@testing-library/react": "^16.3.2",
     "@testing-library/user-event": "^14.6.1",
     "@types/dompurify": "^3.0.5",

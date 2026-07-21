@@ -1,0 +1,10 @@
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+.sample {
+  width: 220px;
+}

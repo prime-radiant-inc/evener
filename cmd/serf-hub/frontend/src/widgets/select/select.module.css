@@ -1,0 +1,26 @@
+/*
+ * Native <select>, restyled - no appearance:none/custom chevron, so there's
+ * no need for a background-image icon (which would risk smuggling a literal
+ * color into a data-URI SVG past the token-contract's literal-color scan).
+ * "no custom dropdown - Combobox covers rich cases in another batch."
+ */
+.select {
+  height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-control);
+  border: 1px solid var(--edge);
+  background: var(--surface-1);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
+
+.select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -1,0 +1,38 @@
+import type { ReactNode } from "react";
+import { requireClass } from "../internal/requireClass";
+import styles from "./emptystate.module.css";
+
+export interface EmptyStateProps {
+  title: string;
+  hint?: string;
+  /**
+   * The locked API line for this widget (see the wave-2 plan's "Locked
+   * widget APIs") omits the `?` present on every other optional field
+   * there (`hint?`), but a pane with nothing actionable to offer (e.g. a
+   * read-only empty log) is a completely ordinary case, and every sibling
+   * slot-style prop in this same wave (PaneScaffold's footer?, Card's
+   * plain children) is optional - so this is read as a documentation typo
+   * rather than a deliberate requirement, and kept optional.
+   */
+  action?: ReactNode;
+}
+
+const BASE_CLASS = {
+  emptyState: requireClass(styles.emptyState, "emptystate.module.css", "emptyState"),
+  title: requireClass(styles.title, "emptystate.module.css", "title"),
+  hint: requireClass(styles.hint, "emptystate.module.css", "hint"),
+  action: requireClass(styles.action, "emptystate.module.css", "action"),
+};
+
+/** Centered title/hint/action for a pane or list with nothing in it.
+ * Passive - no interaction, no focus ring of its own (an `action` button
+ * carries its own). */
+export function EmptyState({ title, hint, action }: EmptyStateProps) {
+  return (
+    <div className={BASE_CLASS.emptyState}>
+      <p className={BASE_CLASS.title}>{title}</p>
+      {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
+      {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}
+    </div>
+  );
+}

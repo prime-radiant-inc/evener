@@ -1,3 +1,89 @@
+/*
+ * Font faces + base element wiring. Token *values* (color, type scale,
+ * space, radius, motion) live in tokens.css — this file only wires the
+ * fonts those tokens name (--font-sans/--font-mono) to actual files, and
+ * applies the base tokens to the document root.
+ *
+ * Font source: the latin1 woff2 subset (ASCII + Latin-1 Supplement — the
+ * same range Google Fonts serves as "latin") pre-built by the @ibm/plex-*
+ * npm packages, imported straight from node_modules so no binary is
+ * committed to this repo. See this task's report for why: the packages
+ * ship pre-split per-weight, per-subset files at exactly this cut, so a
+ * relative url() import needs no build step of its own.
+ */
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local("IBM Plex Sans"), local("IBMPlexSans"),
+    url("../../node_modules/@ibm/plex-sans/fonts/split/woff2/IBMPlexSans-Regular-Latin1.woff2") format("woff2");
+  unicode-range: U+0000, U+000D, U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014,
+    U+2018-201A, U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local("IBM Plex Sans Medium"), local("IBMPlexSans-Medium"),
+    url("../../node_modules/@ibm/plex-sans/fonts/split/woff2/IBMPlexSans-Medium-Latin1.woff2") format("woff2");
+  unicode-range: U+0000, U+000D, U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014,
+    U+2018-201A, U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src:
+    local("IBM Plex Sans SemiBold"), local("IBMPlexSans-SemiBold"),
+    url("../../node_modules/@ibm/plex-sans/fonts/split/woff2/IBMPlexSans-SemiBold-Latin1.woff2") format("woff2");
+  unicode-range: U+0000, U+000D, U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014,
+    U+2018-201A, U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src:
+    local("IBM Plex Mono"), local("IBMPlexMono"),
+    url("../../node_modules/@ibm/plex-mono/fonts/split/woff2/IBMPlexMono-Regular-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src:
+    local("IBM Plex Mono Medium"), local("IBMPlexMono-Medium"),
+    url("../../node_modules/@ibm/plex-mono/fonts/split/woff2/IBMPlexMono-Medium-Latin1.woff2") format("woff2");
+  unicode-range: U+0020-007E, U+00A0-00FF, U+0131, U+0152-0153, U+02C6, U+02DA, U+02DC, U+2013-2014, U+2018-201A,
+    U+201C-201E, U+2020-2022, U+2026, U+2030, U+2039-203A, U+2044, U+20AC, U+2122, U+2212, U+FB01-FB02;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
+  background: var(--surface-0);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-regular);
+  line-height: var(--line-height-body);
 }

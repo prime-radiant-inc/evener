@@ -1,495 +1,254 @@
-# Serf Web Hub — Design System & Style Guide
+# Serf Web Hub — Design System & Style Guide (v2)
 
-Status: **current** (updated 2026-07-11; originally drafted 2026-06-16). Static references are
-[`examples/01-golden-live-session.html`](examples/01-golden-live-session.html) and
-[`examples/02-hard-cases.html`](examples/02-hard-cases.html) (self-contained; open in a
-browser). Note the examples still use the golden draft's token *names* (`--fs-*`, `--s1..6`,
-`--r`); the shipping names in §3 are canonical.
+Status: **current**. This is the wave-2 rewrite's design system: tokens, fonts, and a widget
+library under `cmd/serf-hub/frontend/src/widgets/`, built as React function components + CSS
+Modules, with a living gallery (`/dev/widgets`, dev builds only) showing every widget in every
+documented state, in both themes.
 
-This guide describes the SHIPPING system in `cmd/serf-hub/assets/style.css` + `renderer.js`.
-Where a rule has not landed yet it is marked as deferred (§7).
+**This supersedes the pre-wave-2 version of this document** (the `renderer.js`/`style.css`-era
+transcript UI — audience/principles/component-grammar/sidebar/mobile-forms sections describing
+the old server-rendered hub). That content isn't reproduced here; it's in git history
+(`git log -- docs/web-ui/design-system.md`) if it's ever needed for migration reference. The
+wave-2 widget library is a from-scratch visual system, not a reskin of the old one, so carrying
+old rules forward inline would misrepresent what's actually enforced today.
 
----
-
-## 1. Audience & register
-
-Serf's web hub is a **customer-facing product** for power users who watch AI agents work in
-real time. It must feel **crafted** (first impressions matter) while staying **information-dense
-and fast** (people live in it all day). Register: a refined, dark-first developer tool —
-evolve the existing Tokyo-Night aesthetic, do not rebrand.
+Source of design law: `docs/superpowers/plans/2026-07-20-webui-rewrite-wave2-design-system.md`,
+§Direction. §1 below reproduces it verbatim; everything after is derived from it or documents
+what the implementation actually shipped.
 
 ---
 
-## 2. Core principles
+## 1. Direction (the design law)
 
-These were derived with the product owner and override convenience. When in doubt, re-read them.
+> Reproduced verbatim from the wave-2 plan. If this section and the plan ever disagree, the
+> plan is source of truth and this section is stale — file it as a doc bug.
 
-1. **Color means "needs your eye"; absence of color means "settled."** A *done/successful*
-   thing is the expected state — it must **recede** (neutral), not glow. Saturated color is a
-   scarce signal reserved for: live/active (blue), needs-you (amber), error (red).
-2. **Emphasis is scarce.** A box, a tint, or a rail is emphasis — spend it only on what the
-   user needs to *see* (the agent's finding, a subagent result, something needing attention).
-   **Never emphasize the user's own messages** — including mid-turn steers. The user knows what
-   they said; echoing it loudly is wasted attention.
-3. **One containment device per element.** Use a box **or** a rail, never both. Avoid stacking
-   containers (a bordered box with internal gridlines is two devices).
-4. **Conversation leads; tool calls are subordinate.** Prose (user + agent) is the loud,
-   readable layer. Tool calls collapse to a quiet line and **collapse further once scrolled
-   past**. Scannability comes from emphasizing the conversation, not from louder tool rows.
-5. **Minimal, purposeful motion.** A little, never a lot. No blinking/flashing. One gentle
-   "alive" cue (a slow-breathing dot) and a soft (non-blinking) streaming cursor — nothing more.
-   Honor `prefers-reduced-motion`.
-6. **Mono is for machine text only.** File paths, commands, identifiers, code, raw tool output.
-   Everything a human authored — labels, prose, buttons, nav, durations, relative times — is
-   sans. (Treating monospace + ALL-CAPS as the house style was the single biggest "amateur"
-   tell in the old UI.)
-7. **Liveness must be honest.** Never show a reassuring "working" animation that looks identical
-   to a hung agent. See [ux-and-implementation-plan.md](ux-and-implementation-plan.md#liveness).
+**Palette (dark, default):**
+
+```css
+--surface-0: #0E1116;  /* app background — deep neutral ink        */
+--surface-1: #161B22;  /* panes, rail                              */
+--surface-2: #1D242E;  /* raised: menus, dialogs, hover            */
+--edge:      #262E3A;  /* hairline borders — replaces shadows      */
+--ink-hi:    #E6EAF0;  /* primary text                             */
+--ink-mid:   #9AA4B2;  /* secondary text                           */
+--ink-low:   #5C6673;  /* placeholders, disabled, timestamps       */
+--attention: #E8A33D;  /* a human is needed — THE amber. Nothing else may be amber. */
+--alive:     #3FB68B;  /* agent working/streaming. Muted sea-green, never acid.     */
+--danger:    #E5484D;  /* failure/destructive                       */
+--accent:    #6CA0F5;  /* focus ring, selection, links — steel-blue */
+```
+
+Each semantic family gets `-bg` and `-edge` companions mixed in `tokens.css` via
+`color-mix(in oklab, var(--attention) 15%, var(--surface-1))` — no new hex literals.
+Light theme: same names, values flipped around `#F5F7FA`/`#FFFFFF` surfaces with the same four
+semantic hues darkened one step for contrast (validated ≥ 4.5:1 for text, 3:1 for UI).
+
+**Type:** IBM Plex Sans (UI + prose; display = weight 600, tracking −1%) and IBM Plex Mono
+(code, tool output, paths, timings). Scale (px): 12 caption / 13 ui / 14 body / 16 pane-title /
+20 page-title, line-heights 1.5 body, 1.3 titles. Mono never used for chrome labels (retired
+pattern stays retired).
+
+**Space/shape:** 4px grid (`--space-1..9` = 4..64); radius 4 (controls) / 8 (panes, dialogs);
+depth = `--edge` borders + surface steps, shadows only on floating layers (menu, dialog, toast).
+
+**Motion:** default none. Allowed: attention onset (one 200ms ease-out color/edge transition),
+streaming caret blink, dialog/menu 120ms fade-scale. Forbidden: idle pulses, skeleton shimmer
+loops on live data, anything that animates during silence (honest-liveness rule).
+
+**Signature — the cadence instrument (`<Cadence>` widget):** one component rendered everywhere
+a session appears (tree row, pane header, mobile card): a state dot plus a 24×10px activity
+trace of the last ~60s of frame arrivals as vertical ticks that fade with age. Working = fresh
+ticks (alive token); quiet = ticks visibly aging to `--ink-low`; needs-you = dot and trailing
+edge in attention amber; failed = danger. It never animates on its own — it only re-renders
+when frames actually arrive, so a busy agent shows a dense fresh trace and a stalled one shows
+honest decay. Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes:
+number[], now: number}`.
 
 ---
 
-## 3. Tokens
+## 2. Tokens as shipped
 
-Defined in the golden example's `:root`. Semantic names carry meaning; raw hues do not.
+`src/styles/tokens.css` is the single source of every color, type, space, radius, and motion
+value in the app. Consumers only ever write `var(--name)` — no component CSS branches on
+theme; the light-theme block (`[data-theme="light"]`) redeclares every color token under the
+same name, and `token-contract.test.ts` (§4) fails CI if a token exists in one theme's block
+but not the other's.
 
-### Color — four meanings, each exactly one
+**Color** — surfaces/ink (`--surface-0/1/2`, `--edge`, `--ink-hi/mid/low`) plus the four
+semantic families (`--attention`, `--alive`, `--danger`, `--accent`), each with `-bg` (15% mix
+into the surface) and `-edge` (40% mix into the hairline border) companions — 19 color tokens
+total, all declared identically-named in both theme blocks. Light-theme semantic hues are
+WCAG-computed (not eyeballed): `--attention: #9D6513`, `--alive: #2B7D60`, `--danger: #DB1F25`,
+`--accent: #1668EF`, each clearing ≥4.5:1 against both `#F5F7FA` and `#FFFFFF`.
 
-| Token | Hue | Meaning — the ONLY thing it marks |
+**Type** — `--font-sans` / `--font-mono` (IBM Plex, self-hosted from the `@ibm/plex-sans` /
+`@ibm/plex-mono` npm packages, latin1 subset, imported by relative `url()` straight from
+`node_modules` — no binaries committed); `--font-weight-regular/medium/semibold` (400/500/600);
+`--tracking-display` (−0.01em, display weight only); `--font-size-caption/ui/body/pane-title/
+page-title` (12/13/14/16/20px); `--line-height-body/title` (1.5/1.3).
+
+**Space & shape** — `--space-1` through `--space-9` (4/8/12/16/24/32/40/48/64px — IBM Carbon
+Design System's own spacing progression, adopted because it's the only well-known scale that
+exactly fits the plan's stated endpoints (4, 64) and step count (9) while staying on the 4px
+grid); `--radius-control` (4px), `--radius-pane` (8px).
+
+**Motion** — `--motion-duration-attention` (200ms), `--motion-duration-overlay` (120ms),
+`--motion-easing-standard` (`ease-out`). See §5 for the budget these back.
+
+---
+
+## 3. Widget inventory (locked API)
+
+Every widget lives at `src/widgets/<name>/` (`index.tsx` + `<name>.module.css` +
+`<name>.test.tsx`), is re-exported from the controller-owned barrel `src/widgets/index.ts`, and
+has a gallery section at `src/dev/gallery-sections/<name>.tsx` showing every documented state in
+both themes (enforced by `src/dev/WidgetGallery.test.tsx`'s completeness test — see §4).
+`src/widgets/internal/` (currently just `requireClass`, a CSS-Modules type-safety helper) is
+implementation machinery, not a widget: no gallery section, not in the barrel.
+
+This table is the actual shipped surface, not the plan's original sketch — a few shapes evolved
+during implementation (noted inline); this table is the one to trust.
+
+| Widget | Props | Notes |
 |---|---|---|
-| `--accent` | blue `#7aa2f7` | **live / active + interactive**: working/running status, links, primary action, focus ring |
-| `--attention` | amber `#e2b06a` | **needs you / awaiting input** (a question, a permission prompt, a blocked session) |
-| `--error` | red `#f7768e` | **failed-to-run / broke** — the agent or a tool itself errored |
-| `--done` | neutral `#7e8593` | **done / settled** — the expected, finished state. Recedes. (This is `--ink-3`, not a color.) |
-| `--success` | dim green `#8aa873` | reserved for *genuine good-news highlights only*, used sparingly — NOT for ordinary "done" |
-
-> A subagent that *ran fine but found bad news* (e.g. a failing test it was asked to check) is
-> **done (neutral)** with the bad news in its result text — **not** red. Red means the subagent
-> or tool itself failed to run.
-
-Neutral ramp (aligned to shipped values, 2026-07-19): `--bg #0a0a0e`, `--surface #16161e`,
-`--surface-2 #1c1c24`, rules `--line #1a1a20` / `--hair` (a 50% `--line` mix — the *faint*
-hairline); text `--ink #ececf0` (primary), `--ink-2 #7a7a86` (secondary), `--ink-3 #7e8593`
-(tertiary, AA ~4.8:1), `--ink-4 #5a5a64` (**hairlines / non-text only** — never words).
-Light theme: `--bg #fafafa`, `--surface #f1f1f2`, `--surface-2 #e6e6e8`, `--line #dadadc`,
-`--ink #16161e`, `--ink-2 #5e5e6a`, `--ink-3 #6b6b76`, `--ink-4 #8a8a92`.
-
-### Type
-
-- **Sans (everything human):** Hanken Grotesk. **Mono (machine text only):** JetBrains Mono.
-- Shipping scale (M preset, px): `--text-2xs 10` / `--text-xs 11` / `--text-sm 12` /
-  `--text-base 13` / `--text-md 14` / `--text-lg 16` / `--text-xl 18` / `--text-2xl 22`.
-- **The transcript uses ONE reading size + two exceptions** (2026-07-11 round 2, tightened
-  from the four-step scale): ALL flowing reading text — assistant prose, tool intents and
-  result text, thinking summaries and bodies, user messages, system asides, plan rows —
-  sits at `--text-base`; mono machine text (commands, code, paths, diffs, raw output) is
-  `--text-sm`; true meta (timestamps, the YOU tag, durations, badges, fold heads) is
-  `--text-xs`. Line-height across the column is `--leading-normal`. **Prose dropped from
-  `--text-lg` to `--text-base`**: the larger hero step made the column read as
-  differently-sized fragments; contrast and paragraph rhythm carry the prose's weight now,
-  not size. `--text-2xs` remains reserved for non-transcript chrome (sidebar counts,
-  pickers) — never transcript text.
-- Leading: `--leading-tight 1.3` / `--leading-snug 1.5` / `--leading-normal 1.6` /
-  `--leading-relaxed 1.7`.
-- Numbers (durations, counts, clock stamps, relative times) are sans with
-  `font-variant-numeric: tabular-nums` — never mono (mono is machine text only).
-
-### Font-size presets
-
-Four user-selectable presets scale every `--text-*` token (base values: `--text-2xs 10` /
-`--text-xs 11` / `--text-sm 12` / `--text-base 13` / `--text-md 14` / `--text-lg 16` /
-`--text-xl 18` / `--text-2xl 22`, all px) via `body[data-font-size]`:
-
-| Preset | Scale | Setting |
-|---|---|---|
-| S | ~90% | Settings → Appearance → Font size |
-| M | 100% (default) | " |
-| L | ~115% | " |
-| XL | ~130% | " |
-
-Persisted per-browser in `localStorage` (`serf-hub.appearance.fontSize`), applied via a
-`body[data-font-size="…"]` attribute redefining the `--text-*` custom properties (they cascade
-to every descendant) — no per-element JS resize logic.
-
-### Spacing, radius, elevation, motion
-
-- Shipping spacing scale (px): `--space-1 2` / `--space-2 4` / `--space-3 8` / `--space-4 12` /
-  `--space-5 16` / `--space-6 24` / `--space-7 32` / `--space-8 48` / `--space-9 64`. Snap to it;
-  1px hairlines stay literal.
-- Radius: **two only** — `--radius-md 5px` (rectangles) and `--radius-pill 999px` (chips/dots).
-- Elevation: flat surfaces separated by hairline rules and background steps
-  (`--bg` → `--surface` → `--surface-2`), not drop shadows; shadows appear only on true overlays
-  (lightbox, drawers).
-- Motion: three durations on one easing — `--motion-fast 110ms` / `--motion-base 180ms` /
-  `--motion-slow 260ms` on `--ease`; `--pulse-cycle` for the one sanctioned breathe. Everything
-  inside `@media (prefers-reduced-motion: reduce)` → none. (See §9.)
-
-### The transcript marker gutter
-
-`.conversation` defines `--gutter` (20px desktop; 12px phone; 8px in a narrow pane): a fixed
-left gutter for **markers and rails only**. Every transcript entry's TEXT starts at the same
-x=0 column line; anything that annotates the entry (the tool ✕/… status glyph, the thinking ✦,
-a body's border-left rail) hangs into the gutter with a negative margin. No entry may
-reintroduce a per-kind text indent — differentiation is weight/color/size, never indent.
-
-### Retired from the old UI
-
-ALL-CAPS + heavy letter-spacing as a default label treatment; monospace for chrome/labels; the
-imperceptible 5% paper-grain `--noise` texture; the 6-radius spread; `--purple`/`--cyan` as
-ambient hues; dim-ink-on-dark for primary navigation (the old `--text-dim`, failed contrast).
+| **Button** | `{variant?: "primary"\|"quiet"\|"danger"; size?: "sm"\|"md"; icon?: ReactNode; children: ReactNode; onClick?; disabled?; type?: "button"\|"submit"\|"reset"} & Omit<ButtonHTMLAttributes, those>` | `forwardRef<HTMLButtonElement>`; spreads unrecognized native attributes (aria-\*, data-\*, id, ...) onto the `<button>` — `className` stays computed-only, never caller-overridable. The canonical exemplar every other widget's file layout/CSS/test style mirrors. |
+| **IconButton** | `{label: string; icon: ReactNode; variant?; size?; onClick?; disabled?; type?} & Omit<ButtonHTMLAttributes, those \| "aria-label">` | Icon-only Button; `label` is required and becomes `aria-label` (no visible text). `forwardRef` + rest-spread, mirroring Button — reuses Button's CSS classes directly (read-only import), which does NOT carry over ref-forwarding/prop-spreading, so this is fixed independently. |
+| **Cadence** | `{state: "idle"\|"working"\|"needs-you"\|"failed"\|"ended"; frameTimes: number[]; now: number}` | The signature widget — see §1. Pure (no timers, no `Date.now()`); ticks render as SVG `<rect>`s, age→opacity in 4 buckets (15s each, half-open `Math.floor` boundaries); needs-you tints the freshest ticks amber too ("trailing edge"), not just the dot. |
+| **Chip** | `{children: ReactNode; tone?: "neutral"\|"attention"\|"alive"\|"danger"; onRemove?: () => void}` | Small labeled pill; `onRemove` renders a remove button, `aria-label` derived from string children or `"Remove"`. |
+| **Badge** | `{count: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | Numeric count indicator, caps display at "99+". |
+| **StatusDot** | `{state: CadenceState}` | Just the dot (imports `CadenceState` from Cadence, doesn't redeclare it) — for tighter contexts than Cadence's full trace; carries its own accessible name since nothing else labels it standalone. |
+| **Meter** | `{label: string; value: number; max: number; tone?: "neutral"\|"attention"\|"alive"\|"danger"}` | `role="meter"`; `label` is required (not optional as an early sketch had it) since role=meter needs an accessible name and a Meter can't ship without one. Fill width via a `--fill` style custom property, not an inline style rule. |
+| **Skeleton** | `{lines?: number}` (default 3) | Static bars, no shimmer (honest-liveness rule) — announces "Loading" once for AT; bars themselves are decorative. |
+| **EmptyState** | `{title: string; hint?: string; action?: ReactNode}` | `action` is optional (an early plan sketch showed it required; a pane with nothing actionable — e.g. a read-only empty log — is an ordinary case, and every sibling slot-style prop this wave is optional, so this was kept optional as the more consistent, more correct shape). |
+| **Card** | `{children: ReactNode}` | Passive raised/bordered container. |
+| **Input** | `{value: string; onChange; placeholder?; disabled?; type?: "text"\|"password"\|"email"\|"search"\|"number"\|"tel"\|"url"; id?; name?}` | Controlled only; labeling is the consumer's job via `<label htmlFor>`. |
+| **Textarea** | `{value: string; onChange; placeholder?; disabled?; autoGrow?: boolean; rows?; id?; name?}` | `autoGrow` counts literal `"\n"` occurrences, not wrapped lines. |
+| **Select** | `{value: string; onChange; options: {value; label}[]; disabled?; id?; name?}` | Native `<select>`, restyled — no custom listbox (Combobox covers richer cases). |
+| **Switch** | `{checked: boolean; onChange: (checked: boolean) => void; disabled?; label: string}` | `role="switch"` on a real `<button>`, not a styled checkbox; `label` is required and always-visible, wired via `aria-labelledby`. |
+| **KeyHint** | `{keys: string[]}` | One `<kbd>` per key, "+"-separated; the literal key name `"Mod"` renders as ⌘ on Apple platforms, `Ctrl` elsewhere. |
+| **Combobox** | `{options: T[]; onQuery; onPick; renderOption?; "aria-label"?; "aria-labelledby"?}` (generic over `T extends {id; label}`) | ARIA 1.2 combobox-with-listbox-popup; real focus never leaves the input. `aria-label`/`aria-labelledby` forward to BOTH the input and the popup listbox (fix-wave: the listbox had no name of its own — see §4) — they're two roles describing one picker, sharing one label source. Debounces `onQuery` 150ms. Never traps focus. |
+| **Menu** | `{trigger: ReactNode; items: {id; label; onSelect; disabled?}[]}` | Trigger + popup; roving tabindex among items (skipping disabled), no typeahead. Popup `role="menu"` gets `aria-labelledby` pointing at the trigger `<button>`'s own id (fix-wave — see §4). Traps focus (`FocusScope trap`). |
+| **Dialog** | `{open; onClose; title; children; footer?}` | Modal: centered, 120ms fade-scale, Escape/scrim-click close, trapped + restored focus. Shares its whole contract with Sheet via the internal `OverlayPanel`. |
+| **Sheet** | `{side?: "right"\|"bottom"; open; onClose; title; children; footer?}` | Same contract as Dialog (shared `OverlayPanel`); only geometry/slide-in animation differs. |
+| **FocusScope** | `{trap?: boolean; children}` | The focus-management primitive Dialog/Sheet/Menu build on: moves focus in on mount, restores on unmount; traps Tab/Shift+Tab when `trap`. Does not (yet) set `inert` on anything outside the scope — see §4. |
+| **Tooltip** | `{label: string; children: ReactNode}` | Hover/focus-triggered, 300ms delay, hidden on touch via CSS. `aria-describedby` wired via `cloneElement` onto a single-element child — works for a native element or any widget that forwards a ref + spreads rest props (Button/IconButton both do, since the fix-wave in §4). |
+| **Toast** + `useToasts()` | `useToasts(): {push: (kind, text) => void}`; `<Toast/>` takes no props | Module-singleton queue (`useSyncExternalStore`), mounted once near the app root. 5s auto-dismiss, true pause/resume on hover (tracks remaining time, doesn't restart the full window — fix-wave, see §4). |
+| **PaneScaffold** | `{title; cadence?; actions?; footer?; children}` | The standard pane chrome: header (title + cadence slot + actions) + scrollable body + optional footer. Most-copied layout primitive in the app. |
+| **CodeBlock** | `{text: string; language?: string; showLineNumbers?: boolean}` | Mono block with a copy button (renders a real `Button` internally); no syntax highlighting (YAGNI this wave). |
+| **Markdown** | `{source: string}` | `marked` → DOMPurify-sanitized HTML → `innerHTML`; fenced code renders through CodeBlock's stylesheet; links open in a new tab with no opener access. |
+| **DiffBlock** | `{unified: string}` | Per-line tone on already-diffed text (additions alive, deletions danger); does not compute a diff itself. |
+| **Tree** | `{nodes: T[]; onActivate; onToggle; renderRow}` (generic over `T extends {id; children?; expanded?}`) | Keyboard-navigable (`role="tree"`), roving tabindex, Up/Down/Right/Left/Enter. Fully controlled — `renderRow(node, {depth, expanded, hasChildren, toggle, activate})` owns each row's visible content; Tree owns structure/ARIA/keyboard path only. |
+| **VirtualList** | `{count; estimateSize; renderRow; ref?: Ref<VirtualListHandle>}` | Wraps `@tanstack/react-virtual`; `ref` exposes `{scrollToIndex}` via the React 19 ref-as-prop pattern (not a `forwardRef` wrapper). Sizes come from `estimateSize` alone, no `measureElement`. |
 
 ---
 
-## 4. Component grammar (the transcript)
+## 4. The color-is-attention rule, machine-enforced
 
-Design rule: **one scannable primary line per entry; status on a left rail or glyph; machine
-detail demoted to a mono chip; deep detail hidden until expanded.** Content column capped ~720px.
+**The rule:** chroma is scarce and means something specific. `--attention`/`--alive`/`--danger`
+each carry exactly one meaning everywhere in the app (a human is needed / the agent is working /
+something failed); reaching for one outside a widget with a genuine matching state is a bug, not
+a style choice. `--accent` is different in kind, not degree — see below.
 
-**Breakpoint ladder + wide band (2026-07-19 addendum).** Phone ≤767px; tablet 768–1199px
-(side panes hidden, sidebar auto-collapses — see §5); desktop 1200–1799px; wide ≥1800px.
-The prose measure holds 720px at **every** width; the machine bleed (`--measure-machine`)
-is 1000px below the wide band and 1200px at/above it. Left edges never move.
+**Enforcement:** `src/styles/token-contract.test.ts` reads every `.module.css` + `global.css`
+under `src/` directly off disk (`node:fs`, not Vite's `?raw` import — see the file's own header
+comment for why: under vitest's default config, a `.css?raw` import silently returns an empty
+string, a real upstream issue this project works around rather than papering over) and runs
+four independent checks:
 
-| Entry | Primary (glance) | Secondary | Hidden until expanded | Color / containment |
-|---|---|---|---|---|
-| **User prompt** | quiet: a dim `You` tag + muted text | turn index | — | none. Demoted on purpose. |
-| **Assistant prose** | the **hero** — sans, `--fs-md`, full contrast | — | — | none; wins via size+space |
-| **Thinking** | quiet collapsed line "Thought for Ns" + faint preview | — | full reasoning (streams live) | none; quietest. Collapsible. |
-| **Tool call (done)** | the **purpose** ("Check kernel version"), not the command | verb+args as a quiet mono line; **success is silent** — no "exit 0", and **no ✓ glyph either** (a done row leads with its content; the status slot stays empty so rows align) | full output | neutral; collapses once scrolled past |
-| **Tool cluster (scrolled-past)** | one line: "✓ 4 steps · …" | — | the individual calls | neutral box (the one device) |
-| **Tool call (running)** | purpose | mono chip | live output | blue left-rail tick |
-| **Tool call (error)** | error summary promoted to primary | mono chip | stderr (truncated, see below) | red left-rail (one device — no extra box) |
-| **Subagents** | a living **delegation rail** (sibling of the plan card): "Subagents · ⟳ N running · ✓ M done"; a lone subagent is just one row | per-row two lines: task name leads; a **live activity** line beneath (the child's latest step + step count), pushed over the socket (subscribe to the child thread — no polling) and **aged honestly** (fresh → dim → `quiet Ns` amber) | each subagent's transcript (the row is the door) | one neutral **left rail, no box**; **fixed spawn-order** (rows never reshuffle live); done fold behind `✓ N done`. A job's notification card and its rail row share a `job_id` and are **tied**: the row pulls the notification's headline, and each carries a quiet cross-link (`↑ in rail` / `report ↓`) that scrolls to + flashes the other |
-| **Job / watch notification** | glyph + title ("Job completed"); **done glyph is neutral ✓** | a quiet dim secondary (job kind · `exit N` · reason); the message prose + a facts list | machine metadata (ids, transcript ref, bytes) in a "raw notification" disclosure | one neutral box + a left rail in the tone colour (neutral for done). **No chip wall.** |
-| **Plan / tasks** | one inline change card per successful `task_list` mutation — progress (`31/46` + thin neutral meter) followed by only tasks added or whose status changed in that call | task notes attached to changed rows | the whole plan in the sidebar; no inline full-plan disclosure | a single neutral **left rail, no box** (rail = "status", box = "needs-you"). Each card stays at its tool call's conversation position. |
-| **Steering** | quiet: dim "You steered" + muted text, thin amber tick | — | — | demoted (it's the user's message); amber tick only |
-| **Image** | inline thumbnail + caption (filename · dims) | provenance (user-pasted / tool-read / generated) | lightbox | neutral card |
-| **Long output** | first N lines + "expand · N more lines" | byte/line count | full (with escape hatch for huge) | neutral box; blue "expand" affordance |
-| **Liveness** | pinned strip: "working · 1:12 · waiting on N subagents" | — | — | not in scroll flow; always reachable |
-| **System / lifecycle** | quiet dim one-liner (plugin loaded, skill activated) | — | — | never divider-weight; no "N chars" |
+1. **File naming.** Every stylesheet besides `tokens.css` is named `global.css` or
+   `<name>.module.css` — the convention the rest of the contract, and the whole widget
+   directory layout, assumes holds.
+2. **No chromatic literal outside `tokens.css`.** Two mechanisms: hex / `rgb()` / `hsl()` /
+   `oklch()` / `oklab()` / `lab()` / `lch()` scanned across whole files (comments included —
+   these forms are distinctive enough not to false-positive on a selector or class name); the
+   148 CSS named colors (`red`, `white`, `black`, ...; not `transparent`/`currentColor`, which
+   aren't chromatic) scanned only inside extracted declaration *values*, after stripping block
+   comments — named colors are ordinary English words that legitimately appear in class names
+   and font stacks, so this one has to be scoped narrowly to avoid false positives (a class
+   literally named `.red` is not a violation). `color-mix()` composing existing `var(--token)`
+   values is never a violation, at any scope — it introduces no new color.
+3. **The three attention-family vars stay on a reviewed allowlist.** Currently: `cadence`,
+   `button` (danger variant), `chip`/`badge`/`toast` (tone props), `statusdot` (state color),
+   `meter` (danger/attention fill), `diffblock` (add/del tints), `dialog` (danger footer). A
+   widget earns a place on this list only when it has a state that genuinely needs one of the
+   three hues — never for decoration. **`--accent` is deliberately exempt from this check
+   entirely** — it's interaction chrome by definition (every interactive widget needs an accent
+   `:focus-visible` ring; accent also carries selection and links), so gating it would grow the
+   allowlist by one entry per interactive widget forever while protecting nothing. The
+   color-is-attention thesis guards the three *attention-class* hues' meanings; focus/selection
+   chrome was never the thing it was protecting.
+4. **Dark and light blocks declare identical color-token name sets.** A token declared in only
+   one theme's block silently breaks the other (falls back to the wrong hue, or resolves to
+   nothing) — checked by extracting both blocks via brace-depth counting and diffing their
+   declared names.
 
-**Streaming text (2026-07-19 addendum).** While an assistant message streams past 4KB of
-accumulated text, the already-parsed head **freezes in place** and later deltas append as
-plain text in a `.streaming-tail` node below it, marked by a CSS streaming caret (the one
-sanctioned live-caret breathe, §9). The reader keeps the formatted head; the raw tail is
-honest about being not-yet-parsed. Finalization re-parses the whole buffer — the tail
-treatment never survives a completed turn.
-
-Status hierarchy: **running (blue) draws the eye; done (neutral) recedes; needs-you (amber) and
-error (red) stand out.** Pair every status color with a glyph so it is colorblind-safe.
-**Done recedes to *absence*, not a green check:** a successful tool row shows **no glyph at all** —
-only a **failure (✕, red)** sits in the gutter. A transcript of successes is then a calm column of
-content with the occasional red ✕ standing out; you never scan past a wall of ✓✓✓.
-
-**Disclosure placement.** Expand affordances in the transcript sit on the **right**, not the left:
-the tool-row caret is right-aligned (so the status/glyph leads a clean, aligned left edge), and
-card disclosures (`raw notification`, `full excerpt`, `show raw error`) read `label … ›` with the
-chevron at the right edge. A left-hung chevron offsets every row and ragged-edges the column; on the
-right it's a quiet "there's more." (The timing meta is out of the flow on every
-breakpoint — fixed top-right — so commands and file paths always get the full row width; a
-hover, focus, or tap on the row brings the meta back.)
-
-**Timing metadata is on-demand — and honest.** Per-row timestamps/runtimes (`.tool-call .tool-meta`:
-`03:19:32 PM · 1ms`) and the per-turn badge (`.assistant-message .turn-meta`: duration ·
-tokens · cost) rest at `opacity: 0` and reveal on row hover, keyboard `:focus-within`, or tap
-(sticky `:hover`) on touch. `opacity` — never `display`/`visibility` — so they stay in the
-accessibility tree and revealing them reflows nothing. The meta is `position: absolute`,
-fixed to the row's top-right and out of the flex flow on every breakpoint, so neither the
-reveal nor the runtime landing at tool end can shift the row's text. The times themselves
-are **server truth or nothing** (issue #37): the hub stamps each tool item with the session
-event's own `startedAt`/`completedAt`/`durationMs` (live) or the transcript entry's recorded
-timestamp (replay), and the renderer shows no clock when none arrived — never a
-browser-wall-clock stand-in. A column of permanent clock stamps was ambient noise competing
-with the content; the data is one hover away, not gone. (This supersedes the 2026-07-01
-"always-visible" revert: the accessibility concern is answered by the a11y-tree +
-focus-within pairing, not by permanence.)
-
-### Transcript row anatomy (reference)
-
-What each element of the two workhorse rows uses. Text column starts at x=0; the marker
-gutter (`--gutter`) is to its left (§3).
-
-**Tool call row (`.tool-call`)**
-- gutter: `.tool-status` glyph — `…` pending (`--ink-3`), *empty/quiet* when done, `✕`
-  `--error` on failure. Mono, `--text-xs`.
-- `.tool-intent` (when the agent stated a purpose): sans `--text-base`, `--ink` — the primary
-  line.
-- `.tool-command` = `.verb` + `.target` + `.result-detail`: verb/target mono, result sans.
-  Mono `--text-sm` whether primary (no purpose, target `--ink`) or demoted under a purpose
-  (one truncated line, `--ink-3`, same x=0 column, no sub-indent) — dim color, not a
-  smaller size, carries the demotion.
-- `.tool-meta` fixed top-right (`position: absolute`, out of flow): sans `--text-xs`
-  `tabular-nums`, `--ink-2`, hover/focus-reveal; server-stamped times only (issue #37).
-- `.tool-body` / `.diff-body` / `.shell-output`…: full-width below; rails hang in the gutter,
-  boxed machine output is mono `--text-sm` with its own contained `overflow-x`.
-
-**Thinking row (`.think`)**
-- gutter: `.think-glyph` ✦ (breathes while streaming).
-- `.think-label` "Thought for Ns" + `.pv` gist: sans `--text-base`, tier-colored
-  (`--ink` long / `--ink-2` short), gist italic.
-- `.think-body`: expanded reasoning, `pre-wrap` italic `--ink-2`, text at x=0 with a
-  1px rail in the gutter.
-
-### The notification / job card (worked example)
-
-The job- and watch-notification card is the canonical test of principles #1, #3, and #6. It is a
-single neutral box with a tone-coloured left rail — **one** containment device. Inside:
-
-- **Header:** a tone glyph + the title. A *completed* job is the expected state, so its glyph is a
-  **neutral ✓** and its rail is neutral — not a green dot. Only a warning (amber ⚠) or a failure
-  (red ✕) spends colour. The job kind and the failure signal (`delegate`, `exit 1`, the reason)
-  ride a **quiet dim secondary**, not bordered chips.
-- **Body:** the agent's `communicate` message as prose (markdown), then a compact **facts**
-  definition list for the structured extras (concerns, artifacts; commit/tests/status only as a
-  fallback when there's no message). Mono is used **only** for machine values (commit hashes,
-  filenames) — never for the labels.
-- **Demoted to the "raw notification" disclosure:** job/delivery ids, transcript refs, byte counts,
-  triggers — the plumbing. It is discoverable, not displayed. The daemon's boilerplate prose
-  ("Job <id> completed…") is suppressed; the title already says it.
-
-Anti-pattern (retired): a wall of bordered `label value` mono chips for every attribute, a green
-"done" dot, and structured fields as `status x` / `commits y` mono run-on lines.
+Every mechanism above is poison-tested against hand-written snippets proving both what it
+catches and what it must not flag (see the test file itself) — not just asserted to work.
 
 ---
 
-## 5. Sidebar
+## 5. Motion budget
 
-Project-first, ranked by recency, with disclosure folding. Tiers top→bottom:
+Default is none. The only motion this app plays, all on `--motion-easing-standard`
+(`ease-out`):
 
-- **ACTIVE** — projects with a live/needs-you session; auto-expanded; rollup dot (blue=live,
-  amber=needs-you). Sessions listed; **subagents de-weighted** to dim, single-line, indented
-  rows with a terminal-state glyph (`✓` neutral / `⟳` blue / `✕` red), collapsing to "+N
-  subagents" past ~3.
-- **RECENT** — touched in ~last day; collapsed.
-- **OLDER** — collapsed.
-- **ARCHIVED SESSIONS (N)** — one top-level disclosure, collapsed by default, folding away
-  everything archived so it stops cluttering the active list. N counts the archived sessions
-  inside. Expanding reveals per-project sub-headings (project name, own disclosure chevron):
-  archived projects ride as session-less stubs that lazy-hydrate on expand, and each active
-  project with archived-tier sessions gets a group revealing only those sessions (they already
-  ride the tree snapshot, so no fetch). Active projects never list archived sessions inline.
-- **TEST RUNS (N)** — auto-bucket the disposable `serf-e2e-*` single-session sprawl into one
-  collapsed group so it stops drowning real projects.
+- **Attention onset** (`--motion-duration-attention`, 200ms) — a state crossing into
+  needs-you. Cadence's dot, StatusDot, and Switch all use it for their own state-driven color
+  transitions.
+- **Overlay fade-scale** (`--motion-duration-overlay`, 120ms) — Dialog, Sheet, and Menu's
+  open/close.
 
-Session row anatomy (`.sb-row`, reference — note: the sidebar is under active restyling in a
-parallel 2026-07-11 pass; verify against `style.css` if this drifts): status dot/glyph (blue
-live · amber needs-you · neutral otherwise) · title sans `--text-base` `--ink` (muted until
-hover/selected) · right-aligned relative age sans `--text-2xs` `--ink-2` `tabular-nums`
-(opacity-swapped for row actions on hover) · subagent children indented, dim, `--text-2xs`
-terminal-state glyph rows folding to "+N subagents".
-
-Project header: disclosure chevron (`›`, muted, rotates 90° when `aria-expanded="true"`,
-`--motion-fast`) · name (sans, not ALL-CAPS-mono) · relative age · count; rollup dot only when
-something is live/needs-you. The chevron appears on **every** project header, including
-collapsed archived stubs — the whole header is the toggle; the chevron is decorative
-(`aria-hidden`). Vertical rhythm: symmetric `--space-2` header padding plus a `--space-2`
-top margin between a project and whatever precedes it — group separation reads as a subtle
-rhythm break, not a void. Tap floors are untouched (32px desktop / 52px mobile min-height).
-
-**Tri-state mode (2026-07-19 addendum; collapsed = hidden since issue #33).** The
-sidebar mode is `auto | rail | pane`, persisted per-browser (`rail` is the legacy
-name for the collapsed state). `auto` (the default) collapses below 1200px and expands
-at/above it; `rail`/`pane` pin the state. ⌘B cycles `rail → pane → auto`. The legacy
-binary preference migrates: collapsed→`rail`, expanded→`pane`, unset→`auto`.
-
-**Collapsed means fully collapsed.** There is no 56px icon rail: the sidebar leaves
-the layout entirely. The app-shell nav chip (`.app-nav-toggle`, hidden on desktop
-otherwise) floats top-left and reopens the sidebar as an **overlay drawer**
-(`body[data-sidebar-rail][data-sidebar-open]`) — the same pattern as the phone and
-short-landscape bands, including outside-click / Escape close and close-on-navigate.
-⌘B or the in-header mode toggle cycle back to `pane` to re-pin it.
+Forbidden: idle pulses, shimmer loops on live data, anything that animates during silence (the
+honest-liveness rule — a "working" indicator that looks identical whether the agent is
+streaming or hung is worse than no indicator). Every widget with motion of its own respects
+`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Menu, Sheet, StatusDot, Switch) —
+collapses to instant, no exceptions.
 
 ---
 
-## 6. Controls layout
+## 6. Copy rules
 
-- **Top bar = identity only:** session title + a single `Details ⋯` overflow. (The model chip
-  does **not** live here — no duplication.) The mobile nav toggle (`☰`) is a **quiet bare glyph**,
-  not a filled, bordered, shadowed box — it floats over the stable header, so it recedes like the
-  rest of the identity bar (a faint backdrop blur keeps it legible on the rare page where content
-  sits beneath it). Title + actions stay on **one row** (the title ellipsizes; actions never wrap
-  under it).
-- **Bottom = all live controls, by the composer where hands/eyes already are:** model chip, `+`
-  attach, `Interrupt`, `Send as steer`, `Send` (primary blue). Every control is a real
-  `<button>` with a visible `:focus-visible` ring and ≥30px hit target.
-
-### Composer anatomy (shipping, 2026-07-12 round 4)
-
-Top to bottom inside `.workspace-input` (the dock):
-
-- **The dock is the container.** A hairline top rule + a background step (`--surface`)
-  separate it from the transcript — that is the composer's ONE containment device
-  (principle #3). On **phone** the inner `.input-card` is a transparent, borderless,
-  unpadded pass-through: no box, no radius, and **no focus-within outline** — focus reads
-  from the dock's top-rule accent tint plus the caret, and each control keeps its own
-  `:focus-visible` ring. On **desktop** the card keeps a subtle raised background,
-  `--radius-md`, and the quiet focus-within outline: in the wide two-pane layout the dock
-  spans the window, so the card earns its keep by locating the input; removing it there is
-  a separate call.
-- **Current-task strip** (the tasks trigger, phone only): the dock's own TOP line, above
-  the status rail — "what the agent is doing right now": `▸ 2/5 Refactor session config`
-  (count badge + the in-progress task's subject), ONE truncated line, full-width,
-  `--tap-min` tall, tapping opens the tasks panel. The trigger carries `data-tasks-signal`
-  (`none` / `active` / `done`, set by the badge updater) and the strip renders **only while
-  `active`** (an unfinished list); at rest ("42/42 forever", or no tasks) it is hidden — a
-  settled count is noise, and the plan card in the transcript + the desktop trigger keep
-  the panel discoverable. Because the "tasks" label word and the glyph are visual-only, the
-  updater writes a full `aria-label` ("tasks 2/5 — …"). This strip REPLACED the round-3
-  badge-only `tasks 1/3` rail item, so tasks never show twice. On desktop the trigger stays
-  a rail item (count badge + prose) as before.
-- **Status rail** (`.input-status-rail`, above the textarea on phone): ONE calm secondary
-  line — status dot + state word · branch ref (truncated; on phone the "branch" label word
-  is dropped, the ref is self-evident) · `ctx` + compact `16k / 262k` numbers · the honest
-  quiet-liveness item when the agent has been silent.
-- **Textarea**: bare — transparent background, no border/outline at rest, 16px on phone
-  (iOS zoom guard).
-- **Action row** (`.input-controls`) is the last content band: `+` attach · model chip ·
-  stop `■` · `steer` · send `↑` (the one blue disc on phone). The home indicator and the
-  corner curves only constrain the **edges** of the bottommost band, so the row is inset
-  **horizontally** (`env(safe-area-inset-left/right) + --space-4`, on top of the dock's
-  `--space-3`) and keeps only a small fixed `--space-2` bottom pad — it does **not** stack
-  `env(safe-area-inset-bottom)` under itself (round 3 did, which floated the controls
-  ~80px above the physical bottom with a dead band below). The controls sit down in the
-  gutter zone alongside the home indicator, which overlays dock background between them —
-  Safari's own toolbar pattern. On phone, **stop and steer render only while they are
-  live** (`[disabled]` → `display: none`): a dimmed disc at rest is one more object at the
-  bottom of the screen for nothing.
+Sentence case for all UI copy; no ALL-CAPS. Active-voice labels ("Save changes", not "Changes
+saved" or "Save Changes"). Mono is for machine text only — code, tool output, paths, commands,
+identifiers — never chrome labels, captions, or any text a human authored. (This tripped up
+even this wave's own gallery scaffold once: three caption labels shipped on `--font-mono` in
+the foundation task and were caught and fixed in wave-close review — see git history for
+`gallery-section.module.css` and `theme-flip.module.css`. If it happened once, watch for it.)
 
 ---
 
-## 7. What still needs rules (deferred from the review panels)
+## 7. Known gaps (documented, not fixed — wave-close adjudication)
 
-The golden + hard-case examples prove the happy/short path and the four hard cases (heavy
-subagent fan-out with a failure, error + truncated stderr, inline image, very long output). The
-style guide still needs written rules + exemplars for: main-agent error promotion (to the
-chrome, not just a row); nested subagents; multiple steers in one turn; a permission/approval
-prompt (interactive **and** needs-you — decide which color wins); plan/todo list; diff/patch;
-empty/just-started session; stalled agent; daemon disconnect; multi-image gallery;
-silent-success tool; interrupted turn; failed-then-retried tool; and **error-findability**
-(scroll-track markers + an attention-aware "jump to latest").
+Two items reviewed at wave-close and deliberately left as documented gaps rather than quick
+fixes, because the "quick fix" in both cases risked being wrong in a way that's worse than the
+current gap:
 
-**Resolved: the agent asking the user a question.** Mockup 16
-(`mockups/16-blocking-needs-you.html`) resolved this exactly as its own recommendation footer
-prescribed: Alt A's amber-container/blue-button split is the base grammar (needs-you claims the
-frame, the one button that unblocks stays blue/primary), Alt C's docked bar is why the ask can
-never hang off-screen, and Alt D's quick-reply chips are the answering surface; Alt B (all-amber)
-was rejected. Shipped as the `ask_user` feature (`renderer.js` `markAgentQuestion` +
-`renderNeedsYouDock`/`jumpToAgentQuestion`). `notifications.js`'s transition table, which already
-fired on `idle→awaiting`, now also fires on `active→awaiting` so a question posted mid-turn
-raises the OS notification too.
-
----
-
-## 8. Mobile (≤767px)
-
-> Breakpoint context (2026-07-19): this section is the **phone** band. The full ladder is
-> phone ≤767px · tablet 768–1199px · desktop 1200–1799px · wide ≥1800px (§4).
-
-The hub must work on a phone, not just survive on one. The desktop two-pane layout collapses to
-a single-pane workspace; the sidebar becomes an off-canvas drawer behind the header hamburger.
-
-- **One column.** `#workspace` is the full viewport. The sidebar is `position: fixed`,
-  `translateX(-100%)`, revealed by `body.app[data-sidebar-open]` over a scrim. Anything that is
-  only meaningful in the two-pane layout (the sidebar drag-resizer, side panes, the pane
-  splitter) is **`display: none`** here — an in-flow, full-height element left behind shoves the
-  workspace a whole viewport down (the "blank phone screen" bug).
-- **Reclaim width.** Desktop reserves a wide left gutter (tool indent + 32px card/system
-  indents). On phone that wastes a quarter of the screen — tighten conversation padding to
-  `--s3` and pull the indents in (`--tool-indent: 22px`, cards/system to `--s4`). Prose and
-  cards use the **full** width.
-- **Never scroll sideways.** Long unbroken machine tokens (identifiers in inline code, paths,
-  notification chips) must wrap (`overflow-wrap: anywhere`); flexed labels need `min-width: 0`.
-  The conversation column itself is `overflow-x: clip` as a permanent guard — a `<pre>` of raw
-  output keeps its **own** contained `overflow-x: auto`, but nothing forces a column-wide
-  horizontal scrollbar.
-- **Touch.** `--tap-min: 44px` on phone (desktop is 32px); suppress sticky `:hover` backgrounds
-  under `@media (hover: none)` so a tapped row doesn't stay lit.
-- **Reading scale on a phone (2026-07-11 round 2).** The transcript follows the same
-  one-size rule as desktop — flowing text `--text-base`, mono machine text `--text-sm`,
-  meta `--text-xs`. Compact density shrinks only the app **chrome** (`body` drops to
-  `--text-sm`); the `.conversation` column keeps `--text-base` and is never re-tiered
-  per-kind. Editable fields are pinned to **16px** so iOS never zoom-jumps on focus.
-- **Editable fields ≥ 16px.** iOS Safari zooms the page into any focused field whose text is
-  smaller than 16px and does not zoom back out — so the composer, prompt, and search inputs are all
-  16px on phone.
-- **Short forms.** For creation flows like `/new`, use the mobile form rules in §11.
-
-## 9. Motion
-
-Principle #5 (minimal, purposeful motion) stands, sharpened — **motion marks state changes; it
-never runs ambiently.** A looping animation that plays while the agent is "working" is forbidden:
-it is indistinguishable from a hang (principle #7). Everything here collapses to instant under
-`@media (prefers-reduced-motion: reduce)`.
-
-- **One easing.** `--ease: cubic-bezier(0.22, 0.61, 0.36, 1)` (crisp ease-out: reacts fast,
-  settles soft) on three durations `--motion-fast 110 / -base 180 / -slow 260`. `--ease-emphasis`
-  (faint overshoot) is reserved for press/pop moments — used sparingly.
-- **Where motion is allowed:** opening a session (one-shot transcript + welcome reveal); a
-  control acknowledging a press (small settle); a quiet hover wash on an interactive row; a
-  panel/drawer sliding; the "↓ N new" pill popping in; the streaming caret and the single live-dot
-  breathe. That is the whole budget.
-- **Where it is forbidden:** per-token reflow on live append; any infinite loop that implies
-  progress; blinking/flashing; motion on the user's own messages.
-
-## 10. Implementation status & dev workflow
-
-The shipping UI now carries the token foundation **and** the conversation-first grammar: assistant
-prose is the reading hero (size + leading + paragraph rhythm); tool calls are quiet one-line rows
-whose verbose per-call intent recedes to a single dim clamped breadcrumb (full text on
-hover/expand); turn boundaries breathe; mobile is single-column and overflow-proof; the motion
-layer above is in place, and the agent-question edge case from §7 has shipped. The 2026-07-11
-typography pass landed the one-column marker gutter and hover/focus-revealed timing metadata;
-round 2 (same day) squashed the column to ONE flowing reading size (`--text-base`, prose
-included) with mono `--text-sm` and meta `--text-xs` as the only exceptions, and normalized
-every transcript disclosure to the sidebar chevron idiom — a `›` glyph, `--ink-2`,
-`--text-md`, rotating 90° when open, on a hit target of at least 24px (`.tool-disclosure`,
-`summary` fold markers, and the shared `.fold-chevron` span for text-labelled folds). All
-locked by `cmd/serf-hub/jstest/test-transcript-typography.js`. The rest of §7's deferred list is still
-open.
-
-**Dev loop:** set `SERF_HUB_ASSETS_DIR=<repo>/cmd/serf-hub` when launching `serf-hub` to serve
-`assets/` and re-parse `templates/` from disk — CSS/JS edits take effect on reload (templates on
-restart) with no rebuild. Unset in production; assets ship embedded.
-
-## 11. Mobile forms
-
-For short, committed creation flows like `/new`, the mobile form is a single column with one clear hierarchy: the prompt first, the config as a stack of full-width rows, and a pinned bottom action band.
-
-### Form rows
-
-On phone, configuration options become full-width rows rather than a pile of chips:
-
-- **Min-height:** `48px` (on top of `--tap-min` 44px).
-- **Label:** sans, sentence case, `--text-base` minimum, left.
-- **Value:** sans, `--text-base` or `--text-md`, right, truncated.
-- **Caret:** at the far right; the whole row is the hit target.
-- **Separator:** 1px `--line` hairline.
-- **No** ALL-CAPS, monospace, letter-spacing, or per-row boxes.
-
-This is the same settings-row idiom the user already knows from system settings, rendered in the existing Serf neutral palette.
-
-### Auto-expanding text inputs
-
-Textareas that grow with content stay visible without a manual resize handle or a permanent oversized field:
-
-- **Min-height:** `96px`.
-- **Max-height:** `40vh` or `8` lines, whichever is smaller.
-- **Font-size:** `16px` so iOS never auto-zooms on focus.
-- **Motion:** height changes only when `prefers-reduced-motion` allows.
-
-### Bottom action band
-
-The primary action for a mobile form lives in a fixed bottom band:
-
-- Sits on top of `env(safe-area-inset-bottom)`, not floating above it.
-- Background: `--surface`; top border: 1px `--line`.
-- Primary button: at least `52px` tall, accent background.
-- Secondary attach/action button: at least `44px` tall.
-- No shadows unless the band is a true overlay.
-
-### Mobile pickers
-
-When a form row opens a selector, it uses a **bottom sheet** anchored to the bottom of the viewport. Sheet rows are `48px` minimum, sans labels, grouped by plain headings, with a large `Done` action.
-
-### Retired for mobile forms
-
-The ALL-CAPS-mono `<details>` summary, the 10px chip labels, the 9px caret-only hit target, and keyboard-hint labels inside buttons.
+- **FocusScope doesn't set `inert` on anything outside the trapped scope.** Tab-trapping
+  (`trap=true`) covers keyboard navigation, which is what this project's tests exercise and
+  what the large majority of real interaction is. The residual gap is a screen reader's virtual
+  cursor (or touch exploration) reaching content outside the scope that a sighted keyboard user
+  would never land on. A correct fix needs to know what "outside the scope" even means for a
+  given consumer: Dialog/Sheet's `FocusScope` has no DOM siblings at all (the scrim wraps it
+  alone), so there's nothing to make `inert` there; Menu's `FocusScope` sibling IS the trigger
+  button, which needs to stay clickable to close the menu on a second click — naively making it
+  `inert` would break that. The real fix is portal-rendering overlay content up to a stable
+  app-root position (none of Dialog/Sheet/Menu do this — they render inline in the component
+  tree today) and inerting siblings AT THAT level, which is a real architectural change, not a
+  FocusScope-local one. Flagged for a future pass alongside adopting portals, not bolted on now.
+- **Tooltip's timer and `aria-describedby` wiring stay fully active on touch devices**, even
+  though the visual bubble is CSS-hidden there (`@media (hover: none)`, since a tap has no
+  `mouseleave` to dismiss an open tooltip with). This looks like wasted work worth suppressing
+  via a `matchMedia('(hover: none)')` gate, but doing that would also suppress the
+  `aria-describedby` association for a touch/AT user navigating by focus (e.g. VoiceOver swipe
+  navigation on a touchscreen) — who would genuinely benefit from the description being
+  announced even though they'll never see the visual bubble. Suppressing the "dead" wiring and
+  removing a real accessibility benefit for exactly the users who might need it most is a worse
+  trade than leaving admittedly-redundant code running. A narrower alternative was considered —
+  gate only the mouse path (`onMouseEnter`/`onMouseLeave`, which never fires on a real touch
+  device anyway) behind `matchMedia('(hover: none)')` while leaving `onFocus`/`onBlur` fully
+  ungated, since Tooltip already wires all four as independent handlers — but it's flagged for
+  the same follow-up pass rather than made now, without real-device AT verification that it
+  doesn't change touch+AT behavior in some non-obvious way. Left as-is, flagged for a more
+  careful pass that can validate actual AT behavior on a real touch+screen-reader device, not
+  reasoned about in the abstract.

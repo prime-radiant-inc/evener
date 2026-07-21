@@ -1,0 +1,54 @@
+.root {
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--edge);
+  background: var(--surface-1);
+}
+
+.language {
+  color: var(--ink-mid);
+  font-family: var(--font-sans); /* a chrome label, never mono - see Direction */
+  font-size: var(--font-size-caption);
+}
+
+.copyWrapper {
+  /* keeps the copy button pinned to the header's trailing edge whether or
+   * not a language label is present, without an empty placeholder element */
+  flex: none;
+  margin-left: auto;
+}
+
+.pre {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  overflow-x: auto;
+}
+
+.code {
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+}
+
+.line {
+  display: flex;
+}
+
+.gutter {
+  flex: none;
+  width: 2.5em;
+  padding-right: var(--space-3);
+  color: var(--ink-low);
+  text-align: right;
+  user-select: none;
+}

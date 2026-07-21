@@ -1,0 +1,37 @@
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--space-5);
+  height: var(--space-5);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-control);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: 1;
+}
+
+/* --- tone -> token family --------------------------------------------
+ * badge is allowlisted (src/styles/token-contract.test.ts) for its tone
+ * prop - a count badge's whole purpose is to carry a status hue.
+ */
+.neutral {
+  background: var(--surface-2);
+  color: var(--ink-mid);
+}
+
+.attention {
+  background: var(--attention-bg);
+  color: var(--attention);
+}
+
+.alive {
+  background: var(--alive-bg);
+  color: var(--alive);
+}
+
+.danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
