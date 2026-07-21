@@ -357,17 +357,25 @@ describe("notification routing", () => {
 
     const beforeB = threadsStore.getState().threads.get("ref_b");
 
+    // Stream A's own item BEFORE settling — wire-true: the real
+    // turn/completed is a bare status/timing stamp with no items (every live
+    // settle site in internal/appprojector/appwire_projection.go emits
+    // Turn{ID,Status[,Error]} with Items nil, ItemsView "" — see
+    // protocol/reducer.ts's "turn/completed" case), so A's item must already
+    // be in the model via item/started + item/completed, not smuggled in
+    // through the settle payload.
+    fake.emitNotification({
+      method: "item/started",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" } },
+    } as AnyNotification);
+    fake.emitNotification({
+      method: "item/completed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" } },
+    } as AnyNotification);
+
     fake.emitNotification({
       method: "turn/completed",
-      params: {
-        turnId: "turn_1",
-        turn: {
-          id: "turn_1",
-          status: "completed",
-          itemsView: "",
-          items: [{ type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" }],
-        },
-      },
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
     } as AnyNotification);
 
     // The rightful owner (A, whose activeTurnId matched) settles...
