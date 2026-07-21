@@ -930,3 +930,112 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
   const item = itemAt(turnAt(model, 0), 0);
   expect(item).toMatchObject({ type: "warning", text: "context canceled", warning: { source: "user", title: "Cancelled", hint: "" } });
 });
+
+// Settled tool calls keep their arguments: the live projector's
+// EventToolCallEnd (internal/appprojector/appwire_projection.go:414-442)
+// resolves argsJSON at :424-427 but uses it only to derive Description -
+// the settled ThreadItem it emits carries no ArgumentsJSON, even though the
+// streamed item/started item (:373) had it. Historical items DO carry it
+// (internal/apptranscript/apptranscript.go:284,312), so this is a
+// live-settle-only loss the reducer corrects, mergeReasoning-style.
+
+test("item/completed without argumentsJson keeps the item's original argumentsJSON alongside settled output/status", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+      },
+    } as AnyNotification,
+    1002,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", output: "file1\nfile2", status: "completed" },
+      },
+    } as AnyNotification,
+    1003,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.argumentsJSON).toBe('{"command":"ls"}');
+  expect(item.output).toBe("file1\nfile2");
+  expect(item.status).toBe("completed");
+});
+
+test("item/completed with its own argumentsJson replaces the old value (wire truth wins)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls"}', status: "inProgress" },
+      },
+    } as AnyNotification,
+    1002,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", toolName: "bash", callId: "call_1", argumentsJson: '{"command":"ls -la"}', status: "completed" },
+      },
+    } as AnyNotification,
+    1003,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.argumentsJSON).toBe('{"command":"ls -la"}');
+});
+
+test("item/completed inserting a never-started item has no argumentsJSON (no crash, no fabrication)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "hi", status: "completed" } },
+    } as AnyNotification,
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.argumentsJSON).toBeUndefined();
+});

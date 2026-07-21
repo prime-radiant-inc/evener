@@ -142,6 +142,22 @@ function mergeObservedTiming(settled: ItemModel, existing: ItemModel | undefined
   };
 }
 
+// The live tool-settle site drops ArgumentsJSON: EventToolCallEnd
+// (internal/appprojector/appwire_projection.go:414-442) resolves it into
+// argsJSON at :424-427 but uses that only to derive Description, never
+// attaching it to the emitted ThreadItem - so the settled wire item's
+// argumentsJson is empty even though the streamed item/started item (:373)
+// had it. Historical items don't lose it
+// (internal/apptranscript/apptranscript.go:284,312), so this is a
+// live-settle-only gap the model corrects: keep the existing item's
+// argumentsJSON when the settled payload didn't bring its own. A settled
+// payload that DOES carry argumentsJson wins - wire truth over memory.
+function mergeArguments(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (settled.argumentsJSON !== undefined) return settled;
+  if (existing?.argumentsJSON === undefined) return settled;
+  return { ...settled, argumentsJSON: existing.argumentsJSON };
+}
+
 // Folds a PRESERVED item (one carried over from before settlement, not
 // replaced by wire-authoritative data — see the "turn/completed" case) into
 // its settled shape. The live wire's settle stamp carries no items at all,
@@ -390,7 +406,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...model,
           turns: mapTurn(model.turns, existingTurnId, (turn) => ({
             ...turn,
-            items: mapItem(turn.items, item.id, (old) => mergeObservedTiming(mergeReasoning(wireItemToModel(item), old), old, now)),
+            items: mapItem(turn.items, item.id, (old) => mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now)),
           })),
           askPending,
           lastFrameAt: now,
