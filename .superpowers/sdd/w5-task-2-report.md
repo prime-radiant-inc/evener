@@ -185,3 +185,58 @@ export { Dropzone } from "./dropzone";
 6. Draft storage key (`serf.composer.draft.v1.<ref>`) and the attachment-rejection toast wording
    were my own design choices (no exact string mandated anywhere) — flag if either needs to match
    something else already decided elsewhere in the wave.
+
+---
+
+## Addendum: post-review Critical fix
+
+The coordinator's review reproduced a Critical live: `Composer.tsx:72-77`'s original `textEditor.read()`
+returned `{text, cursor}` with `cursor` read live off the DOM ref but `text` captured from whichever
+render's closure constructed the `textEditor` object. `useAttachments.ts`'s decode-failure `.catch()`
+calls that specific `read()`/`write()` pair long after the render that registered it — so pasting an
+image whose decode later fails, then typing before the rejection settles, made `write()`'s call to the
+(always-stable) `setText` silently revert the ENTIRE composer to the stale pre-gesture text: the marker
+insertion AND everything typed since, gone, with the draft desynced too (the revert bypassed
+`writeDraft`). Reproduced live per the reviewer's exact recipe before fixing, and reproduced again
+afterward by temporarily reverting the fix and re-running the new tests to confirm they go red with
+precisely the described symptoms.
+
+**Fix chosen: a synchronously-updated ref mirror (`textRef`), not a raw DOM read.** Initially reached for
+`textareaRef.current.value` (the more obvious "make it as live as cursor" fix), but that alone doesn't
+close the second mandated case (two attachment gestures fired back-to-back with no intervening render):
+within one uncommitted React batch, `textareaRef.current.value` hasn't been updated yet either — reading
+it would show the same staleness, just via a different mechanism. `textRef.current` is updated the
+instant `write()`/`handleTextChange`/`clearIfUnchanged` run, independent of whether React has re-rendered
+or the DOM has caught up, so both call sites — an old-render closure resuming late, and a same-batch
+second call with no commit between — read correctly. The cursor got the identical treatment by reusing
+the existing `cursorToRestoreRef` (this component's own "pending, not-yet-applied cursor intent") ahead
+of the DOM's live `selectionStart`, which the browser hasn't moved yet in the identical race; once the
+post-commit layout effect actually applies it and clears the ref, `read()` correctly falls back to the
+live DOM value, which is what must be trusted for genuine user-driven cursor movement (clicking, arrow
+keys) this component has no other hook into.
+
+`write()` also now calls `writeDraft`, closing the "revert bypasses writeDraft" gap the coordinator
+named — attachment-driven edits (marker insert, marker strip) keep the draft in sync exactly like typing
+already did, so a decode failure's stripped marker doesn't leave a stale, invalid `[image N]` fragment
+sitting in local storage.
+
+**Test placement, per the mandate:** the RED lives at the `Composer.test.tsx` integration level (both
+the critical repro and the two-gestures case), verified to fail against the original code with the exact
+described symptoms (full revert to `""`; markers clobbering as `"[image 2]"` / `"[image 2][image 1]"`)
+before being fixed. `useAttachments.test.ts`'s fake `TextEditor` is backed by one always-current shared
+closure and structurally cannot reproduce per-render-closure staleness — documented on both the fake
+itself and on the `TextEditor` interface's own doc comment in `useAttachments.ts`, rather than distorting
+the fake to artificially reproduce staleness it doesn't otherwise have (its job is to prove
+`useAttachments`' own orchestration is correct against a spec-compliant editor, not to also stand in for
+Composer.tsx's specific wiring bug).
+
+Also added: the asymmetric unchanged-since-submit test (text typed while a send is still in flight
+survives the eventual success, draft included — the companion to the already-covered "unchanged clears"
+and "failed leaves untouched" branches).
+
+**Commit:** `ddf05d8bf` — "webui wave5 T2: fix critical stale-text revert in TextEditor.read()/write()".
+4 files changed (`Composer.tsx`, `Composer.test.tsx`, `useAttachments.ts`, `useAttachments.test.ts`).
+Gates re-run in full afterward: `tsc --noEmit` clean, `vitest run` 116 files / 1700 tests (1697 + 3 new:
+the critical regression, the two-gestures-no-render case, the asymmetric-unchanged-since-submit case),
+`biome ci src` clean, `npm run build` clean — full suite re-verified twice in a row for stability, no
+flakes observed this time.
