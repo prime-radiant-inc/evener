@@ -5,7 +5,7 @@
 // (possibly reference-equal, for no-op cases) output.
 
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
-import type { AnyNotification, InputItem, OutputImage, Thread, ThreadItem, ThreadReadResponse, ThreadTurnsListResponse, Turn } from "./types.gen";
+import type { AnyNotification, InputItem, OutputImage, SandboxEscalationRequested, Thread, ThreadItem, ThreadReadResponse, ThreadTurnsListResponse, Turn } from "./types.gen";
 
 // The following notification param types are "(inline)" in the AppWire
 // catalog (appwire/protocol.go / docs/appwire-protocol.md): the codegen
@@ -318,6 +318,17 @@ function isAskUserItem(item: ThreadItem): boolean {
   return item.type === "commandExecution" && item.toolName === "ask_user";
 }
 
+// Appends `incoming` to pendingEscalations, or — if an entry with the same
+// escalationId is already present — replaces it in place rather than
+// growing the list. Dedup exists because hydration's surface-on-entry
+// snapshot (thread.serf.pendingEscalations) and this live notification can
+// legitimately race and both deliver the same card; last write wins.
+function upsertPendingEscalation(escalations: SandboxEscalationRequested[], incoming: SandboxEscalationRequested): SandboxEscalationRequested[] {
+  const idx = escalations.findIndex((e) => e.escalationId === incoming.escalationId);
+  if (idx === -1) return [...escalations, incoming];
+  return escalations.map((e, i) => (i === idx ? incoming : e));
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -515,6 +526,19 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "serf/thread/name/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, name: n.params.name, lastFrameAt: now };
+    }
+
+    // PendingEscalations is THREAD-level human-client state, never a
+    // transcript item (appwire/types.go's ThreadSerf.PendingEscalations doc
+    // comment: "a HUMAN-CLIENT field only ... never part of the model's
+    // transcript or any model-visible projection"). The catalog entry
+    // (appwire/protocol.go:185) declares this notification with its real
+    // generated payload type (SandboxEscalationRequested), used verbatim
+    // here rather than a local "(inline)" interface. See
+    // upsertPendingEscalation for the dedup rationale.
+    case "serf/sandbox/escalation/requested": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, pendingEscalations: upsertPendingEscalation(model.pendingEscalations, n.params), lastFrameAt: now };
     }
 
     // Job lifecycle carries no ThreadModel-tracked state (no job list at

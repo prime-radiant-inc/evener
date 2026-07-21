@@ -1192,3 +1192,36 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
 
   expect(model.pendingEscalations).toEqual([escalation]);
 });
+
+test('"serf/sandbox/escalation/requested" appends a new card with full field mapping and stamps lastFrameAt', () => {
+  let model = testHydrate();
+  const escalation = testEscalation({ command: "rm -rf /tmp/x", outputSoFar: "partial output", partiallyRan: true });
+
+  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification, 2000);
+
+  expect(model.pendingEscalations).toEqual([escalation]);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test('"serf/sandbox/escalation/requested" with an already-present escalationId replaces that entry instead of growing the list', () => {
+  // Snapshot-then-subscribe overlap: hydration's pendingEscalations snapshot
+  // and a live requested notification can race and both deliver the same
+  // card (appwire/types.go's PendingEscalations doc comment). Last write
+  // wins — replace in place, don't drop the update or duplicate the entry.
+  const first = testEscalation({ mode: "exempt_denied_path" });
+  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [first] } });
+
+  const updated = testEscalation({ mode: "exempt_command", partiallyRan: true });
+  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updated } as AnyNotification, 2000);
+
+  expect(model.pendingEscalations).toEqual([updated]);
+});
+
+test('"serf/sandbox/escalation/requested" for a different thread is a same-reference no-op', () => {
+  const model = testHydrate();
+  const escalation = testEscalation({ ref: "some_other_ref", threadId: "thr_other" });
+
+  const result = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification, 2000);
+
+  expect(result).toBe(model);
+});
