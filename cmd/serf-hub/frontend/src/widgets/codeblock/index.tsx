@@ -60,6 +60,11 @@ export function CodeBlock({ text, language, showLineNumbers = false }: CodeBlock
         <code className={CLASS.code}>
           {lines
             ? lines.map((line, i) => (
+                // i is this line's actual displayed line number (the
+                // gutter below), not an arbitrary position - lines is
+                // derived fresh from the text prop every render, in the
+                // same fixed order text.split gives it.
+                // biome-ignore lint/suspicious/noArrayIndexKey: i is the displayed line number itself, see above
                 <span key={i} className={CLASS.line}>
                   <span className={CLASS.gutter} aria-hidden="true">
                     {i + 1}

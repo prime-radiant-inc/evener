@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import styles from "./menu.module.css";
@@ -92,9 +92,13 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
     setIsOpen(true);
   }
 
-  function closeMenu() {
+  // useCallback (not a plain function like openMenu) so the outside-click
+  // effect below can depend on it honestly without re-attaching its
+  // document listener on every render: closeMenu closes over nothing but
+  // the setIsOpen setter, which React itself guarantees is stable.
+  const closeMenu = useCallback(() => {
     setIsOpen(false);
-  }
+  }, []);
 
   function focusIndex(index: number) {
     if (index === -1) return;
@@ -195,7 +199,7 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
     }
     document.addEventListener("mousedown", onDocumentMouseDown);
     return () => document.removeEventListener("mousedown", onDocumentMouseDown);
-  }, [isOpen]);
+  }, [isOpen, closeMenu]);
 
   return (
     <div ref={rootRef} className={CLASS.root}>

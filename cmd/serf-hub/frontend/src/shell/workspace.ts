@@ -220,6 +220,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
 export function useWorkspaceStore(): WorkspaceStoreState;
 export function useWorkspaceStore<T>(selector: (state: WorkspaceStoreState) => T): T;
 export function useWorkspaceStore<T>(selector?: (state: WorkspaceStoreState) => T): T | WorkspaceStoreState {
+  // Not a real conditional hook call - see stores/connection.ts's own
+  // useConnectionStore for the full explanation (zustand's useStore has a
+  // `selector = identity` JS default param, so both arms run identically).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(workspaceStore, selector) : useStore(workspaceStore);
 }
 

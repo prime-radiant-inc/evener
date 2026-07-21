@@ -226,6 +226,10 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
 export function useTreeStore(): TreeStoreState;
 export function useTreeStore<T>(selector: (state: TreeStoreState) => T): T;
 export function useTreeStore<T>(selector?: (state: TreeStoreState) => T): T | TreeStoreState {
+  // Not a real conditional hook call - see stores/connection.ts's own
+  // useConnectionStore for the full explanation (zustand's useStore has a
+  // `selector = identity` JS default param, so both arms run identically).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see stores/connection.ts
   return selector ? useStore(treeStore, selector) : useStore(treeStore);
 }
 

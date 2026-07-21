@@ -191,7 +191,9 @@ export function DockHost() {
   // click in a later wave). `panes` is a dependency because a just-opened
   // pane's dockview panel may not exist until the structural effect above
   // creates it - same commit, declared first, so it already will have by
-  // the time this one re-runs.
+  // the time this one re-runs. Deliberately trigger-only: never read
+  // inside this effect's own body.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: panes is a deliberate trigger-only dep for same-commit ordering, see above
   useEffect(() => {
     if (!api || !focusedPaneId) return;
     if (api.activePanel?.id !== focusedPaneId) {

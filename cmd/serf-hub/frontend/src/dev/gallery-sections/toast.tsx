@@ -24,7 +24,11 @@ function ToastDemo() {
     for (const sample of SAMPLES) push(sample.kind, sample.text);
   }
 
-  useEffect(pushAll, []);
+  // push (from useToasts()) is a directly re-exported module-level function
+  // (widgets/toast/index.tsx's pushToast), referentially stable across
+  // renders - listing it changes nothing at runtime, but is honest about
+  // what pushAll actually reads.
+  useEffect(pushAll, [push]);
 
   return (
     <div className={styles.demoFrame}>

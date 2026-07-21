@@ -159,6 +159,7 @@ export function useTranscriptScroll({
   // empty thread gets its first turn) - hasContent is what makes this rerun
   // for that later transition, since a plain RefObject mutation alone
   // triggers no rerun.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: both flags below are deliberate, re-verified against this rule - see the two comments inside
   useLayoutEffect(() => {
     const el = listRef.current?.getScrollElement();
     if (!el) return;
@@ -212,12 +213,22 @@ export function useTranscriptScroll({
     el.addEventListener("scroll", handleScroll);
     return () => el.removeEventListener("scroll", handleScroll);
     // firstTurnId is intentionally NOT a dependency: it's only read inside
-    // the initializedRef-guarded one-time block above, and the listener
-    // itself needs no re-attachment when content changes (schedulePersist/
-    // clearPill/loadOlderRef.current all read fresh state at call time).
-    // (No react-hooks/exhaustive-deps lint rule is configured in this
-    // project - this deliberate omission is only documented here, not
-    // suppressed.)
+    // the initializedRef-guarded one-time block above, which - since
+    // initializedRef never resets - executes exactly once per mount, at
+    // whichever render actually flips hasContent (or the first render, if
+    // content is there from the start). That render's closure already has
+    // the fresh firstTurnId; every later change to firstTurnId (e.g. a
+    // loadOlder prepend) happens after initializedRef.current is already
+    // true, when this gated block no longer runs at all - so a later
+    // effect re-run with a stale firstTurnId in its closure, if one ever
+    // happened, still wouldn't read it. The listener itself also needs no
+    // re-attachment when content changes: schedulePersist/clearPill/
+    // loadOlderRef.current all read fresh state at call time regardless.
+    //
+    // hasContent is listed despite not being read in this effect's body at
+    // all - it exists purely to force a re-run at the "VirtualList mounts
+    // for the first time" transition (a ref becoming non-null triggers no
+    // re-render/effect on its own; hasContent flipping does).
   }, [ref, listRef, measure, clearPill, schedulePersist, hasContent]);
 
   // Flushes any pending debounced persistence write on true unmount (a fast

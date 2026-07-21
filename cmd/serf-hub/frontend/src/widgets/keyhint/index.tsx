@@ -33,6 +33,10 @@ export function KeyHint({ keys }: KeyHintProps) {
   return (
     <span className={BASE_CLASS.keyHint}>
       {keys.map((key, i) => (
+        // keys is a caller-supplied literal chord (e.g. ["Mod", "K"]) -
+        // its order IS the shortcut's meaning, fixed by whoever renders
+        // this KeyHint, never reordered independently of the prop itself.
+        // biome-ignore lint/suspicious/noArrayIndexKey: order is the shortcut's own meaning, see above
         <Fragment key={i}>
           {i > 0 && <span className={BASE_CLASS.separator}>+</span>}
           <kbd className={BASE_CLASS.key}>{displayOf(key)}</kbd>

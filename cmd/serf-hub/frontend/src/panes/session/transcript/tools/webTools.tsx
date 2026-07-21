@@ -67,6 +67,11 @@ function WebSearchBody({ item }: ToolRenderProps) {
   return (
     <ul>
       {lines.map((line, i) => (
+        // lines is derived fresh each render from item.output, a completed
+        // tool call's fixed, immutable result string - same slice every
+        // time, never reordered; two lines can also legitimately share
+        // identical clipped text, which a content-based key would collide on.
+        // biome-ignore lint/suspicious/noArrayIndexKey: fixed source text, possible duplicate lines, see above
         <li key={i}>{line}</li>
       ))}
     </ul>

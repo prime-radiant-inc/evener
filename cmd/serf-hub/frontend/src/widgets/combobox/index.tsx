@@ -84,6 +84,9 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
   // activeIndex against the new (possibly shorter) options, must not
   // dereference out of bounds either. activeOption below is what actually
   // guards that; this effect just formalizes the reset for next render.
+  // options is deliberately trigger-only: the reset itself doesn't need
+  // its value, only needs to fire when it changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: options is a deliberate trigger-only dep, see above
   useEffect(() => {
     setActiveIndex(-1);
   }, [options]);

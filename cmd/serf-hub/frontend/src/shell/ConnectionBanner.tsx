@@ -75,7 +75,10 @@ export function ConnectionBanner({ state, createClient = defaultCreateClient }: 
   // while still closed (a retry whose fresh client also ends up closed -
   // e.g. still unauthenticated - must re-check, not keep showing whatever
   // the PREVIOUS client's probe found; `state` alone can't detect that,
-  // since the string can stay "closed" across the swap).
+  // since the string can stay "closed" across the swap). `client` is
+  // deliberately a trigger-only dependency here - never read inside the
+  // effect body, purely so a client swap re-runs the probe.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: client is a deliberate trigger-only dep, see above
   useEffect(() => {
     if (state !== "closed") {
       setClosedReason(null);

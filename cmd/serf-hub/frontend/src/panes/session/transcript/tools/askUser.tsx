@@ -151,6 +151,10 @@ function AskUserBody({ item }: ToolRenderProps) {
   return (
     <div>
       {questions.map((q, i) => (
+        // questions has no id field of its own (see AskUserQuestion above)
+        // and is re-parsed fresh from one tool call's fixed argumentsJSON
+        // every render - always the same 1-4 entries in the same order.
+        // biome-ignore lint/suspicious/noArrayIndexKey: derived fresh from a fixed, immutable source each render, see above
         <QuestionCard key={i} q={q} />
       ))}
       <div className={CLASS.footer}>Answer in the composer (wave 5).</div>

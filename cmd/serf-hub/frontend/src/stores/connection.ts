@@ -52,5 +52,15 @@ export const connectionStore = createStore<ConnectionStoreState>(() => ({
 export function useConnectionStore(): ConnectionStoreState;
 export function useConnectionStore<T>(selector: (state: ConnectionStoreState) => T): T;
 export function useConnectionStore<T>(selector?: (state: ConnectionStoreState) => T): T | ConnectionStoreState {
+  // Not actually a conditional hook call: zustand's own useStore is
+  // `function useStore(api, selector = identity)` (node_modules/zustand/
+  // esm/react.mjs) - a JS default parameter, not internal branching - so
+  // both ternary arms run the exact same useSyncExternalStore/useCallback
+  // sequence regardless of which one a given render takes. TypeScript's
+  // overloads for useStore don't have a variant accepting a possibly-
+  // undefined selector, which is the only reason this is two call sites
+  // instead of one (see this same pattern + comment in stores/threads.ts,
+  // stores/tree.ts, shell/workspace.ts).
+  // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see above
   return selector ? useStore(connectionStore, selector) : useStore(connectionStore);
 }

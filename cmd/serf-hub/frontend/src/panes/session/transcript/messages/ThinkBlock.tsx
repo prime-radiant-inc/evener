@@ -54,7 +54,12 @@ export function ThinkBlock({ item, live }: ItemRenderProps) {
           // empty <p> - .paragraph carries its own margin, so an empty one
           // would still show as a visible gap. It appears in position the
           // instant its first chunk arrives.
+          //
+          // index-as-key is deliberate: i IS the stable identity here
+          // (summaryIndex, per this file's top comment - "each index's
+          // chunks only ever grow by appending", positions never reorder).
           chunks.length === 0 ? null : (
+            // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
             <p key={i} className={CLASS.paragraph}>
               <StreamingText chunks={chunks} />
             </p>
@@ -76,6 +81,11 @@ export function ThinkBlock({ item, live }: ItemRenderProps) {
         <summary className={CLASS.summary}>{thoughtLabel(seconds, preview)}</summary>
         <div className={CLASS.body}>
           {paragraphs.map((text, i) => (
+            // This settled view only renders once item.reasoningSummaries
+            // has stopped streaming (the live branch above is the only one
+            // still growing) - paragraphs is a frozen snapshot by the time
+            // this runs, so index is stable for this render's whole life.
+            // biome-ignore lint/suspicious/noArrayIndexKey: frozen settled snapshot, see above
             <p key={i} className={CLASS.paragraph}>
               {text}
             </p>

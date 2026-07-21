@@ -38,6 +38,7 @@ export function ToolCallItem({ item, live }: ItemRenderProps) {
   const [expanded, setExpanded] = useState(false);
   const userToggledRef = useRef(false);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
   useLayoutEffect(() => {
     if (live || userToggledRef.current) return;
     setExpanded(descriptor.autoExpand?.(item) ?? false);

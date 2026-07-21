@@ -44,7 +44,13 @@ export function ImageGallery({ images }: ImageGalleryProps) {
   return (
     <div className={CLASS.strip}>
       {images.map((src, i) => (
+        // src is a content-addressed URL (/s/{ref}/images/{sha}, see this
+        // file's own top comment) - already unique per distinct image on
+        // its own; +i here is belt-and-suspenders against a literal
+        // duplicate (two entries hashing the same, which would collide as
+        // a bare-src key), not standing in for a missing real id.
         <button
+          // biome-ignore lint/suspicious/noArrayIndexKey: src is already content-stable, see above
           key={src + i}
           type="button"
           data-testid="image-gallery-thumb"

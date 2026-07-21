@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
 import { requireClass } from "../internal/requireClass";
 import { dismissToast, getToasts, pushToast, subscribe, type ToastKind, type ToastRecord } from "./store";
 import styles from "./toast.module.css";
@@ -51,16 +51,23 @@ function ToastItem({ toast }: { toast: ToastRecord }) {
   const remainingMsRef = useRef(AUTO_DISMISS_MS);
   const startedAtRef = useRef(0);
 
-  function schedule(durationMs: number) {
-    startedAtRef.current = Date.now();
-    timerRef.current = setTimeout(() => dismissToast(toast.id), durationMs);
-  }
+  // useCallback so the mount effect below can depend on it honestly: its
+  // only real dependency is toast.id, which - list is keyed by toast.id
+  // (Toast above) - never actually changes within one ToastItem instance's
+  // lifetime anyway (a different id remounts a fresh instance instead).
+  const schedule = useCallback(
+    (durationMs: number) => {
+      startedAtRef.current = Date.now();
+      timerRef.current = setTimeout(() => dismissToast(toast.id), durationMs);
+    },
+    [toast.id],
+  );
 
   useEffect(() => {
     remainingMsRef.current = AUTO_DISMISS_MS;
     schedule(AUTO_DISMISS_MS);
     return () => clearTimeout(timerRef.current);
-  }, [toast.id]);
+  }, [schedule]);
 
   function pause() {
     clearTimeout(timerRef.current);

@@ -105,6 +105,11 @@ export function DiffBlock({ unified }: DiffBlockProps) {
   return (
     <div className={CLASS.root}>
       {lines.map((line, i) => (
+        // A diff line's position is intrinsically sequential (line 5 of a
+        // unified diff IS line 5) and content can legitimately repeat
+        // (e.g. two blank context lines) - i is both stable and collision-
+        // free here, unlike a content-based key would be.
+        // biome-ignore lint/suspicious/noArrayIndexKey: positionally sequential, content can repeat, see above
         <div key={i} className={`${CLASS.line} ${KIND_CLASS[line.kind]}`}>
           <span className={CLASS.marker} aria-hidden="true">
             {line.marker}
