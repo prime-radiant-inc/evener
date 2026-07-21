@@ -5,6 +5,15 @@ import styles from "./virtuallist.module.css";
 
 export interface VirtualListHandle {
   scrollToIndex: (index: number, options?: ScrollToOptions) => void;
+  /**
+   * The raw scrolling DOM node (this widget's own `root`, the one element
+   * with `overflow-y: auto`) - an escape hatch for a consumer that needs
+   * scroll-behavior concerns VirtualList deliberately doesn't own itself
+   * (stick-to-bottom, near-top paging triggers, persisted scroll-position
+   * restore; see the session transcript pane's flow/ hooks). Returns null
+   * before mount, same as any ref.
+   */
+  getScrollElement: () => HTMLDivElement | null;
 }
 
 export interface VirtualListProps {
@@ -21,6 +30,17 @@ export interface VirtualListProps {
    * vs. a long streamed response) needs this.
    */
   dynamic?: boolean;
+  /**
+   * Keys each rendered row by a stable identity instead of react-virtual's
+   * default (raw index). Needed by any consumer that PREPENDS rows (the
+   * session transcript's older-turn paging): without it, an index shift
+   * makes React reuse each row's DOM node - and dynamic mode's measured-
+   * height cache, which is also keyed by this same identity - for a
+   * DIFFERENT logical row than before, corrupting both live DOM state and
+   * cached sizes. Omitted (the default) leaves every existing fixed-
+   * identity consumer (e.g. the gallery demo) completely unaffected.
+   */
+  getItemKey?: (index: number) => string | number;
   ref?: Ref<VirtualListHandle>;
 }
 
@@ -43,7 +63,7 @@ const DEFAULT_OVERSCAN = 6;
  * rows this wave's consumers have and keeps this a thin wrapper rather
  * than a dynamic-height layout engine.
  */
-export function VirtualList({ count, estimateSize, renderRow, dynamic, ref }: VirtualListProps) {
+export function VirtualList({ count, estimateSize, renderRow, dynamic, getItemKey, ref }: VirtualListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -51,12 +71,14 @@ export function VirtualList({ count, estimateSize, renderRow, dynamic, ref }: Vi
     getScrollElement: () => scrollRef.current,
     estimateSize,
     overscan: DEFAULT_OVERSCAN,
+    getItemKey,
   });
 
   useImperativeHandle(
     ref,
     () => ({
       scrollToIndex: (index, options) => virtualizer.scrollToIndex(index, options),
+      getScrollElement: () => scrollRef.current,
     }),
     [virtualizer],
   );

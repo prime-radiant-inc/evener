@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createRef } from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { createRef, useState } from "react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { VirtualList, type VirtualListHandle } from "./index";
 import rawStyles from "./virtuallist.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -210,4 +210,83 @@ test("declares no :focus-visible rule of its own (rows are consumer content, not
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "virtuallist.module.css"), "utf8");
   expect(css).not.toContain(":focus-visible");
+});
+
+// getItemKey (wave 4 T4): the transcript pane prepends older turns above the
+// live content (loadOlder paging - stores/threads.ts's prependOlderTurns).
+// Without a stable per-row key, react-virtual falls back to keying rows by
+// raw index, so a prepend that shifts every existing row's index makes React
+// reuse each row's DOM identity for a DIFFERENT logical row - the class of
+// bug this test proves directly, using an uncontrolled <input>'s live value
+// as the "did React actually reuse THIS row's own DOM node" tell (an
+// uncontrolled input's value survives a re-render only if React kept the
+// same underlying element - defaultValue is not re-applied on update).
+describe("getItemKey", () => {
+  // getItemKey (when keyed=true) closes over the component's OWN, always-
+  // current `ids` state - exactly like Session.tsx's real usage closes over
+  // the current model.turns - rather than a fixed snapshot, so it keeps
+  // returning the right id for an index whose meaning just shifted.
+  function PrependableList({ keyed }: { keyed?: boolean }) {
+    const [ids, setIds] = useState(["a", "b", "c"]);
+    return (
+      <div>
+        <button onClick={() => setIds((prev) => ["z", ...prev])}>prepend</button>
+        <VirtualList
+          count={ids.length}
+          estimateSize={() => ROW_HEIGHT}
+          getItemKey={keyed ? (i) => ids[i]! : undefined}
+          renderRow={(i) => <input data-testid={`input-${ids[i]}`} defaultValue={ids[i]} />}
+        />
+      </div>
+    );
+  }
+
+  test("omitted (default): a prepend reassigns an existing row's DOM identity by index, corrupting live (uncontrolled) row state", () => {
+    render(<PrependableList />);
+    fireEvent.change(screen.getByTestId("input-a"), { target: { value: "hello" } });
+
+    fireEvent.click(screen.getByText("prepend"));
+
+    // react-virtual's default index-based key means the DOM node born at
+    // index 0 (typed into as "a") is reused for whatever's NOW at index 0
+    // ("z"), while the node born at index 1 ("b", never touched) is reused
+    // for "a"'s new slot at index 1 - so "input-a" resolves to the recycled
+    // "b" node and shows its stale, untouched content ("b"), not "hello":
+    // the edit didn't just vanish, it landed on the wrong row entirely.
+    expect((screen.getByTestId("input-a") as HTMLInputElement).value).toBe("b");
+  });
+
+  test("provided: a prepend preserves each row's own DOM identity (and therefore its live state) across the index shift", () => {
+    render(<PrependableList keyed />);
+    fireEvent.change(screen.getByTestId("input-a"), { target: { value: "hello" } });
+
+    fireEvent.click(screen.getByText("prepend"));
+
+    // "a" now renders at index 1, but keyed identically ("a") both before
+    // and after - React must reuse its exact DOM node, carrying "hello"
+    // forward regardless of the index shift.
+    expect((screen.getByTestId("input-a") as HTMLInputElement).value).toBe("hello");
+  });
+});
+
+// getScrollElement (wave 4 T4): the transcript pane's flow/ hooks need
+// read/write access to the real scrollable node (scrollTop/scrollHeight/
+// clientHeight, plus a native `scroll` listener) to implement stick-to-
+// bottom, near-top paging, and prepend scroll-anchor correction - none of
+// which VirtualList itself owns or should own (it's a windowing primitive,
+// not a scroll-behavior one). Exposing the already-existing internal
+// scrollRef via the handle is the minimal additive surface for that,
+// alongside the already-existing scrollToIndex.
+test("ref.current.getScrollElement() returns the actual scrolling root node", () => {
+  const ref = createRef<VirtualListHandle>();
+  const { container } = render(
+    <VirtualList ref={ref} count={10} estimateSize={() => ROW_HEIGHT} renderRow={(i) => <div key={i}>row {i}</div>} />,
+  );
+
+  expect(ref.current?.getScrollElement()).toBe(rootOf(container));
+});
+
+test("ref.current.getScrollElement() returns null before mount (no ref attached)", () => {
+  const ref = createRef<VirtualListHandle>();
+  expect(ref.current).toBeNull();
 });
