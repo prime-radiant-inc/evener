@@ -36,7 +36,6 @@ export interface AskBatch {
   id: string;
   questions: AskQuestionRef[]; // preserves global posting order within this batch
   sending: boolean;
-  sendError?: string;
 }
 
 // pruneBatch drops questions no longer present in the live set, but only

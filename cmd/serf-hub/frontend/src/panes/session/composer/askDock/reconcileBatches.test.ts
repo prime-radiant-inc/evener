@@ -60,12 +60,6 @@ test("a SENDING batch's questions are protected - never pruned by the live-set s
   expect(result).toEqual([{ id: "b1", questions: [ref("a:0")], sending: true }]);
 });
 
-test("a sendError carries through untouched when nothing about that batch changes", () => {
-  const prev = [batch({ id: "b1", questions: [ref("a:0")], sendError: "transient failure" })];
-  const result = reconcileBatches(prev, [ref("a:0")], vi.fn());
-  expect(result).toEqual([{ id: "b1", questions: [ref("a:0")], sending: false, sendError: "transient failure" }]);
-});
-
 test("returns the SAME array reference when nothing changed (no new questions, no pruning)", () => {
   const prev = [batch({ id: "b1", questions: [ref("a:0")] })];
   const result = reconcileBatches(prev, [ref("a:0")], vi.fn());
