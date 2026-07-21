@@ -1,0 +1,9 @@
+/* Layout/spacing only - typography is owned entirely by Markdown's and
+ * StreamingText's own stylesheets (both already source font-family/size/
+ * line-height/color from the same tokens), so the live and settled paths
+ * can never visually mismatch: there is nothing here to fight with either
+ * widget's own text styling, which is exactly what keeps a rapid live-to-
+ * settled transition free of any flash-of-unstyled jank. */
+.message {
+  padding: var(--space-2) 0;
+}

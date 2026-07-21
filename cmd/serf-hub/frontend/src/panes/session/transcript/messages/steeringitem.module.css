@@ -1,0 +1,24 @@
+/* Quiet, collapsed-by-default divider for daemon-originated steering
+ * (mockup #3: "neutral (not amber) steer tick" - steering is routine
+ * bookkeeping, never an attention-worthy event on its own). */
+.details {
+  padding: var(--space-1) 0;
+}
+
+.summary {
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.body {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  border-left: 2px solid var(--edge);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}

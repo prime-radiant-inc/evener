@@ -1,0 +1,48 @@
+/* The quietest layer in the transcript (mockup #5): never out-shouts the
+ * agent's own prose. Live streams fully open at reduced contrast; settled
+ * collapses to a single ink-low summary line. */
+.block {
+  padding: var(--space-1) 0;
+}
+
+.label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.paragraph {
+  margin: 0 0 var(--space-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-body);
+  color: var(--ink-mid);
+}
+
+.paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.details {
+  padding: 0;
+}
+
+.summary {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.body {
+  margin-top: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--edge);
+}
