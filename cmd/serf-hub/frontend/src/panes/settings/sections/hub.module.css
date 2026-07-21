@@ -1,0 +1,9 @@
+.root {
+  display: flex;
+  flex-direction: column;
+}
+
+.list {
+  margin: 0;
+  padding: 0;
+}
