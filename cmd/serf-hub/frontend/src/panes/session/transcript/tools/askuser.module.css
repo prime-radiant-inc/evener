@@ -1,0 +1,62 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-1);
+  margin-bottom: var(--space-2);
+}
+
+.question {
+  font-size: var(--font-size-body);
+  color: var(--ink-hi);
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.label {
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+.detail {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.recommended {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.note {
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.footer {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}
+
+.fallback {
+  color: var(--ink-low);
+  font-size: var(--font-size-ui);
+}
