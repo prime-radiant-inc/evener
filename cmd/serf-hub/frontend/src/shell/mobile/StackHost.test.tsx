@@ -1,5 +1,5 @@
 import { lazy, useState } from "react";
-import { afterEach, beforeAll, beforeEach, test, expect } from "vitest";
+import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { registerPane, type PaneProps } from "../paneRegistry";
@@ -194,4 +194,71 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // tap must go straight to welcome, not bounce forward to ref_b.
   await user.click(screen.getByRole("button", { name: "Back" }));
   expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+// --- URL sync: the address bar always reflects the focused pane -----------
+//
+// Unlike DockHost, StackHost has no per-pane "tab" carrying its own text -
+// Session.tsx's ref (its own PaneScaffold title) appears exactly once per
+// test here, so these use findByText, not AppShell.test.tsx's own
+// findAllByText-and-count-2 idiom for the tab-plus-body case.
+
+test("the URL updates to a deep-linked pane's URL once it becomes focused", async () => {
+  render(<StackHost />);
+  await screen.findByText("No session open");
+
+  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  await screen.findByText("ref_x");
+
+  expect(window.location.pathname).toBe("/s/ref_x");
+});
+
+test("switching between two deep-linked panes updates the URL each time", async () => {
+  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  render(<StackHost />);
+  await screen.findByText("ref_x");
+  expect(window.location.pathname).toBe("/s/ref_x");
+
+  workspaceStore.getState().openPane("session", { ref: "ref_y" });
+  await screen.findByText("ref_y");
+
+  expect(window.location.pathname).toBe("/s/ref_y");
+});
+
+test("a pane type with no deep link (paneToURL returns null) leaves the URL untouched", async () => {
+  window.history.pushState({}, "", "/before");
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+
+  await screen.findByText(/doc pane: ref_a/);
+
+  expect(window.location.pathname).toBe("/before");
+});
+
+test("back navigation updates the URL to match the pane it returns to", async () => {
+  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  render(<StackHost />);
+  await screen.findByText("ref_x");
+  workspaceStore.getState().openPane("session", { ref: "ref_y" });
+  await screen.findByText("ref_y");
+  expect(window.location.pathname).toBe("/s/ref_y");
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  await screen.findByText("ref_x");
+  expect(window.location.pathname).toBe("/s/ref_x");
+});
+
+test("mounting already at the focused pane's own URL does not dispatch a redundant popstate", async () => {
+  window.history.pushState({}, "", "/s/ref_x");
+  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  const handler = vi.fn();
+  window.addEventListener("popstate", handler);
+
+  render(<StackHost />);
+  await screen.findByText("ref_x");
+
+  window.removeEventListener("popstate", handler);
+  expect(handler).not.toHaveBeenCalled();
 });

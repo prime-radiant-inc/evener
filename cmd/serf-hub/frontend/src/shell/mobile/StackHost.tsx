@@ -1,6 +1,7 @@
 import { Suspense, useEffect, useRef } from "react";
 import { IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
+import { navigate, paneToURL } from "../routing";
 import { useWorkspaceStore, workspaceStore, type OpenPaneRecord } from "../workspace";
 import styles from "./StackHost.module.css";
 
@@ -82,6 +83,23 @@ export function StackHost() {
       prevFocusedIdRef.current = focusedPaneId;
     }
   }, [focusedPaneId]);
+
+  // URL sync (requirement 2): unlike desktop, exactly one pane is ever
+  // visible at a time here, so it's meaningful (and, per this task's
+  // spec, required) for the address bar to always name it - reload,
+  // share, and bookmark all land back on the same screen. paneToURL
+  // returns null for a pane type with no deep link at all (e.g. "doc" -
+  // see routing.ts's own documented case); the address bar is simply left
+  // alone for those, same as desktop's DockHost never had a reason to
+  // touch it either. navigate() itself no-ops when already at the target
+  // pathname, so this never produces a redundant history entry on mount
+  // when AppShell's own routing glue already put the address bar here
+  // first (the common case in the real app).
+  useEffect(() => {
+    if (!focusedPane) return;
+    const url = paneToURL(focusedPane.type, focusedPane.params);
+    if (url) navigate(url);
+  }, [focusedPane]);
 
   // Backstop, same reasoning as DockHost's own onReady fallback: a blank
   // stack with no chrome of its own to open a new pane from is a dead end.
