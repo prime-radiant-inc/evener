@@ -290,3 +290,84 @@ the prior aggregate-only implementation before the rewrite.
   runs.
 
 This stream is now a finished unit, ready for review.
+
+---
+
+## Addendum 2: review fixes (Needs-fixes → addressed)
+
+Review came back Needs-fixes: one Important, several Minors. Adjudicated
+scope: `chrome/**` + `SteeringItem.tsx` only, as always.
+
+**1. Important — `STATUS_TONE.cancelled` was wrong (`"danger"` → `"neutral"`).**
+I mis-cited the legacy's own reasoning: the `planGlyphForStatus` comment
+I quoted ("a plan item that will not happen reads the same as a failure")
+governs only the GLYPH SHAPE choice (why cancelled gets an X rather than a
+hollow circle), not its color. The legacy's actual rendering chain
+(`renderer-format.js:496-506` `planStateClass` + `style.css:3324-3329`)
+colors a cancelled task's glyph `--ink-3` — the identical dim neutral
+`pending`'s own glyph uses — with struck-through `--ink-2` label text,
+never a danger red. Fixed to `"neutral"`; the ✕ glyph alone now carries
+the "won't happen" distinction, matching this design system's
+color-is-attention rule (danger-tinting a routine cancellation would make
+reprioritized work indistinguishable from a genuine failure). Root cause
+of the miss, per the review: the tone mapping had no direct test at all —
+my own `TASKS_DATA` row-rendering fixture never even included a
+cancelled-status task, so the wrong value rendered fine in every test I
+had. Fixed by exporting `STATUS_TONE` and adding a pinning test asserting
+the full mapping (all four statuses) — written first, confirmed red
+against the un-fixed code (`undefined`, since the export didn't exist
+yet), then green after the export + fix.
+
+**2. Minor — tightened the current-task suppression regex.**
+`isTaskBookkeepingSteering` matched only the OPENING
+`<CURRENT-TASK id="...">` tag with no requirement that it ever closes —
+so a truncated or malformed steering body that merely *starts* like one
+was wrongly suppressed. Tightened to the legacy's own `classifySteering`
+shape (`renderer-format.js:421`): the full
+`<CURRENT-TASK ...>...</CURRENT-TASK>` pair. Added a fixture with the
+opening tag present but never closed, confirmed red (wrongly suppressed:
+`getByTestId("steering-item")` found nothing) against the loose regex,
+green after tightening it.
+
+**3. Disclosures requested by the review:**
+
+- **Task-row detail scope reduction (deliberate, beyond-parity).**
+  `taskData.ts`'s `parseTaskListData` already parses `type`, `depends_on`,
+  `reasoning_effort`, `prompt`, and `notes` off the wire-true `Task` shape
+  (`TaskRow`'s full field set) — but `TasksPanel.tsx`'s row view
+  (`TaskRowView`) renders only `status` (as the glyph/tone) and
+  `description`. The legacy sidebar panel offered a per-row expandable
+  disclosure revealing all of those fields (`cmd/serf-hub/assets/
+  renderer-panels.js:403-449`, `buildTaskDetailList`: type pill, status,
+  "depends on #N, #M", reasoning effort, prompt, a numbered notes list).
+  This was never a hidden gap — the fields are parsed and typed on
+  `TaskRow` specifically so a future wave's row-detail disclosure has
+  everything it needs with no further wire investigation — but it's
+  worth stating explicitly rather than leaving it implicit: **the current
+  row view is status+description only; type/depends_on/reasoning_effort/
+  prompt/notes are parsed and wired-ready, not yet surfaced in the UI.**
+- **Punch item: `listModels(true)` (the store's refresh bypass) has no UI
+  trigger.** `ModelSwitch.tsx` always calls the no-arg `listModels()`,
+  which is session-lifetime cached — correct for the common case (models
+  don't change mid-session), but there is currently no affordance for a
+  user to force a refresh if a provider's catalog genuinely changes while
+  a session is open (e.g. a new model ships). Today that requires a full
+  page reload. A future wave could add a small refresh icon inside the
+  open picker calling `listModels(true)`; not built here since the task's
+  own instruction called the refresh affordance optional and no wave
+  requirement asked for it.
+
+**New commit range**: `e299f4803..02cedcf50` (12 commits total on
+`w5-chrome`, 2 new since Addendum 1):
+
+- `69ac9f9b8` — T5(I) fix: cancelled task tone (Important)
+- `02cedcf50` — T5(J) fix: current-task regex tightening (Minor)
+
+**Test delta**: 115 → 115 test files (no new files, two existing files
+extended); 1681 → 1683 tests (+2: the `STATUS_TONE` pinning test, the
+truncated-current-task regression test). `npx tsc --noEmit` clean,
+`biome ci src` clean, `npm run build` clean, re-verified fresh at HEAD
+after both commits. Both new tests were written first and observed red
+against the pre-fix code before either fix landed.
+
+Stream ready for re-review.
