@@ -7369,6 +7369,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodSerfPathValidate,
 		appwire.MethodSerfHarnessesList,
 		appwire.MethodSerfCommandList,
+		appwire.MethodSerfSettingsOverview,
 	}
 
 	for _, method := range expected {

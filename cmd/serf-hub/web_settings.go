@@ -28,6 +28,20 @@ var (
 	settingsAbsPath         = filepath.Abs
 )
 
+// builtinAgentNames are the agents compiled into the binary (defaultPersona.txt
+// etc.) and shown on Settings → Agents. They have no on-disk file to open, so
+// every row's EditPath stays empty. Shared by renderSettingsPartial (the
+// server-rendered page) and hubSettingsOverview (serf/settings/overview, its
+// appwire replacement) so the two data paths cannot drift apart.
+var builtinAgentNames = []string{"default", "explorer", "subagent"}
+
+// settingsSpawnTimeoutDisplay is the Settings → General/Hub "Spawn timeout"
+// value. It is a display literal, not derived from live spawner config —
+// there is no configurable spawn timeout today. Shared by
+// renderSettingsPartial and hubSettingsOverview for the same reason as
+// builtinAgentNames above.
+const settingsSpawnTimeoutDisplay = "30s"
+
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
 	if newWebEnabled() {
 		serveSPAIndex(w, r, distFS())
@@ -96,12 +110,10 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// Built-in agents are compiled into the binary (defaultPersona.txt etc.)
-	// and don't have an on-disk file to open. EditPath stays empty so the
-	// template can omit the link rather than rendering a broken one.
-	agentNames := []string{"default", "explorer", "subagent"}
-	agents := make([]agentDisplay, 0, len(agentNames))
-	for _, name := range agentNames {
+	// Built-in agents don't have an on-disk file to open. EditPath stays empty
+	// so the template can omit the link rather than rendering a broken one.
+	agents := make([]agentDisplay, 0, len(builtinAgentNames))
+	for _, name := range builtinAgentNames {
 		agents = append(agents, agentDisplay{Name: name})
 	}
 
@@ -128,7 +140,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		HubAddr:          s.cfg.HubAddr,
 		RunDir:           s.cfg.RunDir,
 		StateDir:         s.cfg.StateDir,
-		SpawnTimeout:     "30s",
+		SpawnTimeout:     settingsSpawnTimeoutDisplay,
 		PastPerPage:      s.cfg.PastPerPage,
 		PastIndexPath:    pastIndexPath,
 		PastIndexSize:    pastIndexSize,

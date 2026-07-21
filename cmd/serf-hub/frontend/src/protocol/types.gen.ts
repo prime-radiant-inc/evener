@@ -679,6 +679,61 @@ export interface ServerInfo {
   version: string;
 }
 
+export interface SettingsAgentEntry {
+  name: string;
+  editPath?: string;
+}
+
+export interface SettingsCodexLaunchEntry {
+  id: string;
+  binary?: string;
+  workingDir?: string;
+  listen?: string;
+  timeoutMillis?: number;
+  envKeys?: string[];
+}
+
+export interface SettingsHubOverview {
+  version?: string;
+  commit?: string;
+  listenAddr?: string;
+  runDir?: string;
+  spawnTimeout?: string;
+  bearerTokenAge?: string;
+  pastIndex?: SettingsPastIndexOverview;
+}
+
+export interface SettingsMCPOverview {
+  servers?: SettingsMCPServerEntry[];
+  error?: string;
+}
+
+export interface SettingsMCPServerEntry {
+  name: string;
+  transport?: string;
+  status?: string;
+  error?: string;
+}
+
+export interface SettingsOverviewResponse {
+  hub?: SettingsHubOverview;
+  storage?: SettingsStorageOverview;
+  agents?: SettingsAgentEntry[];
+  codexLaunches?: SettingsCodexLaunchEntry[];
+  mcpDiscovered?: SettingsMCPOverview;
+}
+
+export interface SettingsPastIndexOverview {
+  path?: string;
+  size?: string;
+  perPage?: number;
+  count?: number;
+}
+
+export interface SettingsStorageOverview {
+  stateDir?: string;
+}
+
 export interface TaskListParams {
   ref?: string;
 }
@@ -1127,6 +1182,7 @@ export type MethodName =
   | "serf/plugin/disable"
   | "serf/plugin/setAutoUpgrade"
   | "serf/command/list"
+  | "serf/settings/overview"
   | "serf/sandbox/escalation/resolve";
 
 export type NotificationName =
@@ -1223,6 +1279,7 @@ export interface MethodTypes {
   "serf/plugin/disable": { params: PluginRefParams; result: PluginListResponse };
   "serf/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "serf/command/list": { params: EmptyParams; result: CommandListResponse };
+  "serf/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
   "serf/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 

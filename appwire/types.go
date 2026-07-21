@@ -70,6 +70,11 @@ const (
 	MethodSerfPluginDisable         = "serf/plugin/disable"
 	MethodSerfPluginSetAutoUpgrade  = "serf/plugin/setAutoUpgrade"
 	MethodSerfCommandList           = "serf/command/list"
+	// MethodSerfSettingsOverview returns the field bag behind six settings
+	// sections whose only data path today is Go-template variables:
+	// hub/runtime, storage, agent roster, codex launch configs, and probed MCP
+	// servers. See SettingsOverviewResponse's doc comment.
+	MethodSerfSettingsOverview = "serf/settings/overview"
 	// MethodSerfSandboxEscalationResolve delivers a human's approve/deny decision
 	// for a pending sandbox-exemption escalation (M7). Client→server; ScopeBoth
 	// (daemon serves it; hub relays). It is a UI-only request, never advertised to
@@ -1475,4 +1480,174 @@ type PluginSetAutoUpgradeParams struct {
 	Plugin      string `json:"plugin"`
 	Marketplace string `json:"marketplace"`
 	AutoUpgrade bool   `json:"autoUpgrade"`
+}
+
+// SettingsOverviewResponse is the result of serf/settings/overview: the field
+// bag behind six settings sections whose only data path today is Go-template
+// variables rendered server-side — General, Hub, Storage, Agents, Codex
+// launch, and the probed half of MCP servers (cmd/serf-hub/templates/
+// partials/settings/{general,hub,storage,agents,launch-codex,mcp}.html) —
+// replacing cmd/serf-hub/web_settings.go's settingsData for exactly those six
+// (the deletion wave removes the template path once the frontend ports off
+// it). Every field is sourced from the same computation the legacy template
+// used; see each sub-type's doc comment for the exact web_settings.go
+// citation. A field the legacy template never rendered is left off rather
+// than invented — also noted on the sub-type that would otherwise carry it.
+//
+// The other ten settings sections (providers/credentials, serf launch,
+// in-repo trust, per-project override, marketplaces/plugins, plugin/skill
+// dirs, the MCP config editable half, theme, transcript, display,
+// notifications) are out of scope: they already have their own wire methods
+// or land on a different task's new store. Nothing here is per-project.
+type SettingsOverviewResponse struct {
+	Hub           *SettingsHubOverview       `json:"hub,omitempty"`
+	Storage       *SettingsStorageOverview   `json:"storage,omitempty"`
+	Agents        []SettingsAgentEntry       `json:"agents,omitempty"`
+	CodexLaunches []SettingsCodexLaunchEntry `json:"codexLaunches,omitempty"`
+	McpDiscovered *SettingsMCPOverview       `json:"mcpDiscovered,omitempty"`
+}
+
+// SettingsHubOverview is the Settings → General / Settings → Hub section
+// (cmd/serf-hub/templates/partials/settings/{general,hub}.html). Fields
+// mirror cmd/serf-hub/web_settings.go's renderSettingsPartial settingsData
+// construction.
+type SettingsHubOverview struct {
+	// Version is the running hub's version string.
+	// Source: web_settings.go settingsData.HubVersion (the package Version constant).
+	Version string `json:"version,omitempty"`
+	// Commit is the git commit the binary was built from; empty in dev builds.
+	// Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
+	Commit string `json:"commit,omitempty"`
+	// ListenAddr is the hub HTTP server's bind address.
+	// Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
+	ListenAddr string `json:"listenAddr,omitempty"`
+	// RunDir is the per-PID rendezvous directory the hub watches for live daemons.
+	// Source: web_settings.go settingsData.RunDir (cfg.RunDir).
+	RunDir string `json:"runDir,omitempty"`
+	// SpawnTimeout is how long the hub waits for a daemon to report ready after
+	// spawn. Source: web_settings.go settingsData.SpawnTimeout — today a
+	// hardcoded "30s" literal, not derived from live spawner config (there is
+	// no configurable spawn timeout yet).
+	SpawnTimeout string `json:"spawnTimeout,omitempty"`
+	// BearerTokenAge is a human-readable age of the hub's auth-token file (e.g.
+	// "created 3d ago" / "just now"), empty if unavailable.
+	// Source: web_settings.go settingsData.BearerTokenAge (fileAgeHuman over
+	// hubedge.TokenFileName under HubStateRoot).
+	BearerTokenAge string `json:"bearerTokenAge,omitempty"`
+	// PastIndex is nil only when no past-session index is configured
+	// (cfg.Past == nil) — e.g. a minimal/test hub config.
+	PastIndex *SettingsPastIndexOverview `json:"pastIndex,omitempty"`
+}
+
+// SettingsPastIndexOverview describes the past-session SQLite index. Settings
+// → General renders Path/Size/PerPage; Settings → Storage renders Path/Size/
+// Count — both from this same object (the frontend reads hub.pastIndex for
+// both pages; the value is not duplicated under Storage).
+// Source: web_settings.go settingsData.PastIndexPath/PastIndexSize/
+// PastPerPage/PastCount.
+type SettingsPastIndexOverview struct {
+	// Path is the past-index SQLite file path, tilde-shortened against $HOME.
+	// Source: web_settings.go tildeHome(cfg.PastIndexPath).
+	Path string `json:"path,omitempty"`
+	// Size is a human-readable file size (e.g. "48 MB"), empty if the file
+	// does not exist yet. Source: web_settings.go fileSizeHuman(cfg.PastIndexPath).
+	Size string `json:"size,omitempty"`
+	// PerPage is the configured /past results-per-page.
+	// Source: web_settings.go settingsData.PastPerPage (cfg.PastPerPage).
+	PerPage int `json:"perPage,omitempty"`
+	// Count is the total number of indexed session metas, all-time — NOT a
+	// count of currently-live/running sessions. The legacy storage.html
+	// template's own copy calls this "currently tracking N sessions", which is
+	// this same all-time indexed total. A genuine live-daemon count exists
+	// (cfg.Roster) but is intentionally not surfaced here: no legacy settings
+	// template ever rendered one.
+	// Source: web_settings.go settingsData.PastCount (len(cfg.Past.AllMetas())).
+	Count int `json:"count,omitempty"`
+}
+
+// SettingsStorageOverview is the Settings → Storage section (cmd/serf-hub/
+// templates/partials/settings/storage.html). RunDir and the past-index
+// path/size/count that storage.html also renders are not duplicated here —
+// see SettingsHubOverview / SettingsPastIndexOverview, which the frontend
+// reads for those (single source of truth; both live in the one overview
+// response already).
+type SettingsStorageOverview struct {
+	// StateDir is the root directory for hub state: auth token, credentials,
+	// and project sub-directories.
+	// Source: web_settings.go settingsData.StateDir (cfg.StateDir).
+	StateDir string `json:"stateDir,omitempty"`
+}
+
+// SettingsAgentEntry is one row in Settings → Agents (cmd/serf-hub/templates/
+// partials/settings/agents.html) — today always exactly the three built-in
+// agent names compiled into the binary (defaultPersona.txt etc.).
+// Source: web_settings.go renderSettingsPartial's agentNames/agents
+// construction.
+type SettingsAgentEntry struct {
+	Name string `json:"name"`
+	// EditPath is an editor:// deep link to the agent's definition file. Always
+	// empty today: built-in agents have no on-disk file to open. Kept for
+	// shape parity with web_settings.go's agentDisplay.EditPath in case a
+	// future on-disk agent source populates it.
+	EditPath string `json:"editPath,omitempty"`
+}
+
+// SettingsCodexLaunchEntry is one row in Settings → Codex launch config
+// (cmd/serf-hub/templates/partials/settings/launch-codex.html): a read-only
+// display of one [[codex_launches]] hub.toml entry.
+// Source: web_settings.go settingsData.CodexLaunches (cfg.CodexLaunches,
+// codexlaunch.CodexLaunchConfig).
+//
+// Binary/WorkingDir/Listen/Timeout ride over the wire as their raw configured
+// value (empty/zero when unset) rather than the template's display-fallback
+// text ("codex", "(inherited)", "ws://127.0.0.1:0", "30s") — the frontend
+// applies the same fallback at render time, so the wire stays truthful about
+// what is actually configured.
+//
+// Args, BearerToken, and BearerTokenFile are intentionally excluded: Args is
+// never rendered by the template, and the bearer-token fields are live
+// secrets the credential-never-echo invariant forbids sending to the browser
+// — the template never renders them either. EnvKeys carries only the Env
+// map's keys, sorted, matching the template's own redaction ("Values are
+// redacted here.").
+type SettingsCodexLaunchEntry struct {
+	ID         string `json:"id"`
+	Binary     string `json:"binary,omitempty"`
+	WorkingDir string `json:"workingDir,omitempty"`
+	Listen     string `json:"listen,omitempty"`
+	// TimeoutMillis is Timeout in milliseconds, 0 when unset (the template's
+	// 30s default applies client-side, matching the other display fallbacks).
+	TimeoutMillis int64    `json:"timeoutMillis,omitempty"`
+	EnvKeys       []string `json:"envKeys,omitempty"`
+}
+
+// SettingsMCPServerEntry is one probed MCP server row in Settings → MCP
+// servers' "Discovered servers" list (cmd/serf-hub/templates/partials/
+// settings/mcp.html) — the probed/read-only half; the editable half (MCP
+// config file list, inline server CRUD) rides the existing launch-config
+// wire (serf/launch/getLayer + serf/launch/setLayer), not this method.
+// Source: web_settings.go discoverMCPsForSettings's mcpDisplay, itself
+// sourced from agent/mcpprobe.Result. Command, Args, Tools, Agents, and
+// EditPath exist on mcpDisplay but are never rendered by mcp.html's
+// discovered-servers block, so they are omitted here too.
+type SettingsMCPServerEntry struct {
+	Name      string `json:"name"`
+	Transport string `json:"transport,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// SettingsMCPOverview is the Settings → MCP servers section's probed half.
+// Source: web_settings.go mcpConfigPathForSettings + discoverMCPsForSettings.
+// A missing MCP config file is the empty state (Servers empty, Error ""),
+// matching discoverMCPsForSettings; Error is populated only on a real parse
+// failure (e.g. malformed mcp.json), mirroring settingsData.McpsError.
+//
+// Each server probe (agent/mcpprobe.Probe) runs under its own bounded
+// per-server timeout in parallel with the others, so this section's total
+// latency stays bounded regardless of server count — see mcpprobe's package
+// doc for the exact bound; this handler adds no further timeout on top of it.
+type SettingsMCPOverview struct {
+	Servers []SettingsMCPServerEntry `json:"servers,omitempty"`
+	Error   string                   `json:"error,omitempty"`
 }
