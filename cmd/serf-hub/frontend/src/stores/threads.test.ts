@@ -802,6 +802,195 @@ describe("frameTimes tracking (threads store)", () => {
   });
 });
 
+// watchThread is the sanctioned narrow extension the transcript/tools
+// stream (subagent-module watched-child rows) added to this store: an
+// ADDITIVE, leaner (includeTurns:false) subscription to a child thread,
+// refcounted independently of ensureThread's own counter so a real pane
+// and a watching subagent row never fight over the same lifecycle - and
+// stored in its own watchedThreads/watchedFrameTimes fields so releasing
+// a watch can never touch a ref's "real pane" data (or vice versa), even
+// when the exact same ref happens to be both ensureThread'd and
+// watchThread'd at once.
+describe("useThreadsStore.watchThread", () => {
+  test("hydrates via thread/read with includeTurns:false and routes a subsequent matching notification", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => {
+      expect(params).toEqual({
+        ref: "ref_a",
+        includeTurns: false,
+        itemsView: "full",
+        subscribe: true,
+        replaceSubscription: false,
+        turnLimit: 40,
+      });
+      return readResponse("ref_a");
+    });
+
+    await threadsStore.getState().watchThread("ref_a");
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    expect(model?.threadId).toBe("thr_ref_a");
+
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+  });
+
+  test("a second watchThread(ref) does not re-read", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    await threadsStore.getState().watchThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1);
+  });
+
+  test("throws when no client has been connected yet", async () => {
+    await expect(threadsStore.getState().watchThread("ref_a")).rejects.toThrow(/no client connected/i);
+  });
+
+  test("propagates a thread/read failure and leaves the ref untracked", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => {
+      throw new Error("boom");
+    });
+
+    await expect(threadsStore.getState().watchThread("ref_a")).rejects.toThrow("boom");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("watchThread and ensureThread are refcounted independently - releasing one never affects the other's tracking", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+
+    threadsStore.getState().releaseThread("ref_a");
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(false);
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true); // the watch survives
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("frameTimes for a watched ref land in watchedFrameTimes, never the real-pane frameTimes map", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().watchThread("ref_a");
+
+    vi.spyOn(Date, "now").mockReturnValue(4_000_000);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([4_000_000]);
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
+  });
+
+  test("a notification is delivered to BOTH a real pane and a watch on the same ref, but frameTimes is appended once per map, not doubled into either", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    vi.spyOn(Date, "now").mockReturnValue(9_000_000);
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
+    expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([9_000_000]);
+    expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([9_000_000]);
+  });
+
+  test("releaseWatchedThread refcounts watchers; stops tracking only when the last watcher releases", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().watchThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(true);
+
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+
+  test("releasing an untracked watch is a harmless no-op", () => {
+    expect(() => threadsStore.getState().releaseWatchedThread("never_watched")).not.toThrow();
+  });
+
+  test("a watched ref is not re-subscribed on reconnect once released, same as a real pane", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", (params) => readResponse((params as { ref: string }).ref));
+    await threadsStore.getState().watchThread("ref_a");
+    threadsStore.getState().releaseWatchedThread("ref_a");
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => fake.calls.filter((c) => c.method === "thread/read").length > 1);
+
+    const refsReRead = fake.calls
+      .filter((c) => c.method === "thread/read")
+      .slice(1)
+      .map((c) => (c.params as { ref: string }).ref);
+    expect(refsReRead).toEqual([]);
+  });
+
+  test("onReady re-subscribes every tracked watch additively, replacing its model wholesale, independent of ensureThread's own refs", async () => {
+    const fake = connectFakeClient();
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      const ref = (params as { ref: string }).ref;
+      const turns = readCount <= 1 ? [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] : [];
+      return readResponse(ref, { turns });
+    });
+
+    await threadsStore.getState().watchThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.turns.length === 0);
+
+    const readCallsAfterReconnect = fake.calls.filter((c) => c.method === "thread/read").slice(1);
+    expect(readCallsAfterReconnect).toHaveLength(1);
+    expect(readCallsAfterReconnect[0]?.params).toEqual({
+      ref: "ref_a",
+      includeTurns: false,
+      itemsView: "full",
+      subscribe: true,
+      replaceSubscription: false,
+      turnLimit: 40,
+    });
+  });
+
+  test("a watch released before its in-flight hydrate resolves is not resurrected", async () => {
+    const fake = connectFakeClient();
+    const box: { resolveRead: ((resp: ThreadReadResponse) => void) | null } = { resolveRead: null };
+    fake.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (box.resolveRead = resolve)));
+
+    const watching = threadsStore.getState().watchThread("ref_a");
+    await flushUntil(() => box.resolveRead !== null);
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    box.resolveRead?.(readResponse("ref_a"));
+    await watching;
+
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+  });
+});
+
 describe("useThreadsStore.loadOlderTurns", () => {
   test("fetches the older page via thread/turns/list using the model's olderCursor, prepends it, and advances the cursor", async () => {
     const fake = connectFakeClient();
