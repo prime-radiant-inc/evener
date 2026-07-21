@@ -232,6 +232,8 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     model: thread.modelProvider,
     reasoningEffort: thread.serf.reasoningEffort,
     askPending: thread.serf.askPending ?? false,
+    // Go wire-nullable-array rule: omitempty absent means empty, not missing.
+    pendingEscalations: thread.serf.pendingEscalations ?? [],
     turns: (thread.turns ?? []).map(wireToTurnModel),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.serf.queue,

@@ -9,6 +9,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "Auth files",
   "olderCursor": undefined,
+  "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
   "ref": "ref_1001",
@@ -103,6 +104,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
   "modelProvider": "anthropic",
   "name": "Refactor plan v2",
   "olderCursor": undefined,
+  "pendingEscalations": [],
   "queue": {
     "depth": 2,
     "ids": [
@@ -186,6 +188,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,
+  "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
   "ref": "ref_2001",
@@ -263,6 +266,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "modelProvider": "anthropic/claude-sonnet-4-5",
   "name": "",
   "olderCursor": undefined,
+  "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
   "ref": "ref_3001",

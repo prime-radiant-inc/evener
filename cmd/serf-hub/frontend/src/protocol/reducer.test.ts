@@ -1,7 +1,7 @@
 import { test, expect } from "vitest";
 import { hydrateThread, applyNotification, prependOlderTurns, notificationTargetsThread } from "./reducer";
 import type { ThreadModel, TurnModel, ItemModel } from "./model";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "./types.gen";
+import type { AnyNotification, SandboxEscalationRequested, Thread, ThreadCapabilities, ThreadReadResponse, ThreadTurnsListResponse } from "./types.gen";
 // Vite's `?raw` import (declared ambiently by the "vite/client" lib already
 // in tsconfig.json) loads each fixture's text at build time — this project
 // has no @types/node, so node:fs is not an option here.
@@ -81,6 +81,19 @@ function testThread(overrides: Partial<Thread> = {}): Thread {
 function testHydrate(overrides: Partial<Thread> = {}): ThreadModel {
   const thread = testThread(overrides);
   return hydrateThread({ thread }, thread.serf.ref, 1000);
+}
+
+function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
+  return {
+    threadId: "thr_t",
+    ref: "ref_t",
+    escalationId: "esc_1",
+    mode: "exempt_denied_path",
+    tool: "write_file",
+    kind: "file_tool",
+    deniedPath: "/etc/passwd",
+    ...overrides,
+  };
 }
 
 for (const f of ["basic-turn", "streaming-with-reset", "tool-and-jobs", "queue-and-status"]) {
@@ -1128,4 +1141,54 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
 
   const item = itemAt(turnAt(model, 0), 0);
   expect(item.argumentsJSON).toBeUndefined();
+});
+
+// pendingEscalations (M7): appwire/types.go's ThreadSerf.PendingEscalations
+// doc comment calls it the "surface-on-entry snapshot ... so a client
+// entering / reconnecting to / not-having-seen-live this session surfaces
+// the card(s)" and rules it a HUMAN-CLIENT field only, never part of the
+// transcript. hydrateThread must therefore carry it verbatim (or default it
+// to [], per the Go wire-nullable-array rule: omitempty absent means empty)
+// as a THREAD-level ThreadModel field, not a turn item.
+
+test("hydrateThread maps serf.pendingEscalations verbatim into pendingEscalations", () => {
+  const escalation = testEscalation();
+  const model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  expect(model.pendingEscalations).toEqual([escalation]);
+});
+
+test("hydrateThread defaults pendingEscalations to an empty array when serf.pendingEscalations is absent", () => {
+  const model = testHydrate();
+  expect(model.pendingEscalations).toEqual([]);
+});
+
+test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {
+  const escalation = testEscalation();
+  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  expect(model.pendingEscalations).toEqual([escalation]);
+});
+
+test("pendingEscalations survives a turn/completed bare-stamp settle — thread-level state, untouched by turn machinery", () => {
+  const escalation = testEscalation();
+  let model = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] } });
+  model = applyNotification(
+    model,
+    { method: "turn/started", params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } } } as AnyNotification,
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    { method: "turn/completed", params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } } } as AnyNotification,
+    1002,
+  );
+
+  expect(model.pendingEscalations).toEqual([escalation]);
 });

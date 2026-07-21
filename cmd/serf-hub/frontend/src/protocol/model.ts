@@ -3,7 +3,7 @@
 // shape; components should only ever read this model, never the wire types
 // directly.
 
-import type { QueueState, ThreadStatus } from "./types.gen";
+import type { QueueState, SandboxEscalationRequested, ThreadStatus } from "./types.gen";
 
 export interface ItemModel {
   id: string;
@@ -59,6 +59,12 @@ export interface ThreadModel {
   model: string;
   reasoningEffort?: string;
   askPending: boolean;
+  // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
+  // (M7) — appwire/types.go's ThreadSerf.PendingEscalations doc comment: "a
+  // HUMAN-CLIENT field only ... never part of the model's transcript or any
+  // model-visible projection." THREAD-level, never a turn item; always an
+  // array (hydrateThread defaults an absent wire value to []).
+  pendingEscalations: SandboxEscalationRequested[];
   turns: TurnModel[];
   activeTurnId?: string;
   queue: QueueState | null;
