@@ -534,9 +534,16 @@ type ThreadItem struct {
 	// (tool-call items only). Stamped live from the event stream's own
 	// timestamps; nil when no honest span was recorded (issue #37: the web
 	// hover meta shows real times or nothing).
-	DurationMS *int64          `json:"durationMs,omitempty"`
-	Raw        json.RawMessage `json:"raw,omitempty"`
-	EventKind  string          `json:"eventKind,omitempty"`
+	DurationMS *int64 `json:"durationMs,omitempty"`
+	// ExitCode is a shell tool call's process exit code, promoted onto the
+	// settled commandExecution item from the ToolState JSON snapshot the
+	// projector/transcript already hold (the "exit_code" field of
+	// shellToolResult, agent/session_tools_shell.go:483; wire-honesty spec
+	// Part A). Nil for any tool whose ToolState carries no exit_code — never
+	// fabricated as zero.
+	ExitCode  *int64          `json:"exitCode,omitempty"`
+	Raw       json.RawMessage `json:"raw,omitempty"`
+	EventKind string          `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
 	// daemon/system steering (issue #24).

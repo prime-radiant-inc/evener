@@ -2089,3 +2089,65 @@ func TestAppEventProjectorLeavesToolItemTimingUnsetWithoutClock(t *testing.T) {
 		t.Fatalf("completed item timing=(%v,%v,%v), want all nil for zero event timestamps", item.StartedAt, item.CompletedAt, item.DurationMS)
 	}
 }
+
+// TestAppEventProjectorToolCallEndCarriesArgumentsJSON (wire-honesty spec Part
+// A): the settled commandExecution item must carry the same ArgumentsJSON the
+// started item already had. The projector already resolves it (toolArgsByKey,
+// falling back to the end event's own ArgumentsJSON) but previously dropped it
+// from the completed item literal.
+func TestAppEventProjectorToolCallEndCarriesArgumentsJSON(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_args",
+		ArgumentsJSON: `{"command":"ls"}`,
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_args",
+		Output:   "ok",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ArgumentsJSON != `{"command":"ls"}` {
+		t.Fatalf("completed item ArgumentsJSON=%q, want the started item's args", item.ArgumentsJSON)
+	}
+}
+
+// TestAppEventProjectorToolCallEndCarriesExitCode (wire-honesty spec Part A):
+// the shell tool's exit code already rides ToolState.exit_code
+// (agent/session_tools_shell.go:483 shellToolResult) end to end; the settled
+// item promotes it onto the typed ExitCode field.
+func TestAppEventProjectorToolCallEndCarriesExitCode(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_exit"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName:  "shell",
+		CallID:    "call_exit",
+		Output:    "ok",
+		ToolState: json.RawMessage(`{"type":"shell","status":"completed","exit_code":2}`),
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode == nil || *item.ExitCode != 2 {
+		t.Fatalf("completed item ExitCode=%v, want *2", item.ExitCode)
+	}
+}
+
+// TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState (wire-honesty
+// spec Part A): a tool whose ToolState carries no exit_code (or none at all,
+// e.g. read_file) must leave ExitCode nil rather than fabricating zero.
+func TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "read_file", CallID: "call_read"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "read_file",
+		CallID:   "call_read",
+		Output:   "contents",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode != nil {
+		t.Fatalf("completed item ExitCode=%v, want nil for a tool with no ToolState", *item.ExitCode)
+	}
+}

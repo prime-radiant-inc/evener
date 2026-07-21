@@ -140,6 +140,52 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	}
 }
 
+// TestProjectTurnMapsToolResultExitCode (wire-honesty spec Part A): reload
+// promotes a shell tool's exit code from the persisted ToolState the same way
+// the live projector does.
+func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_shell",
+				Name:       "shell",
+				Content:    "ok",
+				ToolState:  json.RawMessage(`{"type":"shell","status":"completed","exit_code":1}`),
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 || done[0].ExitCode == nil || *done[0].ExitCode != 1 {
+		t.Fatalf("tool result ExitCode=%v, want *1", done[0].ExitCode)
+	}
+}
+
+// TestProjectTurnOmitsExitCodeForNonShellToolState (wire-honesty spec Part A):
+// a non-shell tool's ToolState carries no exit_code, so reload must leave
+// ExitCode nil rather than fabricating zero.
+func TestProjectTurnOmitsExitCodeForNonShellToolState(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_read",
+				Name:       "read_file",
+				Content:    "ok",
+				ToolState:  json.RawMessage(`{"job_id":"job_1"}`),
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 || done[0].ExitCode != nil {
+		t.Fatalf("tool result ExitCode=%v, want nil for a non-shell ToolState", done[0].ExitCode)
+	}
+}
+
 func TestProjectTurnProjectsToolResultOutputImages(t *testing.T) {
 	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
 	turn := schema.Turn{
