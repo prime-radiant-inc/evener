@@ -66,7 +66,8 @@ registerToolRenderer({
         {...props}
         resolveKey={(item) => {
           const args = parseArgs(item.argumentsJSON);
-          const jobId = (parseJSONObject(item.output) && str(parseJSONObject(item.output)!, "job_id")) ?? str(args, "job_id") ?? "";
+          const parsedOutput = parseJSONObject(item.output);
+          const jobId = (parsedOutput && str(parsedOutput, "job_id")) ?? str(args, "job_id") ?? "";
           return resolveRowKey(undefined, jobId, item.callId ?? item.id);
         }}
         resolveKind={(item) => {
