@@ -7,7 +7,7 @@
 // onRestoreToComposer/onDrainSuccess/onFallbackToComposer/
 // useAskDockPending) are wired correctly - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
-import { cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -435,4 +435,70 @@ test("a Conflict on the ask-answers path falls back into the composer, preservin
   await waitFor(() => expect(screen.queryByText("Deploy?")).toBeNull());
   const restored = await screen.findByRole("textbox", { name: /message/i });
   expect((restored as HTMLTextAreaElement).value).toBe("my own note\n\n[answers]\n1. [Deploy?] → skipped (no answer)");
+});
+
+// --- full-tree sweep: cross-seam scenarios (task 5) -------------------------
+
+test("the ask dock renders above the queue strip when both are visible at once", async () => {
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+    },
+    turns: [],
+  });
+
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  await screen.findByText("Deploy?");
+  const queueHeading = await screen.findByText(/queued messages/i);
+
+  const dock = document.querySelector("[data-ask-response-dock]");
+  expect(dock).toBeTruthy();
+  // DOCUMENT_POSITION_FOLLOWING (4): the queue heading comes AFTER the dock
+  // in document order - see MDN's Node.compareDocumentPosition bitmask.
+  expect(dock!.compareDocumentPosition(queueHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("queuing a message end to end: queue -> strip renders -> edit restores text -> cancel fires with expectedEntryId", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/queue", () => ({}));
+
+  await user.type(textarea() as HTMLTextAreaElement, "first queued message");
+  expect(screen.getByRole("button", { name: /^queue\b/i }).textContent).toMatch(/queue/i);
+  await user.click(screen.getByRole("button", { name: /^queue\b/i }));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
+  expect((textarea() as HTMLTextAreaElement).value).toBe(""); // clears optimistically like any other successful submit
+
+  // The daemon's own wire echo is what actually reconciles the pending
+  // entry AND is the strip's only source of queue rows (no local mutation)
+  // - a successful RPC response alone never does either (pendingTurnsStore's
+  // own documented contract).
+  await act(async () => {
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { depth: 1, ids: ["q1"], texts: ["first queued message"], preview: ["first queued message"] },
+      },
+    } as AnyNotification);
+  });
+
+  expect(await screen.findByText(/queued messages/i)).toBeTruthy();
+  expect(screen.getByText("first queued message")).toBeTruthy();
+
+  fake.on("turn/cancelQueued", () => ({ removedText: "first queued message" }));
+  await user.click(screen.getByRole("button", { name: /edit message/i }));
+
+  expect((textarea() as HTMLTextAreaElement).value).toBe("first queued message"); // restored into the (now empty) composer
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/cancelQueued")).toBe(true));
+  const call = fake.calls.find((c) => c.method === "turn/cancelQueued");
+  expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });

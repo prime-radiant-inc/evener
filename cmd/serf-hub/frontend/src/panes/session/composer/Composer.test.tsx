@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -702,17 +699,10 @@ test("clicking the attach button triggers the hidden file input", async () => {
   expect(clickSpy).toHaveBeenCalledTimes(1);
 });
 
-// --- T3/T4 integration slots -------------------------------------------------
-// Comments aren't queryable via the DOM - reading the component's own source
-// is the only way to pin that these reserved regions exist, in the right
-// relative order, for T3/T4 (or T6's integration pass) to fill in without
-// ever needing to restructure this file's JSX.
-test("reserves marked slots for T3's queue strip and T4's ask dock, dock above strip above the input row", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const source = readFileSync(join(here, "Composer.tsx"), "utf8");
-  const askSlotIndex = source.indexOf("T4: ask dock");
-  const queueSlotIndex = source.indexOf("T3: queue strip");
-  expect(askSlotIndex).toBeGreaterThan(-1);
-  expect(queueSlotIndex).toBeGreaterThan(-1);
-  expect(askSlotIndex).toBeLessThan(queueSlotIndex);
-});
+// The former "reserves marked slots for T3/T4" test lived here, pinning the
+// two slots via source-text scraping (comments aren't queryable via the DOM,
+// and there was nothing else there yet to query). Now that the wave
+// integration has actually mounted <AskDock>/<QueueStrip> in those slots
+// (Composer.integration.test.tsx), a real behavioral DOM-order assertion
+// supersedes it - see that file's "the ask dock renders above the queue
+// strip when both are visible at once" test.
