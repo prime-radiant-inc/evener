@@ -1,0 +1,471 @@
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { lazy } from "react";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import type { ThreadModel } from "../../../protocol/model";
+import { FakeClient } from "../../../protocol/testing/fakeClient";
+import type { Thread, ThreadCapabilities } from "../../../protocol/types.gen";
+import { registerPane } from "../../../shell/paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
+import { connectionStore } from "../../../stores/connection";
+import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { Toast } from "../../../widgets";
+import { SessionActionsMenu } from "./SessionActionsMenu";
+
+// A minimal, test-only "session" pane registration - real registerPane/
+// paneFor/openPane machinery, just without pulling in the actual
+// panes/session module (a heavier dependency this test doesn't need: it
+// only asserts openPane was called correctly for fork/aside's child-pane
+// hop, never that a real SessionPane renders) - mirrors transcript/tools/
+// subagentModule.test.tsx's identical setup for the exact same reason.
+registerPane({
+  id: "session",
+  title: () => "test session",
+  component: lazy(() => Promise.resolve({ default: () => null })),
+});
+
+const FULL_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  queue: true,
+  goal: true,
+  rename: true,
+};
+
+function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  return {
+    ref: "ref_a",
+    threadId: "thr_a",
+    name: "My session",
+    status: { type: "idle" },
+    modelProvider: "anthropic",
+    model: "claude",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        items: [
+          { id: "item_1", turnId: "turn_1", type: "userMessage", text: "please fix the bug", status: "completed" },
+        ],
+      },
+    ],
+    queue: null,
+    tasks: null,
+    lastFrameAt: 0,
+    capabilities: FULL_CAPABILITIES,
+    goal: null,
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    ...overrides,
+  };
+}
+
+// wireThread is a fully-formed wire Thread (thread/clear and thread/fork
+// both respond with one) - thread/clear's store action (stores/threads.ts)
+// folds it straight through hydrateThread, so a malformed one here would
+// throw inside that fold rather than exercising this component at all; the
+// fork/aside handlers below only ever read `.serf.ref` back out, but the
+// fake's return value is still type-checked against the real wire
+// response shape, so every required field has to be present regardless.
+function wireThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: "thr_a",
+    sessionId: "sess_a",
+    preview: "test",
+    ephemeral: false,
+    modelProvider: "anthropic",
+    createdAt: 1000,
+    updatedAt: 1000,
+    status: { type: "idle" },
+    cwd: "/tmp/project",
+    cliVersion: "1.0.0",
+    source: "serf",
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+    ...overrides,
+  };
+}
+
+function connectFakeClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+async function openMenu(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+}
+
+beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+// --- menu contents + capability gating --------------------------------------
+
+test("opens to show every session action", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+
+  expect(screen.getByRole("menuitem", { name: "Fork" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Aside" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Compact" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Clear" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Shut down" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
+});
+
+test("disables each action the thread's own capabilities say are unavailable", async () => {
+  const user = userEvent.setup();
+  const noCapabilities: ThreadCapabilities = {
+    ...FULL_CAPABILITIES,
+    compact: false,
+    clear: false,
+    shutdown: false,
+    rename: false,
+    forkFromTurn: false,
+  };
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ capabilities: noCapabilities })} />);
+  await openMenu(user);
+
+  expect(screen.getByRole("menuitem", { name: "Fork" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Aside" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Compact" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Clear" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Shut down" }).getAttribute("aria-disabled")).toBe("true");
+  expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
+});
+
+test("Fork is disabled when there is no user message anywhere to fork from, even if the capability is available", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ turns: [] })} />);
+  await openMenu(user);
+  expect(screen.getByRole("menuitem", { name: "Fork" }).getAttribute("aria-disabled")).toBe("true");
+});
+
+// --- Compact (direct call, no confirmation) ---------------------------------
+
+test("Compact calls the compact action directly with no confirmation dialog", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("thread/compact/start", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Compact" }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a" }));
+  expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("a failed Compact surfaces an error toast", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/compact/start", () => {
+    throw new Error("compact boom");
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Compact" }));
+
+  await screen.findByText(/compact boom/i);
+});
+
+// --- Aside (direct call, opens the new pane on success) ---------------------
+
+test("Aside forks at the tip and opens the new session as a pane", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("thread/fork", (params) => {
+    called = params;
+    return {
+      thread: wireThread({
+        id: "child_1",
+        sessionId: "child_1",
+        source: "local",
+        serf: { ref: "local/child_1", capabilities: FULL_CAPABILITIES, queue: {} },
+      }),
+    };
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Aside" }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", sourceTurnId: "", aside: true }));
+  await waitFor(() => expect(workspaceStore.getState().panes.some((p) => p.type === "session")).toBe(true));
+  expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({ ref: "local/child_1" });
+});
+
+test("a failed Aside surfaces an error toast and opens no pane", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/fork", () => {
+    throw new Error("aside boom");
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Aside" }));
+
+  await screen.findByText(/aside boom/i);
+  expect(workspaceStore.getState().panes).toHaveLength(0);
+});
+
+// --- Clear (destructive, confirms via Dialog) -------------------------------
+
+test("Clear opens a confirmation dialog rather than acting immediately", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Clear" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("heading", { name: /clear conversation/i })).toBeTruthy();
+});
+
+test("confirming Clear calls clearThread and closes the dialog on success", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("thread/clear", (params) => {
+    called = params;
+    return { thread: wireThread(), ref: "ref_a" };
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Clear" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /^clear$/i }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("cancelling Clear closes the dialog without calling the action", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Clear" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /cancel/i }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("a failed Clear surfaces an error toast and leaves the dialog open", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/clear", () => {
+    throw new Error("clear boom");
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Clear" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /^clear$/i }));
+
+  await screen.findByText(/clear boom/i);
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
+// --- Shutdown (destructive, confirms via Dialog) ----------------------------
+
+test("confirming Shut down calls shutdown and closes the dialog on success", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("thread/shutdown", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /shut down/i }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+// --- Rename ------------------------------------------------------------------
+
+test("Rename opens a dialog pre-filled with the current session name", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ name: "Old name" })} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect((within(dialog).getByRole("textbox") as HTMLInputElement).value).toBe("Old name");
+});
+
+test("saving Rename calls rename with the trimmed value and closes on success", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("serf/thread/name/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ name: "Old name" })} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog");
+  const input = within(dialog).getByRole("textbox");
+  await user.clear(input);
+  await user.type(input, "  New name  ");
+  await user.click(within(dialog).getByRole("button", { name: /save/i }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", name: "New name" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("Save is disabled while the rename field is blank", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ name: "Old name" })} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog");
+  const input = within(dialog).getByRole("textbox");
+  await user.clear(input);
+  await user.type(input, "   ");
+
+  expect((within(dialog).getByRole("button", { name: /save/i }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("a failed rename surfaces an error toast and leaves the dialog open", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/thread/name/set", () => {
+    throw new Error("rename boom");
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel({ name: "Old name" })} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /save/i }));
+
+  await screen.findByText(/rename boom/i);
+  expect(screen.getByRole("dialog")).toBeTruthy();
+});
+
+// --- Fork --------------------------------------------------------------------
+
+test("Fork opens a dialog pre-filled with the last user message, editable before submitting", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
+
+  const dialog = await screen.findByRole("dialog");
+  expect((within(dialog).getByRole("textbox") as HTMLTextAreaElement).value).toBe("please fix the bug");
+});
+
+test("submitting Fork calls forkFromTurn with the source turn and edited text, then opens the child pane", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let called: unknown;
+  fake.on("thread/fork", (params) => {
+    called = params;
+    return {
+      thread: wireThread({
+        id: "child_2",
+        sessionId: "child_2",
+        source: "local",
+        serf: { ref: "local/child_2", capabilities: FULL_CAPABILITIES, queue: {} },
+      }),
+    };
+  });
+
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
+  const dialog = await screen.findByRole("dialog");
+  const textarea = within(dialog).getByRole("textbox");
+  await user.clear(textarea);
+  await user.type(textarea, "fix a different bug");
+  await user.click(within(dialog).getByRole("button", { name: /^fork$/i }));
+
+  await waitFor(() =>
+    expect(called).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "fix a different bug" }),
+  );
+  await waitFor(() =>
+    expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({ ref: "local/child_2" }),
+  );
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});
+
+test("a failed Fork surfaces an error toast, opens no pane, and leaves the dialog open with the edit intact", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/fork", () => {
+    throw new Error("fork boom");
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: /^fork$/i }));
+
+  await screen.findByText(/fork boom/i);
+  expect((within(screen.getByRole("dialog")).getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+    "please fix the bug",
+  );
+});
