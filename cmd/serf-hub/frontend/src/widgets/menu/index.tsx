@@ -16,6 +16,19 @@ export interface MenuProps {
    * the imported Button widget). */
   trigger: ReactNode;
   items: MenuItem[];
+  /** Forwarded to the trigger button's own tabIndex. Omitted (the default)
+   * leaves the button's native tabIndex (0) untouched - every existing
+   * consumer of this widget is unaffected. Pass -1 when Menu is nested
+   * inside another widget that already owns its own single Tab stop via
+   * roving tabindex (e.g. a tree row - see shell/rail/RailRow.tsx): without
+   * this, the trigger becomes an ADDITIONAL always-focusable Tab stop on
+   * every row simultaneously, which breaks the "exactly one Tab stop at a
+   * time" contract that roving tabindex depends on. The trigger stays
+   * reachable by click either way; -1 only removes it from sequential Tab
+   * navigation, not from focus entirely (see handleTriggerKeyDown's own
+   * stopPropagation for the other half of that same containment - a
+   * consumed key must not also reach the ancestor that owns Tab order). */
+  triggerTabIndex?: number;
 }
 
 const CLASS = {
@@ -61,7 +74,7 @@ function stepEnabledIndex(items: MenuItem[], from: number, delta: 1 | -1): numbe
  * intended navigation, matching the task's "typeahead NOT required" YAGNI
  * call for the rest of this widget's scope). No typeahead.
  */
-export function Menu({ trigger, items }: MenuProps) {
+export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const rootRef = useRef<HTMLDivElement>(null);
@@ -94,10 +107,32 @@ export function Menu({ trigger, items }: MenuProps) {
     else openMenu();
   }
 
+  // Consume-then-stop, mirroring handleMenuKeyDown's own Escape precedent
+  // below: every key this handler gives a MEANING to must stop there,
+  // never also reach an ancestor that might independently react to the
+  // same keypress (e.g. a Tree row's own onKeyDown - see
+  // shell/rail/RailRow.tsx). ArrowDown/ArrowUp open the menu, so they're
+  // stopped whether or not this particular press is what actually opened
+  // it (openMenu() is idempotent-guarded by `!isOpen`, but the KEY's
+  // meaning - "this is this trigger's open shortcut" - holds regardless).
+  // Enter/Space get stopPropagation only, never preventDefault: the
+  // browser's own native <button> activation (a click, via onClick) is
+  // what actually opens the menu for those two, and preventDefault would
+  // suppress that default action entirely, breaking it.
   function handleTriggerKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      if (!isOpen) openMenu();
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isOpen) openMenu();
+        break;
+      case "Enter":
+      case " ":
+        event.stopPropagation();
+        break;
+      default:
+        break;
     }
   }
 
@@ -161,6 +196,7 @@ export function Menu({ trigger, items }: MenuProps) {
       <button
         id={triggerId}
         type="button"
+        tabIndex={triggerTabIndex}
         className={CLASS.trigger}
         aria-haspopup="menu"
         aria-expanded={isOpen}

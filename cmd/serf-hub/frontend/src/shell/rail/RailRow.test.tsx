@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { TreeRowInfo } from "../../widgets";
+import { Tree, type TreeRowInfo } from "../../widgets";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
 import { cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
@@ -82,6 +82,11 @@ describe("loading row", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
     expect(screen.getByText(/loading/i)).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  test("announces itself via role=status, like the top-level Skeleton", () => {
+    render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
+    expect(screen.getByRole("status").textContent).toMatch(/loading/i);
   });
 });
 
@@ -231,5 +236,92 @@ describe("project row", () => {
   test("the synthetic '(no project)' bucket gets no actions menu at all - archive/delete always 400 for it server-side", () => {
     render(<RailRow node={projectRailNode(apiProject({ key: "no-project", name: "(no project)" }))} info={info()} actions={actions()} />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+// --- fix-wave: nested Menu triggers must not corrupt Tree's roving
+// tabindex (Important) -----------------------------------------------
+//
+// These render RailRow through a REAL Tree (not the hand-built `info`
+// double every other test in this file uses) - the bug this covers is
+// specifically about Tree's own keyboard/focus machinery interacting with
+// RailRow's content, which a fake `info` object can't exercise.
+describe("roving-tabindex integration (Tree + RailRow)", () => {
+  function twoSessionRows(): [SessionRailNode, SessionRailNode] {
+    return [
+      sessionRailNode(apiNode({ row_id: "rowA", ref: "local:a", title: "Row A" })),
+      sessionRailNode(apiNode({ row_id: "rowB", ref: "local:b", title: "Row B" })),
+    ];
+  }
+
+  function renderTree(nodes: SessionRailNode[]) {
+    return render(
+      <Tree
+        nodes={nodes}
+        onToggle={() => {}}
+        onActivate={() => {}}
+        renderRow={(node, rowInfo) => <RailRow node={node} info={rowInfo} actions={actions()} />}
+      />,
+    );
+  }
+
+  test("only the roving treeitem is a Tab stop - neither row's actions trigger is", () => {
+    renderTree(twoSessionRows());
+    const treeitems = screen.getAllByRole("treeitem");
+    expect(treeitems.map((el) => el.tabIndex)).toEqual([0, -1]); // Row A (first) starts as the roving one
+
+    const triggers = screen.getAllByRole("button", { name: /actions for/i });
+    expect(triggers).toHaveLength(2);
+    for (const trigger of triggers) expect(trigger.tabIndex).toBe(-1);
+  });
+
+  test("Tab from before the tree lands on the roving treeitem, never a row's own trigger", async () => {
+    render(
+      <>
+        <button type="button">Before</button>
+        <Tree
+          nodes={twoSessionRows()}
+          onToggle={() => {}}
+          onActivate={() => {}}
+          renderRow={(node, rowInfo) => <RailRow node={node} info={rowInfo} actions={actions()} />}
+        />
+      </>,
+    );
+    const user = userEvent.setup();
+    act(() => screen.getByRole("button", { name: "Before" }).focus());
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("treeitem", { name: /Row A/ }));
+  });
+
+  test("ArrowDown on a row's trigger opens the menu; the tree's roving tabindex survives closing it again (post-Escape corruption probe)", () => {
+    // Reproduces the reviewer's exact probe, inverted. The corruption is
+    // NOT visible right after opening - FocusScope's own mount effect
+    // (widgets/focusscope/index.tsx) captures document.activeElement as
+    // its restore target, THEN focuses the popup's first item; that
+    // second focus move bubbles back up to Row A's own treeitem (the
+    // popup is rendered INSIDE it) and reasserts currentId="rowA" as a
+    // side effect, momentarily masking the bug. But WITHOUT
+    // stopPropagation, Tree's own moveTo("rowB") already ran (and moved
+    // real DOM focus to Row B's treeitem) BEFORE that effect captured its
+    // restore target - so the restore target FocusScope captured is Row
+    // B's treeitem, not Row A's trigger. Closing the menu (Escape unmounts
+    // FocusScope, running its cleanup) restores focus to that stale
+    // target: Row B, silently stealing the roving tabindex out from under
+    // Row A even though the menu that just closed belonged to Row A.
+    renderTree(twoSessionRows());
+    const rowATreeitem = screen.getByRole("treeitem", { name: /Row A/ });
+    const rowBTreeitem = screen.getByRole("treeitem", { name: /Row B/ });
+    const rowATrigger = within(rowATreeitem).getByRole("button", { name: /actions for/i });
+
+    act(() => rowATrigger.focus());
+    fireEvent.keyDown(rowATrigger, { key: "ArrowDown" });
+    expect(screen.getByRole("menu")).toBeTruthy(); // the menu still opens
+
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull(); // closed
+
+    expect(rowATreeitem.tabIndex).toBe(0); // still Row A's roving tabindex...
+    expect(rowBTreeitem.tabIndex).toBe(-1); // ...not silently moved to Row B
+    expect(document.activeElement).toBe(rowATrigger); // and focus is back on Row A's own trigger
   });
 });

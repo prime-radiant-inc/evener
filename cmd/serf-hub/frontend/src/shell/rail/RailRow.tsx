@@ -103,6 +103,17 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   if (items.length === 0) return null;
   return (
     <Menu
+      // Same reasoning as Chevron's own tabIndex={-1} above: the row's
+      // single outer treeitem is the Tree widget's one roving Tab stop -
+      // without this, the trigger becomes a SECOND, always-focusable Tab
+      // stop on every row simultaneously, breaking that contract (Tab
+      // would reach "Actions for Row B" without ever reaching Row B's own
+      // treeitem). Still reachable by click; Menu's own consume-then-stop
+      // key handling (widgets/menu/index.tsx) is the other half of this -
+      // an ArrowDown/Enter/Space this trigger already gives meaning to
+      // must never also bubble into Tree's onKeyDown and move the roving
+      // tabindex to a different row out from under an open menu.
+      triggerTabIndex={-1}
       trigger={
         <>
           <span aria-hidden="true">{"⋯"}</span>
@@ -201,7 +212,14 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
 }
 
 function LoadingRow(): ReactNode {
-  return <span className={CLASS.loadingRow}>Loading…</span>;
+  // role="status" so this is announced the same way the top-level Skeleton
+  // (widgets/skeleton) is - the visible "Loading…" text is its own
+  // accessible name via name-from-content, no separate aria-label needed.
+  return (
+    <span role="status" className={CLASS.loadingRow}>
+      Loading…
+    </span>
+  );
 }
 
 export function RailRow({ node, info, actions }: RailRowProps) {
