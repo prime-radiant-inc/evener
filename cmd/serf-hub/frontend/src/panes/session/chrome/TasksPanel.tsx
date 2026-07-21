@@ -53,11 +53,24 @@ const CLASS = {
 // renderer-format.js: planGlyphForStatus/planStateClass) translated onto
 // this app's own widget vocabulary (Chip tones) rather than the legacy's
 // window.SerfIcons SVG fragments, which this client has no equivalent of -
-// same semantic mapping: done recedes (neutral), in_progress reads as the
-// live "agent working" hue (alive), cancelled reads the same as a failure
-// (danger) per that file's own comment ("a plan item that will not happen
-// reads the same as a failure"), open/pending stays neutral with a hollow
-// glyph to stay visually distinct from done's checkmark.
+// same semantic mapping for the GLYPH: done gets a checkmark, in_progress
+// a filled dot, cancelled an X (distinct shape from pending's hollow
+// circle) so "won't happen" reads differently from "hasn't started yet".
+//
+// The TONE, however, does NOT mirror planGlyphForStatus's own comment
+// ("a plan item that will not happen reads the same as a failure") into
+// danger - that comment governs only the glyph SHAPE choice. The legacy's
+// actual rendering chain colors it neutral: planStateClass (this same
+// file, lines 496-506) maps cancelled into the SAME CSS class family as
+// pending/done, and style.css:3324-3329 confirms it explicitly - "cancelled
+// — recedes like done, struck to read as dropped" - `.plan-item.cancelled
+// .plan-glyph` is `--ink-3` (the identical dim neutral pending's glyph
+// uses), never a danger red. In this design system's color-is-attention
+// rule (tokens.css: "a human is needed / agent working / failure - nothing
+// else may be amber/danger"), tinting a routine cancellation as danger
+// would make reprioritized work indistinguishable from a genuine failure.
+// The ✕ glyph alone carries the "won't happen" distinction; the tone stays
+// neutral like every other settled, non-attention-needing state.
 const STATUS_GLYPH: Record<TaskStatus, string> = {
   open: "○",
   in_progress: "●",
@@ -65,11 +78,11 @@ const STATUS_GLYPH: Record<TaskStatus, string> = {
   cancelled: "✕",
 };
 
-const STATUS_TONE: Record<TaskStatus, ChipTone> = {
+export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
   open: "neutral",
   in_progress: "alive",
   done: "neutral",
-  cancelled: "danger",
+  cancelled: "neutral",
 };
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {

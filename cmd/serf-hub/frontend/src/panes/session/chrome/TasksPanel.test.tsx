@@ -8,7 +8,7 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
-import { TasksPanel } from "./TasksPanel";
+import { STATUS_TONE, TasksPanel } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -86,6 +86,27 @@ test("the trigger shows a bare 'Tasks' label when no aggregate has arrived yet",
 test("the trigger shows the done/total counts once the aggregate has arrived", () => {
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 7, done: 3 } })} />);
   expect(screen.getByRole("button", { name: "Tasks 3/7" })).toBeTruthy();
+});
+
+// --- STATUS_TONE: pinning test (review finding) --------------------------
+// The mapping shipped entirely untested, which is how `cancelled: "danger"`
+// slipped through: the legacy comment cited for that choice
+// (renderer-format.js's planGlyphForStatus, "a plan item that will not
+// happen reads the same as a failure") governs only the GLYPH shape, not
+// color - the legacy's actual rendering chain (renderer-format.js:496-506
+// planStateClass + style.css:3324-3329) colors a cancelled task's glyph
+// `--ink-3` (the SAME dim neutral as pending's glyph) and its label
+// `--ink-2` with a strikethrough - neutral/receding, never danger-red. In
+// this design system's color-is-attention rule, danger-tinting a routine
+// cancellation would make reprioritized work indistinguishable from a real
+// failure. The ✕ glyph alone carries the "won't happen" distinction.
+test("pins each task status's Chip tone - cancelled reads as neutral/receding, not danger", () => {
+  expect(STATUS_TONE).toEqual({
+    open: "neutral",
+    in_progress: "alive",
+    done: "neutral",
+    cancelled: "neutral",
+  });
 });
 
 // --- fetch-on-open: the per-task row list --------------------------------
