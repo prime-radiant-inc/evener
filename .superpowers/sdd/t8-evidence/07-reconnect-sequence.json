@@ -1,0 +1,17 @@
+{
+  "note": "Reconnect test: hub PID 21693 (SERF_HUB_WEB=new, -addr 127.0.0.1:9280) killed with `kill -9`. Browser tab kept open the whole time, no navigate/reload issued.",
+  "afterKill9": {
+    "t_ms": 510,
+    "connectionLine": "connection: reconnecting"
+  },
+  "hubRestarted": {
+    "newPid": 32436,
+    "sameAddr": "127.0.0.1:9280"
+  },
+  "afterRestart": {
+    "t_ms": 511,
+    "connectionLine": "connection: ready",
+    "threadListButtons": 1,
+    "note": "No navigate/reload call issued anywhere in this sequence -- same DevHarness component instance the whole time."
+  }
+}
