@@ -50,7 +50,8 @@ test("shows one failed-to-load message replacing everything when the marketplace
   });
   fake.on("serf/plugin/list", () => ({ plugins: [] }));
   render(<MarketplacesPluginsSection />);
-  expect(await screen.findByText(/Failed to load: network down/)).toBeTruthy();
+  expect(await screen.findByText("Failed to load")).toBeTruthy();
+  expect(screen.getByText("network down")).toBeTruthy();
   expect(screen.queryByText("Marketplaces")).toBeNull();
   expect(screen.queryByText("Browse")).toBeNull();
   expect(screen.queryByText("Installed")).toBeNull();
@@ -63,5 +64,6 @@ test("shows one failed-to-load message when the plugin list fails to load", asyn
     throw new Error("boom");
   });
   render(<MarketplacesPluginsSection />);
-  expect(await screen.findByText(/Failed to load: boom/)).toBeTruthy();
+  expect(await screen.findByText("Failed to load")).toBeTruthy();
+  expect(screen.getByText("boom")).toBeTruthy();
 });

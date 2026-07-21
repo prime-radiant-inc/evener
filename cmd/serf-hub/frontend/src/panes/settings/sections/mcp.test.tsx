@@ -76,7 +76,8 @@ test("shows a loading state for discovered servers before the overview resolves"
 test("a top-level probe failure replaces the discovered-servers list with one message", () => {
   connectFakeClient();
   render(<McpSection useOverviewStore={overviewHook({ data: { mcpDiscovered: { error: "probe timed out" } } })} />);
-  expect(screen.getByText(/Failed to load: probe timed out/)).toBeTruthy();
+  expect(screen.getByText("Failed to load")).toBeTruthy();
+  expect(screen.getByText("probe timed out")).toBeTruthy();
 });
 
 test("renders the mcpConfigs entries from the launch layer", async () => {

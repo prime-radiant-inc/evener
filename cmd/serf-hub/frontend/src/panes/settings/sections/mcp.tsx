@@ -197,7 +197,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
         <h3 className={CLASS.sectionTitle}>Discovered servers</h3>
         <p className={CLASS.sectionHelp}>Reachability, as probed from the hub.</p>
         {discovered?.error !== undefined ? (
-          <EmptyState title="Failed to load" hint={`Failed to load: ${discovered.error}`} />
+          <EmptyState title="Failed to load" hint={discovered.error} />
         ) : overview.loading && overview.data === null ? (
           <Skeleton />
         ) : (
@@ -222,7 +222,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
       </section>
 
       {launchLayerError !== null ? (
-        <EmptyState title="Failed to load" hint={`Failed to load: ${launchLayerError}`} />
+        <EmptyState title="Failed to load" hint={launchLayerError} />
       ) : launchLayerLoading && layer === null ? (
         <Skeleton />
       ) : (

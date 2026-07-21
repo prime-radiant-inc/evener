@@ -68,7 +68,7 @@ export function MarketplacesPluginsSection() {
         you need — installed, enabled plugins load into every new serf session.
       </p>
       {loadError !== null ? (
-        <EmptyState title="Failed to load" hint={`Failed to load: ${loadError}`} />
+        <EmptyState title="Failed to load" hint={loadError} />
       ) : stillLoading ? (
         <Skeleton />
       ) : (

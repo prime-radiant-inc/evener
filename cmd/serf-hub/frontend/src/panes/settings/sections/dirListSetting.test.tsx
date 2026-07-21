@@ -149,7 +149,8 @@ describe("DirListSetting", () => {
       throw new Error("network down");
     });
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
-    expect(await screen.findByText(/Failed to load: network down/)).toBeTruthy();
+    expect(await screen.findByText("Failed to load")).toBeTruthy();
+    expect(screen.getByText("network down")).toBeTruthy();
   });
 
   test("adding a valid path validates then saves the layer with the new entry appended", async () => {

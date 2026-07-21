@@ -254,7 +254,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
       <h2 className={CLASS.title}>{label}</h2>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
-        <EmptyState title="Failed to load" hint={`Failed to load: ${error}`} />
+        <EmptyState title="Failed to load" hint={error} />
       ) : loading && layer === null ? (
         <Skeleton />
       ) : (
