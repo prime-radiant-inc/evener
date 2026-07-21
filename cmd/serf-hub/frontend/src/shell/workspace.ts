@@ -78,15 +78,21 @@ export function registerDockviewApi(api: DockviewApi | null): void {
   dockviewApi = api;
 }
 
-const PANE_TYPE_IDS = new Set<PaneTypeId>(["session", "transcript", "doc", "spawn", "settings", "welcome"]);
-
-function isPaneTypeId(value: unknown): value is PaneTypeId {
-  return typeof value === "string" && PANE_TYPE_IDS.has(value as PaneTypeId);
-}
-
-function isRegistered(type: PaneTypeId): boolean {
+// Type predicate: true only for a value that's both a string AND
+// currently registered in the pane registry. paneFor() (imported above) is
+// the single source of truth for "is this a real pane type" - registering
+// a SECOND, hand-maintained list of PaneTypeId's own union members here
+// (an earlier version did exactly that, via a `Set` literal) would drift
+// silently the moment PaneTypeId's union in paneRegistry.ts ever changes,
+// with no compiler check to catch it. The cast reflects paneFor()'s own
+// runtime check as the actual source of truth, not a hidden assumption -
+// the registry Map's own .get() (which paneFor calls) doesn't "trust" its
+// argument's type at runtime, it just looks the key up; whether that
+// lookup succeeds IS the validation.
+function isRegistered(type: unknown): type is PaneTypeId {
+  if (typeof type !== "string") return false;
   try {
-    paneFor(type);
+    paneFor(type as PaneTypeId);
     return true;
   } catch {
     return false;
@@ -102,7 +108,7 @@ function isRegistered(type: PaneTypeId): boolean {
 // way this happens given layouts persist to localStorage across deploys).
 function readPanelParams(panel: IDockviewPanel): PanePanelParams {
   const raw = panel.params;
-  if (!raw || !isPaneTypeId(raw.paneType) || !isRegistered(raw.paneType)) {
+  if (!raw || !isRegistered(raw.paneType)) {
     throw new Error(`workspace: restored panel "${panel.id}" has unrecognized params`);
   }
   return { paneType: raw.paneType, paneParams: raw.paneParams };

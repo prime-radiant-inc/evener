@@ -8,6 +8,11 @@ import { connectionStore } from "../stores/connection";
 import { resetWorkspaceStoreForTests } from "./workspace";
 import { AppShell } from "./AppShell";
 
+// Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
+// deliberately internal implementation detail; duplicated here the same
+// way DockHost.test.tsx's own LAYOUT_KEY is).
+const LAYOUT_KEY = "serf.workspace.layout.v1";
+
 const ALL_FEATURES_OFF = {
   threadList: false,
   threadTurnsList: false,
@@ -228,4 +233,33 @@ test("navigating from a 404 straight to a session deep link opens only that pane
   await screen.findByText("Transcript arrives in wave 4");
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_from_404"]);
+});
+
+test("a saved layout from a previous session doesn't suppress a fresh deep link", async () => {
+  // Phase 1: generate a REAL saved layout at the default route (the
+  // welcome pane) - real timers throughout; the welcome pane's own
+  // addPanel() already schedules the debounced save (addPanel fires
+  // onDidLayoutChange - see DockHost.test.tsx's own probe-verified
+  // comment on that), so waitFor polling for the actual write to land is
+  // enough, no fake-timer juggling needed for this test's own concern.
+  window.history.pushState({}, "", "/");
+  const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  await waitFor(() => {
+    expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  });
+  unmount();
+  resetWorkspaceStoreForTests(); // simulates a fresh page load: in-memory workspace state resets
+
+  // Phase 2: fresh mount at a NEW deep link. Deliberately NOT calling
+  // localStorage.clear() here, unlike every other test in this file (see
+  // beforeEach above, which blinds the rest of the suite to this path) -
+  // the whole point is proving a stale saved layout from phase 1 does not
+  // suppress this freshly-routed pane.
+  window.history.pushState({}, "", "/s/ref_new_session");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByText("Transcript arrives in wave 4")).toBeTruthy();
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_new_session"]);
 });

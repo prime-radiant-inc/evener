@@ -32,6 +32,19 @@ const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 // useWorkspaceStore's focusedPaneId - both are kept in sync (see the focus-
 // reconciliation effect below) but reading dockview's own truth here avoids
 // a render-order dependency between this component and DockHost's effects.
+//
+// UNMOUNT, NOT HIDE: dockview unmounts a panel's whole React tree when it
+// isn't the active tab in its group - confirmed via a live probe (see this
+// wave's task report), not just CSS-hidden. Any pane's own component-local
+// state (an in-progress draft, scroll position, anything not lifted into a
+// store) is lost the instant its tab loses focus, and the component
+// remounts from scratch when it regains it. Every real pane implementation
+// (wave 4's transcript view, most directly) must be designed remount-safe:
+// durable state belongs in a store keyed by the pane's own params (e.g.
+// threads.ts, refcounted per ref - see that file's own header comment),
+// never component-local useState for anything that needs to survive a tab
+// switch - a remount re-subscribes cleanly through the SAME refcount
+// mechanism that already handles multiple panes sharing one ref.
 function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
   const [focused, setFocused] = useState(api.isActive);
   useEffect(() => {
@@ -219,14 +232,30 @@ export function DockHost() {
   function handleReady(event: DockviewReadyEvent): void {
     registerDockviewApi(event.api);
 
-    // Falls back to welcome whenever the workspace is STILL empty after the
-    // restore attempt - not simply whenever restoreLayout() itself reports
-    // failure. Other code CAN already have opened a pane before this runs
-    // (a test, most directly - see DockHost.test.tsx) and this must never
-    // stomp on that; a "successfully" restored but empty layout (every tab
-    // was closed before the last save) also needs the same fallback, not
-    // just an outright restore failure, since a blank dockview with no
-    // chrome of its own to open a new pane from is a dead end.
+    // Restore-or-fallback runs ONLY into an EMPTY workspace - a routed pane
+    // (AppShell's routing glue, most directly - see its own comment on why
+    // it opens the initial route's pane during render, before this handler
+    // ever runs) always wins outright over a stale saved layout, rather
+    // than the layout replacing it. Both the restore attempt AND the
+    // welcome fallback are gated by the SAME check: restoreLayout() itself
+    // mutates dockview's panels unconditionally once called (fromJSON has
+    // no concept of "only if nothing else is here"), so calling it at all
+    // when something has already been routed in would wipe out that routed
+    // pane and replace it with whatever the layout last had - exactly the
+    // bug a live reproduction caught (a returning user with a saved layout
+    // following a deep link saw their OLD tabs, not the link). The nested
+    // re-check after restoreLayout() covers the OTHER empty case: a
+    // "successfully" restored but empty layout (every tab was closed
+    // before the last save), which still needs the welcome fallback since
+    // a blank dockview with no chrome of its own to open a new pane from
+    // is a dead end.
+    //
+    // This is a deliberately simple fix, not the target behavior: the
+    // controller has ruled that a future pass (Task 7, its own test cycle)
+    // should MERGE instead - restore the saved layout as the base, then
+    // open the routed pane inside it, focused - rather than suppressing
+    // restore entirely whenever anything is already routed. Today's fix
+    // trades that richer behavior for straightforward correctness now.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS
@@ -240,12 +269,14 @@ export function DockHost() {
     // tree - openPane's own same-params/singleton dedup makes that call
     // safe to repeat if StrictMode (or a future refactor) invokes it more
     // than once.
-    const stored = readStoredLayout();
-    if (stored !== undefined) {
-      workspaceStore.getState().restoreLayout(stored);
-    }
     if (workspaceStore.getState().panes.length === 0) {
-      workspaceStore.getState().openPane("welcome");
+      const stored = readStoredLayout();
+      if (stored !== undefined) {
+        workspaceStore.getState().restoreLayout(stored);
+      }
+      if (workspaceStore.getState().panes.length === 0) {
+        workspaceStore.getState().openPane("welcome");
+      }
     }
 
     setApi(event.api);

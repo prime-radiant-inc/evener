@@ -453,3 +453,37 @@ test("restores a previously-saved layout on boot instead of falling back to welc
   expect(tabs).toHaveLength(3);
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_a", "Doc ref_b", "Doc ref_c"]);
 });
+
+test("a routed pane opened before mount wins over a stale saved layout, not wholesale replaced by it", async () => {
+  // Phase 1: generate a REAL stale saved layout - panes that will NOT be
+  // part of phase 2's workspace at all. Round-tripped through a real save
+  // (same rationale as the test above: dockview's serialization shape is
+  // opaque/versioned, so a real save is the only faithful source).
+  workspaceStore.getState().openPane("doc", { ref: "ref_stale_a" });
+  workspaceStore.getState().openPane("doc", { ref: "ref_stale_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_stale_b/);
+
+  vi.useFakeTimers();
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_stale_c" });
+  });
+  await Promise.resolve();
+  advance(500);
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  vi.useRealTimers();
+  unmount();
+  resetWorkspaceStoreForTests(); // in-memory workspace resets; localStorage (the stale layout) does not
+
+  // Phase 2: simulates AppShell's routing already having opened a pane (a
+  // deep link) BEFORE DockHost ever mounts and reads localStorage - the
+  // routed pane must win outright, not be wiped out by the stale layout
+  // above, and the stale panes must NOT appear at all (not a merge).
+  const routed = workspaceStore.getState().openPane("doc", { ref: "ref_routed" });
+  render(<DockHost />);
+
+  expect(await screen.findByText(/doc pane: ref_routed/)).toBeTruthy();
+  const tabs2 = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs2).map((t) => t.textContent)).toEqual(["Doc ref_routed"]);
+  expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([routed]);
+});

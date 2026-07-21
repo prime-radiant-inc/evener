@@ -58,14 +58,29 @@ function basenameOf(path: string): string {
 // contract (no chromatic literal, the attention/alive/danger allowlist)
 // still applies to it unchanged, exactly like every other stylesheet; only
 // the naming rule gets a named exception, here.
-const NAMING_EXCEPTIONS = new Set(["dockview-theme.css"]);
+//
+// Keyed by the EXACT path (not the basename): a same-named decoy file
+// anywhere else in the tree (e.g. widgets/dockview-theme.css) must NOT
+// ride along on this one file's exception - see the poison test below.
+const NAMING_EXCEPTIONS = new Set(["shell/dockview-theme.css"]);
+
+function isNamingViolation(path: string): boolean {
+  const base = basenameOf(path);
+  return base !== "global.css" && !base.endsWith(".module.css") && !NAMING_EXCEPTIONS.has(path);
+}
 
 test("every non-token stylesheet under src is named global.css, <name>.module.css, or a named exception", () => {
-  const offenders = OTHER_STYLESHEETS.map(([path]) => path).filter((path) => {
-    const base = basenameOf(path);
-    return base !== "global.css" && !base.endsWith(".module.css") && !NAMING_EXCEPTIONS.has(base);
-  });
+  const offenders = OTHER_STYLESHEETS.map(([path]) => path).filter(isNamingViolation);
   expect(offenders).toEqual([]);
+});
+
+test("the dockview-theme.css naming exception is scoped to its exact path, not just its basename", () => {
+  expect(isNamingViolation("shell/dockview-theme.css")).toBe(false);
+  // A same-named decoy anywhere else still violates the naming rule - the
+  // exception must not become "any file called dockview-theme.css".
+  expect(isNamingViolation("widgets/dockview-theme.css")).toBe(true);
+  expect(isNamingViolation("dev/dockview-theme.css")).toBe(true);
+  expect(isNamingViolation("dockview-theme.css")).toBe(true);
 });
 
 // --- (a) no chromatic literal outside tokens.css -----------------------
