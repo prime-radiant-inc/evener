@@ -242,6 +242,40 @@ describe("DeviceCodeDialog", () => {
     expect(screen.getByText(/Waiting for you to authorize/)).toBeTruthy();
   });
 
+  // Pins the headline behavior verified directly against the legacy source
+  // (templates/partials/credentials.html's own tick(), not the parity floor
+  // doc's paraphrase - see oauthDialogs.tsx's own comment on this branch):
+  // a poll REQUEST failure (as opposed to an "expired"/"authorized" response
+  // body) attaches its message and does NOT reschedule - the poll loop
+  // silently stops, identical to "expired".
+  test("a devicePoll request failure stops polling without rescheduling - no further poll calls ever follow", async () => {
+    const fake = connectFakeClient();
+    let calls = 0;
+    fake.on("serf/auth/device/poll", () => {
+      calls += 1;
+      throw new Error("network error");
+    });
+    render(
+      <DeviceCodeDialog
+        name="work"
+        flowId="flow-2"
+        userCode="ABCD-EFGH"
+        verificationUrl="https://verify"
+        intervalSeconds={1}
+        onCancel={() => {}}
+        onSuccess={() => {}}
+        onRestart={() => {}}
+      />,
+    );
+    await screen.findByText("network error", {}, POLL_TIMEOUT);
+    expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
+    const callsAtError = calls;
+    // Wait comfortably past 2 more poll intervals - if this ever regressed
+    // to rescheduling after an error, this would catch it.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 2200)));
+    expect(calls).toBe(callsAtError);
+  });
+
   test("clicking 'Start again' after expiry calls onRestart", async () => {
     const fake = connectFakeClient();
     fake.on("serf/auth/device/poll", () => ({ state: "expired" }));
