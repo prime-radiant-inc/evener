@@ -1,8 +1,8 @@
 // ask_user descriptor (parity checklist §2's askUserRenderer + §10's
 // interception note - this rewrite renders it as a normal tool-call row,
 // unlike legacy's suppress-and-redirect-to-a-dock design, since the
-// composer-side answer flow is explicitly out of scope this wave). Ground
-// truth: agent/internal/tool/definitions.go's DefAskUser gives the exact
+// composer-side answer flow is a separate wave-5 surface). Ground truth:
+// agent/internal/tool/definitions.go's DefAskUser gives the exact
 // argumentsJson shape - {questions:[{header(<=12 chars), question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
 // if_unanswered?}]}, 1-4 questions. ask_user's own Output is a single
@@ -12,34 +12,20 @@
 // preserves it through settle like every other tool call (protocol/
 // reducer.ts).
 //
-// This wave is read-only: no answer affordance here at all (the composer
-// owns that in Wave 5) - every card just says so. Parsing is defensive
-// throughout: a malformed argumentsJSON, a missing `questions` array, or
-// an individual malformed question all degrade to a fallback rather than
-// throwing, since this is untrusted wire JSON, not a value this file
-// controls the shape of.
+// This transcript card stays read-only: no answer affordance here (the
+// composer's askDock owns that - panes/session/composer/askDock/**). The
+// question/option shape check itself (parseAskUserQuestions and its
+// AskUserOption/AskUserQuestion types) moved to ../../askShared so askDock
+// can reuse the identical parsing without duplicating it or reaching into
+// this directory; this file keeps only what's specific to the read-only
+// card (the malformed-vs-absent fallback wording and the static markup).
 
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { type AskUserQuestion, parseAskUserQuestions } from "../../askShared";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
-import { parseArgs } from "./helpers";
-
-interface AskUserOption {
-  label: string;
-  detail: string;
-  recommended?: boolean;
-}
-
-interface AskUserQuestion {
-  header: string;
-  question: string;
-  options: AskUserOption[];
-  multiSelect?: boolean;
-  why?: string;
-  ifUnanswered?: string;
-}
 
 const CLASS = {
   card: requireClass(styles.card, "askuser.module.css", "card"),
@@ -53,47 +39,6 @@ const CLASS = {
   footer: requireClass(styles.footer, "askuser.module.css", "footer"),
   fallback: requireClass(styles.fallback, "askuser.module.css", "fallback"),
 };
-
-function parseOption(raw: unknown): AskUserOption | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.label !== "string" || typeof obj.detail !== "string") return undefined;
-  return { label: obj.label, detail: obj.detail, recommended: obj.recommended === true };
-}
-
-function parseQuestion(raw: unknown): AskUserQuestion | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.header !== "string" || typeof obj.question !== "string" || !Array.isArray(obj.options)) {
-    return undefined;
-  }
-  const options = obj.options.map(parseOption).filter((o): o is AskUserOption => o !== undefined);
-  if (options.length === 0) return undefined;
-  return {
-    header: obj.header,
-    question: obj.question,
-    options,
-    multiSelect: obj.multi_select === true,
-    why: typeof obj.why === "string" ? obj.why : undefined,
-    ifUnanswered: typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
-  };
-}
-
-// parseAskUserQuestions returns undefined whenever there's nothing usable to
-// render - argumentsJSON absent entirely, a JSON syntax error, valid JSON
-// with no questions array, or every individual question in that array
-// failing its own shape check - without distinguishing WHY here. An empty
-// array can't legitimately occur (DefAskUser requires minItems:1) but is
-// treated the same as undefined defensively either way. AskUserBody draws
-// its own absent-vs-malformed distinction for its fallback wording; see
-// isMalformedArgumentsJSON below.
-function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | undefined {
-  const args = parseArgs(item.argumentsJSON);
-  const raw = args.questions;
-  if (!Array.isArray(raw)) return undefined;
-  const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
-  return questions.length > 0 ? questions : undefined;
-}
 
 // isMalformedArgumentsJSON is true only for a genuine JSON syntax error in
 // THIS item's own argumentsJSON - the one case AskUserBody's fallback below
