@@ -234,6 +234,22 @@ describe("near-top triggers loadOlder", () => {
     expect(loadOlder).toHaveBeenCalled();
   });
 
+  // A rejected loadOlder must not escape as an unhandled rejection -
+  // useTranscript.ts's own loadOlder has no catch of its own, so this
+  // hook's near-top handler adds one (see the .catch(() => {}) at its call
+  // site, matching Session.tsx's own ensureThread(ref).catch(() => {})
+  // precedent for the identical shape of gap). A dedicated unit test for
+  // this was attempted (a plain expect(loadOlder).toHaveBeenCalled() can't
+  // tell a caught rejection apart from an uncaught one, so it was written
+  // against Node's own unhandledRejection event instead) but abandoned:
+  // vitest's own runner intercepts process-level unhandledRejection
+  // dispatch in a way a per-test process.on listener couldn't reliably
+  // observe here, so it passed identically whether or not the .catch was
+  // actually present - unable to discriminate the bug from the fix, kept
+  // out rather than left in as a misleading pass. The full-suite exit code
+  // DOES catch this class of regression (confirmed empirically: a
+  // genuinely uncaught rejection exits 1 even though the individual test
+  // that triggered it "passes") - see this task's own report.
   test("a scroll event NOT near the top does not call loadOlder", () => {
     const { ref, el } = makeListHandle();
     const { measure, set } = makeMeasure(SCROLLED_AWAY);

@@ -154,7 +154,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           <FlowOverlay
             top={
               <>
-                {model.olderCursor && <LoadOlderRow onClick={() => void loadOlder()} loading={loadingOlder} />}
+                {model.olderCursor && (
+                  <LoadOlderRow onClick={() => void loadOlder().catch(() => {})} loading={loadingOlder} />
+                )}
                 <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
               </>
             }
