@@ -15,8 +15,12 @@ export type { ChipProps, ChipTone } from "./chip";
 export { Chip } from "./chip";
 export type { CodeBlockProps } from "./codeblock";
 export { CodeBlock } from "./codeblock";
+export type { CollectionAddResult, CollectionEditorProps } from "./collectioneditor";
+export { CollectionEditor } from "./collectioneditor";
 export type { ComboboxOption, ComboboxProps } from "./combobox";
 export { Combobox } from "./combobox";
+export type { ConfirmDialogProps } from "./confirmdialog";
+export { ConfirmDialog } from "./confirmdialog";
 export type { DialogProps } from "./dialog";
 export { Dialog } from "./dialog";
 export type { DiffBlockProps } from "./diffblock";
@@ -26,6 +30,8 @@ export { EmptyState } from "./emptystate";
 export type { FocusScopeProps } from "./focusscope";
 // --- overlays batch (W2T3) ---
 export { FocusScope } from "./focusscope";
+export type { FormRowProps } from "./formrow";
+export { FormRow } from "./formrow";
 export type { IconButtonProps } from "./iconbutton";
 // --- primitives batch (W2T2) ---
 export { IconButton } from "./iconbutton";
@@ -42,6 +48,10 @@ export { Meter } from "./meter";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";
+export type { PathPickerProps } from "./pathpicker";
+export { PathPicker } from "./pathpicker";
+export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
+export { RadioGroup } from "./radiogroup";
 export type { SelectOption, SelectProps } from "./select";
 export { Select } from "./select";
 export type { SheetProps, SheetSide } from "./sheet";
