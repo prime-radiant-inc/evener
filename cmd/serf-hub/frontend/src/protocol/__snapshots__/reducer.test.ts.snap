@@ -3,7 +3,25 @@
 exports[`fixture basic-turn reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
+  "activeTurnStartedAt": undefined,
   "askPending": false,
+  "capabilities": {
+    "changeModel": true,
+    "clear": true,
+    "compact": true,
+    "forkFromTurn": true,
+    "goal": true,
+    "interrupt": true,
+    "queue": true,
+    "rename": true,
+    "send": true,
+    "shutdown": true,
+    "steer": true,
+  },
+  "contextPressure": 0,
+  "contextUsed": 0,
+  "contextWindow": 0,
+  "goal": null,
   "lastFrameAt": 1006,
   "model": "anthropic/claude-sonnet-4-5",
   "modelProvider": "anthropic/claude-sonnet-4-5",
@@ -12,10 +30,12 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
+  "reasoningEffortLevels": [],
   "ref": "ref_1001",
   "status": {
     "type": "idle",
   },
+  "supportsReasoning": false,
   "tasks": null,
   "threadId": "thr_1001",
   "turns": [
@@ -92,13 +112,33 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
       "usage": undefined,
     },
   ],
+  "usage": null,
+  "workMillis": 0,
 }
 `;
 
 exports[`fixture queue-and-status reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
+  "activeTurnStartedAt": undefined,
   "askPending": false,
+  "capabilities": {
+    "changeModel": true,
+    "clear": true,
+    "compact": true,
+    "forkFromTurn": true,
+    "goal": true,
+    "interrupt": true,
+    "queue": true,
+    "rename": true,
+    "send": true,
+    "shutdown": true,
+    "steer": true,
+  },
+  "contextPressure": 0,
+  "contextUsed": 0,
+  "contextWindow": 0,
+  "goal": null,
   "lastFrameAt": 1004,
   "model": "claude-opus-4-1",
   "modelProvider": "anthropic",
@@ -121,10 +161,16 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
     ],
   },
   "reasoningEffort": "medium",
+  "reasoningEffortLevels": [
+    "low",
+    "medium",
+    "high",
+  ],
   "ref": "ref_4001",
   "status": {
     "type": "active",
   },
+  "supportsReasoning": true,
   "tasks": {
     "done": 2,
     "total": 5,
@@ -176,13 +222,33 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
       "usage": undefined,
     },
   ],
+  "usage": null,
+  "workMillis": 0,
 }
 `;
 
 exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
+  "activeTurnStartedAt": undefined,
   "askPending": false,
+  "capabilities": {
+    "changeModel": true,
+    "clear": true,
+    "compact": true,
+    "forkFromTurn": true,
+    "goal": true,
+    "interrupt": true,
+    "queue": true,
+    "rename": true,
+    "send": true,
+    "shutdown": true,
+    "steer": true,
+  },
+  "contextPressure": 0,
+  "contextUsed": 0,
+  "contextWindow": 0,
+  "goal": null,
   "lastFrameAt": 1014,
   "model": "anthropic/claude-sonnet-4-5",
   "modelProvider": "anthropic/claude-sonnet-4-5",
@@ -191,10 +257,12 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
+  "reasoningEffortLevels": [],
   "ref": "ref_2001",
   "status": {
     "type": "idle",
   },
+  "supportsReasoning": false,
   "tasks": null,
   "threadId": "thr_2001",
   "turns": [
@@ -254,13 +322,33 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
       "usage": undefined,
     },
   ],
+  "usage": null,
+  "workMillis": 0,
 }
 `;
 
 exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
 {
   "activeTurnId": undefined,
+  "activeTurnStartedAt": undefined,
   "askPending": false,
+  "capabilities": {
+    "changeModel": true,
+    "clear": true,
+    "compact": true,
+    "forkFromTurn": true,
+    "goal": true,
+    "interrupt": true,
+    "queue": true,
+    "rename": true,
+    "send": true,
+    "shutdown": true,
+    "steer": true,
+  },
+  "contextPressure": 0,
+  "contextUsed": 0,
+  "contextWindow": 0,
+  "goal": null,
   "lastFrameAt": 1008,
   "model": "anthropic/claude-sonnet-4-5",
   "modelProvider": "anthropic/claude-sonnet-4-5",
@@ -269,10 +357,12 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "pendingEscalations": [],
   "queue": {},
   "reasoningEffort": undefined,
+  "reasoningEffortLevels": [],
   "ref": "ref_3001",
   "status": {
     "type": "idle",
   },
+  "supportsReasoning": false,
   "tasks": null,
   "threadId": "thr_3001",
   "turns": [
@@ -317,5 +407,7 @@ PASS
       "usage": undefined,
     },
   ],
+  "usage": null,
+  "workMillis": 0,
 }
 `;

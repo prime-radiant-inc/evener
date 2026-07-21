@@ -4,6 +4,7 @@ import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
@@ -257,6 +258,22 @@ test("workspace.focusPane activates the corresponding dockview tab", async () =>
 
 // --- session pane tab titles: PaneTitleCtx <-> the real threads store -----
 
+// This suite exercises tab titles, not capability gating - every field here
+// is false/empty, a plausible-but-inert snapshot.
+const NO_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  queue: false,
+  goal: false,
+  rename: false,
+};
+
 function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {
     ref,
@@ -271,6 +288,15 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     queue: null,
     tasks: null,
     lastFrameAt: 0,
+    capabilities: NO_CAPABILITIES,
+    goal: null,
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
     ...overrides,
   };
 }

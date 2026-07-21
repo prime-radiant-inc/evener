@@ -250,6 +250,16 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     tasks: null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
+    capabilities: thread.serf.capabilities,
+    goal: thread.serf.goal ?? null,
+    contextUsed: thread.serf.contextUsed ?? 0,
+    contextWindow: thread.serf.contextWindow ?? 0,
+    contextPressure: thread.serf.contextPressure ?? 0,
+    usage: thread.serf.usage ?? null,
+    workMillis: thread.serf.workMillis ?? 0,
+    activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
+    reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],
+    supportsReasoning: thread.serf.supportsReasoning ?? false,
   };
 }
 
@@ -574,7 +584,19 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "thread/model/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, modelProvider: n.params.modelProvider, model: n.params.model, lastFrameAt: now };
+      // ThreadModelChangedParams (appwire/types.go:867-874) carries
+      // reasoningEffortLevels/supportsReasoning alongside modelProvider/
+      // model, describing the NEW model's full reasoning profile - not a
+      // partial patch, so an omitted/empty ladder on the new payload
+      // replaces (not preserves) whatever the old model's picker showed.
+      return {
+        ...model,
+        modelProvider: n.params.modelProvider,
+        model: n.params.model,
+        reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
+        supportsReasoning: n.params.supportsReasoning ?? false,
+        lastFrameAt: now,
+      };
     }
 
     case "thread/reasoning-effort/changed": {

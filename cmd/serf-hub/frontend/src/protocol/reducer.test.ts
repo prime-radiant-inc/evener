@@ -1076,6 +1076,65 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   expect(model.reasoningEffort).toBe("high");
 });
 
+// Wave 5 T1: thread/model/changed's real payload (appwire/types.go's
+// ThreadModelChangedParams, lines 867-874) carries reasoningEffortLevels/
+// supportsReasoning alongside modelProvider/model — "describe the NEW
+// profile so a client's effort picker re-keys without a separate model/list
+// round trip" (that struct's own doc comment), so a model switch replaces
+// the picker's ladder wholesale rather than patching it.
+test("thread/model/changed updates modelProvider/model and the new reasoning-effort profile (reasoningEffortLevels/supportsReasoning)", () => {
+  let model = testHydrate();
+  expect(model.modelProvider).toBe("anthropic/claude-sonnet-4-5");
+  expect(model.reasoningEffortLevels).toEqual([]);
+  expect(model.supportsReasoning).toBe(false);
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        modelProvider: "anthropic",
+        model: "claude-opus-4-1",
+        reasoningEffortLevels: ["low", "medium", "high"],
+        supportsReasoning: true,
+      },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.modelProvider).toBe("anthropic");
+  expect(model.model).toBe("claude-opus-4-1");
+  expect(model.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
+  expect(model.supportsReasoning).toBe(true);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to empty/false when the new payload omits them - it describes the NEW model completely, not a partial patch onto the old one", () => {
+  let model = testHydrate({
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      reasoningEffortLevels: ["low", "medium", "high"],
+      supportsReasoning: true,
+    },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", modelProvider: "openai", model: "gpt-5.5" },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.reasoningEffortLevels).toEqual([]);
+  expect(model.supportsReasoning).toBe(false);
+});
+
 // Observed reasoning timing: the wire never carries reasoning timestamps at
 // all (neither the live projector nor the historical reader sets
 // ThreadItem.StartedAt/CompletedAt for reasoning items), so the reducer
@@ -1665,6 +1724,102 @@ test("hydrateThread maps serf.pendingEscalations verbatim into pendingEscalation
 test("hydrateThread defaults pendingEscalations to an empty array when serf.pendingEscalations is absent", () => {
   const model = testHydrate();
   expect(model.pendingEscalations).toEqual([]);
+});
+
+// Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
+// activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
+// from thread.serf (appwire/types.go's SerfThread, lines 223-274). None of
+// these except reasoningEffortLevels/supportsReasoning (via
+// thread/model/changed, tested above) and reasoningEffort (via
+// thread/reasoning-effort/changed, tested above) ever get a live push - see
+// SerfThread's own doc comment ("read on demand ... rather than pushed on
+// every event") and appwire/protocol.go's Notifications catalog, which has
+// no capabilities/goal/context/usage entry at all.
+test("hydrateThread maps capabilities/goal/context*/usage/workMillis/activeTurnStartedAt/reasoningEffortLevels/supportsReasoning verbatim from thread.serf", () => {
+  const model = testHydrate({
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      goal: { status: "active", iterations: 2 },
+      contextUsed: 12_000,
+      contextWindow: 200_000,
+      contextPressure: 0.06,
+      usage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, totalTokens: 160 },
+      workMillis: 45_000,
+      activeTurnStartedAt: 1_000,
+      reasoningEffortLevels: ["low", "medium", "high"],
+      supportsReasoning: true,
+    },
+  });
+
+  expect(model.capabilities).toEqual(CAPABILITIES);
+  expect(model.goal).toEqual({ status: "active", iterations: 2 });
+  expect(model.contextUsed).toBe(12_000);
+  expect(model.contextWindow).toBe(200_000);
+  expect(model.contextPressure).toBe(0.06);
+  expect(model.usage).toEqual({ inputTokens: 100, outputTokens: 50, cacheReadTokens: 10, totalTokens: 160 });
+  expect(model.workMillis).toBe(45_000);
+  expect(model.activeTurnStartedAt).toBe(new Date(1_000).toISOString());
+  expect(model.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
+  expect(model.supportsReasoning).toBe(true);
+});
+
+test("hydrateThread defaults the wave 5 snapshot-only fields when thread.serf omits them (old daemon / codex thread)", () => {
+  const model = testHydrate(); // testThread()'s default serf carries none of these
+
+  expect(model.goal).toBeNull();
+  expect(model.contextUsed).toBe(0);
+  expect(model.contextWindow).toBe(0);
+  expect(model.contextPressure).toBe(0);
+  expect(model.usage).toBeNull();
+  expect(model.workMillis).toBe(0);
+  expect(model.activeTurnStartedAt).toBeUndefined();
+  expect(model.reasoningEffortLevels).toEqual([]);
+  expect(model.supportsReasoning).toBe(false);
+});
+
+test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive live notifications untouched - no wire push exists for any of them", () => {
+  let model = testHydrate({
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      goal: { status: "active", iterations: 1 },
+      contextUsed: 500,
+      contextWindow: 100_000,
+      contextPressure: 0.005,
+      usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+      workMillis: 10,
+      activeTurnStartedAt: 500,
+    },
+  });
+  const before = {
+    goal: model.goal,
+    contextUsed: model.contextUsed,
+    contextWindow: model.contextWindow,
+    contextPressure: model.contextPressure,
+    usage: model.usage,
+    workMillis: model.workMillis,
+    activeTurnStartedAt: model.activeTurnStartedAt,
+  };
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.goal).toEqual(before.goal);
+  expect(model.contextUsed).toBe(before.contextUsed);
+  expect(model.contextWindow).toBe(before.contextWindow);
+  expect(model.contextPressure).toBe(before.contextPressure);
+  expect(model.usage).toEqual(before.usage);
+  expect(model.workMillis).toBe(before.workMillis);
+  expect(model.activeTurnStartedAt).toBe(before.activeTurnStartedAt);
 });
 
 test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {

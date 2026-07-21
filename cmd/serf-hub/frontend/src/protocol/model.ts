@@ -3,7 +3,14 @@
 // shape; components should only ever read this model, never the wire types
 // directly.
 
-import type { QueueState, SandboxEscalationRequested, ThreadStatus } from "./types.gen";
+import type {
+  GoalState,
+  QueueState,
+  SandboxEscalationRequested,
+  SerfUsage,
+  ThreadCapabilities,
+  ThreadStatus,
+} from "./types.gen";
 
 export interface ItemModel {
   id: string;
@@ -71,4 +78,35 @@ export interface ThreadModel {
   tasks: { total: number; done: number } | null;
   olderCursor?: string;
   lastFrameAt: number; // liveness input
+  // Wave 5 T1: the following are all sourced from thread.serf
+  // (appwire/types.go's SerfThread, lines 223-274) and are SNAPSHOT-ONLY -
+  // hydrateThread populates them, and applyNotification updates them ONLY
+  // where a real notification actually carries the field (see each field's
+  // own note below); everything else here is stale until the next
+  // thread/read (e.g. a reconnect re-hydrate) and there is no live-push
+  // wire-candidate yet.
+  capabilities: ThreadCapabilities;
+  // Goal is null when no /goal objective is set (wire: SerfThread.Goal
+  // *GoalState, omitempty). No live push exists (goal/set's response
+  // carries only {started}, and appwire/protocol.go's Notifications catalog
+  // has no goal-changed entry) - a future wave's wire-candidate.
+  goal: GoalState | null;
+  contextUsed: number;
+  contextWindow: number;
+  contextPressure: number;
+  // Usage is null (not a zero-valued object) when the daemon has no token
+  // data at all (old daemon, or a Codex-bridged thread) - SerfThread.Usage's
+  // own doc comment: "nil is how a fresh/old-daemon/codex thread signals 'no
+  // token data' rather than rendering ↑0 ↓0." No live push.
+  usage: SerfUsage | null;
+  workMillis: number;
+  // activeTurnStartedAt is undefined when no turn is active (an ISO string,
+  // like every other timestamp on this model, converted from the wire's
+  // epoch-ms SerfThread.ActiveTurnStartedAt). No live push.
+  activeTurnStartedAt?: string;
+  // reasoningEffortLevels/supportsReasoning DO get a live update, but only
+  // via thread/model/changed (a model switch describes the new model's full
+  // profile - see reducer.ts's own case) - never independently pushed.
+  reasoningEffortLevels: string[];
+  supportsReasoning: boolean;
 }

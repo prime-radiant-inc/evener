@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
+import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
@@ -17,6 +18,22 @@ function turn(id: string, itemIds: string[], overrides: Partial<TurnModel> = {})
   return { id, status: "completed", items: itemIds.map((iid) => item(iid, id)), ...overrides };
 }
 
+// This suite exercises scroll behavior, not capability gating - every field
+// here is false/empty, a plausible-but-inert snapshot.
+const NO_CAPABILITIES: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  queue: false,
+  goal: false,
+  rename: false,
+};
+
 function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): ThreadModel {
   return {
     ref: "ref_a",
@@ -31,6 +48,15 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     tasks: null,
     pendingEscalations: [],
     lastFrameAt: 0,
+    capabilities: NO_CAPABILITIES,
+    goal: null,
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
     ...overrides,
   };
 }
