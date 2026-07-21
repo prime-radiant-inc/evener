@@ -178,6 +178,9 @@ export function Rail() {
       setRenameTarget(session);
       setRenameValue(session.title);
     },
+    onToggleFavoriteProject: (project) => {
+      void runAction(() => setFavorite("project", project.key, !project.favorite), "Couldn't update favorite");
+    },
     onToggleArchiveProject: (project) => {
       void runAction(
         () => setArchived("project", project.key, !(project.is_archived ?? false), project.working_dir),

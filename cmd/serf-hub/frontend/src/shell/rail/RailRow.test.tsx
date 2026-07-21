@@ -49,6 +49,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
     onToggleFavorite: vi.fn(),
     onToggleArchiveSession: vi.fn(),
     onRenameRequest: vi.fn(),
+    onToggleFavoriteProject: vi.fn(),
     onToggleArchiveProject: vi.fn(),
     onDeleteProjectRequest: vi.fn(),
     ...overrides,
@@ -182,6 +183,28 @@ describe("session row", () => {
     render(<RailRow node={sessionRailNode(apiNode({ tier: "recent" }))} info={info()} actions={actions()} />);
     expect(screen.getByText("recent")).toBeTruthy();
   });
+
+  // hub tree-wire gaps round (wave 3 task 6): a live-tier row's own
+  // Tier/Favorite/Rename fields used to arrive unstamped (undefined/false)
+  // regardless of the session's real decisions, since handleAPITree's Live
+  // loop bypassed the tier-stamping helper entirely. RailRow never gated
+  // these on tier itself - it just reads session.favorite/session.rename
+  // directly, same as every other row - so once the hub fix landed, this
+  // was already correct with no rail-side code change; pinned explicitly
+  // here (rather than left to incidental coverage from fixtures that never
+  // set tier at all) since a live row is the realistic shape a reviewer
+  // would specifically want proof for.
+  test("favorite star and Rename affordance both work on a live-tier row, not just current/archived ones", async () => {
+    const acts = actions();
+    const session = apiNode({ tier: "live", favorite: true, rename: true });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
+
+    expect(screen.getByTestId("favorite-star")).toBeTruthy();
+    const user = await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Remove from pinned" })).toBeTruthy();
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    expect(acts.onRenameRequest).toHaveBeenCalledWith(session);
+  });
 });
 
 describe("project row", () => {
@@ -226,11 +249,35 @@ describe("project row", () => {
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
   });
 
-  test("menu never offers Favorite or Rename for a project row (not supported by the wire shape)", async () => {
+  test("menu never offers Rename for a project row - only sessions can be renamed", async () => {
     render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
-    expect(screen.queryByRole("menuitem", { name: /pinned/i })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Rename" })).toBeNull();
+  });
+
+  test("shows a favorite star when the project is favorited, hides it otherwise", () => {
+    const { rerender } = render(
+      <RailRow node={projectRailNode(apiProject({ favorite: true }))} info={info()} actions={actions()} />,
+    );
+    expect(screen.getByTestId("favorite-star")).toBeTruthy();
+
+    rerender(<RailRow node={projectRailNode(apiProject({ favorite: false }))} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("favorite-star")).toBeNull();
+  });
+
+  test("menu offers 'Add to pinned' for an unfavorited project and calls onToggleFavoriteProject on select", async () => {
+    const acts = actions();
+    const project = apiProject({ favorite: false, key: "p1" });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
+    const user = await openMenu(/actions for/i);
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    expect(acts.onToggleFavoriteProject).toHaveBeenCalledWith(project);
+  });
+
+  test("menu offers 'Remove from pinned' for a favorited project", async () => {
+    render(<RailRow node={projectRailNode(apiProject({ favorite: true }))} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Remove from pinned" })).toBeTruthy();
   });
 
   test("the synthetic '(no project)' bucket gets no actions menu at all - archive/delete always 400 for it server-side", () => {

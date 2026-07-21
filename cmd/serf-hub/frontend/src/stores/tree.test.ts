@@ -112,6 +112,28 @@ describe("refresh", () => {
     expect(tree?.archived_projects[0]?.session_count).toBe(3);
   });
 
+  // TreeProject.favorite (hubapi's Go field is `omitempty bool`, like
+  // TreeNode's own favorite) is never a nullable array - unlike sessions/
+  // children above, there's no explicit null to collapse, only "present and
+  // true" vs. "absent" - both pass straight through normalizeProject
+  // unchanged. Locks that this task's new field survives the wire round
+  // trip, both ways.
+  test("passes TreeProject.favorite through unchanged: present when the wire sends it, absent otherwise", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        projects: [
+          { key: "p1", name: "Favorited", sessions: null, favorite: true },
+          { key: "p2", name: "Not favorited", sessions: null },
+        ],
+      }),
+    );
+    await treeStore.getState().refresh();
+    const { tree } = treeStore.getState();
+    expect(tree?.projects[0]?.favorite).toBe(true);
+    expect(tree?.projects[1]?.favorite).toBeUndefined();
+  });
+
   test("loading is true while the request is in flight and false once it settles", async () => {
     let resolveFetch!: (value: Response) => void;
     fetchMock.mockReturnValueOnce(

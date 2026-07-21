@@ -414,6 +414,24 @@ describe("favorite action", () => {
     await screen.findByText(/favorite store error: boom/i);
     expect(treeGetCallCount()).toBe(1); // no refetch on failure
   });
+
+  // Project rows gain pin/unpin the same way session rows already have -
+  // TreeProject.Favorite (the hub's own tree-wire gaps round) is what makes
+  // this possible; see actions.ts's setFavorite, generic across both kinds
+  // already.
+  test("toggling favorite on a project POSTs /api/favorite with kind:project and refetches on success", async () => {
+    renderRail();
+    await screen.findByText("prime-radiant");
+    expect(treeGetCallCount()).toBe(1);
+
+    const user = userEvent.setup();
+    const row = rowFor("prime-radiant");
+    await user.click(within(row).getByRole("button", { name: /actions for prime-radiant/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+
+    expect(postCalls).toContainEqual({ path: "/api/favorite", body: { kind: "project", id: "proj1", favorited: true } });
+    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+  });
 });
 
 describe("archive action", () => {

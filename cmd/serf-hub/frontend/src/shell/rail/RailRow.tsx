@@ -66,6 +66,7 @@ export interface RailRowActions {
   onToggleFavorite: (session: ApiTreeNode) => void;
   onToggleArchiveSession: (session: ApiTreeNode) => void;
   onRenameRequest: (session: ApiTreeNode) => void;
+  onToggleFavoriteProject: (project: ApiTreeProject) => void;
   onToggleArchiveProject: (project: ApiTreeProject) => void;
   onDeleteProjectRequest: (project: ApiTreeProject) => void;
 }
@@ -153,12 +154,21 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
 // but the server rejects both archive and delete for this exact key
 // ("no-project is not a local project" - web_api_archive.go/
 // web_api_project_delete.go). Offering menu items that are guaranteed to
-// fail server-side would be worse than offering none.
+// fail server-side would be worse than offering none - kept as an
+// all-or-nothing exclusion (favorite included) rather than special-casing
+// per action, since POST /api/favorite's own project-kind validation is a
+// separate, disclosed gap (unrelated to this row's own scope) that this
+// component has no reliable way to distinguish from "would actually work".
 const NO_PROJECT_KEY = "no-project";
 
 function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
+    {
+      id: "favorite",
+      label: project.favorite ? "Remove from pinned" : "Add to pinned",
+      onSelect: () => actions.onToggleFavoriteProject(project),
+    },
     {
       id: "archive",
       label: project.is_archived ? "Unarchive project" : "Archive project",
@@ -205,6 +215,11 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
       <span className={CLASS.label} onClick={info.activate}>
         {project.name}
       </span>
+      {project.favorite === true && (
+        <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
+          {"★"}
+        </span>
+      )}
       {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
       <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
     </span>

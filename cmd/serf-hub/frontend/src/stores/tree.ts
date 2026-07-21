@@ -61,6 +61,13 @@ export interface TreeProject {
   more_archived?: number;
   worktrees?: number;
   is_archived?: boolean;
+  // Mirrors the project-kind decision POST /api/favorite accepts
+  // (kind:"project"); TreeNode's own favorite field above is the
+  // session-kind counterpart. omitempty bool on the Go side (like
+  // TreeNode.favorite), never a nullable array - absent/false collapse to
+  // the same falsy value, so no normalize* handling is needed beyond this
+  // optional typing.
+  favorite?: boolean;
   session_count?: number;
   // Normalized: the wire's `sessions` (no omitempty - explicit JSON `null`
   // on an archived-project stub) is always a real array here - see
