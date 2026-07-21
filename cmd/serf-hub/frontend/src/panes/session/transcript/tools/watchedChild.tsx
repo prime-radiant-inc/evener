@@ -7,48 +7,16 @@
 // live status/liveness to show, never turn content - a subagent row that
 // wants richer detail already has "open transcript" (subagentModule.tsx)
 // for that.
-import { useEffect, useState } from "react";
-import { Cadence, type CadenceState } from "../../../../widgets";
+import { useEffect } from "react";
+import { Cadence } from "../../../../widgets";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
+import { cadenceStateForStatus, useNowTick, NOW_TICK_MS } from "../../liveness";
 
 export interface WatchedChildIndicatorProps {
   ref: string;
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
-// Same tick interval as panes/session/Session.tsx's own useNowTick (not
-// imported from there - Session.tsx is outside this stream's file
-// ownership; this is a deliberate, small, self-contained duplicate of a
-// "what time is it" clock, not shared state).
-const NOW_TICK_MS = 3_000;
-
-function useNowTick(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
-// cadenceStateForStatus mirrors Session.tsx's own wire-status mapping
-// (duplicated for the same file-ownership reason as useNowTick above -
-// see that function's comment).
-function cadenceStateForStatus(type: string): CadenceState {
-  switch (type) {
-    case "systemError":
-      return "failed";
-    case "awaiting":
-    case "warning":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "closed":
-      return "ended";
-    default:
-      return "idle";
-  }
-}
 
 export function WatchedChildIndicator({ ref: childRef }: WatchedChildIndicatorProps) {
   useEffect(() => {

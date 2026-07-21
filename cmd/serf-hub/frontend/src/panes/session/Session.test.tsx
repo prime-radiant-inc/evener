@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { afterEach, beforeEach, test, expect, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import Session, { cadenceStateForStatus } from "./Session";
+import Session from "./Session";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { ClientProvider } from "../../shell/clientContext";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
@@ -284,12 +284,13 @@ test("Cadence's dot reflects the thread's live status via cadenceStateForStatus,
   });
   // needs-you (awaiting) is a visibly different dot than working (active) -
   // asserted via the shared cadenceStateForStatus mapping rather than a
-  // brittle class-name string, see the direct unit tests below for that.
+  // brittle class-name string, see liveness.test.ts's direct unit tests
+  // for that.
   await waitFor(() => expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("awaiting"));
 });
 
 test("Cadence's frame trace grows as live notifications arrive, sourced from the threads store's frameTimes ring", async () => {
-  // Fake timers so the pane's own now-tick (Session.tsx's useNowTick) and
+  // Fake timers so the pane's own now-tick (liveness.ts's useNowTick) and
   // the store's Date.now()-stamped frameTimes entry can be deterministically
   // synchronized - under real timers a frame recorded even a fraction of a
   // millisecond after the component's last-rendered `now` reads as
@@ -324,34 +325,10 @@ test("Cadence's frame trace grows as live notifications arrive, sourced from the
   expect(document.querySelectorAll('[data-testid="pane-cadence-slot"] rect').length).toBeGreaterThan(0);
 });
 
-// cadenceStateForStatus: direct unit tests, mirroring shell/rail/RailRow.tsx's
-// own cadenceStateFor precedent (exported specifically for this). This maps
-// the RAW wire ThreadStatus.type vocabulary (appwire/types.go's constants),
-// not hubcore's already-normalized NormalizeState output RailRow's version
-// consumes - see Session.tsx's own comment for why they're deliberately
-// separate functions.
-test("cadenceStateForStatus: active is working", () => {
-  expect(cadenceStateForStatus("active")).toBe("working");
-});
-
-test("cadenceStateForStatus: awaiting and warning are both needs-you", () => {
-  expect(cadenceStateForStatus("awaiting")).toBe("needs-you");
-  expect(cadenceStateForStatus("warning")).toBe("needs-you");
-});
-
-test("cadenceStateForStatus: systemError is failed", () => {
-  expect(cadenceStateForStatus("systemError")).toBe("failed");
-});
-
-test("cadenceStateForStatus: closed is ended", () => {
-  expect(cadenceStateForStatus("closed")).toBe("ended");
-});
-
-test("cadenceStateForStatus: idle, notLoaded, and any unknown value are idle", () => {
-  expect(cadenceStateForStatus("idle")).toBe("idle");
-  expect(cadenceStateForStatus("notLoaded")).toBe("idle");
-  expect(cadenceStateForStatus("something-future-and-unknown")).toBe("idle");
-});
+// cadenceStateForStatus's own direct unit tests now live in
+// liveness.test.ts, alongside the function itself (hoisted out of this
+// file so transcript/tools/watchedChild.tsx can share it - see liveness.ts's
+// own header for why).
 
 // --- transcript/flow integration (wave 4 T4) -----------------------------
 //

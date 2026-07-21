@@ -3,14 +3,15 @@
 // PaneHost's own comment in shell/DockHost.tsx), so every durable piece of
 // state here lives in the threads store (ThreadModel, frameTimes) - this
 // component's own state is limited to what may honestly die on a tab
-// switch: the live decay clock (nowTick, below) and the connection-ready
-// gate's local closure, neither of which loses anything a remount can't
-// immediately reconstruct from the store.
-import { useEffect, useRef, useState } from "react";
-import { PaneScaffold, VirtualList, Cadence, EmptyState, type CadenceState, type VirtualListHandle } from "../../widgets";
+// switch: the live decay clock (nowTick, from ./liveness) and the
+// connection-ready gate's local closure, neither of which loses anything a
+// remount can't immediately reconstruct from the store.
+import { useEffect, useRef } from "react";
+import { PaneScaffold, VirtualList, Cadence, EmptyState, type VirtualListHandle } from "../../widgets";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { cadenceStateForStatus, useNowTick, NOW_TICK_MS } from "./liveness";
 import { useTranscript } from "./transcript/useTranscript";
 import { TurnBlock } from "./transcript/TurnBlock";
 // Side-effect barrels: registering every message item renderer (T2) and
@@ -32,55 +33,6 @@ export interface SessionPaneParams {
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
-// Same interval as the legacy renderer's own liveness tick
-// (cmd/serf-hub/assets/renderer.js LIVENESS_TICK_MS=3000) - fine-grained
-// enough that Cadence's tick decay visibly advances promptly, coarse enough
-// to be a non-issue re-rendering cost-wise.
-const NOW_TICK_MS = 3_000;
-
-// cadenceStateForStatus maps the WIRE ThreadStatus.type vocabulary
-// (appwire/types.go's constants: idle/active/awaiting/warning/closed/
-// notLoaded/systemError - ThreadModel.status.type carries this straight
-// through, see reducer.ts) onto Cadence's four-family state space.
-// Deliberately a SEPARATE function from shell/rail/RailRow.tsx's own
-// cadenceStateFor: that one consumes hubcore.NormalizeState's ALREADY-
-// remapped output (closed->ended, systemError->errored folded in) from the
-// REST /api/tree snapshot, not the raw wire vocabulary this pane's live
-// ThreadModel carries - collapsing the raw wire vocabulary straight to
-// CadenceState in one hop here mirrors NormalizeState's own remapping
-// without making this pane depend on shell/rail's module for it. Exported
-// for direct testing, same precedent as cadenceStateFor.
-export function cadenceStateForStatus(type: string): CadenceState {
-  switch (type) {
-    case "systemError":
-      return "failed";
-    case "awaiting":
-    case "warning":
-      return "needs-you";
-    case "active":
-      return "working";
-    case "closed":
-      return "ended";
-    default: // "idle", "notLoaded", "", and any future/unknown value
-      return "idle";
-  }
-}
-
-// useNowTick is the only thing in this pane that owns a timer: Cadence is a
-// pure prop-driven render (widgets/cadence's own doc comment - "no timers,
-// no Date.now()"), so something above it has to own the clock ticks that
-// make its trace visibly decay even between live frames. Transient by
-// design - unmounting drops the interval and a remount just starts a fresh
-// one from the current instant, which is exactly right for a pure "what
-// time is it" signal.
-function useNowTick(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 // A reasonable average-turn guess for VirtualList's `dynamic` mode to
 // correct post-mount from each turn's real rendered height (turns vary
