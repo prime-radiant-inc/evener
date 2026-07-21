@@ -22,15 +22,24 @@ export function reasoningPreview(summaries: string[][] | undefined, maxLen = 80)
 }
 
 // thoughtSeconds computes whole elapsed seconds from two REAL ISO
-// timestamps - never a client wall clock (see this file's own test header
-// comment: internal/appprojector never actually stamps a reasoning item's
-// StartedAt/CompletedAt today, so this predictably returns undefined in
-// practice; it stays correct for whenever the backend adds real timestamps
-// rather than inventing a duration in the meantime - "never synthesized
-// from the client's wall clock" is this codebase's own standing rule for
-// exactly this situation, see parity-m4-transcript.md's tool-meta-timing
-// entries). Floors at 1s so a genuine sub-second thought is never "0s".
-export function thoughtSeconds(startedAt: string | undefined, completedAt: string | undefined): number | undefined {
+// timestamps - never a client wall clock ("never synthesized from the
+// client's wall clock" is this codebase's own standing rule, see
+// parity-m4-transcript.md's tool-meta-timing entries). The wire pair
+// (startedAt/completedAt) wins when present; otherwise falls back to the
+// client-observed arrival pair (observedStartedAt/observedCompletedAt - see
+// ItemModel's own comment in model.ts). Both absent (hydrated/historical
+// items) yields no duration rather than inventing one. Floors at 1s so a
+// genuine sub-second thought is never "0s".
+export function thoughtSeconds(
+  startedAt: string | undefined,
+  completedAt: string | undefined,
+  observedStartedAt?: string,
+  observedCompletedAt?: string,
+): number | undefined {
+  return elapsedSeconds(startedAt, completedAt) ?? elapsedSeconds(observedStartedAt, observedCompletedAt);
+}
+
+function elapsedSeconds(startedAt: string | undefined, completedAt: string | undefined): number | undefined {
   if (!startedAt || !completedAt) return undefined;
   const start = Date.parse(startedAt);
   const end = Date.parse(completedAt);

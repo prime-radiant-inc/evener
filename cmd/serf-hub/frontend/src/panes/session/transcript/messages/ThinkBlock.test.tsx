@@ -105,6 +105,38 @@ test("a real startedAt/completedAt pair (future-proofing - not populated by toda
   expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
 });
 
+test("an observed timing pair (no wire pair) also produces a real Ns label", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        reasoningSummaries: [["content"]],
+        observedStartedAt: "2026-01-01T00:00:00.000Z",
+        observedCompletedAt: "2026-01-01T00:00:03.000Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s · content");
+});
+
+test("the wire pair wins over the observed pair when both are present", () => {
+  render(
+    <ThinkBlock
+      item={item({
+        reasoningSummaries: [["content"]],
+        startedAt: "2026-01-01T00:00:00.000Z",
+        completedAt: "2026-01-01T00:00:04.000Z",
+        observedStartedAt: "2026-01-01T00:00:00.000Z",
+        observedCompletedAt: "2026-01-01T00:00:09.000Z",
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+});
+
 // --- empty thoughts removed --------------------------------------------------
 
 test("settled with no reasoningSummaries at all renders nothing (empty thought removed)", () => {

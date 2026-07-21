@@ -54,14 +54,11 @@ test("preview clips a long first line to the given max length", () => {
 });
 
 // --- thoughtSeconds ----------------------------------------------------------
-// Only ever computes from REAL server timestamps on the item
-// (ItemModel.startedAt/completedAt) - never a client wall clock. As of this
-// wave, internal/appprojector never actually stamps a reasoning item's
-// StartedAt/CompletedAt (confirmed against appwire_projection.go and
-// apptranscript.go's reasoning-item construction sites - neither sets
-// either field), so in practice this always returns undefined today; the
-// function stays correct and ready for whenever the backend adds real
-// timestamps, rather than fabricating one now.
+// Computes from REAL timestamps only - never a client wall clock. The wire
+// pair (ItemModel.startedAt/completedAt) wins when present; otherwise falls
+// back to the client-observed arrival pair (ItemModel.observedStartedAt/
+// observedCompletedAt, stamped by the reducer - see model.ts's own comment).
+// Both absent (hydrated/historical items) yields no duration.
 
 test("undefined startedAt/completedAt yields no duration", () => {
   expect(thoughtSeconds(undefined, undefined)).toBeUndefined();
@@ -80,4 +77,23 @@ test("computes whole elapsed seconds, rounded, from two real ISO timestamps", ()
 
 test("a sub-second elapsed span floors at 1s, never 0s", () => {
   expect(thoughtSeconds("2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.200Z")).toBe(1);
+});
+
+test("neither wire nor observed pair present yields no duration", () => {
+  expect(thoughtSeconds(undefined, undefined, undefined, undefined)).toBeUndefined();
+});
+
+test("falls back to the observed pair when the wire pair is absent", () => {
+  expect(thoughtSeconds(undefined, undefined, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:04.400Z")).toBe(4);
+});
+
+test("the wire pair wins when both the wire and observed pairs are present", () => {
+  expect(
+    thoughtSeconds(
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:10.000Z",
+      "2026-01-01T00:00:00.000Z",
+      "2026-01-01T00:00:02.000Z",
+    ),
+  ).toBe(10);
 });

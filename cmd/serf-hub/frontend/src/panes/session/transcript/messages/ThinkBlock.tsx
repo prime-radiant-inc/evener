@@ -34,10 +34,9 @@ const CLASS = {
 };
 
 // thoughtLabel never fabricates a duration: `seconds` is undefined whenever
-// the wire hasn't given this item real StartedAt/CompletedAt timestamps -
-// which, as of this wave, is always (see reasoningFormat.ts's own
-// thoughtSeconds comment) - and the label honestly omits the number rather
-// than measuring a client-side clock instead.
+// neither the wire pair nor the observed pair is present on this item (see
+// reasoningFormat.ts's own thoughtSeconds comment) - and the label honestly
+// omits the number rather than measuring a client-side clock instead.
 function thoughtLabel(seconds: number | undefined, preview: string): string {
   const durationText = seconds === undefined ? "Thought" : `Thought for ${seconds}s`;
   return [durationText, preview].filter(Boolean).join(" · ");
@@ -60,7 +59,7 @@ export function ThinkBlock({ item, live }: ItemRenderProps) {
   const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
   if (paragraphs.length === 0) return null; // empty thoughts removed
 
-  const seconds = thoughtSeconds(item.startedAt, item.completedAt);
+  const seconds = thoughtSeconds(item.startedAt, item.completedAt, item.observedStartedAt, item.observedCompletedAt);
   const preview = reasoningPreview(item.reasoningSummaries);
 
   return (
