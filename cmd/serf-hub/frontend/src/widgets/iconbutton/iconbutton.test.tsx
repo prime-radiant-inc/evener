@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { IconButton } from "./index";
+import { IconButton, type IconButtonProps } from "./index";
 
 afterEach(cleanup);
 
@@ -104,6 +104,23 @@ test("forwards a ref to the underlying button element", () => {
 test("spreads unrecognized props onto the underlying button element", () => {
   render(<IconButton label="Go" icon={<DotIcon />} data-testid="my-icon-button" />);
   expect(screen.getByRole("button").getAttribute("data-testid")).toBe("my-icon-button");
+});
+
+// --- wave-close review: rest-spread merge order (Important) ------------
+// Same class of gap as Button's (see button.test.tsx): IconButtonProps
+// omits "aria-label" from ButtonHTMLAttributes, so a literal
+// <IconButton aria-label="x"> is a type error, but a caller composing
+// IconButton inside its own wrapper (spreading a props object typed more
+// loosely than IconButtonProps) is not caught by TypeScript's
+// excess-property check. label is IconButton's ONLY accessible name -
+// letting a stray aria-label through would silently replace it. The
+// prior test above only spreads a non-conflicting key (data-testid), so
+// it never exercised this. Simulated via a cast through unknown, since
+// the point under test is the runtime prop-merge order.
+test("a caller-supplied aria-label arriving via untyped spread does not override the label prop's own accessible name", () => {
+  const conflicting = { label: "Go", icon: <DotIcon />, "aria-label": "caller-injected" } as unknown as IconButtonProps;
+  render(<IconButton {...conflicting} />);
+  expect(screen.getByRole("button").getAttribute("aria-label")).toBe("Go");
 });
 
 // IconButton reuses Button's own base class (not a duplicate CSS rule) so

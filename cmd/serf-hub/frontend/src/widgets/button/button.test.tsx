@@ -5,7 +5,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Button } from "./index";
+import { Button, type ButtonProps } from "./index";
+import { requireClass } from "../internal/requireClass";
+import rawStyles from "./button.module.css";
+
+const styles = {
+  button: requireClass(rawStyles.button, "button.module.css", "button"),
+  primary: requireClass(rawStyles.primary, "button.module.css", "primary"),
+  md: requireClass(rawStyles.md, "button.module.css", "md"),
+};
 
 // This project doesn't wire @testing-library/react's auto-cleanup into a
 // global vitest setup file (vite.config.ts's setupFiles is empty, and that
@@ -119,6 +127,28 @@ test("spreads unrecognized props onto the underlying button element", () => {
   const button = screen.getByRole("button");
   expect(button.getAttribute("aria-describedby")).toBe("hint-id");
   expect(button.getAttribute("data-testid")).toBe("my-button");
+});
+
+// --- wave-close review: rest-spread merge order (Important) ------------
+// ButtonProps omits "className" from ButtonHTMLAttributes, so a literal
+// <Button className="x"> is a type error - but that only guards object
+// literals. A caller composing Button inside its own wrapper component
+// (spreading a props object typed more loosely than ButtonProps) is NOT
+// caught by TypeScript's excess-property check, which fires only on
+// object literals, not on a spread variable. The prior test above only
+// spreads non-conflicting keys (aria-describedby, data-testid), so it
+// passes regardless of {...rest}'s position in the JSX and never
+// exercised this. Simulated here via a cast through unknown, since the
+// point under test is the runtime prop-merge order, not the type escape
+// hatch itself.
+test("a caller-supplied className arriving via untyped spread does not override the widget's own classes", () => {
+  const conflicting = { children: "Go", className: "caller-injected" } as unknown as ButtonProps;
+  render(<Button {...conflicting} />);
+  const button = screen.getByRole("button");
+  expect(button.classList.contains(styles.button)).toBe(true);
+  expect(button.classList.contains(styles.primary)).toBe(true);
+  expect(button.classList.contains(styles.md)).toBe(true);
+  expect(button.className).not.toContain("caller-injected");
 });
 
 // jsdom does not compute :focus-visible-triggered styles, so the exemplar's

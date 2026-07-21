@@ -51,6 +51,15 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * underlying <button>, mirroring Button (see that widget's index.tsx) -
  * class-reuse between the two is CSS-only and doesn't carry this over on
  * its own.
+ *
+ * {...rest} is spread BEFORE type/aria-label/className/onClick/disabled
+ * below, not after - same merge-order reasoning as Button (see that
+ * widget's index.tsx): a later JSX attribute wins a same-key conflict,
+ * and IconButtonProps' Omit<..., "aria-label"> only blocks an object
+ * *literal*, not a caller spreading a more loosely-typed props object.
+ * Getting this backwards previously let a stray aria-label silently
+ * replace label as the button's only accessible name - see the
+ * "arriving via untyped spread" test in iconbutton.test.tsx.
  */
 export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
   { label, icon, variant = "primary", size = "md", onClick, disabled = false, type = "button", ...rest },
@@ -59,12 +68,12 @@ export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(functio
   return (
     <button
       ref={ref}
+      {...rest}
       type={type}
       aria-label={label}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
       onClick={onClick}
       disabled={disabled}
-      {...rest}
     >
       <span className={BASE_CLASS.icon}>{icon}</span>
     </button>

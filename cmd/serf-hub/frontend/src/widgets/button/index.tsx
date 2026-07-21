@@ -42,6 +42,17 @@ const SIZE_CLASS: Record<ButtonSize, string> = {
  * focus - reach the real DOM node; before this, both were silently
  * dropped since Button rendered from a fixed prop list with no rest
  * spread. See tooltip.test.tsx for the cross-widget integration proof.
+ *
+ * {...rest} is spread BEFORE type/className/onClick/disabled below, not
+ * after: a later JSX attribute always wins a same-key conflict, so this
+ * ordering is what actually makes those props caller-non-overridable.
+ * ButtonProps' Omit<..., "className"> only blocks an object *literal*
+ * like <Button className="x"> - it does not catch a caller spreading a
+ * more loosely-typed props object (e.g. from its own wrapper component),
+ * which is exactly the case TypeScript's excess-property check does not
+ * cover. Getting this order backwards previously let such a className
+ * silently replace Button's variant/size/focus-ring classes - see the
+ * "arriving via untyped spread" test in button.test.tsx.
  */
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { variant = "primary", size = "md", icon, children, onClick, disabled = false, type = "button", ...rest },
@@ -50,11 +61,11 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   return (
     <button
       ref={ref}
+      {...rest}
       type={type}
       className={`${BASE_CLASS.button} ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]}`}
       onClick={onClick}
       disabled={disabled}
-      {...rest}
     >
       {icon !== undefined && <span className={BASE_CLASS.icon}>{icon}</span>}
       {children}

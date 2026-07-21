@@ -244,6 +244,11 @@ current gap:
   navigation on a touchscreen) — who would genuinely benefit from the description being
   announced even though they'll never see the visual bubble. Suppressing the "dead" wiring and
   removing a real accessibility benefit for exactly the users who might need it most is a worse
-  trade than leaving admittedly-redundant code running. Left as-is, flagged for a more careful
-  pass that can validate actual AT behavior on a real touch+screen-reader device, not reasoned
-  about in the abstract.
+  trade than leaving admittedly-redundant code running. A narrower alternative was considered —
+  gate only the mouse path (`onMouseEnter`/`onMouseLeave`, which never fires on a real touch
+  device anyway) behind `matchMedia('(hover: none)')` while leaving `onFocus`/`onBlur` fully
+  ungated, since Tooltip already wires all four as independent handlers — but it's flagged for
+  the same follow-up pass rather than made now, without real-device AT verification that it
+  doesn't change touch+AT behavior in some non-obvious way. Left as-is, flagged for a more
+  careful pass that can validate actual AT behavior on a real touch+screen-reader device, not
+  reasoned about in the abstract.
