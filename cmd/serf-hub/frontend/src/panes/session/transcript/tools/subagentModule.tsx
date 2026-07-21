@@ -15,11 +15,13 @@
 // mount within a turn (VirtualList windows a whole TurnBlock as one row -
 // see TurnBlock.tsx's own file - so a turn's items always mount/unmount
 // together, making "first to render, in wire/array order" a real,
-// deterministic signal, not a race) claims leadership via a lazy useState
-// initializer and is the only one that renders the module chrome; every
-// other delegate item in the same turn renders nothing further (its own
-// one-line summary still shows independently - that's ToolCallItem's
-// mandatory summary span, owned by T1, not this body).
+// deterministic signal, not a race) claims leadership inside a
+// useLayoutEffect (symmetric with its own release - see DelegateBody's own
+// comment for why claim and release must live in the same effect) and is
+// the only one that renders the module chrome; every other delegate item in
+// the same turn renders nothing further (its own one-line summary still
+// shows independently - that's ToolCallItem's mandatory summary span, owned
+// by T1, not this body).
 //
 // Scope decision: only `delegate` (the spawn) and the three follow-up
 // calls above ever touch a row. job_list/job_watch do not - they're
@@ -239,17 +241,32 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
 }
 
 function DelegateBody({ item }: ToolRenderProps) {
-  const [isLeader] = useState(() => claimLeader(item.turnId, item.id));
+  const [isLeader, setIsLeader] = useState(false);
 
   useLayoutEffect(() => {
     const { rowKey, row } = rowFromDelegateItem(item);
     upsertSubagentRow(item.turnId, { rowKey, ...row });
   });
 
+  // Claim AND release inside the SAME effect - never a useState lazy
+  // initializer, which runs at render time (store setState during render is
+  // an impure-render anti-pattern on its own, StrictMode aside). This makes
+  // the claim self-healing across StrictMode's dev-only mount -> cleanup ->
+  // remount double-invoke: a split where claiming happened once at render
+  // but releasing/re-claiming only happened in the effect meant the interim
+  // cleanup pass freed the store's leader slot while this component stayed
+  // mounted (its own isLeader would never be recomputed to notice) - a
+  // later-mounting delegate in the same turn could then also claim the now-
+  // vacant slot. Keeping both calls in one effect means the double-invoke's
+  // immediately-following remount pass re-runs this exact body and
+  // re-claims before anything else gets a chance to. See this file's own
+  // StrictMode test for the failure mode this fixes.
   useLayoutEffect(() => {
-    if (!isLeader) return;
+    const leader = claimLeader(item.turnId, item.id);
+    setIsLeader(leader);
+    if (!leader) return;
     return () => releaseLeader(item.turnId, item.id);
-  }, [isLeader, item.turnId, item.id]);
+  }, [item.turnId, item.id]);
 
   return isLeader ? <SubagentModule turnId={item.turnId} /> : null;
 }

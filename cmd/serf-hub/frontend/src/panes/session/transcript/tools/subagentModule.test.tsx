@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, test, expect } from "vitest";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { lazy } from "react";
+import { lazy, StrictMode } from "react";
 import { toolRendererFor } from "../toolRenderers";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
@@ -141,6 +141,58 @@ test("a delegate item in a DIFFERENT turn gets its own, separate module", () => 
     </>,
   );
   expect(screen.getAllByTestId("subagent-module")).toHaveLength(2);
+});
+
+// claimLeader/releaseLeader must stay symmetric across StrictMode's dev-only
+// mount -> cleanup -> remount double-invoke of effects (React double-invokes
+// mount effects once, in development, to surface exactly this class of bug -
+// see Session.test.tsx's own StrictMode test and AppShell.tsx:55's comment
+// for this codebase's existing precedent that StrictMode-safety is upheld
+// even though production doesn't wrap in StrictMode today). Claiming inside
+// a useState lazy initializer (render phase) while releasing inside a
+// useLayoutEffect cleanup (effect phase) is asymmetric: the double-invoke's
+// interim cleanup pass frees the store's leader slot while the leader
+// component stays mounted and its own `isLeader` state is frozen forever, so
+// nothing re-claims the slot on the double-invoke's remount pass - a THIRD
+// delegate item mounting afterward, into the now-vacant slot, then also
+// claims leadership.
+test("StrictMode's mount-cleanup-remount double-invoke keeps leadership with the first item; a later-mounting delegate in the same turn must not also claim it", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const first = delegateItem({
+    id: "ds1",
+    callId: "call_ds1",
+    argumentsJSON: JSON.stringify({ task: "strict first" }),
+  });
+  const second = delegateItem({
+    id: "ds2",
+    callId: "call_ds2",
+    argumentsJSON: JSON.stringify({ task: "strict second" }),
+  });
+  const third = delegateItem({
+    id: "ds3",
+    callId: "call_ds3",
+    argumentsJSON: JSON.stringify({ task: "strict third" }),
+  });
+
+  const { rerender } = render(
+    <StrictMode>
+      <Body item={first} live={false} />
+      <Body item={second} live={false} />
+    </StrictMode>,
+  );
+  expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
+
+  // third mounts fresh, in the SAME turn, after the first two have already
+  // been through StrictMode's double-invoke cycle once.
+  rerender(
+    <StrictMode>
+      <Body item={first} live={false} />
+      <Body item={second} live={false} />
+      <Body item={third} live={false} />
+    </StrictMode>,
+  );
+  expect(screen.getAllByTestId("subagent-module")).toHaveLength(1);
 });
 
 // --- row content ----------------------------------------------------------
