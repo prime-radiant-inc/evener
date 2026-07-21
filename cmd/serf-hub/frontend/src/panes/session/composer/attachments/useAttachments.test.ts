@@ -1,0 +1,356 @@
+import { act, renderHook } from "@testing-library/react";
+import type { RefObject } from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { useAttachments } from "./useAttachments";
+
+// Same jsdom canvas-stub technique as encodePng.test.ts (see that file's
+// own header comment) - useAttachments calls the REAL reencodeToPng
+// internally, so its tests exercise the real orchestration end to end
+// rather than mocking the module it depends on.
+let originalGetContext: typeof HTMLCanvasElement.prototype.getContext;
+let originalToBlob: typeof HTMLCanvasElement.prototype.toBlob;
+let originalImage: typeof Image;
+let originalCreateObjectURL: typeof URL.createObjectURL;
+let originalRevokeObjectURL: typeof URL.revokeObjectURL;
+
+beforeEach(() => {
+  originalGetContext = HTMLCanvasElement.prototype.getContext;
+  originalToBlob = HTMLCanvasElement.prototype.toBlob;
+  originalImage = globalThis.Image;
+  originalCreateObjectURL = URL.createObjectURL;
+  originalRevokeObjectURL = URL.revokeObjectURL;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+
+  HTMLCanvasElement.prototype.getContext = (() => ({ drawImage() {} })) as unknown as typeof originalGetContext;
+  HTMLCanvasElement.prototype.toBlob = function (this: HTMLCanvasElement, callback: BlobCallback): void {
+    callback(new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }));
+  };
+  class FakeImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    width = 8;
+    height = 4;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      Promise.resolve().then(() => this.onload?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = FakeImage;
+});
+
+afterEach(() => {
+  HTMLCanvasElement.prototype.getContext = originalGetContext;
+  HTMLCanvasElement.prototype.toBlob = originalToBlob;
+  globalThis.Image = originalImage;
+  URL.createObjectURL = originalCreateObjectURL;
+  URL.revokeObjectURL = originalRevokeObjectURL;
+  vi.restoreAllMocks();
+});
+
+function installDecodeErrorStub(): void {
+  class FailingImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      Promise.resolve().then(() => this.onerror?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = FailingImage;
+}
+
+function makeTextareaRef(value = "", cursor = 0): RefObject<HTMLTextAreaElement | null> {
+  const el = document.createElement("textarea");
+  el.value = value;
+  el.selectionStart = cursor;
+  el.selectionEnd = cursor;
+  return { current: el };
+}
+
+function makeFile(name: string, type = "image/png", size = 1024): File {
+  const bytes = new Uint8Array(size);
+  return new File([bytes], name, { type });
+}
+
+async function flush(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+test("ingesting an image synchronously inserts its marker and flags the item pending", () => {
+  const ref = makeTextareaRef("hello", 5);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+
+  expect(ref.current?.value).toBe("hello[image 1]");
+  expect(result.current.items).toHaveLength(1);
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true, name: "a.png" });
+  expect(result.current.hasPending).toBe(true);
+});
+
+test("after the async re-encode resolves, the item flips to settled with data/width/height", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+
+  expect(result.current.items[0]).toMatchObject({ marker: 1, pending: false, width: 8, height: 4 });
+  expect(typeof result.current.items[0]?.data).toBe("string");
+  expect(result.current.hasPending).toBe(false);
+});
+
+test("two files in the same ingest call get sequential markers inserted side by side", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
+  });
+
+  expect(ref.current?.value).toBe("[image 1][image 2]");
+  expect(result.current.items.map((i) => i.marker)).toEqual([1, 2]);
+  await flush();
+  expect(result.current.items.every((i) => !i.pending)).toBe(true);
+});
+
+test("a non-image file is rejected: no item, no marker, and onRejected receives the reason", () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+  const onRejected = vi.fn();
+
+  act(() => {
+    result.current.ingestFiles([makeFile("notes.txt", "text/plain")], onRejected);
+  });
+
+  expect(ref.current?.value).toBe("");
+  expect(result.current.items).toHaveLength(0);
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("notes.txt");
+});
+
+test("an oversized image is rejected before decode, naming the 8 MB limit", () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+  const onRejected = vi.fn();
+
+  act(() => {
+    result.current.ingestFiles([makeFile("big.png", "image/png", 8 * 1024 * 1024 + 1)], onRejected);
+  });
+
+  expect(result.current.items).toHaveLength(0);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 MB");
+});
+
+test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+  const onRejected = vi.fn();
+
+  act(() => {
+    result.current.ingestFiles(
+      [makeFile("ok.png"), makeFile("a.txt", "text/plain"), makeFile("b.pdf", "application/pdf")],
+      onRejected,
+    );
+  });
+
+  expect(result.current.items).toHaveLength(1);
+  expect(onRejected).toHaveBeenCalledTimes(1);
+  const message = onRejected.mock.calls[0]?.[0] as string;
+  expect(message).toContain("a.txt");
+  expect(message).toContain("b.pdf");
+});
+
+test("the 9th image in one session is rejected on the count cap, naming the 8-image limit", () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles(
+      Array.from({ length: 8 }, (_, i) => makeFile(`${i}.png`)),
+      () => {},
+    );
+  });
+  expect(result.current.items).toHaveLength(8);
+
+  const onRejected = vi.fn();
+  act(() => {
+    result.current.ingestFiles([makeFile("ninth.png")], onRejected);
+  });
+  expect(result.current.items).toHaveLength(8);
+  expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 images");
+});
+
+test("a decode failure strips the marker, drops the item, and reports via onRejected", async () => {
+  const ref = makeTextareaRef("", 0);
+  installDecodeErrorStub();
+  const { result } = renderHook(() => useAttachments(ref));
+  const onRejected = vi.fn();
+
+  act(() => {
+    result.current.ingestFiles([makeFile("bad.png")], onRejected);
+  });
+  expect(ref.current?.value).toBe("[image 1]");
+  await flush();
+
+  expect(ref.current?.value).toBe("");
+  expect(result.current.items).toHaveLength(0);
+  expect(onRejected).toHaveBeenCalledTimes(1);
+});
+
+test("removeItem strips the marker text and removes exactly that item", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
+  });
+  await flush();
+
+  act(() => {
+    result.current.removeItem(1);
+  });
+
+  expect(ref.current?.value).toBe("[image 2]");
+  expect(result.current.items.map((i) => i.marker)).toEqual([2]);
+});
+
+test("marker numbering never reuses a number removed via removeItem", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+  act(() => {
+    result.current.removeItem(1);
+  });
+  expect(result.current.items).toHaveLength(0);
+
+  act(() => {
+    result.current.ingestFiles([makeFile("b.png")], () => {});
+  });
+  expect(result.current.items[0]?.marker).toBe(2);
+});
+
+test("clearSubmitted removes exactly the submitted markers, leaving items added mid-flight intact", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+  const submittedMarkers = new Set(result.current.items.map((i) => i.marker));
+
+  // Simulate a new attachment arriving while that submit is still in flight.
+  act(() => {
+    result.current.ingestFiles([makeFile("b.png")], () => {});
+  });
+  await flush();
+
+  act(() => {
+    result.current.clearSubmitted(submittedMarkers);
+  });
+
+  expect(result.current.items).toHaveLength(1);
+  expect(result.current.items[0]?.name).toBe("b.png");
+});
+
+test("clearSubmitted resets the marker counter to restart at 1 once the result is empty", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+  const submittedMarkers = new Set(result.current.items.map((i) => i.marker));
+
+  act(() => {
+    result.current.clearSubmitted(submittedMarkers);
+  });
+  expect(result.current.items).toHaveLength(0);
+
+  act(() => {
+    result.current.ingestFiles([makeFile("fresh.png")], () => {});
+  });
+  expect(result.current.items[0]?.marker).toBe(1);
+});
+
+test("clearSubmitted does NOT reset the counter when surviving (mid-flight) items remain", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+  const submittedMarkers = new Set(result.current.items.map((i) => i.marker));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("b.png")], () => {});
+  });
+  await flush();
+
+  act(() => {
+    result.current.clearSubmitted(submittedMarkers);
+  });
+  expect(result.current.items).toHaveLength(1);
+
+  act(() => {
+    result.current.ingestFiles([makeFile("c.png")], () => {});
+  });
+  // b.png kept marker 2; c.png must be 3, never reusing 1.
+  expect(result.current.items.map((i) => i.marker)).toEqual([2, 3]);
+});
+
+test("toInputAttachments maps settled items to the wire-facing {mediaType, data, name} shape only", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+
+  const attachments = result.current.toInputAttachments();
+  expect(attachments).toHaveLength(1);
+  expect(attachments[0]).toEqual({
+    mediaType: "image/png",
+    data: result.current.items[0]?.data,
+    name: "a.png",
+  });
+});
+
+test("hasPending stays true until every in-flight item has settled", async () => {
+  const ref = makeTextareaRef("", 0);
+  const { result } = renderHook(() => useAttachments(ref));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
+  });
+  expect(result.current.hasPending).toBe(true);
+  await flush();
+  expect(result.current.hasPending).toBe(false);
+});
