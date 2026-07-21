@@ -322,6 +322,23 @@ test("prependOlderTurns keeps order and advances olderCursor", () => {
   expect(result.olderCursor).toBe("cursor_0");
 });
 
+// ThreadTurnsListResponse.data is typed as a required Turn[], but that's a
+// TS-side promise, not a wire guarantee - mirrors the same defense
+// hydrateThread/wireToTurnModel already apply to thread.turns/turn.items
+// (both `?? []`). A response missing `data` entirely (the Go zero value for
+// a nil slice marshals as JSON `null`, not `[]`) must not crash and must
+// behave as "an empty page" rather than losing the turns already in model.
+test("prependOlderTurns tolerates a wire-nullable data array (treats it as an empty page)", () => {
+  const thread = testThread({ turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.serf.ref, 1000);
+
+  const resp = { nextCursor: "cursor_0" } as unknown as ThreadTurnsListResponse;
+  const result = prependOlderTurns(model, resp);
+
+  expect(result.turns.map((t) => t.id)).toEqual(["turn_2"]);
+  expect(result.olderCursor).toBe("cursor_0");
+});
+
 test("askPending flips from thread snapshot and item lifecycle", () => {
   const askingModel = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
   expect(askingModel.askPending).toBe(true);

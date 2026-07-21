@@ -134,7 +134,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 }
 
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const older = resp.data.map(wireToTurnModel);
+  const older = (resp.data ?? []).map(wireToTurnModel);
   return {
     ...model,
     turns: [...older, ...model.turns],
