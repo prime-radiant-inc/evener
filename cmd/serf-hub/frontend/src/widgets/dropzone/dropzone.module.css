@@ -1,0 +1,14 @@
+.zone {
+  position: relative;
+}
+
+/* --accent (not --attention/--alive/--danger) is deliberate: a drag-hover
+ * highlight is ordinary interaction chrome, not one of the three
+ * meaning-gated attention hues (see src/styles/token-contract.test.ts) -
+ * this file has no allowlist entry to earn and needs none. */
+.active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-bg);
+  border-radius: var(--radius-pane);
+}

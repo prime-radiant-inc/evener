@@ -1,0 +1,20 @@
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.zoneBody {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  min-width: 220px;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+}
+
+.dropped {
+  color: var(--ink-hi);
+}

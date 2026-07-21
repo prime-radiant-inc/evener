@@ -1,4 +1,4 @@
-import { type ChangeEvent, useLayoutEffect, useRef } from "react";
+import { type ChangeEvent, type ClipboardEvent, forwardRef, type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./textarea.module.css";
 
@@ -22,6 +22,18 @@ export interface TextareaProps {
   rows?: number;
   id?: string;
   name?: string;
+  /** Native keydown passthrough - e.g. a composer's Enter-to-send/steer
+   * routing (checking key/modifiers and optionally calling
+   * preventDefault()). Fires before onChange for the same keystroke. */
+  onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Native paste passthrough - e.g. a composer intercepting a pasted image
+   * off the clipboard while leaving a text-only paste to the browser's own
+   * default insertion (never calling preventDefault() itself). */
+  onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+  /** Accessible name when no visible `<label>` owns this field - e.g. a
+   * composer whose only visual cue is a placeholder (which screen readers
+   * must not rely on alone). */
+  "aria-label"?: string;
 }
 
 const MIN_ROWS = 2;
@@ -44,8 +56,28 @@ function resizeToFitContent(el: HTMLTextAreaElement): void {
   el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
 }
 
-/** A multi-line text field. Controlled only, mirroring Input. */
-export function Textarea({ value, onChange, placeholder, disabled = false, autoGrow, rows, id, name }: TextareaProps) {
+/** A multi-line text field. Controlled only, mirroring Input. Forwards its
+ * ref to the native element (a composer needs imperative focus()/
+ * selectionStart access alongside the controlled value - see
+ * panes/session/composer's attachment-marker helpers) while still keeping
+ * its own internal ref for the autoGrow measurement effect below; the
+ * inline ref callback sets both from the one native node. */
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
+  {
+    value,
+    onChange,
+    placeholder,
+    disabled = false,
+    autoGrow,
+    rows,
+    id,
+    name,
+    onKeyDown,
+    onPaste,
+    "aria-label": ariaLabel,
+  },
+  forwardedRef,
+) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: value is a deliberate trigger-only dep - resizeToFitContent reads the DOM element's own (React-already-updated) value/scrollHeight, never the `value` variable directly, but the effect must still re-run on every keystroke to remeasure
@@ -57,15 +89,22 @@ export function Textarea({ value, onChange, placeholder, disabled = false, autoG
 
   return (
     <textarea
-      ref={textareaRef}
+      ref={(node) => {
+        textareaRef.current = node;
+        if (typeof forwardedRef === "function") forwardedRef(node);
+        else if (forwardedRef) forwardedRef.current = node;
+      }}
       id={id}
       name={name}
       className={BASE_CLASS.textarea}
       value={value}
       onChange={onChange}
+      onKeyDown={onKeyDown}
+      onPaste={onPaste}
       placeholder={placeholder}
+      aria-label={ariaLabel}
       disabled={disabled}
       rows={autoGrow ? MIN_ROWS : (rows ?? MIN_ROWS)}
     />
   );
-}
+});

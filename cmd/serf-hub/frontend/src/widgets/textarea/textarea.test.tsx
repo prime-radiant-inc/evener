@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MAX_HEIGHT_VIEWPORT_FRACTION, Textarea } from "./index";
 
@@ -64,6 +64,38 @@ test("is keyboard-focusable when enabled", () => {
   const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
   textarea.focus();
   expect(document.activeElement).toBe(textarea);
+});
+
+// --- ref forwarding + onKeyDown/onPaste: composer-consumers need imperative
+// access (focus(), selectionStart/selectionEnd for cursor-position work) and
+// native keydown/paste interception (Enter-to-send routing, clipboard-image
+// capture) that a controlled value/onChange pair alone can't provide - see
+// panes/session/composer's own attachment + submit-routing modules for the
+// real consumers of both.
+test("forwards a ref to the underlying native textarea element", () => {
+  const ref = createRef<HTMLTextAreaElement>();
+  render(<Textarea ref={ref} value="hi" onChange={() => {}} />);
+  expect(ref.current).toBe(screen.getByRole("textbox"));
+});
+
+test("calls onKeyDown with the native keyboard event", async () => {
+  const user = userEvent.setup();
+  const onKeyDown = vi.fn();
+  render(<Textarea value="" onChange={() => {}} onKeyDown={onKeyDown} />);
+  await user.type(screen.getByRole("textbox"), "{Enter}");
+  expect(onKeyDown).toHaveBeenCalledTimes(1);
+  expect(onKeyDown.mock.calls[0]?.[0]).toHaveProperty("key", "Enter");
+});
+
+test("calls onPaste with the native clipboard event", () => {
+  const onPaste = vi.fn();
+  render(<Textarea value="" onChange={() => {}} onPaste={onPaste} />);
+  const textarea = screen.getByRole("textbox");
+  const pasteEvent = Object.assign(new Event("paste", { bubbles: true, cancelable: true }), {
+    clipboardData: { items: [] },
+  });
+  textarea.dispatchEvent(pasteEvent);
+  expect(onPaste).toHaveBeenCalledTimes(1);
 });
 
 test("without autoGrow, rows stays at the default regardless of newlines", () => {
