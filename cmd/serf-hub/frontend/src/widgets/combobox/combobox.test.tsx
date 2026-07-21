@@ -317,3 +317,31 @@ test("forwards aria-labelledby to the input", () => {
   );
   expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
 });
+
+// --- fix-wave: role=listbox accessible name (Important) ----------------
+// The popup listbox had no name of its own - same gap as an unlabelled
+// role=menu (see menu.test.tsx). It carries the same aria-label/
+// aria-labelledby the input was given, rather than a separate id: the
+// listbox and its input describe the same one picker, so there is exactly
+// one label source to point both at, not two independent ones to keep in
+// sync.
+test("the popup listbox shares the input's aria-label", async () => {
+  const user = setupUser();
+  render(<Combobox options={MODELS} onQuery={vi.fn()} onPick={vi.fn()} aria-label="Model" />);
+  screen.getByRole("combobox", { name: "Model" }).focus();
+  await user.keyboard("{ArrowDown}");
+  expect(screen.getByRole("listbox", { name: "Model" })).toBeTruthy();
+});
+
+test("the popup listbox shares the input's aria-labelledby", async () => {
+  const user = setupUser();
+  render(
+    <div>
+      <span id="model-label">Model</span>
+      <Combobox options={MODELS} onQuery={vi.fn()} onPick={vi.fn()} aria-labelledby="model-label" />
+    </div>,
+  );
+  screen.getByRole("combobox", { name: "Model" }).focus();
+  await user.keyboard("{ArrowDown}");
+  expect(screen.getByRole("listbox", { name: "Model" })).toBeTruthy();
+});

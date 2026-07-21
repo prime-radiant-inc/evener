@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import styles from "./menu.module.css";
@@ -66,6 +66,7 @@ export function Menu({ trigger, items }: MenuProps) {
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const rootRef = useRef<HTMLDivElement>(null);
   const itemRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const triggerId = useId();
 
   function openMenu() {
     setActiveIndex(firstEnabledIndex(items));
@@ -158,6 +159,7 @@ export function Menu({ trigger, items }: MenuProps) {
   return (
     <div ref={rootRef} className={CLASS.root}>
       <button
+        id={triggerId}
         type="button"
         className={CLASS.trigger}
         aria-haspopup="menu"
@@ -169,7 +171,7 @@ export function Menu({ trigger, items }: MenuProps) {
       </button>
       {isOpen && (
         <FocusScope trap>
-          <ul role="menu" className={CLASS.popup} onKeyDown={handleMenuKeyDown}>
+          <ul role="menu" aria-labelledby={triggerId} className={CLASS.popup} onKeyDown={handleMenuKeyDown}>
             {items.map((item, index) => (
               <li
                 key={item.id}

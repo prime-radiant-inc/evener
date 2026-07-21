@@ -44,9 +44,13 @@ const CLASS = {
  *
  * Accessible name: pass `aria-labelledby` (pointing at an external label
  * element's id) as the primary, recommended pattern - both it and
- * `aria-label` are forwarded to the input as-is. This keeps the
- * combobox's name fixed to just that label, never the popup's rendered
- * option text. Wrapping in a native <label> instead
+ * `aria-label` are forwarded to the input AND to the popup listbox
+ * (whichever was passed; both attributes just pass through undefined when
+ * absent). The input and the listbox are two roles describing the same
+ * one picker, so they share the single label source given rather than
+ * each carrying their own - this keeps the combobox's name fixed to just
+ * that label, never the popup's rendered option text. Wrapping in a
+ * native <label> instead
  * (`<label>Model<Combobox .../></label>`) still works via descendant
  * containment regardless of the wrapper <div> in between, but is a
  * secondary option with a caveat: name-from-content computation walks the
@@ -180,7 +184,13 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
         aria-labelledby={ariaLabelledBy}
       />
       {showPopup && (
-        <ul role="listbox" id={listboxId} className={CLASS.listbox}>
+        <ul
+          role="listbox"
+          id={listboxId}
+          aria-label={ariaLabel}
+          aria-labelledby={ariaLabelledBy}
+          className={CLASS.listbox}
+        >
           {options.map((option, index) => (
             <li
               key={option.id}

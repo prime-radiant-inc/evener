@@ -55,6 +55,19 @@ test("the trigger announces its popup state via aria-haspopup/aria-expanded", as
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
+// --- fix-wave: role=menu accessible name (Important) -------------------
+// A menu with no accessible name announces as just "menu" to a screen
+// reader - indistinguishable from any other menu on the page. Labelling
+// it via the trigger (whatever text/content opened it) is the standard
+// menu-button pattern and needs no new prop: the trigger already carries
+// the name a sighted user associates with this menu.
+test("the popup's accessible name matches the trigger content (aria-labelledby)", async () => {
+  const user = userEvent.setup();
+  render(<Menu trigger="Actions" items={items()} />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu", { name: "Actions" })).toBeTruthy();
+});
+
 test("opening focuses the first item", async () => {
   const user = userEvent.setup();
   render(<Menu trigger="Actions" items={items()} />);
