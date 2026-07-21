@@ -73,6 +73,10 @@ type TreeProject struct {
 	MoreArchived    int    `json:"more_archived,omitempty"`
 	Worktrees       int    `json:"worktrees,omitempty"`
 	IsArchived      bool   `json:"is_archived,omitempty"`
+	// Favorite mirrors the project-kind decision POST /api/favorite accepts
+	// (kind:"project"); TreeNode's own Favorite field is the session-kind
+	// counterpart.
+	Favorite bool `json:"favorite,omitempty"`
 	// SessionCount is set on archived-project stubs in /api/tree, whose
 	// Sessions are omitted (null) to keep the snapshot bounded; the sidebar
 	// lazy-loads the sessions from /api/tree/project?key= on expand.

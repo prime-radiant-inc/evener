@@ -626,6 +626,7 @@ func (s *WebServer) apiTreeProject(scope string, favs map[hubcore.ArchiveKey]boo
 		MoreArchived:    p.MoreArchived,
 		Worktrees:       p.Worktrees,
 		IsArchived:      p.IsArchived,
+		Favorite:        favs[hubcore.ArchiveKey{Kind: "project", ID: p.Key}],
 	}
 	for _, n := range p.Current {
 		ap.Sessions = append(ap.Sessions, s.apiTreeNodeTier(scope, p.Key, "current", favs, n))

@@ -618,3 +618,108 @@ func TestWeb_APITreeLiveRowsCarryTierFavoriteRename(t *testing.T) {
 		t.Fatalf("live row Rename=false, want true (local session): %+v", node)
 	}
 }
+
+// projectRawFromResponse decodes body as raw JSON and returns the sole
+// entry of top-level key arrayKey (e.g. "projects") as a map, so a test can
+// assert a field's exact wire presence/absence — an omitempty field
+// unmarshaled into hubapi.TreeProject can't distinguish "false" from
+// "absent," but the raw JSON can.
+func projectRawFromResponse(t *testing.T, body []byte, arrayKey string) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode raw JSON: %v", err)
+	}
+	arr, _ := raw[arrayKey].([]any)
+	if len(arr) != 1 {
+		t.Fatalf("want 1 entry in raw %q, got %+v", arrayKey, raw[arrayKey])
+	}
+	entry, ok := arr[0].(map[string]any)
+	if !ok {
+		t.Fatalf("raw %q[0] is not an object: %+v", arrayKey, arr[0])
+	}
+	return entry
+}
+
+// TestWeb_APITreeProjectFavoriteStampedOnWire covers a wire gap: the favorite
+// write side (POST /api/favorite) already accepts kind:"project", but
+// hubapi.TreeProject had no Favorite field, so a favorited project's decision
+// was unreadable from GET /api/tree.
+func TestWeb_APITreeProjectFavoriteStampedOnWire(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+	}
+	favStore := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := favStore.Set("project", project.ID, true, now); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Favorite: favStore})
+	web.injectMetasForTest(metas)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	if !resp.Projects[0].Favorite {
+		t.Fatalf("favorited project should stamp favorite=true: %+v", resp.Projects[0])
+	}
+	raw := projectRawFromResponse(t, rec.Body.Bytes(), "projects")
+	if fav, ok := raw["favorite"]; !ok || fav != true {
+		t.Fatalf("raw JSON favorite=%v (present=%v), want true", fav, ok)
+	}
+}
+
+// TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited pins the other half:
+// an unfavorited project must omit the favorite key entirely (omitempty),
+// not send an explicit false.
+func TestWeb_APITreeProjectFavoriteOmittedWhenUnfavorited(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Projects) != 1 {
+		t.Fatalf("want 1 project, got %d", len(resp.Projects))
+	}
+	if resp.Projects[0].Favorite {
+		t.Fatalf("unfavorited project should not be marked favorite: %+v", resp.Projects[0])
+	}
+	raw := projectRawFromResponse(t, rec.Body.Bytes(), "projects")
+	if _, present := raw["favorite"]; present {
+		t.Fatalf("unfavorited project should omit the favorite key entirely, got %+v", raw)
+	}
+}
