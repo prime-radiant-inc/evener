@@ -375,3 +375,95 @@ binary>`) + a real `openai/gpt-5.5` session, driven via the Chrome skill. Eviden
 `.superpowers/sdd/t5b-evidence/` (13 files). All spawned sessions shut down, hub process killed,
 scratch state directories and built binaries removed, browser tabs closed — confirmed via `pgrep`
 and a port-listen check before closing out this task.
+
+## T5c addendum — pre-merge fixes (VirtualList height, streaming render isolation, think-block reconciliation)
+
+Status: DONE. Two fix commits on top of this report's own HEAD (`98193cd73`): `5e6597d37`
+(VirtualList) and `3620eea62` (memoization). Not merged/pushed, per the brief.
+
+**Fix 1 — `VirtualList` measures real content height.** The measured element carried both
+`measureElement`'s ref *and* the virtualizer's own inline `height: item.size` write, so
+`measureElement`'s own read (synchronous on mount, and via `ResizeObserver` thereafter) always
+played back exactly what was just written — the box could never be observed to change size no
+matter how much its real content grew past the estimate. Fixed: dynamic mode no longer writes an
+inline height on the measured element at all; its box is sized by content alone (the `.item`
+class's `position: absolute` already takes it out of flow, so nothing else's layout depends on
+this). Non-dynamic rows are byte-identical to before — jsdom can't lay out real content, so the new
+widget test pins the structural precondition (no inline height on the measured element in dynamic
+mode) rather than a height number; all existing `VirtualList` tests pass unmodified.
+
+Live re-verified (fresh `make build-hub`, `SERF_HUB_WEB=new`, a real `openai/gpt-5.5` session):
+every rendered row now measures `inlineHeight: "(none)"`, `height` exactly equal to its own
+content's `scrollHeight`, and consecutive rows sit at *exactly* adjacent `top` offsets (zero gap,
+zero overlap) — checked across rows from 63px to 2798px tall, including a 1041px real streamed
+agent-message turn.
+
+| | Before (T5b, `t5b-evidence/09-BUG-virtuallist-dynamic-height-overlap.png`) | After (T5c, `t5c-evidence/02-parta-settled-row-boundary-no-overlap.png`) |
+|---|---|---|
+| A long-settled row's rendered height | pinned at the 96px estimate | its own real content height, exactly (verified 63px–2798px) |
+| Real content height (measured) | 337px (241px overflow) | matches rendered height exactly, every row |
+| Next row | overlapped, illegible | starts exactly where the previous row's content ends |
+
+**Fix 2 — streaming render isolation.** T5b's render-count probe found a 500-delta flood
+re-rendered an unrelated, already-settled sibling item exactly 500 times (no memoization anywhere
+in the item render tree, and `TurnBlock` passes the enclosing `turn` — a fresh object reference on
+every delta — to every item renderer). Inventoried every registered renderer's own reads of
+`ItemRenderProps.turn` (grepped `transcript/messages` and `transcript/tools`): only
+`SystemNoticeItem` reads it (`turn.items`, for its own consecutive-run grouping) — every other
+renderer (`ToolCallItem`, `RawItemView`, `AgentMessageItem`, `UserMessageItem`, `SteeringItem`,
+`ThinkBlock`, `WarningItem`) destructures only `item`/`live`. Fixed: a shared `ignoringTurn` memo
+comparator (`types.ts`) — compares `item` by reference and `live` by value, deliberately ignoring
+`turn`'s identity — wraps every renderer that qualifies at its own export
+(`export const Foo = memo(function Foo(...) {...}, ignoringTurn)`, so every existing
+`itemRendererFor(...).toBe(Foo)` identity test still passes unmodified). `SystemNoticeItem` is
+deliberately excluded (commented in place, both at the comparator's own definition and at
+`SystemNoticeItem`'s): ignoring `turn` would leave its grouping stale when a sibling system item
+joins or leaves its run without this item's own `item`/`live` changing. `TurnSeparator` is left
+unmemoized — it renders once per turn and returns `null` throughout an in-progress turn (not a hot
+path in the flood scenario, or in general).
+
+| | Before (T5b) | After (T5c) |
+|---|---|---|
+| Settled sibling's re-renders across a 500-delta flood | **500** | **0** |
+
+Re-verified directly, not just inferred: temporarily un-wrapped the flood-probe's own registered
+synthetic component and re-ran the identical test — it reproduced exactly 500 again, confirming the
+`memo`/`ignoringTurn` wrap (not some other change) is what accounts for the difference. A new
+`TurnBlock` test pins the same mechanism directly (a memoized renderer does not re-render when only
+the enclosing turn object changes); each of the 7 wrapped renderers' own test files gets a
+structural check (`$$typeof`/`compare`) proving it is wired to this exact shared comparator.
+
+**Part C reconciliation — the think-block settle contradiction is resolved: verdict (a).** T5b's
+live proof reported a reasoning item that "never settles to 'Thought for Ns' … even minutes after
+the turn genuinely completed." The unit-tested semantics (R1's turn-settle fold + R2's
+`observedCompletedAt` stamp) say a bare `turn/completed` should flip any still-`inProgress` item to
+`completed` and stamp its observed duration at that fold. Both couldn't be true. Drove a fresh live
+session (`openai/gpt-5.5`, `reasoning_effort: "high"`, the bat-and-ball cognitive-reflection riddle —
+reliably produces a visible reasoning summary) and watched the *same already-open browser tab*,
+live, across the turn's settle (no reload) — `/api/tree` confirmed the session's own state moved
+from `"active"` to `"awaiting"` — and the DOM's think block:
+
+| | mid-turn (`t5c-evidence/10-partc-midturn-thinking.png`) | post-settle (`t5c-evidence/12-partc-postsettle-thinkblock-in-view.png`) |
+|---|---|---|
+| `data-live` | `"true"` | `"false"` |
+| Summary text | "Thinking…" | **"Thought for 36s · Preparing final cognitive psychology origin report"** |
+
+The block left its live branch and showed a real, honestly-observed duration, exactly matching
+R1/R2's own unit-tested behavior. **Verdict (a): T5b's observation was mid-turn only**, not a
+reproduction of a genuine settle-time defect — the reducer's fold and stamp are directly and
+positively proven correct, live, on a real daemon. (Not independently re-confirmed against T5b's
+own session 2, which is no longer available to inspect: plausibly, T5b's own multi-minute wait
+didn't coincide with that session's `turn/completed` notification actually landing and being
+applied client-side, or their `/api/tree` reading reflected a different signal than the one
+cross-checked here.)
+
+**Gates.** Both fixes independently gated: `tsc --noEmit` → 0; `vitest run` → 0, file count checked
+against the prior run at every step (104 files/1509 tests baseline → 104/1510 after Part A, +1 test
+→ 104/1521 after Part B, +11 tests); `npm run lint` → 0; `npm run build` → 0 (`dist/PLACEHOLDER`
+restored via `git restore`, confirmed clean via `git status --porcelain`).
+
+**Live-proof housekeeping.** Both sessions spawned for this task's live re-verification shut down
+cleanly (`POST /s/<id>/shutdown`, 204 each, confirmed via `pgrep` that the underlying `serf serve`
+processes exited), hub process killed directly (confirmed via `pgrep` and a port-listen check),
+browser tabs closed (`list_tabs` confirmed empty). Evidence: `.superpowers/sdd/t5c-evidence/` (7
+files).
