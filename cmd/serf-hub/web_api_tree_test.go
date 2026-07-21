@@ -565,3 +565,56 @@ func TestPastIndexOnChangeNotifiesTreeChangedOnDeltaOnly(t *testing.T) {
 	}
 	assertNoNotification(t, client, server, appwire.NotifySerfTreeChanged)
 }
+
+// TestWeb_APITreeLiveRowsCarryTierFavoriteRename covers a wire gap: the Live
+// loop in handleAPITree used to call apiTreeNode directly, bypassing
+// apiTreeNodeTier — the only path that stamps Tier/Branch/ClusterCount/
+// Favorite/Rename. A session both live and archived would show tier=""
+// (undefined) on the wire, and no live row ever carried favorite state or
+// the rename affordance, regardless of the session's actual decisions.
+func TestWeb_APITreeLiveRowsCarryTierFavoriteRename(t *testing.T) {
+	const liveSessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "serf")
+	if err := os.MkdirAll(workingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{PID: 61, Address: "127.0.0.1:4061", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: liveSessionID, status: appwire.ThreadStatusIdle})
+	r.Refresh()
+	favStore := hubcore.NewFavoriteStore(filepath.Join(root, "index.db"))
+	if err := favStore.Set("session", liveSessionID, true, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex(""), Favorite: favStore})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	var got hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Live) != 1 {
+		t.Fatalf("live=%d: %+v", len(got.Live), got.Live)
+	}
+	node := got.Live[0]
+	if node.Tier != "live" {
+		t.Fatalf("live row Tier=%q, want %q: %+v", node.Tier, "live", node)
+	}
+	if !node.Favorite {
+		t.Fatalf("live row Favorite=false, want true (session was favorited): %+v", node)
+	}
+	if !node.Rename {
+		t.Fatalf("live row Rename=false, want true (local session): %+v", node)
+	}
+}

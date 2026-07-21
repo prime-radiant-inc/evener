@@ -113,7 +113,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if !treeNodeCanActLive(n) {
 			continue
 		}
-		resp.Live = append(resp.Live, s.apiTreeNode("live", "", n, true))
+		resp.Live = append(resp.Live, s.apiTreeNodeTier("live", "", "live", favs, n))
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
