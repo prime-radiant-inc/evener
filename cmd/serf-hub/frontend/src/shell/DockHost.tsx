@@ -232,51 +232,65 @@ export function DockHost() {
   function handleReady(event: DockviewReadyEvent): void {
     registerDockviewApi(event.api);
 
-    // Restore-or-fallback runs ONLY into an EMPTY workspace - a routed pane
-    // (AppShell's routing glue, most directly - see its own comment on why
-    // it opens the initial route's pane during render, before this handler
-    // ever runs) always wins outright over a stale saved layout, rather
-    // than the layout replacing it. Both the restore attempt AND the
-    // welcome fallback are gated by the SAME check: restoreLayout() itself
-    // mutates dockview's panels unconditionally once called (fromJSON has
-    // no concept of "only if nothing else is here"), so calling it at all
-    // when something has already been routed in would wipe out that routed
-    // pane and replace it with whatever the layout last had - exactly the
-    // bug a live reproduction caught (a returning user with a saved layout
-    // following a deep link saw their OLD tabs, not the link). The nested
-    // re-check after restoreLayout() covers the OTHER empty case: a
-    // "successfully" restored but empty layout (every tab was closed
-    // before the last save), which still needs the welcome fallback since
-    // a blank dockview with no chrome of its own to open a new pane from
-    // is a dead end.
+    // MERGE, not suppress: whatever AppShell's routing glue already opened
+    // during render (a deep link, or welcome for "/" - see its own comment
+    // on why it opens the initial route's pane during render, before this
+    // handler ever runs) is captured by TYPE+PARAMS - not id - before
+    // attempting a restore, then re-opened via the normal openPane() path
+    // AFTER it, on top of whatever the saved layout restored, focused.
+    // Capturing type+params rather than id is deliberate on two counts:
+    // (1) restoreLayout() replaces `panes` wholesale (dockview's fromJSON
+    // has no concept of "merge with what's already there"), so the routed
+    // pane's pre-restore id is gone from the store the instant restore
+    // runs regardless; (2) re-deriving it via openPane() afterward reuses
+    // that function's own same-params dedup for free - if the restored
+    // layout already contains the identical session, this focuses THAT
+    // panel instead of ever opening a second tab for it.
     //
-    // This is a deliberately simple fix, not the target behavior: the
-    // controller has ruled that a future pass (Task 7, its own test cycle)
-    // should MERGE instead - restore the saved layout as the base, then
-    // open the routed pane inside it, focused - rather than suppressing
-    // restore entirely whenever anything is already routed. Today's fix
-    // trades that richer behavior for straightforward correctness now.
+    // Both the restore attempt and the routed re-open are unconditional
+    // (not gated on "panes is currently empty" the way the previous,
+    // provisional fix was) - restoreLayout() and openPane() are each
+    // already idempotent/no-op-safe on their own terms (nothing stored ->
+    // skipped outright below; nothing routed -> an empty loop), so there is
+    // no "already non-empty" case left to specially suppress.
+    //
+    // Failure-mode floor, preserved exactly: restoreLayout()'s own
+    // structural-validation failure (corrupt localStorage, or a restored
+    // panel referencing an unregistered pane type) clears the store back to
+    // empty (see workspace.ts) BEFORE the routed re-open loop runs - so a
+    // corrupt saved layout still leaves the routed pane as the ONLY thing
+    // that ends up open, the same "deep link wins alone" guarantee the
+    // pre-merge implementation always provided.
     //
     // NOTE for whoever wires AppShell's routing glue to this store: React
     // runs child effects before parent effects within one commit, so THIS
     // handler (called from DockviewReact's own mount effect, a descendant
     // of AppShell) fires before any plain useEffect in AppShell ever could
     // - a deep-linked route opened via a normal AppShell useEffect would
-    // race this exact fallback and land ALONGSIDE a spurious welcome tab,
-    // not instead of it. AppShell must open its initial route's pane
+    // race this exact sequence and land ALONGSIDE a spurious welcome tab,
+    // not merged into place. AppShell must open its initial route's pane
     // during render (e.g. a useRef-guarded call in the component body, or
     // a useState lazy initializer) so it runs before ANY effect in the
     // tree - openPane's own same-params/singleton dedup makes that call
     // safe to repeat if StrictMode (or a future refactor) invokes it more
     // than once.
+    const routed = workspaceStore.getState().panes.map((p) => ({ type: p.type, params: p.params }));
+
+    const stored = readStoredLayout();
+    if (stored !== undefined) {
+      workspaceStore.getState().restoreLayout(stored);
+    }
+    for (const pane of routed) {
+      workspaceStore.getState().openPane(pane.type, pane.params);
+    }
+
+    // Backstop, unchanged from before: a blank dockview with no chrome of
+    // its own to open a new pane from is a dead end - covers both "nothing
+    // was ever routed AND nothing was saved" and "a restore succeeded but
+    // the saved layout was itself already empty" (every tab closed before
+    // the last save).
     if (workspaceStore.getState().panes.length === 0) {
-      const stored = readStoredLayout();
-      if (stored !== undefined) {
-        workspaceStore.getState().restoreLayout(stored);
-      }
-      if (workspaceStore.getState().panes.length === 0) {
-        workspaceStore.getState().openPane("welcome");
-      }
+      workspaceStore.getState().openPane("welcome");
     }
 
     setApi(event.api);

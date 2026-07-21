@@ -454,36 +454,93 @@ test("restores a previously-saved layout on boot instead of falling back to welc
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_a", "Doc ref_b", "Doc ref_c"]);
 });
 
-test("a routed pane opened before mount wins over a stale saved layout, not wholesale replaced by it", async () => {
-  // Phase 1: generate a REAL stale saved layout - panes that will NOT be
-  // part of phase 2's workspace at all. Round-tripped through a real save
-  // (same rationale as the test above: dockview's serialization shape is
-  // opaque/versioned, so a real save is the only faithful source).
-  workspaceStore.getState().openPane("doc", { ref: "ref_stale_a" });
-  workspaceStore.getState().openPane("doc", { ref: "ref_stale_b" });
+test("a routed pane opened before mount merges into a stale saved layout as its focused member", async () => {
+  // Phase 1: generate a REAL stale saved layout via a real save round-trip
+  // (dockview's own serialization shape is opaque/versioned, so a real
+  // save is the only faithful source - same rationale as the restore test
+  // above). Two of its three panes deliberately reuse the SAME small
+  // id-suffix sequence (pane_doc_1, pane_doc_2, ...) that phase 2's own
+  // freshly-reset nextPaneSeq counter will mint next - the realistic shape
+  // of the id-collision hazard this test also guards against (see
+  // workspace.ts's bumpPastRestoredIds), not a contrived id string.
+  workspaceStore.getState().openPane("doc", { ref: "ref_stale_a" }); // pane_doc_1
+  workspaceStore.getState().openPane("doc", { ref: "ref_stale_b" }); // pane_doc_2
   const { unmount } = render(<DockHost />);
   await screen.findByText(/doc pane: ref_stale_b/);
 
   vi.useFakeTimers();
   act(() => {
-    workspaceStore.getState().openPane("doc", { ref: "ref_stale_c" });
+    workspaceStore.getState().openPane("doc", { ref: "ref_stale_c" }); // pane_doc_3
   });
   await Promise.resolve();
   advance(500);
   expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
   vi.useRealTimers();
   unmount();
-  resetWorkspaceStoreForTests(); // in-memory workspace resets; localStorage (the stale layout) does not
+  resetWorkspaceStoreForTests(); // in-memory workspace (incl. nextPaneSeq) resets; localStorage (the stale layout) does not
 
   // Phase 2: simulates AppShell's routing already having opened a pane (a
   // deep link) BEFORE DockHost ever mounts and reads localStorage - the
-  // routed pane must win outright, not be wiped out by the stale layout
-  // above, and the stale panes must NOT appear at all (not a merge).
-  const routed = workspaceStore.getState().openPane("doc", { ref: "ref_routed" });
+  // target behavior (per the controller ruling this task implements): the
+  // saved layout restores as the BASE, and the routed pane opens INSIDE
+  // it, focused - not wholesale replaced by it (the old, provisional
+  // suppress-on-routed fix) and not itself suppressing the restore.
+  // resetWorkspaceStoreForTests() just above means this mint ALSO starts
+  // from pane_doc_1 - deliberately colliding, in id-suffix terms, with
+  // phase 1's own first two ids.
+  workspaceStore.getState().openPane("doc", { ref: "ref_routed" }); // pane_doc_1 again, pre-restore
   render(<DockHost />);
 
-  expect(await screen.findByText(/doc pane: ref_routed/)).toBeTruthy();
+  expect(await screen.findByText(/doc pane: ref_routed \(focused=true\)/)).toBeTruthy();
   const tabs2 = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs2).map((t) => t.textContent)).toEqual(["Doc ref_routed"]);
-  expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([routed]);
+  // All three restored tabs are present, in their saved order, PLUS the
+  // routed one appended last - a real merge, not a replacement either
+  // direction. Critically, "Doc ref_stale_b" is still its own distinct tab
+  // with its own content: under the id-collision bug this also regression-
+  // tests, the routed pane's freshly-minted id silently collided with
+  // stale_b's restored one, and DockHost's reconciliation clobbered
+  // stale_b's real dockview panel with the routed pane's params instead of
+  // creating a fourth, separate one - collapsing this to 3 tabs, not 4.
+  expect(Array.from(tabs2).map((t) => t.textContent)).toEqual([
+    "Doc ref_stale_a",
+    "Doc ref_stale_b",
+    "Doc ref_stale_c",
+    "Doc ref_routed",
+  ]);
+  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_routed");
+  expect(workspaceStore.getState().panes).toHaveLength(4);
+
+  // Clicking back to "Doc ref_stale_b" proves its CONTENT survived intact,
+  // not just its tab title - under the id-collision bug, this tab's real
+  // dockview panel got its params silently overwritten to ref_routed's
+  // (see the comment above), so its content would read "ref_routed" here
+  // too despite the tab still being labeled "Doc ref_stale_b" at the point
+  // that bug's clobbering write happens to land.
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Doc ref_stale_b"));
+  expect(await screen.findByText(/doc pane: ref_stale_b \(focused=true\)/)).toBeTruthy();
 });
+
+test("a corrupt saved layout never suppresses a routed pane - the deep link wins alone (failure-mode floor)", async () => {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify({ nonsense: true }));
+  workspaceStore.getState().openPane("doc", { ref: "ref_routed" });
+
+  render(<DockHost />);
+
+  // restoreLayout()'s own structural-validation failure clears whatever
+  // fromJSON left behind and empties the store (see workspace.ts) - the
+  // routed pane, captured before the attempt, is then the only thing
+  // re-opened afterward: the same outright "wins alone" guarantee the
+  // pre-merge implementation always provided, preserved here as the
+  // failure-mode floor rather than the general case.
+  expect(await screen.findByText(/doc pane: ref_routed \(focused=true\)/)).toBeTruthy();
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_routed"]);
+});
+
+// "no saved layout -> welcome fallback unchanged" (the third scenario this
+// task's merge-restore behavior must preserve) is already covered above by
+// "falls back to opening welcome when localStorage has nothing saved" -
+// with no stored layout at all, handleReady's restore branch never runs,
+// so that test's behavior is identical before and after this task's change
+// by construction, not merely by coincidence.

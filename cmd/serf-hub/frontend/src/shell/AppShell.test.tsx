@@ -235,7 +235,7 @@ test("navigating from a 404 straight to a session deep link opens only that pane
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_from_404"]);
 });
 
-test("a saved layout from a previous session doesn't suppress a fresh deep link", async () => {
+test("a saved layout from a previous session merges with a fresh deep link, which lands focused", async () => {
   // Phase 1: generate a REAL saved layout at the default route (the
   // welcome pane) - real timers throughout; the welcome pane's own
   // addPanel() already schedules the debounced save (addPanel fires
@@ -254,12 +254,17 @@ test("a saved layout from a previous session doesn't suppress a fresh deep link"
   // Phase 2: fresh mount at a NEW deep link. Deliberately NOT calling
   // localStorage.clear() here, unlike every other test in this file (see
   // beforeEach above, which blinds the rest of the suite to this path) -
-  // the whole point is proving a stale saved layout from phase 1 does not
-  // suppress this freshly-routed pane.
+  // the whole point is proving a stale saved layout from phase 1 merges
+  // WITH this freshly-routed pane (DockHost.tsx's own merge-restore boot
+  // sequence) rather than suppressing it, or being suppressed by it.
   window.history.pushState({}, "", "/s/ref_new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText("Transcript arrives in wave 4")).toBeTruthy();
   const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_new_session"]);
+  // The restored "Welcome" tab (phase 1's whole saved layout) is still
+  // there - a merge, not a replacement - with the routed deep link
+  // appended after it and focused/active.
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Welcome", "ref_new_session"]);
+  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("ref_new_session");
 });

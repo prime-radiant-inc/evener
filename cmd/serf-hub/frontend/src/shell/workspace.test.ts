@@ -308,4 +308,44 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(workspaceStore.getState().restoreLayout({})).toBe(false);
     expect(fake.cleared).toBe(true);
   });
+
+  // Restored ids come from a PREVIOUS page load's own independently-
+  // numbered counter (nextPaneSeq resets to 0 on every fresh load - see
+  // openPane's own "fresh id" tests above) - a freshly-minted id after a
+  // restore can otherwise collide with one just restored, silently
+  // duplicating an id in `panes` (see workspace.ts's bumpPastRestoredIds
+  // for the full failure mode this guards against, live-reproduced via
+  // DockHost.test.tsx's own save/restore/re-open round trip).
+  test("restoreLayout bumps the pane-id counter past every restored id, so the next openPane() can't collide with one", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [
+        { id: "pane_doc_1", params: { paneType: "doc", paneParams: { ref: "a" } } },
+        { id: "pane_doc_5", params: { paneType: "doc", paneParams: { ref: "b" } } },
+      ];
+      fake.activePanel = { id: "pane_doc_5" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    workspaceStore.getState().restoreLayout({});
+    const freshId = workspaceStore.getState().openPane("doc", { ref: "fresh" });
+
+    expect(freshId).not.toBe("pane_doc_1");
+    expect(freshId).not.toBe("pane_doc_5");
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual(["pane_doc_1", "pane_doc_5", freshId]);
+  });
+
+  test("restoreLayout leaves the counter untouched when the restored layout has no panels at all", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [];
+      fake.activePanel = undefined;
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    workspaceStore.getState().restoreLayout({});
+    const freshId = workspaceStore.getState().openPane("doc", { ref: "fresh" });
+
+    expect(freshId).toBe("pane_doc_1"); // the ordinary first-ever id, nothing to bump past
+  });
 });

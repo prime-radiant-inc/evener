@@ -114,6 +114,29 @@ function readPanelParams(panel: IDockviewPanel): PanePanelParams {
   return { paneType: raw.paneType, paneParams: raw.paneParams };
 }
 
+// Restored panel ids came from a PREVIOUS page load's own independently-
+// numbered nextPaneId counter (nextPaneSeq resets to 0 on every fresh page
+// load - see nextPaneId's own comment above), so a freshly-minted id AFTER
+// a restore can collide with one just restored - e.g. both sessions' very
+// first pane is "pane_doc_1". Left unguarded, the store would then hold two
+// DIFFERENT logical panes sharing one id, and DockHost's reconciliation
+// effect (which looks dockview panels up BY id) would silently push the
+// second one's params into the first one's real dockview panel instead of
+// creating a new one - discarding whichever pane's content lost that race,
+// with no error or warning. Bumping the counter past every id restoreLayout
+// just brought back makes every id minted AFTER this collision-proof
+// against it. This was always a latent hazard (any pane opened after a
+// restore could have hit it), but DockHost's merge-restore boot sequence
+// (handleReady re-opening a routed pane on top of a restored base) made it
+// routine rather than rare - caught via a live save/restore/re-open round
+// trip in that flow's own test, not by inspection.
+function bumpPastRestoredIds(panes: { id: string }[]): void {
+  for (const p of panes) {
+    const suffix = /_(\d+)$/.exec(p.id)?.[1];
+    if (suffix !== undefined) nextPaneSeq = Math.max(nextPaneSeq, Number(suffix));
+  }
+}
+
 export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   panes: [],
   focusedPaneId: null,
@@ -176,6 +199,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
         const { paneType, paneParams } = readPanelParams(panel);
         return { id: panel.id, type: paneType, params: paneParams };
       });
+      bumpPastRestoredIds(panes);
       set({ panes, focusedPaneId: dockviewApi.activePanel?.id ?? panes[0]?.id ?? null });
       return true;
     } catch {
