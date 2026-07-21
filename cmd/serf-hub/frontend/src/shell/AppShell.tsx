@@ -19,6 +19,14 @@ import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
+import { initPrefs } from "../stores/prefs";
+
+// Apply persisted display preferences (theme/density/font-size) during
+// module evaluation - before first paint - so a saved theme never flashes
+// the default. Idempotent; sections re-apply on change. (Wave-7 T4's
+// documented wiring line, pre-proven against the full suite by its review.)
+initPrefs();
+
 import styles from "./AppShell.module.css";
 
 // dockview (pulled in by DockHost.tsx) is ~636kB of the main bundle on its

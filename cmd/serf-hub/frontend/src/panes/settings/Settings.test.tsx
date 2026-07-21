@@ -27,7 +27,7 @@ afterEach(() => {
 test("bare params show the default (General) section", () => {
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
-  expect(screen.getByText("This section hasn't been built yet.")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
   // General's own nav link is the active one.
   expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
 });
@@ -42,7 +42,7 @@ test("desktop: nav and content render simultaneously, with no back button", () =
   stubMatchMedia(false);
   render(<Settings params={{}} paneId="settings-1" focused={true} />);
   expect(screen.getByRole("navigation", { name: "Settings sections" })).toBeTruthy();
-  expect(screen.getByText("This section hasn't been built yet.")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "General" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Back to settings" })).toBeNull();
 });
 
@@ -66,7 +66,7 @@ test("mobile: initial render shows the content view with a visible back button, 
   stubMatchMedia(true);
   render(<Settings params={{ section: "hub" }} paneId="settings-1" focused={true} />);
   expect(screen.getByRole("button", { name: "Back to settings" })).toBeTruthy();
-  expect(screen.getByText("This section hasn't been built yet.")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Hub" })).toBeTruthy();
   expect(screen.queryByRole("navigation", { name: "Settings sections" })).toBeNull();
 });
 

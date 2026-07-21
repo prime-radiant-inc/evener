@@ -3,18 +3,38 @@ import { useState } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { useIsMobile } from "../../shell/useIsMobile";
+import { useSettingsOverviewStore } from "../../stores/settingsOverview";
 import { PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { SettingsNav } from "./SettingsNav";
 import { DEFAULT_SECTION_ID, settingsSectionLabel } from "./sections";
 import { AgentsSection } from "./sections/agents";
 import { CredentialsSection } from "./sections/credentials/CredentialsSection";
+import { DisplaySection } from "./sections/display";
+import { GeneralSection } from "./sections/general";
+import { HubSection } from "./sections/hub";
 import { InRepoSection } from "./sections/inrepo";
 import { CodexLaunchSection } from "./sections/launchCodex";
 import { LaunchServerSection } from "./sections/launchServer";
+import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
+import { McpSection } from "./sections/mcp";
+import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
+import { PluginsDirsSection } from "./sections/pluginsDirs";
 import { ProjectSection } from "./sections/project";
+import { SkillsDirsSection } from "./sections/skillsDirs";
+import { StorageSection } from "./sections/storage";
+import { ThemeSection } from "./sections/theme";
+import { TranscriptSection } from "./sections/transcript";
 import styles from "./settings.module.css";
+
+// McpSection's overview dependency is injected (its own McpSectionProps seam,
+// built against the pinned interface before the real store existed) - this
+// adapter binds it to the real store at the one place the dispatch map needs
+// a zero-prop component.
+function McpSectionWired() {
+  return <McpSection useOverviewStore={useSettingsOverviewStore} />;
+}
 
 export interface SettingsPaneParams {
   section?: string;
@@ -43,6 +63,17 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   "launch-codex": CodexLaunchSection,
   inrepo: InRepoSection,
   project: ProjectSection,
+  "plugins-manager": MarketplacesPluginsSection,
+  plugins: PluginsDirsSection,
+  skills: SkillsDirsSection,
+  mcp: McpSectionWired,
+  general: GeneralSection,
+  theme: ThemeSection,
+  transcript: TranscriptSection,
+  display: DisplaySection,
+  notifications: NotificationsSection,
+  hub: HubSection,
+  storage: StorageSection,
 };
 
 /**
