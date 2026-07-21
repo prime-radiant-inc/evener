@@ -1,0 +1,9 @@
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+.sample {
+  width: 220px;
+}

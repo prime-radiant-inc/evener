@@ -1,0 +1,18 @@
+/*
+ * Layout only - no color/tokens here at all. IconButton renders using
+ * button.module.css's own base + variant classes (imported directly, not
+ * duplicated) so it inherits Button's exact colors and its focus ring for
+ * free; this file only overrides the square sizing an icon-only button
+ * needs in place of Button's own sm/md (which set horizontal padding
+ * sized for a text label).
+ */
+
+.sm {
+  width: 28px;
+  padding: 0;
+}
+
+.md {
+  width: 32px;
+  padding: 0;
+}
