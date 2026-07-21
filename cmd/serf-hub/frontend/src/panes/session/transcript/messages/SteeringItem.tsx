@@ -44,7 +44,7 @@ const CLASS = {
 function isTaskBookkeepingSteering(text: string): boolean {
   const stripped = text.replace(/^\s*<SYSTEM-REMINDER>\s*/i, "").replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "");
 
-  if (/<CURRENT-TASK\s+id="\d+">/.test(stripped)) return true;
+  if (/<CURRENT-TASK\s+id="\d+">[\s\S]*?<\/CURRENT-TASK>/.test(stripped)) return true;
   if (/^Task list:/m.test(stripped)) return true;
   if (/completed all tasks/.test(stripped)) return false; // tasks-done: kept, and wins precedence over task-nudge below
   if (/task_list tool available/.test(stripped)) return true;

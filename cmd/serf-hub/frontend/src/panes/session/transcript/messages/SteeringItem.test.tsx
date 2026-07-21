@@ -113,6 +113,23 @@ test("a current-task restatement renders nothing - the tasks panel already shows
   expect(container.firstChild).toBeNull();
 });
 
+// Review finding: matching only the OPENING <CURRENT-TASK id="..."> tag
+// (no requirement that it ever closes) suppressed anything that merely
+// STARTS like one - a truncated or malformed steering body reading the
+// same as a genuine, complete current-task block. The legacy's own
+// classifySteering regex (renderer-format.js:421) requires the full
+// open+close pair (`<CURRENT-TASK ...>...<\/CURRENT-TASK>`); this pins
+// the tightened match against a fixture that has the opening tag but
+// never closes it - the loose match would have wrongly suppressed this;
+// the tightened one must not.
+const TRUNCATED_CURRENT_TASK_STEERING =
+  '<SYSTEM-REMINDER>\n<CURRENT-TASK id="3">\n<TITLE>Fix the bug</TITLE>\n<INSTRUCTIONS>\ndo the thing\n</SYSTEM-REMINDER>';
+
+test("a truncated current-task fragment (opening tag present, never closed) is NOT suppressed - it isn't a genuine complete current-task block", () => {
+  render(<SteeringItem item={item({ text: TRUNCATED_CURRENT_TASK_STEERING })} turn={turn} live={false} />);
+  expect(screen.getByTestId("steering-item")).toBeTruthy();
+});
+
 test("a full task-list restatement renders nothing - the tasks panel already shows the list", () => {
   const { container } = render(<SteeringItem item={item({ text: FULL_LIST_STEERING })} turn={turn} live={false} />);
   expect(container.firstChild).toBeNull();
