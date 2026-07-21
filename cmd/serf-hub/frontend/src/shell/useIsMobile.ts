@@ -25,6 +25,14 @@ export function useIsMobile(): boolean {
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
     const mql = window.matchMedia(MOBILE_QUERY);
+    // Resync against the CURRENT viewport before wiring up the listener:
+    // this effect runs after the browser paints (unlike useLayoutEffect,
+    // which would run in the same synchronous pass as the useState
+    // initializer above), a real point in time where an actual resize or
+    // orientation change could already have landed between the two - with
+    // no future "change" event left to correct a stale render-time value,
+    // since the change already happened.
+    setIsMobile(mql.matches);
     const onChange = (event: MediaQueryListEvent) => setIsMobile(event.matches);
     mql.addEventListener("change", onChange);
     return () => mql.removeEventListener("change", onChange);

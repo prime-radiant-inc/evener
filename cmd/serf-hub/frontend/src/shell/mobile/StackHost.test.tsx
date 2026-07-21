@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, beforeEach, test, expect, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { registerPane, type PaneProps } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -204,6 +204,52 @@ test("a back tap does not push the pane it left onto the stack (no ping-pong)", 
   // tap must go straight to welcome, not bounce forward to ref_b.
   await user.click(screen.getByRole("button", { name: "Back" }));
   expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test("back skips a stacked pane that has since been closed, falling to welcome when nothing else is left", async () => {
+  const first = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a as the back target
+  await screen.findByText(/doc pane: ref_b/);
+
+  // Closing the NON-focused, stacked pane (ref_a) does not change
+  // focusedPaneId (workspace.ts's closePane only clears focus when the
+  // CLOSED pane was the focused one) - so this component's own bookkeeping
+  // effect never re-runs and backStackRef still names ref_a's now-defunct
+  // id. popValidBackTarget must discover that at pop time, not before.
+  act(() => {
+    workspaceStore.getState().closePane(first);
+  });
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  expect(await screen.findByText("No session open")).toBeTruthy();
+});
+
+test("back skips a stale MIDDLE stack entry and lands on the next valid one behind it", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // stacks ref_a
+  await screen.findByText(/doc pane: ref_b/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_c" }); // stacks ref_b
+  await screen.findByText(/doc pane: ref_c/);
+
+  // ref_b sits BETWEEN ref_a and ref_c on the stack ([ref_a, ref_b]) - closing
+  // it (still not the focused pane) leaves a stale entry in the MIDDLE of
+  // what popValidBackTarget will walk, not just at the top.
+  act(() => {
+    workspaceStore.getState().closePane(second);
+  });
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Back" }));
+
+  // ref_b is skipped silently; ref_a (still open, next behind it) is the
+  // landing target - not welcome, and not a dead end on the stale entry.
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
 });
 
 // --- URL sync: the address bar always reflects the focused pane -----------

@@ -60,6 +60,29 @@ function installMatchMediaStub(initialMatches: boolean) {
   return { matchMedia, lists };
 }
 
+// Distinct from installMatchMediaStub above: that one memoizes one live
+// FakeMediaQueryList per query (matching how a real browser hands multiple
+// callers the SAME live state), which cannot model a value that's already
+// DIFFERENT by the time a second matchMedia() call happens - there is
+// nothing to .emit() a change through yet at that point, only two
+// independent snapshots. This one hands back queued values in call order
+// instead, purpose-built for the render-time-vs-effect-time gap: the
+// useState initializer's own matchMedia() call is call #1, the effect's
+// own later matchMedia() call is call #2 - and useEffect (unlike
+// useLayoutEffect) runs AFTER the browser paints, a real point in time
+// where an actual resize/rotation could land between the two, not the
+// same synchronous render pass.
+function installMatchMediaStubSequence(matchesInCallOrder: boolean[]) {
+  let callCount = 0;
+  const matchMedia = vi.fn((query: string) => {
+    const matches = matchesInCallOrder[callCount] ?? matchesInCallOrder.at(-1)!;
+    callCount += 1;
+    return new FakeMediaQueryList(query, matches);
+  });
+  window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+  return { matchMedia };
+}
+
 afterEach(() => {
   cleanup();
   // @ts-expect-error restores jsdom's own absence of matchMedia between
@@ -107,6 +130,21 @@ test("removes its change listener on unmount", () => {
   unmount();
 
   expect(list.listenerCount).toBe(0);
+});
+
+test("resyncs to the effect-time viewport when it already differs from the render-time snapshot", () => {
+  // The render-time snapshot (the useState initializer's own matchMedia()
+  // call) sees "not mobile"; by the time the effect's own LATER
+  // matchMedia() call runs, the viewport has already crossed into mobile.
+  // The hook must land on that effect-time truth, not stay stuck on the
+  // stale render-time value forever (nothing would ever correct it - the
+  // change listener only fires on a FUTURE change, not this already-past
+  // one).
+  installMatchMediaStubSequence([false, true]);
+
+  const { result } = renderHook(() => useIsMobile());
+
+  expect(result.current).toBe(true);
 });
 
 test("does not throw and returns false when window.matchMedia is unavailable", () => {

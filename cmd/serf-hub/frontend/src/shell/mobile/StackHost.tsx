@@ -115,6 +115,24 @@ export function StackHost() {
   // two panes forever instead of walking back through real history).
   const wentBackRef = useRef(false);
 
+  // KNOWN, DISCLOSED COMPOSITION GAP (not fixed this wave - see requirement
+  // 2's own "history back/forward works via the existing popstate wiring"
+  // and this stream's report): wentBackRef is set ONLY by this component's
+  // OWN handleBack below. A REAL browser back/forward action (the
+  // hardware/gesture button, not this in-app one) also changes
+  // focusedPaneId - via a popstate -> AppShell's routing glue ->
+  // openPane()/focusPane() - but with no way for THIS effect to learn that
+  // the change was itself already a "backward" step from the user's point
+  // of view. The result: this effect pushes the pane the user just used
+  // real-back to LEAVE onto backStackRef, same as any ordinary forward
+  // navigation would - so tapping this component's OWN back button right
+  // afterward pops that pane back into focus, i.e. moves the user FORWARD
+  // again instead of continuing backward. Fixing this needs either
+  // reading real vs. synthetic popstate events apart (PopStateEvent itself
+  // carries no such flag) or replacing this local stack with one driven by
+  // window.history's own position - a bigger seam than this task's own
+  // component-local design calls for. Flagging for the wave gate's device
+  // check (Task 7) to decide fix-vs-document, not guessing at a fix here.
   useEffect(() => {
     const prev = prevFocusedIdRef.current;
     if (prev !== focusedPaneId) {

@@ -1,9 +1,27 @@
 # Wave 3 Task 4 report — mobile stack host
 
-Branch `w3-mobile`, off Task 2's tip `2b7adbf4e`. 7 commits. Full suite green (715 tests, 53
-files), `tsc --noEmit` clean, `eslint src` clean, `npm run build` clean — each verified twice in a
-row for stability. Zero touches outside `src/shell/mobile/**` and `src/shell/useIsMobile.ts(+test)`
-(`git diff --stat 2b7adbf4e HEAD` — 7 files, all within scope).
+Branch `w3-mobile`, off Task 2's tip `2b7adbf4e`. 7 implementation commits + 1 report commit, plus
+one review-response fix commit (below, addressing three review findings). Full suite green (718
+tests, 53 files), `tsc --noEmit` clean, `eslint src` clean, `npm run build` clean — each verified
+twice in a row for stability, both before and after the fix commit. Zero touches outside
+`src/shell/mobile/**` and `src/shell/useIsMobile.ts(+test)` (`git diff --stat 2b7adbf4e HEAD` — 7
+files, all within scope).
+
+## Review response
+
+A code review of the initial submission found two Important findings and one Minor
+(disclosure-only) finding, all addressed in the one fix commit at the end of the Commits table
+below:
+
+1. `popValidBackTarget`'s dead-pane-skip path (the loop discarding a stacked id that's since been
+   `closePane`'d) had zero test coverage — see "TDD evidence" below for the two tests added and why
+   they land as pinning coverage, not a bug fix.
+2. `useIsMobile` could stay stuck on a stale render-time viewport snapshot if the actual viewport
+   already differed by the time the effect ran — see the corrected `useIsMobile` self-review bullet
+   below for the real bug, the one-line fix, and the corrected timing reasoning (my original
+   `useLayoutEffect`-shaped justification for a plain `useEffect` was wrong).
+3. Real browser back/forward (not this component's own back button) composes oddly with the
+   local back-stack — disclosed, not fixed this wave; see "Back-stack design" below.
 
 ## Commits
 
@@ -16,6 +34,8 @@ row for stability. Zero touches outside `src/shell/mobile/**` and `src/shell/use
 | `ffe29f47e` | TreeDrawer — tree rail slot, wired into StackHost's top bar |
 | `82fb60931` | StackHost — document the AppShell mount contract |
 | `19c75c809` | TreeDrawer — de-duplicate the placeholder's own heading |
+| `a12857572` | sdd: wave 3 task 4 report — mobile stack host |
+| *(this commit)* | webui: mobile — dead-pane back coverage; useIsMobile effect-time resync — the review-response fix commit described above (a commit cannot know its own SHA in advance; see the chat reply for the real one) |
 
 ## TDD evidence
 
@@ -51,6 +71,20 @@ this codebase's own established treatment of CSS (`sheet.module.css`'s slide-in 
 clearly written as a whole; its tests — and my one addition, the safe-area-inset assertion in
 `StackHost.test.tsx` — exist as source-content regression *locks*, not iteratively red-green'd per
 CSS line). All *behavioral* (TSX) code followed strict red-green.
+
+**A second, more significant gap, caught by code review, not by me**: `popValidBackTarget`'s own
+stale-entry-skip loop (the `while` loop discarding a stacked id no longer present in `panes`) had
+**zero test coverage** at initial submission — every back-navigation test up to that point only
+ever exercised `focusPane`/`openPane`, never `closePane`, so the one piece of this component with
+its own dedicated branching logic for "what if the pane I stacked earlier got closed out from under
+it" was verified only by hand-tracing, not by a test watching it actually run. Per the reviewer's
+own instruction, I wrote the two missing scenarios (2-deep: close the only stacked pane, back lands
+on welcome; 3-deep: close the MIDDLE stacked pane, back skips it and lands on the next valid one
+behind it) and ran them *against the unmodified implementation first* to find out which side of
+red/green they'd land on — both passed immediately, with no code change needed. That makes them
+**pinning coverage** for already-correct behavior, not a red-first bug fix — disclosed as exactly
+that distinction, the same way the CSS exception above is disclosed as its own kind of exception
+rather than folded silently into the "every unit was TDD'd" claim.
 
 ## Mount contract (for AppShell, documented in `StackHost.tsx`'s own header comment)
 
@@ -111,16 +145,36 @@ this by construction: it's independent of how many real browser history entries 
 `wentBackRef` flag distinguishes "the user tapped back" from any other focus change so an abandoned
 pane is never re-pushed (no A↔B ping-ponging); stale stack entries (a pane closed since it was
 stacked) are skipped by `popValidBackTarget`. Welcome itself never shows a back affordance
-(it's the stack's root) regardless of what the stack holds — tested explicitly (11 back-navigation
-tests cover single/multi-level pop, exhausted-stack fallback, no-ping-pong, and the
-mounted-with-a-pre-seeded-pane case where this component never itself observed a "transition into"
-the initial pane).
+(it's the stack's root) regardless of what the stack holds — tested explicitly (8 tests under the
+file's own "back navigation" section, after this round's 2 additions, cover single/multi-level pop,
+exhausted-stack fallback, no-ping-pong, the mounted-with-a-pre-seeded-pane case where this component
+never itself observed a "transition into" the initial pane, and — new this round — the two dead-pane
+stack-skip scenarios; a further "back navigation updates the URL..." test lives under the URL-sync
+section instead, since its own subject is that interaction, not back mechanics on their own).
 
 Known, disclosed, narrow limitation: the back-stack is component-local, not module-level, so it
 resets across a `StackHost` unmount/remount (a breakpoint crossing to desktop and back). Real
 phones never cross the 900px breakpoint mid-session, so this only matters for a resized dev browser
 window — the same class of narrow limitation Task 2's own report discloses for `DockHost`'s
 "remount re-runs the whole boot sequence."
+
+**Second known, disclosed limitation (flagged by review, not fixed this wave — documented directly
+on the bookkeeping effect in `StackHost.tsx`, in a "KNOWN, DISCLOSED COMPOSITION GAP" comment right
+above it, and left for Task 7's wave-gate device check to decide fix-vs-document)**: `wentBackRef`
+is set only by this component's *own* `handleBack`
+below, so it can only recognize an in-app back-button tap as "backward." A REAL browser back
+action — the hardware/gesture button, not this component's own affordance — also changes
+`focusedPaneId`, via a popstate that (once AppShell wires the breakpoint switch) drives
+`openPane()`/`focusPane()` through the existing routing glue, but with no flag telling this effect
+that change was itself already a step backward. The practical effect: the bookkeeping effect pushes
+the pane the user just used *real* back to leave onto `backStackRef`, exactly as an ordinary forward
+navigation would — so tapping this component's own back button right afterward pops that pane back
+into focus, moving the user forward again rather than continuing backward. `PopStateEvent` itself
+carries nothing distinguishing "the browser's own back/forward" from "a same-tab synthetic dispatch
+from `routing.ts`'s own `navigate()`," so a real fix needs either a different signal for that
+distinction or replacing this local stack with one driven off `window.history`'s own position — both
+bigger seams than a component-local stack, not a one-line fix, hence documented rather than guessed
+at here.
 
 ## Rail slot contract (`TreeDrawer.tsx`)
 
@@ -155,11 +209,22 @@ Task 2's tip.
 ## Self-review
 
 - **`useIsMobile` re-derives the media query in both the `useState` initializer and the effect**
-  (two separate `window.matchMedia(...)` calls) rather than sharing one `MediaQueryList` — real
-  browsers return equivalent, independently-live lists for the same query either way, and the two
-  calls happen in the same synchronous render→commit→effect pass with no chance for the viewport to
-  change in between, so this is correct, not just simple. Kept the two-call form because threading
-  a single `MediaQueryList` through a ref would be more machinery for the same guarantee.
+  (two separate `window.matchMedia(...)` calls) rather than sharing one `MediaQueryList`. My
+  original justification here was **wrong and has been corrected following code review**: I'd
+  claimed the two calls "happen in the same synchronous render→commit→effect pass with no chance
+  for the viewport to change in between" — that guarantee holds for `useLayoutEffect` (synchronous,
+  before paint), not the plain `useEffect` this hook actually uses, which React defers until *after*
+  the browser paints. That's a real point in time, not a same-pass technicality — an actual
+  resize/rotation can land in the gap between the initializer's snapshot and the effect's own later
+  `matchMedia()` call. Fixed with one line, `setIsMobile(mql.matches)` right after creating `mql` in
+  the effect, resyncing to the effect-time truth before the change listener even attaches (there is
+  no future "change" event to correct an already-past discrepancy otherwise). Covered by a
+  dedicated test (`installMatchMediaStubSequence`, distinct from the existing per-query stub, since
+  modeling "the value already differs between call #1 and call #2" needed queued-by-call-order
+  values rather than one shared live object) — red against the pre-fix code, green after. Kept the
+  two-call form rather than threading a single `MediaQueryList` through a ref, since the fix already
+  gives the correctness guarantee that mattered; a shared ref would be more machinery for no
+  additional guarantee.
 - **`StackHost` runs three separate small effects** (back-stack bookkeeping, URL sync, welcome
   backstop) rather than one combined effect — deliberate, mirroring DockHost's own
   three-separate-effects precedent (structural/focus/title-sync) for the same reason: each answers
@@ -199,6 +264,8 @@ Task 2's tip.
 
 ## Verification
 
+Initial submission (before the review-response fix commit):
+
 ```
 npx vitest run   → EXIT=0  (715 passed, 53 files; 2 full reruns, identical both times)
 npx tsc --noEmit → EXIT=0  (no output, both runs)
@@ -207,4 +274,15 @@ npm run build     → EXIT=0  (tsc --noEmit && vite build; dist/ shows Welcome-*
                               still separately chunked; the >500kB main-bundle warning is
                               pre-existing from Task 2's dockview inclusion, not new here — this
                               task's own files add ~4kB of source and pull in no new dependency)
+```
+
+After the review-response fix commit (3 new tests: 2 dead-pane back-target scenarios + 1
+useIsMobile effect-time-resync case):
+
+```
+npx vitest run   → EXIT=0  (718 passed, 53 files; 2 full reruns, identical both times)
+npx tsc --noEmit → EXIT=0  (no output, both runs)
+npx eslint src    → EXIT=0  (no output, both runs)
+npm run build     → EXIT=0  (both runs; same pre-existing chunk-size warning, unrelated to this
+                              round's changes)
 ```
