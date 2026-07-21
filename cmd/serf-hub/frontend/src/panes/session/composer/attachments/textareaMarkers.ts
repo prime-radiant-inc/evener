@@ -1,54 +1,60 @@
 // Positional "[image N]" marker helpers (parity-m5-composer.md §G, contracts
 // §Attachments), ported from composer-attachments.js's insertAtCursor/
-// stripMarker/nextMarker. Pure DOM manipulation - no React, no store - so
-// the ingestion hook can call these directly against the real textarea
-// node it holds a ref to.
-
+// stripMarker/nextMarker.
+//
+// Pure string splicing, NOT direct DOM mutation: the composer's textarea is
+// a React-controlled input (value={text}), and React tracks controlled
+// form elements to detect/undo native value drift - a "change"-family
+// native event firing ANYWHERE in the tree (verified: specifically the
+// hidden file-picker <input>'s own change event, not a click or a paste
+// event) triggers React's controlled-input restoration pass, which
+// silently reset a direct `el.value = ...` mutation on this UNRELATED
+// textarea back to its last-rendered value in exactly one of this file's
+// own integration tests (Composer.test.tsx's file-picker attach case) -
+// caught by that test actually failing, not by inspection. The fix is
+// structural, not a workaround: every caller now computes the new text +
+// cursor position as plain values and applies them through the composer's
+// own `text` state (setText), which is the only place React won't fight
+// itself over - see Composer.tsx's writeText/cursor-restore effect.
 export function markerText(n: number): string {
   return `[image ${n}]`;
 }
 
-// insertAtCursor splices `text` into el.value at the current selection
-// (replacing any selected range), then moves the cursor to just after the
-// inserted text.
-export function insertAtCursor(el: HTMLTextAreaElement, text: string): void {
-  const value = el.value;
-  const start = typeof el.selectionStart === "number" ? el.selectionStart : value.length;
-  const end = typeof el.selectionEnd === "number" ? el.selectionEnd : start;
-  el.value = value.slice(0, start) + text + value.slice(end);
-  const pos = start + text.length;
-  el.selectionStart = pos;
-  el.selectionEnd = pos;
+export interface TextEdit {
+  value: string;
+  cursor: number;
+}
+
+// Separate from TextEdit (not an override via intersection: `number &
+// (number | undefined)` collapses right back to `number`, which is why
+// this needs its own named shape rather than `TextEdit & {cursor: ...}`).
+export interface TextEditWithUnknownCursor {
+  value: string;
+  cursor: number | undefined;
+}
+
+// insertMarker splices `marker` into `value` at [start,end) (replacing any
+// selected range), returning the new value and the cursor position just
+// after the inserted text - the caller applies both via its own controlled
+// state instead of writing a DOM node's `.value` directly.
+export function insertMarker(value: string, start: number, end: number, marker: string): TextEdit {
+  const nextValue = value.slice(0, start) + marker + value.slice(end);
+  return { value: nextValue, cursor: start + marker.length };
 }
 
 // stripMarker removes the FIRST literal occurrence of markerText(n) from
-// el.value (plain string search, not regex - avoids escaping surprises).
-// If the cursor sat past the deletion point, shifts it back by the
-// marker's length so it stays anchored to the same character; if it sat
-// before the deletion point, it is explicitly restored unchanged. A null
-// element (no textarea currently wired) is a safe no-op, never a throw -
-// the caller (useAttachments) can always call this unconditionally.
-//
-// Reads selectionStart BEFORE reassigning el.value, not after: setting a
-// text control's `.value` moves its cursor to the end of the new value
-// (HTMLInputElement/HTMLTextAreaElement's own value-setter behavior,
-// reproduced by jsdom) - reading selectionStart afterward would see that
-// reset position, not the cursor's actual position at the time of the
-// strip. The legacy composer-attachments.js's own stripMarker reads it
-// AFTER the reassignment (the same bug), but its test suite never asserts
-// a post-strip cursor position, so this was never caught - fixed here
-// rather than ported, per this codebase's "fix it when you find it" rule.
-export function stripMarker(el: HTMLTextAreaElement | null, n: number): void {
-  if (!el) return;
+// `value` (plain string search, not regex - avoids escaping surprises).
+// If `cursor` sat past the deletion point, the returned cursor shifts back
+// by the marker's length so it stays anchored to the same character; if it
+// sat before the deletion point, it comes back unchanged. Returns the
+// ORIGINAL value/cursor untouched (a safe no-op result, not a throw) when
+// the marker isn't present or `cursor` is unknown (undefined).
+export function stripMarker(value: string, cursor: number | undefined, n: number): TextEditWithUnknownCursor {
   const needle = markerText(n);
-  const value = el.value;
   const idx = value.indexOf(needle);
-  if (idx < 0) return;
-  const cursor = el.selectionStart;
-  el.value = value.slice(0, idx) + value.slice(idx + needle.length);
-  if (typeof cursor === "number") {
-    const restored = cursor > idx ? Math.max(idx, cursor - needle.length) : cursor;
-    el.selectionStart = restored;
-    el.selectionEnd = restored;
-  }
+  if (idx < 0) return { value, cursor };
+  const nextValue = value.slice(0, idx) + value.slice(idx + needle.length);
+  if (typeof cursor !== "number") return { value: nextValue, cursor };
+  const nextCursor = cursor > idx ? Math.max(idx, cursor - needle.length) : cursor;
+  return { value: nextValue, cursor: nextCursor };
 }

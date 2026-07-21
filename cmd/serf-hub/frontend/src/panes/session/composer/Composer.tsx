@@ -8,14 +8,14 @@
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useLayoutEffect, useRef, useState } from "react";
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
 import { Dropzone } from "../../../widgets/dropzone";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
-import { useAttachments } from "./attachments/useAttachments";
+import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
 import { readEnterToSendPref } from "./enterToSendPref";
@@ -49,7 +49,9 @@ export function Composer({ ref }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
-  const attachments = useAttachments(textareaRef);
+  // Set by textEditor.write() below; consumed (and cleared) by the
+  // cursor-restore layout effect once `text`'s new value has committed.
+  const cursorToRestoreRef = useRef<number | null>(null);
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -62,6 +64,38 @@ export function Composer({ ref }: ComposerProps) {
   // isOtherSessionsDraft guarded against.
   const [text, setText] = useState(() => readDraft(ref));
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+
+  // Bridges useAttachments' pure string-splice logic to this component's
+  // own controlled `text` state, instead of a direct DOM `.value` mutation
+  // - see useAttachments.ts's TextEditor doc comment for the React
+  // controlled-input restoration bug that direct mutation ran into.
+  const textEditor: TextEditor = {
+    read: () => ({ text, cursor: textareaRef.current?.selectionStart ?? text.length }),
+    write: (nextText, cursor) => {
+      setText(nextText);
+      cursorToRestoreRef.current = cursor;
+    },
+  };
+  const attachments = useAttachments(textEditor);
+
+  // Runs after `text`'s new value has committed to the DOM (via React's own
+  // controlled-value reconciliation) - only then is it safe to move the
+  // native cursor without React clobbering it. Keyed on `text` so it fires
+  // once per actual text change, not on every unrelated re-render (e.g. a
+  // live model update); a no-op whenever textEditor.write() wasn't the
+  // cause of this particular change (ordinary typing has no ref to
+  // restore).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: text is a deliberate trigger-only dep - the effect body only reads cursorToRestoreRef, but must still re-run on every text change to pick up a write() that just landed, same idiom as widgets/textarea's own autoGrow effect
+  useLayoutEffect(() => {
+    const cursor = cursorToRestoreRef.current;
+    if (cursor === null) return;
+    cursorToRestoreRef.current = null;
+    const el = textareaRef.current;
+    if (el) {
+      el.selectionStart = cursor;
+      el.selectionEnd = cursor;
+    }
+  }, [text]);
 
   if (!model) return null; // Session.tsx only mounts this once its own model is hydrated; defensive only.
 
@@ -179,6 +213,13 @@ export function Composer({ ref }: ComposerProps) {
     }
   }
 
+  // Legacy suppresses every one of these keybindings entirely inside a
+  // framed side-pane iframe (isInPane()) - verified moot, not assumed: this
+  // rewrite's multi-pane layout is dockview panels in the SAME document
+  // (shell/DockHost.tsx), never cross-document <iframe> panes at all (grep
+  // for "iframe" across src turns up nothing) - the whole concept this
+  // legacy gate defended against doesn't exist here, so there is no
+  // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>): void {
     if (event.key !== "Enter") return;
     if (event.metaKey || event.ctrlKey) {

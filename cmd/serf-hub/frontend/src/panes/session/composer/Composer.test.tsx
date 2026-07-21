@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -302,6 +302,21 @@ test("clicking steer with an empty textarea and empty queue is a focus-only no-o
   expect(document.activeElement).toBe(textarea());
 });
 
+test("a successful classic steer also clears the textarea and its draft (contracts §Drafts)", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", () => ({}));
+
+  await user.type(textarea(), "steer this");
+  await user.click(steerButton());
+
+  await waitFor(() => expect(textarea().value).toBe(""));
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
+});
+
 test("clicking steer with a non-empty queue routes to drain-as-steer, carrying the composer text", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -535,6 +550,34 @@ test("removing an attachment chip strips its marker from the textarea", async ()
 
   await user.click(screen.getByRole("button", { name: /remove/i }));
   expect(textarea().value).toBe("");
+});
+
+test("picking a file via the hidden input attaches it, same as paste/drop", async () => {
+  installCanvasStubs();
+  await mountComposer("ref_a");
+
+  // The picker input is `hidden` (only ever reached via the visible Attach
+  // button proxying a click to it - see the next test) - user-event's own
+  // upload() expects a pointer-interactable target, so this uses RTL's
+  // fireEvent.change with a target.files override instead, the documented
+  // idiom for a file input's change event.
+  const file = new File([new Uint8Array([1, 2, 3])], "picked.png", { type: "image/png" });
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  fireEvent.change(input, { target: { files: [file] } });
+
+  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+});
+
+test("clicking the attach button triggers the hidden file input", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const clickSpy = vi.spyOn(input, "click");
+
+  await user.click(screen.getByRole("button", { name: /attach image/i }));
+  expect(clickSpy).toHaveBeenCalledTimes(1);
 });
 
 // --- T3/T4 integration slots -------------------------------------------------

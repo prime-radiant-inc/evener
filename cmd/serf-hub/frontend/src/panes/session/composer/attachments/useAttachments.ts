@@ -1,7 +1,7 @@
 // useAttachments orchestrates the composer's staged-image pipeline (parity-
 // m5-composer.md §G, contracts §Attachments): validate against limits.ts,
-// reserve a marker + insert it into the textarea synchronously (before any
-// async work - test-composer-image-markers.js's own "pending: true"
+// reserve a marker + splice it into the composer text synchronously (before
+// any async work - test-composer-image-markers.js's own "pending: true"
 // contract), re-encode to PNG via encodePng.ts, then settle the item in
 // place. Component state (not a store): per Composer.tsx's own header
 // comment and the wave plan's binding constraints, only DURABLE state
@@ -10,11 +10,11 @@
 // kind of in-progress, undurable UI state the legacy composer ALSO never
 // persisted past its own DOM lifetime, and base64-heavy image bytes would
 // blow past localStorage's practical quota (up to 8 * 8MB) if it tried.
-import { type RefObject, useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { InputAttachment } from "../../../../stores/threads";
 import { reencodeToPng } from "./encodePng";
 import { rejectionReason } from "./limits";
-import { insertAtCursor, markerText, stripMarker } from "./textareaMarkers";
+import { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 
 export interface PendingAttachment {
   marker: number;
@@ -26,22 +26,41 @@ export interface PendingAttachment {
   pending: boolean;
 }
 
+// TextEditor is the seam this hook uses to change the composer's text
+// instead of ever touching a DOM node's `.value` directly: the textarea is
+// a React-controlled input, and a direct `el.value = ...` mutation gets
+// silently reverted by React's own controlled-input restoration pass when
+// a "change"-family native event fires ANYWHERE in the tree (verified: the
+// hidden file-picker input's own change event specifically, not a click or
+// a paste event - caught by Composer.test.tsx's file-picker attach case
+// actually failing, not by inspection). Composer.tsx is the one owner of
+// `text` state, so it implements both halves: read() reports the CURRENT
+// text and native cursor position (fresh, not cached, so sequential
+// inserts in one ingestFiles() batch each see the previous insert's own
+// result); write() applies a new value through setText() and separately
+// restores the native cursor position once that commits (its own
+// layout-effect, since only Composer.tsx has that lifecycle hook).
+export interface TextEditor {
+  read(): { text: string; cursor: number };
+  write(text: string, cursor: number): void;
+}
+
 export interface UseAttachmentsResult {
   items: PendingAttachment[];
   /** True while any item is still mid-encode - gates submit (parity §A: "a
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
-  /** Validates + stages every file, synchronously inserting one "[image N]"
-   * marker per accepted file at the textarea's current cursor, then
-   * re-encodes each to PNG asynchronously. Every rejection reason from this
-   * one call is combined into a single onRejected call (never one per
+  /** Validates + stages every file, synchronously splicing one "[image N]"
+   * marker per accepted file into the composer text at the current cursor,
+   * then re-encodes each to PNG asynchronously. Every rejection reason from
+   * this one call is combined into a single onRejected call (never one per
    * file) - the caller (Composer.tsx) wires this straight to
    * useToasts().push("error", ...), per the wave's failure-feedback
    * convention; this hook has no toast/DOM-banner opinion of its own. */
   ingestFiles(files: File[], onRejected: (message: string) => void): void;
   /** Removes one item by its stable marker (not array index, which shifts
    * as items are added/removed) and strips its "[image N]" text from the
-   * textarea. Never resets the marker counter - only clearSubmitted does,
+   * composer. Never resets the marker counter - only clearSubmitted does,
    * and only when the result is empty (parity: removing the highest
    * marker still never reuses it). */
   removeItem(marker: number): void;
@@ -61,7 +80,7 @@ export interface UseAttachmentsResult {
   clearSubmitted(submittedMarkers: Set<number>): void;
 }
 
-export function useAttachments(textareaRef: RefObject<HTMLTextAreaElement | null>): UseAttachmentsResult {
+export function useAttachments(editor: TextEditor): UseAttachmentsResult {
   const [items, setItems] = useState<PendingAttachment[]>([]);
   // The marker high-water mark is deliberately NOT derived from items.length
   // (which shrinks on removal) - a plain ref persists across renders without
@@ -91,14 +110,17 @@ export function useAttachments(textareaRef: RefObject<HTMLTextAreaElement | null
       }
 
       if (accepted.length > 0) {
-        const el = textareaRef.current;
+        // Spliced synchronously, in order, before any async decode - each
+        // sibling marker in the SAME batch chains off the cursor position
+        // the previous insertMarker call already advanced to.
+        let { text, cursor } = editor.read();
         const newItems: PendingAttachment[] = accepted.map(({ file, marker }) => {
-          // Inserted synchronously, in order, before any async decode - a
-          // sibling marker in the SAME batch chains off the cursor position
-          // the previous insertAtCursor call already advanced to.
-          if (el) insertAtCursor(el, markerText(marker));
+          const edit = insertMarker(text, cursor, cursor, markerText(marker));
+          text = edit.value;
+          cursor = edit.cursor;
           return { marker, name: file.name, mediaType: "image/png", pending: true };
         });
+        editor.write(text, cursor);
         setItems((prev) => [...prev, ...newItems]);
 
         for (const { file, marker } of accepted) {
@@ -109,7 +131,9 @@ export function useAttachments(textareaRef: RefObject<HTMLTextAreaElement | null
               );
             })
             .catch(() => {
-              stripMarker(textareaRef.current, marker);
+              const current = editor.read();
+              const stripped = stripMarker(current.text, current.cursor, marker);
+              editor.write(stripped.value, stripped.cursor ?? current.cursor);
               setItems((prev) => prev.filter((item) => item.marker !== marker));
               onRejected(`${file.name || "unknown"} (image decode failed)`);
             });
@@ -124,15 +148,17 @@ export function useAttachments(textareaRef: RefObject<HTMLTextAreaElement | null
         );
       }
     },
-    [items, textareaRef],
+    [items, editor],
   );
 
   const removeItem = useCallback(
     (marker: number) => {
-      stripMarker(textareaRef.current, marker);
+      const current = editor.read();
+      const stripped = stripMarker(current.text, current.cursor, marker);
+      editor.write(stripped.value, stripped.cursor ?? current.cursor);
       setItems((prev) => prev.filter((item) => item.marker !== marker));
     },
-    [textareaRef],
+    [editor],
   );
 
   const clearSubmitted = useCallback((submittedMarkers: Set<number>) => {

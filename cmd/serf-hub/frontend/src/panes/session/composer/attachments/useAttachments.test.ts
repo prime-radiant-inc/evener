@@ -1,7 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
-import type { RefObject } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { useAttachments } from "./useAttachments";
+import { type TextEditor, useAttachments } from "./useAttachments";
 
 // Same jsdom canvas-stub technique as encodePng.test.ts (see that file's
 // own header comment) - useAttachments calls the REAL reencodeToPng
@@ -70,12 +69,27 @@ function installDecodeErrorStub(): void {
   globalThis.Image = FailingImage;
 }
 
-function makeTextareaRef(value = "", cursor = 0): RefObject<HTMLTextAreaElement | null> {
-  const el = document.createElement("textarea");
-  el.value = value;
-  el.selectionStart = cursor;
-  el.selectionEnd = cursor;
-  return { current: el };
+// A fake TextEditor backed by a plain in-memory variable - useAttachments'
+// own contract (see its header comment) is that it never touches a DOM
+// node directly, so its tests need no real textarea element at all, only
+// something implementing read()/write().
+interface FakeEditor extends TextEditor {
+  getText(): string;
+  getCursor(): number;
+}
+
+function makeFakeEditor(initialText = "", initialCursor = initialText.length): FakeEditor {
+  let text = initialText;
+  let cursor = initialCursor;
+  return {
+    read: () => ({ text, cursor }),
+    write: (nextText, nextCursor) => {
+      text = nextText;
+      cursor = nextCursor;
+    },
+    getText: () => text,
+    getCursor: () => cursor,
+  };
 }
 
 function makeFile(name: string, type = "image/png", size = 1024): File {
@@ -91,23 +105,24 @@ async function flush(): Promise<void> {
   });
 }
 
-test("ingesting an image synchronously inserts its marker and flags the item pending", () => {
-  const ref = makeTextareaRef("hello", 5);
-  const { result } = renderHook(() => useAttachments(ref));
+test("ingesting an image synchronously splices its marker into the editor text and flags the item pending", () => {
+  const editor = makeFakeEditor("hello", 5);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
   });
 
-  expect(ref.current?.value).toBe("hello[image 1]");
+  expect(editor.getText()).toBe("hello[image 1]");
+  expect(editor.getCursor()).toBe("hello[image 1]".length);
   expect(result.current.items).toHaveLength(1);
   expect(result.current.items[0]).toMatchObject({ marker: 1, pending: true, name: "a.png" });
   expect(result.current.hasPending).toBe(true);
 });
 
 test("after the async re-encode resolves, the item flips to settled with data/width/height", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -119,38 +134,38 @@ test("after the async re-encode resolves, the item flips to settled with data/wi
   expect(result.current.hasPending).toBe(false);
 });
 
-test("two files in the same ingest call get sequential markers inserted side by side", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+test("two files in the same ingest call get sequential markers spliced side by side", async () => {
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
   });
 
-  expect(ref.current?.value).toBe("[image 1][image 2]");
+  expect(editor.getText()).toBe("[image 1][image 2]");
   expect(result.current.items.map((i) => i.marker)).toEqual([1, 2]);
   await flush();
   expect(result.current.items.every((i) => !i.pending)).toBe(true);
 });
 
 test("a non-image file is rejected: no item, no marker, and onRejected receives the reason", () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
 
   act(() => {
     result.current.ingestFiles([makeFile("notes.txt", "text/plain")], onRejected);
   });
 
-  expect(ref.current?.value).toBe("");
+  expect(editor.getText()).toBe("");
   expect(result.current.items).toHaveLength(0);
   expect(onRejected).toHaveBeenCalledTimes(1);
   expect(onRejected.mock.calls[0]?.[0]).toContain("notes.txt");
 });
 
 test("an oversized image is rejected before decode, naming the 8 MB limit", () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
 
   act(() => {
@@ -162,8 +177,8 @@ test("an oversized image is rejected before decode, naming the 8 MB limit", () =
 });
 
 test("a mixed accept+reject batch combines all rejections into one onRejected call while still accepting the good file", () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
 
   act(() => {
@@ -181,8 +196,8 @@ test("a mixed accept+reject batch combines all rejections into one onRejected ca
 });
 
 test("the 9th image in one session is rejected on the count cap, naming the 8-image limit", () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles(
@@ -200,26 +215,26 @@ test("the 9th image in one session is rejected on the count cap, naming the 8-im
   expect(onRejected.mock.calls[0]?.[0]).toContain("maximum 8 images");
 });
 
-test("a decode failure strips the marker, drops the item, and reports via onRejected", async () => {
-  const ref = makeTextareaRef("", 0);
+test("a decode failure strips the marker from the editor text, drops the item, and reports via onRejected", async () => {
+  const editor = makeFakeEditor("", 0);
   installDecodeErrorStub();
-  const { result } = renderHook(() => useAttachments(ref));
+  const { result } = renderHook(() => useAttachments(editor));
   const onRejected = vi.fn();
 
   act(() => {
     result.current.ingestFiles([makeFile("bad.png")], onRejected);
   });
-  expect(ref.current?.value).toBe("[image 1]");
+  expect(editor.getText()).toBe("[image 1]");
   await flush();
 
-  expect(ref.current?.value).toBe("");
+  expect(editor.getText()).toBe("");
   expect(result.current.items).toHaveLength(0);
   expect(onRejected).toHaveBeenCalledTimes(1);
 });
 
 test("removeItem strips the marker text and removes exactly that item", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
@@ -230,13 +245,13 @@ test("removeItem strips the marker text and removes exactly that item", async ()
     result.current.removeItem(1);
   });
 
-  expect(ref.current?.value).toBe("[image 2]");
+  expect(editor.getText()).toBe("[image 2]");
   expect(result.current.items.map((i) => i.marker)).toEqual([2]);
 });
 
 test("marker numbering never reuses a number removed via removeItem", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -254,8 +269,8 @@ test("marker numbering never reuses a number removed via removeItem", async () =
 });
 
 test("clearSubmitted removes exactly the submitted markers, leaving items added mid-flight intact", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -278,8 +293,8 @@ test("clearSubmitted removes exactly the submitted markers, leaving items added 
 });
 
 test("clearSubmitted resets the marker counter to restart at 1 once the result is empty", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -299,8 +314,8 @@ test("clearSubmitted resets the marker counter to restart at 1 once the result i
 });
 
 test("clearSubmitted does NOT reset the counter when surviving (mid-flight) items remain", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -326,8 +341,8 @@ test("clearSubmitted does NOT reset the counter when surviving (mid-flight) item
 });
 
 test("toInputAttachments maps settled items to the wire-facing {mediaType, data, name} shape only", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png")], () => {});
@@ -344,8 +359,8 @@ test("toInputAttachments maps settled items to the wire-facing {mediaType, data,
 });
 
 test("hasPending stays true until every in-flight item has settled", async () => {
-  const ref = makeTextareaRef("", 0);
-  const { result } = renderHook(() => useAttachments(ref));
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
 
   act(() => {
     result.current.ingestFiles([makeFile("a.png"), makeFile("b.png")], () => {});
