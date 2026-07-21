@@ -1,0 +1,311 @@
+import { lazy } from "react";
+import { beforeAll, beforeEach, describe, expect, test } from "vitest";
+import type { DockviewApi } from "dockview-core";
+import { registerPane, type PaneDescriptor, type PaneProps } from "./paneRegistry";
+import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
+
+// Fixture pane types, registered once for the whole file. "settings" is the
+// file's singleton fixture, "doc" its non-singleton fixture - both are real
+// PaneTypeId values (the union is locked/closed, so fixtures must be drawn
+// from it), but neither is the REAL settings/doc pane (those don't exist
+// yet); "transcript" is deliberately left UNREGISTERED, as this file's
+// stand-in for "a syntactically valid PaneTypeId that isn't actually
+// registered" (restoreLayout's own-registration-check tests below).
+function fixtureDescriptor<P>(id: PaneDescriptor<P>["id"], overrides: Partial<PaneDescriptor<P>> = {}): PaneDescriptor<P> {
+  return {
+    id,
+    title: () => `title for ${id}`,
+    component: lazy(() => new Promise<{ default: React.ComponentType<PaneProps<P>> }>(() => {})),
+    ...overrides,
+  };
+}
+
+beforeAll(() => {
+  registerPane(fixtureDescriptor("settings", { singleton: true }));
+  registerPane(fixtureDescriptor("doc"));
+});
+
+beforeEach(() => {
+  resetWorkspaceStoreForTests();
+});
+
+describe("openPane", () => {
+  test("opens a new pane, adding it to panes with a fresh id", () => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "a", path: "x" });
+    const panes = workspaceStore.getState().panes;
+    expect(panes).toEqual([{ id, type: "doc", params: { ref: "a", path: "x" }, beside: undefined }]);
+  });
+
+  test("defaults params to {} when omitted", () => {
+    const id = workspaceStore.getState().openPane("doc");
+    expect(workspaceStore.getState().panes.find((p) => p.id === id)?.params).toEqual({});
+  });
+
+  test("focuses the newly-opened pane", () => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "a" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+  });
+
+  test("records the beside positioning hint", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" }, { beside: first });
+    expect(workspaceStore.getState().panes.find((p) => p.id === second)?.beside).toBe(first);
+  });
+
+  test("two non-singleton panes with different params are both opened", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" });
+    expect(first).not.toBe(second);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([first, second]);
+  });
+
+  test("reopening a non-singleton pane with identical params focuses the existing one instead of duplicating", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().openPane("doc", { ref: "b" }); // a second, different pane
+    const again = workspaceStore.getState().openPane("doc", { ref: "a" });
+
+    expect(again).toBe(first);
+    expect(workspaceStore.getState().panes).toHaveLength(2);
+    expect(workspaceStore.getState().focusedPaneId).toBe(first);
+  });
+
+  test("reopening a singleton pane type focuses the existing instance instead of creating a second", () => {
+    const first = workspaceStore.getState().openPane("settings", { section: "appearance" });
+    const again = workspaceStore.getState().openPane("settings", { section: "appearance" });
+
+    expect(again).toBe(first);
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
+  test("reopening a singleton pane type with different params updates the existing pane's params in place", () => {
+    const first = workspaceStore.getState().openPane("settings", { section: "appearance" });
+    const again = workspaceStore.getState().openPane("settings", { section: "credentials" });
+
+    expect(again).toBe(first);
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: first, type: "settings", params: { section: "credentials" }, beside: undefined },
+    ]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(first);
+  });
+
+  test("throws for an unregistered pane type (mirrors paneFor's own contract)", () => {
+    expect(() => workspaceStore.getState().openPane("transcript", {})).toThrow(/transcript/);
+  });
+});
+
+describe("closePane", () => {
+  test("removes the pane from panes", () => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().closePane(id);
+    expect(workspaceStore.getState().panes).toEqual([]);
+  });
+
+  test("clears focusedPaneId when closing the focused pane", () => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().closePane(id);
+    expect(workspaceStore.getState().focusedPaneId).toBeNull();
+  });
+
+  test("leaves focusedPaneId untouched when closing a different, non-focused pane", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" }); // now focused
+    workspaceStore.getState().closePane(first);
+    expect(workspaceStore.getState().focusedPaneId).toBe(second);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([second]);
+  });
+
+  test("is a no-op for an unknown paneId", () => {
+    const id = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().closePane("not-a-real-id");
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([id]);
+    expect(workspaceStore.getState().focusedPaneId).toBe(id);
+  });
+});
+
+describe("focusPane", () => {
+  test("sets focusedPaneId to an existing pane's id", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().openPane("doc", { ref: "b" }); // focus moves here
+    workspaceStore.getState().focusPane(first);
+    expect(workspaceStore.getState().focusedPaneId).toBe(first);
+  });
+
+  test("is a no-op for an unknown paneId", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().focusPane("not-a-real-id");
+    expect(workspaceStore.getState().focusedPaneId).toBe(first);
+  });
+});
+
+// A minimal DockviewApi double covering only what workspace.ts itself
+// touches (toJSON/fromJSON/panels/activePanel/clear). This file tests
+// workspace.ts's OWN logic - dedup/focus bookkeeping and how it delegates
+// persistence - in isolation from the real dockview library; DockHost's own
+// tests (DockHost.test.tsx) exercise real dockview end to end, per this
+// task's testing guidance ("mock only what jsdom can't do" is about THAT
+// boundary, not this one - a fake api double here is an ordinary unit-test
+// seam for a store that would otherwise need a full dockview mount just to
+// test a dedup guard).
+class FakeDockviewApi {
+  panels: Array<{ id: string; params: unknown }> = [];
+  activePanel: { id: string } | undefined = undefined;
+  cleared = false;
+  toJSONResult: unknown = { fake: "layout" };
+  fromJSONBehavior: (data: unknown) => void = () => {};
+
+  toJSON(): unknown {
+    return this.toJSONResult;
+  }
+
+  fromJSON(data: unknown): void {
+    this.fromJSONBehavior(data);
+  }
+
+  clear(): void {
+    this.cleared = true;
+    this.panels = [];
+    this.activePanel = undefined;
+  }
+}
+
+function asDockviewApi(fake: FakeDockviewApi): DockviewApi {
+  return fake as unknown as DockviewApi;
+}
+
+describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
+  test("layoutJSON returns null when no DockviewApi is registered", () => {
+    expect(workspaceStore.getState().layoutJSON()).toBeNull();
+  });
+
+  test("restoreLayout returns false when no DockviewApi is registered", () => {
+    expect(workspaceStore.getState().restoreLayout({ anything: true })).toBe(false);
+  });
+
+  test("layoutJSON delegates to the registered api's toJSON()", () => {
+    const fake = new FakeDockviewApi();
+    fake.toJSONResult = { grid: "serialized" };
+    registerDockviewApi(asDockviewApi(fake));
+
+    expect(workspaceStore.getState().layoutJSON()).toEqual({ grid: "serialized" });
+  });
+
+  test("registering null clears the api (layoutJSON goes back to null)", () => {
+    const fake = new FakeDockviewApi();
+    registerDockviewApi(asDockviewApi(fake));
+    registerDockviewApi(null);
+
+    expect(workspaceStore.getState().layoutJSON()).toBeNull();
+  });
+
+  test("restoreLayout calls fromJSON and, on success, rebuilds panes/focusedPaneId from the api's panels/activePanel", () => {
+    const fake = new FakeDockviewApi();
+    let receivedData: unknown;
+    fake.fromJSONBehavior = (data) => {
+      receivedData = data;
+      fake.panels = [
+        { id: "p1", params: { paneType: "settings", paneParams: { section: "appearance" } } },
+        { id: "p2", params: { paneType: "doc", paneParams: { ref: "a", path: "x" } } },
+      ];
+      fake.activePanel = { id: "p2" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({ the: "json" });
+
+    expect(ok).toBe(true);
+    expect(receivedData).toEqual({ the: "json" });
+    expect(workspaceStore.getState().panes).toEqual([
+      { id: "p1", type: "settings", params: { section: "appearance" } },
+      { id: "p2", type: "doc", params: { ref: "a", path: "x" } },
+    ]);
+    expect(workspaceStore.getState().focusedPaneId).toBe("p2");
+  });
+
+  test("restoreLayout falls back to the first panel as focused when the api reports no active panel", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [{ id: "p1", params: { paneType: "doc", paneParams: {} } }];
+      fake.activePanel = undefined;
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    workspaceStore.getState().restoreLayout({});
+
+    expect(workspaceStore.getState().focusedPaneId).toBe("p1");
+  });
+
+  test("restoreLayout sets focusedPaneId to null when the restored layout has no panels at all", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [];
+      fake.activePanel = undefined;
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({});
+
+    expect(ok).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(workspaceStore.getState().focusedPaneId).toBeNull();
+  });
+
+  test("restoreLayout returns false and clears the api when fromJSON throws (structurally invalid data)", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      throw new Error("dockview: root must be of type branch");
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({ nonsense: true });
+
+    expect(ok).toBe(false);
+    expect(fake.cleared).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+    expect(workspaceStore.getState().focusedPaneId).toBeNull();
+  });
+
+  test("restoreLayout returns false and clears the api when a restored panel's paneType isn't a real PaneTypeId", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [{ id: "p1", params: { paneType: "not-a-real-type", paneParams: {} } }];
+      fake.activePanel = { id: "p1" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({});
+
+    expect(ok).toBe(false);
+    expect(fake.cleared).toBe(true);
+    expect(workspaceStore.getState().panes).toEqual([]);
+  });
+
+  test("restoreLayout returns false and clears the api when a restored panel's paneType is a valid PaneTypeId but isn't registered", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      // "transcript" is a real PaneTypeId (see the file header) but this
+      // test file never registers it - simulates a layout saved by a later
+      // build (once transcript panes ship) loaded by an older one that
+      // hasn't shipped them yet.
+      fake.panels = [{ id: "p1", params: { paneType: "transcript", paneParams: { ref: "a" } } }];
+      fake.activePanel = { id: "p1" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    const ok = workspaceStore.getState().restoreLayout({});
+
+    expect(ok).toBe(false);
+    expect(fake.cleared).toBe(true);
+  });
+
+  test("restoreLayout returns false when a restored panel has no params at all", () => {
+    const fake = new FakeDockviewApi();
+    fake.fromJSONBehavior = () => {
+      fake.panels = [{ id: "p1", params: undefined }];
+      fake.activePanel = { id: "p1" };
+    };
+    registerDockviewApi(asDockviewApi(fake));
+
+    expect(workspaceStore.getState().restoreLayout({})).toBe(false);
+    expect(fake.cleared).toBe(true);
+  });
+});
