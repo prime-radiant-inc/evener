@@ -6,6 +6,7 @@ import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } 
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import Session from "./Session";
@@ -555,4 +556,44 @@ test("clicking the real NewContentPill clears it", async () => {
   fireEvent.click(screen.getByTestId("new-content-pill"));
 
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
+});
+
+// --- toast failure convention (wave 5 T1) --------------------------------
+//
+// A user-initiated action that fails surfaces via the existing useToasts()
+// singleton - no new banner systems, no silent `.catch(() => {})`. This
+// loadOlder() catch is the wave's reference implementation; every other
+// stream's own failure handling (composer send/steer/queue, queue strip
+// promote/edit/cancel, ask answering, session actions) follows the same
+// pattern.
+test("a failed loadOlder surfaces an error toast instead of failing silently", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hi", status: "completed" }],
+        },
+      ],
+    }),
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => {
+    throw new Error("boom");
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+
+  const loadOlderButton = await screen.findByTestId("load-older-row");
+  fireEvent.click(loadOlderButton);
+
+  await screen.findByText(/couldn't load older messages: boom/i);
 });
