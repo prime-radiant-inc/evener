@@ -2171,6 +2171,33 @@ func TestAppEventProjectorToolCallEndCarriesExitCode(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorToolCallEndCarriesZeroExitCode (wire-honesty spec Part
+// A, review Minor) pins the boundary that makes the pointer field honest: a
+// successful shell run's ToolState literally contains "exit_code":0, which
+// must produce a non-nil *int64 pointing at 0 — distinguishable from the
+// "no ToolState at all" case (TestAppEventProjectorToolCallEndOmitsExitCode
+// WithoutToolState below), which leaves it nil. Go's json only touches the
+// pointer when the key is present, so this already holds by construction;
+// pinned here so it can never silently regress.
+func TestAppEventProjectorToolCallEndCarriesZeroExitCode(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_exit_zero"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName:  "shell",
+		CallID:    "call_exit_zero",
+		Output:    "ok",
+		ToolState: json.RawMessage(`{"type":"shell","status":"completed","exit_code":0}`),
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode == nil {
+		t.Fatalf("completed item ExitCode=nil, want a non-nil pointer to 0 (present-and-zero, not absent)")
+	}
+	if *item.ExitCode != 0 {
+		t.Fatalf("completed item ExitCode=%v, want *0", *item.ExitCode)
+	}
+}
+
 // TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState (wire-honesty
 // spec Part A): a tool whose ToolState carries no exit_code (or none at all,
 // e.g. read_file) must leave ExitCode nil rather than fabricating zero.

@@ -163,6 +163,38 @@ func TestProjectTurnMapsToolResultExitCode(t *testing.T) {
 	}
 }
 
+// TestProjectTurnMapsToolResultZeroExitCode (wire-honesty spec Part A, review
+// Minor) pins the boundary that makes the pointer field honest on reload too:
+// a successful shell run's persisted ToolState literally contains
+// "exit_code":0, which must produce a non-nil *int64 pointing at 0 —
+// distinguishable from the "no exit_code in ToolState at all" case
+// (TestProjectTurnOmitsExitCodeForNonShellToolState below), which leaves it
+// nil. Go's json only touches the pointer when the key is present, so this
+// already holds by construction; pinned here so it can never silently
+// regress.
+func TestProjectTurnMapsToolResultZeroExitCode(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_shell_zero",
+				Name:       "shell",
+				Content:    "ok",
+				ToolState:  json.RawMessage(`{"type":"shell","status":"completed","exit_code":0}`),
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 || done[0].ExitCode == nil {
+		t.Fatalf("tool result ExitCode=nil, want a non-nil pointer to 0 (present-and-zero, not absent)")
+	}
+	if *done[0].ExitCode != 0 {
+		t.Fatalf("tool result ExitCode=%v, want *0", *done[0].ExitCode)
+	}
+}
+
 // TestProjectTurnOmitsExitCodeForNonShellToolState (wire-honesty spec Part A):
 // a non-shell tool's ToolState carries no exit_code, so reload must leave
 // ExitCode nil rather than fabricating zero.
