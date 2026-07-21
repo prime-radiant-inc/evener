@@ -46,10 +46,24 @@ function basenameOf(path: string): string {
 // Guards the file-naming half of the widget convention (one dir per widget:
 // index.tsx + <name>.module.css + <name>.test.tsx) that the rest of this
 // contract - and every stream after this one - assumes holds.
-test("every non-token stylesheet under src is named global.css or <name>.module.css", () => {
+//
+// shell/dockview-theme.css is the one deliberate exception: it restyles a
+// third-party library (dockview) via a plain, UNSCOPED class selector
+// (.dockview-theme-serf, passed to DockviewReact's own className prop -
+// see DockHost.tsx), which a `.module.css` file cannot do (CSS Modules
+// hash every class name, and dockview needs to see the literal class it's
+// told to apply). The wave-3 plan's Global Constraints name this file
+// explicitly as being "on the token-contract allowlist for referencing
+// --surface/--edge/--ink vars only" - every OTHER mechanism in this
+// contract (no chromatic literal, the attention/alive/danger allowlist)
+// still applies to it unchanged, exactly like every other stylesheet; only
+// the naming rule gets a named exception, here.
+const NAMING_EXCEPTIONS = new Set(["dockview-theme.css"]);
+
+test("every non-token stylesheet under src is named global.css, <name>.module.css, or a named exception", () => {
   const offenders = OTHER_STYLESHEETS.map(([path]) => path).filter((path) => {
     const base = basenameOf(path);
-    return base !== "global.css" && !base.endsWith(".module.css");
+    return base !== "global.css" && !base.endsWith(".module.css") && !NAMING_EXCEPTIONS.has(base);
   });
   expect(offenders).toEqual([]);
 });
