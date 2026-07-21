@@ -2,7 +2,7 @@ import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Dialog } from "./index";
 
@@ -86,6 +86,39 @@ test("clicking inside the panel does not call onClose", async () => {
   );
   await user.click(screen.getByText("Body text"));
   expect(onClose).not.toHaveBeenCalled();
+});
+
+// --- fix-wave: scrim drag guard (Important) -----------------------------
+// A click event's target reflects where the mouse was released, not where
+// the press started - so selecting body text and dragging the release
+// point out onto the scrim previously produced a click whose target WAS
+// the scrim (indistinguishable from a genuine backdrop click) even though
+// the interaction began inside the panel.
+
+test("a mousedown inside the panel followed by a click landing on the scrim (a drag out) does not close it", () => {
+  const onClose = vi.fn();
+  const { container } = render(
+    <Dialog open onClose={onClose} title="t">
+      <p>Body text</p>
+    </Dialog>,
+  );
+  const scrim = container.firstElementChild!;
+  fireEvent.mouseDown(screen.getByText("Body text"));
+  fireEvent.click(scrim);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+test("a mousedown and click both landing on the scrim closes it", () => {
+  const onClose = vi.fn();
+  const { container } = render(
+    <Dialog open onClose={onClose} title="t">
+      Body
+    </Dialog>,
+  );
+  const scrim = container.firstElementChild!;
+  fireEvent.mouseDown(scrim);
+  fireEvent.click(scrim);
+  expect(onClose).toHaveBeenCalledOnce();
 });
 
 test("the close button calls onClose when clicked", async () => {

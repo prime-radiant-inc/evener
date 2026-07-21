@@ -12,6 +12,11 @@ export interface ComboboxProps<T extends ComboboxOption = ComboboxOption> {
   onQuery: (query: string) => void;
   onPick: (option: T) => void;
   renderOption?: (option: T) => ReactNode;
+  /** Accessible name for the input, forwarded as-is. Prefer
+   * `aria-labelledby` pointing at an external label element - see this
+   * component's doc comment for why. */
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
 }
 
 const QUERY_DEBOUNCE_MS = 150;
@@ -37,26 +42,27 @@ const CLASS = {
  * keystroke. Never traps focus (no FocusScope) - this is the widget
  * later model/directory pickers build on.
  *
- * Has no label prop (not in the locked API) - give it an accessible name
- * by wrapping it in a native <label>, which works via descendant
- * containment regardless of the wrapper <div> in between:
- * `<label>Model<Combobox .../></label>`. Caveat worth verifying before
- * this pattern is relied on widely: name-from-content computation walks
- * the label's full subtree, which - while the popup is open - includes
- * the rendered option text too. This may make the accessible name noisier
+ * Accessible name: pass `aria-labelledby` (pointing at an external label
+ * element's id) as the primary, recommended pattern - both it and
+ * `aria-label` are forwarded to the input as-is. This keeps the
+ * combobox's name fixed to just that label, never the popup's rendered
+ * option text. Wrapping in a native <label> instead
+ * (`<label>Model<Combobox .../></label>`) still works via descendant
+ * containment regardless of the wrapper <div> in between, but is a
+ * secondary option with a caveat: name-from-content computation walks the
+ * label's full subtree, which - while the popup is open - includes the
+ * rendered option text too. This may make the accessible name noisier
  * than intended while browsing (exact behavior depends on how a given
  * browser/AT's accname implementation treats the nested listbox; not
- * fully verified here). If that turns out to matter in practice, the
- * clean fix is an internal aria-labelledby wired to a caller-supplied id
- * instead of relying on containment - not done here to avoid growing the
- * locked prop shape without confirming the containment approach actually
- * needs replacing. See this task's report.
+ * fully verified here).
  */
 export function Combobox<T extends ComboboxOption = ComboboxOption>({
   options,
   onQuery,
   onPick,
   renderOption,
+  "aria-label": ariaLabel,
+  "aria-labelledby": ariaLabelledBy,
 }: ComboboxProps<T>) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -69,12 +75,23 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
   // The caller's options prop can change out from under an open popup
   // (new search results arriving) - drop any stale highlight rather than
   // let aria-activedescendant point at an index that now means something
-  // else, or nothing at all.
+  // else, or nothing at all. This effect runs after commit, so it alone
+  // isn't enough - the render that happens first, still with the old
+  // activeIndex against the new (possibly shorter) options, must not
+  // dereference out of bounds either. activeOption below is what actually
+  // guards that; this effect just formalizes the reset for next render.
   useEffect(() => {
     setActiveIndex(-1);
   }, [options]);
 
   const showPopup = open && options.length > 0;
+  // Bounds-checked instead of `options[activeIndex]!`: activeIndex can be
+  // stale relative to a freshly-shrunk options array during the single
+  // render between a debounced onQuery's shorter results arriving and the
+  // [options] effect above resetting it - an out-of-bounds access there
+  // used to throw during render (type ArrowDown to a high index, then a
+  // shorter result set lands - exactly the flow this widget exists for).
+  const activeOption = activeIndex >= 0 && activeIndex < options.length ? options[activeIndex] : undefined;
 
   function pick(option: T) {
     onPick(option);
@@ -114,17 +131,20 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
           setActiveIndex((current) => Math.max(current - 1, 0));
         }
         break;
-      case "Enter": {
-        const active = activeIndex === -1 ? undefined : options[activeIndex];
-        if (active) {
+      case "Enter":
+        if (activeOption) {
           event.preventDefault();
-          pick(active);
+          pick(activeOption);
         }
         break;
-      }
       case "Escape":
+        // Only consume Escape (and stop it reaching an enclosing overlay,
+        // e.g. a Dialog this combobox is nested in) when there's actually
+        // a popup here to close. Otherwise let it bubble - an idle
+        // combobox has nothing of its own for Escape to do.
         if (open) {
           event.preventDefault();
+          event.stopPropagation();
           setOpen(false);
           setActiveIndex(-1);
         }
@@ -155,7 +175,9 @@ export function Combobox<T extends ComboboxOption = ComboboxOption>({
         aria-expanded={showPopup}
         aria-autocomplete="list"
         aria-controls={showPopup ? listboxId : undefined}
-        aria-activedescendant={activeIndex !== -1 ? optionId(options[activeIndex]!) : undefined}
+        aria-activedescendant={activeOption ? optionId(activeOption) : undefined}
+        aria-label={ariaLabel}
+        aria-labelledby={ariaLabelledBy}
       />
       {showPopup && (
         <ul role="listbox" id={listboxId} className={CLASS.listbox}>

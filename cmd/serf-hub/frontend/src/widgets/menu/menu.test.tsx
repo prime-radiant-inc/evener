@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Dialog } from "../dialog";
 import { Menu, type MenuItem } from "./index";
 
 afterEach(cleanup);
@@ -206,4 +207,25 @@ test("the popup's open animation honors prefers-reduced-motion, using only token
   expect(css).toContain("animation:");
   expect(css).toContain("var(--motion-duration-overlay)");
   expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+});
+
+// --- fix-wave: nested-overlay Escape containment (Important) -----------
+
+test("Escape closes only the menu when nested in a Dialog; a second Escape then closes the Dialog", async () => {
+  const user = userEvent.setup();
+  const onDialogClose = vi.fn();
+  render(
+    <Dialog open onClose={onDialogClose} title="t">
+      <Menu trigger="Actions" items={items()} />
+    </Dialog>,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  expect(screen.getByRole("menu")).toBeTruthy();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(onDialogClose).not.toHaveBeenCalled();
+
+  await user.keyboard("{Escape}");
+  expect(onDialogClose).toHaveBeenCalledOnce();
 });

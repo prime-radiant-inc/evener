@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Dialog } from "../dialog";
 import { Combobox, type ComboboxOption } from "./index";
 
 afterEach(() => {
@@ -239,4 +240,80 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "combobox.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+// --- fix-wave: options shrinking under a stale activeIndex (Critical) ---
+
+test("options shrinking below the active index does not crash, clears activedescendant, and makes Enter a no-op", async () => {
+  const user = setupUser();
+  const onPick = vi.fn();
+  const many: ComboboxOption[] = [
+    { id: "a", label: "Alpha" },
+    { id: "b", label: "Bravo" },
+    { id: "c", label: "Charlie" },
+    { id: "d", label: "Delta" },
+  ];
+  const { rerender } = renderCombobox({ options: many, onPick });
+  const input = screen.getByRole("combobox", { name: "Model" }) as HTMLInputElement;
+  input.focus();
+  await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}"); // activeIndex -> 2 ("Charlie")
+  expect(input.getAttribute("aria-activedescendant")).toContain("-c");
+
+  const fewer: ComboboxOption[] = [{ id: "a", label: "Alpha" }];
+  expect(() =>
+    rerender(
+      <label>
+        Model
+        <Combobox options={fewer} onQuery={vi.fn()} onPick={onPick} />
+      </label>,
+    ),
+  ).not.toThrow();
+
+  expect(input.getAttribute("aria-activedescendant")).toBeNull();
+
+  await user.keyboard("{Enter}");
+  expect(onPick).not.toHaveBeenCalled();
+});
+
+// --- fix-wave: nested-overlay Escape containment (Important) -----------
+
+test("Escape closes only the combobox's own popup when nested in a Dialog; a second Escape then closes the Dialog", async () => {
+  const user = setupUser();
+  const onDialogClose = vi.fn();
+  render(
+    <Dialog open onClose={onDialogClose} title="Pick a model">
+      <label>
+        Model
+        <Combobox options={MODELS} onQuery={vi.fn()} onPick={vi.fn()} />
+      </label>
+    </Dialog>,
+  );
+  const input = screen.getByRole("combobox", { name: "Model" });
+  input.focus();
+  await user.keyboard("{ArrowDown}");
+  expect(screen.getByRole("listbox")).toBeTruthy();
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(onDialogClose).not.toHaveBeenCalled();
+
+  await user.keyboard("{Escape}");
+  expect(onDialogClose).toHaveBeenCalledOnce();
+});
+
+// --- fix-wave: aria-label / aria-labelledby forwarding (controller-approved) ---
+
+test("forwards aria-label to the input", () => {
+  render(<Combobox options={[]} onQuery={vi.fn()} onPick={vi.fn()} aria-label="Model" />);
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+});
+
+test("forwards aria-labelledby to the input", () => {
+  render(
+    <div>
+      <span id="model-label">Model</span>
+      <Combobox options={[]} onQuery={vi.fn()} onPick={vi.fn()} aria-labelledby="model-label" />
+    </div>,
+  );
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
 });

@@ -2,7 +2,7 @@ import { afterEach, test, expect, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Sheet } from "./index";
 
@@ -76,6 +76,21 @@ test("clicking the scrim calls onClose", async () => {
   );
   await user.click(container.firstElementChild!);
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+// fix-wave: same scrim drag guard as dialog.test.tsx - Sheet shares
+// OverlayPanel, so this confirms the fix there applies here too.
+test("a mousedown inside the panel followed by a click landing on the scrim (a drag out) does not close it", () => {
+  const onClose = vi.fn();
+  const { container } = render(
+    <Sheet open onClose={onClose} title="t">
+      <p>Body text</p>
+    </Sheet>,
+  );
+  const scrim = container.firstElementChild!;
+  fireEvent.mouseDown(screen.getByText("Body text"));
+  fireEvent.click(scrim);
+  expect(onClose).not.toHaveBeenCalled();
 });
 
 test("the close button calls onClose when clicked", async () => {

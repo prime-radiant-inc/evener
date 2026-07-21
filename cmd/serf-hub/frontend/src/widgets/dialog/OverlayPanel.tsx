@@ -1,4 +1,4 @@
-import { useId, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useId, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
 import { CloseIcon } from "./CloseIcon";
@@ -38,15 +38,27 @@ const CLASS = {
  */
 export function OverlayPanel({ open, onClose, title, children, footer, panelClassName }: OverlayPanelProps) {
   const titleId = useId();
+  // A click event's target reflects where the mouse was RELEASED, not
+  // where the press started - selecting text inside the panel and
+  // dragging the release point out onto the scrim produces a click whose
+  // target is the scrim, indistinguishable by target alone from a genuine
+  // backdrop click. Tracking where the press itself landed and requiring
+  // both ends of the gesture to be the scrim closes that gap.
+  const scrimPressStartedOnScrimRef = useRef(false);
 
   if (!open) return null;
 
+  function handleScrimMouseDown(event: MouseEvent<HTMLDivElement>) {
+    scrimPressStartedOnScrimRef.current = event.target === event.currentTarget;
+  }
+
   function handleScrimClick(event: MouseEvent<HTMLDivElement>) {
-    // Only a click landing directly on the scrim itself counts as
-    // "outside the panel" - a click inside the panel bubbles up through
-    // this same handler, but its event.target is the descendant that was
-    // actually clicked, not the scrim.
-    if (event.target === event.currentTarget) onClose();
+    // Only a press-and-release that both land directly on the scrim
+    // itself count as "outside the panel" - a click inside the panel
+    // bubbles up through this same handler, but its event.target is the
+    // descendant that was actually clicked, not the scrim.
+    if (event.target === event.currentTarget && scrimPressStartedOnScrimRef.current) onClose();
+    scrimPressStartedOnScrimRef.current = false;
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -54,7 +66,7 @@ export function OverlayPanel({ open, onClose, title, children, footer, panelClas
   }
 
   return (
-    <div className={CLASS.scrim} onClick={handleScrimClick}>
+    <div className={CLASS.scrim} onMouseDown={handleScrimMouseDown} onClick={handleScrimClick}>
       <FocusScope trap>
         <div
           role="dialog"

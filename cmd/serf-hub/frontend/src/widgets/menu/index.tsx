@@ -128,7 +128,13 @@ export function Menu({ trigger, items }: MenuProps) {
         break;
       }
       case "Escape":
+        // This handler only exists in the tree while the menu is open
+        // (it's on the popup <ul>, which {isOpen && ...} gates), so
+        // reaching this case always means there's a popup here to close -
+        // stop the event from also reaching an enclosing overlay (e.g. a
+        // Dialog this menu is nested in).
         event.preventDefault();
+        event.stopPropagation();
         closeMenu();
         break;
       default:
