@@ -137,6 +137,21 @@ export function rememberedArgs(item: { id: string; callId?: string; argumentsJSO
   return argsCache.get(key) ?? parsed;
 }
 
+// trailingBracketFooter extracts the inner text of a trailing "[...]"
+// segment - the shape several agent-side formatters end their plain-text
+// tool output in (agent/session_tools_shell.go's formatShellResult,
+// agent/session_tools_jobs.go's formatJobStop/formatDelegateSend/
+// formatJobReadOutput). Returns undefined when the (right-trimmed) text
+// doesn't end in a closing bracket at all - a still-running/backgrounded
+// call, or a tool with no footer convention.
+export function trailingBracketFooter(text: string): string | undefined {
+  const trimmed = text.trimEnd();
+  if (!trimmed.endsWith("]")) return undefined;
+  const openIdx = trimmed.lastIndexOf("[");
+  if (openIdx === -1) return undefined;
+  return trimmed.slice(openIdx + 1, trimmed.length - 1);
+}
+
 // str reads a string-typed field off a parsed-args/output object, undefined
 // for a missing or non-string value - every descriptor's target/summary
 // logic uses this rather than trusting the wire's untyped JSON directly.

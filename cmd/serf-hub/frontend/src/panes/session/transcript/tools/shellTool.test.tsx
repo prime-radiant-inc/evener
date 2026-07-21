@@ -34,6 +34,16 @@ test("summary: no footer at all (still running, or backgrounded) shows no exit s
   expect(d.summary(withCommand("sleep 10", { output: "partial output so far" }))).toBe("Ran sleep 10");
 });
 
+test("summary: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
+  // agent/session_tools_shell.go's runBufferedShell path (used when the
+  // execution environment doesn't support streaming) has no StateResult/
+  // bracketed footer at all - it ends in a bare
+  // "exit_code=N duration_ms=N timed_out=bool" line instead.
+  const d = toolRendererFor("shell");
+  const out = "stdout here\nexit_code=2 duration_ms=15 timed_out=false";
+  expect(d.summary(withCommand("false", { output: out }))).toBe("Ran false · exit 2");
+});
+
 test("summary: a long command is clipped", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
@@ -62,6 +72,12 @@ test("autoExpand: true when the parsed exit code is nonzero", () => {
 test("autoExpand: false on a clean exit", () => {
   const d = toolRendererFor("shell");
   expect(d.autoExpand?.(withCommand("true", { output: "x\n[exit 0]" }))).toBe(false);
+});
+
+test("autoExpand: true for a nonzero exit reported via the buffered fallback's exit_code= trailer", () => {
+  const d = toolRendererFor("shell");
+  const out = "stdout\nexit_code=1 duration_ms=5 timed_out=false";
+  expect(d.autoExpand?.(withCommand("false", { output: out }))).toBe(true);
 });
 
 test("autoExpand: false when no exit code is detectable at all (no false failure signal)", () => {

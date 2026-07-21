@@ -1,5 +1,17 @@
 import { test, expect } from "vitest";
-import { clip, tailSlice, tailFold, formatToolDuration, formatByteCount, lineCount, parseArgs, parseJSONObject, str, rememberedArgs } from "./helpers";
+import {
+  clip,
+  tailSlice,
+  tailFold,
+  formatToolDuration,
+  formatByteCount,
+  lineCount,
+  parseArgs,
+  parseJSONObject,
+  str,
+  rememberedArgs,
+  trailingBracketFooter,
+} from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 
 // --- clip ---------------------------------------------------------------
@@ -175,4 +187,30 @@ test("rememberedArgs: falls back to the item id when callId is absent", () => {
 test("rememberedArgs: never observed live and no argumentsJSON at all degrades to {} (the documented remaining gap)", () => {
   const neverSeenLive = tItem({ callId: "call_remember_never_live", argumentsJSON: undefined });
   expect(rememberedArgs(neverSeenLive)).toEqual({});
+});
+
+// --- trailingBracketFooter ----------------------------------------------
+// Ground truth: several agent-side formatters (formatShellResult,
+// formatJobStop, formatDelegateSend, formatJobReadOutput) all end their
+// plain-text output in a "[... · ...]" bracketed footer summarizing the
+// call's own outcome. This extracts that footer's inner text verbatim
+// (the tool already wrote a good human summary; no need to re-derive
+// individual fields from it) rather than the whole preceding body.
+
+test("trailingBracketFooter: extracts the inner text of a trailing bracket", () => {
+  expect(trailingBracketFooter("some output\n[job job_1 · completed · already_terminal]")).toBe(
+    "job job_1 · completed · already_terminal",
+  );
+});
+
+test("trailingBracketFooter: trailing whitespace after the closing bracket is tolerated", () => {
+  expect(trailingBracketFooter("x\n[exit 0]\n\n")).toBe("exit 0");
+});
+
+test("trailingBracketFooter: undefined when the text doesn't end in a bracket", () => {
+  expect(trailingBracketFooter("plain text, no footer")).toBeUndefined();
+});
+
+test("trailingBracketFooter: undefined for an empty string", () => {
+  expect(trailingBracketFooter("")).toBeUndefined();
 });

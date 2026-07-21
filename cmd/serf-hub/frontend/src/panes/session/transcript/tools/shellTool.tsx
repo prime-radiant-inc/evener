@@ -19,7 +19,7 @@
 import { registerToolRenderer } from "../toolRenderers";
 import type { ToolRenderProps } from "../toolRenderers";
 import { CodeBlock } from "../../../../widgets";
-import { clip, rememberedArgs, str, tailFold, tailSlice } from "./helpers";
+import { clip, rememberedArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
 import type { ItemModel } from "../../../../protocol/model";
 import styles from "./shelltool.module.css";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -35,19 +35,27 @@ function shellCommand(args: Record<string, unknown>): string {
   return str(args, "command") ?? str(args, "cmd") ?? "";
 }
 
-// parseShellExitCode reads the trailing "[... exit <N> ...]" footer
-// formatShellResult appends - see this file's own header for why this is a
-// text heuristic, not a structured field. Returns undefined for a
-// backgrounded/still-running command (no footer yet) or any output that
-// doesn't end in a bracketed segment.
+// A second, differently-shaped trailer for the "buffered" execution
+// environment fallback (used when the env doesn't support streaming,
+// agent/session_tools_shell.go's runBufferedShell): no StateResult/
+// brackets at all, just a bare "exit_code=N duration_ms=N timed_out=bool"
+// line.
+const BUFFERED_EXIT_CODE_RE = /\bexit_code=(-?\d+)\b/;
+
+// parseShellExitCode reads "exit <N>" out of the trailing "[... exit <N>
+// ...]" footer formatShellResult appends (the common, streaming-execenv
+// path), falling back to the buffered-execenv trailer above - see this
+// file's own header for why this is a text heuristic, not a structured
+// field. Returns undefined for a backgrounded/still-running command (no
+// trailer of either shape yet).
 function parseShellExitCode(output: string): number | undefined {
-  const trimmed = output.trimEnd();
-  if (!trimmed.endsWith("]")) return undefined;
-  const openIdx = trimmed.lastIndexOf("[");
-  if (openIdx === -1) return undefined;
-  const footer = trimmed.slice(openIdx);
-  const match = /\bexit (-?\d+)\b/.exec(footer);
-  return match ? Number(match[1]) : undefined;
+  const footer = trailingBracketFooter(output);
+  if (footer !== undefined) {
+    const bracketed = /\bexit (-?\d+)\b/.exec(footer);
+    if (bracketed) return Number(bracketed[1]);
+  }
+  const buffered = BUFFERED_EXIT_CODE_RE.exec(output);
+  return buffered ? Number(buffered[1]) : undefined;
 }
 
 function ShellBody({ item, live }: ToolRenderProps) {
