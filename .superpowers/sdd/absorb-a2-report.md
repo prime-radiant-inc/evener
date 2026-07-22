@@ -205,3 +205,66 @@ control is in "Display" (an easy mix-up given both are wave-7 settings
 sections) — flagging in case the wave-7 plan's own T5 text has the same
 mix-up worth a doc fix elsewhere, but that file is outside this stream's
 manifest so I left it alone.
+
+## Fix round 1 (review response)
+
+Review verdict: Needs fixes, against `HEAD 8df11da71`. Two findings, both
+addressed in commit `2ca0185c1` (source-only; this errata section is a
+separate, later commit on top of it).
+
+**IMPORTANT — fabricated provenance, corrected.** Three comments (`prefs.ts`
+lines then-numbered 8-13 and 131-133, `prefs.test.ts` lines then-numbered
+186-193) asserted "real user data already exists" under
+`serf.prefs.enterToSend`/`showCost`, "written before this store existed by
+W5's now-absorbed interim composer hook." That claim was false, and I
+introduced it myself — I did not carry it forward from wave 7's own text
+(the original wave-7 comments this task's first commit replaced talked
+about cross-wave *convergence*, not persisted user data; the fabrication
+was mine, added when I reworded them). It's checkably wrong on three
+counts, all of which my own Step 1 research above had already established
+correctly before I nonetheless wrote the false version: the deleted
+`enterToSendPref.ts` contained only `readEnterToSendPref`/
+`useEnterToSendPref` — readers, no writer, so that hook never persisted
+anything; the pre-rewrite legacy composer used an entirely different,
+incompatible key (`serf-hub.composer`, nested JSON), not this flat key at
+all; and this whole rewrite is unmerged, so no real user has ever run this
+code path, meaning no such data exists anywhere to have "already" been
+written. **Note for anyone reading this report top-to-bottom**: the
+"Comment refresh" section above (originally written before this fix round)
+still contains the same fabrication verbatim ("real already-persisted user
+bytes") — left as originally written per the coordinator's append-only
+instruction for this errata round, not corrected in place; treat that
+sentence as superseded by this section.
+
+Corrected all three comments to the verifiable motivation: the encoding is
+a live contract reachable from Settings *today* (Display's own
+`setEnterToSend`/`setShowCost` write it, `Composer.tsx` reads it back), and
+it already broke once, for real, in this repo's own history — commit
+`932eeddca` ("fix boolean encoding to '1'/'0' (cross-wave contract
+break)"), which I independently verified exists via `git log`/`git show`
+before citing it (it shows `readBool`/`writeBool` briefly wrote/read
+`"true"`/`"false"` during wave 7's own development, fixed back to `"1"`/
+`"0"` with 8 updated assertions plus 2 cross-file ones). No provenance
+narrated beyond that one citable commit.
+
+**MINOR — missing enterToSend-specific "0" assertion, added.** The deleted
+`enterToSendPref.test.ts`'s "reads off for '0' or any other stored value"
+proposition was, post-migration, only proven for `enterToSend` via the
+"true" case (`the literal string 'true' is not a valid boolean encoding...`
+test) - the "0" case was provable only generically, through `showCost`
+sharing the same `readBool`. Added `reads a previously stored enterToSend
+of '0' as false` to `prefs.test.ts`'s "hydration from existing localStorage"
+describe block, proving it directly on the field itself.
+
+Gates re-run in full on the fixed tree (`cmd/serf-hub/frontend`):
+1. `npx tsc --noEmit` — clean.
+2. `npx vitest run` — **185 test files passed (185), 2853 tests passed
+   (2853)** — exactly the coordinator's predicted count (prior 2852 + the
+   1 new `enterToSend` "0" test).
+3. `npm run lint` — clean, "Checked 543 files... No fixes applied."
+4. `npm run build` — succeeded; `git restore dist/PLACEHOLDER` confirmed
+   clean via `git status` immediately after.
+
+Fix commit: `2ca0185c1` — "webui absorb-a2: fix fabricated provenance
+comments, add enterToSend '0' test" (2 files changed: `prefs.ts`,
+`prefs.test.ts`; not amended into the reviewed commits, per instructions).
