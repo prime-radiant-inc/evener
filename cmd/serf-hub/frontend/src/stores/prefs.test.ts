@@ -139,6 +139,17 @@ describe("hydration from existing localStorage", () => {
     expect(prefsStore.getState().showCost).toBe(false);
   });
 
+  // "0" reads as false is exercised generically above via showCost (same
+  // shared readBool), but enterToSend's own reader was the deleted
+  // enterToSendPref.test.ts's explicit proposition ("reads off for '0' or
+  // any other stored value") - proven directly on enterToSend itself, not
+  // only inferred through a sibling field.
+  test("reads a previously stored enterToSend of '0' as false", () => {
+    localStorage.setItem(KEY("enterToSend"), "0");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+
   test("reads previously stored notification toggles and loud scope", () => {
     localStorage.setItem(KEY("notificationsOs"), "1");
     localStorage.setItem(KEY("notificationsLoudScope"), "all");
@@ -183,14 +194,16 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
 });
 
 describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", () => {
-  // Real user data already exists under serf.prefs.enterToSend's exact key
-  // NAME and "1"/"0" VALUE ENCODING - written before this store existed by
-  // W5's now-absorbed interim composer hook, read with a strict `=== "1"`
-  // check (this codebase's own established precedent for a single persisted
-  // boolean - see shell/rail/Rail.tsx's COLLAPSED_STORAGE_KEY - is "1"/"0",
-  // not JS's "true"/"false"). Both must stay exactly as they are, forever:
-  // an already-persisted "1"/"0" value must keep reading correctly, not just
-  // whatever this store happens to write from here on.
+  // This is a live contract reachable from Settings today, not a
+  // hypothetical one - Settings -> Display's own setEnterToSend/setShowCost
+  // write both keys, and Composer.tsx reads enterToSend from this same
+  // store. The "1"/"0" VALUE ENCODING (this codebase's own established
+  // precedent for a single persisted boolean - see shell/rail/Rail.tsx's
+  // COLLAPSED_STORAGE_KEY - not JS's "true"/"false") already broke this
+  // contract once during development: commit 932eeddca ("fix boolean
+  // encoding to '1'/'0' (cross-wave contract break)") fixed readBool/
+  // writeBool back from a brief "true"/"false" regression. Never repeat it -
+  // both the key NAME and the encoding must stay exactly as they are.
   test("setEnterToSend writes the literal key serf.prefs.enterToSend with '1'/'0' encoding", () => {
     prefsStore.getState().setEnterToSend(true);
     expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("1");

@@ -5,12 +5,16 @@
 // instead. Every key lives under the "serf.prefs.<name>" contract (wave-7
 // plan): a flat, one-value-per-key namespace, NOT the legacy's per-section
 // JSON blobs (serf-hub.composer, serf-hub.transcript.systemStatus, ...).
-// serf.prefs.enterToSend/serf.prefs.showCost are PINNED: real user data
-// already exists under these exact names and "1"/"0" encoding, written
-// before this store existed by W5's now-absorbed interim composer hook
-// (Composer.tsx reads both fields from this store directly now) - the key
-// names and encoding are permanent, not just this store's own choice, the
-// way every other key below is.
+// serf.prefs.enterToSend/serf.prefs.showCost are PINNED: this is a live
+// contract reachable from Settings today, not a hypothetical one - Settings
+// -> Display's own setEnterToSend/setShowCost (below) write both keys, and
+// Composer.tsx reads enterToSend from this same store on every render and
+// keydown. The encoding already broke this contract once during
+// development: commit 932eeddca ("fix boolean encoding to '1'/'0'
+// (cross-wave contract break)") fixed readBool/writeBool back from a brief
+// "true"/"false" regression. Never repeat it - the key names and encoding
+// are permanent, not just this store's own choice, the way every other key
+// below is.
 //
 // Hydrated once from localStorage at module load (mirroring every other
 // store's singleton-at-import-time shape - connection.ts/threads.ts/
@@ -129,11 +133,13 @@ function removeRaw(name: string): void {
 // precedent for a single persisted boolean (shell/rail/Rail.tsx's
 // COLLAPSED_STORAGE_KEY: `localStorage.getItem(...) === "1"` /
 // `collapsed ? "1" : "0"`). serf.prefs.enterToSend/serf.prefs.showCost in
-// particular carry real, already-persisted user data with a strict `=== "1"`
-// reader (this store's own "pinned key contract" tests below) - switching to
-// "true"/"false" here would silently strand every existing "1"/"0" value as
-// unrecognized, reading back as this function's fallback rather than
-// erroring.
+// particular are a live contract reachable from Settings today (Display's
+// own setEnterToSend/setShowCost, Composer.tsx's own enterToSend read) -
+// this encoding already broke that contract once during development
+// (commit 932eeddca, "fix boolean encoding to '1'/'0' (cross-wave contract
+// break)"): switching back to "true"/"false" would silently strand every
+// "1"/"0" value already written as unrecognized, reading back as this
+// function's fallback rather than erroring.
 function readBool(name: string, fallback: boolean): boolean {
   const raw = readRaw(name);
   if (raw === "1") return true;
