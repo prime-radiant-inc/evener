@@ -364,35 +364,30 @@ describe("project expansion", () => {
   });
 });
 
-describe("collapse", () => {
-  test("collapses to a slim reopen affordance and persists the choice; reopening restores the sidebar and persists that too", async () => {
-    renderRail();
+describe("hide affordance (onHide)", () => {
+  // Rail no longer owns a boolean collapse of its own: the sidebarMode system
+  // (RailHost) subsumes it. Rail only renders a "Hide sidebar" button when
+  // RailHost passes onHide (the inline desktop case), and delegates the action.
+  test("renders a Hide sidebar button that calls onHide when the prop is provided", async () => {
+    const onHide = vi.fn();
+    render(
+      <>
+        <Rail onHide={onHide} />
+        <Toast />
+      </>,
+    );
     await screen.findByText("Needs you session");
 
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /hide sidebar/i }));
-    expect(screen.queryByText("Needs you session")).toBeNull();
-    const reopen = screen.getByRole("button", { name: /show sidebar/i });
-    expect(localStorage.getItem("serf.rail.collapsed.v1")).toBe("1");
-
-    await user.click(reopen);
+    await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
+    expect(onHide).toHaveBeenCalledTimes(1);
+    // Rail itself never hides - RailHost owns visibility; the tree stays put.
     expect(screen.getByText("Needs you session")).toBeTruthy();
-    expect(localStorage.getItem("serf.rail.collapsed.v1")).toBe("0");
   });
 
-  test("reads the initial collapsed state from localStorage on mount", async () => {
-    localStorage.setItem("serf.rail.collapsed.v1", "1");
+  test("renders no Hide sidebar button when onHide is absent (mobile / overlay-drawer instance)", async () => {
     renderRail();
-    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    await screen.findByText("Needs you session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();
-  });
-
-  test("a collapsed rail still surfaces the needs-you count on its reopen affordance", async () => {
-    localStorage.setItem("serf.rail.collapsed.v1", "1");
-    renderRail();
-    await vi.waitFor(() => {
-      expect(screen.getByRole("button", { name: /show sidebar.*1/i })).toBeTruthy();
-    });
   });
 });
 
@@ -561,5 +556,96 @@ describe("delete project flow", () => {
 
     await screen.findByText(/could not be removed/i);
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+  });
+});
+
+describe("reveal (railController /project)", () => {
+  const REVEAL_SESSION = wireNode({
+    row_id: "project:revealp:local:rs1",
+    ref: "local:rs1",
+    title: "Reveal target session",
+  });
+  const COLLAPSED_PROJECT = wireProject({
+    key: "revealp",
+    name: "reveal-project",
+    default_expanded: false, // starts collapsed: reveal must un-collapse it
+    sessions: [REVEAL_SESSION],
+  });
+  const REVEAL_TREE = {
+    ...EMPTY_WIRE_TREE,
+    needs_you: [NEEDS_YOU_NODE],
+    projects: [COLLAPSED_PROJECT],
+    attentionSummary: { needsYou: 1, error: 0, working: 0 },
+  };
+
+  // jsdom implements no scrollIntoView at all (verified: the property is
+  // absent, so vi.spyOn can't wrap it); assign a fresh spy each test so the
+  // reveal effect's call is observable and doesn't throw.
+  let scrollSpy: ReturnType<typeof vi.fn>;
+  beforeEach(() => {
+    scrollSpy = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollSpy as unknown as typeof HTMLElement.prototype.scrollIntoView;
+  });
+  afterEach(() => {
+    // @ts-expect-error restore jsdom's honest absence of scrollIntoView
+    delete HTMLElement.prototype.scrollIntoView;
+  });
+
+  function renderRailWith(props: { revealTarget?: string | null; onRevealConsumed?: () => void }) {
+    return render(
+      <>
+        <Rail revealTarget={props.revealTarget} onRevealConsumed={props.onRevealConsumed} />
+        <Toast />
+      </>,
+    );
+  }
+
+  test("expands a collapsed project and scrolls the target session's row into view (block:center)", async () => {
+    treeResponseBody = REVEAL_TREE;
+    const onRevealConsumed = vi.fn();
+
+    renderRailWith({ revealTarget: "local:rs1", onRevealConsumed });
+
+    // The session starts hidden (project collapsed); reveal un-collapses it.
+    const row = await screen.findByText("Reveal target session");
+    await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalled());
+    expect(scrollSpy.mock.calls[0]?.[0]).toMatchObject({ block: "center" });
+    // The scrolled element is the target session's own row.
+    expect(row.closest("[data-session-ref]")?.getAttribute("data-session-ref")).toBe("local:rs1");
+    await vi.waitFor(() => expect(onRevealConsumed).toHaveBeenCalledTimes(1));
+  });
+
+  test("scrolls an already-visible top-level tier session without any expand", async () => {
+    treeResponseBody = REVEAL_TREE;
+    const onRevealConsumed = vi.fn();
+
+    renderRailWith({ revealTarget: "local:ny1", onRevealConsumed }); // NEEDS_YOU_NODE, always shown
+
+    await screen.findByText("Needs you session");
+    await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(onRevealConsumed).toHaveBeenCalledTimes(1));
+  });
+
+  test("consumes without scrolling when the ref belongs to no rendered session", async () => {
+    treeResponseBody = REVEAL_TREE;
+    const onRevealConsumed = vi.fn();
+
+    renderRailWith({ revealTarget: "local:ghost", onRevealConsumed });
+
+    // The tree must have loaded before the effect gives up (it waits for it).
+    await screen.findByText("Needs you session");
+    await vi.waitFor(() => expect(onRevealConsumed).toHaveBeenCalled());
+    expect(scrollSpy).not.toHaveBeenCalled();
+  });
+
+  test("a null reveal target does nothing", async () => {
+    treeResponseBody = REVEAL_TREE;
+    const onRevealConsumed = vi.fn();
+
+    renderRailWith({ revealTarget: null, onRevealConsumed });
+
+    await screen.findByText("Needs you session");
+    expect(scrollSpy).not.toHaveBeenCalled();
+    expect(onRevealConsumed).not.toHaveBeenCalled();
   });
 });

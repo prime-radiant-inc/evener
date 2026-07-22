@@ -1,11 +1,12 @@
-// Rail is the workspace shell's sidebar: session tree over stores/tree.ts,
-// mounted by AppShell as a plain sibling of DockHost (see this task's
-// report for the exact mount contract - AppShell.tsx is out of this task's
-// scope to edit). Owns its own collapse/expand chrome, per-branch expand
-// state, and the rename/delete-project confirmation dialogs; every mutation
-// goes through actions.ts, refetching the tree on success and toasting on
-// failure (no optimistic UI - out of this task's scope).
-import { type ChangeEvent, useEffect, useState } from "react";
+// Rail is the workspace shell's sidebar content: session tree over
+// stores/tree.ts. RailHost decides its VISIBILITY (inline, or hidden behind the
+// ☰ overlay drawer per sidebarMode) and mounts it; Rail itself just renders the
+// tree, owns per-branch expand state, the reveal (railController /project), and
+// the rename/delete-project confirmation dialogs. Every mutation goes through
+// actions.ts, refetching the tree on success and toasting on failure (no
+// optimistic UI - out of this task's scope). The header's "Hide sidebar" button
+// is shown only when RailHost passes onHide (the inline desktop case).
+import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   type TreeNode as ApiTreeNode,
   type TreeProject as ApiTreeProject,
@@ -14,7 +15,6 @@ import {
   useTreeStore,
 } from "../../stores/tree";
 import {
-  Badge,
   Button,
   Dialog,
   EmptyState,
@@ -30,7 +30,14 @@ import { workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RailRow, type RailRowActions } from "./RailRow";
-import { archivedProjectNodes, overrideLookup, projectNodes, type RailNode, sessionNodes } from "./railNodes";
+import {
+  archivedProjectNodes,
+  overrideLookup,
+  projectNodeIdForSessionRef,
+  projectNodes,
+  type RailNode,
+  sessionNodes,
+} from "./railNodes";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -40,30 +47,9 @@ const CLASS = {
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
-  railCollapsed: requireClass(styles.railCollapsed, "Rail.module.css", "railCollapsed"),
-  reopen: requireClass(styles.reopen, "Rail.module.css", "reopen"),
   dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
   dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
 };
-
-const COLLAPSED_STORAGE_KEY = "serf.rail.collapsed.v1";
-
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_STORAGE_KEY) === "1";
-  } catch {
-    return false; // localStorage unavailable (Safari private mode, etc.): default open
-  }
-}
-
-function persistCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
-  } catch {
-    // Best-effort, mirrors DockHost.tsx's own persistLayout precedent - a
-    // full quota must never be fatal to the rail itself.
-  }
-}
 
 function isEmptyTree(tree: TreeResponse): boolean {
   return (
@@ -118,31 +104,68 @@ function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, acti
   );
 }
 
-export function Rail() {
+export interface RailProps {
+  // Shown as the header "Hide sidebar" button when provided (the inline desktop
+  // case). RailHost wires it to collapse the sidebar (setSidebarMode("rail"));
+  // the mobile-drawer and overlay-drawer instances pass none (the drawer has
+  // its own close) and show no button.
+  onHide?: () => void;
+  // The session ref the palette's /project command wants revealed. Rail expands
+  // its project section and scrolls its row into view, then calls
+  // onRevealConsumed so the caller can clear it. See railController (PIN-A).
+  revealTarget?: string | null;
+  onRevealConsumed?: () => void;
+}
+
+export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
   const projectDetails = useTreeStore((s) => s.projectDetails);
   const toasts = useToasts();
 
-  const [collapsed, setCollapsed] = useState(readCollapsed);
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void treeStore.getState().refresh();
   }, []);
 
-  function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev;
-      persistCollapsed(next);
-      return next;
-    });
-  }
+  // Reveal a session's row for the palette's /project command (railController).
+  // If the row is already rendered, scroll it into view (block:"center"). If
+  // it's hidden inside a collapsed project, un-collapse that project instead
+  // and return: setting the override changes expandedOverrides, which re-runs
+  // this effect, and the now-rendered row scrolls on that pass. The Tree
+  // renders every expanded row (no virtualization), so a project-bearing ref
+  // always resolves after its one expand; the `!== true` guard makes the
+  // expand happen at most once, so an unknown ref just falls through to consume
+  // rather than looping. Consuming (onRevealConsumed) lets the caller clear the
+  // target.
+  useEffect(() => {
+    if (!revealTarget) return;
+    const rows = bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]");
+    const row = rows ? Array.from(rows).find((el) => el.dataset.sessionRef === revealTarget) : undefined;
+    if (row) {
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      onRevealConsumed?.();
+      return;
+    }
+    if (!tree) return; // tree still loading - wait for it (tree is in deps), don't give up early
+    const projectId = projectNodeIdForSessionRef([...tree.projects, ...tree.test_runs], revealTarget);
+    if (projectId && expandedOverrides.get(projectId) !== true) {
+      setExpandedOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(projectId, true);
+        return next;
+      });
+      return;
+    }
+    onRevealConsumed?.();
+  }, [revealTarget, tree, expandedOverrides, onRevealConsumed]);
 
   function setExpanded(id: string, value: boolean) {
     setExpandedOverrides((prev) => {
@@ -252,33 +275,23 @@ export function Rail() {
     }
   }
 
-  if (collapsed) {
-    const needsYouCount = tree?.attentionSummary.needsYou ?? 0;
-    const label = needsYouCount > 0 ? `Show sidebar (${needsYouCount} need attention)` : "Show sidebar";
-    return (
-      <div className={CLASS.railCollapsed}>
-        <button type="button" className={CLASS.reopen} aria-label={label} onClick={toggleCollapsed}>
-          {needsYouCount > 0 ? <Badge count={needsYouCount} tone="attention" /> : <span aria-hidden="true">{"»"}</span>}
-        </button>
-      </div>
-    );
-  }
-
   const isExpanded = overrideLookup(expandedOverrides);
 
   return (
     <div className={CLASS.rail}>
       <div className={CLASS.header}>
         <h2 className={CLASS.title}>Sessions</h2>
-        <IconButton
-          label="Hide sidebar"
-          icon={<span aria-hidden="true">{"«"}</span>}
-          variant="quiet"
-          size="sm"
-          onClick={toggleCollapsed}
-        />
+        {onHide && (
+          <IconButton
+            label="Hide sidebar"
+            icon={<span aria-hidden="true">{"«"}</span>}
+            variant="quiet"
+            size="sm"
+            onClick={onHide}
+          />
+        )}
       </div>
-      <div className={CLASS.body}>
+      <div className={CLASS.body} ref={bodyRef}>
         {loading && !tree && <Skeleton lines={6} />}
         {!loading && !tree && error && (
           <EmptyState

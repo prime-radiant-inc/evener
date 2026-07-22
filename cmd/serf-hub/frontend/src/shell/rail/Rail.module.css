@@ -75,37 +75,38 @@
   outline-offset: -2px;
 }
 
-/* Collapses to a sliver rather than hiding content within a still-wide
- * container - the whole point is reclaiming the width, not just the
- * visual clutter. 22px stays clear of the widget's own smallest control
- * (IconButton's 28px `sm`), which is why this is a bespoke button rather
- * than that widget. */
-.railCollapsed {
-  width: 22px;
-  height: 100%;
-  background: var(--surface-1);
-  border-right: 1px solid var(--edge);
+/* --- collapsed-rail ☰ chip (RailHost.tsx) --------------------------------
+ * When sidebarMode collapses the rail (rail mode, or auto below 1200px),
+ * RailHost hides the rail entirely and leaves this chip pinned top-left; it
+ * opens the rail as an overlay drawer. align-self keeps it hugging the top of
+ * the workspace row rather than stretching a full-height column. */
+.chipBar {
+  flex: none;
+  align-self: flex-start;
 }
 
-.reopen {
-  display: flex;
+.chip {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 100%;
-  height: 100%;
-  border: none;
-  background: transparent;
+  gap: var(--space-1);
+  min-width: var(--space-7);
+  height: var(--space-7);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
   color: var(--ink-mid);
   cursor: default;
 }
 
-.reopen:hover {
+.chip:hover {
   background: var(--surface-2);
 }
 
-.reopen:focus-visible {
+.chip:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 
 .dialogField {
