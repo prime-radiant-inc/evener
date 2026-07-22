@@ -125,7 +125,7 @@ test("focus is trapped and restored on close, same as Dialog", () => {
   expect(document.activeElement).toBe(trigger);
 });
 
-test("side=right and side=bottom render distinct panel classes", () => {
+test("side=right, side=bottom, and side=left each render a distinct, non-empty panel class", () => {
   const { rerender, container } = render(
     <Sheet open side="right" onClose={vi.fn()} title="t">
       Body
@@ -140,14 +140,29 @@ test("side=right and side=bottom render distinct panel classes", () => {
   );
   const bottomClass = screen.getByRole("dialog").className;
 
-  expect(rightClass).not.toEqual(bottomClass);
+  rerender(
+    <Sheet open side="left" onClose={vi.fn()} title="t">
+      Body
+    </Sheet>,
+  );
+  const leftClass = screen.getByRole("dialog").className;
+
+  // Each must be non-empty: an unregistered side silently falls through
+  // SIDE_CLASS[side] to undefined, which React renders as no class
+  // attribute at all (className="") rather than a loud failure - the same
+  // failure shape requireClass exists to catch for a CSS module's own
+  // missing class (see widgets/internal/requireClass.ts).
+  expect(rightClass).not.toBe("");
+  expect(bottomClass).not.toBe("");
+  expect(leftClass).not.toBe("");
+  expect(new Set([rightClass, bottomClass, leftClass]).size).toBe(3);
   expect(container).toBeTruthy();
 });
 
 // As in dialog.test.tsx: jsdom does not evaluate real CSS animations or
 // media queries, so the slide-in animation and its reduced-motion opt-out
 // are verified by reading the CSS module's own source.
-test("both side variants' slide-in animations honor prefers-reduced-motion, using only tokens", () => {
+test("all side variants' slide-in animations honor prefers-reduced-motion, using only tokens", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "sheet.module.css"), "utf8");
   expect(css).toContain("animation:");

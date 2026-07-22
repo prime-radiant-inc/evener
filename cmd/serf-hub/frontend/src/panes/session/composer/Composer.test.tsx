@@ -4,6 +4,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { paletteStore } from "../../../shell/palette/paletteController";
 import { connectionStore } from "../../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -93,6 +94,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  paletteStore.setState({ open: false, query: "" });
 });
 
 afterEach(() => {
@@ -711,3 +713,25 @@ test("clicking the attach button triggers the hidden file input", async () => {
 // (Composer.integration.test.tsx), a real behavioral DOM-order assertion
 // supersedes it - see that file's "the ask dock renders above the queue
 // strip when both are visible at once" test.
+
+// --- leading-"/" command-palette hook (wave 6) ------------------------
+
+test('"/" at the start of an empty composer opens the command palette (floor §2.1)', async () => {
+  await mountComposer("ref_slash");
+
+  const notPrevented = fireEvent.keyDown(textarea(), { key: "/" });
+
+  expect(paletteStore.getState().open).toBe(true);
+  expect(paletteStore.getState().query).toBe("/");
+  expect(notPrevented).toBe(false); // preventDefault()'d - the "/" never types
+});
+
+test('"/" in a NON-empty composer is a literal slash, not a palette trigger', async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_slash2");
+  await user.type(textarea(), "hello");
+
+  fireEvent.keyDown(textarea(), { key: "/" });
+
+  expect(paletteStore.getState().open).toBe(false);
+});

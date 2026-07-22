@@ -1,0 +1,13 @@
+/* Interim model picker row. Tokens only; a neutral field that never uses color
+ * for attention. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.error {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}

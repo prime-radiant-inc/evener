@@ -1,0 +1,203 @@
+/* Command palette overlay body. The overlay chrome (scrim, panel, focus
+ * trap, close button) is the shared Dialog/OverlayPanel; these classes style
+ * only the palette-specific body: the input, the results list, and the row
+ * grammars for search / command / args / help. Tokens only - color is used
+ * only where it means attention (the error strip's danger, the <mark>
+ * highlight's accent); every neutral surface stays neutral. */
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  align-self: flex-start;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--accent-bg);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.pillBack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--ink-mid);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+  font-size: var(--font-size-ui);
+}
+
+.pillBack:hover {
+  color: var(--ink-hi);
+}
+
+.input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-0);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+}
+
+.input:focus {
+  outline: 2px solid var(--accent-edge);
+  outline-offset: 1px;
+}
+
+/* The inline error strip carries no color of its own: the danger hue is the
+ * Chip widget's job (the design system gates the attention-family tokens to
+ * allowlisted widgets), so this is a neutral, left-aligned wrapper that only
+ * positions the danger Chip and gives it the alert role. */
+.error {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 50vh;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.sectionHeader {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-display);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  border: none;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.row[aria-selected="true"] {
+  background: var(--surface-2);
+}
+
+.glyph {
+  flex: none;
+  color: var(--ink-low);
+}
+
+.title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cmdId {
+  flex: none;
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.hint {
+  flex: none;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.project {
+  flex: none;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.age {
+  flex: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+.snippet {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-mid);
+}
+
+.mark {
+  background: var(--accent-bg);
+  color: var(--ink-hi);
+  border-radius: 2px;
+}
+
+.helpRow {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+}
+
+.helpKeys {
+  flex: none;
+  min-width: 5rem;
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.helpDesc {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.empty {
+  padding: var(--space-4) var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+}
+
+.emptyTitle {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  margin: 0 0 var(--space-1);
+}
+
+.emptyBody {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  margin: 0;
+}

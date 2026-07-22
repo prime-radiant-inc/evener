@@ -77,6 +77,8 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioNeedsYou_ArchivedLiveAwaitingExcluded,
 		fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove,
 		fuzzScenarioNeedsYou_CarriesAskPendingFromLiveEntry,
+		fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary,
+		fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary,
 		fuzzScenarioNewRosterWithEntries,
 		fuzzScenarioNoProjectKeyIsStable,
 		fuzzScenarioNodeTitle_EmptyBaseWithForkLabel,

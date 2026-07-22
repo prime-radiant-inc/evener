@@ -58,12 +58,20 @@ paths = [
   # .claude/worktrees/ holds linked git worktrees — transient full checkouts
   # (gitignored, never committed, absent in CI) whose web-UI test fixtures
   # carry deliberately-fake secret-shaped strings; same class as inspo/.
-  '''\.claude/worktrees/.*''',
-  # The root .env is the local, gitignored credential file a dev checkout
-  # carries by design; with gitleaks installed locally, the whole-tree walk
-  # flagged it on every `make lint`. Allowlisted per Jesse (2026-07-22),
-  # reversing the earlier scream-on-sight stance. Residual risk accepted: a
-  # deliberately force-added .env would pass this scan — it stays gitignored,
-  # so committing it requires explicit override.
+  # Anchored to a path segment boundary (start-of-path or preceding '/') so it
+  # cannot also match an unrelated path that merely contains the substring
+  # "claude/worktrees/" mid-component; every real worktree path is one of
+  # these two shapes, so this is marginally tighter with no behavior change.
+  '''(^|/)\.claude/worktrees/.*''',
+  # .env is the local, gitignored credential file a dev checkout carries by
+  # design. The regex matches the basename at ANY depth (root or any
+  # subdirectory), not just the repo root: gitignore's own `.env` entry
+  # (unanchored, no leading slash) is likewise depth-agnostic, so this
+  # allowlist matches exactly what's already gitignored everywhere in the
+  # tree. With gitleaks installed locally, the whole-tree walk flagged it on
+  # every `make lint`. Allowlisted per Jesse (2026-07-22), reversing the
+  # earlier scream-on-sight stance. Residual risk accepted: a deliberately
+  # force-added .env would pass this scan — it stays gitignored, so
+  # committing it requires explicit override.
   '''(^|/)\.env$''',
 ]

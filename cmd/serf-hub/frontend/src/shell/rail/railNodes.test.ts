@@ -1,6 +1,12 @@
 import { describe, expect, test } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import { archivedProjectNodes, overrideLookup, projectNodes, sessionNodes } from "./railNodes";
+import {
+  archivedProjectNodes,
+  overrideLookup,
+  projectNodeIdForSessionRef,
+  projectNodes,
+  sessionNodes,
+} from "./railNodes";
 
 function node(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   return {
@@ -154,5 +160,36 @@ describe("overrideLookup", () => {
     expect(isExpanded("b", true)).toBe(false);
     expect(isExpanded("c", true)).toBe(true);
     expect(isExpanded("c", false)).toBe(false);
+  });
+});
+
+describe("projectNodeIdForSessionRef", () => {
+  test("returns the projectnode: id matching what projectNodes assigns for a session under a project", () => {
+    const projects = [project({ key: "p1", sessions: [node({ ref: "local:a" })] })];
+    // Same id projectNodes would put on the branch, so Rail's reveal expands
+    // exactly that node's override entry.
+    expect(projectNodeIdForSessionRef(projects, "local:a")).toBe("projectnode:p1");
+    const [rail] = projectNodes(projects, () => false);
+    expect(projectNodeIdForSessionRef(projects, "local:a")).toBe(rail?.id);
+  });
+
+  test("finds a session nested in a subagent cluster under the project", () => {
+    const projects = [
+      project({ key: "p2", sessions: [node({ ref: "local:parent", children: [node({ ref: "local:child" })] })] }),
+    ];
+    expect(projectNodeIdForSessionRef(projects, "local:child")).toBe("projectnode:p2");
+  });
+
+  test("returns null for a ref that belongs to no project (a top-level tier entry)", () => {
+    const projects = [project({ key: "p1", sessions: [node({ ref: "local:a" })] })];
+    expect(projectNodeIdForSessionRef(projects, "local:elsewhere")).toBeNull();
+  });
+
+  test("returns the FIRST matching project's id and does not match a different project", () => {
+    const projects = [
+      project({ key: "p1", sessions: [node({ ref: "local:a" })] }),
+      project({ key: "p2", sessions: [node({ ref: "local:b" })] }),
+    ];
+    expect(projectNodeIdForSessionRef(projects, "local:b")).toBe("projectnode:p2");
   });
 });

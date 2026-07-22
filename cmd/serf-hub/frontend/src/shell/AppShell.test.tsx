@@ -6,6 +6,7 @@ import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { AppShell } from "./AppShell";
+import { paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
@@ -71,6 +72,7 @@ beforeAll(async () => {
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
+  await import("../panes/spawn/Spawn");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path) - pre-warmed for the same
   // reason as the two panes above.
@@ -86,6 +88,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   window.history.pushState({}, "", "/");
+  // The command palette store is a module singleton; reset it so one test's
+  // open palette never leaks into the next.
+  paletteStore.setState({ open: false, query: "" });
 });
 
 test("mounts and renders the welcome pane", async () => {
@@ -119,7 +124,7 @@ test("banner reflects reconnecting state when injected", async () => {
   expect(await screen.findByText(/reconnecting to the server/i)).toBeTruthy();
 });
 
-test('clicking "New session" navigates to /new and the welcome pane shows a note', async () => {
+test('clicking "New session" navigates to /new and opens the spawn pane', async () => {
   const user = userEvent.setup();
   render(<AppShell client={new FakeClient("ready")} />);
   const button = await screen.findByRole("button", { name: "New session" });
@@ -127,7 +132,48 @@ test('clicking "New session" navigates to /new and the welcome pane shows a note
   await user.click(button);
 
   expect(window.location.pathname).toBe("/new");
-  expect(await screen.findByText(/starting a new session isn't available yet/i)).toBeTruthy();
+  // /new now opens the real spawn pane (the old "not available yet" welcome
+  // fallback is gone) - its Spawn button proves the pane mounted.
+  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+});
+
+// --- command palette wiring (this task) -------------------------------
+
+test("Cmd+K opens the command palette from anywhere in the app", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  await user.keyboard("{Meta>}k{/Meta}");
+
+  expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+});
+
+test("Ctrl+K opens the command palette", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  await user.keyboard("{Control>}k{/Control}");
+
+  expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+});
+
+test("clicking any [data-search-trigger] element opens the command palette", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  // Any element in the app can mark itself as a search trigger; the global
+  // listener AppShell installs opens the palette on its click.
+  const trigger = document.createElement("button");
+  trigger.setAttribute("data-search-trigger", "");
+  trigger.textContent = "Search";
+  document.body.appendChild(trigger);
+  await user.click(trigger);
+
+  expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+  trigger.remove();
 });
 
 test("populates connectionStore.serverInfo from the injected client's scripted connect() response", async () => {

@@ -4,7 +4,7 @@ import { OverlayPanel } from "../dialog/OverlayPanel";
 import { requireClass } from "../internal/requireClass";
 import styles from "./sheet.module.css";
 
-export type SheetSide = "right" | "bottom";
+export type SheetSide = "right" | "bottom" | "left";
 
 export interface SheetProps {
   side?: SheetSide;
@@ -20,14 +20,15 @@ const BASE_PANEL_CLASS = requireClass(dialogStyles.panel, "dialog.module.css", "
 const SIDE_CLASS: Record<SheetSide, string> = {
   right: `${BASE_PANEL_CLASS} ${requireClass(styles.right, "sheet.module.css", "right")}`,
   bottom: `${BASE_PANEL_CLASS} ${requireClass(styles.bottom, "sheet.module.css", "bottom")}`,
+  left: `${BASE_PANEL_CLASS} ${requireClass(styles.left, "sheet.module.css", "left")}`,
 };
 
 /**
- * Slide-over panel anchored to the right edge or the bottom edge -
- * otherwise the exact Dialog contract (see ../dialog), sharing its
- * OverlayPanel: scrim, Escape/scrim-click to close, trapped and restored
- * focus, close button. Only the panel's own geometry and slide-in
- * animation differ (sheet.module.css).
+ * Slide-over panel anchored to the right edge, the left edge, or the
+ * bottom edge - otherwise the exact Dialog contract (see ../dialog),
+ * sharing its OverlayPanel: scrim, Escape/scrim-click to close, trapped
+ * and restored focus, close button. Only the panel's own geometry and
+ * slide-in animation differ (sheet.module.css).
  */
 export function Sheet({ side = "right", open, onClose, title, children, footer }: SheetProps) {
   return (

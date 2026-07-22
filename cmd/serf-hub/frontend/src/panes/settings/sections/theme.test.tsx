@@ -94,6 +94,14 @@ describe("Phone density", () => {
     expect(document.body.dataset.phoneDensity).toBe("comfortable");
     expect(screen.queryByText(/Settings saved/)).toBeNull();
   });
+
+  // The help copy must name the gate that's actually shipped in tokens.css
+  // (@media (max-width: 900px), matching useIsMobile's own breakpoint) -
+  // not a stale number that names a different, unimplemented gate.
+  test("the help copy states the shipped 900px density gate", () => {
+    renderWithToasts();
+    expect(screen.getByText(/900px/)).toBeTruthy();
+  });
 });
 
 describe("Sidebar mode", () => {

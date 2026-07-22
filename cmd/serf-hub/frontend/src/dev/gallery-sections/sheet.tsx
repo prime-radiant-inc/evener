@@ -43,6 +43,9 @@ export default function SheetGallerySection() {
       <ThemeFlip>
         <SheetDemo side="bottom" />
       </ThemeFlip>
+      <ThemeFlip>
+        <SheetDemo side="left" />
+      </ThemeFlip>
     </section>
   );
 }
