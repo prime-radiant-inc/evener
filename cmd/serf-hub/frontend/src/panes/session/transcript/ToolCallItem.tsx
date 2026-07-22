@@ -5,6 +5,7 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useRef, useState } from "react";
+import { Chip } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ImageGallery } from "./flow/ImageGallery";
 import styles from "./toolcallitem.module.css";
@@ -14,7 +15,19 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./type
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
+  error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
+
+// A tool call failed or was denied when its ItemModel carries error text. That
+// PRESENCE is the primary signal (the reducer maps ThreadItem.error straight
+// through, so it survives an old-daemon reload whose settled status is still
+// "completed"); the honest status "failed" the wire now stamps
+// (apptranscript.SettledToolStatus, appwire_projection.go:438) is corroboration
+// for the same-daemon live/reload paths. A whitespace-empty error is not a
+// failure — the projector only stamps failed when data.Error != "".
+function toolFailed(item: ItemRenderProps["item"]): boolean {
+  return (item.error !== undefined && item.error !== "") || item.status === "failed";
+}
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
 // component never reads `turn` at all (only `item`/`live`, destructured
@@ -30,14 +43,17 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
   // owned by any one descriptor - rendered here, once, so every current and
   // future tool gets it for free rather than each body wiring it in itself.
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
+  const failed = toolFailed(item);
+  const hasErrorText = item.error !== undefined && item.error !== "";
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
-  // only default-expanded state anywhere is a failed shell call once it
-  // settles, via descriptor.autoExpand). autoExpand only means anything
-  // once the call has actually finished (e.g. shell's own exit-code
-  // heuristic can't resolve mid-stream), so this is applied exactly once,
-  // at the live -> settled transition - never on every render, which is
+  // only default-expanded state anywhere is a failed call once it settles,
+  // via descriptor.autoExpand OR a tool error/denial (item.error, parity §11:
+  // "only failure earns the eye"; §2:100's force-open on error)). autoExpand
+  // only means anything once the call has actually finished (e.g. shell's own
+  // exit-code heuristic can't resolve mid-stream), so this is applied exactly
+  // once, at the live -> settled transition - never on every render, which is
   // also what lets a user's own manual toggle afterward stick rather than
   // being fought back open/closed.
   const [expanded, setExpanded] = useState(false);
@@ -46,14 +62,17 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
   useLayoutEffect(() => {
     if (live || userToggledRef.current) return;
-    setExpanded(descriptor.autoExpand?.(item) ?? false);
+    setExpanded((descriptor.autoExpand?.(item) ?? false) || failed);
     // Edge-triggered on the live -> settled transition (and on an
     // already-settled initial mount) - deliberately NOT depending on
-    // `item`/`descriptor` too, so a settled row's later re-renders never
-    // re-run this and re-fight a manual toggle.
+    // `item`/`descriptor`/`failed` too, so a settled row's later re-renders
+    // never re-run this and re-fight a manual toggle.
   }, [live]);
 
-  if (!Body && !hasOutputImages) {
+  // A failed row is never a bare summary line even with no body/images: the
+  // reader must be able to open it and read the error, so it is always a
+  // <details>.
+  if (!Body && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <span className={CLASS.summary}>{descriptor.summary(item)}</span>
@@ -62,7 +81,18 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
   }
 
   return (
-    <details className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""} open={expanded}>
+    <details
+      className={CLASS.call}
+      data-testid="tool-call-item"
+      data-tool-name={item.toolName ?? ""}
+      // A failed row carries data-attention="error" for the same urgent-anchor
+      // search the legacy shell tagged failed rows with (parity §11's
+      // dataset.attention="error"); a clean row carries neither attribute so it
+      // recedes (success is glyph-less).
+      data-failed={failed ? "true" : undefined}
+      data-attention={failed ? "error" : undefined}
+      open={expanded}
+    >
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable (implicit role="button", Enter/Space already synthesize this same click) */}
       <summary
         className={CLASS.summary}
@@ -71,14 +101,18 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
           // toggle: preventDefault stops the browser from also flipping
           // `open` itself, so `expanded` state stays the single source of
           // truth. The user's own choice, once made, always wins over
-          // autoExpand from here on (see the effect above).
+          // autoExpand/force-open from here on (see the effect above).
           e.preventDefault();
           userToggledRef.current = true;
           setExpanded((prev) => !prev);
         }}
       >
+        {/* Only failure earns a glyph - a danger-toned marker, colour spent on
+            the one thing that needs the eye (parity §11:261). */}
+        {failed && <Chip tone="danger">Failed</Chip>}
         {descriptor.summary(item)}
       </summary>
+      {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
       {Body && <Body item={item} live={live} />}
       <ImageGallery images={item.outputImages} />
     </details>

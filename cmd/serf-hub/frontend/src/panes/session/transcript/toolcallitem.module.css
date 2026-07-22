@@ -9,4 +9,21 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The tool-result error/denial text (ItemModel.error), shown verbatim above
+ * the descriptor's own body on a failed row. Failure colour lives entirely on
+ * the Chip marker inside the summary (its danger tone is allowlisted in
+ * token-contract.test.ts); this text block itself stays on neutral ink tokens
+ * like every other rule here, so the reader gets the message without a wall of
+ * red. */
+.error {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
