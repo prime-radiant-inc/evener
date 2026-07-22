@@ -126,6 +126,39 @@ test("findInSessionMatches normalizes runs of whitespace before matching", () =>
   expect(hits).toHaveLength(1);
 });
 
+// The transcript renders more than an item's settled `text`: tool output, tool
+// error text, and live reasoning summaries are all visible, so search must
+// find them too (reviewer adjudication I2).
+function itemWith(id: string, fields: Partial<ItemModel>): ItemModel {
+  return { id, turnId: "t", type: "message", text: "", ...fields };
+}
+
+test("findInSessionMatches scans tool output", () => {
+  const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", output: "result: frobnitz found" })])]);
+  const hits = findInSessionMatches(model, "frobnitz");
+  expect(hits).toHaveLength(1);
+  expect(hits[0]?.turn).toBe(1);
+});
+
+test("findInSessionMatches scans tool error text", () => {
+  const model = modelWithTurns([turn("t1", [itemWith("i1", { type: "tool", error: "frobnitz not permitted" })])]);
+  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
+});
+
+test("findInSessionMatches scans reasoning summaries (joined chunks)", () => {
+  const model = modelWithTurns([
+    turn("t1", [itemWith("i1", { type: "reasoning", reasoningSummaries: [["thinking about ", "frobnitz"]] })]),
+  ]);
+  expect(findInSessionMatches(model, "frobnitz")).toHaveLength(1);
+});
+
+test("a match in both text and output yields two hits sharing the turn label", () => {
+  const model = modelWithTurns([turn("t1", [itemWith("i1", { text: "frobnitz here", output: "frobnitz there" })])]);
+  const hits = findInSessionMatches(model, "frobnitz");
+  expect(hits).toHaveLength(2);
+  expect(hits.every((h) => h.turn === 1)).toBe(true);
+});
+
 // --- buildSnippet / highlightParts: ~40 chars of context per side, leading/
 // trailing ellipsis only when truncated, <mark> around the match
 // (search.js:984-992, 994-1003). Structured parts (not HTML strings) so the

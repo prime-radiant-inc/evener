@@ -13,7 +13,7 @@
 //     <mark> without dangerouslySetInnerHTML - React escapes for us, so the
 //     legacy's escapeHtml has no successor here.
 
-import type { ThreadModel } from "../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../protocol/model";
 
 export interface SearchResult {
   id: string;
@@ -63,6 +63,24 @@ function normalizeWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
+// itemSearchTexts gathers every user-VISIBLE text an item renders in the
+// transcript, so search finds what the user can see (reviewer adjudication
+// I2), not just the settled message text: an item's `text`, a tool call's
+// `output` and `error`, and each live reasoning summary (its streamed chunks
+// joined). Each source that matches produces its own hit, all sharing the
+// item's turn label.
+function itemSearchTexts(item: ItemModel): string[] {
+  const texts: string[] = [];
+  if (item.text) texts.push(item.text);
+  if (item.output) texts.push(item.output);
+  if (item.error) texts.push(item.error);
+  for (const summary of item.reasoningSummaries ?? []) {
+    const joined = summary.join("");
+    if (joined) texts.push(joined);
+  }
+  return texts;
+}
+
 export function findInSessionMatches(model: ThreadModel, query: string): InSessionMatch[] {
   const q = query.toLowerCase();
   if (!q) return [];
@@ -71,11 +89,13 @@ export function findInSessionMatches(model: ThreadModel, query: string): InSessi
   for (const turn of model.turns) {
     turnNumber += 1;
     for (const item of turn.items) {
-      const text = normalizeWhitespace(item.text);
-      if (!text) continue;
-      const hit = text.toLowerCase().indexOf(q);
-      if (hit < 0) continue;
-      out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, query.length) });
+      for (const raw of itemSearchTexts(item)) {
+        const text = normalizeWhitespace(raw);
+        if (!text) continue;
+        const hit = text.toLowerCase().indexOf(q);
+        if (hit < 0) continue;
+        out.push({ turn: turnNumber, itemId: item.id, snippet: buildSnippet(text, hit, query.length) });
+      }
     }
   }
   return out;
