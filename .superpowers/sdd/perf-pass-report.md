@@ -66,6 +66,15 @@ component). Notably `notifications/attention.test.ts` — cited as a "pure logic
 example — is correctly *rejected*: it transitively pulls in the transport layer.
 No candidate uses `vi.mock`/`vi.hoisted`/`require`, so the import walk is complete.
 
+**Limitation (classifier scope).** The walk resolves **first-party** (`./`, `../`)
+modules only and **trusts third-party packages** not to touch DOM globals at
+import time — e.g. `paneRegistry.test.ts` imports React's `lazy` as a value
+(non-type `import { lazy } from "react"`) and is routed to node; that holds today
+(React does not hit `document`/`window` at module eval), but whoever extends the
+node-routed set must re-examine this boundary for any new third-party value import
+that could run DOM code at module load. The loud-fail net still backstops a wrong
+guess, but the classifier itself does not prove third-party safety.
+
 **Isolation measurement (39-file subset, node vs jsdom, 3 runs each):**
 
 | env | Duration | cumulative environment |
@@ -231,5 +240,17 @@ out under Lever 2 — reduce oversubscription, don't touch the tests.
 ## Commit range
 
 `5c3d8d66e..d3ce36088` (2 commits): `6bd607b37` env-routing, `d3ce36088`
-incremental-tsc. Reproduction scripts: `scratchpad/perf/` (`classify.mjs`,
-`apply-pragma.mjs`, `measure.sh`, `contend*.sh`).
+incremental-tsc.
+
+**Reproduction / verification of record.** The classifier and measurement helpers
+were ephemeral session-scratchpad tooling and were **not preserved** — they were
+never committed (confirmed via `git log --all` / `git fsck`), so any reference to
+`scratchpad/perf/*.mjs` or `*.sh` is a dangling pointer; those files no longer
+exist. What survives is authoritative: the classifier's **algorithm** is described
+in full in Lever 1's prose above (transitive first-party import walk; reject on a
+`.tsx` dependency or any browser-global token, including the node∩jsdom
+silent-pass set), and the review **independently re-derived the identical 39-file
+result** from scratch via a **TypeScript-compiler-API transitive-closure walk**
+(comment-stripped browser-global scan with type-import erasure): 0 of the 39 pull
+in a `.tsx`, 0 reference a browser global. That re-derivation, not the lost
+scripts, is the verification of record.
