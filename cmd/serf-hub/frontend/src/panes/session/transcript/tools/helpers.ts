@@ -1,12 +1,11 @@
 // Shared formatting/parsing helpers for the per-tool descriptors in this
-// directory. Ground-truth notes (see the wave-4 task-3 report for full
-// citations): ItemModel carries only the tool call's OWN output TEXT
-// (item.output) and its input arguments (item.argumentsJSON) - the wire's
-// ThreadItem.error and ThreadItem.raw (tool_state) fields are both dropped
-// by protocol/reducer.ts's wireItemToModel before they ever reach a
-// component, so every helper here works from plain text/JSON-args, never
-// from a structured tool_state snapshot the legacy renderer-tools.js relied
-// on.
+// directory. Ground-truth note: the model carries the tool call's own output
+// TEXT (item.output), its input arguments (item.argumentsJSON), its error/
+// denial message (item.error), and a shell call's exit code (item.exitCode) —
+// all mapped by protocol/reducer.ts's wireItemToModel. The one wire field
+// still dropped there is ThreadItem.raw (the tool_state snapshot), so every
+// helper here works from plain text/JSON-args, never from a structured
+// tool_state snapshot the legacy renderer-tools.js relied on.
 
 // clip is a head-truncation: text at or under `max` passes through
 // unchanged; over budget, keeps the first `max` chars and appends a single

@@ -31,6 +31,13 @@ export interface ItemModel {
   // item/completed and the snapshot/reload paths (both fold through
   // reducer's wireItemToModel).
   error?: string;
+  // A shell tool call's process exit code, promoted onto the settled item as a
+  // typed wire field (ThreadItem.exitCode, wire-honesty spec Part A). undefined
+  // for a still-running/backgrounded call, for any non-shell tool, and for an
+  // old daemon that doesn't populate it (the shell descriptor then falls back
+  // to parsing the output footer text). A real 0 is a clean exit, distinct from
+  // undefined — never conflate the two.
+  exitCode?: number;
   images?: string[];
   outputImages?: string[];
   status?: string;

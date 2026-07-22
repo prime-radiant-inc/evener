@@ -1131,6 +1131,73 @@ test("hydrateThread maps a settled item's error onto the model (snapshot path)",
   expect(itemAt(turnAt(model, 0), 0).error).toBe("exit status 1");
 });
 
+// A settled shell tool call now carries its process exit code as a typed wire
+// field (ThreadItem.exitCode, wire-honesty spec Part A) — the model must carry
+// it so a descriptor reads a structured number rather than parsing the output
+// footer text.
+test("item/completed maps the wire item's exitCode onto the model (live path)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          output: "boom",
+          exitCode: 2,
+          status: "completed",
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(2);
+});
+
+test("hydrateThread maps a settled item's exitCode onto the model (snapshot path)", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "commandExecution",
+            id: "item_tool",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_1",
+            output: "ok",
+            exitCode: 0,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  // A real typed 0 must round-trip as 0, never collapse to undefined — the
+  // descriptor distinguishes "ran, exit 0" from "no code (backgrounded)".
+  expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();
@@ -1983,6 +2050,71 @@ test('"serf/sandbox/escalation/requested" for a different thread is a same-refer
   const result = applyNotification(
     model,
     { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification,
+    2000,
+  );
+
+  expect(result).toBe(model);
+});
+
+test('"serf/sandbox/escalation/resolved" clears the matching card by id and stamps lastFrameAt', () => {
+  // Wire-honesty spec Part B: the daemon now broadcasts escalation/resolved to
+  // every OTHER subscribed client when a pending escalation leaves the set
+  // (resolved, turn-interrupted, or cleared by session close). A client still
+  // showing that card drops it — reusing the exact by-id clear the local
+  // resolve path already uses (resolvePendingEscalation).
+  const escalation = testEscalation();
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_t", ref: "ref_t", escalationId: escalation.escalationId },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.pendingEscalations).toEqual([]);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test('"serf/sandbox/escalation/resolved" for an id this client never held leaves the set intact but still stamps lastFrameAt', () => {
+  // The resolved broadcast is a genuine live frame even when this client's own
+  // pending set never carried that id (it hydrated after the raise, or the id
+  // belongs to a sibling escalation) — stamp liveness like every other targeted
+  // notification, and leave the surviving cards untouched.
+  const escalation = testEscalation({ escalationId: "esc_1" });
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_t", ref: "ref_t", escalationId: "esc_never_held" },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.pendingEscalations).toEqual([escalation]);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test('"serf/sandbox/escalation/resolved" for a different thread is a same-reference no-op', () => {
+  const escalation = testEscalation();
+  const model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  const result = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_other", ref: "some_other_ref", escalationId: escalation.escalationId },
+    } as AnyNotification,
     2000,
   );
 

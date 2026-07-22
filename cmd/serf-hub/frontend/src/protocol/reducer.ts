@@ -112,6 +112,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     argumentsJSON: item.argumentsJson,
     output: item.output,
     error: item.error,
+    exitCode: item.exitCode,
     images: imagesToStrings(item.images),
     outputImages: outputImagesToStrings(item.outputImages),
     status: item.status,
@@ -273,17 +274,15 @@ export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListRespo
   };
 }
 
-// Removes one pending escalation by id, returning the same reference when
-// the id is absent (the no-op-same-reference idiom used throughout this
-// file). Consumed by the threads store's resolve action (a later task)
-// after a successful serf/sandbox/escalation/resolve call — the wire has no
-// resolved broadcast (appwire/protocol.go's M7 catalog has only
-// NotifySerfSandboxEscalationRequested and the resolve method itself; the
-// legacy client, cmd/serf-hub/assets/appwire.js, only ever handles
-// "requested"), so removing this client's own copy after a successful
-// resolve is local-only. A different client watching the same session stays
-// stale until its next snapshot — a known wire limitation, not something to
-// paper over here.
+// Removes one pending escalation by id, returning the same reference when the
+// id is absent (the no-op-same-reference idiom used throughout this file). Two
+// callers reuse it: the threads store's resolveEscalation action, after this
+// client's own successful serf/sandbox/escalation/resolve call, and the
+// serf/sandbox/escalation/resolved notification case in applyNotification,
+// which fires when another client's resolve — or a turn-interrupt or session
+// close — retires the card. So a client merely watching the session drops its
+// now-stale copy live off the broadcast instead of waiting for its next
+// snapshot.
 export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
   if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
@@ -617,6 +616,18 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         pendingEscalations: upsertPendingEscalation(model.pendingEscalations, n.params),
         lastFrameAt: now,
       };
+    }
+
+    // The resolved twin of requested (wire-honesty spec Part B): a previously-
+    // raised escalation left the pending set — resolved, turn-interrupted, or
+    // cleared by session close. The payload carries no outcome (see
+    // SandboxEscalationResolved's Go doc); this client clears its own copy by
+    // id via the same helper the local resolve action reuses. resolvePending-
+    // Escalation is a same-reference no-op for an id we never held, but a
+    // targeted live frame still stamps lastFrameAt like every other case here.
+    case "serf/sandbox/escalation/resolved": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...resolvePendingEscalation(model, n.params.escalationId), lastFrameAt: now };
     }
 
     // Job lifecycle carries no ThreadModel-tracked state (no job list at

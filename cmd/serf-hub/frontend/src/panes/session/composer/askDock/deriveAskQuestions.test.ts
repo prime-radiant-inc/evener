@@ -90,6 +90,15 @@ test("excludes an ask_user call that has not yet been acked (still inProgress)",
   expect(liveAskQuestions(m)).toEqual([]);
 });
 
+test("excludes an errored/denied ask_user call — error presence, not status, disqualifies it", () => {
+  // The projector stamps status "completed" even on a denied/errored ask_user
+  // (a Go follow-up), so status alone can't tell a real question apart from a
+  // denied one; ItemModel.error presence is the disqualifier. A denied ask
+  // must never render an answerable card the human can submit into the void.
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1", { error: "user denied the ask_user request" })])]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
 test("flattens every question across a single call's multiple questions in order", () => {
   const twoQuestions = askQuestions([
     { header: "First", question: "q1", options: [{ label: "a", detail: "b" }] },
