@@ -20,6 +20,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
+  AnyNotification,
   AuthDevicePollResponse,
   AuthDeviceStartResponse,
   AuthLoginCompleteResponse,
@@ -149,9 +150,67 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
   return selector ? useStore(credentialsStore, selector) : useStore(credentialsStore);
 }
 
+// --- notification-triggered refetch --------------------------------------
+//
+// serf/auth/updated BroadcastAlls to every connected client after a
+// successful auth mutation (login/logout/apiKey set/an authorized device
+// poll) from ANY of them - InstanceEntry's own activeSource/hasStoredOAuth/
+// hasStoredFile/storedEmail fields are exactly what such a mutation changes,
+// so a browser tab that already loaded the instance list goes stale
+// otherwise. Mirrors stores/tree.ts's (and stores/extensions.ts's) identical
+// wiring, applied here to this store's one wire-truth list. The
+// notification's own payload carries no fields on the wire (see
+// NotificationTypes in protocol/types.gen.ts) - a debounced serf/instance/
+// list refetch is the only option, exactly like serf/tree/changed's own
+// "just refetch" contract.
+const REFETCH_DEBOUNCE_MS = 250;
+
+let wiredClient: AppwireClientLike | null = null;
+let refetchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleRefetch(): void {
+  clearTimeout(refetchTimer);
+  refetchTimer = setTimeout(() => {
+    // fetch()'s own requireClient() throws outside its try/catch, by design
+    // (see this file's own top comment) - a real rejection here would be an
+    // unobserved background call with nothing awaiting it, so a rare
+    // disconnect-during-the-debounce-window race must be swallowed here
+    // rather than surfacing as an unhandled rejection.
+    credentialsStore
+      .getState()
+      .fetch()
+      .catch(() => {});
+  }, REFETCH_DEBOUNCE_MS);
+}
+
+function handleNotification(n: AnyNotification): void {
+  if (n.method === "serf/auth/updated") scheduleRefetch();
+}
+
+function attachNotifications(client: AppwireClientLike): void {
+  if (client === wiredClient) return; // already wired to this exact client
+  wiredClient = client;
+  client.onNotification(handleNotification);
+}
+
+// Watches connectionStore for the client becoming available and attaches
+// this store's own notification handler to it - see stores/tree.ts's
+// identical wiring for the full "why react to the store instead of reading
+// it once" rationale (a mount-order race between this module and AppShell's
+// own connect() effect).
+connectionStore.subscribe((state) => {
+  if (state.client) attachNotifications(state.client);
+});
+const initialClient = connectionStore.getState().client;
+if (initialClient) attachNotifications(initialClient);
+
 // resetCredentialsStoreForTests resets this singleton store's state between
-// tests, mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No
-// production code should ever call this.
+// tests, including the module-private wiring/debounce bookkeeping above -
+// mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
+// code should ever call this.
 export function resetCredentialsStoreForTests(): void {
+  wiredClient = null;
+  clearTimeout(refetchTimer);
+  refetchTimer = undefined;
   credentialsStore.setState({ instances: [], availableTypes: [], loading: false, error: null });
 }

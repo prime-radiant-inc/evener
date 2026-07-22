@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -463,5 +463,102 @@ describe("listDirChildren", () => {
       return { data: ["/opt", "/home"] };
     });
     await expect(extensionsStore.getState().listDirChildren("")).resolves.toEqual(["/opt", "/home"]);
+  });
+});
+
+describe("notification-triggered refetch", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("serf/marketplace/updated schedules a debounced fetchMarketplaces, 250ms", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().fetchMarketplaces(); // initial load; also wires notification handling
+    fake.on("serf/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] }));
+
+    fake.emitNotification({ method: "serf/marketplace/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A, MARKETPLACE_B]);
+  });
+
+  test("serf/plugin/updated schedules a debounced fetchPlugins, 250ms", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/plugin/list", () => ({ plugins: [] }));
+    await extensionsStore.getState().fetchPlugins();
+    fake.on("serf/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+
+    fake.emitNotification({ method: "serf/plugin/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(extensionsStore.getState().plugins).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+  });
+
+  test("serf/launch/updated schedules a debounced fetchLaunchLayer, 250ms", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
+    await extensionsStore.getState().fetchLaunchLayer();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+
+    fake.emitNotification({ method: "serf/launch/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(extensionsStore.getState().launchLayer).toEqual({ pluginDirs: [] });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(extensionsStore.getState().launchLayer).toEqual({ pluginDirs: ["/opt/plugins"] });
+  });
+
+  test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.emitNotification({ method: "serf/marketplace/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(extensionsStore.getState().marketplaces).toEqual([MARKETPLACE_A]);
+  });
+
+  test("an irrelevant notification triggers no refetch on any of the three channels", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/marketplace/list", () => ({ marketplaces: [] }));
+    fake.on("serf/plugin/list", () => ({ plugins: [] }));
+    fake.on("serf/launch/getLayer", () => ({}));
+    await Promise.all([
+      extensionsStore.getState().fetchMarketplaces(),
+      extensionsStore.getState().fetchPlugins(),
+      extensionsStore.getState().fetchLaunchLayer(),
+    ]);
+    const marketplaceSpy = vi.fn(() => ({ marketplaces: [MARKETPLACE_A] }));
+    const pluginSpy = vi.fn(() => ({ plugins: [PLUGIN_A] }));
+    const launchSpy = vi.fn(() => ({ pluginDirs: ["/opt/plugins"] }));
+    fake.on("serf/marketplace/list", marketplaceSpy);
+    fake.on("serf/plugin/list", pluginSpy);
+    fake.on("serf/launch/getLayer", launchSpy);
+
+    fake.emitNotification({ method: "thread/started", params: {} });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(marketplaceSpy).not.toHaveBeenCalled();
+    expect(pluginSpy).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+  });
+
+  test("each channel debounces independently - a burst of the same notification coalesces into one refetch", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/marketplace/list", () => ({ marketplaces: [] }));
+    await extensionsStore.getState().fetchMarketplaces();
+    const marketplaceSpy = vi.fn(() => ({ marketplaces: [MARKETPLACE_A] }));
+    fake.on("serf/marketplace/list", marketplaceSpy);
+
+    fake.emitNotification({ method: "serf/marketplace/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(100);
+    fake.emitNotification({ method: "serf/marketplace/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(100); // 200ms elapsed total, but the second notification reset the window
+    expect(marketplaceSpy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150); // 250ms since the last notification
+    expect(marketplaceSpy).toHaveBeenCalledTimes(1);
   });
 });

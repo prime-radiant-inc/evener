@@ -1,5 +1,5 @@
 import { cleanup, renderHook } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -233,5 +233,87 @@ describe("useCredentialsStore", () => {
     const { result } = renderHook(() => useCredentialsStore());
     expect(result.current.instances).toEqual([]);
     expect(typeof result.current.fetch).toBe("function");
+  });
+});
+
+describe("notification-triggered refetch", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("serf/auth/updated schedules a debounced fetch, 250ms", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch(); // initial load; also wires notification handling
+    const updated: InstanceListResponse = {
+      instances: [{ ...ONE_INSTANCE, hasStoredOAuth: false }],
+      availableTypes: [],
+    };
+    fake.on("serf/instance/list", () => updated);
+
+    fake.emitNotification({ method: "serf/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(credentialsStore.getState().instances).toEqual(updated.instances);
+  });
+
+  test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST_RESPONSE);
+    fake.emitNotification({ method: "serf/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
+  });
+
+  test("an irrelevant notification does not trigger a refetch", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("serf/instance/list", listSpy);
+
+    fake.emitNotification({ method: "thread/started", params: {} });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(listSpy).not.toHaveBeenCalled();
+  });
+
+  test("a burst of serf/auth/updated coalesces into exactly one refetch", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+    const listSpy = vi.fn(() => LIST_RESPONSE);
+    fake.on("serf/instance/list", listSpy);
+
+    fake.emitNotification({ method: "serf/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(100);
+    fake.emitNotification({ method: "serf/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(100); // 200ms elapsed total, but the second notification reset the window
+    expect(listSpy).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(150); // 250ms since the last notification
+    expect(listSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a background refetch race with no client connected is swallowed, not an unhandled rejection", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST_RESPONSE);
+    await credentialsStore.getState().fetch();
+
+    fake.emitNotification({ method: "serf/auth/updated", params: {} });
+    // Disconnect before the debounce fires - fetch()'s own requireClient()
+    // throws outside its try/catch by design (this store's own doc comment),
+    // so the scheduled background call must swallow that rejection itself
+    // rather than surfacing an unhandled promise rejection that would fail
+    // this test even though nothing here ever awaits it directly.
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    await vi.advanceTimersByTimeAsync(250);
+    // Reaching this line (rather than the test failing on an unhandled
+    // rejection) is the real assertion; this just also confirms the failed
+    // background attempt left the prior successful load untouched.
+    expect(credentialsStore.getState().instances).toEqual([ONE_INSTANCE]);
   });
 });

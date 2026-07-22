@@ -21,6 +21,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
+  AnyNotification,
   LaunchConfigLayer,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
@@ -273,12 +274,87 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
   return selector ? useStore(extensionsStore, selector) : useStore(extensionsStore);
 }
 
-// resetExtensionsStoreForTests resets the store to its initial state.
+// --- notification-triggered refetch --------------------------------------
+//
+// The hub BroadcastAlls these three notifications to every connected client
+// after a successful mutation from ANY of them - the cross-client staleness
+// gap this store had until now (a change made in one browser tab never
+// reached any other tab's already-loaded marketplaces/plugins/launchLayer
+// until a manual re-open of the section). Mirrors stores/tree.ts's own
+// identical wiring for the sidebar's REST-backed refetch, applied here to
+// this store's three RPC-backed fetches - three independent debounced
+// channels (not one shared one like tree.ts's) since the three lists are
+// unrelated fetches that should each coalesce their own bursts without
+// waiting on each other. Every one of these three notifications carries an
+// empty payload on the wire (see NotificationTypes in
+// protocol/types.gen.ts) - nothing to apply directly, so a debounced
+// re-fetch of the affected list is the only option, exactly like
+// serf/tree/changed's own "just refetch" contract.
+const REFETCH_DEBOUNCE_MS = 250;
+
+let wiredClient: AppwireClientLike | null = null;
+let marketplaceRefetchTimer: ReturnType<typeof setTimeout> | undefined;
+let pluginRefetchTimer: ReturnType<typeof setTimeout> | undefined;
+let launchLayerRefetchTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleMarketplaceRefetch(): void {
+  clearTimeout(marketplaceRefetchTimer);
+  marketplaceRefetchTimer = setTimeout(() => {
+    void extensionsStore.getState().fetchMarketplaces();
+  }, REFETCH_DEBOUNCE_MS);
+}
+
+function schedulePluginRefetch(): void {
+  clearTimeout(pluginRefetchTimer);
+  pluginRefetchTimer = setTimeout(() => {
+    void extensionsStore.getState().fetchPlugins();
+  }, REFETCH_DEBOUNCE_MS);
+}
+
+function scheduleLaunchLayerRefetch(): void {
+  clearTimeout(launchLayerRefetchTimer);
+  launchLayerRefetchTimer = setTimeout(() => {
+    void extensionsStore.getState().fetchLaunchLayer();
+  }, REFETCH_DEBOUNCE_MS);
+}
+
+function handleNotification(n: AnyNotification): void {
+  if (n.method === "serf/marketplace/updated") scheduleMarketplaceRefetch();
+  else if (n.method === "serf/plugin/updated") schedulePluginRefetch();
+  else if (n.method === "serf/launch/updated") scheduleLaunchLayerRefetch();
+}
+
+function attachNotifications(client: AppwireClientLike): void {
+  if (client === wiredClient) return; // already wired to this exact client
+  wiredClient = client;
+  client.onNotification(handleNotification);
+}
+
+// Watches connectionStore for the client becoming available and attaches
+// this store's own notification handler to it - see stores/tree.ts's
+// identical wiring for the full "why react to the store instead of reading
+// it once" rationale (a mount-order race between this module and AppShell's
+// own connect() effect).
+connectionStore.subscribe((state) => {
+  if (state.client) attachNotifications(state.client);
+});
+const initialClient = connectionStore.getState().client;
+if (initialClient) attachNotifications(initialClient);
+
+// resetExtensionsStoreForTests resets the store to its initial state,
+// including the module-private wiring/debounce bookkeeping above.
 // extensions.ts is a singleton store shared by the whole app, so
 // extensions.test.ts must reset it between tests to keep them isolated - no
 // production code should ever call this (mirrors threads.ts/tree.ts's own
 // reset*StoreForTests precedent).
 export function resetExtensionsStoreForTests(): void {
+  wiredClient = null;
+  clearTimeout(marketplaceRefetchTimer);
+  marketplaceRefetchTimer = undefined;
+  clearTimeout(pluginRefetchTimer);
+  pluginRefetchTimer = undefined;
+  clearTimeout(launchLayerRefetchTimer);
+  launchLayerRefetchTimer = undefined;
   extensionsStore.setState({
     marketplaces: null,
     marketplacesLoading: false,
