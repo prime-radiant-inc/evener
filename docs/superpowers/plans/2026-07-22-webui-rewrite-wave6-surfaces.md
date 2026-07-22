@@ -89,7 +89,7 @@ export interface SpawnRequest {
   accessMode?: string;         // merged into launchOverrides.sandbox iff schema didn't set it — floor §1.8
   launchOverrides?: LaunchConfigLayer;
 }
-export interface SpawnResult { ref: string; } // from ThreadStartResponse.thread, leading "local:" stripped — floor §1.14 (spawn.js:404-417)
+export interface SpawnResult { ref: string; } // the QUALIFIED thread.serf.ref verbatim (e.g. "local:abc"). Floor §1.14's local:-strip (spawn.js:404-417) is a RULED divergence: ParseRef (appwire/refs.go:23-34) rejects a bare id, so the stripped form is dead-on-arrival — T1-proven live, T1-review-verified against Go source. T2 keeps it qualified; the close sweep records the divergence.
 export function startThread(client: AppwireClientLike, req: SpawnRequest): Promise<SpawnResult>;
 
 // panes/spawn/preflight.ts — working-dir preflight (T1 defines; T2 fills) — floor §1.13
