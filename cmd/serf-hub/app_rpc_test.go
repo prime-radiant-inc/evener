@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
@@ -7259,6 +7260,156 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	}
 	if !hasOpenAI {
 		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+	}
+}
+
+// TestHubRPCInstanceCreateBroadcastsAuthUpdated proves the "multiple browsers
+// stay in sync" founding requirement for provider-instance CRUD: a successful
+// serf/instance/create must broadcast serf/auth/updated so every other
+// connected client refetches its now-stale instance list. The notification is
+// reused rather than a new one minted for instances: notifications.js already
+// treats serf/auth/updated as payload-agnostic ("something about credentials
+// or instances changed, refetch"), reloading both the instances panel and the
+// providers settings tab on receipt.
+func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("serf/instance/create: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifySerfAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance create")
+	}
+}
+
+// TestHubRPCInstanceEditBroadcastsAuthUpdated is the serf/instance/edit sibling
+// of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
+// serf/auth/updated is the right (reused) notification.
+func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
+		t.Fatalf("serf/instance/edit: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifySerfAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance edit")
+	}
+}
+
+// TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the serf/instance/remove
+// sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
+// comment for why serf/auth/updated is the right (reused) notification.
+func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("serf/instance/remove: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifySerfAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance remove")
+	}
+}
+
+// TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated is the
+// serf/instance/setDefault sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated;
+// see its doc comment for why serf/auth/updated is the right (reused)
+// notification.
+func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("serf/instance/setDefault: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifySerfAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifySerfAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for serf/auth/updated broadcast after instance setDefault")
 	}
 }
 
