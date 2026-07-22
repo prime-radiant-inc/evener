@@ -285,11 +285,16 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 // this store's three RPC-backed fetches - three independent debounced
 // channels (not one shared one like tree.ts's) since the three lists are
 // unrelated fetches that should each coalesce their own bursts without
-// waiting on each other. Every one of these three notifications carries an
-// empty payload on the wire (see NotificationTypes in
-// protocol/types.gen.ts) - nothing to apply directly, so a debounced
-// re-fetch of the affected list is the only option, exactly like
-// serf/tree/changed's own "just refetch" contract.
+// waiting on each other. All three notifications' generated payload types
+// are empty ({}) in protocol/types.gen.ts, so there is nothing to apply
+// directly and a debounced re-fetch of the affected list is the only
+// option, exactly like serf/tree/changed's own "just refetch" contract.
+// On the wire serf/marketplace/updated and serf/plugin/updated genuinely
+// send empty maps (notifyMarketplaceUpdated/notifyPluginUpdated,
+// cmd/serf-hub/app_rpc.go:657,663), while serf/launch/updated carries
+// {cwd, layer} (notifyLaunchUpdated, app_rpc.go:772-775) whose fields the
+// generated type drops because codegen can't see into Go's untyped
+// map[string]string; this refetch is payload-agnostic either way.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;

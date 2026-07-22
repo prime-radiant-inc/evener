@@ -158,11 +158,14 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
 // hasStoredFile/storedEmail fields are exactly what such a mutation changes,
 // so a browser tab that already loaded the instance list goes stale
 // otherwise. Mirrors stores/tree.ts's (and stores/extensions.ts's) identical
-// wiring, applied here to this store's one wire-truth list. The
-// notification's own payload carries no fields on the wire (see
-// NotificationTypes in protocol/types.gen.ts) - a debounced serf/instance/
-// list refetch is the only option, exactly like serf/tree/changed's own
-// "just refetch" contract.
+// wiring, applied here to this store's one wire-truth list. On the wire
+// serf/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
+// cmd/serf-hub/app_rpc.go:764-767), but its generated
+// SerfAuthUpdatedPayload type is empty ({}) because codegen can't see
+// into Go's untyped map[string]string - and this refetch is
+// payload-agnostic anyway (nothing reads those fields), so a debounced
+// serf/instance/list refetch is the only option, exactly like
+// serf/tree/changed's own "just refetch" contract.
 const REFETCH_DEBOUNCE_MS = 250;
 
 let wiredClient: AppwireClientLike | null = null;
