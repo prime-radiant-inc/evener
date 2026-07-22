@@ -1240,6 +1240,28 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
   });
+
+  test("a serf/sandbox/escalation/resolved notification clears the matching card from both tracked and watched models", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().watchThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toHaveLength(1);
+
+    // The real wire shape (appwire.SandboxEscalationResolved): {threadId, ref,
+    // escalationId} — the daemon's broadcast to every OTHER subscribed client
+    // when a pending escalation leaves the set (server/appwire_runtime.go's M7
+    // fix). Unlike the local resolveEscalation action, this arrives for a
+    // resolve some OTHER client made, so a client that only watches the session
+    // still drops its now-stale card.
+    fake.emitNotification({
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_ref_a", ref: "ref_a", escalationId: "esc_1" },
+    } as AnyNotification);
+
+    expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
+  });
 });
 
 describe("useThreadsStore hook", () => {

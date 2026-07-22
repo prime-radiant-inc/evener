@@ -1989,6 +1989,71 @@ test('"serf/sandbox/escalation/requested" for a different thread is a same-refer
   expect(result).toBe(model);
 });
 
+test('"serf/sandbox/escalation/resolved" clears the matching card by id and stamps lastFrameAt', () => {
+  // Wire-honesty spec Part B: the daemon now broadcasts escalation/resolved to
+  // every OTHER subscribed client when a pending escalation leaves the set
+  // (resolved, turn-interrupted, or cleared by session close). A client still
+  // showing that card drops it — reusing the exact by-id clear the local
+  // resolve path already uses (resolvePendingEscalation).
+  const escalation = testEscalation();
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_t", ref: "ref_t", escalationId: escalation.escalationId },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.pendingEscalations).toEqual([]);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test('"serf/sandbox/escalation/resolved" for an id this client never held leaves the set intact but still stamps lastFrameAt', () => {
+  // The resolved broadcast is a genuine live frame even when this client's own
+  // pending set never carried that id (it hydrated after the raise, or the id
+  // belongs to a sibling escalation) — stamp liveness like every other targeted
+  // notification, and leave the surviving cards untouched.
+  const escalation = testEscalation({ escalationId: "esc_1" });
+  let model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_t", ref: "ref_t", escalationId: "esc_never_held" },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.pendingEscalations).toEqual([escalation]);
+  expect(model.lastFrameAt).toBe(2000);
+});
+
+test('"serf/sandbox/escalation/resolved" for a different thread is a same-reference no-op', () => {
+  const escalation = testEscalation();
+  const model = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, pendingEscalations: [escalation] },
+  });
+
+  const result = applyNotification(
+    model,
+    {
+      method: "serf/sandbox/escalation/resolved",
+      params: { threadId: "thr_other", ref: "some_other_ref", escalationId: escalation.escalationId },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(result).toBe(model);
+});
+
 test("resolvePendingEscalation removes the entry with a matching escalationId", () => {
   const escalation = testEscalation();
   const model = testHydrate({
