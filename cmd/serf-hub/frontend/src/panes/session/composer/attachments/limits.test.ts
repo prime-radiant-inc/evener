@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./limits";
 

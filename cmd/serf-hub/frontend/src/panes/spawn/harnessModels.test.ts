@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { HarnessDescriptor } from "../../protocol/types.gen";
 import { harnessUsesSerfModels, modelLabel } from "./harnessModels";

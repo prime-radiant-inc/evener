@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { lazy } from "react";
 import { expect, test } from "vitest";
 import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";

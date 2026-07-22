@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
 import { collectItemIds, computeReconciledIds, type PendingTurnEntry } from "./pendingReconcile";

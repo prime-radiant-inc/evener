@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { checkAuthStatus, SIGN_IN_PROMPT_MESSAGE } from "./auth";
 

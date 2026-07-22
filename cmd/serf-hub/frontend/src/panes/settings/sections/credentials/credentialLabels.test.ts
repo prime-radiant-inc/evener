@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialLayers, groupByType, unconfiguredLabel } from "./credentialLabels";

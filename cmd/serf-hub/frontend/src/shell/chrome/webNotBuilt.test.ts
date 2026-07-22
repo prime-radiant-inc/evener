@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { checkWebNotBuilt, NOT_BUILT_MESSAGE } from "./webNotBuilt";
 
