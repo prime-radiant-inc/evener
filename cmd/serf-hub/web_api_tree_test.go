@@ -672,6 +672,7 @@ func TestWeb_APITreeOrphanLiveRowsCarryTierFavoriteRename(t *testing.T) {
 	}
 	if node == nil {
 		t.Fatalf("orphan-live session not found in any project: %+v", got.Projects)
+		return // unreachable; proves the nil guard to static analysis (SA5011)
 	}
 	if node.Tier != "live" {
 		t.Fatalf("orphan-live row Tier=%q, want %q: %+v", node.Tier, "live", *node)
