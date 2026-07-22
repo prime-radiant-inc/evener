@@ -511,7 +511,9 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 
 // registerInstanceHandlers registers the serf/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
-// are registered — matching the original inline guard.
+// are registered — matching the original inline guard. Successful mutations
+// broadcast serf/auth/updated (see notifyInstanceUpdated) so every other
+// connected client refetches its now-stale instance list.
 func registerInstanceHandlers(server *appserver.Server, instancesController *hubInstancesController) {
 	if instancesController == nil {
 		return
@@ -523,24 +525,28 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		if err := instancesController.Create(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
+		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Edit(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
+		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
+		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.SetDefault(params); err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
+		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
 	})
 }
@@ -765,6 +771,21 @@ func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) 
 		"provider":     provider,
 		"activeSource": activeSource,
 	})
+}
+
+// notifyInstanceUpdated broadcasts a serf/auth/updated notification to all
+// connected clients after a provider-instance CRUD mutation (create, edit,
+// remove, setDefault). It deliberately reuses the auth/updated channel rather
+// than minting a new notification type: the client-side handler
+// (notifications.js) already treats serf/auth/updated as payload-agnostic —
+// "credentials or instances changed, refetch" — reloading both the instances
+// panel and the providers settings tab on receipt, regardless of payload
+// content. An empty payload mirrors notifyMarketplaceUpdated/
+// notifyPluginUpdated below, which broadcast the same way for the same
+// reason: there is no single provider/activeSource pair that honestly
+// summarizes "the instance list changed."
+func notifyInstanceUpdated(server *appserver.Server) {
+	server.BroadcastAll(appwire.NotifySerfAuthUpdated, map[string]string{})
 }
 
 // notifyLaunchUpdated broadcasts a serf/launch/updated notification to all connected clients.

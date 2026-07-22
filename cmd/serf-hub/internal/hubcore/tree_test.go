@@ -1667,3 +1667,95 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 		}
 	}
 }
+
+// fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary is the
+// wave-6 wire-honesty regression: attention.go's AttentionSummary already
+// promoted a live, top-level, active session with a pending sandbox-
+// exemption escalation (M7) into needs_you, but BuildTree's needs-you tier
+// had no matching promotion — the escalation lit the web title/favicon
+// (summary-driven) but never appeared in needs_you[], so the notifications
+// engine never edge-fired OS/sound for it. Both now derive inclusion from
+// the same promotedAttentionLevel call (attention.go), so the tier and the
+// summary can't drift apart again. 01SUB (subagent) and 01ARCH (manually
+// archived) prove the promotion is additive, not a widening of who's
+// tier-eligible in the first place.
+func fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01SUB", UpdatedAt: now, ParentSessionID: "01A", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ARCH", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+	}
+	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true}
+
+	tree := BuildTree(metas, live, decisions)
+	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01A" {
+		t.Fatalf("NeedsYou = %+v, want exactly [01A] (active session promoted by its own pending escalation)", tree.NeedsYou)
+	}
+	if tree.NeedsYou[0].State != "active" {
+		t.Fatalf("NeedsYou[0].State = %q, want the real underlying state (active) — promotion changes membership, not the node's reported state", tree.NeedsYou[0].State)
+	}
+
+	_, sum := DeriveAttention(metas, live, decisions)
+	if sum.NeedsYou != 1 || sum.Error != 0 {
+		t.Fatalf("summary = %+v, want NeedsYou:1 Error:0 (01SUB excluded as a subagent, 01ARCH excluded as archived)", sum)
+	}
+	if got, want := len(tree.NeedsYou), sum.NeedsYou+sum.Error; got != want {
+		t.Fatalf("tree.NeedsYou has %d entries but the summary counts %d (needsYou+error) for the same inputs — the tier and the badge disagree", got, want)
+	}
+}
+
+func TestNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testing.T) {
+	fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t)
+}
+
+// fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary is the
+// round-4-review regression: the escalation-promotion unification (above)
+// shared *which states count*, but left *which sessions are even eligible*
+// as two independent copies. DeriveAttention (attention.go) excluded only
+// IsSubagent; BuildTree's needs-you tier also excludes a fork-superseded
+// parent — the snapshotted original of an edited message (ForkLabel set),
+// nested under the active branch that superseded it (see
+// TestBuildTree_ExcludesNestedForkFromNeedsYou). So a live, awaiting,
+// non-subagent, ForkLabel'd parent with a live active continuation was
+// counted by AttentionSummary (badge) but absent from needs_you[] (list) —
+// same bug class, different axis. Both now derive eligibility from the same
+// nestedSessionIDs + tierEligible calls, so a session can't be top-level to
+// one and nested to the other.
+func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		// "branch" is the active continuation: it forked from "fork" (edited a
+		// message), so it carries ParentSessionID but no ForkLabel of its own.
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		// "fork" is the snapshotted original — superseded, renders nested under
+		// "branch" — but it's still live and awaiting.
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+	}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.NeedsYou) != 0 {
+		t.Fatalf("nested fork leaked into NeedsYou: %#v", tree.NeedsYou)
+	}
+
+	_, sum := DeriveAttention(metas, live, nil)
+	if sum.NeedsYou != 0 {
+		t.Fatalf("summary = %+v, want NeedsYou:0 (the fork-superseded parent is nested, not tier-eligible — same exclusion as the tree)", sum)
+	}
+	if got, want := len(tree.NeedsYou), sum.NeedsYou+sum.Error; got != want {
+		t.Fatalf("tree.NeedsYou has %d entries but the summary counts %d (needsYou+error) for the same inputs — the tier and the badge disagree", got, want)
+	}
+}
+
+func TestNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) {
+	fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t)
+}

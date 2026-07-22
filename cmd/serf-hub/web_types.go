@@ -10,13 +10,18 @@ import (
 	"primeradiant.com/serf/hubapi"
 )
 
-// searchResult is one item in the /api/search response.
+// searchResult is one item in the /api/search response. Ref carries the
+// qualified session ref (e.g. "local:abc") in the same shape apiTreeNode
+// produces for /api/tree — SPA clients open sessions only by qualified ref
+// (appwire.ParseRef rejects bare ids), so the bare ID field alone cannot be
+// used to open a hit.
 type searchResult struct {
 	ID      string `json:"id"`
 	Title   string `json:"title"`
 	Project string `json:"project"`
 	State   string `json:"state"`
 	Age     string `json:"age"`
+	Ref     string `json:"ref"`
 }
 
 // searchResponse is the JSON envelope returned by /api/search.

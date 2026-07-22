@@ -4173,6 +4173,106 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	}
 }
 
+// TestWeb_ApiSearch_LiveResultRefMatchesTreeAPI pins that a live search hit's
+// additive Ref field carries the exact qualified ref /api/tree produces for
+// the same session. The SPA opens sessions only by qualified ref (e.g.
+// "local:<id>" — appwire.ParseRef rejects bare ids), so a bare id alone left
+// SPA clients unable to open a search hit.
+func TestWeb_ApiSearch_LiveResultRefMatchesTreeAPI(t *testing.T) {
+	projectDir := filepath.Join(t.TempDir(), "foo")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: project.CanonicalPath}, SessionID: "01L", Status: "active"},
+	)
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
+
+	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	treeRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(treeRec, treeReq)
+	var tree hubapi.TreeResponse
+	if err := json.Unmarshal(treeRec.Body.Bytes(), &tree); err != nil {
+		t.Fatalf("decode tree: %v", err)
+	}
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+		t.Fatalf("want 1 project with 1 session, got %+v", tree.Projects)
+	}
+	treeNode := tree.Projects[0].Sessions[0]
+	if treeNode.SessionID != "01L" || treeNode.Ref == "" {
+		t.Fatalf("tree node = %+v, want SessionID 01L with a non-empty ref", treeNode)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/search", nil)
+	searchRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(searchRec, searchReq)
+	var search searchResponse
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &search); err != nil {
+		t.Fatalf("decode search: %v", err)
+	}
+	if len(search.Live) != 1 {
+		t.Fatalf("live results = %d, want 1: %+v", len(search.Live), search.Live)
+	}
+	if search.Live[0].Ref != treeNode.Ref {
+		t.Fatalf("search live ref = %q, want tree ref %q", search.Live[0].Ref, treeNode.Ref)
+	}
+	if search.Live[0].Ref != "local:01L" {
+		t.Fatalf("search live ref = %q, want %q", search.Live[0].Ref, "local:01L")
+	}
+}
+
+// TestWeb_ApiSearch_PastResultRefMatchesTreeAPI pins the same qualified-ref
+// guarantee as TestWeb_ApiSearch_LiveResultRefMatchesTreeAPI for a past
+// (ended) session hit.
+func TestWeb_ApiSearch_PastResultRefMatchesTreeAPI(t *testing.T) {
+	now := time.Now()
+	projectDir := filepath.Join(t.TempDir(), "proj")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	web.injectMetasForTest(metas)
+
+	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	treeRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(treeRec, treeReq)
+	var tree hubapi.TreeResponse
+	if err := json.Unmarshal(treeRec.Body.Bytes(), &tree); err != nil {
+		t.Fatalf("decode tree: %v", err)
+	}
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+		t.Fatalf("want 1 project with 1 session, got %+v", tree.Projects)
+	}
+	treeNode := tree.Projects[0].Sessions[0]
+	if treeNode.SessionID != "01A" || treeNode.Ref == "" {
+		t.Fatalf("tree node = %+v, want SessionID 01A with a non-empty ref", treeNode)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/search", nil)
+	searchRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(searchRec, searchReq)
+	var search searchResponse
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &search); err != nil {
+		t.Fatalf("decode search: %v", err)
+	}
+	if len(search.Past) != 1 {
+		t.Fatalf("past results = %d, want 1: %+v", len(search.Past), search.Past)
+	}
+	if search.Past[0].Ref != treeNode.Ref {
+		t.Fatalf("search past ref = %q, want tree ref %q", search.Past[0].Ref, treeNode.Ref)
+	}
+	if search.Past[0].Ref != "local:01A" {
+		t.Fatalf("search past ref = %q, want %q", search.Past[0].Ref, "local:01A")
+	}
+}
+
 // TestWeb_Settings_Theme_Renders checks that GET /settings/theme returns 200
 // with the theme radio inputs present.
 func TestWeb_Settings_Theme_Renders(t *testing.T) {
