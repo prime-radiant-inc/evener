@@ -44,12 +44,24 @@ export function urlToPane(pathname: string): { type: PaneTypeId; params: unknown
   // below) for old bookmarks/links. paneToURL never emits this form - see
   // its "settings" case.
   if (pathname === "/credentials") return { type: "settings", params: { section: "credentials" } };
+  // Old bookmarks for the pre-rewrite /settings/providers page land on the
+  // credentials section (triage #12). Intercepted before the generic
+  // /settings/{section} match below so it never resolves to a "providers"
+  // section that has no pane. Inbound-only, like /credentials: paneToURL
+  // emits the canonical /settings/credentials form (its "settings" case).
+  if (pathname === "/settings/providers") return { type: "settings", params: { section: "credentials" } };
 
   const sessionRef = matchGroup(/^\/s\/([^/]+)$/, pathname);
   if (sessionRef !== null) return { type: "session", params: { ref: sessionRef } };
 
-  const transcriptRef = matchGroup(/^\/thread\/([^/]+)$/, pathname);
-  if (transcriptRef !== null) return { type: "transcript", params: { ref: transcriptRef } };
+  // /thread/{ref} is the share-link target: it renders the SESSION pane
+  // (composer live, per the tested legacy thread-document mode) inside the
+  // chrome-stripped single-pane shell layout the shell applies off
+  // isSinglePaneRoute (singlePane.ts) - NOT the read-only "transcript" pane,
+  // which is a distinct open-beside surface with no URL (see paneToURL).
+  // Inbound-only, like /credentials: a session pane serializes back to /s/{ref}.
+  const threadRef = matchGroup(/^\/thread\/([^/]+)$/, pathname);
+  if (threadRef !== null) return { type: "session", params: { ref: threadRef } };
 
   const section = matchGroup(/^\/settings\/([^/]+)$/, pathname);
   if (section !== null) return { type: "settings", params: { section } };
@@ -67,10 +79,12 @@ export function paneToURL(type: PaneTypeId, params: unknown): string | null {
       const ref = refParam(params);
       return ref !== null ? `/s/${encodeURIComponent(ref)}` : null;
     }
-    case "transcript": {
-      const ref = refParam(params);
-      return ref !== null ? `/thread/${encodeURIComponent(ref)}` : null;
-    }
+    case "transcript":
+      // No deep link: the read-only transcript pane is an open-beside surface
+      // (opened contextually via openBeside, not a URL), the same as "doc"
+      // below. /thread/{ref} now belongs to the session pane's single-pane
+      // mode (see urlToPane), so it can't also address a transcript pane.
+      return null;
     case "settings": {
       const section = sectionParam(params);
       return section !== null ? `/settings/${encodeURIComponent(section)}` : "/settings";
