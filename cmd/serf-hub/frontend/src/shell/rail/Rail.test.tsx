@@ -364,35 +364,30 @@ describe("project expansion", () => {
   });
 });
 
-describe("collapse", () => {
-  test("collapses to a slim reopen affordance and persists the choice; reopening restores the sidebar and persists that too", async () => {
-    renderRail();
+describe("hide affordance (onHide)", () => {
+  // Rail no longer owns a boolean collapse of its own: the sidebarMode system
+  // (RailHost) subsumes it. Rail only renders a "Hide sidebar" button when
+  // RailHost passes onHide (the inline desktop case), and delegates the action.
+  test("renders a Hide sidebar button that calls onHide when the prop is provided", async () => {
+    const onHide = vi.fn();
+    render(
+      <>
+        <Rail onHide={onHide} />
+        <Toast />
+      </>,
+    );
     await screen.findByText("Needs you session");
 
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /hide sidebar/i }));
-    expect(screen.queryByText("Needs you session")).toBeNull();
-    const reopen = screen.getByRole("button", { name: /show sidebar/i });
-    expect(localStorage.getItem("serf.rail.collapsed.v1")).toBe("1");
-
-    await user.click(reopen);
+    await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
+    expect(onHide).toHaveBeenCalledTimes(1);
+    // Rail itself never hides - RailHost owns visibility; the tree stays put.
     expect(screen.getByText("Needs you session")).toBeTruthy();
-    expect(localStorage.getItem("serf.rail.collapsed.v1")).toBe("0");
   });
 
-  test("reads the initial collapsed state from localStorage on mount", async () => {
-    localStorage.setItem("serf.rail.collapsed.v1", "1");
+  test("renders no Hide sidebar button when onHide is absent (mobile / overlay-drawer instance)", async () => {
     renderRail();
-    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    await screen.findByText("Needs you session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();
-  });
-
-  test("a collapsed rail still surfaces the needs-you count on its reopen affordance", async () => {
-    localStorage.setItem("serf.rail.collapsed.v1", "1");
-    renderRail();
-    await vi.waitFor(() => {
-      expect(screen.getByRole("button", { name: /show sidebar.*1/i })).toBeTruthy();
-    });
   });
 });
 

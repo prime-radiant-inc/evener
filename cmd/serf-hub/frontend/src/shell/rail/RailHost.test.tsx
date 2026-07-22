@@ -1,12 +1,15 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, expect, test } from "vitest";
-import { resetTreeStoreForTests } from "../../stores/tree";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { prefsStore } from "../../stores/prefs";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
+import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost } from "./RailHost";
+import { revealSessionInRail, setRailRevealHandler } from "./railController";
 
-// Node 26 shadows jsdom's real window.localStorage with a non-functional
-// global under vitest; Rail reads its collapsed-state key during render, so
-// this file needs the same in-memory stand-in every rail/shell test uses
-// (see Rail.test.tsx's identical note). Scoped to this file only.
+// Node 26 shadows jsdom's real localStorage with a non-functional global under
+// vitest; RailHost mounts <Rail/>, and prefsStore writes through on
+// setSidebarMode - the same in-memory stand-in every rail/shell test uses.
 class MemoryStorage {
   private store = new Map<string, string>();
   getItem(key: string): string | null {
@@ -23,20 +26,214 @@ class MemoryStorage {
   }
 }
 
+// jsdom has no matchMedia; RailHost queries two features - useIsMobile's
+// "(max-width: 899px)" and useSidebarMode's "(min-width: 1200px)". This stub
+// answers each from the {mobile, wide} state a test installs.
+class FakeMediaQueryList {
+  matches: boolean;
+  media: string;
+  private listeners = new Set<(event: MediaQueryListEvent) => void>();
+  constructor(media: string, matches: boolean) {
+    this.media = media;
+    this.matches = matches;
+  }
+  addEventListener(type: string, listener: (event: MediaQueryListEvent) => void): void {
+    if (type === "change") this.listeners.add(listener);
+  }
+  removeEventListener(type: string, listener: (event: MediaQueryListEvent) => void): void {
+    if (type === "change") this.listeners.delete(listener);
+  }
+}
+
+function installMatchMedia(state: { mobile: boolean; wide: boolean }) {
+  const lists = new Map<string, FakeMediaQueryList>();
+  const matchMedia = (query: string) => {
+    let list = lists.get(query);
+    if (!list) {
+      const initial = query.includes("min-width: 1200px")
+        ? state.wide
+        : query.includes("max-width: 899px")
+          ? state.mobile
+          : false;
+      list = new FakeMediaQueryList(query, initial);
+      lists.set(query, list);
+    }
+    return list;
+  };
+  window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+}
+
+function emptyTree(needsYou = 0) {
+  return {
+    generated_at: "2026-01-01T00:00:00Z",
+    sources: [],
+    live: [],
+    needs_you: [],
+    favorites: [],
+    projects: [],
+    archived_projects: [],
+    test_runs: [],
+    attentionSummary: { needsYou, error: 0, working: 0 },
+  };
+}
+
+function jsonResponse(body: unknown): Response {
+  return { ok: true, status: 200, statusText: "OK", json: () => Promise.resolve(body) } as Response;
+}
+
 beforeAll(() => {
-  // @ts-expect-error MemoryStorage implements only the Storage methods Rail
-  // actually calls - see the comment above.
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
   globalThis.localStorage = new MemoryStorage();
+});
+
+beforeEach(() => {
+  localStorage.clear();
+  resetTreeStoreForTests();
+  resetWorkspaceStoreForTests();
+  prefsStore.setState({ sidebarMode: "auto" });
+  // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => jsonResponse(emptyTree())),
+  );
 });
 
 afterEach(() => {
   cleanup();
-  resetTreeStoreForTests();
+  setRailRevealHandler(null);
+  prefsStore.setState({ sidebarMode: "auto" });
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  // @ts-expect-error restore jsdom's honest absence of matchMedia
+  delete window.matchMedia;
 });
 
-test("renders the rail (T1 pass-through to <Rail/>)", () => {
-  render(<RailHost />);
-  // The expanded rail always renders its "Sessions" header regardless of
-  // tree/loading state - proving RailHost mounted a real <Rail/>.
-  expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+describe("desktop mode resolution", () => {
+  test("pane mode renders the rail inline with a Hide sidebar affordance, no chip", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "pane" });
+    render(<RailHost />);
+    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /hide sidebar/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
+  });
+
+  test("auto mode above 1200px renders inline (not collapsed)", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "auto" });
+    render(<RailHost />);
+    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
+  });
+
+  test("auto mode below 1200px collapses to the ☰ chip (rail hidden)", () => {
+    installMatchMedia({ mobile: false, wide: false });
+    prefsStore.setState({ sidebarMode: "auto" });
+    render(<RailHost />);
+    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+  });
+
+  test("rail (Collapsed) mode collapses to the ☰ chip even on a wide viewport", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(<RailHost />);
+    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+  });
+});
+
+describe("the ☰ chip and overlay drawer", () => {
+  test("clicking the chip opens the rail as an overlay drawer", async () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(<RailHost />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /show sidebar/i }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  test("the chip surfaces the needs-you count in its accessible name (color-is-attention badge)", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    treeStore.setState({ tree: emptyTree(3) });
+    render(<RailHost />);
+    expect(screen.getByRole("button", { name: /show sidebar.*3 need attention/i })).toBeTruthy();
+  });
+});
+
+describe("⌘B cycles the sidebar mode (rail -> pane -> auto)", () => {
+  function pressCmdB(): boolean {
+    const event = new KeyboardEvent("keydown", { key: "b", metaKey: true, bubbles: true, cancelable: true });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    return event.defaultPrevented;
+  }
+
+  test("cycles rail -> pane -> auto -> rail and preventDefaults the browser shortcut", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(<RailHost />);
+
+    expect(pressCmdB()).toBe(true);
+    expect(prefsStore.getState().sidebarMode).toBe("pane");
+    pressCmdB();
+    expect(prefsStore.getState().sidebarMode).toBe("auto");
+    pressCmdB();
+    expect(prefsStore.getState().sidebarMode).toBe("rail");
+  });
+
+  test("⌘B does nothing on mobile (the modes are desktop only)", () => {
+    installMatchMedia({ mobile: true, wide: false });
+    prefsStore.setState({ sidebarMode: "auto" });
+    render(<RailHost />);
+    pressCmdB();
+    expect(prefsStore.getState().sidebarMode).toBe("auto");
+  });
+});
+
+describe("hide affordance wiring", () => {
+  test("Hide sidebar in an inline mode switches to rail mode, collapsing to the chip", async () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "pane" });
+    render(<RailHost />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
+    expect(prefsStore.getState().sidebarMode).toBe("rail");
+    expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();
+  });
+});
+
+describe("mobile", () => {
+  test("renders the plain rail (no mode logic, no chip) regardless of sidebarMode", () => {
+    installMatchMedia({ mobile: true, wide: false });
+    prefsStore.setState({ sidebarMode: "rail" }); // would collapse on desktop
+    render(<RailHost />);
+    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
+  });
+});
+
+describe("reveal seam (railController /project)", () => {
+  test("registers a handler; revealing while collapsed opens the overlay drawer first", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(<RailHost />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    act(() => revealSessionInRail("local:abc"));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  test("clears its handler on unmount", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "pane" });
+    const { unmount } = render(<RailHost />);
+    unmount();
+    // No RailHost mounted: a reveal is a no-op-safe call (railController stub).
+    expect(() => revealSessionInRail("local:x")).not.toThrow();
+  });
 });

@@ -1,10 +1,11 @@
-// Rail is the workspace shell's sidebar: session tree over stores/tree.ts,
-// mounted by AppShell as a plain sibling of DockHost (see this task's
-// report for the exact mount contract - AppShell.tsx is out of this task's
-// scope to edit). Owns its own collapse/expand chrome, per-branch expand
-// state, and the rename/delete-project confirmation dialogs; every mutation
-// goes through actions.ts, refetching the tree on success and toasting on
-// failure (no optimistic UI - out of this task's scope).
+// Rail is the workspace shell's sidebar content: session tree over
+// stores/tree.ts. RailHost decides its VISIBILITY (inline, or hidden behind the
+// ☰ overlay drawer per sidebarMode) and mounts it; Rail itself just renders the
+// tree, owns per-branch expand state, the reveal (railController /project), and
+// the rename/delete-project confirmation dialogs. Every mutation goes through
+// actions.ts, refetching the tree on success and toasting on failure (no
+// optimistic UI - out of this task's scope). The header's "Hide sidebar" button
+// is shown only when RailHost passes onHide (the inline desktop case).
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   type TreeNode as ApiTreeNode,
@@ -14,7 +15,6 @@ import {
   useTreeStore,
 } from "../../stores/tree";
 import {
-  Badge,
   Button,
   Dialog,
   EmptyState,
@@ -47,30 +47,9 @@ const CLASS = {
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
   sectionDisclosure: requireClass(styles.sectionDisclosure, "Rail.module.css", "sectionDisclosure"),
-  railCollapsed: requireClass(styles.railCollapsed, "Rail.module.css", "railCollapsed"),
-  reopen: requireClass(styles.reopen, "Rail.module.css", "reopen"),
   dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
   dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
 };
-
-const COLLAPSED_STORAGE_KEY = "serf.rail.collapsed.v1";
-
-function readCollapsed(): boolean {
-  try {
-    return localStorage.getItem(COLLAPSED_STORAGE_KEY) === "1";
-  } catch {
-    return false; // localStorage unavailable (Safari private mode, etc.): default open
-  }
-}
-
-function persistCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_STORAGE_KEY, collapsed ? "1" : "0");
-  } catch {
-    // Best-effort, mirrors DockHost.tsx's own persistLayout precedent - a
-    // full quota must never be fatal to the rail itself.
-  }
-}
 
 function isEmptyTree(tree: TreeResponse): boolean {
   return (
@@ -126,6 +105,11 @@ function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, acti
 }
 
 export interface RailProps {
+  // Shown as the header "Hide sidebar" button when provided (the inline desktop
+  // case). RailHost wires it to collapse the sidebar (setSidebarMode("rail"));
+  // the mobile-drawer and overlay-drawer instances pass none (the drawer has
+  // its own close) and show no button.
+  onHide?: () => void;
   // The session ref the palette's /project command wants revealed. Rail expands
   // its project section and scrolls its row into view, then calls
   // onRevealConsumed so the caller can clear it. See railController (PIN-A).
@@ -133,14 +117,13 @@ export interface RailProps {
   onRevealConsumed?: () => void;
 }
 
-export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
+export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
   const projectDetails = useTreeStore((s) => s.projectDetails);
   const toasts = useToasts();
 
-  const [collapsed, setCollapsed] = useState(readCollapsed);
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [archivedOpen, setArchivedOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
@@ -183,14 +166,6 @@ export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
     }
     onRevealConsumed?.();
   }, [revealTarget, tree, expandedOverrides, onRevealConsumed]);
-
-  function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev;
-      persistCollapsed(next);
-      return next;
-    });
-  }
 
   function setExpanded(id: string, value: boolean) {
     setExpandedOverrides((prev) => {
@@ -300,31 +275,21 @@ export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
     }
   }
 
-  if (collapsed) {
-    const needsYouCount = tree?.attentionSummary.needsYou ?? 0;
-    const label = needsYouCount > 0 ? `Show sidebar (${needsYouCount} need attention)` : "Show sidebar";
-    return (
-      <div className={CLASS.railCollapsed}>
-        <button type="button" className={CLASS.reopen} aria-label={label} onClick={toggleCollapsed}>
-          {needsYouCount > 0 ? <Badge count={needsYouCount} tone="attention" /> : <span aria-hidden="true">{"»"}</span>}
-        </button>
-      </div>
-    );
-  }
-
   const isExpanded = overrideLookup(expandedOverrides);
 
   return (
     <div className={CLASS.rail}>
       <div className={CLASS.header}>
         <h2 className={CLASS.title}>Sessions</h2>
-        <IconButton
-          label="Hide sidebar"
-          icon={<span aria-hidden="true">{"«"}</span>}
-          variant="quiet"
-          size="sm"
-          onClick={toggleCollapsed}
-        />
+        {onHide && (
+          <IconButton
+            label="Hide sidebar"
+            icon={<span aria-hidden="true">{"«"}</span>}
+            variant="quiet"
+            size="sm"
+            onClick={onHide}
+          />
+        )}
       </div>
       <div className={CLASS.body} ref={bodyRef}>
         {loading && !tree && <Skeleton lines={6} />}
