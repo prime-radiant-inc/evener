@@ -17,6 +17,7 @@ import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { urlToPane } from "./routing";
+import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
@@ -94,12 +95,14 @@ function usePathname(): string {
   return pathname;
 }
 
-// Opens (or focuses) the pane a pathname resolves to. "session", "settings",
-// and "spawn" map directly (their params pass straight through to their own
-// registered pane type); every other resolved type - "welcome" itself, plus
-// the not-yet-registered "transcript"/"doc" - falls back to the plain welcome
-// singleton. A null route (genuinely unknown path) opens nothing - NotFound
-// renders in DockHost's place instead, see the component's return below.
+// Opens (or focuses) the pane a pathname resolves to. "session" (including the
+// /thread/{ref} single-pane share link, which routes to the session pane),
+// "settings", and "spawn" map directly (their params pass straight through to
+// their own registered pane type); "welcome" and any other resolved type fall
+// back to the plain welcome singleton (the "doc"/"transcript" panes are opened
+// via openBeside, never routed here). A null route (genuinely unknown path)
+// opens nothing - NotFound renders in DockHost's place instead, see the
+// component's return below.
 function openRouteAsPane(pathname: string): void {
   const route = urlToPane(pathname);
   if (route === null) return;
@@ -182,6 +185,13 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const pathname = usePathname();
   const route = urlToPane(pathname);
   const isMobile = useIsMobile();
+  // Single-pane mode (the /thread/{ref} share link): the shell strips its own
+  // chrome - the rail (which carries the search/settings entry points, floor
+  // §2.3) is suppressed below, and the root is marked so wave-8 T6 can finish
+  // the presentation (dockview tab-strip suppression + full-viewport) off the
+  // [data-single-pane] hook without re-touching this chokepoint. The routed
+  // pane itself is the session pane (routing.ts), composer live.
+  const singlePane = isSinglePaneRoute(pathname);
 
   // Opens a pathname's pane during render, not a useEffect, for as long as
   // DockHost hasn't mounted for the very first time yet - a regular effect
@@ -221,7 +231,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
 
   return (
     <ClientProvider client={client}>
-      <div className={styles.shell}>
+      <div className={styles.shell} data-single-pane={singlePane ? "" : undefined}>
         <ConnectionBanner state={connectionState} />
         <ToastRegion />
         <CommandPalette />
@@ -232,7 +242,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-          {!isMobile && route !== null && <RailHost />}
+          {!isMobile && route !== null && !singlePane && <RailHost />}
           {route === null ? (
             <NotFound />
           ) : isMobile ? (

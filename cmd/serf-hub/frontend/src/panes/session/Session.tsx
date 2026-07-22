@@ -19,6 +19,7 @@ import { Cadence, EmptyState, PaneScaffold, useToasts, VirtualList, type Virtual
 import { SessionChrome } from "./chrome/SessionChrome";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
+import { PendingChips } from "./pending/PendingChips";
 import { TurnBlock } from "./transcript/TurnBlock";
 import { useTranscript } from "./transcript/useTranscript";
 // Side-effect barrels: registering every message item renderer (T2) and
@@ -183,6 +184,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           </FlowOverlay>
         </div>
       )}
+      <PendingChips sessionRef={ref} />
       <Composer ref={ref} />
     </PaneScaffold>
   );
