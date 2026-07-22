@@ -435,7 +435,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Output:        data.Output,
 			Error:         data.Error,
 			OutputImages:  projectOutputImages(data.OutputImages),
-			Status:        "completed",
+			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,
 			// Carry the call's purpose onto the completed item too (#26):
 			// the started item already has it, and live consumers (the web

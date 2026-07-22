@@ -26,6 +26,12 @@ const docFileMaxBytes = 512 * 1024
 // headers. Markdown renders via marked; other text renders escaped in <pre>;
 // binary gets a notice.
 //
+// ?format=raw switches the response from the server-rendered HTML page to
+// the file's literal bytes (writeDocFileRaw), for the native React doc-viewer
+// pane. It reuses every guard below unchanged — only the final response
+// differs — so the two variants reject a given session/path identically. The
+// default (no format param) behavior is byte-for-byte unchanged.
+//
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
 // traversal, and confirm the symlink-resolved absolute path is contained by
@@ -63,6 +69,11 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	data, err := readDocFile(abs)
 	if err != nil {
 		http.NotFound(w, r)
+		return
+	}
+
+	if r.URL.Query().Get("format") == "raw" {
+		writeDocFileRaw(w, data)
 		return
 	}
 
@@ -188,6 +199,25 @@ func looksBinaryBytes(data []byte) bool {
 		head = head[:8192]
 	}
 	return bytes.IndexByte(head, 0) >= 0
+}
+
+// writeDocFileRaw serves a document pane's literal file bytes for the native
+// React doc-viewer pane (?format=raw), which renders the content itself
+// instead of consuming the server-rendered HTML page. Content-Type reflects
+// the same binary/text classification the HTML variant already computes via
+// looksBinaryBytes, rather than sniffing the bytes: sniffing (e.g.
+// http.DetectContentType) would classify an HTML-like text file as
+// text/html, and a browser that ever loads this URL directly (not just via
+// fetch) would then execute it same-origin. text/plain and
+// application/octet-stream are both honest about the content and never
+// browser-executable.
+func writeDocFileRaw(w http.ResponseWriter, data []byte) {
+	if looksBinaryBytes(data) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	}
+	_, _ = w.Write(data)
 }
 
 func formatDocBytes(n int) string {
