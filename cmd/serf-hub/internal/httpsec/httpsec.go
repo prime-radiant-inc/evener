@@ -21,6 +21,13 @@ import "net/http"
 // Google Fonts CSS that pulls in Hanken Grotesk + JetBrains Mono. The CSS
 // itself references WOFF2 files on `fonts.gstatic.com`, which is allowed via
 // the `font-src` directive below. See design language §1.2.
+//
+// Also sets X-Content-Type-Options: nosniff (defense-in-depth): it stops a
+// browser from re-sniffing a response's bytes past its declared Content-Type.
+// /doc/file's raw-content variant (?format=raw) already chooses a safe
+// declared Content-Type itself rather than reflecting a sniffed one; this
+// header hardens every response the hub serves against the same class of
+// MIME-sniffing reinterpretation, not just that one route.
 func CSPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy",
@@ -33,6 +40,7 @@ func CSPMiddleware(next http.Handler) http.Handler {
 				"base-uri 'self'; "+
 				"form-action 'self'; "+
 				"frame-ancestors 'self'")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(w, r)
 	})
 }

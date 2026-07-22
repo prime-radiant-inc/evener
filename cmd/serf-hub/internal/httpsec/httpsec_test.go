@@ -43,3 +43,21 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 		t.Errorf("Content-Security-Policy mismatch\ngot:  %s\nwant: %s", got, wantCSP)
 	}
 }
+
+// TestCSPMiddleware_SetsNosniff (reviewer Minor, defense-in-depth): without
+// X-Content-Type-Options: nosniff, a browser that ever loads a hub response
+// outside its declared Content-Type (e.g. old-style MIME sniffing) could
+// reinterpret it as something executable. This hardens exactly the sniffing
+// class /doc/file's raw-content variant (?format=raw) already defends
+// against by choosing a safe declared Content-Type instead of reflecting
+// http.DetectContentType.
+func TestCSPMiddleware_SetsNosniff(t *testing.T) {
+	guarded := CSPMiddleware(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	guarded.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want %q", got, "nosniff")
+	}
+}
