@@ -2,8 +2,10 @@
 
 Worktree `webui-w6-surfaces`, branch `w6-surfaces`. Starting HEAD `6e3f46aad`
 (217 test files / 3189 tests, confirmed by a full baseline run before any
-change: `npx vitest run` 217/3189 all passing). Single item, per the brief.
-DONE.
+change: `npx vitest run` 217/3189 all passing). Two items: the §1.14 reset
+itself, plus a coordinator-adjudicated fold-in of concern #1 from the first
+pass (the `busy` flag is the same defect class in the same success path).
+Both DONE.
 
 ## The finding
 
@@ -76,7 +78,7 @@ pre-fix failure (same assertion, same message) with the other 9 tests in the
 file (including the failure-path companion test) still green; `git stash
 pop` restored the fix; full gate chain re-run green (below).
 
-## Gates
+## Gates (first commit)
 
 - `npx tsc --noEmit`: exit 0.
 - `npx vitest run` (bare): 217 files passed / 3191 tests passed (baseline
@@ -88,33 +90,72 @@ pop` restored the fix; full gate chain re-run green (below).
   cmd/serf-hub/frontend/dist/PLACEHOLDER` ran immediately after; `git status
   --short` confirmed a clean tree apart from the two intended source files.
 
+Commit `d0d186106`.
+
+## Second item — `busy` never resets on a successful spawn (coordinator fold-in)
+
+Coordinator adjudication on the first pass's concern #1: fold in rather than
+triage separately — same defect class (post-success state hygiene), same
+`doSpawn()` success path, and an empty prompt behind a permanently-disabled
+"Spawning…" button is a worse dead end than the original stale-prompt bug.
+
+**Verification requested by the coordinator, done first.** Read
+`handleSpawn`/`handleCreateConfirm` again: both already reset `busy` to
+`false` on every failure branch — `handleSpawn`'s `catch`, its
+`preflightDir` "abort" and "offer-create" early returns, and
+`handleCreateConfirm`'s `catch` (its `finally` only resets
+`createDialogPath`, but the `catch` alongside it already covers `busy`).
+Confirmed true, not just assumed: three existing tests were extended with a
+`(button as HTMLButtonElement).disabled === false` assertion covering each
+failure branch (thrown `thread/start`, preflight-abort, and — as the
+success-side control — `handleCreateConfirm`'s own success path) and all but
+the success one were GREEN before any production-code change in this second
+item, i.e. before touching anything. Only the success path (shared by both
+callers via `doSpawn()`) was broken. No failure-path change was needed or
+made.
+
+**The change.** One more line in `doSpawn()`, added alongside the existing
+§1.14 resets, before `navigate(url)`: `setBusy(false)`. Same file, same
+function, no new state.
+
+**RED evidence.** Two assertions failed identically before this line existed
+— both exercising `doSpawn()`'s success path through its two different
+callers:
+- New test "re-enables the Spawn button after a successful spawn
+  (post-success state hygiene, same class as §1.14)" (via `handleSpawn`):
+  `AssertionError: expected 'Spawning…' to be 'Spawn'`.
+- Extended "offers to create a missing directory, then creates it and
+  spawns" (via `handleCreateConfirm`, proving the shared `doSpawn()`
+  placement fixes both call sites, not just one): the appended `waitFor`
+  timed out with the button still showing `disabled` + "Spawning…".
+
+**Mutation proof.** Removed just the `setBusy(false)` line (and its
+comment); reran `Spawn.test.tsx` — the identical two failures reappeared,
+the other 9 tests (including the three failure-path lock-in assertions)
+stayed green; restored the line, reran, 11/11 green.
+
+**Gates (second commit).**
+- `npx tsc --noEmit`: exit 0.
+- `npx vitest run` (bare): 217 files passed / 3192 tests passed (3191 + 1 —
+  only one of the four touched tests is a new `test()` block; the other
+  three are assertions appended to existing tests).
+- `npm run lint` (Biome ci): exit 0, 611 files checked, no fixes applied.
+- `npm run build`: exit 0. `git restore
+  cmd/serf-hub/frontend/dist/PLACEHOLDER` ran immediately after; tree clean
+  apart from `Spawn.tsx`/`Spawn.test.tsx`.
+
+Files: `cmd/serf-hub/frontend/src/panes/spawn/Spawn.tsx`,
+`.../Spawn.test.tsx` (same two files as the first commit).
+
 ## Concerns
 
-- **`busy` is never reset to `false` on a successful spawn**, in either the
-  pre-fix or post-fix code (`handleSpawn`'s `try` block falls through after
-  `await doSpawn()` with no trailing `setBusy(false)`; only the `catch` and
-  the two early-return preflight branches reset it). This is pre-existing,
-  not introduced by this change, and is not named by floor row §1.14 L186
-  (which only specifies the button restores "on failure", matching legacy's
-  full-page-navigation model where success makes the button's state moot).
-  If the spawn pane genuinely stays mounted behind the session pane it
-  navigated to (the wave6-report's stated reason this gap matters), a
-  returning user would see a correctly-emptied prompt but a Spawn button
-  permanently stuck disabled/"Spawning…" — arguably a worse dead-end than the
-  bug just fixed. Left untouched: not in the brief's enumerated reset list,
-  not cited by the floor row or the gap punch list as its own item, and
-  fixing it would need a scope decision (e.g. whether to reset in a
-  `finally`) the brief didn't make. Flagging for Jesse/the controller to
-  triage, possibly as its own micro-item.
-- Did not independently re-verify, via a live dockview probe, that the spawn
-  pane actually stays mounted (rather than unmount-then-remount-fresh) when
-  `navigate()` opens the new session pane beside it — `DockHost.tsx`'s own
-  "UNMOUNT, NOT HIDE" comment says dockview unmounts a panel the instant it
-  stops being the active tab *in its own group*, which would itself reset
-  all component-local state on remount. Took the wave6-report's static-code
-  finding (verified against `paneRegistry.ts`'s `singleton: true` +
-  `AppShell.tsx`'s open-without-close routing) as authoritative per the
-  brief rather than re-litigating the sweep's own methodology; the fix is
-  correct defensive engineering (and matches the floor row) regardless of
-  which mounting behavior turns out to hold live.
-- No blockers, no scope ambiguity otherwise, no deviation from the brief.
+- **Resolved this pass:** the `busy`-stuck-on-success gap flagged after the
+  first commit is fixed above (coordinator fold-in) — no longer open.
+- **Concern #2 from the first pass (mount-vs-unmount under real dockview) —
+  resolved-by-design, per the coordinator: no action needed.** The fix (both
+  items) is correct under either mounting behavior — if the pane remounts
+  fresh, the reset is a no-op; if it stays mounted, the reset is what makes
+  the pane usable again. T8/M9's live passes are what will observe the real
+  mounting behavior; not re-litigated here.
+- No blockers, no scope ambiguity, no deviation from the brief or the
+  coordinator's follow-up instruction.

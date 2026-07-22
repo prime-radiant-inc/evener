@@ -275,6 +275,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // one-shot prompt/attachments reset.
     updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
+    // Same defect class: both callers set busy=true before awaiting this
+    // function but only their OWN catch blocks ever reset it back to false,
+    // so a success fell through with the button stuck disabled/"Spawning…"
+    // forever on a pane that can outlive the navigation below.
+    setBusy(false);
     const url = paneToURL("session", { ref });
     if (url) navigate(url);
   }

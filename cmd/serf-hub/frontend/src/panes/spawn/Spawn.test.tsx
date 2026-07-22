@@ -219,6 +219,11 @@ test("offers to create a missing directory, then creates it and spawns", async (
     ),
   );
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  // doSpawn's busy reset is shared by both callers - handleCreateConfirm's
+  // success path re-enables the button the same way handleSpawn's does.
+  await waitFor(() =>
+    expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false),
+  );
 });
 
 test("aborts with the validator message for a non-fixable working dir", async () => {
@@ -235,6 +240,9 @@ test("aborts with the validator message for a non-fixable working dir", async ()
 
   expect(await screen.findByText("path is not a directory")).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  // Failure paths already reset busy (verified, unchanged by this fix) - the
+  // button must stay usable so the user can correct the path and retry.
+  expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {
@@ -343,4 +351,26 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   await screen.findByText(/spawn failed/i);
   expect(prompt.value).toBe("do the thing[image 1]");
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+  // handleSpawn's catch already resets busy on a thrown startThread (same
+  // class of bug, verified already-fixed here - the button must stay usable
+  // so the user can retry without reloading).
+  expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("re-enables the Spawn button after a successful spawn (post-success state hygiene, same class as §1.14)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await screen.findByLabelText("Harness");
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByRole("button", { name: "Spawn" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+
+  // Queried by a name that matches either label so a still-stuck "Spawning…"
+  // fails on the assertions below with a clear message, not a failed query.
+  const button = screen.getByRole("button", { name: /^spawn/i }) as HTMLButtonElement;
+  expect(button.textContent).toBe("Spawn");
+  expect(button.disabled).toBe(false);
 });
