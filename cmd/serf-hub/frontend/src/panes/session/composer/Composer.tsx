@@ -18,6 +18,7 @@ import {
 } from "react";
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -26,7 +27,6 @@ import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
 import { clearDraft, readDraft, writeDraft } from "./draft";
-import { readEnterToSendPref } from "./enterToSendPref";
 import { QueueStrip, submitWithPendingTracking } from "./queue";
 import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
 
@@ -168,6 +168,16 @@ export function Composer({ ref }: ComposerProps) {
   // below, per the rules of hooks.
   const askPending = useAskDockPending(ref);
 
+  // enterToSend drives the Steer/Send kbd-hint labels below - read via the
+  // reactive usePrefsStore hook (Settings -> Display's own live toggle,
+  // display.tsx's setEnterToSend) rather than a plain read, so this
+  // component's hints update immediately if a user has Settings open in
+  // another pane while this composer is mounted. Read unconditionally
+  // alongside the rest of this component's hooks, ahead of the `!model`
+  // early return below, per the rules of hooks - same rationale as
+  // askPending's own doc comment above.
+  const enterToSend = usePrefsStore((s) => s.enterToSend);
+
   // readyAnnouncement drives this component's own aria-live region below,
   // announcing "Message composer ready." the moment askPending flips
   // true -> false (parity-m5-composer.md line 118's OTHER half: AskDock's
@@ -224,7 +234,6 @@ export function Composer({ ref }: ComposerProps) {
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments;
-  const enterToSend = readEnterToSendPref();
 
   const showStop =
     model.status.type !== "ended" &&
@@ -465,7 +474,7 @@ export function Composer({ ref }: ComposerProps) {
       formRef.current?.requestSubmit();
       return;
     }
-    const enterToSendNow = readEnterToSendPref(); // fresh, not the render-time `enterToSend` closure
+    const enterToSendNow = prefsStore.getState().enterToSend; // fresh, not the render-time `enterToSend` closure
     if (event.shiftKey) {
       if (enterToSendNow) return; // literal newline - avoids doubling up enterToSend's own Enter-submits meaning
       event.preventDefault();

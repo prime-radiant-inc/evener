@@ -139,6 +139,15 @@ describe("hydration from existing localStorage", () => {
     expect(prefsStore.getState().showCost).toBe(false);
   });
 
+  // Proves "0" never decodes truthy for enterToSend - not branch-reached:
+  // the false fallback coincides with "0"'s own decoding. showCost's "0"
+  // assertion above (true default) is what actually proves the branch fires.
+  test("reads a previously stored enterToSend of '0' as false", () => {
+    localStorage.setItem(KEY("enterToSend"), "0");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().enterToSend).toBe(false);
+  });
+
   test("reads previously stored notification toggles and loud scope", () => {
     localStorage.setItem(KEY("notificationsOs"), "1");
     localStorage.setItem(KEY("notificationsLoudScope"), "all");
@@ -183,13 +192,16 @@ describe("corrupted/unrecognized localStorage values fall back to the documented
 });
 
 describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", () => {
-  // W5's interim hook (webui-w5-composer/.../composer/enterToSendPref.ts,
-  // already shipped) reads serf.prefs.enterToSend with a strict `=== "1"`
-  // check - its own test asserts the literal string "true" reads as FALSE.
-  // Both the key NAME and the "1"/"0" VALUE ENCODING must match for the two
-  // waves to converge at merge (this codebase's own established precedent
-  // for a single persisted boolean - see shell/rail/Rail.tsx's
-  // COLLAPSED_STORAGE_KEY - is "1"/"0", not JS's "true"/"false").
+  // This is a live contract reachable from Settings today, not a
+  // hypothetical one - Settings -> Display's own setEnterToSend/setShowCost
+  // write both keys, and Composer.tsx reads enterToSend from this same
+  // store. The "1"/"0" VALUE ENCODING (this codebase's own established
+  // precedent for a single persisted boolean - see shell/rail/Rail.tsx's
+  // COLLAPSED_STORAGE_KEY - not JS's "true"/"false") already broke this
+  // contract once during development: commit 932eeddca ("fix boolean
+  // encoding to '1'/'0' (cross-wave contract break)") fixed readBool/
+  // writeBool back from a brief "true"/"false" regression. Never repeat it -
+  // both the key NAME and the encoding must stay exactly as they are.
   test("setEnterToSend writes the literal key serf.prefs.enterToSend with '1'/'0' encoding", () => {
     prefsStore.getState().setEnterToSend(true);
     expect(localStorage.getItem("serf.prefs.enterToSend")).toBe("1");
@@ -382,6 +394,13 @@ describe("localStorage unavailable (e.g. Safari private mode)", () => {
     expect(() => resetPrefsStoreForTests()).not.toThrow();
     expect(prefsStore.getState().theme).toBe("system");
     expect(prefsStore.getState().showCost).toBe(true);
+    // Migrated from W5's interim hook (enterToSendPref.test.ts, deleted at the
+    // absorb-a2 merge): "degrades to off when localStorage throws" - readBool
+    // shares the exact same readRaw try/catch this asserts generically above,
+    // but enterToSend's own OFF default was that hook's specifically-named
+    // contract, so it gets its own explicit assertion rather than relying on
+    // theme/showCost's coverage of the shared code path alone.
+    expect(prefsStore.getState().enterToSend).toBe(false);
   });
 
   test("writing is best-effort and never throws", () => {
@@ -433,6 +452,18 @@ describe("initPrefs (production entry point)", () => {
 });
 
 describe("usePrefsStore hook", () => {
+  // Migrated from W5's interim hook (enterToSendPref.test.ts, deleted at the
+  // absorb-a2 merge): "useEnterToSendPref reflects the stored value at render
+  // time" - a value already persisted BEFORE the component ever mounts, as
+  // opposed to the next test's live update-after-mount case.
+  test("reflects a value already hydrated from localStorage before the component mounts", () => {
+    localStorage.setItem(KEY("enterToSend"), "1");
+    resetPrefsStoreForTests();
+
+    const { result } = renderHook(() => usePrefsStore((s) => s.enterToSend));
+    expect(result.current).toBe(true);
+  });
+
   test("reflects store state and re-renders on change", () => {
     const { result } = renderHook(() => usePrefsStore((s) => s.enterToSend));
     expect(result.current).toBe(false);
