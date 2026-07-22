@@ -783,6 +783,21 @@
         const itemKey = firstNonEmpty(params.itemId, params.callId, item.callId, item.id, item.itemId);
         return scopedItemKey(threadKey, turnKey, itemKey);
       };
+      // Mirrors appwire.js:669's terminalStatus() value set (completed/failed/
+      // interrupted) without calling it: this module's jstest fixtures each
+      // stub window.SerfAppwire independently (33 separate stub literals) and
+      // none provide that helper, so a cross-file call would throw at runtime
+      // in every hydration test. Duplicating the 3-value set here is the
+      // smaller, safer surface. An item/turn stuck matching only "completed"
+      // silently drops a settled-but-errored item out of the hydration-dedup
+      // suppression set below (completedItemKeys) — a buffered turn/completed
+      // notification then re-emits TOOL_CALL_START for it, activeTools has no
+      // entry (its first pass already reached TOOL_CALL_END and was deleted),
+      // and a duplicate card appends.
+      const isTerminalItemOrTurnStatus = (status) => {
+        const s = String(status || "").toLowerCase();
+        return s === "completed" || s === "failed" || s === "interrupted";
+      };
       const hydrationKeysFromThread = (thread) => {
         const itemKeys = new Set();
         const completedItemKeys = new Set();
@@ -795,13 +810,13 @@
         );
         for (const turn of (thread && thread.turns) || []) {
           const turnKey = firstNonEmpty(turn && turn.id);
-          const turnCompleted = String((turn && turn.status) || "").toLowerCase() === "completed";
+          const turnCompleted = isTerminalItemOrTurnStatus(turn && turn.status);
           for (const item of (turn && turn.items) || []) {
             const itemKey = firstNonEmpty(item && item.callId, item && item.id, item && item.itemId);
             const scoped = scopedItemKey(threadKey, turnKey, itemKey);
             if (scoped) {
               itemKeys.add(scoped);
-              const itemCompleted = String((item && item.status) || "").toLowerCase() === "completed";
+              const itemCompleted = isTerminalItemOrTurnStatus(item && item.status);
               if (turnCompleted || itemCompleted) completedItemKeys.add(scoped);
             }
           }
