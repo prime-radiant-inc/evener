@@ -36,8 +36,18 @@ export interface AskQuestionRef {
   ifUnanswered?: string;
 }
 
+// An ask_user call is answerable only if it settled WITHOUT error. Status is
+// not a usable failure signal — the projector stamps "completed" even on a
+// denied/errored call (ItemModel.error's own doc comment; a Go follow-up) — so
+// error PRESENCE is what disqualifies a card: a denied ask must never render as
+// answerable, or the human submits answers into a call that already failed.
 function isAckedAskUserItem(item: ItemModel): boolean {
-  return item.type === "commandExecution" && item.toolName === "ask_user" && item.status === "completed";
+  return (
+    item.type === "commandExecution" &&
+    item.toolName === "ask_user" &&
+    item.status === "completed" &&
+    item.error === undefined
+  );
 }
 
 // lastUserMessageIndex finds the position of the most recent plain user
