@@ -47,6 +47,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 					State:   hubcore.NormalizeState(le.Status),
 					Project: filepath.Base(le.WorkingDir),
 					Age:     "now",
+					Ref:     hubRefFromTreeNodeID(le.SessionID).String(),
 				})
 			}
 		}
@@ -61,6 +62,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 				State:   "ended",
 				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
 				Age:     hubcore.AgeString(e.Meta.UpdatedAt),
+				Ref:     hubRefFromTreeNodeID(e.Meta.ID).String(),
 			})
 		}
 	}
