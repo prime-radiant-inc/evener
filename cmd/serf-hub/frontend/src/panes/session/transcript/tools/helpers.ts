@@ -2,8 +2,8 @@
 // directory. Ground-truth note: the model carries the tool call's own output
 // TEXT (item.output), its input arguments (item.argumentsJSON), its error/
 // denial message (item.error), and a shell call's exit code (item.exitCode) —
-// all mapped by protocol/reducer.ts's wireItemToModel. The one wire field
-// still dropped there is ThreadItem.raw (the tool_state snapshot), so every
+// all mapped by protocol/reducer.ts's wireItemToModel. ThreadItem.raw (the
+// tool_state snapshot) is among the wire fields dropped there, so every
 // helper here works from plain text/JSON-args, never from a structured
 // tool_state snapshot the legacy renderer-tools.js relied on.
 
