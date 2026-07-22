@@ -185,6 +185,47 @@ describe("reconciliation via the threads store (wire echoes)", () => {
     expect(result.current).toHaveLength(0);
   });
 
+  // pendingReconcile.test.ts already proves computeReconciledIds' own
+  // multiset match resolves the FIRST-registered of two identical-text
+  // entries when only one authoritative slot exists (a pure-function test
+  // against a hand-built ThreadModel) - this is the missing store-level
+  // companion, proving the SAME FIFO-by-registration-order behavior holds
+  // through the real submitWithPendingTracking + threadsStore + wire-echo
+  // pipeline, not just the pure algorithm in isolation.
+  test("two queue entries with IDENTICAL text reconcile FIFO - the OLDER (first-registered) entry resolves before the newer duplicate", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a");
+    fake.on("turn/queue", () => ({}));
+    const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
+
+    await act(async () => {
+      await submitWithPendingTracking({ ref: "ref_a", method: "queue", text: "same text", onFailure: () => {} }, () =>
+        threadsStore.getState().queue("ref_a", "same text"),
+      );
+    });
+    const olderId = result.current[0]!.id;
+
+    await act(async () => {
+      await submitWithPendingTracking({ ref: "ref_a", method: "queue", text: "same text", onFailure: () => {} }, () =>
+        threadsStore.getState().queue("ref_a", "same text"),
+      );
+    });
+    expect(result.current).toHaveLength(2);
+
+    // Only ONE authoritative slot with this text - a multiset match, not
+    // simple text equality, so this must resolve exactly one of the two
+    // duplicate chips.
+    act(() => {
+      fake.emitNotification({
+        method: "thread/queueChanged",
+        params: { threadId: "thr_ref_a", ref: "ref_a", queue: { depth: 1, texts: ["same text"] } },
+      });
+    });
+
+    expect(result.current).toHaveLength(1);
+    expect(result.current[0]!.id).not.toBe(olderId); // the OLDER duplicate cleared first; the newer one remains
+  });
+
   test("a new steering item (serf/steering/injected) reconciles a drain-method entry", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a");
