@@ -195,10 +195,11 @@ describe("pinned key contract: serf.prefs.enterToSend / serf.prefs.showCost", ()
   // This is a live contract reachable from Settings today, not a
   // hypothetical one - Settings -> Display's own setEnterToSend/setShowCost
   // write both keys, and Composer.tsx reads enterToSend from this same
-  // store. The "1"/"0" VALUE ENCODING (this codebase's own established
-  // precedent for a single persisted boolean - see shell/rail/Rail.tsx's
-  // COLLAPSED_STORAGE_KEY - not JS's "true"/"false") already broke this
-  // contract once during development: commit 932eeddca ("fix boolean
+  // store. The "1"/"0" VALUE ENCODING (this store's own uniform encoding
+  // for every persisted boolean - readBool/writeBool, shared across
+  // enterToSend, showCost, and every transcript/notifications member, not
+  // JS's "true"/"false") already broke this contract once during
+  // development: commit 932eeddca ("fix boolean
   // encoding to '1'/'0' (cross-wave contract break)") fixed readBool/
   // writeBool back from a brief "true"/"false" regression. Never repeat it -
   // both the key NAME and the encoding must stay exactly as they are.

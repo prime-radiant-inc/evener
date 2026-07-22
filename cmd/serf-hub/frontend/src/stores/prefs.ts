@@ -43,10 +43,10 @@
 // what this makes true; before this, "system" always rendered dark
 // regardless of the OS. phoneDensity/fontSize
 // get the same document-mirroring treatment the legacy's settings-
-// appearance.js gave them (onto document.body.dataset), even though no CSS
-// in the new design system keys off those two attributes yet - reproducing
-// the legacy's own mechanism is this task's explicit brief; a future task
-// adding the corresponding CSS gate has something to attach to either way.
+// appearance.js gave them (onto document.body.dataset), and tokens.css now
+// keys off both: the type ramp scales off <body data-font-size> and the
+// phone line-height off <body data-phone-density> (its "font-size + phone-
+// density preference application" block), so the mirror changes what renders.
 // sidebarMode gets NO document mirror - it has no data-* attribute for CSS
 // to key off, unlike phoneDensity/fontSize above. Its consumer is
 // shell/rail/RailHost.tsx, which reads this value directly to drive the
