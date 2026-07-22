@@ -581,8 +581,16 @@ type resumeBlockingDelegateAdapter struct {
 	name          string
 	secondStarted chan struct{}
 	once          sync.Once
-	mu            sync.Mutex
-	calls         int
+	// restartStarted, when non-nil, is closed once the FIRST restart turn (the
+	// third Complete call — after "finish first" and the initial "resume and
+	// block") enters the model call. By then that turn has already drained its
+	// startup steering, so a test can await this to know the restarted delegate
+	// is blocked and will not consume a later-enqueued steering frame. Tests that
+	// never restart leave it nil and the signal is skipped.
+	restartStarted chan struct{}
+	onceRestart    sync.Once
+	mu             sync.Mutex
+	calls          int
 }
 
 func (a *resumeBlockingDelegateAdapter) Name() string { return a.name }
@@ -603,6 +611,9 @@ func (a *resumeBlockingDelegateAdapter) Complete(ctx context.Context, req llm.Re
 	}
 
 	a.once.Do(func() { close(a.secondStarted) })
+	if call >= 3 && a.restartStarted != nil {
+		a.onceRestart.Do(func() { close(a.restartStarted) })
+	}
 	<-ctx.Done()
 	return llm.Response{Provider: a.name, Model: req.Model}, ctx.Err()
 }
