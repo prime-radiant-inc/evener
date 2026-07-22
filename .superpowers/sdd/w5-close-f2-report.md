@@ -20,11 +20,33 @@ below), and every regression net was mutation-verified (defect reintroduced, con
 reverted, confirmed zero net diff against the working tree) — full transcript of each cycle is in
 the commit-by-commit narrative below; only the outcomes are repeated here.
 
-**Observed, pre-existing flake (not mine to fix):** across roughly a dozen full-suite runs during
-this work, exactly one showed a single failure in `src/panes/session/transcript/TurnBlock.test.tsx`
-("registers a synthetic item type...") — a file entirely outside this stream's manifest (transcript
-pane, not composer/queue). Never reproduced again in ~11 subsequent full runs. Consistent with the
-sibling flake-investigation stream's scope per the brief; not chased further.
+**Observed, pre-existing flake (not mine to fix, but two process notes below):** across roughly 20
+full-suite runs during this work, 2 showed a single failure each, both times in
+`src/protocol/tokenFlood.test.tsx`'s "500 deltas on a live item do not re-render an already-settled
+sibling item in the same turn - render-count probe" test (`Error: Test timed out in 5000ms`) - a
+file entirely outside this stream's manifest (streaming/session-mount stress test, not composer/
+queue), explicitly self-described elsewhere in the same file as a "tripwire, not a perf gate."
+Consistent with the sibling flake-investigation stream's scope per the brief; not chased further.
+An earlier draft of this report misattributed one instance to `TurnBlock.test.tsx` from a
+truncated glimpse of tail output - that text was actually a comment fragment quoted *inside*
+`tokenFlood.test.tsx`'s own failure context, not a separate failing file. Corrected here after
+reproducing the flake twice more with the full failure output actually captured.
+
+**Process note (self-caught, disclosing in full):** the report commit's own gate run
+(`npx vitest run 2>&1 | tail -6 && ... && git commit`) hit this exact flake - `tail`'s exit code,
+not vitest's, is what `&&` actually saw, so the chain silently proceeded through a real "1 failed"
+result straight to the commit. This defeats the whole point of AND-chaining gates and is precisely
+the "gates check exit codes, never grep'd pipes" failure mode. I caught it by reading the
+output text (which still showed "1 failed") in the same turn, immediately re-verified with a
+non-piped `npx vitest run` (real exit code 0, 2031/2031) proving the just-made commit's tree is
+genuinely clean, then reproduced the flake twice more with proper exit-code capture to pin down
+its actual identity above. Every OTHER commit in this stream was gated by a piped `tail`
+too, but each one's captured text explicitly showed the full "N passed (N)" count with no failures
+before I proceeded - this was the one instance where the masked exit code, not my own reading of
+the output, would have been the only thing standing between a real failure and a commit. No commit
+in this stream actually carries a broken tree (verified above), but the METHOD was wrong throughout
+and should not be repeated - a future gate chain should redirect to a file and check `$?`
+explicitly, not pipe through `tail`.
 
 ## Items
 
