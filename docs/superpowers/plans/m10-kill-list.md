@@ -412,3 +412,57 @@ Waves 6 and 8 are unlanded. Before deleting, re-run against the final tree:
 3. `grep -rn "/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort" cmd/serf-hub/frontend/src` — must stay empty to delete the §1.6 cluster.
 4. Confirm `hubapi/client.go` still lists exactly the 13 routes in §2.1 (it is the TUI contract).
 5. `git grep htmx` at the end — must be empty.
+
+---
+
+## Appendix D — Dry-run re-validation (pre-W8-final)
+
+**Date:** 2026-07-22
+**Performed against:** worktree `webui-workspace-shell` (integration) HEAD `3907b815f`, read-only cross-reference with `webui-w8-periphery` HEAD `e3b9c188c` (branch `w8-periphery`; only T1's chokepoint/seam commits have landed there — T2-T7 streams are not yet dispatched).
+
+Wave 6 (spawn/palette/notifications/rail) is merged to integration (`ed5057be2`, closed out at `dedcf52dd`). Wave 8 (periphery) has landed only its controller-owned T1 commits, on its own wave branch — nothing from T1 is in the integration tree yet. This re-validates Appendix C against that state and folds in the wave-6/wave-8 deltas from the dispatch brief.
+
+### Appendix C check outcomes
+
+1. **`newWebEnabled` sites (§3).** `grep -rn "newWebEnabled" cmd/serf-hub --include='*.go'` → still exactly 5 call sites + the definition, unchanged: `web_workspace.go:45` (`handleSession`), `web_workspace.go:158` (`handleThreadDocument`), `web.go:226` (`handleIndex`), `web_launchconfig.go:8` (`handleCredentials`), `web_settings.go:46` (`handleSettings`); definition `webnext.go:16`. **PASS, no drift.**
+
+2. **Re-sweep `frontend/src` for `fetch(`/URL literals (§1.6, R2).** Enumerated every `fetch(` and `new WebSocket(` in non-test source. The SPA now uses **11 REST paths + `/rpc`** (was 8 at the original sweep): the original 8 (`tree`, `tree/project`, `rename`, `archive`, `favorite`, `project/delete`, `images/{sha}`, `manifest.webmanifest`) plus three new ones wave 6 added — `/api/search`, `/api/dirs/create`, `/api/git/head` — all three are exactly the endpoints §1.6/R1 flagged as "plausible future consumers." Zero `/doc/*` references anywhere in the current integration tree — the doc pane doesn't exist on this side of the merge yet (it's wave-8 T5, unmerged). **Confirms new REST dependencies on 3 of the 6 §1.6 endpoints; confirms none yet on `/doc/*` in the merged tree** (see wave-8 pending-protection below).
+
+3. **Orphaned-cluster literal grep (§1.6).** `grep -rn '/api/\(search\|upgrade\|git/head\|dirs/create\|path/validate\)\|reasoning-effort' cmd/serf-hub/frontend/src` → **not empty.** Decomposes into: real `fetch()` calls for `/api/search`, `/api/dirs/create`, `/api/git/head` (production dependencies — see reclassification table); and every `reasoning-effort` hit is the **AppWire method name** `thread/reasoning-effort/set`/`changed`, never the REST path (zero literal hits for the REST endpoint itself). Separately, zero hits anywhere for `/api/upgrade` or `/api/path/validate` as REST literals — both live only as AppWire `serf/upgrade` / `serf/path/validate` now. **The check no longer passes as originally written — 3 of 6 endpoints must leave the orphaned cluster; the other 3 are now confirmed (not just predicted) fully migrated to AppWire, which is stronger evidence than the original doc had.**
+
+4. **`hubapi/client.go` route count (§2.1).** Exactly 13 `c.get`/`c.post` call sites, matching the 13 listed T-routes exactly (health, tree, sessions/{ref} bare, spawn-schema, spawn, models, send, tasks, interrupt, compact, clear, fork, model); confirmed `c.get`/`c.post` are the only two request-issuing helpers in the file (no stray `http.NewRequest`/`.Get`/`.Post`). **PASS, no drift.**
+
+5. **`git grep htmx` (§4 acceptance gate).** Not empty — expected pre-deletion. Hits fall into three buckets: (a) the exact §1.1/§1.2/§1.3 DELETE-scoped files (`assets/*.js`, `style.css`, `templates/**`, `jstest/**`) — matches the plan exactly, nothing unexpected; (b) SDD/plan/spec prose under `docs/**`/`.superpowers/**` (out of M10 scope); (c) **5 files the current plan does not touch**, using "htmx" only as historical/explanatory prose or incidental test data, never as a dependency: `cmd/serf-hub/doc_serve.go:25`, `frontend/src/panes/session/composer/draft.ts:6`, `frontend/src/panes/settings/sections/theme.tsx:43`, `frontend/src/stores/prefs.ts:24,26` (comments contrasting new behavior with "the legacy's htmx world"), and `internal/hubcore/tree_test.go:93` (a test fixture string, `"htmx swap"`, coincidental). None is a functional dependency — the gate's *intent* ("nothing depends on htmx") is already satisfied once §1.1 executes. Recommend scrubbing the 4 comments in the same PR series so the gate is literally, not just functionally, empty — cosmetic, not a blocker. Also noted in passing: `web_test.go` carries htmx-named tests (`TestWeb_AppShellScopesHtmxHistoryToWorkspace`, `TestWeb_Assets_ServeHtmx`) exercising exactly the deleted behavior/asset — §1.5/Appendix A's reachability method explicitly excludes `_test.go`, so the kill list's function/file counts never included test-file surgery. That surgery is mandatory (the deletions won't compile/pass without it) but ordinary — not a new decision, just budget for it.
+
+### Risk recap (the three named risks)
+
+- **R1 (orphaned-REST cluster is a judgment call).** Substantially resolved by wave 6 — see reclassification below. The 3 endpoints that remain unconsumed are now **confirmed** migrated to live AppWire replacements in production code (not merely "planned to be"), stronger evidence than the original doc had.
+- **R2 (`/doc/*` limbo, broken-asset trap).** MW-B (the `?format=raw` variant, commit `770800fe8`) has already landed in integration (`doc_serve.go:75`), ahead of where the wave-8 plan doc frames it (it still lists MW-B as an open go/no-go). But **the broken-asset trap itself is unresolved and unchanged**: `writeDocPage`/`writeDocMarkdownPage` (`doc_serve.go:237-270`, the default non-`raw` response) still hardcode `<link href="/assets/style.css">` and, for markdown, `<script src="/assets/marked.min.js">` — both §1.1 DELETE targets, byte-for-byte unchanged per the function's own doc comment. See Ambiguity below.
+- **R3 (`assets/` partial keep).** Unchanged, confirmed no drift: `cmd/serf-hub/assets/` still holds exactly the 33 JS + `style.css` (DELETE) alongside the 4 icons + `manifest.webmanifest` (KEEP); `hubedge/auth_token.go:109-117`'s `isAuthExempt` still lists exactly the same 6 exact-match paths the kill list and the wave-8 plan both pin (`/auth`, `/api/health`, the 4 icon paths). No wave-6/8 change has touched this.
+
+### Reclassification table
+
+| Row (§ of origin) | Old class | New class | Evidence |
+|---|---|---|---|
+| `GET /api/search` (§1.6) | Orphaned REST | **PROTECTED (S)** | `frontend/src/shell/palette/search.ts:53` — real `fetch()`; wave-6 T3 palette search mode |
+| `POST /api/dirs/create` (§1.6) | Orphaned REST | **PROTECTED (S)** | `frontend/src/panes/spawn/preflight.ts:41` — real `fetch()`; its own comment: "no appwire method exists for creation — verified" |
+| `GET /api/git/head` (§1.6) | Orphaned REST | **PROTECTED (S)** | `frontend/src/panes/spawn/branch.ts:13` — real `fetch()`; wave-6 T2 branch-HEAD auto-resolution — exactly the scenario §4 R1 predicted |
+| `GET /doc/file` (R2, §4) | Limbo (unconsumed, undeleted) | **PROTECTED-pending-W8** | Raw mode already shipped server-side (`doc_serve.go:75`, commit `770800fe8`); consumed by wave-8 T1's `protocol/docContent.ts` stub (`webui-w8-periphery`, unmerged) pending T5's fill; zero consumption in the current merged tree |
+| `GET /doc/image` (R2, §4) | Limbo (unconsumed, undeleted) | **PROTECTED-pending-W8** | Pre-existing route (`output_images.go:202`, `web.go:188`); T1's `docContent.ts:31-33` `docImageURL()` already builds the real href; consumed once T5/T6 land the doc pane + `openBeside` body |
+
+Consequence of the `/api/search` move: its "exclusive helpers" clause (§1.6 — "If `/api/search` goes, also delete `sortLiveForSearch`, `searchPastTitle`, `searchResult`/`searchResponse`") is now moot. The endpoint is not going, so those helpers are not deletion candidates either.
+
+### Remaining genuinely-orphaned set (keep-by-default)
+
+| Endpoint | Confirmed live replacement | REST literal anywhere in `frontend/src`? |
+|---|---|---|
+| `GET /api/upgrade` | AppWire `serf/upgrade` (`shell/palette/commands.ts:137`, palette `/upgrade` command) | none |
+| `POST /api/sessions/{ref}/reasoning-effort` | AppWire `thread/reasoning-effort/set` (`stores/threads.ts:745`; `chrome/StatusRow.tsx`; palette `/reasoning-effort`) | none |
+| `POST /api/path/validate` | AppWire `serf/path/validate` (`stores/extensions.ts:257`, `stores/launchConfig.ts:93`, spawn `preflight.ts`/`Spawn.tsx`, settings `dirListSetting.tsx`/`mcp.tsx`/`collectionFields.tsx`) | none |
+
+Per the standing rule, all three are **KEPT, not deleted** — this needs no sign-off (sign-off was only ever for the delete path). TUI (`hubapi.Client`, check 4) still references none of the six original cluster members either, so nothing here depends on the TUI changing.
+
+### Ambiguities
+
+1. **Should the still-intact legacy HTML fallback in `doc_serve.go` be neutered before/alongside M10's asset deletion?** `writeDocPage`/`writeDocMarkdownPage` (the `/doc/file` response whenever `?format=raw` is absent) are untouched by MW-B and still emit `<link href="/assets/style.css">` (both) and `<script src="/assets/marked.min.js">` (markdown case) — both §1.1 DELETE targets. Once M10 lands, any hit to `/doc/file?session=&path=` without `?format=raw` (a stale link, a hand-typed URL, or a future caller that forgets the query param) will 200 with two dead asset references: the document content still renders (inline `<pre>` / binary notice / markdown source falls back to a `<pre>` when `window.marked` is undefined — see the markdown page's own inline script), just unstyled and, for markdown, unparsed — a degradation, not a hard break. It is not a page route (no bookmarkable or discoverable entry point; it requires a live session ref + a real path), and the original R2 write-up already anticipated this reshape happening "in wave 8" — but neither T5's scope nor the T8 close-sweep description in the wave-8 plan explicitly commits to closing this specific gap (both describe the *new* native pane's own behavior, not a check on the *legacy default mode's* continued reachability once the assets it references are gone).
+   **Recommendation:** low severity, not an M10 blocker (no discoverable trigger; content still renders; degrades rather than 404s/500s). Add one explicit line item to wave-8's T8 close sweep (or a small MW-B follow-up): once the native doc pane is the only real caller, either (a) make `?format=raw` the only mode `doc_serve.go` serves and reject the legacy default outright, or (b) strip the two asset tags from `writeDocPage`/`writeDocMarkdownPage` so the default mode degrades with no dead links at all. Either is a handful of lines; the only bad option is leaving it undecided past M10.
