@@ -47,12 +47,14 @@
 // in the new design system keys off those two attributes yet - reproducing
 // the legacy's own mechanism is this task's explicit brief; a future task
 // adding the corresponding CSS gate has something to attach to either way.
-// sidebarMode gets NO document mirror: the legacy delegates it to
-// window.SerfSidebar.applySidebarMode, a vanilla-JS global with no
-// equivalent in this app (shell/rail/Rail.tsx owns an unrelated, frozen-
-// this-wave boolean collapse toggle of its own, `serf.rail.collapsed.v1`) -
-// wiring a real 3-state auto/pane/rail mode into the shell is out of this
-// store's manifest; persisting the preference is as far as T4 goes.
+// sidebarMode gets NO document mirror - it has no data-* attribute for CSS
+// to key off, unlike phoneDensity/fontSize above. Its consumer is
+// shell/rail/RailHost.tsx, which reads this value directly to drive the
+// rail's 3-state visibility (auto: responsive at the 1200px desktop
+// threshold; pane: always expanded; rail: collapsed behind a top-left ☰
+// overlay drawer) and owns the global ⌘B listener that cycles
+// rail -> pane -> auto. Persisting the preference is as far as this
+// store's own job goes.
 //
 // No cross-tab `storage` event sync: deliberately omitted, matching the
 // legacy exactly - none of assets/{theme,settings-appearance,settings-
@@ -100,8 +102,7 @@ const KEY_PREFIX = "serf.prefs.";
 
 // --- localStorage access: every read/write is best-effort - a private
 // browsing mode that throws on storage access must never be fatal to the
-// settings UI, matching shell/rail/Rail.tsx's own readCollapsed/
-// persistCollapsed precedent (COLLAPSED_STORAGE_KEY).
+// settings UI.
 function readRaw(name: string): string | null {
   try {
     return localStorage.getItem(`${KEY_PREFIX}${name}`);
@@ -114,10 +115,9 @@ function writeRaw(name: string, value: string): void {
   try {
     localStorage.setItem(`${KEY_PREFIX}${name}`, value);
   } catch {
-    // Best-effort, mirrors Rail.tsx's own persistCollapsed precedent - a
-    // full quota (or a browser that blocks storage entirely) must never be
-    // fatal to the settings UI; the in-memory state this call also sets
-    // still takes effect for the rest of the session.
+    // Best-effort: a full quota (or a browser that blocks storage entirely)
+    // must never be fatal to the settings UI; the in-memory state this call
+    // also sets still takes effect for the rest of the session.
   }
 }
 
@@ -129,10 +129,10 @@ function removeRaw(name: string): void {
   }
 }
 
-// "1"/"0", not JS's "true"/"false": this codebase's own established
-// precedent for a single persisted boolean (shell/rail/Rail.tsx's
-// COLLAPSED_STORAGE_KEY: `localStorage.getItem(...) === "1"` /
-// `collapsed ? "1" : "0"`). serf.prefs.enterToSend/serf.prefs.showCost in
+// "1"/"0", not JS's "true"/"false": every boolean this store persists
+// (enterToSend, showCost, every transcript.* and notifications.* member)
+// uses this one encoding, so readBool/writeBool only have to get it right
+// once. serf.prefs.enterToSend/serf.prefs.showCost in
 // particular are a live contract reachable from Settings today (Display's
 // own setEnterToSend/setShowCost, Composer.tsx's own enterToSend read) -
 // this encoding already broke that contract once during development
