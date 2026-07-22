@@ -20,9 +20,8 @@
 // PathPicker instead (visually mirroring CollectionEditor's own row/list
 // styling for consistency). See the wave-7 task-3 report for the full
 // reasoning.
-import { useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import type { LaunchConfigLayer } from "../../../protocol/types.gen";
-import { connectionStore } from "../../../stores/connection";
 import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
   Button,
@@ -37,6 +36,7 @@ import {
 } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./dirListSetting.module.css";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
@@ -205,22 +205,12 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
   const error = useExtensionsStore((s) => s.launchLayerError);
   const toasts = useToasts();
 
-  // Mirrors panes/session/Session.tsx's own mount-effect shape: AppShell
-  // mounts the pane tree independently of whether the one AppwireClient has
-  // finished connecting yet, so a direct deep link to a settings section
-  // can reach this effect before the client is "ready". Defers the ONE
-  // fetch attempt until the client is actually usable (immediately, if
-  // already ready) rather than failing once and never retrying.
-  useEffect(() => {
-    let started = false;
-    function tryStart() {
-      if (started || connectionStore.getState().state !== "ready") return;
-      started = true;
-      void extensionsStore.getState().fetchLaunchLayer();
-    }
-    tryStart();
-    return connectionStore.subscribe(tryStart);
-  }, []);
+  // useConnectedEffect (not a bare useEffect): a direct deep link to
+  // /settings/plugins-dirs or /settings/skills-dirs can mount this section
+  // before AppShell's own connect() handshake finishes, and fetchLaunchLayer
+  // requires a connected client - see that hook's own doc comment for the
+  // race this guards against.
+  useConnectedEffect(() => extensionsStore.getState().fetchLaunchLayer(), []);
 
   async function handleAdd(path: string): Promise<CollectionAddResult> {
     const validated = await extensionsStore.getState().validatePath(path, "dir");
