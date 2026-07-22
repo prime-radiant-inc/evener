@@ -3,13 +3,18 @@ import { Suspense } from "react";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
 
-// Await the module ONCE up front so React.lazy resolves from a warm module
-// cache (mirrors panes/welcome/index.test.tsx's own beforeAll pattern for
-// the same reason: the slow part of lazy-loading is the transform/import
-// work, an awaitable completion, not something to race with a widened
-// findBy deadline).
+// Warm BOTH modules up front: ./index runs registerPane() (so paneFor works),
+// and ./Session is the React.lazy() chunk the registered component actually
+// import()s on first render - awaiting ./index alone leaves that chunk cold,
+// so the render below then raced findBy's deadline against Session.tsx's
+// (large) first transform+import and timed out under load. Awaiting the real
+// lazy chunk here resolves React.lazy from a warm module cache instead
+// (mirrors AppShell.test.tsx, which awaits ./Session for exactly this reason:
+// the slow part of lazy-loading is the transform/import work, an awaitable
+// completion, not something to race with a widened findBy deadline).
 beforeAll(async () => {
   await import("./index");
+  await import("./Session");
 });
 
 afterEach(cleanup);
