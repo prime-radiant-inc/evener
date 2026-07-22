@@ -548,6 +548,12 @@ export interface SandboxEscalationResolveParams {
   approve: boolean;
 }
 
+export interface SandboxEscalationResolved {
+  threadId?: string;
+  ref?: string;
+  escalationId: string;
+}
+
 export interface SerfAttentionChangedPayload {
 }
 
@@ -839,6 +845,7 @@ export interface ThreadItem {
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
+  exitCode?: number;
   raw?: unknown;
   eventKind?: string;
   source?: string;
@@ -1212,6 +1219,7 @@ export type NotificationName =
   | "serf/plugin/updated"
   | "serf/task/updated"
   | "serf/sandbox/escalation/requested"
+  | "serf/sandbox/escalation/resolved"
   | "serf/tree/changed";
 
 export interface MethodTypes {
@@ -1310,6 +1318,7 @@ export interface NotificationTypes {
   "serf/plugin/updated": SerfPluginUpdatedPayload;
   "serf/task/updated": TaskUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
+  "serf/sandbox/escalation/resolved": SandboxEscalationResolved;
   "serf/tree/changed": SerfTreeChangedPayload;
 }
 
