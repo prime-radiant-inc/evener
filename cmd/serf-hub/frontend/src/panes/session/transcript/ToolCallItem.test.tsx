@@ -62,6 +62,27 @@ test("handles a missing toolName gracefully (falls back to the default descripto
   expect(() => render(<ToolCallItem item={item({ toolName: undefined })} turn={turn} live={false} />)).not.toThrow();
 });
 
+// --- suppress: a descriptor can remove its whole row (task_list view /
+// malformed non-mutation) - ToolCallItem renders null ---------------------
+
+test("a descriptor whose suppress returns true renders nothing at all", () => {
+  registerToolRenderer({ match: "tci_suppress", summary: () => "s", body: () => <div>b</div>, suppress: () => true });
+  render(<ToolCallItem item={item({ toolName: "tci_suppress" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-call-item")).toBe(null);
+});
+
+test("suppress returning false renders the row normally", () => {
+  registerToolRenderer({
+    match: "tci_unsuppress",
+    summary: () => "kept",
+    body: () => <div>b</div>,
+    suppress: () => false,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_unsuppress" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  expect(screen.getByText("kept")).toBeTruthy();
+});
+
 // --- expand/collapse: collapsed by default, descriptor.autoExpand can pop
 // it open at settle (parity-m4-transcript.md's own Highlights: "every tool
 // row, including diffs, starts collapsed" - the only default-expanded

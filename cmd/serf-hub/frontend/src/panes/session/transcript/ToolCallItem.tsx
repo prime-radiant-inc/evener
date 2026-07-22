@@ -69,6 +69,13 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
     // never re-run this and re-fight a manual toggle.
   }, [live]);
 
+  // A descriptor may suppress its whole row (task_list `action:"view"` and
+  // malformed non-mutations - the legacy "no card, no divider, no tool-call
+  // row"). Checked AFTER the hooks above so the hook order stays stable across
+  // renders; an errored call is never suppressed (its error still surfaces
+  // below).
+  if (descriptor.suppress?.(item)) return null;
+
   // A failed row is never a bare summary line even with no body/images: the
   // reader must be able to open it and read the error, so it is always a
   // <details>.

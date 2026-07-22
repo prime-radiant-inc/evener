@@ -1,0 +1,53 @@
+/* Task-update card. Neutral throughout: a plan's rows are not attention-
+ * worthy (color-is-attention - only error/failed earns colour, and a failed
+ * task_list never renders a card at all), so the touched-row distinction is
+ * carried by a text flag label, not a tint. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.progress {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+  white-space: nowrap;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font-size: var(--font-size-ui);
+}
+
+.flag {
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 5ch;
+}
+
+.desc {
+  color: var(--ink-hi);
+}
+
+.note {
+  color: var(--ink-mid);
+  font-style: italic;
+}
