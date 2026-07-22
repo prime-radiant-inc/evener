@@ -9,6 +9,7 @@
 // safe no-op - never throw - so a producer that calls it mid-wave degrades to
 // "nothing opens yet", not a crash.
 import type { PaneTypeId } from "./paneRegistry";
+import { getDockviewApi, workspaceStore } from "./workspace";
 
 // A logical pane to open: its registered type plus that type's own params bag
 // (shape validated by the owning pane, same erased-params contract as
@@ -18,14 +19,34 @@ export interface PaneRef {
   params: unknown;
 }
 
-// openBeside opens `pane` in a split group beside the focused group (dockview
-// addPanel with position {direction:"right"}), deduping an identical
-// already-open pane by a (type + params-key) signature and focusing it instead
-// (floor §3.2). On the mobile StackHost (useIsMobile) it degrades to a full
-// navigate (no splits). T6 fills; no-op until then.
-export function openBeside(_pane: PaneRef): void {}
+// openBeside opens `pane` in a split group beside the currently-focused pane
+// (workspace.ts records the `beside` hint; DockHost turns it into dockview's
+// addPanel position {referencePanel, direction:"right"}). Deduping is the
+// store's own job: openPane already focuses an identical already-open pane
+// (same type + deep-equal params) instead of opening a duplicate, so re-opening
+// a pane beside just focuses it (floor §3.2). The mobile StackHost registers no
+// dockview api (getDockviewApi() === null), which is the "no split capability"
+// signal: there openBeside degrades to a plain open, and the one pane simply
+// becomes the focused, full-screen screen the stack shows (its own "navigate"
+// equivalent - a doc/transcript pane has no URL to navigate to).
+export function openBeside(pane: PaneRef): void {
+  const ws = workspaceStore.getState();
+  // Split only when a dockview host is present AND something is focused to
+  // split beside; otherwise open with no positioning hint (a fresh pane, or
+  // the mobile full-screen degrade).
+  const beside = getDockviewApi() !== null ? ws.focusedPaneId : null;
+  ws.openPane(pane.type, pane.params, beside !== null ? { beside } : undefined);
+}
 
 // popOutPane promotes an open panel to a dockview-native popout window (floor
-// cross-cutting #10 - a new capability, no legacy port). T6 fills; no-op until
-// then.
-export function popOutPane(_paneId: string): void {}
+// cross-cutting #10 - a new capability, no legacy port). Dockview owns popout
+// entirely; this is the thin imperative entry point. A no-op when there is no
+// dockview host (mobile) or the id names no open panel, so a caller can invoke
+// it optimistically without first checking either.
+export function popOutPane(paneId: string): void {
+  const api = getDockviewApi();
+  if (!api) return;
+  const panel = api.getPanel(paneId);
+  if (!panel) return;
+  void api.addPopoutGroup(panel);
+}
