@@ -260,6 +260,38 @@ test("in-session search scans the focused ThreadModel's turns", async () => {
   expect(screen.getByText("turn 1")).toBeTruthy();
 });
 
+// --- search-result navigation: qualified ref vs bare id (I3) ---
+
+async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: Record<string, unknown>, term: string) {
+  fetchMock.mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ live: [result], past: [] }),
+  } as Response);
+  render(<CommandPalette />);
+  act(() => openPalette());
+  await user.type(screen.getByRole("combobox"), term);
+  await waitFor(() => expect(screen.getByText("Live")).toBeTruthy());
+  const row = screen.getAllByRole("option").find((o) => o.textContent?.includes(term));
+  await user.click(row as HTMLElement);
+}
+
+test("a search result carrying a qualified ref is opened by that ref (new hubs)", async () => {
+  const user = userEvent.setup();
+  await searchAndClick(
+    user,
+    { id: "bare123", ref: "local:qualified", title: "reffuls", project: "p", state: "active", age: "now" },
+    "reffuls",
+  );
+  expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
+});
+
+test("a search result with no ref falls back to the bare-id URL (old hubs)", async () => {
+  const user = userEvent.setup();
+  await searchAndClick(user, { id: "bareonly", title: "norefs", project: "p", state: "ended", age: "2h" }, "norefs");
+  expect(window.location.pathname).toBe("/s/bareonly");
+});
+
 // --- keyboard navigation ---
 
 test("ArrowDown moves the active row (aria-selected) with wraparound", async () => {

@@ -171,8 +171,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // once on mount keeps a stable reference for the view memo below (a fresh
   // object each render would defeat that memo and reset the active row on
   // every keystroke). Command runs still read the live ThreadModel fresh via
-  // focusedModel(), so turn-state guards stay current.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-once by design; buildPaletteContext is a stable module import
+  // focusedModel(), so turn-state guards stay current. (buildPaletteContext is
+  // a stable module import, so the empty dep array needs no suppression.)
   const ctx = useMemo(() => buildPaletteContext(), []);
   const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
 
@@ -275,8 +275,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
-  // active = first row, or none when empty).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: intentionally keyed on the view identity only, not activeIndex
+  // active = first row, or none when empty). Keyed on the view memo, which
+  // only changes when the data deps do - never on a bare activeIndex change.
   useEffect(() => {
     setActiveIndex(view.items.length > 0 ? 0 : -1);
   }, [view]);
@@ -362,7 +362,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     }
     if (item.kind === "live" || item.kind === "past") {
       closePalette();
-      const url = `/s/${encodeURIComponent(item.result.id)}`;
+      // Open by the qualified ref when the hub provides one; fall back to the
+      // bare id for old hubs that don't (I3). The session route resolves a
+      // ref, not a bare session id.
+      const url = `/s/${encodeURIComponent(item.result.ref || item.result.id)}`;
       if (newTab) window.open(url, "_blank");
       else navigate(url);
     }

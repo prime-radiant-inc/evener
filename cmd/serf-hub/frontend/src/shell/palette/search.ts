@@ -17,6 +17,11 @@ import type { ItemModel, ThreadModel } from "../../protocol/model";
 
 export interface SearchResult {
   id: string;
+  // The qualified, routable ref (e.g. "local:abc"). New hubs carry it on every
+  // hit (web_api.go handleApiSearch, main commit e18f84cba); the SPA opens a
+  // session by ref, NOT the bare session id. Optional for old-hub tolerance -
+  // a hit without it falls back to the bare-id URL.
+  ref?: string;
   title: string;
   project: string;
   state: string;

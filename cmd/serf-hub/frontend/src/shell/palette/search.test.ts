@@ -43,6 +43,17 @@ test("fetchSearch returns the live and past rows verbatim", async () => {
   expect(resp).toEqual(body);
 });
 
+test("fetchSearch preserves the optional qualified ref a new hub sends (I3)", async () => {
+  fetchMock.mockResolvedValueOnce(
+    jsonResponse({
+      live: [{ id: "bare", ref: "local:qualified", title: "t", project: "p", state: "active", age: "now" }],
+      past: [],
+    }),
+  );
+  const resp = await fetchSearch("t");
+  expect(resp.live[0]?.ref).toBe("local:qualified");
+});
+
 test("fetchSearch normalizes Go's null empty-slice encoding to []", async () => {
   fetchMock.mockResolvedValueOnce(jsonResponse({ live: null, past: null }));
   const resp = await fetchSearch("nothing");
