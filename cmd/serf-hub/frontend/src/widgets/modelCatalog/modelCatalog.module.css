@@ -1,0 +1,14 @@
+/* Interim model-catalog picker row. Tokens only; a neutral field that never
+ * uses color for attention. T2 fills the rich catalog (provider grouping,
+ * capability badges, cost, Recent) inside this same module. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.error {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
