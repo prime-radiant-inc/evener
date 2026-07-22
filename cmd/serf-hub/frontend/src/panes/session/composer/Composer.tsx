@@ -36,7 +36,7 @@ export interface ComposerProps {
 
 // Only this one class goes through requireClass (the design-system's rule
 // for any NEW class) - the file's five pre-existing classNames below are
-// bare `styles.foo` references, this file's own established convention
+// bare direct module references, this file's own established convention
 // (unlike QueueStrip.tsx's full CLASS table); flagged rather than silently
 // mixed, and not "fixed" wholesale since rewriting five unrelated, already-
 // working references is outside this fix's own scope.
