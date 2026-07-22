@@ -1,21 +1,20 @@
 // The shell/exec_command/run_shell_command descriptor (parity checklist
-// §2's shellRenderer). Ground truth on the failure signal (this
-// descriptor's autoExpand is the one place the checklist specifically asks
-// for it): ItemModel.status is ALWAYS "completed" for a finished tool call
+// §2's shellRenderer). Failure signal for a settled call: the daemon promotes
+// the process exit code onto the item as a typed wire field
+// (ItemModel.exitCode), so that structured number is the PRIMARY source for
+// both the exit-code summary suffix and autoExpand. Two facts still shape the
+// logic: ItemModel.status is ALWAYS "completed" for a finished tool call
 // regardless of exit code (internal/appprojector/appwire_projection.go
-// hard-codes Status: "completed" on EventToolCallEnd, never conditional on
-// the call's own error), and ThreadItem.error - which DOES carry the
-// failure text on the wire - is dropped by protocol/reducer.ts's
-// wireItemToModel before it ever reaches a component. Neither field is a
-// usable failure signal here. The only remaining signal is the shell
-// tool's own output TEXT: agent/session_tools_shell.go's formatShellResult
-// appends a trailing "[exit <N> · ...]" bracketed footer whenever the
-// command wasn't backgrounded and an exit code was captured. This
-// descriptor parses THAT footer - a text-pattern heuristic coupled to the
-// Go formatter's current wording, not a structured wire field - documented
-// here and in the wave-4 task-3 report rather than invented silently. It
-// intentionally only looks inside the FINAL bracketed segment (never the
-// command's own stdout/stderr body) to keep false positives unlikely.
+// hard-codes Status: "completed" on EventToolCallEnd), and ItemModel.error
+// carries a denial/failure message when the call itself failed or was denied
+// (mapped by reducer.ts's wireItemToModel) — a distinct signal from a nonzero
+// exit, which is a command that ran and returned. When exitCode is absent (an
+// old daemon that doesn't populate it), the descriptor falls back to the
+// output-footer text heuristic below: agent/session_tools_shell.go's
+// formatShellResult appends a trailing "[exit <N> · ...]" bracketed footer
+// whenever the command wasn't backgrounded and an exit code was captured. The
+// heuristic looks only inside the FINAL bracketed segment (never the command's
+// own stdout/stderr body) to keep false positives unlikely.
 
 import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
@@ -45,10 +44,10 @@ const BUFFERED_EXIT_CODE_RE = /\bexit_code=(-?\d+)\b/;
 
 // parseShellExitCode reads "exit <N>" out of the trailing "[... exit <N>
 // ...]" footer formatShellResult appends (the common, streaming-execenv
-// path), falling back to the buffered-execenv trailer above - see this
-// file's own header for why this is a text heuristic, not a structured
-// field. Returns undefined for a backgrounded/still-running command (no
-// trailer of either shape yet).
+// path), falling back to the buffered-execenv trailer above. This is the
+// old-daemon fallback used only when the typed ItemModel.exitCode is absent —
+// see this file's own header. Returns undefined for a backgrounded/still-
+// running command (no trailer of either shape yet).
 function parseShellExitCode(output: string): number | undefined {
   const footer = trailingBracketFooter(output);
   if (footer !== undefined) {
@@ -57,6 +56,14 @@ function parseShellExitCode(output: string): number | undefined {
   }
   const buffered = BUFFERED_EXIT_CODE_RE.exec(output);
   return buffered ? Number(buffered[1]) : undefined;
+}
+
+// shellExitCode is the descriptor's single exit-code source: the typed wire
+// field (ItemModel.exitCode) first, the output-footer text heuristic only as
+// the old-daemon fallback. `??` (not `||`) so a real typed 0 stays 0 rather
+// than falling through to the text scan.
+function shellExitCode(item: ItemModel): number | undefined {
+  return item.exitCode ?? parseShellExitCode(item.output ?? "");
 }
 
 function ShellBody({ item, live }: ToolRenderProps) {
@@ -76,12 +83,12 @@ registerToolRenderer({
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
     const command = clip(shellCommand(args), COMMAND_CLIP);
-    const exitCode = parseShellExitCode(item.output ?? "");
+    const exitCode = shellExitCode(item);
     return exitCode ? `Ran ${command} · exit ${exitCode}` : `Ran ${command}`;
   },
   body: ShellBody,
   autoExpand(item: ItemModel) {
-    const exitCode = parseShellExitCode(item.output ?? "");
+    const exitCode = shellExitCode(item);
     return exitCode !== undefined && exitCode !== 0;
   },
 });

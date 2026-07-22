@@ -112,6 +112,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     argumentsJSON: item.argumentsJson,
     output: item.output,
     error: item.error,
+    exitCode: item.exitCode,
     images: imagesToStrings(item.images),
     outputImages: outputImagesToStrings(item.outputImages),
     status: item.status,

@@ -1131,6 +1131,73 @@ test("hydrateThread maps a settled item's error onto the model (snapshot path)",
   expect(itemAt(turnAt(model, 0), 0).error).toBe("exit status 1");
 });
 
+// A settled shell tool call now carries its process exit code as a typed wire
+// field (ThreadItem.exitCode, wire-honesty spec Part A) — the model must carry
+// it so a descriptor reads a structured number rather than parsing the output
+// footer text.
+test("item/completed maps the wire item's exitCode onto the model (live path)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          output: "boom",
+          exitCode: 2,
+          status: "completed",
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(2);
+});
+
+test("hydrateThread maps a settled item's exitCode onto the model (snapshot path)", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "commandExecution",
+            id: "item_tool",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_1",
+            output: "ok",
+            exitCode: 0,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  // A real typed 0 must round-trip as 0, never collapse to undefined — the
+  // descriptor distinguishes "ran, exit 0" from "no code (backgrounded)".
+  expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();

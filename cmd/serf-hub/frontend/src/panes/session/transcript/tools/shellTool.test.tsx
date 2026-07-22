@@ -85,6 +85,34 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
   expect(d.autoExpand?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
 });
 
+// --- typed exitCode (wire-honesty spec Part A) ----------------------------
+// The daemon now promotes a shell call's process exit code onto the settled
+// item as ItemModel.exitCode. That typed number is the primary signal; the
+// output-footer text heuristic above stays only as the old-daemon fallback
+// (every test above carries no exitCode, so those now exercise that fallback).
+
+test("summary: uses the typed exitCode directly, with no output footer to parse", () => {
+  const d = toolRendererFor("shell");
+  expect(d.summary(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe("Ran make test · exit 2");
+});
+
+test("summary: the typed exitCode wins over a conflicting output footer", () => {
+  const d = toolRendererFor("shell");
+  // Typed 0 (clean) must not be overridden by a stray bracketed "[exit 5]" in
+  // the command's own output text — the structured field is authoritative.
+  expect(d.summary(withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" }))).toBe("Ran make test");
+});
+
+test("autoExpand: true from a typed nonzero exitCode with no footer text", () => {
+  const d = toolRendererFor("shell");
+  expect(d.autoExpand?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe(true);
+});
+
+test("autoExpand: a typed exit 0 wins over a conflicting nonzero footer (no false auto-expand)", () => {
+  const d = toolRendererFor("shell");
+  expect(d.autoExpand?.(withCommand("make test", { exitCode: 0, output: "x\n[exit 5]" }))).toBe(false);
+});
+
 // --- body -----------------------------------------------------------------
 
 test("the command reads straight from a settled item's own argumentsJSON (the model preserves it through item/completed - see R2)", () => {
