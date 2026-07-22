@@ -790,8 +790,11 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	})
 
 	// Build the NeedsYou triage tier: every top-level live session in the
-	// awaiting|warning|errored family, flat across all projects, errors first
-	// and then oldest-blocked first so the queue works top-down. Subagents and
+	// awaiting|warning|errored family, plus any other live session promoted by
+	// a pending sandbox-exemption escalation (M7) — the same promotedAttentionLevel
+	// call attention.go's AttentionSummary uses, so the tier and the badge can
+	// never drift apart again — flat across all projects, errors first and then
+	// oldest-blocked first so the queue works top-down. Subagents and plain
 	// working/idle sessions are excluded — this tier is strictly "what needs me
 	// right now." An archived session is suppressed even while live: archive is
 	// a clearing verb (spec v5, round-4 A4/B7), so an archived-but-still-awaiting
@@ -803,7 +806,11 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			continue
 		}
 		st := stateFor(le.SessionID)
-		if st != "awaiting" && st != "warning" && st != "errored" {
+		// Membership mirrors attention.go's AttentionSummary exactly: one shared
+		// call, not a second, independently-maintained copy of this rule. The
+		// node keeps reporting st below — promotion changes membership, not the
+		// node's own state.
+		if lvl := promotedAttentionLevel(st, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
 		// Archive suppression: an archived session is out of the inbox even

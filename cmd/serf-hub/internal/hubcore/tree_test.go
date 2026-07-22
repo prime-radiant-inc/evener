@@ -1667,3 +1667,49 @@ func fuzzScenarioNeedsYou_AskPendingBandsBetweenErroredAndYourMove(t *testing.T)
 		}
 	}
 }
+
+// fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary is the
+// wave-6 wire-honesty regression: attention.go's AttentionSummary already
+// promoted a live, top-level, active session with a pending sandbox-
+// exemption escalation (M7) into needs_you, but BuildTree's needs-you tier
+// had no matching promotion — the escalation lit the web title/favicon
+// (summary-driven) but never appeared in needs_you[], so the notifications
+// engine never edge-fired OS/sound for it. Both now derive inclusion from
+// the same promotedAttentionLevel call (attention.go), so the tier and the
+// summary can't drift apart again. 01SUB (subagent) and 01ARCH (manually
+// archived) prove the promotion is additive, not a widening of who's
+// tier-eligible in the first place.
+func fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testing.T) {
+	now := time.Now()
+	metas := []schema.SessionMeta{
+		{ID: "01A", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01SUB", UpdatedAt: now, ParentSessionID: "01A", IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+		{ID: "01ARCH", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/p/x"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01A", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01ARCH", Status: appwire.ThreadStatusActive, PendingEscalation: true},
+	}
+	decisions := map[ArchiveKey]bool{{Kind: "session", ID: "01ARCH"}: true}
+
+	tree := BuildTree(metas, live, decisions)
+	if len(tree.NeedsYou) != 1 || tree.NeedsYou[0].ID != "01A" {
+		t.Fatalf("NeedsYou = %+v, want exactly [01A] (active session promoted by its own pending escalation)", tree.NeedsYou)
+	}
+	if tree.NeedsYou[0].State != "active" {
+		t.Fatalf("NeedsYou[0].State = %q, want the real underlying state (active) — promotion changes membership, not the node's reported state", tree.NeedsYou[0].State)
+	}
+
+	_, sum := DeriveAttention(metas, live, decisions)
+	if sum.NeedsYou != 1 || sum.Error != 0 {
+		t.Fatalf("summary = %+v, want NeedsYou:1 Error:0 (01SUB excluded as a subagent, 01ARCH excluded as archived)", sum)
+	}
+	if got, want := len(tree.NeedsYou), sum.NeedsYou+sum.Error; got != want {
+		t.Fatalf("tree.NeedsYou has %d entries but the summary counts %d (needsYou+error) for the same inputs — the tier and the badge disagree", got, want)
+	}
+}
+
+func TestNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testing.T) {
+	fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t)
+}

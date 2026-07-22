@@ -25,9 +25,12 @@ type AttentionEntry struct {
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the
-// tier-eligible population (live, top-level, not manually archived) — the
-// same definition as the NeedsYou tier by construction. camelCase: see
-// AttentionEntry.
+// tier-eligible population (live, top-level, not manually archived), with
+// each session's needs-you/error membership decided by the same
+// promotedAttentionLevel call BuildTree's needs-you tier (tree.go) uses for
+// its own inclusion check — the same definition as the NeedsYou tier by
+// construction, not just in intent: NeedsYou+Error is exactly len(needs_you)
+// for identical inputs. camelCase: see AttentionEntry.
 type AttentionSummary struct {
 	// serf:naming-ignore
 	NeedsYou int `json:"needsYou"`
@@ -63,6 +66,23 @@ func attentionLevel(normalized string) string {
 	}
 }
 
+// promotedAttentionLevel is attentionLevel plus the one escalation-promotion
+// rule: a blocked sandbox-exemption escalation (M7) needs the human NOW, but
+// it blocks mid-turn so the daemon status is still "active" (level
+// "working"). A pending escalation promotes any non-error level to
+// needs_you — additive to any other reason, and it never downgrades an
+// "error" level. DeriveAttention's summary below and BuildTree's needs-you
+// tier (tree.go) both call this single function for their inclusion
+// decision, so a live session can never light one without the other — see
+// AttentionSummary's doc.
+func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
+	level := attentionLevel(normalized)
+	if pendingEscalation && level != "error" {
+		level = "needs_you"
+	}
+	return level
+}
+
 // DeriveAttention computes the attention map + summary over the same inputs
 // BuildTree consumes. Only tier-eligible sessions (live, top-level, not
 // manually archived) carry attention; everything else is absent from the map
@@ -93,14 +113,7 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 		if d := decisionFor(decisions, le.SessionID); d != nil && *d {
 			continue
 		}
-		level := attentionLevel(NormalizeState(le.Status))
-		// A blocked sandbox-exemption escalation (M7) needs the human NOW, but it
-		// blocks mid-turn so the daemon status is still "active" (level "working").
-		// Promote to needs_you so the owning session lights up cross-session — additive
-		// to any other reason, and it never downgrades an "error" state.
-		if le.PendingEscalation && level != "error" {
-			level = "needs_you"
-		}
+		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
 		e := AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
 		if meta != nil {
 			e.Title = nodeTitle(*meta, nodeKind(*meta))
