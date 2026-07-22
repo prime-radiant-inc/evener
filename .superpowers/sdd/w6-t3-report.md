@@ -44,3 +44,16 @@ Filled T1's `paletteController.ts` + `CommandPalette.tsx` seams; new sibling mod
 ## Verification posture
 
 Wire-true tests throughout: `commands.test.ts` drives real `threadsStore` actions over a `FakeClient` (asserting the exact wire method + params), real `prefsStore`/`workspaceStore`, seam-mocked `railController`. `search.test.ts` pins the REST call shape + fixtures against the Go handler. Component tests render the real overlay in jsdom (modes, search, args, help, error strip, keyboard nav). Live hub proof (fake-`$HOME` flock) is T6's wave-close responsibility per the plan.
+
+---
+
+## Review fixes (round 2)
+
+Coordinator verdict "Needs fixes" — four items addressed as new RED-first commits on `w6-palette` (`e7a94d161..c6e0c92ad`). Full suite after: **201 files / 2985 tests** (+9 over the pre-fix 2976), tsc clean, `npm run lint` exit 0 (now **pristine — zero warnings**), build OK, placeholder restored.
+
+- **I1 — help panel was sticky and leaky (floor §2.8), `81e685804`.** `showingHelp` never cleared on query change, and `view.items` stayed populated underneath the help panel, so `ArrowDown`+`Enter` fired the next registry command invisibly (e.g. `/upgrade`). Fix: `buildView` returns **empty rows while `showingHelp`** (nav inert, matching the legacy `items=[]`), and the input `onChange` clears `showingHelp` (typing returns a real list). Two RED tests written first (invisible-fire + sticky-help), both now green — the RED→GREEN transition is the mutation proof.
+- **I2 — in-session search only read `item.text` (adjudicated: WIDEN), `5ec1d2f17`.** `findInSessionMatches` now scans everything the transcript renders: `item.text`, tool `item.output`, tool `item.error`, and each live `reasoningSummaries` entry (streamed chunks joined). Each matching source yields its own hit sharing the item's turn label. 4 RED fixtures (output / error / reasoning / text+output→2 hits) drove it.
+- **I3 — consume the optional qualified `ref` (adjudicated), `c6e0c92ad`.** Added `ref?: string` to `SearchResult`; `activateResult` opens by `item.result.ref` when present, falling back to the bare-id URL when absent (old-hub tolerance). This is the client half of the main-side Go fix `e18f84cba` (adds a qualified `ref` to each `/api/search` hit) — **it resolves concern #1**: once that Go commit lands on this branch (next main→integration absorb), search→open works end-to-end; until then, old-hub fallback keeps behavior identical to before. Both REST shapes tested (with/without `ref`) + the navigation-by-ref-vs-id component tests.
+- **Minor — pristine lint, `c6e0c92ad`.** Removed two stale/unused `useExhaustiveDependencies` suppressions (`ctx` mount-once memo; the active-row reset effect) that biome flagged as `suppressions/unused`; folded their rationale into plain comments. Biome ci now emits zero warnings.
+
+**Concern status after round 2:** #1 (search-result ref) is **client-side resolved** (I3), pending the `e18f84cba` absorb — T6 live-proof should still confirm end-to-end. #2 (`/tasks`/`/status` inert) and #3 (precise virtualized scroll-to-hit) stand as documented beyond-parity follow-ups.
