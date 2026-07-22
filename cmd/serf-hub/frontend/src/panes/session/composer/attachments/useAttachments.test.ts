@@ -308,6 +308,42 @@ test("clearSubmitted removes exactly the submitted markers, leaving items added 
   expect(result.current.items[0]?.name).toBe("b.png");
 });
 
+// clearSubmitted previously only ever filtered `items` state, never the
+// editor's own text - harmless when the whole textarea gets blanked
+// alongside it (Composer.tsx's own clearIfUnchanged, the common case), but
+// a genuinely stale, un-removable "[image N]" marker was left orphaned in
+// the textarea/draft whenever the text had ALREADY diverged from the
+// submitted snapshot (a concurrent edit mid-flight) - the marker's own
+// backing item vanishes from `items` (no chip, no bytes) while its literal
+// text lingers with nothing left to represent it.
+test("clearSubmitted strips the submitted markers' own text from the editor too - a concurrent edit must not leave an orphaned marker behind", async () => {
+  const editor = makeFakeEditor("", 0);
+  const { result } = renderHook(() => useAttachments(editor));
+
+  act(() => {
+    result.current.ingestFiles([makeFile("a.png")], () => {});
+  });
+  await flush();
+  const submittedMarkers = new Set(result.current.items.map((i) => i.marker));
+
+  // A concurrent composer edit lands (via the SAME editor, bypassing this
+  // hook) while the submission carrying marker 1 is still in flight -
+  // mirrors Composer.tsx's own textEditor.write() being called from a
+  // fireEvent.change handler mid-submit (Composer.test.tsx's own "text
+  // typed while a send is still in flight" idiom).
+  act(() => {
+    const newText = `${editor.getText()} plus more`;
+    editor.write(newText, newText.length);
+  });
+
+  act(() => {
+    result.current.clearSubmitted(submittedMarkers);
+  });
+
+  expect(editor.getText()).toBe(" plus more"); // marker 1's text is gone; the concurrent edit survives
+  expect(result.current.items).toHaveLength(0);
+});
+
 test("clearSubmitted resets the marker counter to restart at 1 once the result is empty", async () => {
   const editor = makeFakeEditor("", 0);
   const { result } = renderHook(() => useAttachments(editor));
