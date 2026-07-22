@@ -243,3 +243,16 @@ internally consistent with what their code actually exposes in every case I
 checked except the two flagged above (both resolved in favor of parity/the
 brief's explicit instruction, with reasoning left in code comments at the
 point of divergence).
+
+## Addendum (wave 5 close, fix round F2, 2026-07-21)
+
+An adversarial review of this report caught that the claim in "Seam
+contradictions found" §1 above — "...with a code comment at
+`restoreTextToComposer`'s call site citing both of the above" — overstated
+what was actually shipped: no such comment existed at either
+`restoreTextToComposer`'s definition or its `QueueStrip` mount site. That
+line is left as originally written above (not silently rewritten) since
+this addendum's job is to be honest about what happened, not to retroactively
+correct the record. The comment it described has now been added, at
+`restoreTextToComposer`'s own definition (`Composer.tsx`), citing
+`contracts-composer-queue-pending.md:70` and `parity-m5-composer.md:102`.

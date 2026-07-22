@@ -89,9 +89,15 @@ export interface UseAttachmentsResult {
    * called after a successful send/steer/queue/drain with the marker set
    * from the snapshot taken at submit time, so anything staged WHILE that
    * request was in flight (not part of the snapshot) survives untouched.
-   * Resets the marker counter to restart at 1 only when the result is
-   * empty (mirrors composer-attachments.js's resetMarkerCounter, called
-   * only when clearSubmittedComposerItems empties the list). */
+   * Also strips each submitted marker's own "[image N]" text from the
+   * editor (same as removeItem) - without this, a concurrent edit that
+   * diverged the composer's text from the submitted snapshot would leave
+   * an orphaned marker with no backing item behind (harmless when the
+   * caller ALSO blanks the whole textarea alongside this call, the common
+   * case, but a real, silent leak otherwise). Resets the marker counter to
+   * restart at 1 only when the result is empty (mirrors composer-
+   * attachments.js's resetMarkerCounter, called only when
+   * clearSubmittedComposerItems empties the list). */
   clearSubmitted(submittedMarkers: Set<number>): void;
 }
 
@@ -176,13 +182,29 @@ export function useAttachments(editor: TextEditor): UseAttachmentsResult {
     [editor],
   );
 
-  const clearSubmitted = useCallback((submittedMarkers: Set<number>) => {
-    setItems((prev) => {
-      const next = prev.filter((item) => !submittedMarkers.has(item.marker));
-      if (next.length === 0) nextMarkerRef.current = 0;
-      return next;
-    });
-  }, []);
+  const clearSubmitted = useCallback(
+    (submittedMarkers: Set<number>) => {
+      if (submittedMarkers.size > 0) {
+        // Same per-marker strip removeItem uses, threaded across every
+        // submitted marker in one editor.write() - stripMarker is a safe
+        // no-op (returns its input unchanged) for any marker no longer
+        // present in the CURRENT text, so this never fights a concurrent
+        // edit that already removed one itself.
+        let current = editor.read();
+        for (const marker of submittedMarkers) {
+          const stripped = stripMarker(current.text, current.cursor, marker);
+          current = { text: stripped.value, cursor: stripped.cursor ?? current.cursor };
+        }
+        editor.write(current.text, current.cursor);
+      }
+      setItems((prev) => {
+        const next = prev.filter((item) => !submittedMarkers.has(item.marker));
+        if (next.length === 0) nextMarkerRef.current = 0;
+        return next;
+      });
+    },
+    [editor],
+  );
 
   const toInputAttachments = useCallback((): InputAttachment[] => {
     return items

@@ -44,12 +44,17 @@ function isQueuedDrainPartial(err: unknown): boolean {
 
 export interface QueueStripProps {
   ref: string;
-  // Returns the composer's CURRENT text/attachments at the moment the drain
-  // affordance is used - drainAsSteer atomically appends this to the queue
-  // before draining the whole thing into the active turn as one steering
-  // message (see stores/threads.ts's own drainAsSteer doc comment for why
-  // this is a getter, not a cached value).
-  getComposerText(): { text: string; attachments?: InputAttachment[] };
+  // Returns the composer's CURRENT text/attachments/hasPending at the moment
+  // the drain affordance is used - drainAsSteer atomically appends this to
+  // the queue before draining the whole thing into the active turn as one
+  // steering message (see stores/threads.ts's own drainAsSteer doc comment
+  // for why this is a getter, not a cached value). `hasPending` mirrors the
+  // composer's own attachments.hasPending (true while an attachment is still
+  // mid-encode) - handleDrain below blocks on it with the SAME "still
+  // processing" toast the composer's own submit paths already use, so a
+  // drain can no longer silently omit a not-yet-encoded image from the
+  // drained payload (w5-integration-wiring-report.md Concern #3).
+  getComposerText(): { text: string; attachments?: InputAttachment[]; hasPending: boolean };
   // Restores a queued entry's full text into the composer - called BEFORE
   // cancelQueued on an edit (loser-safe order: a contract row - the text
   // must land even if the cancel that follows fails). `attachments` is
@@ -65,6 +70,21 @@ export interface QueueStripProps {
   // clear the composer's own text/attachment state (mirrors the legacy
   // "the textarea clears" behavior on a successful drain).
   onDrainSuccess(): void;
+  // True while EITHER surface has an in-flight submit/steer/queue/drain -
+  // the shared busy gate (Composer.tsx's own busyAction, extended with a
+  // "drain" value this stream's own onDrainBusyChange sets). Disables the
+  // Steer-now button below the same way Composer's own busyAction disables
+  // its classic Send/Steer/Stop controls, closing the race where both
+  // surfaces' drain-capable buttons could fire concurrently - both
+  // ultimately call the SAME drainAsSteer RPC (w5-integration-wiring-
+  // report.md's "two Steer buttons" concern).
+  busy: boolean;
+  // Reports this component's OWN drain busy transitions upward so Composer
+  // can fold them into its shared busyAction gate - called with true right
+  // before the drain RPC starts and false once it settles (success or
+  // failure), replacing what used to be a local, Composer-invisible
+  // `draining` state.
+  onDrainBusyChange(busy: boolean): void;
 }
 
 // ActionButton wraps an IconButton in a Tooltip only when there's a reason
@@ -97,6 +117,8 @@ export function QueueStrip({
   getComposerText,
   onRestoreToComposer,
   onDrainSuccess,
+  busy,
+  onDrainBusyChange,
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue");
@@ -105,7 +127,6 @@ export function QueueStrip({
   // indices shift), not row index - mirrors the legacy renderer's own
   // setQueuedRowActionsDisabled keying.
   const [busyEntryIds, setBusyEntryIds] = useState<ReadonlySet<string>>(new Set());
-  const [draining, setDraining] = useState(false);
 
   const queue = model?.queue ?? null;
   const depth = queue?.depth ?? 0;
@@ -185,8 +206,12 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    const { text, attachments } = getComposerText();
-    setDraining(true);
+    const { text, attachments, hasPending } = getComposerText();
+    if (hasPending) {
+      toasts.push("error", "Image attachment is still processing");
+      return;
+    }
+    onDrainBusyChange(true);
     try {
       await submitWithPendingTracking(
         {
@@ -214,7 +239,7 @@ export function QueueStrip({
       // doesn't reach React as an unhandled promise rejection from this
       // fire-and-forget click handler.
     } finally {
-      setDraining(false);
+      onDrainBusyChange(false);
     }
   }
 
@@ -223,7 +248,7 @@ export function QueueStrip({
       <div className={CLASS.header}>
         <h3 className={CLASS.title}>Queued messages ({depth})</h3>
         <Tooltip label="Send your message and everything queued into the current turn">
-          <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={draining}>
+          <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
             Steer now
           </Button>
         </Tooltip>

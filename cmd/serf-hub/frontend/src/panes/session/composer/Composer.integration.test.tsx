@@ -7,7 +7,7 @@
 // onRestoreToComposer/onDrainSuccess/onFallbackToComposer/
 // useAskDockPending) are wired correctly - not re-deriving QueueStrip's or
 // AskDock's own already-covered internal behavior.
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
@@ -217,6 +217,53 @@ test("a successful strip-triggered drain clears the composer's own text and draf
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
 });
 
+// Mirrors this file's own "text typed while a send is still in flight
+// survives" idiom (Composer.test.tsx) for the strip-triggered drain path:
+// onDrainSuccess previously cleared the composer's CURRENT text/attachments
+// unconditionally, with no snapshot to compare against (unlike this
+// component's own classic drain, which uses clearIfUnchanged) - so an edit
+// landing while a strip-triggered drain was still in flight would be
+// silently discarded once the drain resolved (w5-integration-wiring-
+// report.md Concern #2).
+test("text changed while a strip-triggered drain is in flight survives the drain's own success (not cleared) - the same unchanged-since-submit asymmetry as the classic drain path", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      activeTurnId: "turn_1",
+    },
+  });
+  let resolveDrain: (() => void) | undefined;
+  fake.on(
+    "turn/drainAsSteer",
+    () =>
+      new Promise<Record<string, never>>((resolve) => {
+        resolveDrain = () => resolve({});
+      }),
+  );
+
+  await user.type(textarea() as HTMLTextAreaElement, "original");
+  await user.click(screen.getByRole("button", { name: /steer now/i })); // fires the request; handleDrain awaits the still-pending promise
+
+  // The user keeps typing while the drain is in flight - a real, synchronous
+  // DOM change event landing between the drain click and its settlement.
+  fireEvent.change(textarea() as HTMLTextAreaElement, { target: { value: "original plus more" } });
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+
+  resolveDrain?.();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+
+  // Give onDrainSuccess (handleDrain's own .then continuation) a chance to
+  // run and settle - if it were going to wrongly clear, it would have by
+  // the time this passes.
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  expect((textarea() as HTMLTextAreaElement).value).toBe("original plus more"); // NOT cleared - text changed since the drain was triggered
+  expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("original plus more");
+});
+
 test("clicking a queued row's Edit button restores its full text into an empty composer verbatim", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -272,6 +319,72 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
   expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
 });
 
+// --- shared busy gate across Composer and QueueStrip (item 6) ---------------
+// Composer's own busyAction and QueueStrip's drain previously tracked busy
+// state independently, so a user could fire the classic drain (Shift+Enter
+// or this component's own "Steer" button) and QueueStrip's "Steer now"
+// button concurrently - both ultimately call the SAME drainAsSteer RPC,
+// neither button disabling the other.
+
+test("while a strip-triggered drain is in flight, the composer's own classic steer control is also disabled (shared busy gate)", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      activeTurnId: "turn_1",
+    },
+  });
+  let resolveDrain: (() => void) | undefined;
+  fake.on(
+    "turn/drainAsSteer",
+    () =>
+      new Promise<Record<string, never>>((resolve) => {
+        resolveDrain = () => resolve({});
+      }),
+  );
+
+  await user.click(screen.getByRole("button", { name: /steer now/i }));
+
+  await waitFor(() => {
+    expect((screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  resolveDrain?.();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+});
+
+test("while the composer's own classic drain is in flight, the strip's Steer-now button is also disabled (shared busy gate)", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    serf: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { depth: 1, ids: ["q1"], texts: ["queued hello"], preview: ["queued hello"] },
+      activeTurnId: "turn_1",
+    },
+  });
+  let resolveDrain: (() => void) | undefined;
+  fake.on(
+    "turn/drainAsSteer",
+    () =>
+      new Promise<Record<string, never>>((resolve) => {
+        resolveDrain = () => resolve({});
+      }),
+  );
+
+  await user.type(textarea() as HTMLTextAreaElement, "drain me");
+  await user.click(screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }));
+
+  await waitFor(() => {
+    expect((screen.getByRole("button", { name: /steer now/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  resolveDrain?.();
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
+});
+
 // --- pending-tracking uniformity (send/steer/queue/drain all register) ------
 
 test("a plain send registers an optimistic pending entry, visible until a wire echo confirms it", async () => {
@@ -290,7 +403,7 @@ test("a plain send registers an optimistic pending entry, visible until a wire e
   expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
 });
 
-test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods", async () => {
+test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods, and it is actually visible in the composed UI", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -303,6 +416,15 @@ test("a queue submit ALSO registers an optimistic pending entry - uniform across
   await user.click(screen.getByRole("button", { name: /^queue\b/i }));
 
   await waitFor(() => expect(result.current).toHaveLength(1));
+  // QueueStrip.test.tsx's own "a pending queue-method entry from another
+  // submission renders as an extra, action-less row" test already proves
+  // QueueStrip renders a pending row given the right store state, but only
+  // in isolation (props handed to it directly) - this is the missing
+  // end-to-end proof that the pending row is ALSO visible once driven
+  // through the REAL, fully composed Composer+QueueStrip tree via an actual
+  // user submit, not just the store's own hook state (queue-strip stream
+  // review, Minor).
+  expect(await screen.findByText("queued message")).toBeTruthy();
 });
 
 // Both failure tests below defer their RPC's rejection via a manually-
@@ -414,6 +536,32 @@ test("sending an answer submits through the normal send path and restores the co
     input: [{ type: "text", text: "[answers]\n1. [Deploy?] → skipped (no answer)" }],
   });
   expect(await screen.findByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
+});
+
+// AskDock's own anchor (askDock/AskDock.tsx) announces entering ask-pending
+// mode ("Answer the agent's questions.") but unmounts entirely once its
+// batches empty - it cannot also announce the OTHER half of parity-m5-
+// composer.md line 118's legacy transition. This is Composer's own half:
+// exiting ask-pending mode announces "Message composer ready." through this
+// component's OWN aria-live region (w5-integration-wiring-report.md
+// Concern #4).
+test("resolving the pending ask announces the composer's restoration via this component's own aria-live region", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
+  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+
+  // Never announced before any ask has ever happened - there is nothing
+  // that just became ready (honest liveness, not a static claim).
+  expect(screen.queryByText("Message composer ready.")).toBeNull();
+
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  await screen.findByText("Deploy?");
+  expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
+
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+
+  expect(await screen.findByText("Message composer ready.")).toBeTruthy();
 });
 
 test("a Conflict on the ask-answers path falls back into the composer, preserving any draft typed before the question arrived", async () => {

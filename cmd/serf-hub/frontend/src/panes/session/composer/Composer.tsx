@@ -8,11 +8,19 @@
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useLayoutEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { AskDock, useAskDockPending } from "./askDock";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
@@ -26,7 +34,24 @@ export interface ComposerProps {
   ref: string;
 }
 
-type BusyAction = "submit" | "steer" | "interrupt" | null;
+// Only this one class goes through requireClass (the design-system's rule
+// for any NEW class) - the file's five pre-existing classNames below are
+// bare `styles.foo` references, this file's own established convention
+// (unlike QueueStrip.tsx's full CLASS table); flagged rather than silently
+// mixed, and not "fixed" wholesale since rewriting five unrelated, already-
+// working references is outside this fix's own scope.
+const CLASS = {
+  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
+};
+
+// "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
+// "Steer now" button) - never by this component's own submitAction, which
+// uses "steer" for its classic drain-as-steer route too (see submitAction's
+// own setBusyAction call). Both surfaces still share this ONE piece of
+// state: whichever one goes busy first disables the other's controls too,
+// closing the race where both could otherwise fire drainAsSteer at once
+// (w5-integration-wiring-report.md's "two Steer buttons" concern).
+type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -53,6 +78,13 @@ export function Composer({ ref }: ComposerProps) {
   // Set by textEditor.write() below; consumed (and cleared) by the
   // cursor-restore layout effect once `text`'s new value has committed.
   const cursorToRestoreRef = useRef<number | null>(null);
+  // Set by getComposerText() below, the moment QueueStrip's own drain
+  // affordance actually reads this composer's text/attachments; consumed by
+  // handleDrainSuccess to decide whether a strip-triggered drain should
+  // still clear the composer (only if unchanged since THAT read, mirroring
+  // clearIfUnchanged's own submittedText snapshot for the classic drain
+  // path below).
+  const lastDrainSnapshotRef = useRef<{ text: string; markers: Set<number> } | null>(null);
 
   // Restore-on-mount is unconditional, not leak-guarded: under dockview a
   // session pane's `ref` never changes across a mounted Composer's
@@ -136,6 +168,27 @@ export function Composer({ ref }: ComposerProps) {
   // below, per the rules of hooks.
   const askPending = useAskDockPending(ref);
 
+  // readyAnnouncement drives this component's own aria-live region below,
+  // announcing "Message composer ready." the moment askPending flips
+  // true -> false (parity-m5-composer.md line 118's OTHER half: AskDock's
+  // own anchor already announces "Answer the agent's questions." on entry,
+  // but that element unmounts entirely once its batches empty - see
+  // AskDock.tsx's own header comment, "does NOT own... the mode-switch
+  // status announcement... that is the composer's own surface" - so only
+  // this component can announce the exit half of that same legacy
+  // transition). Edge-triggered on the actual transition, not derived
+  // straight from `!askPending`: a plain `!askPending ? "ready" : ""`
+  // would also announce "ready" on this component's very first mount
+  // (askPending starts false with no prior ask to exit from), which is not
+  // an honest liveness signal - there's nothing that just became ready.
+  const wasAskPendingRef = useRef(askPending);
+  const [readyAnnouncement, setReadyAnnouncement] = useState("");
+  useEffect(() => {
+    const wasPending = wasAskPendingRef.current;
+    wasAskPendingRef.current = askPending;
+    if (wasPending && !askPending) setReadyAnnouncement("Message composer ready.");
+  }, [askPending]);
+
   // Runs after `text`'s new value has committed to the DOM (via React's own
   // controlled-value reconciliation) - only then is it safe to move the
   // native cursor without React clobbering it. Keyed on `text` so it fires
@@ -201,16 +254,27 @@ export function Composer({ ref }: ComposerProps) {
   // handleDrainSuccess is QueueStrip's own onDrainSuccess seam (its "Steer
   // now" button, a SEPARATE trigger from this component's own classic
   // steer/drain path below): mirrors the legacy "the textarea clears" rule
-  // on a successful drain. Unlike clearIfUnchanged, the callback carries no
-  // snapshot of what was drained (QueueStripProps.onDrainSuccess takes no
-  // arguments), so there is no "unchanged since submit" check possible here
-  // - this unconditionally clears whatever is CURRENTLY present. A real,
-  // narrow asymmetry with this component's own drain path (submitAction
-  // below DOES check clearIfUnchanged) - see w5-integration-wiring-report.md.
+  // on a successful drain, gated the SAME way clearIfUnchanged gates this
+  // component's own drain path - only if the text is unchanged since the
+  // drain was TRIGGERED (lastDrainSnapshotRef, populated by getComposerText
+  // below at the moment QueueStrip actually read it), not unconditionally.
+  // QueueStripProps.onDrainSuccess itself takes no arguments, so this ref is
+  // the seam's own way of recovering a submitted-snapshot to compare
+  // against - see w5-integration-wiring-report.md Concern #2, previously an
+  // unconditional clear that could silently discard an edit made while the
+  // strip's own drain request was still in flight.
   function handleDrainSuccess(): void {
-    updateText("");
-    clearDraft(ref);
-    attachments.clearSubmitted(new Set(attachments.items.map((item) => item.marker)));
+    const snapshot = lastDrainSnapshotRef.current;
+    if (snapshot === null) return; // defensive only: onDrainSuccess never fires without a prior getComposerText() call
+    if (textRef.current === snapshot.text) {
+      updateText("");
+      clearDraft(ref);
+    }
+    // Unconditional, like submitAction's own clearSubmitted call below: safe
+    // regardless of the text-unchanged check above, since it only ever
+    // removes the SPECIFIC markers this drain's own snapshot captured - an
+    // attachment staged after that snapshot survives untouched either way.
+    attachments.clearSubmitted(snapshot.markers);
   }
 
   // restoreTextToComposer implements the shared "put text back into the
@@ -236,6 +300,15 @@ export function Composer({ ref }: ComposerProps) {
   // integration deliberately reuses the queue-edit merge behavior for both
   // seams rather than porting the overwrite - a considered choice, not a
   // parity citation.
+  //
+  // Deliberately typed to accept only `restoredText`, not the second
+  // `attachments` parameter QueueStripProps.onRestoreToComposer's own
+  // signature allows for - a queued entry's edit is a text-only recompose
+  // per parity (contracts-composer-queue-pending.md:70, parity-m5-
+  // composer.md:102): dropped image attachments surface via QueueStrip's
+  // own reportRemovedImages warning toast, never restored here. Any
+  // attachments argument a caller passes is simply extra to a JS/TS call
+  // and never reaches this function's body.
   function restoreTextToComposer(restoredText: string): void {
     const existing = textRef.current;
     const merged = existing.trim() === "" ? restoredText : `${existing.replace(/\s+$/, "")}\n\n${restoredText}`;
@@ -244,19 +317,30 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   // getComposerText is QueueStrip's own seam for reading this composer's
-  // CURRENT text/attachments at the moment its drain affordance is used -
-  // textRef.current (not the `text` state closure) for the identical
-  // liveness reason textEditor.read() above reads it, and
+  // CURRENT text/attachments/hasPending at the moment its drain affordance
+  // is used - textRef.current (not the `text` state closure) for the
+  // identical liveness reason textEditor.read() above reads it, and
   // toInputAttachments() for the same wire shape submitAction's own payload
-  // already uses. Attachments still mid-encode are silently omitted by
-  // toInputAttachments() itself (its own doc comment: callers should only
-  // invoke it once hasPending is false) - QueueStrip's "Steer now" button
-  // has no hasPending guard of its own (unlike this component's classic
-  // submit paths), a narrow, pre-existing gap flagged in
-  // w5-integration-wiring-report.md rather than fixed here (QueueStrip.tsx
-  // is outside this integration's manifest).
+  // already uses. `hasPending` mirrors this component's own attachments.
+  // hasPending so QueueStrip's "Steer now" button can block with the SAME
+  // "still processing" toast this component's classic submit paths already
+  // use, instead of silently sending a drain payload with a not-yet-encoded
+  // image missing (toInputAttachments() itself only ever filters incomplete
+  // items without signaling it - see that function's own doc comment) - see
+  // w5-integration-wiring-report.md Concern #3. Also stashes a snapshot into
+  // lastDrainSnapshotRef (text + the currently-staged marker set) so
+  // handleDrainSuccess can later tell whether the composer changed between
+  // THIS read and the drain actually resolving - QueueStrip only ever calls
+  // this once per handleDrain invocation, immediately before starting the
+  // request, so the snapshot always reflects exactly what that drain sent.
   function getComposerText() {
-    return { text: textRef.current, attachments: attachments.toInputAttachments() };
+    const markers = new Set(attachments.items.map((item) => item.marker));
+    lastDrainSnapshotRef.current = { text: textRef.current, markers };
+    return {
+      text: textRef.current,
+      attachments: attachments.toInputAttachments(),
+      hasPending: attachments.hasPending,
+    };
   }
 
   // submitAction wraps every method in submitWithPendingTracking (the wave's
@@ -419,15 +503,30 @@ export function Composer({ ref }: ComposerProps) {
           above) hides/inerts the input row below while a question is
           pending - AskDock owns answering while questions pend. */}
       <AskDock ref={ref} onFallbackToComposer={restoreTextToComposer} />
+      {/* Screen-reader-only: announces the OTHER half of parity-m5-
+          composer.md line 118's status-region transition - AskDock's own
+          anchor announces "Answer the agent's questions." on entry but
+          unmounts entirely on resolve, so only this component can announce
+          exiting ask-pending mode (readyAnnouncement's own doc comment
+          above). Visually hidden, not a persistent visible banner - once
+          the textarea itself is visibly back, there is nothing left for a
+          permanent "ready" line to usefully say (honest-liveness: only
+          announce a real transition, never a static claim). */}
+      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
+        {readyAnnouncement}
+      </div>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
-          comment above. */}
+          comment above. busy/onDrainBusyChange share this component's own
+          busyAction gate both ways (BusyAction's own "drain" doc comment). */}
       <QueueStrip
         ref={ref}
         getComposerText={getComposerText}
         onRestoreToComposer={restoreTextToComposer}
         onDrainSuccess={handleDrainSuccess}
+        busy={busyAction !== null}
+        onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
       />
       {hasAttachments && (
         <div className={styles.chips} hidden={askPending} inert={askPending}>
