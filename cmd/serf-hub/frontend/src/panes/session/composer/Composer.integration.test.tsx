@@ -529,6 +529,32 @@ test("sending an answer submits through the normal send path and restores the co
   expect(await screen.findByRole("textbox", { name: /message/i })).toBeTruthy(); // composer un-hides again
 });
 
+// AskDock's own anchor (askDock/AskDock.tsx) announces entering ask-pending
+// mode ("Answer the agent's questions.") but unmounts entirely once its
+// batches empty - it cannot also announce the OTHER half of parity-m5-
+// composer.md line 118's legacy transition. This is Composer's own half:
+// exiting ask-pending mode announces "Message composer ready." through this
+// component's OWN aria-live region (w5-integration-wiring-report.md
+// Concern #4).
+test("resolving the pending ask announces the composer's restoration via this component's own aria-live region", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", idleNoTurnOverrides());
+  fake.on("turn/start", () => ({ turn: { id: "turn_2", status: "inProgress", itemsView: "" } }));
+
+  // Never announced before any ask has ever happened - there is nothing
+  // that just became ready (honest liveness, not a static claim).
+  expect(screen.queryByText("Message composer ready.")).toBeNull();
+
+  startTurn(fake, "ref_a", "turn_1");
+  ackAskUserCall(fake, "ref_a", "turn_1", "item_1", "call_1");
+  await screen.findByText("Deploy?");
+  expect(screen.queryByText("Message composer ready.")).toBeNull(); // not yet - still pending
+
+  await user.click(screen.getByRole("button", { name: /send answers/i }));
+
+  expect(await screen.findByText("Message composer ready.")).toBeTruthy();
+});
+
 test("a Conflict on the ask-answers path falls back into the composer, preserving any draft typed before the question arrived", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", idleNoTurnOverrides());

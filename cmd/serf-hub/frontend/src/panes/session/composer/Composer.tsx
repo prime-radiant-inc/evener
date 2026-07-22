@@ -8,11 +8,19 @@
 // per-ref drafts, attachments (paste/drag/picker), interrupt affordance.
 // T3/T4 render their own subtrees inside the two marked slots below without
 // ever touching the surrounding structure - see each slot's own comment.
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useLayoutEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
 import { AskDock, useAskDockPending } from "./askDock";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
@@ -25,6 +33,16 @@ import { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouti
 export interface ComposerProps {
   ref: string;
 }
+
+// Only this one class goes through requireClass (the design-system's rule
+// for any NEW class) - the file's five pre-existing classNames below are
+// bare `styles.foo` references, this file's own established convention
+// (unlike QueueStrip.tsx's full CLASS table); flagged rather than silently
+// mixed, and not "fixed" wholesale since rewriting five unrelated, already-
+// working references is outside this fix's own scope.
+const CLASS = {
+  visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
+};
 
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
 // "Steer now" button) - never by this component's own submitAction, which
@@ -149,6 +167,27 @@ export function Composer({ ref }: ComposerProps) {
   // the rest of this component's hooks, ahead of the `!model` early return
   // below, per the rules of hooks.
   const askPending = useAskDockPending(ref);
+
+  // readyAnnouncement drives this component's own aria-live region below,
+  // announcing "Message composer ready." the moment askPending flips
+  // true -> false (parity-m5-composer.md line 118's OTHER half: AskDock's
+  // own anchor already announces "Answer the agent's questions." on entry,
+  // but that element unmounts entirely once its batches empty - see
+  // AskDock.tsx's own header comment, "does NOT own... the mode-switch
+  // status announcement... that is the composer's own surface" - so only
+  // this component can announce the exit half of that same legacy
+  // transition). Edge-triggered on the actual transition, not derived
+  // straight from `!askPending`: a plain `!askPending ? "ready" : ""`
+  // would also announce "ready" on this component's very first mount
+  // (askPending starts false with no prior ask to exit from), which is not
+  // an honest liveness signal - there's nothing that just became ready.
+  const wasAskPendingRef = useRef(askPending);
+  const [readyAnnouncement, setReadyAnnouncement] = useState("");
+  useEffect(() => {
+    const wasPending = wasAskPendingRef.current;
+    wasAskPendingRef.current = askPending;
+    if (wasPending && !askPending) setReadyAnnouncement("Message composer ready.");
+  }, [askPending]);
 
   // Runs after `text`'s new value has committed to the DOM (via React's own
   // controlled-value reconciliation) - only then is it safe to move the
@@ -464,6 +503,18 @@ export function Composer({ ref }: ComposerProps) {
           above) hides/inerts the input row below while a question is
           pending - AskDock owns answering while questions pend. */}
       <AskDock ref={ref} onFallbackToComposer={restoreTextToComposer} />
+      {/* Screen-reader-only: announces the OTHER half of parity-m5-
+          composer.md line 118's status-region transition - AskDock's own
+          anchor announces "Answer the agent's questions." on entry but
+          unmounts entirely on resolve, so only this component can announce
+          exiting ask-pending mode (readyAnnouncement's own doc comment
+          above). Visually hidden, not a persistent visible banner - once
+          the textarea itself is visibly back, there is nothing left for a
+          permanent "ready" line to usefully say (honest-liveness: only
+          announce a real transition, never a static claim). */}
+      <div className={CLASS.visuallyHidden} role="status" aria-live="polite">
+        {readyAnnouncement}
+      </div>
       {/* T3: queue strip - the queue preview (model.queue) above the input
           row; getComposerText/onRestoreToComposer/onDrainSuccess are this
           integration's own seam implementations, see each one's own doc
