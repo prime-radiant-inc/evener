@@ -349,15 +349,6 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
   return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
 }
 
-// True for the tool call the daemon tracks as StatusInfo.PendingAsk
-// (agent/session_tools_ask.go, appwire/types.go SerfThread.AskPending): the
-// built-in ask_user tool, wire-projected like any other tool call
-// (type "commandExecution", toolName "ask_user" — confirmed against
-// internal/appprojector/appwire_projection.go and internal/apptranscript).
-function isAskUserItem(item: ThreadItem): boolean {
-  return item.type === "commandExecution" && item.toolName === "ask_user";
-}
-
 // Appends `incoming` to pendingEscalations, or — if an entry with the same
 // escalationId is already present — replaces it in place rather than
 // growing the list. Dedup exists because hydration's surface-on-entry
@@ -462,7 +453,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...turn,
           items: [...turn.items, wireItemToModel(item)],
         })),
-        askPending: isAskUserItem(item) ? true : model.askPending,
         lastFrameAt: now,
       };
     }
@@ -470,7 +460,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params as ItemLifecycleInline;
-      const askPending = isAskUserItem(item) ? false : model.askPending;
       const existingTurnId = findItemTurnId(model, turnId, item.id);
       if (existingTurnId) {
         return {
@@ -481,7 +470,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
               mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
             ),
           })),
-          askPending,
           lastFrameAt: now,
         };
       }
@@ -499,7 +487,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...turn,
           items: [...turn.items, wireItemToModel(item)],
         })),
-        askPending,
         lastFrameAt: now,
       };
     }

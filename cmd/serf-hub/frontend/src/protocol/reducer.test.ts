@@ -1002,25 +1002,33 @@ test("prependOlderTurns tolerates a wire-nullable data array (treats it as an em
   expect(result.olderCursor).toBe("cursor_0");
 });
 
-test("askPending flips from thread snapshot and item lifecycle", () => {
-  const askingModel = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
-  expect(askingModel.askPending).toBe(true);
+// askPending is a THREAD-level wire signal (SerfThread.askPending, mirroring
+// the daemon's long-lived HasPendingAsk - "this session is waiting on a human
+// answer", agent/session_tools_ask.go). It is snapshot-authoritative: only a
+// wire snapshot (hydrateThread) sets it; no notification carries it (askPending
+// appears only on SerfThread in types.gen.ts). The AskDock derives its OWN,
+// separate in-tool pending signal from ask_user items (composer/askDock), so
+// the reducer must NOT recompute this thread field from item lifecycle - doing
+// so clobbers the wire's authoritative value whenever items churn.
+test("askPending is wire-authoritative from the thread snapshot", () => {
+  const asking = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
+  expect(asking.askPending).toBe(true);
 
-  let model = testHydrate();
-  expect(model.askPending).toBe(false);
+  const notAsking = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: false } });
+  expect(notAsking.askPending).toBe(false);
 
-  model = applyNotification(
-    model,
-    {
-      method: "turn/started",
-      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
-    1001,
-  );
-  model = applyNotification(
-    model,
-    {
-      method: "item/started",
+  // Absent on the wire (omitempty) defaults to false.
+  expect(testHydrate().askPending).toBe(false);
+});
+
+test("item lifecycle never clobbers the wire's thread-level askPending", () => {
+  const turnStarted = {
+    method: "turn/started",
+    params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+  } as AnyNotification;
+  const askUser = (method: "item/started" | "item/completed", status: string) =>
+    ({
+      method,
       params: {
         threadId: "thr_t",
         ref: "ref_t",
@@ -1031,35 +1039,29 @@ test("askPending flips from thread snapshot and item lifecycle", () => {
           turnId: "turn_1",
           toolName: "ask_user",
           callId: "call_ask",
-          status: "inProgress",
+          status,
         },
       },
-    } as AnyNotification,
-    1002,
-  );
-  expect(model.askPending).toBe(true);
+    }) as AnyNotification;
 
-  model = applyNotification(
-    model,
-    {
-      method: "item/completed",
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
-        turnId: "turn_1",
-        item: {
-          type: "commandExecution",
-          id: "item_ask",
-          turnId: "turn_1",
-          toolName: "ask_user",
-          callId: "call_ask",
-          status: "completed",
-        },
-      },
-    } as AnyNotification,
-    1003,
-  );
-  expect(model.askPending).toBe(false);
+  // A session the wire says is waiting on a human (askPending: true) stays
+  // waiting across an ask_user call's whole open->settle lifecycle: the tool
+  // call completing is NOT a wire signal that the thread-level ask was
+  // answered (that arrives only via the next snapshot / HasPendingAsk).
+  let waiting = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, askPending: true } });
+  waiting = applyNotification(waiting, turnStarted, 1001);
+  waiting = applyNotification(waiting, askUser("item/started", "inProgress"), 1002);
+  expect(waiting.askPending).toBe(true);
+  waiting = applyNotification(waiting, askUser("item/completed", "completed"), 1003);
+  expect(waiting.askPending).toBe(true);
+
+  // Symmetrically, a thread the wire says is NOT waiting stays not-waiting when
+  // an ask_user item merely opens: the reducer no longer fabricates a
+  // thread-level true from item lifecycle either.
+  let idle = testHydrate();
+  idle = applyNotification(idle, turnStarted, 1001);
+  idle = applyNotification(idle, askUser("item/started", "inProgress"), 1002);
+  expect(idle.askPending).toBe(false);
 });
 
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
