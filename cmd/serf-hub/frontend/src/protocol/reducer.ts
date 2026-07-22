@@ -111,6 +111,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     callId: item.callId,
     argumentsJSON: item.argumentsJson,
     output: item.output,
+    error: item.error,
     images: imagesToStrings(item.images),
     outputImages: outputImagesToStrings(item.outputImages),
     status: item.status,

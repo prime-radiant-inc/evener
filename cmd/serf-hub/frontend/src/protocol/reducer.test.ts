@@ -1064,6 +1064,73 @@ test("item lifecycle never clobbers the wire's thread-level askPending", () => {
   expect(idle.askPending).toBe(false);
 });
 
+// A failed/denied tool call carries its failure in the wire item's `error`
+// field (ThreadItem.error) while its `status` is projected "completed"
+// regardless (a known Go limitation). The model must carry `error` so a
+// denied/errored ask is distinguishable from a clean completion.
+test("item/completed maps the wire item's error onto the model (live path)", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    } as AnyNotification,
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "ask_user",
+          callId: "call_1",
+          error: "denied: user rejected",
+          status: "completed",
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.error).toBe("denied: user rejected");
+  // Status is "completed" even for the errored call - error presence, not
+  // status, is the honest failure signal.
+  expect(item.status).toBe("completed");
+});
+
+test("hydrateThread maps a settled item's error onto the model (snapshot path)", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "commandExecution",
+            id: "item_tool",
+            turnId: "turn_1",
+            toolName: "run_tests",
+            callId: "call_1",
+            error: "exit status 1",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).error).toBe("exit status 1");
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();

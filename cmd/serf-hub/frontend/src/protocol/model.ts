@@ -22,6 +22,15 @@ export interface ItemModel {
   callId?: string;
   argumentsJSON?: string;
   output?: string;
+  // Tool-result error text (wire ThreadItem.error): populated instead of
+  // output when a tool call failed or was denied. The wire projects item
+  // status "completed" even for an errored call (internal/appprojector and
+  // internal/apptranscript both hardcode it - a Go follow-up), so error
+  // PRESENCE, not status, is what distinguishes a failed/denied call (e.g. a
+  // denied ask_user) from a clean completion. Carried on both the live
+  // item/completed and the snapshot/reload paths (both fold through
+  // reducer's wireItemToModel).
+  error?: string;
   images?: string[];
   outputImages?: string[];
   status?: string;
