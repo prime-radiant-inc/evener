@@ -426,20 +426,27 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			argsJSON = data.ArgumentsJSON
 		}
 		item := appwire.ThreadItem{
-			Type:         "commandExecution",
-			ID:           p.toolItemID(data.CallID),
-			TurnID:       p.activeTurnID,
-			ToolName:     data.ToolName,
-			CallID:       data.CallID,
-			Output:       data.Output,
-			Error:        data.Error,
-			OutputImages: projectOutputImages(data.OutputImages),
-			Status:       "completed",
-			Raw:          raw,
+			Type:          "commandExecution",
+			ID:            p.toolItemID(data.CallID),
+			TurnID:        p.activeTurnID,
+			ToolName:      data.ToolName,
+			CallID:        data.CallID,
+			ArgumentsJSON: argsJSON,
+			Output:        data.Output,
+			Error:         data.Error,
+			OutputImages:  projectOutputImages(data.OutputImages),
+			Status:        "completed",
+			Raw:           raw,
 			// Carry the call's purpose onto the completed item too (#26):
 			// the started item already has it, and live consumers (the web
 			// subagent activity line) render the purpose from Description.
 			Description: apptranscript.ToolIntentFromArguments(json.RawMessage(argsJSON)),
+			// ExitCode promotes the shell tool's exit code, already riding
+			// data.ToolState end to end (agent/session_tools_shell.go:483
+			// shellToolResult), onto the settled item (wire-honesty spec Part
+			// A). Read from data.ToolState directly rather than raw, which may
+			// have been overwritten above with the skill-activation payload.
+			ExitCode: apptranscript.ExitCodeFromToolState(data.ToolState),
 		}
 		// Server-truth timing for the hover meta (issue #37): CompletedAt from
 		// this event's own timestamp; StartedAt/DurationMS from the recorded
@@ -703,6 +710,22 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Command:      data.Command,
 			OutputSoFar:  data.OutputSoFar,
 			PartiallyRan: data.PartiallyRan,
+		})}
+	case events.EventSandboxEscalationResolved:
+		// The pair to EventSandboxEscalationRequested above: a previously-raised
+		// escalation left the pending set (resolved, turn-interrupted, or cleared by
+		// session close — agent/session_escalation.go's escalateOnSandboxDenial emits
+		// this exactly once per escalation from its convergence-point exit). Every
+		// OTHER subscribed client uses it to clear its own stale copy of the card. It
+		// carries no reason/approved (a review decision, additive later): the sole
+		// consumer clears by id identically regardless of outcome, and the producer
+		// cannot reliably distinguish close-cancel from interrupt anyway. Like
+		// requested, it rides the event stream only and touches no turn/item state.
+		data := eventData[events.SandboxEscalationResolvedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfSandboxEscalationResolved, appwire.SandboxEscalationResolved{
+			ThreadID:     p.threadID,
+			Ref:          p.ref,
+			EscalationID: data.EscalationID,
 		})}
 	case events.EventSessionNameChanged:
 		p.clearSkillCandidate()

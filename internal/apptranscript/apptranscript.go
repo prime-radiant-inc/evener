@@ -118,6 +118,26 @@ func ToolIntentFromArguments(raw json.RawMessage) string {
 	return ""
 }
 
+// ExitCodeFromToolState extracts a shell tool call's process exit code from
+// its raw ToolState JSON snapshot (the "exit_code" field of shellToolResult,
+// agent/session_tools_shell.go:483), so the live projector and transcript
+// reload can both promote it onto the settled commandExecution item's typed
+// ExitCode field (wire-honesty spec Part A). Returns nil when the snapshot is
+// empty, unparseable, or simply omits the field (any non-shell tool) — the
+// absence is honest, never fabricated as zero.
+func ExitCodeFromToolState(raw json.RawMessage) *int64 {
+	if len(raw) == 0 {
+		return nil
+	}
+	var v struct {
+		ExitCode *int64 `json:"exit_code"`
+	}
+	if json.Unmarshal(raw, &v) != nil {
+		return nil
+	}
+	return v.ExitCode
+}
+
 // StringifyToolContent returns transcript text for arbitrary tool result
 // content.
 func StringifyToolContent(v any) string {
@@ -345,6 +365,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				CallID:   part.ToolResult.ToolCallID,
 				Status:   appwire.TurnStatusCompleted,
 				Raw:      part.ToolResult.ToolState,
+				ExitCode: ExitCodeFromToolState(part.ToolResult.ToolState),
 			}
 			// The entry's recorded timestamp is the server truth for when the
 			// result landed (issue #37); a zero timestamp mints no stamp. The

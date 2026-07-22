@@ -4098,7 +4098,7 @@ func TestStoppedDelegateDropsPreStopPendingWatchSend(t *testing.T) {
 
 func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *testing.T) {
 	t.Parallel()
-	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{}), restartStarted: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
 	sess := newDelegateTestSession(t, c)
@@ -4165,6 +4165,18 @@ func TestDelegateSendExplicitStartDoesNotReenablePreStopPendingWatchSend(t *test
 	}
 	if restarted.StartedJobID == "" || restarted.StartedJobID == second.JobID {
 		t.Fatalf("restart result = %+v, want later concrete job", restarted)
+	}
+	// Await the restarted turn reaching its blocked model call. By then it has
+	// already drained its startup steering (injectDrainedSteering runs before the
+	// first model call), so every watch send enqueued below lands after that drain
+	// and survives to the queue snapshot. Without this await the restarted turn's
+	// startup drain races the post-restart send and can consume it, leaving the
+	// snapshot empty (the historical flake). Awaiting here does not touch the
+	// pre-stop send's fate: the not-reenabled assertions below still stand.
+	select {
+	case <-adapter.restartStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restarted delegate did not start")
 	}
 
 	if err := drainWatchSendsVia(t, sess.jobManager, sess.sendDelegateMessage); err != nil {

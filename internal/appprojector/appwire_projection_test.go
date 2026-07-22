@@ -190,19 +190,56 @@ func TestProject_SandboxEscalationRequested(t *testing.T) {
 	}
 }
 
-func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
-	// The escalation rides the event stream only. It is never a transcript turn:
-	// the projector emits exactly the notification and touches no turn/item state,
-	// so the model can neither observe nor replay it.
+// TestProject_SandboxEscalationResolved (wire-honesty spec Part B) mirrors
+// TestProject_SandboxEscalationRequested above for the pair notification: the
+// projector maps EventSandboxEscalationResolved to
+// serf/sandbox/escalation/resolved, carrying only threadId/ref/escalationId
+// (no reason or approved — a review decision the spec's doc comments explain).
+func TestProject_SandboxEscalationResolved(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{
-		Kind: events.EventSandboxEscalationRequested,
-		Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool", DeniedPath: "hosts"},
+		Kind: events.EventSandboxEscalationResolved,
+		Data: events.SandboxEscalationResolvedData{EscalationID: "esc_1"},
 	})
-	for _, n := range out {
-		switch n.Method {
-		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
-			t.Fatalf("escalation must not project a turn/item (transcript) notification, got %s", n.Method)
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSandboxEscalationResolved {
+		t.Fatalf("want one serf/sandbox/escalation/resolved notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.SandboxEscalationResolved)
+	if !ok {
+		t.Fatalf("params type = %T, want appwire.SandboxEscalationResolved", out[0].Params)
+	}
+	if params.EscalationID != "esc_1" {
+		t.Fatalf("params = %+v", params)
+	}
+	// Same session-routing requirement as the requested notification.
+	if params.ThreadID != "th1" || params.Ref != "local:th1" {
+		t.Fatalf("resolved notification must carry threadId/ref, got %+v", params)
+	}
+}
+
+// TestProject_SandboxEscalationNotInTranscript covers both directions of the
+// M7 escalation pair (requested and resolved, wire-honesty spec Part B). Both
+// ride the event stream only and are never a transcript turn: the projector
+// emits exactly its own notification and touches no turn/item state, so the
+// model can neither observe nor replay either one. This also stands in for
+// the spec's demoted unknown-notification-tolerance check: an older client
+// that does not yet recognize serf/sandbox/escalation/resolved sees no
+// item/turn notification riding alongside it to react to badly — it drops the
+// unrecognized notification exactly like any other, the established norm in
+// the TUI and legacy web.
+func TestProject_SandboxEscalationNotInTranscript(t *testing.T) {
+	cases := []events.SessionEvent{
+		{Kind: events.EventSandboxEscalationRequested, Data: events.SandboxEscalationRequestedData{EscalationID: "esc_1", Mode: "read-only", Tool: "write_file", Kind: "file_tool", DeniedPath: "hosts"}},
+		{Kind: events.EventSandboxEscalationResolved, Data: events.SandboxEscalationResolvedData{EscalationID: "esc_1"}},
+	}
+	for _, ev := range cases {
+		p := NewAppEventProjector("th1", "local:th1")
+		out := p.Project(ev)
+		for _, n := range out {
+			switch n.Method {
+			case appwire.NotifyItemStarted, appwire.NotifyItemCompleted, appwire.NotifyTurnStarted, appwire.NotifyTurnCompleted:
+				t.Fatalf("%s must not project a turn/item (transcript) notification, got %s", ev.Kind, n.Method)
+			}
 		}
 	}
 }
@@ -2087,5 +2124,94 @@ func TestAppEventProjectorLeavesToolItemTimingUnsetWithoutClock(t *testing.T) {
 	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.StartedAt != nil || item.CompletedAt != nil || item.DurationMS != nil {
 		t.Fatalf("completed item timing=(%v,%v,%v), want all nil for zero event timestamps", item.StartedAt, item.CompletedAt, item.DurationMS)
+	}
+}
+
+// TestAppEventProjectorToolCallEndCarriesArgumentsJSON (wire-honesty spec Part
+// A): the settled commandExecution item must carry the same ArgumentsJSON the
+// started item already had. The projector already resolves it (toolArgsByKey,
+// falling back to the end event's own ArgumentsJSON) but previously dropped it
+// from the completed item literal.
+func TestAppEventProjectorToolCallEndCarriesArgumentsJSON(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_args",
+		ArgumentsJSON: `{"command":"ls"}`,
+	}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_args",
+		Output:   "ok",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ArgumentsJSON != `{"command":"ls"}` {
+		t.Fatalf("completed item ArgumentsJSON=%q, want the started item's args", item.ArgumentsJSON)
+	}
+}
+
+// TestAppEventProjectorToolCallEndCarriesExitCode (wire-honesty spec Part A):
+// the shell tool's exit code already rides ToolState.exit_code
+// (agent/session_tools_shell.go:483 shellToolResult) end to end; the settled
+// item promotes it onto the typed ExitCode field.
+func TestAppEventProjectorToolCallEndCarriesExitCode(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_exit"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName:  "shell",
+		CallID:    "call_exit",
+		Output:    "ok",
+		ToolState: json.RawMessage(`{"type":"shell","status":"completed","exit_code":2}`),
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode == nil || *item.ExitCode != 2 {
+		t.Fatalf("completed item ExitCode=%v, want *2", item.ExitCode)
+	}
+}
+
+// TestAppEventProjectorToolCallEndCarriesZeroExitCode (wire-honesty spec Part
+// A, review Minor) pins the boundary that makes the pointer field honest: a
+// successful shell run's ToolState literally contains "exit_code":0, which
+// must produce a non-nil *int64 pointing at 0 — distinguishable from the
+// "no ToolState at all" case (TestAppEventProjectorToolCallEndOmitsExitCode
+// WithoutToolState below), which leaves it nil. Go's json only touches the
+// pointer when the key is present, so this already holds by construction;
+// pinned here so it can never silently regress.
+func TestAppEventProjectorToolCallEndCarriesZeroExitCode(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_exit_zero"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName:  "shell",
+		CallID:    "call_exit_zero",
+		Output:    "ok",
+		ToolState: json.RawMessage(`{"type":"shell","status":"completed","exit_code":0}`),
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode == nil {
+		t.Fatalf("completed item ExitCode=nil, want a non-nil pointer to 0 (present-and-zero, not absent)")
+	}
+	if *item.ExitCode != 0 {
+		t.Fatalf("completed item ExitCode=%v, want *0", *item.ExitCode)
+	}
+}
+
+// TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState (wire-honesty
+// spec Part A): a tool whose ToolState carries no exit_code (or none at all,
+// e.g. read_file) must leave ExitCode nil rather than fabricating zero.
+func TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "read_file", CallID: "call_read"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "read_file",
+		CallID:   "call_read",
+		Output:   "contents",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.ExitCode != nil {
+		t.Fatalf("completed item ExitCode=%v, want nil for a tool with no ToolState", *item.ExitCode)
 	}
 }

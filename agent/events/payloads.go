@@ -159,6 +159,18 @@ type SandboxEscalationRequestedData struct {
 	PartiallyRan bool   `json:"partially_ran,omitempty"`
 }
 
+// SandboxEscalationResolvedData is the payload for an
+// EventSandboxEscalationResolved event (M7, wire-honesty spec Part B): the
+// escalation named by EscalationID left the pending set, by explicit resolve,
+// turn-interrupt, or session close. It carries no decision (reason/approved) —
+// the sole consumer clears its card by id identically regardless of outcome,
+// and the producer (the convergence point in escalateOnSandboxDenial) cannot
+// reliably distinguish close-cancel from interrupt anyway. Additive later if a
+// "resolved elsewhere" toast ever wants more.
+type SandboxEscalationResolvedData struct {
+	EscalationID string `json:"escalation_id"`
+}
+
 // SteeringSourceUser marks steering that originated from the human user —
 // the UI steer action, or queued user input drained as steering — as opposed
 // to daemon/system-generated nudges (task reminders, loop detection, hook

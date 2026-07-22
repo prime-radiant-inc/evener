@@ -183,10 +183,20 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 
 	// Remove the waiter on every exit path (resolve, interrupt, close). Idempotent
 	// with ResolveSandboxEscalation's delete and cancelAllEscalations's clear.
+	//
+	// The resolved broadcast (wire-honesty spec Part B) fires from this SAME
+	// defer — the convergence point every exit path funnels through — rather
+	// than from each clearing site individually. That is deliberate: a close
+	// begins by cancelling the turn ctx (session_lifecycle.go) before it calls
+	// cancelAllEscalations, so the goroutine's own ctx.Done() arm below often
+	// wins the race and clears the waiter first, leaving a close-site emit an
+	// empty-map no-op. Emitting here instead fires exactly once per escalation
+	// no matter which arm of the select unblocked it.
 	defer func() {
 		s.mu.Lock()
 		delete(s.pendingEscalations, id)
 		s.mu.Unlock()
+		s.emit(events.EventSandboxEscalationResolved, events.SandboxEscalationResolvedData{EscalationID: id})
 	}()
 
 	// Emit the card BEFORE blocking so RecordAppEvent → Broadcast pushes it to the
