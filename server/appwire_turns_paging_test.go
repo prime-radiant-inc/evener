@@ -681,6 +681,10 @@ func TestValidatedTranscriptPathReadsOnlyLeadingHeader(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// This is an input fixture, not a durability test: batch the writes so
+		// building the 2000-entry file does not pay 2000 per-Append fsyncs.
+		// Close still flushes, so the file read back is byte-identical.
+		writer.SyncInterval = time.Hour
 		for i := 0; i < entries; i++ {
 			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
 				t.Fatal(err)
