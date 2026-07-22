@@ -18,6 +18,7 @@ import {
 } from "react";
 import { WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
+import { openPalette } from "../../../shell/palette/paletteController";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
@@ -468,6 +469,16 @@ export function Composer({ ref }: ComposerProps) {
   // legacy gate defended against doesn't exist here, so there is no
   // isInPane()-equivalent check to port.
   function handleKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>): void {
+    // "/" as the first character of an EMPTY composer opens the command
+    // palette (floor §2.1, legacy renderer.js:6914); any other "/" - mid-text
+    // or in a non-empty composer - is a literal slash. textRef.current is the
+    // synchronous live value, the same read every liveness-sensitive path in
+    // this file uses.
+    if (event.key === "/" && !event.metaKey && !event.ctrlKey && !event.altKey && textRef.current === "") {
+      event.preventDefault();
+      openPalette("/");
+      return;
+    }
     if (event.key !== "Enter") return;
     if (event.metaKey || event.ctrlKey) {
       event.preventDefault();
