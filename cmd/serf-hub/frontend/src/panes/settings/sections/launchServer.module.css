@@ -1,0 +1,42 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 720px;
+}
+
+.help {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.error {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+}
+
+.diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-2);
+}
+
+.diagnosticsHeading {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-semibold);
+}
+
+.diagnosticsList {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

@@ -1,0 +1,25 @@
+.defaultHint {
+  margin-left: var(--space-2);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.radioBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.radioHelp {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.compositeControls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--edge);
+}

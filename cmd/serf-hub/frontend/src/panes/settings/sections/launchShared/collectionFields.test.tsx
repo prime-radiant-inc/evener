@@ -1,0 +1,307 @@
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import type { LaunchOption } from "../../../../protocol/types.gen";
+import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
+
+afterEach(cleanup);
+
+function pathListOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
+  return {
+    field: "skills_dirs",
+    wireField: "skillsDirs",
+    label: "Skill directories",
+    description: "Extra directories serf scans for skills.",
+    group: "Resources",
+    kind: "pathList",
+    pathKind: "dir",
+    perLaunch: true,
+    ...overrides,
+  };
+}
+
+describe("PathListField", () => {
+  test("renders existing items and the section label/help", () => {
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={["/opt/skills"]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "/opt/skills", valid: true })}
+      />,
+    );
+    expect(screen.getAllByText("Skill directories").length).toBeGreaterThan(0);
+    expect(screen.getByText("Extra directories serf scans for skills.")).toBeTruthy();
+    expect(screen.getByText("/opt/skills")).toBeTruthy();
+  });
+
+  test("adding a value validates it via the injected validatePath(path, schemaPathKind) before accepting", async () => {
+    const user = userEvent.setup();
+    const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins", valid: true });
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/opt/plugins");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/plugins"]));
+    expect(validatePath).toHaveBeenCalledWith("/opt/plugins", "dir");
+  });
+
+  test("outputFile pathKind is translated to 'output-file' for the RPC call", async () => {
+    const user = userEvent.setup();
+    const validatePath = vi.fn().mockResolvedValue({ path: "/tmp/trace.json", valid: true });
+    render(
+      <PathListField
+        option={pathListOption({
+          field: "mcp_configs",
+          wireField: "mcpConfigs",
+          label: "MCP config files",
+          pathKind: "file",
+        })}
+        items={[]}
+        onChange={() => {}}
+        validatePath={validatePath}
+      />,
+    );
+    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/tmp/mcp.json");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/tmp/mcp.json", "file"));
+  });
+
+  test("an invalid path shows an inline error and does not add the row", async () => {
+    const user = userEvent.setup();
+    const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "path does not exist" });
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/nope");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(screen.getByText("path does not exist")).toBeTruthy());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("accepts the server-canonicalized path when the server rewrites it", async () => {
+    const user = userEvent.setup();
+    const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins/canonical", valid: true });
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/opt/plugins/../plugins");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/plugins/canonical"]));
+  });
+
+  test("remove drops the item from the list", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={["/opt/a", "/opt/b"]}
+        onChange={onChange}
+        validatePath={async () => ({ path: "", valid: true })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Remove /opt/a" }));
+    expect(onChange).toHaveBeenCalledWith(["/opt/b"]);
+  });
+
+  test("empty state message", () => {
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={[]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+      />,
+    );
+    expect(screen.getByText(/No skill directories configured/i)).toBeTruthy();
+  });
+});
+
+describe("ModelListField", () => {
+  const modelFallbacksOption: LaunchOption = {
+    field: "model_fallbacks",
+    wireField: "modelFallbacks",
+    label: "Model fallbacks",
+    description: "Ordered list of alternative models.",
+    group: "Resources",
+    kind: "modelList",
+    perLaunch: true,
+  };
+
+  test("adding a bare provider/model string accepts it without server validation", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={[]}
+        onChange={onChange}
+        explicitEmpty={false}
+        onExplicitEmptyChange={() => {}}
+      />,
+    );
+    await user.type(screen.getByPlaceholderText("provider/model"), "openai/gpt-5-mini");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["openai/gpt-5-mini"]));
+  });
+
+  test("the explicit-empty toggle is the only way to send an explicit []", async () => {
+    const user = userEvent.setup();
+    const onExplicitEmptyChange = vi.fn();
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={[]}
+        onChange={() => {}}
+        explicitEmpty={false}
+        onExplicitEmptyChange={onExplicitEmptyChange}
+      />,
+    );
+    await user.click(screen.getByRole("switch", { name: /no model fallbacks/i }));
+    expect(onExplicitEmptyChange).toHaveBeenCalledWith(true);
+  });
+
+  test("adding a row while explicit-empty is on turns the toggle back off", async () => {
+    const user = userEvent.setup();
+    const onExplicitEmptyChange = vi.fn();
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={[]}
+        onChange={() => {}}
+        explicitEmpty={true}
+        onExplicitEmptyChange={onExplicitEmptyChange}
+      />,
+    );
+    await user.type(screen.getByPlaceholderText("provider/model"), "openai/gpt-5-mini");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onExplicitEmptyChange).toHaveBeenCalledWith(false));
+  });
+});
+
+describe("EnvMapField", () => {
+  const envOption: LaunchOption = {
+    field: "env",
+    wireField: "env",
+    label: "Environment variables",
+    group: "Environment",
+    kind: "envMap",
+    perLaunch: true,
+  };
+
+  test("renders each entry as NAME=value", () => {
+    render(<EnvMapField option={envOption} value={{ FOO: "bar" }} onChange={() => {}} />);
+    expect(screen.getByText("FOO=bar")).toBeTruthy();
+  });
+
+  test("the add row is two structured fields (name, value), not one combined NAME=value box", () => {
+    render(<EnvMapField option={envOption} value={{}} onChange={() => {}} />);
+    expect(screen.getByRole("textbox", { name: "Variable name" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Variable value" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("NAME=value")).toBeNull();
+  });
+
+  test("typing a name and a value and submitting adds that entry", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "TOKEN");
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "abc=def");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith({ TOKEN: "abc=def" });
+  });
+
+  test("a value typed before any name still round-trips intact once a name is added (the '=' join point is code-owned, never user-typed)", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "abc=def=ghi");
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "TOKEN");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith({ TOKEN: "abc=def=ghi" });
+  });
+
+  test("a blank name is still rejected with the same inline error as before (typing only a value)", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "bar");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByText(/use NAME=value/i)).toBeTruthy();
+  });
+
+  test("typing '=' into the name field does not leak into the value field", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "bar");
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "FOO=BAZ");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith({ FOOBAZ: "bar" });
+  });
+
+  test("remove drops just that key", () => {
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{ FOO: "bar", BAZ: "qux" }} onChange={onChange} />);
+    screen.getByRole("button", { name: "Remove FOO=bar" }).click();
+    expect(onChange).toHaveBeenCalledWith({ BAZ: "qux" });
+  });
+});
+
+describe("McpServerListField", () => {
+  const mcpOption: LaunchOption = {
+    field: "mcps",
+    wireField: "mcps",
+    label: "MCP servers",
+    group: "Resources",
+    kind: "mcpServerList",
+    perLaunch: true,
+  };
+
+  test("renders 'name → command args' per row", () => {
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[{ name: "fs", command: "mcp-fs", args: ["--root", "/"] }]}
+        onChange={() => {}}
+        validateCommand={async () => ({ path: "mcp-fs", valid: true })}
+      />,
+    );
+    expect(screen.getByText("fs → mcp-fs --root /")).toBeTruthy();
+  });
+
+  test("adding 'name command args...' validates the command and pushes a parsed spec", async () => {
+    const user = userEvent.setup();
+    const validateCommand = vi.fn().mockResolvedValue({ path: "mcp-fs", valid: true });
+    const onChange = vi.fn();
+    render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
+    await user.type(screen.getByPlaceholderText("name command args..."), "fs mcp-fs --root /");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith([{ name: "fs", command: "mcp-fs", args: ["--root", "/"] }]),
+    );
+    expect(validateCommand).toHaveBeenCalledWith("mcp-fs");
+  });
+
+  test("an invalid command is rejected inline and not added", async () => {
+    const user = userEvent.setup();
+    const validateCommand = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid command" });
+    const onChange = vi.fn();
+    render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
+    await user.type(screen.getByPlaceholderText("name command args..."), "fs not-a-real-binary");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(screen.getByText("invalid command")).toBeTruthy());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("missing a command token is rejected without calling validateCommand at all", async () => {
+    const user = userEvent.setup();
+    const validateCommand = vi.fn();
+    const onChange = vi.fn();
+    render(<McpServerListField option={mcpOption} items={[]} onChange={onChange} validateCommand={validateCommand} />);
+    await user.type(screen.getByPlaceholderText("name command args..."), "justonetoken");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(validateCommand).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});

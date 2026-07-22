@@ -1,0 +1,361 @@
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import type { InstanceEntry, InstanceListResponse } from "../../../../protocol/types.gen";
+import { connectionStore } from "../../../../stores/connection";
+import { resetCredentialsStoreForTests } from "../../../../stores/credentials";
+import { Toast } from "../../../../widgets";
+import { CredentialsSection } from "./CredentialsSection";
+
+function connectFakeClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "type">): InstanceEntry {
+  return {
+    apiStyle: "",
+    baseUrl: "",
+    isDefault: false,
+    activeSource: "absent",
+    hasStoredOAuth: false,
+    ...overrides,
+  };
+}
+
+const WORK = instance({
+  name: "work",
+  type: "anthropic",
+  authModes: ["apiKey"],
+  isDefault: true,
+  hasStoredFile: true,
+  activeSource: "file",
+});
+const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
+const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
+
+beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetCredentialsStoreForTests();
+});
+
+afterEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  cleanup();
+});
+
+describe("initial load", () => {
+  test("fetches serf/instance/list on mount and groups rows by type", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    expect(screen.getByText("anthropic")).toBeTruthy();
+    expect(screen.getByText("openai")).toBeTruthy();
+    expect(screen.getByText("personal")).toBeTruthy();
+  });
+
+  test("empty state", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => ({ instances: [], availableTypes: [] }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("No provider instances configured.");
+  });
+
+  test("load failure shows an error message", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => {
+      throw new Error("network down");
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText(/Failed to load: network down/);
+  });
+
+  // The integration-level proof of useConnectedEffect: a direct deep link
+  // to /credentials can mount this section before AppShell's own connect()
+  // handshake finishes (see that hook's own doc comment) - the initial
+  // fetch must defer until the connection is actually ready, then fire
+  // exactly once, rather than throwing (unhandled) or never firing at all.
+  test("mounting before the connection is ready defers the initial load, which then fires exactly once it becomes ready", async () => {
+    const fake = new FakeClient("idle"); // NOT ready at mount
+    connectionStore.getState().connect(fake);
+    let calls = 0;
+    fake.on("serf/instance/list", () => {
+      calls += 1;
+      return LIST;
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    // Give any (wrongly) eager fetch attempt every chance to fire before
+    // asserting it hasn't - a real bug here would throw synchronously into
+    // an unhandled rejection, not silently pass this check.
+    await act(() => Promise.resolve());
+    expect(calls).toBe(0);
+
+    act(() => {
+      fake.emitReady();
+    });
+
+    await screen.findByText("work");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("single-open-editor invariant", () => {
+  test("opening the Add form, then Edit on a row, replaces it (only one editor open at a time)", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "+ Add provider instance" }));
+    expect(screen.getByRole("dialog", { name: "Add provider instance" })).toBeTruthy();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
+    expect(screen.queryByRole("dialog", { name: "Add provider instance" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Edit work" })).toBeTruthy();
+  });
+});
+
+describe("OAuth start branches", () => {
+  test("fallback:true opens the redirect (paste-back) editor using loginStart's own flowId/url", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/auth/device/start", () => ({
+      provider: "personal",
+      flowId: "device-flow",
+      userCode: "X",
+      verificationUrl: "https://verify",
+      intervalSeconds: 5,
+      fallback: true,
+    }));
+    fake.on("serf/auth/login/start", () => ({
+      provider: "personal",
+      flowId: "redirect-flow",
+      url: "https://auth/start",
+    }));
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    await screen.findByRole("dialog", { name: "Sign in to personal" });
+    expect(openSpy).toHaveBeenCalledWith("https://auth/start", "_blank", "noopener");
+    expect(screen.getByRole("link", { name: /re-open authorize url/i })).toBeTruthy();
+  });
+
+  test("fallback:false/absent opens the device-code editor", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/auth/device/start", () => ({
+      provider: "personal",
+      flowId: "device-flow",
+      userCode: "ABCD-EFGH",
+      verificationUrl: "https://verify",
+      intervalSeconds: 5,
+    }));
+    fake.on("serf/auth/device/poll", () => ({ state: "pending" }));
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    await screen.findByText("ABCD-EFGH");
+  });
+
+  test("a deviceStart failure toasts 'Sign-in failed' and opens no editor", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/auth/device/start", () => {
+      throw new Error("provider unavailable");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    await screen.findByText("Sign-in failed: provider unavailable");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  // Proves the key={flowId} teardown DeviceCodeDialog's own doc comment
+  // claims: expiring flow A, then "Start again" (a fresh serf/auth/device/
+  // start -> a NEW flowId, same openEditor.kind==="device" throughout) must
+  // both (a) reset DeviceCodeDialog's own local UI state (copied/expired/
+  // error) rather than leaking flow A's "expired" straight into flow B's
+  // first render, and (b) leave flow A's poll timer genuinely dead. Neither
+  // holds for free: DeviceCodeDialog's internal poll effect already
+  // restarts on a bare flowId prop change (flowId is one of its own deps),
+  // which is enough to make (b) true even WITHOUT the key - only (a)
+  // actually depends on key forcing a real remount (a mere prop update
+  // would keep the same component instance, and therefore its stale local
+  // state, across the transition).
+  test("abandoning an expired device flow and starting a new one resets to a fresh state, not flow A's leftover 'expired' UI - and flow A's timer stays dead", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    let deviceStartCalls = 0;
+    fake.on("serf/auth/device/start", () => {
+      deviceStartCalls += 1;
+      return deviceStartCalls === 1
+        ? {
+            provider: "personal",
+            flowId: "flow-A",
+            userCode: "AAAA-1111",
+            verificationUrl: "https://verify",
+            intervalSeconds: 1,
+          }
+        : {
+            provider: "personal",
+            flowId: "flow-B",
+            userCode: "BBBB-2222",
+            verificationUrl: "https://verify",
+            intervalSeconds: 1,
+          };
+    });
+    const pollCalls: string[] = [];
+    fake.on("serf/auth/device/poll", (params) => {
+      pollCalls.push(params.flowId);
+      return params.flowId === "flow-A" ? { state: "expired" } : { state: "pending" };
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Sign in…" }));
+    await screen.findByText("AAAA-1111");
+
+    // Flow A expires.
+    await screen.findByText(/Code expired/, {}, { timeout: 3000 });
+    await user.click(screen.getByRole("button", { name: "Start again" }));
+
+    // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
+    await screen.findByText("BBBB-2222", {}, { timeout: 3000 });
+    expect(screen.queryByText(/Code expired/)).toBeNull();
+    expect(screen.getByRole("button", { name: /copy code/i })).toBeTruthy();
+
+    // Flow B is genuinely polling under its own flowId.
+    await waitFor(() => expect(pollCalls).toContain("flow-B"), { timeout: 3000 });
+    const flowACallsAtSwitch = pollCalls.filter((id) => id === "flow-A").length;
+
+    // Flow A's timer must be dead - give it every chance it would have had
+    // to fire again if it weren't.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 2200)));
+    expect(pollCalls.filter((id) => id === "flow-A").length).toBe(flowACallsAtSwitch);
+  });
+});
+
+describe("set default", () => {
+  test("calls instanceSetDefault directly with no confirm dialog and no success toast", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/instance/setDefault", (params) => {
+      expect(params).toEqual({ name: "personal" });
+      return { instances: [WORK, { ...PERSONAL, isDefault: true }], availableTypes: ["anthropic", "openai"] };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /make default/i }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/instance/setDefault")).toBe(true));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  test("a setDefault failure toasts 'Set default failed'", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/instance/setDefault", () => {
+      throw new Error("boom");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /make default/i }));
+    await screen.findByText("Set default failed: boom");
+  });
+});
+
+describe("Clear / Remove confirm dialogs", () => {
+  test("Clear opens a ConfirmDialog naming the instance; confirming calls authLogout then refreshes", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/auth/logout", (params) => {
+      expect(params).toEqual({ provider: "work" });
+      return {
+        removed: true,
+        status: { provider: "work", supported: true, signedIn: false, activeSource: "absent", hasStoredOAuth: false },
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // WORK carries hasStoredFile+activeSource:"file" in the shared fixture,
+    // so its row already offers Clear.
+    await user.click(screen.getByRole("button", { name: "Clear" }));
+    const dialog = screen.getByRole("dialog", { name: /clear/i });
+    expect(dialog).toBeTruthy();
+    // The row's own Clear button is still present behind the dialog, so
+    // scope this second click to the dialog's own Clear/confirm button.
+    await user.click(within(dialog).getByRole("button", { name: "Clear" }));
+    await screen.findByText("Credentials cleared for work");
+  });
+
+  test("Remove opens a ConfirmDialog; confirming calls instanceRemove", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    fake.on("serf/instance/remove", (params) => {
+      expect(params).toEqual({ name: "personal" });
+      return { instances: [WORK], availableTypes: ["anthropic"] };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+    await user.click(removeButtons[1]!); // personal's row
+    const dialog = screen.getByRole("dialog", { name: /remove/i });
+    expect(dialog).toBeTruthy();
+    // The row's own Remove button is still present behind the dialog, so
+    // scope this second click to the dialog's own Remove/confirm button.
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await screen.findByText("Removed instance personal");
+  });
+
+  test("cancelling a confirm dialog makes no RPC call", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/instance/list", () => LIST);
+    const removeCalls: unknown[] = [];
+    fake.on("serf/instance/remove", (params) => {
+      removeCalls.push(params);
+      return { instances: [], availableTypes: [] };
+    });
+    render(<CredentialsSection sectionId="credentials" />);
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const removeButtons = screen.getAllByRole("button", { name: "Remove" });
+    await user.click(removeButtons[1]!);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(removeCalls).toEqual([]);
+  });
+});

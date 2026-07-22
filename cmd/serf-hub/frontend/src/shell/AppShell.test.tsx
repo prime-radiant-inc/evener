@@ -70,6 +70,7 @@ beforeAll(async () => {
   globalThis.localStorage = new MemoryStorage();
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
+  await import("../panes/settings/Settings");
   // AppShell.tsx now React.lazy()s DockHost itself (Task 7's bundle split -
   // dockview is dead weight on the mobile path) - pre-warmed for the same
   // reason as the two panes above.
@@ -271,4 +272,49 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   // appended after it and focused/active.
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Welcome", "ref_new_session"]);
   expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("ref_new_session");
+});
+
+// --- settings routing (this task) -------------------------------------
+
+test("deep-linking to /settings/{section} opens the settings pane showing that section", async () => {
+  window.history.pushState({}, "", "/settings/theme");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Theme" }).getAttribute("aria-current")).toBe("page");
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Theme"]);
+});
+
+test("deep-linking to bare /settings opens the settings pane on its default (General) section", async () => {
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "General" }).getAttribute("aria-current")).toBe("page");
+});
+
+test("deep-linking to /credentials resolves to the settings pane, pre-focused on credentials", async () => {
+  window.history.pushState({}, "", "/credentials");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Providers & credentials" }).getAttribute("aria-current")).toBe("page");
+  // paneToURL's own canonical form, not the /credentials alias - see
+  // routing.test.ts's "paneToURL formats the credentials section" test.
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Providers & credentials"]);
+});
+
+test("navigating from one settings section to another, post-mount, updates the SAME pane (singleton) rather than opening a second tab", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/settings/general");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByRole("navigation", { name: "Settings sections" });
+
+  await user.click(screen.getByRole("button", { name: "Storage" }));
+
+  expect(screen.getByRole("button", { name: "Storage" }).getAttribute("aria-current")).toBe("page");
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Storage"]);
 });

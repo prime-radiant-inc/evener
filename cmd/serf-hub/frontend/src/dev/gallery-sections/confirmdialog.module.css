@@ -1,0 +1,16 @@
+/* Same containment need as the Dialog gallery section's own .demoFrame
+ * (see dialog.module.css) - ConfirmDialog's scrim is the same
+ * position:fixed OverlayPanel underneath, so it needs the same
+ * containing-block + explicit-width treatment to stay scoped to this demo
+ * box instead of covering the whole gallery page.
+ */
+.demoFrame {
+  position: relative;
+  contain: layout;
+  overflow: hidden;
+  width: min(360px, calc(100vw - 96px));
+  min-height: 220px;
+  border: 1px dashed var(--edge);
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+}

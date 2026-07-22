@@ -1,0 +1,81 @@
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+}
+
+.content {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.addForm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.addField {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+/* --danger is allowlisted for this widget in
+ * src/styles/token-contract.test.ts - inline add-validation failure is the
+ * same "genuine semantic state" FormRow's own error text earns it for.
+ */
+.error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--font-size-caption);
+}
+
+/* Standard clip-to-1px visually-hidden technique: hides the add field's
+ * accessible-name text visually (the placeholder already conveys it
+ * sighted) while keeping it in the accessibility tree - `display:none`
+ * would remove it from that tree too, which is the one thing this must
+ * not do.
+ */
+.visuallyHidden {
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  white-space: nowrap;
+  border: 0;
+}

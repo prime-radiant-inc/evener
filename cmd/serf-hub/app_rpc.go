@@ -708,6 +708,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfCommandList, func(context.Context, appwire.EmptyParams) (appwire.CommandListResponse, error) {
 		return hubCommandList(cfg)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfSettingsOverview, func(ctx context.Context, _ appwire.EmptyParams) (appwire.SettingsOverviewResponse, error) {
+		return hubSettingsOverview(ctx, cfg)
+	})
 }
 
 // hubCommandList answers serf/command/list by loading every plugin a real
