@@ -268,3 +268,71 @@ Gates re-run in full on the fixed tree (`cmd/serf-hub/frontend`):
 Fix commit: `2ca0185c1` — "webui absorb-a2: fix fabricated provenance
 comments, add enterToSend '0' test" (2 files changed: `prefs.ts`,
 `prefs.test.ts`; not amended into the reviewed commits, per instructions).
+
+## Fix round 2 (review response)
+
+Review verdict: one item remained after round 1 (the provenance-comment
+finding was fully resolved and verified clean). Addressed in commit
+`e1e1675a6`.
+
+**Finding**: the `enterToSend` "0" test added in round 1 (`reads a
+previously stored enterToSend of '0' as false`) cannot discriminate the
+mutation that deletes `readBool`'s `if (raw === "0") return false;` branch
+entirely, for `enterToSend` specifically. With that branch gone, `raw ===
+"0"` falls through to `return fallback`, and `enterToSend`'s own fallback
+is `false` — the same value the deleted branch would have returned — so
+the test's assertion (`toBe(false)`) holds either way, by construction. I
+independently mutation-verified this myself before writing anything
+(temporarily deleted the branch, ran `prefs.test.ts`: only `reads a
+previously stored enterToSend/showCost` failed — the enterToSend-only "0"
+test stayed green; reverted, confirmed clean diff). I also verified the
+test's actual value is real, just narrower than claimed: temporarily
+inverted the branch to `return true`, and BOTH the enterToSend-only test
+and the showCost-inclusive test failed; reverted, confirmed clean diff. So
+the test is a genuine inversion guard ("0" can never silently start
+decoding truthy for this field) - it just isn't the independent
+branch-reached proof my round-1 comment and report both claimed.
+
+**This corrects two earlier claims** (left in place above, per the
+coordinator's append-only instruction for errata - treat both as
+superseded by this section):
+- The original coverage table's "reads off for '0' or 'true'" row (line
+  ~137 above) said "no new test added here" for the "0" case - true when
+  written (before round 1's fix), stale once round 1 added one, and even
+  that addition doesn't make the row's underlying claim ("covered
+  generically via showCost, DRY convention, no field-level test needed")
+  wrong - it was right all along. The branch-reached proof for `enterToSend`
+  genuinely does still live only in showCost's own "0" assertion (`reads a
+  previously stored enterToSend/showCost`, whose `true` default diverges
+  from what "0" decodes to, so removing the branch changes ITS observable
+  outcome).
+- Round 1's own MINOR section (above) said the new test proves the "0"
+  proposition "directly on the field itself," implying it closes the same
+  gap the shared-`readBool` DRY argument left open. It doesn't, and can't -
+  no per-field assertion can, when that field's own fallback coincides with
+  the value under test. The correct, honest characterization: `enterToSend`
+  "0"-reads-false is covered by (a) the shared `readBool` proof via
+  showCost's own "0" assertion, which is what actually exercises and proves
+  the branch fires, plus (b) the round-1 `enterToSend`-specific test as a
+  narrower, real but distinct guard against a silent inversion on this
+  field. Not an independent field-level branch proof.
+
+**Fix**: reworded the test's own comment (kept the test itself and its
+assertion unchanged - option (a), honest scoping, not a new assertion) to
+state exactly this: what it proves ("0" never decodes truthy for
+`enterToSend`) and what it structurally cannot (branch-reached - that
+lives in showCost's assertion, whose `true` default is what separates the
+two outcomes).
+
+Gates re-run in full on the fixed tree (`cmd/serf-hub/frontend`):
+1. `npx tsc --noEmit` — clean.
+2. `npx vitest run` — **185 test files passed (185), 2853 tests passed
+   (2853)** — unchanged from round 1 (comment-only edit, no test added or
+   removed).
+3. `npm run lint` — clean, "Checked 543 files... No fixes applied."
+4. `npm run build` — succeeded; `git restore dist/PLACEHOLDER` confirmed
+   clean via `git status` immediately after.
+
+Fix commit: `e1e1675a6` — "webui absorb-a2: scope the enterToSend '0'
+test's proof honestly" (1 file changed: `prefs.test.ts`; not amended into
+any earlier commit).
