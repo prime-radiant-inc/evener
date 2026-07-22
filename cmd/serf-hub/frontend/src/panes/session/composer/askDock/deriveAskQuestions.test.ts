@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { ThreadCapabilities } from "../../../../protocol/types.gen";

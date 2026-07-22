@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import type { ItemModel } from "../../protocol/model";
 import { parseAskUserQuestions } from "./askShared";

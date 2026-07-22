@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 

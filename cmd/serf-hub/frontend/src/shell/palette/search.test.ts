@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";

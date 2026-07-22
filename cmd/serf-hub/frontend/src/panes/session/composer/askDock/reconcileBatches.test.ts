@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test, vi } from "vitest";
 import type { AskQuestionRef } from "./deriveAskQuestions";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { LaunchOption } from "../../protocol/types.gen";
 import { collectAdvancedOverrides, perLaunchSerfOptions, resolveScalars } from "./schema";

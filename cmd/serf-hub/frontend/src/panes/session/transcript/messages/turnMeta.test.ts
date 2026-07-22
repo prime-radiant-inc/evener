@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import type { TurnModel } from "../../../../protocol/model";
 import { turnMetaParts } from "./turnMeta";

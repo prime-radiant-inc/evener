@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { expect, test } from "vitest";
 import { type AskAnswerItem, composeAskAnswers, quoteGoString } from "./askCompose";
 
