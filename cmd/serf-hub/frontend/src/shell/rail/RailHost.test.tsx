@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { prefsStore } from "../../stores/prefs";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
+import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost } from "./RailHost";
 import { revealSessionInRail, setRailRevealHandler } from "./railController";
@@ -160,6 +161,19 @@ describe("the ☰ chip and overlay drawer", () => {
     treeStore.setState({ tree: emptyTree(3) });
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar.*3 need attention/i })).toBeTruthy();
+  });
+
+  // The ☰ chip sits top-left (CLASS.chipBar); the drawer it opens must slide
+  // in from the same edge, not the opposite one.
+  test("the drawer is anchored left, matching the ☰ chip's top-left position", async () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(<RailHost />);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: /show sidebar/i }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.className.split(" ")).toContain(sheetStyles.left);
+    expect(dialog.className.split(" ")).not.toContain(sheetStyles.right);
   });
 });
 

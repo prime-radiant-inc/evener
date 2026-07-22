@@ -96,7 +96,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
             {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
           </button>
         </div>
-        <Sheet side="right" open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sessions">
+        <Sheet side="left" open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sessions">
           <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} />
         </Sheet>
       </>

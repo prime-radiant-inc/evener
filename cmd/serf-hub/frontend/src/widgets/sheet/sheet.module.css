@@ -26,6 +26,16 @@
   }
 }
 
+@keyframes sheetInLeft {
+  from {
+    transform: translateX(-100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
 .right {
   position: fixed;
   top: 0;
@@ -52,9 +62,23 @@
   animation: sheetInBottom var(--motion-duration-overlay) var(--motion-easing-standard);
 }
 
+.left {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 100vh;
+  width: min(420px, 100vw);
+  border-radius: 0;
+  border-top: none;
+  border-left: none;
+  border-bottom: none;
+  animation: sheetInLeft var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .right,
-  .bottom {
+  .bottom,
+  .left {
     animation: none;
   }
 }
