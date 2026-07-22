@@ -310,8 +310,9 @@ function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] 
   return input;
 }
 
-// mapConflict is the one WireError shape the daemon uses for turn CAS losers
-// (turn/start, turn/steer, turn/queue, turn/interrupt): code -32013 with
+// mapConflict recognizes the WireError shape the daemon uses for a lost turn
+// CAS (turn/start, turn/steer, turn/queue, turn/interrupt) or a stale/raced
+// escalation resolve: code -32013 with
 // data.serfErrorInfo === "conflict" (appwire.Conflict(), appwire/errors.go).
 // The discriminator is the serfErrorInfo string, not the code alone — code
 // -32013 is also used by appwire.QueuedDrainPartial with a different
@@ -849,9 +850,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async resolveEscalation(ref, escalationId, approve) {
     const client = requireClient();
-    // No mapConflict here: resolve isn't a turn-CAS method, and the caller
-    // (the escalation rail) surfaces whatever rejection reaches it as-is.
-    await client.request("serf/sandbox/escalation/resolve", { ref, escalationId, approve });
+    // Map a daemon Conflict to ConflictError, same as every other mutating
+    // action: the daemon surfaces a stale/double/raced resolve as
+    // appwire.Conflict() (server/appwire_runtime.go's
+    // handleAppSandboxEscalationResolve) precisely so the client drops the card
+    // instead of retrying. mapConflict passes any non-conflict rejection
+    // through unchanged, and the local clear below runs only on a resolve that
+    // actually landed.
+    try {
+      await client.request("serf/sandbox/escalation/resolve", { ref, escalationId, approve });
+    } catch (err) {
+      throw mapConflict(err);
+    }
     threadsStore.setState((s) => {
       const patch: Partial<ThreadsStoreState> = {};
       const model = s.threads.get(ref);

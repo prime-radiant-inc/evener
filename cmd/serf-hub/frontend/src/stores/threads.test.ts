@@ -1217,6 +1217,41 @@ describe("useThreadsStore.resolveEscalation", () => {
     expect(threadsStore.getState().threads.get("ref_a")).toBe(before); // same reference: untouched
   });
 
+  test("maps a Conflict wire rejection (serfErrorInfo === conflict) to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    // A stale/double/raced resolve is surfaced as appwire.Conflict() by the
+    // daemon (server/appwire_runtime.go's handleAppSandboxEscalationResolve:
+    // "Surface it as a conflict so the client can drop the card rather than
+    // retry"). resolve must map it to ConflictError like every other mutating
+    // action, so the escalation rail treats it as terminal, not retryable.
+    fake.on("serf/sandbox/escalation/resolve", () => {
+      throw new WireError("escalation is not pending (unknown or already resolved)", -32013, {
+        serfErrorInfo: "conflict",
+      });
+    });
+
+    const rejection = threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    await expect(rejection).rejects.toBeInstanceOf(ConflictError);
+    await expect(rejection).rejects.toThrow("already resolved");
+  });
+
+  test("does not map a same-code, different-serfErrorInfo WireError to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
+    await threadsStore.getState().ensureThread("ref_a");
+    // Same wire code (-32013) but a non-conflict serfErrorInfo — the
+    // discriminator is the serfErrorInfo string, not the code alone.
+    fake.on("serf/sandbox/escalation/resolve", () => {
+      throw new WireError("something else", -32013, { serfErrorInfo: "queuedDrainPartial" });
+    });
+
+    const rejection = threadsStore.getState().resolveEscalation("ref_a", "esc_1", true);
+    await expect(rejection).rejects.not.toBeInstanceOf(ConflictError);
+    await expect(rejection).rejects.toBeInstanceOf(WireError);
+  });
+
   test("a resolve for an escalation absent from the model is a same-reference no-op", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => threadWithEscalation("ref_a", "esc_1"));
