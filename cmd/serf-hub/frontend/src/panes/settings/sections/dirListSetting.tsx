@@ -58,8 +58,14 @@ export interface PathListEditorProps {
   /** Fires only once the caller confirms the ConfirmDialog this widget
    * shows itself - unlike CollectionEditor's onRemove (immediate, no
    * confirm), every row removal here confirms first, per this wave's
-   * binding "every destructive action confirms" constraint. */
-  onRemove: (path: string) => void;
+   * binding "every destructive action confirms" constraint. The returned
+   * promise drives the dialog's own `busy` state (disables both buttons
+   * until it settles) - callers that report failure via a toast rather
+   * than a rejection (this file's own DirListSetting.handleRemove, mcp.tsx's
+   * handleRemoveConfig) still resolve normally, so the dialog closes once
+   * the attempt finishes either way, exactly matching those callers'
+   * existing toast-on-failure convention. */
+  onRemove: (path: string) => Promise<void>;
   listChildren: (path: string) => Promise<string[]>;
   emptyMessage: string;
   removeConfirmTitle: string;
@@ -88,7 +94,19 @@ export function PathListEditor({
   addPlaceholder = "/absolute/path",
 }: PathListEditorProps) {
   const [pending, setPending] = useState<string | null>(null);
+  const [removing, setRemoving] = useState(false);
   const addFieldId = useId();
+
+  async function handleConfirmRemove() {
+    if (pending === null) return;
+    setRemoving(true);
+    try {
+      await onRemove(pending);
+    } finally {
+      setRemoving(false);
+      setPending(null);
+    }
+  }
 
   return (
     <>
@@ -125,10 +143,8 @@ export function PathListEditor({
         open={pending !== null}
         title={removeConfirmTitle}
         confirmLabel="Remove"
-        onConfirm={() => {
-          onRemove(pending as string);
-          setPending(null);
-        }}
+        busy={removing}
+        onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPending(null)}
       >
         {pending !== null ? removeConfirmBody(pending) : ""}
@@ -179,15 +195,14 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
     }
   }
 
-  function handleRemove(path: string) {
+  async function handleRemove(path: string): Promise<void> {
     const current = extensionsStore.getState().launchLayer ?? ({} as LaunchConfigLayer);
     const nextList = (current[wireField] ?? []).filter((p) => p !== path);
-    extensionsStore
-      .getState()
-      .setLaunchLayer({ ...current, [wireField]: nextList })
-      .catch((err: unknown) => {
-        toasts.push("error", `Remove failed: ${errorMessage(err)}`);
-      });
+    try {
+      await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
+    } catch (err) {
+      toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+    }
   }
 
   const lowerLabel = label.toLowerCase();

@@ -93,6 +93,7 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
   const [serverAddError, setServerAddError] = useState<string | null>(null);
   const [serverAddBusy, setServerAddBusy] = useState(false);
   const [pendingRemoveServerIndex, setPendingRemoveServerIndex] = useState<number | null>(null);
+  const [removeServerBusy, setRemoveServerBusy] = useState(false);
   const serverCommandId = useId();
 
   // Runs once on mount - the injected hook's own fetch reference is expected
@@ -129,15 +130,14 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
     }
   }
 
-  function handleRemoveConfig(path: string) {
+  async function handleRemoveConfig(path: string): Promise<void> {
     const current = extensionsStore.getState().launchLayer ?? {};
     const nextList = (current.mcpConfigs ?? []).filter((p) => p !== path);
-    extensionsStore
-      .getState()
-      .setLaunchLayer({ ...current, mcpConfigs: nextList })
-      .catch((err: unknown) => {
-        toasts.push("error", `Remove failed: ${errorMessage(err)}`);
-      });
+    try {
+      await extensionsStore.getState().setLaunchLayer({ ...current, mcpConfigs: nextList });
+    } catch (err) {
+      toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+    }
   }
 
   async function handleAddServer(event: FormEvent<HTMLFormElement>) {
@@ -170,18 +170,20 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
     }
   }
 
-  function handleConfirmRemoveServer() {
+  async function handleConfirmRemoveServer() {
     const index = pendingRemoveServerIndex;
-    setPendingRemoveServerIndex(null);
     if (index === null) return;
+    setRemoveServerBusy(true);
     const current = extensionsStore.getState().launchLayer ?? {};
     const nextList = (current.mcps ?? []).filter((_, i) => i !== index);
-    extensionsStore
-      .getState()
-      .setLaunchLayer({ ...current, mcps: nextList })
-      .catch((err: unknown) => {
-        toasts.push("error", `Remove failed: ${errorMessage(err)}`);
-      });
+    try {
+      await extensionsStore.getState().setLaunchLayer({ ...current, mcps: nextList });
+    } catch (err) {
+      toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+    } finally {
+      setRemoveServerBusy(false);
+      setPendingRemoveServerIndex(null);
+    }
   }
 
   const mcps = layer?.mcps ?? [];
@@ -311,7 +313,8 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
         open={pendingRemoveServerIndex !== null}
         title="Remove MCP server"
         confirmLabel="Remove"
-        onConfirm={handleConfirmRemoveServer}
+        busy={removeServerBusy}
+        onConfirm={() => void handleConfirmRemoveServer()}
         onCancel={() => setPendingRemoveServerIndex(null)}
       >
         {pendingServer !== undefined ? `Remove "${pendingServer.name}"?` : ""}

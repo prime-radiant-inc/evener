@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -193,6 +193,23 @@ test("removing an inline server confirms first, then saves with it filtered out"
   expect(screen.getByRole("dialog", { name: "Remove MCP server" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Remove" }));
   await waitFor(() => expect(screen.queryByText("search → /usr/bin/search-mcp")).toBeNull());
+});
+
+test("the remove-server confirm's buttons disable while the save is in flight", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/launch/getLayer", () => ({
+    mcpConfigs: [],
+    mcps: [{ name: "search", command: "/usr/bin/search-mcp", args: [] }],
+  }));
+  fake.on("serf/launch/setLayer", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("search → /usr/bin/search-mcp");
+  await user.click(screen.getByRole("button", { name: "Remove search" }));
+  const dialog = screen.getByRole("dialog", { name: "Remove MCP server" });
+  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+  expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 test("a failed save while removing a config file toasts failure", async () => {

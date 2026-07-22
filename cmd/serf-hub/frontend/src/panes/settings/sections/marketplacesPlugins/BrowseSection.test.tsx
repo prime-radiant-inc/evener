@@ -181,6 +181,21 @@ test("a failed install toasts failure", async () => {
   );
 });
 
+test("the install confirm's buttons disable while the install is in flight", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  fake.on("serf/plugin/install", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  render(<Harness />);
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  await user.click(within(dialog).getByRole("button", { name: "Install" }));
+  expect((within(dialog).getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+});
+
 test("typing a filter query auto-expands (after the debounce) a marketplace with a matching plugin and hides a successfully-loaded, zero-match one entirely", async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const user = userEvent.setup({ delay: null, advanceTimers: vi.advanceTimersByTime });

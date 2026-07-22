@@ -60,6 +60,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
   const [nameValue, setNameValue] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   const urlId = useId();
   const repoId = useId();
@@ -119,12 +120,15 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
   async function handleConfirmRemove() {
     const name = pendingRemove;
     if (name === null) return;
-    setPendingRemove(null);
+    setRemoveBusy(true);
     try {
       await extensionsStore.getState().removeMarketplace(name);
       toasts.push("success", `Removed marketplace ${name}`);
+      setPendingRemove(null);
     } catch (err) {
       toasts.push("error", `Remove marketplace failed: ${errorMessage(err)}`);
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -225,6 +229,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
         open={pendingRemove !== null}
         title="Remove marketplace"
         confirmLabel="Remove"
+        busy={removeBusy}
         onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPendingRemove(null)}
       >

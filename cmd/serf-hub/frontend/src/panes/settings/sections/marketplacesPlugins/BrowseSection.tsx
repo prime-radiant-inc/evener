@@ -55,6 +55,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   const [filterQuery, setFilterQuery] = useState("");
   const [filterLoading, setFilterLoading] = useState(false);
   const [pendingInstall, setPendingInstall] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const [installBusy, setInstallBusy] = useState(false);
 
   const trimmedQuery = filterQuery.trim();
 
@@ -120,12 +121,15 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
   async function handleConfirmInstall() {
     const target = pendingInstall;
     if (target === null) return;
-    setPendingInstall(null);
+    setInstallBusy(true);
     try {
       await extensionsStore.getState().installPlugin(target.plugin, target.marketplace);
       toasts.push("success", `Installed ${target.plugin}`);
+      setPendingInstall(null);
     } catch (err) {
       toasts.push("error", `Install failed: ${errorMessage(err)}`);
+    } finally {
+      setInstallBusy(false);
     }
   }
 
@@ -183,6 +187,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
         title="Install plugin"
         confirmLabel="Install"
         destructive={false}
+        busy={installBusy}
         onConfirm={() => void handleConfirmInstall()}
         onCancel={() => setPendingInstall(null)}
       >

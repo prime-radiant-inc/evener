@@ -31,6 +31,7 @@ export function InstalledSection() {
   const plugins = useExtensionsStore((s) => s.plugins) ?? [];
   const toasts = useToasts();
   const [pendingRemove, setPendingRemove] = useState<{ plugin: string; marketplace: string } | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
 
   async function handleToggleEnable(plugin: string, marketplace: string, currentlyEnabled: boolean) {
     try {
@@ -61,12 +62,15 @@ export function InstalledSection() {
   async function handleConfirmRemove() {
     const target = pendingRemove;
     if (target === null) return;
-    setPendingRemove(null);
+    setRemoveBusy(true);
     try {
       await extensionsStore.getState().removePlugin(target.plugin, target.marketplace);
       toasts.push("success", `Removed ${target.plugin}`);
+      setPendingRemove(null);
     } catch (err) {
       toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -127,6 +131,7 @@ export function InstalledSection() {
         open={pendingRemove !== null}
         title="Remove plugin"
         confirmLabel="Remove"
+        busy={removeBusy}
         onConfirm={() => void handleConfirmRemove()}
         onCancel={() => setPendingRemove(null)}
       >

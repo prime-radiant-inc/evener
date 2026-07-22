@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -80,6 +80,27 @@ describe("PathListEditor", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(onRemove).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  test("the confirm dialog's buttons disable while onRemove is in flight", async () => {
+    const user = userEvent.setup();
+    let resolveRemove: () => void = () => {};
+    const onRemove = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRemove = resolve;
+        }),
+    );
+    render(<PathListEditor {...baseProps({ onRemove })} />);
+    await user.click(screen.getByRole("button", { name: "Remove /opt/plugins" }));
+    const dialog = screen.getByRole("dialog", { name: "Remove directory" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+
+    resolveRemove();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   test("the Add button is disabled while the draft is blank", () => {

@@ -199,3 +199,28 @@ test("cancelling the remove confirm does not call removeMarketplace", async () =
   await user.click(screen.getByRole("button", { name: "Cancel" }));
   expect(removeSpy).not.toHaveBeenCalled();
 });
+
+test("the confirm dialog's buttons disable while removal is in flight, and it stays open until it resolves", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
+  let resolveRemove: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
+  fake.on(
+    "serf/marketplace/remove",
+    () =>
+      new Promise((resolve) => {
+        resolveRemove = resolve;
+      }),
+  );
+  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  const dialog = screen.getByRole("dialog", { name: "Remove marketplace" });
+  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+  expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByRole("dialog", { name: "Remove marketplace" })).toBeTruthy(); // still open mid-flight
+
+  resolveRemove({ marketplaces: [] });
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+});

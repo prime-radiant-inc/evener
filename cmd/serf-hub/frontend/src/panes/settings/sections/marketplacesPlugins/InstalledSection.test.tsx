@@ -225,3 +225,16 @@ test("a failed remove toasts failure", async () => {
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Remove failed: boom")).toBe(true),
   );
 });
+
+test("the remove confirm's buttons disable while the removal is in flight", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER] });
+  fake.on("serf/plugin/remove", () => new Promise(() => {})); // never resolves - just observe the mid-flight state
+  render(<InstalledSection />);
+  await user.click(screen.getByRole("button", { name: "Remove" }));
+  const dialog = screen.getByRole("dialog", { name: "Remove plugin" });
+  await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+  expect((within(dialog).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+});
