@@ -6,11 +6,18 @@
 // switch: the live decay clock (nowTick, from ./liveness) and the
 // connection-ready gate's local closure, neither of which loses anything a
 // remount can't immediately reconstruct from the store.
+//
+// Wave 5 T1 carves the <Composer>/<SessionChrome> slots below and then
+// FREEZES this file for the wave: T2-T5 build everything else inside those
+// two components' own subtrees (composer/Composer.tsx, chrome/
+// SessionChrome.tsx) and never edit Session.tsx again this wave.
 import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { Cadence, EmptyState, PaneScaffold, useToasts, VirtualList, type VirtualListHandle } from "../../widgets";
+import { SessionChrome } from "./chrome/SessionChrome";
+import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
 import { TurnBlock } from "./transcript/TurnBlock";
 import { useTranscript } from "./transcript/useTranscript";
@@ -40,8 +47,21 @@ const EMPTY_FRAME_TIMES: number[] = [];
 // widgets/virtuallist's own `dynamic` prop doc comment.
 const ESTIMATED_TURN_HEIGHT = 96;
 
+// Failure-feedback convention (decided this wave, T1 - see the wave plan's
+// own "Binding constraints" section): a user-initiated action that fails
+// surfaces via the existing useToasts() singleton, kind "error" - no new
+// banner systems, no silent `.catch(() => {})`. The loadOlder() catch below
+// is the reference implementation; every other stream's own failure
+// handling (composer send/steer/queue, queue strip promote/edit/cancel, ask
+// answering, session actions) should follow the same shape: catch, format
+// with errorMessage(), toasts.push("error", ...).
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const toasts = useToasts();
 
   // ensureThread on mount / releaseThread on unmount, exactly once each.
   // AppShell mounts DockHost (and therefore this pane) unconditionally,
@@ -121,7 +141,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   };
 
   return (
-    <PaneScaffold title={model.name || ref} cadence={cadence}>
+    <PaneScaffold title={model.name || ref} cadence={cadence} footer={<SessionChrome ref={ref} />}>
       <SandboxEscalationRail sessionRef={ref} />
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
@@ -131,7 +151,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
             top={
               <>
                 {model.olderCursor && (
-                  <LoadOlderRow onClick={() => void loadOlder().catch(() => {})} loading={loadingOlder} />
+                  <LoadOlderRow
+                    onClick={() =>
+                      void loadOlder().catch((err) => {
+                        toasts.push("error", `Couldn't load older messages: ${errorMessage(err)}`);
+                      })
+                    }
+                    loading={loadingOlder}
+                  />
                 )}
                 <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
               </>
@@ -156,6 +183,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           </FlowOverlay>
         </div>
       )}
+      <Composer ref={ref} />
     </PaneScaffold>
   );
 }

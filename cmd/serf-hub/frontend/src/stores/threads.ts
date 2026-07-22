@@ -19,8 +19,52 @@ import {
   resolvePendingEscalation,
 } from "../protocol/reducer";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import type { AnyNotification, InputItem, ThreadReadResponse, ThreadTurnsListResponse } from "../protocol/types.gen";
+import type {
+  AnyNotification,
+  GoalSetResponse,
+  InputItem,
+  ModelListResponse,
+  ThreadClearResponse,
+  ThreadForkResponse,
+  ThreadReadResponse,
+  ThreadTurnsListResponse,
+  TurnCancelQueuedResponse,
+} from "../protocol/types.gen";
 import { connectionStore } from "./connection";
+
+// InputAttachment is this store's real-attachment shape: base64 bytes, not a
+// hosted URL. The wire's InputItem (appwire/types.go:561-570) supports EITHER
+// a Data+MediaType+Name triple OR a URL string (both fields are independently
+// optional on the same struct), but nothing in this codebase ever constructs
+// a url-based InputItem (verified: no caller of send/steer/queue/drainAsSteer
+// exists yet outside this store's own tests) - a pasted/dropped/picked image
+// is always bytes, never a pre-hosted URL, so that half of InputItem's shape
+// is left unexercised here rather than invented into this store's public
+// surface. A future caller that genuinely has a hosted URL can still reach
+// it at the wire layer; it just isn't this parameter.
+export interface InputAttachment {
+  mediaType: string;
+  data: string; // base64-encoded bytes (wire InputItem.data)
+  name?: string;
+}
+
+// ForkFromTurnOptions mirrors ThreadForkParams verbatim (appwire/types.go:
+// 692-711) minus ref (a separate positional argument, like every other
+// action here). Fork and aside are the SAME wire method with mutually
+// exclusive param sets (aside excludes sourceTurnId/editedInput/deferInput/
+// label per that struct's own doc comment) - the Go type itself is one flat
+// struct with no type-level split enforcing this, so this TS type mirrors
+// that honestly rather than inventing a discriminated union the wire
+// doesn't have; enforcing the exclusion is the caller's (T5's) job.
+export interface ForkFromTurnOptions {
+  sourceTurnId?: string;
+  editedInput?: string;
+  label?: string;
+  modelProvider?: string;
+  model?: string;
+  deferInput?: boolean;
+  aside?: boolean;
+}
 
 export class ConflictError extends Error {
   constructor(message: string) {
@@ -65,10 +109,77 @@ export interface ThreadsStoreState {
   watchThread(ref: string): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
-  send(ref: string, text: string, images?: string[]): Promise<void>;
-  steer(ref: string, text: string): Promise<void>;
-  queue(ref: string, text: string): Promise<void>;
+  send(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
+  steer(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
+  queue(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
   interrupt(ref: string): Promise<void>;
+  // drainAsSteer atomically appends the composer's current text/attachments
+  // (if any) to the input queue, then drains the whole queue into the
+  // active turn as one steering message (turn/drainAsSteer, kata 0bq1 Path
+  // B) - see this file's own describe block for why `text` is a required
+  // param here, not the bare `drainAsSteer(ref)` the plan's terse pseudocode
+  // showed.
+  drainAsSteer(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
+  // Removes one queued message by index and injects it as steering into the
+  // in-flight turn (issue #22). expectedEntryId, when non-empty, must match
+  // the id the daemon minted for that queue position (QueueState.IDs) - a
+  // mismatch (the queue shifted under the caller's snapshot) is a Conflict,
+  // never a wrong-message promote.
+  promoteQueuedAsSteer(ref: string, index: number, expectedEntryId: string): Promise<void>;
+  // Removes the queued follow-up at index so it is never consumed (issue
+  // #23; also the removal half of the composer's edit-and-recompose flow).
+  // Same expectedEntryId Conflict semantics as promoteQueuedAsSteer. Returns
+  // the wire's own echo of what was removed (RemovedText/RemovedImages) so
+  // the caller can restore the full untruncated text and warn about any
+  // image attachments that were on the entry and are not restored.
+  cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<TurnCancelQueuedResponse>;
+  setModel(ref: string, modelProvider: string, model: string): Promise<void>;
+  setReasoningEffort(ref: string, level: string): Promise<void>;
+  // Sets or clears the session's /goal objective (an empty objective
+  // clears it). Returns whether the goal loop started immediately (false
+  // when cleared, or when a turn is already running and the goal picks up
+  // after it) - the goal is set either way. No live push exists for goal
+  // state (appwire/protocol.go's Notifications catalog has no goal-changed
+  // entry): reflecting this locally is left to the caller (T5 owns that
+  // "snapshot + optimistic local update" per the wave plan), not this
+  // store, which stays a plain fire-and-report wire call like setModel/
+  // setReasoningEffort/rename/compact/shutdown above.
+  setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
+  rename(ref: string, name: string): Promise<void>;
+  compact(ref: string): Promise<void>;
+  // Clears the thread's conversation. Unlike the actions above, thread/clear
+  // has no corresponding live notification, so its response's fresh Thread
+  // snapshot is the only signal the transcript is now empty; this action
+  // applies that snapshot to whichever of threads/watchedThreads track
+  // `ref` (mirroring resolveEscalation's own dual-map update below) so the
+  // pane doesn't keep showing stale turns until some unrelated future
+  // notification or reconnect.
+  clearThread(ref: string): Promise<void>;
+  shutdown(ref: string): Promise<void>;
+  // Forks a thread from a source turn, or - with opts.aside - forks the
+  // session at its current tip into a side thread (same wire method,
+  // mutually exclusive param sets - see ForkFromTurnOptions). The response
+  // describes a DIFFERENT ref (the new child thread), so this never touches
+  // the parent's own tracked model; the caller (T5) opens the child as its
+  // own pane via ensureThread on the returned ref.
+  forkFromTurn(ref: string, opts: ForkFromTurnOptions): Promise<ThreadForkResponse>;
+  // Lists available models (model/list) with launch diagnostics, feeding
+  // the chrome stream's model-switch Combobox. Session-lifetime cached
+  // (models don't change mid-session, and no live push exists for them
+  // either - same "no capabilities-changed entry" reasoning as
+  // ThreadModel.capabilities); pass refresh:true to bypass the cache and
+  // force a fresh request. A failed request never poisons the cache with a
+  // rejected promise - the next call (with or without refresh) retries.
+  listModels(refresh?: boolean): Promise<ModelListResponse>;
+  // Lists the session's tasks (serf/tasks/list). TaskListResponse.Data is
+  // `any` on the wire catalog (appwire/types.go:896-898) - this returns
+  // that raw field verbatim, never wrapped, so the store stays shape-
+  // agnostic; the caller owns interpreting it (the chrome stream's own
+  // parseTaskListData). A Codex-source thread rejects this call
+  // (appwire.Unavailable, "actionUnavailable") - that typed error
+  // propagates unchanged, same as every other read-only action here; the
+  // caller renders the empty/unsupported state for it.
+  listTasks(ref: string): Promise<unknown>;
   // Answers one serf/sandbox/escalation/requested via serf/sandbox/
   // escalation/resolve. On success, removes the escalation from whichever
   // of threads/watchedThreads currently track `ref` (both, if both do -
@@ -94,6 +205,17 @@ const inflightHydrates = new Map<string, Promise<ThreadModel>>();
 let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+
+// listModels' own session-lifetime cache (models are not per-ref, so this
+// is a single slot, not a Map): modelsCache holds the last successful
+// response; inflightModelsList de-dupes concurrent non-refresh callers the
+// same way inflightHydrates does for ensureThread. A rejection is never
+// written to modelsCache (so a prior good cache survives a later failed
+// refresh, and a first-ever failure leaves nothing stale to keep serving),
+// and inflightModelsList is always cleared in a `finally` so a failed call
+// never poisons the next one with a repeated rejection.
+let modelsCache: ModelListResponse | null = null;
+let inflightModelsList: Promise<ModelListResponse> | null = null;
 
 // watchThread's own refcount/inflight bookkeeping - independent of
 // refCounts/inflightHydrates above, so a watch and a real pane on the
@@ -174,10 +296,17 @@ export function appendFrameTime(times: number[], now: number): number[] {
   return next.length > FRAME_TIMES_MAX_ENTRIES ? next.slice(next.length - FRAME_TIMES_MAX_ENTRIES) : next;
 }
 
-function buildInput(text: string, images?: string[]): InputItem[] {
+// buildInput assembles the wire turn/start|steer|queue|drainAsSteer input
+// array: an optional leading text item (queueText allows empty/whitespace-
+// only text when attachments are present - parity finding §B, "image-only
+// queue entries are valid" - so this only omits the text item, never
+// rejects the call), then one image item per attachment.
+function buildInput(text: string, attachments?: InputAttachment[]): InputItem[] {
   const input: InputItem[] = [];
   if (text.trim()) input.push({ type: "text", text });
-  for (const url of images ?? []) input.push({ type: "image", url });
+  for (const att of attachments ?? []) {
+    input.push({ type: "image", mediaType: att.mediaType, data: att.data, name: att.name });
+  }
   return input;
 }
 
@@ -535,29 +664,29 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     });
   },
 
-  async send(ref, text, images) {
+  async send(ref, text, attachments) {
     const client = requireClient();
     try {
-      await client.request("turn/start", { ref, input: buildInput(text, images) });
+      await client.request("turn/start", { ref, input: buildInput(text, attachments) });
     } catch (err) {
       throw mapConflict(err);
     }
   },
 
-  async steer(ref, text) {
+  async steer(ref, text, attachments) {
     const client = requireClient();
     const expectedTurnId = threadsStore.getState().threads.get(ref)?.activeTurnId;
     try {
-      await client.request("turn/steer", { ref, expectedTurnId, input: buildInput(text) });
+      await client.request("turn/steer", { ref, expectedTurnId, input: buildInput(text, attachments) });
     } catch (err) {
       throw mapConflict(err);
     }
   },
 
-  async queue(ref, text) {
+  async queue(ref, text, attachments) {
     const client = requireClient();
     try {
-      await client.request("turn/queue", { ref, input: buildInput(text) });
+      await client.request("turn/queue", { ref, input: buildInput(text, attachments) });
     } catch (err) {
       throw mapConflict(err);
     }
@@ -571,6 +700,151 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
+  },
+
+  async drainAsSteer(ref, text, attachments) {
+    const client = requireClient();
+    try {
+      await client.request("turn/drainAsSteer", { ref, input: buildInput(text, attachments) });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async promoteQueuedAsSteer(ref, index, expectedEntryId) {
+    const client = requireClient();
+    try {
+      await client.request("turn/promoteQueuedAsSteer", { ref, index, expectedEntryId });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async cancelQueued(ref, index, expectedEntryId) {
+    const client = requireClient();
+    try {
+      return await client.request("turn/cancelQueued", { ref, index, expectedEntryId });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async setModel(ref, modelProvider, model) {
+    const client = requireClient();
+    try {
+      await client.request("thread/model/set", { ref, modelProvider, model });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async setReasoningEffort(ref, level) {
+    const client = requireClient();
+    try {
+      await client.request("thread/reasoning-effort/set", { ref, reasoningEffort: level });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async setGoal(ref, objective) {
+    const client = requireClient();
+    try {
+      return await client.request("goal/set", { ref, objective });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async rename(ref, name) {
+    const client = requireClient();
+    try {
+      await client.request("serf/thread/name/set", { ref, name });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async compact(ref) {
+    const client = requireClient();
+    try {
+      await client.request("thread/compact/start", { ref });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async clearThread(ref) {
+    const client = requireClient();
+    let resp: ThreadClearResponse;
+    try {
+      resp = await client.request("thread/clear", { ref });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+    const now = Date.now();
+    threadsStore.setState((s) => {
+      const patch: Partial<ThreadsStoreState> = {};
+      if (s.threads.has(ref)) {
+        const next = new Map(s.threads);
+        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
+        patch.threads = next;
+      }
+      if (s.watchedThreads.has(ref)) {
+        const next = new Map(s.watchedThreads);
+        next.set(ref, hydrateThread({ thread: resp.thread }, ref, now));
+        patch.watchedThreads = next;
+      }
+      return Object.keys(patch).length > 0 ? patch : s;
+    });
+  },
+
+  async shutdown(ref) {
+    const client = requireClient();
+    try {
+      await client.request("thread/shutdown", { ref });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async forkFromTurn(ref, opts) {
+    const client = requireClient();
+    try {
+      // ThreadForkParams.sourceTurnId has no `omitempty` on the wire
+      // (appwire/types.go:694) - it is REQUIRED JSON, unlike every other
+      // fork field - so an aside-mode caller that never set it (aside is
+      // mutually exclusive with sourceTurnId) still gets a well-formed
+      // request rather than an absent field.
+      return await client.request("thread/fork", { ...opts, ref, sourceTurnId: opts.sourceTurnId ?? "" });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async listModels(refresh) {
+    const client = requireClient();
+    if (!refresh && modelsCache) return modelsCache;
+    if (!refresh && inflightModelsList) return inflightModelsList;
+    // No mapConflict here: model/list is a read-only listing with no
+    // turn-CAS concept (verified against every server-side handler - see
+    // this file's own describe block for the exact citations).
+    const request = client.request("model/list", {});
+    if (!refresh) inflightModelsList = request;
+    try {
+      const resp = await request;
+      modelsCache = resp;
+      return resp;
+    } finally {
+      if (!refresh) inflightModelsList = null;
+    }
+  },
+
+  async listTasks(ref) {
+    const client = requireClient();
+    // No mapConflict here either, same reasoning as listModels above.
+    const resp = await client.request("serf/tasks/list", { ref });
+    return resp.data;
   },
 
   async resolveEscalation(ref, escalationId, approve) {
@@ -635,6 +909,8 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
+  modelsCache = null;
+  inflightModelsList = null;
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;

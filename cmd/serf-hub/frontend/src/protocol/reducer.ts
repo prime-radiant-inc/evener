@@ -111,6 +111,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     callId: item.callId,
     argumentsJSON: item.argumentsJson,
     output: item.output,
+    error: item.error,
     images: imagesToStrings(item.images),
     outputImages: outputImagesToStrings(item.outputImages),
     status: item.status,
@@ -250,6 +251,16 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     tasks: null,
     olderCursor: resp.olderCursor,
     lastFrameAt: now,
+    capabilities: thread.serf.capabilities,
+    goal: thread.serf.goal ?? null,
+    contextUsed: thread.serf.contextUsed ?? 0,
+    contextWindow: thread.serf.contextWindow ?? 0,
+    contextPressure: thread.serf.contextPressure ?? 0,
+    usage: thread.serf.usage ?? null,
+    workMillis: thread.serf.workMillis ?? 0,
+    activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
+    reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],
+    supportsReasoning: thread.serf.supportsReasoning ?? false,
   };
 }
 
@@ -337,15 +348,6 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
   const chunks = summaries[summaryIndex] ?? [];
   summaries[summaryIndex] = [...chunks, delta];
   return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
-}
-
-// True for the tool call the daemon tracks as StatusInfo.PendingAsk
-// (agent/session_tools_ask.go, appwire/types.go SerfThread.AskPending): the
-// built-in ask_user tool, wire-projected like any other tool call
-// (type "commandExecution", toolName "ask_user" — confirmed against
-// internal/appprojector/appwire_projection.go and internal/apptranscript).
-function isAskUserItem(item: ThreadItem): boolean {
-  return item.type === "commandExecution" && item.toolName === "ask_user";
 }
 
 // Appends `incoming` to pendingEscalations, or — if an entry with the same
@@ -452,7 +454,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...turn,
           items: [...turn.items, wireItemToModel(item)],
         })),
-        askPending: isAskUserItem(item) ? true : model.askPending,
         lastFrameAt: now,
       };
     }
@@ -460,7 +461,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params as ItemLifecycleInline;
-      const askPending = isAskUserItem(item) ? false : model.askPending;
       const existingTurnId = findItemTurnId(model, turnId, item.id);
       if (existingTurnId) {
         return {
@@ -471,7 +471,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
               mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
             ),
           })),
-          askPending,
           lastFrameAt: now,
         };
       }
@@ -489,7 +488,6 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           ...turn,
           items: [...turn.items, wireItemToModel(item)],
         })),
-        askPending,
         lastFrameAt: now,
       };
     }
@@ -574,7 +572,19 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "thread/model/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, modelProvider: n.params.modelProvider, model: n.params.model, lastFrameAt: now };
+      // ThreadModelChangedParams (appwire/types.go:867-874) carries
+      // reasoningEffortLevels/supportsReasoning alongside modelProvider/
+      // model, describing the NEW model's full reasoning profile - not a
+      // partial patch, so an omitted/empty ladder on the new payload
+      // replaces (not preserves) whatever the old model's picker showed.
+      return {
+        ...model,
+        modelProvider: n.params.modelProvider,
+        model: n.params.model,
+        reasoningEffortLevels: n.params.reasoningEffortLevels ?? [],
+        supportsReasoning: n.params.supportsReasoning ?? false,
+        lastFrameAt: now,
+      };
     }
 
     case "thread/reasoning-effort/changed": {

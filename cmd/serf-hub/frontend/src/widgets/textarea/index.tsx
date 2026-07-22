@@ -1,4 +1,4 @@
-import type { ChangeEvent } from "react";
+import { type ChangeEvent, type ClipboardEvent, forwardRef, type KeyboardEvent, useLayoutEffect, useRef } from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./textarea.module.css";
 
@@ -7,54 +7,104 @@ export interface TextareaProps {
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   placeholder?: string;
   disabled?: boolean;
-  /** Grow the visible row count to fit `value`'s line breaks, up to
-   * MAX_ROWS - it counts "\n" occurrences, not rendered/wrapped lines, so a
-   * long line that wraps visually without a literal line break does NOT
-   * grow the box (see computeRows below for why). When false/omitted,
-   * `rows` (or the 2-row default) is fixed. */
+  /** Grow the textarea's rendered height to fit `value`'s actual laid-out
+   * content: after every value change, resets the inline height to "auto"
+   * then measures the native scrollHeight and applies it, clamped to
+   * MAX_HEIGHT_VIEWPORT_FRACTION of the viewport height (matches the legacy
+   * composer's clamp - cmd/serf-hub/assets/renderer.js:6307-6314,
+   * `Math.min(ta.scrollHeight, window.innerHeight * 0.5)`). Unlike counting
+   * "\n" occurrences, this also grows for a long single logical line that
+   * wraps across several visual lines with no literal line break - the case
+   * a row-count heuristic can never detect, since it only ever sees the
+   * string, never the rendered layout. When false/omitted, `rows` (or the
+   * 2-row default) is fixed and no measurement occurs. */
   autoGrow?: boolean;
   rows?: number;
   id?: string;
   name?: string;
+  /** Native keydown passthrough - e.g. a composer's Enter-to-send/steer
+   * routing (checking key/modifiers and optionally calling
+   * preventDefault()). Fires before onChange for the same keystroke. */
+  onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Native paste passthrough - e.g. a composer intercepting a pasted image
+   * off the clipboard while leaving a text-only paste to the browser's own
+   * default insertion (never calling preventDefault() itself). */
+  onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+  /** Accessible name when no visible `<label>` owns this field - e.g. a
+   * composer whose only visual cue is a placeholder (which screen readers
+   * must not rely on alone). */
+  "aria-label"?: string;
 }
 
 const MIN_ROWS = 2;
-const MAX_ROWS = 12;
+// Matches the legacy composer's clamp fraction exactly (see autoGrow's own
+// doc comment above for the cited line).
+export const MAX_HEIGHT_VIEWPORT_FRACTION = 0.5;
 
 const BASE_CLASS = {
   textarea: requireClass(styles.textarea, "textarea.module.css", "textarea"),
 };
 
-/**
- * autoGrow computes `rows` from the number of line breaks already IN
- * `value`, not by measuring the rendered element's scrollHeight. This is a
- * deliberate choice, not just a testability convenience: a scrollHeight-
- * based approach reads layout that a browser only settles after paint,
- * inherently either lagging a render behind or forcing a second
- * measure-and-set pass per keystroke (the "scrollHeight thrash" this
- * widget's requirements explicitly rule out). Counting line breaks is a
- * pure function of the prop already in hand, so it recomputes exactly
- * once per value change, synchronously, with no DOM read/write cycle and
- * no risk of measuring stale layout.
- */
-function computeRows(value: string, autoGrow: boolean | undefined, rowsProp: number | undefined): number {
-  if (autoGrow !== true) return rowsProp ?? MIN_ROWS;
-  const lineCount = value === "" ? 1 : value.split("\n").length;
-  return Math.min(MAX_ROWS, Math.max(MIN_ROWS, lineCount));
+// resizeToFitContent mirrors the legacy composer's grow() (cmd/serf-hub/
+// assets/renderer.js:6307-6314) exactly: reset to "auto" FIRST so a
+// shrinking value (e.g. a cleared draft) reflects its smaller natural
+// height instead of the still-large explicit height left over from before,
+// then measure scrollHeight and clamp it.
+function resizeToFitContent(el: HTMLTextAreaElement): void {
+  el.style.height = "auto";
+  const maxHeight = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
+  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
 }
 
-/** A multi-line text field. Controlled only, mirroring Input. */
-export function Textarea({ value, onChange, placeholder, disabled = false, autoGrow, rows, id, name }: TextareaProps) {
+/** A multi-line text field. Controlled only, mirroring Input. Forwards its
+ * ref to the native element (a composer needs imperative focus()/
+ * selectionStart access alongside the controlled value - see
+ * panes/session/composer's attachment-marker helpers) while still keeping
+ * its own internal ref for the autoGrow measurement effect below; the
+ * inline ref callback sets both from the one native node. */
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
+  {
+    value,
+    onChange,
+    placeholder,
+    disabled = false,
+    autoGrow,
+    rows,
+    id,
+    name,
+    onKeyDown,
+    onPaste,
+    "aria-label": ariaLabel,
+  },
+  forwardedRef,
+) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: value is a deliberate trigger-only dep - resizeToFitContent reads the DOM element's own (React-already-updated) value/scrollHeight, never the `value` variable directly, but the effect must still re-run on every keystroke to remeasure
+  useLayoutEffect(() => {
+    if (!autoGrow) return;
+    const el = textareaRef.current;
+    if (el) resizeToFitContent(el);
+  }, [autoGrow, value]);
+
   return (
     <textarea
+      ref={(node) => {
+        textareaRef.current = node;
+        if (typeof forwardedRef === "function") forwardedRef(node);
+        else if (forwardedRef) forwardedRef.current = node;
+      }}
       id={id}
       name={name}
       className={BASE_CLASS.textarea}
       value={value}
       onChange={onChange}
+      onKeyDown={onKeyDown}
+      onPaste={onPaste}
       placeholder={placeholder}
+      aria-label={ariaLabel}
       disabled={disabled}
-      rows={computeRows(value, autoGrow, rows)}
+      rows={autoGrow ? MIN_ROWS : (rows ?? MIN_ROWS)}
     />
   );
-}
+});
