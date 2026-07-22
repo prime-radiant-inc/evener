@@ -28,6 +28,18 @@ function fontScaleFor(value: string): string | null {
   return rule ? rule[1]! : null;
 }
 
+// The compact/default multiplier has no body[data-phone-density="compact"]
+// rule of its own - it's seeded on the bare `body { }` rule inside the
+// media query (shared with the --line-height-body declaration next to it).
+// Scoped to that one rule specifically, same shape as fontScaleFor above,
+// so this can't be satisfied by any OTHER --density-scale declaration in
+// the media block (see the test below for why that scoping matters here).
+function baseDensityScale(mediaBlockContent: string): string | null {
+  const bareBodyRule = /\bbody\s*\{([^}]*)\}/.exec(mediaBlockContent);
+  const decl = bareBodyRule ? /--density-scale:\s*([0-9.]+)/.exec(bareBodyRule[1]!) : null;
+  return decl ? decl[1]! : null;
+}
+
 test("each data-font-size preset maps to its pinned --font-scale multiplier", () => {
   expect(fontScaleFor("s")).toBe("0.9");
   expect(fontScaleFor("m")).toBe("1");
@@ -75,6 +87,13 @@ test("phone density opens vertical rhythm by scaling line-height through --densi
 test("the compact density default leaves the base grid unscaled (multiplier 1)", () => {
   const media = /@media\s*\(max-width:\s*900px\)\s*\{([\s\S]*?)\n\}/.exec(CSS);
   // The base body rule inside the media query seeds --density-scale: 1 so
-  // "compact" (and any unset value) holds the base line-height.
-  expect(media![1]).toMatch(/--density-scale:\s*1\b/);
+  // "compact" (and any unset value) holds the base line-height. Reads the
+  // bare body rule's own value (baseDensityScale above) rather than
+  // pattern-matching "1" anywhere in the media block - a bare
+  // /--density-scale:\s*1\b/ also matches the "1" prefix of the
+  // comfortable rule's "1.25" a few lines down (\b is satisfied by the
+  // "1" -> "." transition, since "." is a non-word character), so it
+  // cannot tell "the seed is really 1" from "the seed was deleted and
+  // this is just comfortable's 1.25 leaking through".
+  expect(baseDensityScale(media![1]!)).toBe("1");
 });
