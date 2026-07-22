@@ -5,10 +5,10 @@ import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
+import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { Composer } from "./Composer";
-import { ENTER_TO_SEND_STORAGE_KEY } from "./enterToSendPref";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.
@@ -90,6 +90,7 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
 
 beforeEach(() => {
   localStorage.clear();
+  resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
 });
@@ -273,7 +274,7 @@ test("bare Enter does not submit when enterToSend is off (default)", async () =>
 });
 
 test("bare Enter submits when enterToSend is on", async () => {
-  localStorage.setItem(ENTER_TO_SEND_STORAGE_KEY, "1");
+  prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a");
   fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
@@ -299,7 +300,7 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
 });
 
 test("with enterToSend on, Shift+Enter is a literal newline and does not steer", async () => {
-  localStorage.setItem(ENTER_TO_SEND_STORAGE_KEY, "1");
+  prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -319,7 +320,7 @@ test("the submit kbd hint switches from Mod+Enter to a bare Enter when enterToSe
   expect(submitButton().textContent).toMatch(/enter/i);
 
   cleanup();
-  localStorage.setItem(ENTER_TO_SEND_STORAGE_KEY, "1");
+  prefsStore.getState().setEnterToSend(true);
   await mountComposer("ref_a");
   const hint = submitButton().textContent ?? "";
   expect(hint.toLowerCase()).not.toContain("shift");

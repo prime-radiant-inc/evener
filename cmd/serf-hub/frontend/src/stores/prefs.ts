@@ -4,12 +4,13 @@
 // General/Hub/Storage read live daemon state through settingsOverview.ts
 // instead. Every key lives under the "serf.prefs.<name>" contract (wave-7
 // plan): a flat, one-value-per-key namespace, NOT the legacy's per-section
-// JSON blobs (serf-hub.composer, serf-hub.transcript.systemStatus, ...) -
-// chosen so a parallel wave's interim hook can read/write exactly one named
-// key (serf.prefs.enterToSend, serf.prefs.showCost) without depending on
-// this store's shape at all. Those two names are PINNED (both waves must
-// converge on the literal string at merge); every other key below is this
-// store's own choice, consistently named `serf.prefs.<fieldPath>`.
+// JSON blobs (serf-hub.composer, serf-hub.transcript.systemStatus, ...).
+// serf.prefs.enterToSend/serf.prefs.showCost are PINNED: real user data
+// already exists under these exact names and "1"/"0" encoding, written
+// before this store existed by W5's now-absorbed interim composer hook
+// (Composer.tsx reads both fields from this store directly now) - the key
+// names and encoding are permanent, not just this store's own choice, the
+// way every other key below is.
 //
 // Hydrated once from localStorage at module load (mirroring every other
 // store's singleton-at-import-time shape - connection.ts/threads.ts/
@@ -127,13 +128,12 @@ function removeRaw(name: string): void {
 // "1"/"0", not JS's "true"/"false": this codebase's own established
 // precedent for a single persisted boolean (shell/rail/Rail.tsx's
 // COLLAPSED_STORAGE_KEY: `localStorage.getItem(...) === "1"` /
-// `collapsed ? "1" : "0"`), and the encoding W5's already-shipped interim
-// composer hook (webui-w5-composer/.../composer/enterToSendPref.ts) reads
-// on this exact serf.prefs.enterToSend key with a strict `=== "1"` check -
-// its own test asserts the literal string "true" reads as false. Using
-// "true"/"false" here would silently break that convergence: both waves
-// writing/reading the SAME key with different encodings corrupts each
-// other's value rather than erroring.
+// `collapsed ? "1" : "0"`). serf.prefs.enterToSend/serf.prefs.showCost in
+// particular carry real, already-persisted user data with a strict `=== "1"`
+// reader (this store's own "pinned key contract" tests below) - switching to
+// "true"/"false" here would silently strand every existing "1"/"0" value as
+// unrecognized, reading back as this function's fallback rather than
+// erroring.
 function readBool(name: string, fallback: boolean): boolean {
   const raw = readRaw(name);
   if (raw === "1") return true;
