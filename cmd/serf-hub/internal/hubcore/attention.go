@@ -25,12 +25,14 @@ type AttentionEntry struct {
 }
 
 // AttentionSummary is the authoritative badge count set, computed over the
-// tier-eligible population (live, top-level, not manually archived), with
-// each session's needs-you/error membership decided by the same
-// promotedAttentionLevel call BuildTree's needs-you tier (tree.go) uses for
-// its own inclusion check — the same definition as the NeedsYou tier by
-// construction, not just in intent: NeedsYou+Error is exactly len(needs_you)
-// for identical inputs. camelCase: see AttentionEntry.
+// tier-eligible population — top-level, not manually archived, decided by
+// the same tierEligible call BuildTree's needs-you tier (tree.go) uses for
+// its own inclusion check — with each eligible session's needs-you/error
+// membership decided by the same promotedAttentionLevel call. Two shared
+// functions, not two independently-maintained copies of "who's eligible"
+// and "what counts": the same definition as the NeedsYou tier by
+// construction, not just in intent — NeedsYou+Error is exactly
+// len(needs_you) for identical inputs. camelCase: see AttentionEntry.
 type AttentionSummary struct {
 	// serf:naming-ignore
 	NeedsYou int `json:"needsYou"`
@@ -83,20 +85,48 @@ func promotedAttentionLevel(normalized string, pendingEscalation bool) string {
 	return level
 }
 
+// tierEligible reports whether a session belongs to the tier-eligible
+// population both DeriveAttention's summary and BuildTree's needs-you tier
+// (tree.go) draw from: top-level — neither a subagent nor a fork-superseded
+// parent nested under its active continuation (nested, from tree.go's
+// nestedSessionIDs) — and not manually archived. meta may be nil (a live
+// session with no persisted meta yet is still top-level and unarchived by
+// definition, so nil never excludes on its own). One function, both
+// callers, so population membership can't become two independently-
+// maintained copies again — the same failure mode promotedAttentionLevel
+// above already fixed for state promotion.
+func tierEligible(sessionID string, meta *schema.SessionMeta, nested map[string]struct{}, decisions map[ArchiveKey]bool) bool {
+	if meta != nil && meta.IsSubagent {
+		return false
+	}
+	if _, isNested := nested[sessionID]; isNested {
+		return false
+	}
+	// Archive suppression: only an explicit user archive decision clears
+	// attention — archive is a clearing verb (spec v5, round-4 A4/B7).
+	if d := decisionFor(decisions, sessionID); d != nil && *d {
+		return false
+	}
+	return true
+}
+
 // DeriveAttention computes the attention map + summary over the same inputs
 // BuildTree consumes. Only tier-eligible sessions (live, top-level, not
-// manually archived) carry attention; everything else is absent from the map
-// (equivalently: idle). Archive suppression is manual-decision-only,
-// mirroring the NeedsYou tier filter in tree.go exactly — the sidebar's
-// 14-day age-based auto-archive deliberately does NOT apply here, because
-// needs_you never decays (spec v5): a stale-but-live awaiting session stays
-// in the badge just as it stays in the tier. Cheap by construction —
-// in-memory inputs only, no disk, no BuildTree (spec v5 watcher section).
+// manually archived — tierEligible above) carry attention; everything else
+// is absent from the map (equivalently: idle). tierEligible is the same call
+// BuildTree's needs-you tier filter in tree.go uses, so population
+// membership can't drift between the two. The sidebar's 14-day age-based
+// auto-archive deliberately does NOT apply here, because needs_you never
+// decays (spec v5): a stale-but-live awaiting session stays in the badge
+// just as it stays in the tier. Cheap by construction — in-memory inputs
+// only, no disk, no BuildTree (spec v5 watcher section); nestedSessionIDs is
+// itself a pure, in-memory pass over metas.
 func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) (map[string]AttentionEntry, AttentionSummary) {
 	metaByID := make(map[string]*schema.SessionMeta, len(metas))
 	for i := range metas {
 		metaByID[metas[i].ID] = &metas[i]
 	}
+	nested, _ := nestedSessionIDs(metas)
 	out := make(map[string]AttentionEntry, len(live))
 	var sum AttentionSummary
 	for _, le := range live {
@@ -104,13 +134,7 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 			continue
 		}
 		meta := metaByID[le.SessionID]
-		if meta != nil && meta.IsSubagent {
-			continue
-		}
-		// Archive suppression: only an explicit user archive decision clears
-		// attention — archive is a clearing verb (spec v5, round-4 A4/B7).
-		// Same check, same semantics as the NeedsYou tier builder.
-		if d := decisionFor(decisions, le.SessionID); d != nil && *d {
+		if !tierEligible(le.SessionID, meta, nested, decisions) {
 			continue
 		}
 		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)

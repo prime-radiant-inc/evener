@@ -1713,3 +1713,49 @@ func fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testin
 func TestNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t *testing.T) {
 	fuzzScenarioNeedsYou_PendingEscalationUnifiesWithAttentionSummary(t)
 }
+
+// fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary is the
+// round-4-review regression: the escalation-promotion unification (above)
+// shared *which states count*, but left *which sessions are even eligible*
+// as two independent copies. DeriveAttention (attention.go) excluded only
+// IsSubagent; BuildTree's needs-you tier also excludes a fork-superseded
+// parent — the snapshotted original of an edited message (ForkLabel set),
+// nested under the active branch that superseded it (see
+// TestBuildTree_ExcludesNestedForkFromNeedsYou). So a live, awaiting,
+// non-subagent, ForkLabel'd parent with a live active continuation was
+// counted by AttentionSummary (badge) but absent from needs_you[] (list) —
+// same bug class, different axis. Both now derive eligibility from the same
+// nestedSessionIDs + tierEligible calls, so a session can't be top-level to
+// one and nested to the other.
+func fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	metas := []schema.SessionMeta{
+		// "branch" is the active continuation: it forked from "fork" (edited a
+		// message), so it carries ParentSessionID but no ForkLabel of its own.
+		{ID: "branch", ParentSessionID: "fork", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+		// "fork" is the snapshotted original — superseded, renders nested under
+		// "branch" — but it's still live and awaiting.
+		{ID: "fork", ForkLabel: "before edit", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"}},
+	}
+	live := []LiveEntry{
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "branch", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "fork", Status: appwire.ThreadStatusAwaiting},
+	}
+
+	tree := BuildTreeAt(metas, live, nil, now)
+	if len(tree.NeedsYou) != 0 {
+		t.Fatalf("nested fork leaked into NeedsYou: %#v", tree.NeedsYou)
+	}
+
+	_, sum := DeriveAttention(metas, live, nil)
+	if sum.NeedsYou != 0 {
+		t.Fatalf("summary = %+v, want NeedsYou:0 (the fork-superseded parent is nested, not tier-eligible — same exclusion as the tree)", sum)
+	}
+	if got, want := len(tree.NeedsYou), sum.NeedsYou+sum.Error; got != want {
+		t.Fatalf("tree.NeedsYou has %d entries but the summary counts %d (needsYou+error) for the same inputs — the tier and the badge disagree", got, want)
+	}
+}
+
+func TestNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t *testing.T) {
+	fuzzScenarioNeedsYou_ForkSupersededParentUnifiesWithAttentionSummary(t)
+}

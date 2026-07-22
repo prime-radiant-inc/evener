@@ -274,6 +274,41 @@ func nodeKind(m schema.SessionMeta) string {
 	return "session"
 }
 
+// nestedSessionIDs computes, from metas alone (no project resolution, no
+// disk I/O), which session IDs render nested under another top-level row
+// instead of getting one of their own: subagents (nested under their
+// parent) and fork-superseded parents (ForkLabel set — the snapshotted
+// original of an edited message, see nodeKind's doc — nested under the
+// active branch that superseded it). forkChildren (origin_id -> latest
+// non-subagent child ID) is also returned since assembling the tree needs
+// it again to find which top-level row a fork-superseded parent attaches
+// under.
+//
+// BuildTree's project/tier assembly and DeriveAttention's tier-eligible
+// check (attention.go's tierEligible) both call this one function, so a
+// session can never be top-level to one and nested (hence excluded) to the
+// other.
+func nestedSessionIDs(metas []schema.SessionMeta) (nested map[string]struct{}, forkChildren map[string]string) {
+	forkChildren = make(map[string]string)
+	for _, m := range metas {
+		if m.ParentSessionID != "" && !m.IsSubagent {
+			forkChildren[m.ParentSessionID] = m.ID
+		}
+	}
+	nested = make(map[string]struct{})
+	for _, m := range metas {
+		switch {
+		case m.IsSubagent && m.ParentSessionID != "":
+			nested[m.ID] = struct{}{}
+		case m.ForkLabel != "":
+			if _, ok := forkChildren[m.ID]; ok {
+				nested[m.ID] = struct{}{}
+			}
+		}
+	}
+	return nested, forkChildren
+}
+
 // BuildTree assembles the sidebar Tree from all session metas, the
 // currently-live set, and the user's explicit archive decisions, using the
 // current wall clock for tier classification.
@@ -448,20 +483,17 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		return resolvedProjects[path]
 	}
-	nestedMetaIDs := make(map[string]struct{}) // IDs attached below a top-level row
+	// nestedMetaIDs/forkChildren: the shared lineage nesting (subagents, plus
+	// fork-superseded parents) attention.go's tierEligible also draws from —
+	// see nestedSessionIDs — so a session can't be top-level here and
+	// tier-eligible there, or vice versa. forkChildren maps origin_id ->
+	// latest_child_id: which session forked from each origin, used below to
+	// attach a "snapshotted original" (the parent meta with ForkLabel set)
+	// under the new active branch (the child whose ParentSessionID matches).
+	// Per spec: the new active branch is top-level; the original is the dim
+	// sibling.
+	nestedMetaIDs, forkChildren := nestedSessionIDs(metas) // IDs attached below a top-level row
 	childrenByParent := make(map[string][]schema.SessionMeta)
-
-	// Build a reverse-lookup index: which session forked from each origin?
-	// Used to attach a "snapshotted original" (the parent meta with ForkLabel
-	// set) under the new active branch (the child whose ParentSessionID
-	// matches). Per spec: the new active branch is top-level; the original
-	// is the dim sibling.
-	forkChildren := make(map[string]string) // origin_id -> latest_child_id
-	for _, m := range metas {
-		if m.ParentSessionID != "" && !m.IsSubagent {
-			forkChildren[m.ParentSessionID] = m.ID
-		}
-	}
 
 	// A subagent's persisted working directory may be an isolated worktree or
 	// another effective directory. Its explicit parent is still authoritative
@@ -520,16 +552,15 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		}
 		switch {
 		case m.IsSubagent && m.ParentSessionID != "":
-			// Subagents nest under their origin.
+			// Subagents nest under their origin (membership: nestedSessionIDs).
 			childrenByParent[m.ParentSessionID] = append(childrenByParent[m.ParentSessionID], m)
-			nestedMetaIDs[m.ID] = struct{}{}
 		case m.ForkLabel != "":
 			// This meta is the snapshotted original of a fork. The active
 			// branch (the meta whose ParentSessionID == m.ID) is top-level;
-			// this one becomes the dim child of that active branch.
+			// this one becomes the dim child of that active branch (membership:
+			// nestedSessionIDs).
 			if newID, ok := forkChildren[m.ID]; ok {
 				childrenByParent[newID] = append(childrenByParent[newID], m)
-				nestedMetaIDs[m.ID] = struct{}{}
 			} else {
 				// No active branch references this — keep top-level.
 				acc.topLevel = append(acc.topLevel, m)
@@ -791,15 +822,19 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 
 	// Build the NeedsYou triage tier: every top-level live session in the
 	// awaiting|warning|errored family, plus any other live session promoted by
-	// a pending sandbox-exemption escalation (M7) — the same promotedAttentionLevel
-	// call attention.go's AttentionSummary uses, so the tier and the badge can
-	// never drift apart again — flat across all projects, errors first and then
-	// oldest-blocked first so the queue works top-down. Subagents and plain
-	// working/idle sessions are excluded — this tier is strictly "what needs me
-	// right now." An archived session is suppressed even while live: archive is
-	// a clearing verb (spec v5, round-4 A4/B7), so an archived-but-still-awaiting
-	// session must not linger in the inbox. When nothing qualifies the tier is
-	// empty and the sidebar hides it entirely.
+	// a pending sandbox-exemption escalation (M7), flat across all projects,
+	// errors first and then oldest-blocked first so the queue works top-down.
+	// Both "promoted" and "top-level" share their definition with
+	// attention.go's AttentionSummary — promotedAttentionLevel and
+	// tierEligible respectively — one function each, not a second,
+	// independently-maintained copy, so the tier and the badge can never
+	// drift apart again. Subagents and fork-superseded parents (nested under
+	// their live continuation) are excluded via tierEligible, along with
+	// plain working/idle sessions — this tier is strictly "what needs me
+	// right now." An archived session is suppressed even while live: archive
+	// is a clearing verb (spec v5, round-4 A4/B7), so an
+	// archived-but-still-awaiting session must not linger in the inbox. When
+	// nothing qualifies the tier is empty and the sidebar hides it entirely.
 	needsYou := make([]TreeNode, 0, len(live))
 	for _, le := range live {
 		if le.SessionID == "" {
@@ -813,11 +848,6 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if lvl := promotedAttentionLevel(st, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
-		// Archive suppression: an archived session is out of the inbox even
-		// while live — archive is a clearing verb (spec v5, round-4 A4/B7).
-		if d := decisionFor(decisions, le.SessionID); d != nil && *d {
-			continue
-		}
 		var meta *schema.SessionMeta
 		for i := range metas {
 			if metas[i].ID == le.SessionID {
@@ -825,15 +855,12 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 				break
 			}
 		}
-		// Only top-level sessions surface in triage — a subagent's parent is
-		// the actionable unit.
-		if meta != nil {
-			_, nested := nestedMetaIDs[meta.ID]
-			if nested {
-				continue
-			}
-		}
-		if meta != nil && meta.IsSubagent {
+		// Same tierEligible call attention.go's AttentionSummary uses for its
+		// own inclusion check: only top-level (not a subagent, not a
+		// fork-superseded parent nested under its active continuation) and not
+		// manually archived sessions surface in triage — a nested session's
+		// live continuation is the actionable unit.
+		if !tierEligible(le.SessionID, meta, nestedMetaIDs, decisions) {
 			continue
 		}
 		node := TreeNode{
