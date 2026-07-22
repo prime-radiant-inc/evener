@@ -69,6 +69,16 @@ func docImageRequest(t *testing.T, web *WebServer, session, path string) *httpte
 	return rec
 }
 
+func docRawRequest(t *testing.T, web *WebServer, session, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	u := "/doc/file?format=raw&session=" + session + "&path=" + path
+	req := httptest.NewRequest(http.MethodGet, u, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
 func TestDocImageServesPNG(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
@@ -299,5 +309,141 @@ func TestDocFile_BinaryNotice(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(rec.Body.String()), "binary") {
 		t.Errorf("binary file should show a binary notice; got %q", rec.Body.String())
+	}
+}
+
+// The tests below cover the ?format=raw variant, added for the native React
+// doc-viewer pane: it needs the file's actual bytes, not the server-rendered
+// HTML page. The default (no format param) behavior must stay byte-unchanged
+// — proven by the tests above still passing unmodified — and the guard chain
+// (session/path validation, 403-vs-404) must reject a raw request exactly
+// like it rejects the HTML request for the same guarded input.
+
+func TestDocFile_Raw_ServesTextFileVerbatim(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	content := []byte("hello <script>alert(1)</script>")
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "notes.txt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type=%q, want text/plain; charset=utf-8", ct)
+	}
+	// Raw means raw: no HTML escaping, no <pre> wrapper, no doc-page chrome.
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want verbatim %q", rec.Body.Bytes(), content)
+	}
+}
+
+func TestDocFile_Raw_ServesMarkdownSourceVerbatim(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	content := []byte("# Title\n\nbody")
+	if err := os.WriteFile(filepath.Join(cwd, "README.md"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "README.md")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+		t.Fatalf("Content-Type=%q, want text/plain; charset=utf-8", ct)
+	}
+	// Raw must bypass the server-side marked.js HTML page entirely — the
+	// client renders markdown itself from the literal source bytes.
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want verbatim markdown source %q", rec.Body.Bytes(), content)
+	}
+	if strings.Contains(rec.Body.String(), "marked") || strings.Contains(rec.Body.String(), "doc-markdown") {
+		t.Fatalf("raw markdown must not carry the HTML render wrapper: %q", rec.Body.String())
+	}
+}
+
+func TestDocFile_Raw_ServesBinaryAsOctetStream(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	blob := []byte{0x00, 0x01, 0x02, 0x00, 0xff}
+	if err := os.WriteFile(filepath.Join(cwd, "blob.bin"), blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "blob.bin")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("Content-Type=%q, want application/octet-stream", ct)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), blob) {
+		t.Fatalf("body=%x, want verbatim %x", rec.Body.Bytes(), blob)
+	}
+}
+
+func TestDocFile_Raw_RejectsTraversalDotDot(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	secret := filepath.Join(filepath.Dir(cwd), "secret.txt")
+	if err := os.WriteFile(secret, []byte("TOP SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	htmlRec := docRequest(t, web, session, "../"+filepath.Base(secret))
+	rawRec := docRawRequest(t, web, session, "../"+filepath.Base(secret))
+	if rawRec.Code != htmlRec.Code {
+		t.Fatalf("raw status=%d, want parity with HTML variant status=%d", rawRec.Code, htmlRec.Code)
+	}
+	if rawRec.Code != http.StatusForbidden && rawRec.Code != http.StatusNotFound {
+		t.Errorf("traversal should yield 403/404, got %d", rawRec.Code)
+	}
+	if strings.Contains(rawRec.Body.String(), "TOP SECRET") {
+		t.Fatalf("SECURITY: raw traversal served out-of-cwd file contents")
+	}
+}
+
+func TestDocFile_Raw_RejectsAbsolutePathEscape(t *testing.T) {
+	web, _, session := docServeTestServer(t)
+	htmlRec := docRequest(t, web, session, "/etc/passwd")
+	rawRec := docRawRequest(t, web, session, "/etc/passwd")
+	if rawRec.Code != htmlRec.Code {
+		t.Fatalf("raw status=%d, want parity with HTML variant status=%d", rawRec.Code, htmlRec.Code)
+	}
+	if rawRec.Code != http.StatusForbidden && rawRec.Code != http.StatusNotFound {
+		t.Errorf("absolute escape should yield 403/404, got %d", rawRec.Code)
+	}
+	if strings.Contains(rawRec.Body.String(), "root:") {
+		t.Fatalf("SECURITY: raw absolute path served /etc/passwd")
+	}
+}
+
+func TestDocFile_Raw_RejectsSymlinkEscape(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	secret := filepath.Join(filepath.Dir(cwd), "outside.txt")
+	if err := os.WriteFile(secret, []byte("SYMLINK SECRET"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(cwd, "escape")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlink unsupported on this platform: %v", err)
+	}
+	rawRec := docRawRequest(t, web, session, "escape")
+	if strings.Contains(rawRec.Body.String(), "SYMLINK SECRET") {
+		t.Fatalf("SECURITY: raw symlink escape served out-of-cwd contents (status %d)", rawRec.Code)
+	}
+	if rawRec.Code == http.StatusOK {
+		t.Fatalf("raw symlink escape must be rejected, got 200")
+	}
+}
+
+func TestDocFile_Raw_UnknownSession404(t *testing.T) {
+	web, _, _ := docServeTestServer(t)
+	rec := docRawRequest(t, web, "01NOPE", "anything.txt")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("unknown session should 404, got %d", rec.Code)
+	}
+}
+
+func TestDocFile_Raw_NonLocalSession404(t *testing.T) {
+	web, _, _ := docServeTestServer(t)
+	rec := docRawRequest(t, web, "codex:th_remote", "README.md")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
