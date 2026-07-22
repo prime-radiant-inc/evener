@@ -44,12 +44,17 @@ function isQueuedDrainPartial(err: unknown): boolean {
 
 export interface QueueStripProps {
   ref: string;
-  // Returns the composer's CURRENT text/attachments at the moment the drain
-  // affordance is used - drainAsSteer atomically appends this to the queue
-  // before draining the whole thing into the active turn as one steering
-  // message (see stores/threads.ts's own drainAsSteer doc comment for why
-  // this is a getter, not a cached value).
-  getComposerText(): { text: string; attachments?: InputAttachment[] };
+  // Returns the composer's CURRENT text/attachments/hasPending at the moment
+  // the drain affordance is used - drainAsSteer atomically appends this to
+  // the queue before draining the whole thing into the active turn as one
+  // steering message (see stores/threads.ts's own drainAsSteer doc comment
+  // for why this is a getter, not a cached value). `hasPending` mirrors the
+  // composer's own attachments.hasPending (true while an attachment is still
+  // mid-encode) - handleDrain below blocks on it with the SAME "still
+  // processing" toast the composer's own submit paths already use, so a
+  // drain can no longer silently omit a not-yet-encoded image from the
+  // drained payload (w5-integration-wiring-report.md Concern #3).
+  getComposerText(): { text: string; attachments?: InputAttachment[]; hasPending: boolean };
   // Restores a queued entry's full text into the composer - called BEFORE
   // cancelQueued on an edit (loser-safe order: a contract row - the text
   // must land even if the cancel that follows fails). `attachments` is
@@ -185,7 +190,11 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
-    const { text, attachments } = getComposerText();
+    const { text, attachments, hasPending } = getComposerText();
+    if (hasPending) {
+      toasts.push("error", "Image attachment is still processing");
+      return;
+    }
     setDraining(true);
     try {
       await submitWithPendingTracking(

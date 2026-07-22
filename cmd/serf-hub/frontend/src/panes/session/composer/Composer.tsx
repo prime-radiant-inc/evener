@@ -253,19 +253,23 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   // getComposerText is QueueStrip's own seam for reading this composer's
-  // CURRENT text/attachments at the moment its drain affordance is used -
-  // textRef.current (not the `text` state closure) for the identical
-  // liveness reason textEditor.read() above reads it, and
+  // CURRENT text/attachments/hasPending at the moment its drain affordance
+  // is used - textRef.current (not the `text` state closure) for the
+  // identical liveness reason textEditor.read() above reads it, and
   // toInputAttachments() for the same wire shape submitAction's own payload
-  // already uses. Attachments still mid-encode are silently omitted by
-  // toInputAttachments() itself (its own doc comment: callers should only
-  // invoke it once hasPending is false) - QueueStrip's "Steer now" button
-  // has no hasPending guard of its own (unlike this component's classic
-  // submit paths), a narrow, pre-existing gap flagged in
-  // w5-integration-wiring-report.md rather than fixed here (QueueStrip.tsx
-  // is outside this integration's manifest).
+  // already uses. `hasPending` mirrors this component's own attachments.
+  // hasPending so QueueStrip's "Steer now" button can block with the SAME
+  // "still processing" toast this component's classic submit paths already
+  // use, instead of silently sending a drain payload with a not-yet-encoded
+  // image missing (toInputAttachments() itself only ever filters incomplete
+  // items without signaling it - see that function's own doc comment) - see
+  // w5-integration-wiring-report.md Concern #3.
   function getComposerText() {
-    return { text: textRef.current, attachments: attachments.toInputAttachments() };
+    return {
+      text: textRef.current,
+      attachments: attachments.toInputAttachments(),
+      hasPending: attachments.hasPending,
+    };
   }
 
   // submitAction wraps every method in submitWithPendingTracking (the wave's

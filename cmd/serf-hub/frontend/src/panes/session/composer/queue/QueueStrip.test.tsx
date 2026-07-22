@@ -71,7 +71,7 @@ async function hydrate(fake: FakeClient, ref: string, overrides: Partial<Thread>
 function defaultProps(overrides: Partial<Parameters<typeof QueueStrip>[0]> = {}) {
   return {
     ref: "ref_a",
-    getComposerText: () => ({ text: "composer text", attachments: undefined }),
+    getComposerText: () => ({ text: "composer text", attachments: undefined, hasPending: false }),
     onRestoreToComposer: vi.fn(),
     onDrainSuccess: vi.fn(),
     ...overrides,
@@ -592,7 +592,9 @@ describe("drain-as-steer affordance", () => {
     });
     fake.on("turn/drainAsSteer", () => ({}));
     const onDrainSuccess = vi.fn();
-    renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft" }), onDrainSuccess }));
+    renderStrip(
+      defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: false }), onDrainSuccess }),
+    );
 
     await act(async () => {
       fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
@@ -647,6 +649,33 @@ describe("drain-as-steer affordance", () => {
     });
 
     await screen.findByText(/drain failed.*network unreachable/i);
+  });
+
+  // Mirrors Composer.tsx's own submit-time guard (handleFormSubmit/
+  // handleSteerClick block on attachments.hasPending with the identical
+  // toast) - QueueStrip's "Steer now" button had no equivalent check
+  // (w5-integration-wiring-report.md Concern #3), so a drain triggered
+  // mid-encode would silently omit the not-yet-encoded image from the
+  // drained payload rather than refusing the whole request like every
+  // other submit path does.
+  test("a mid-encode attachment (hasPending) blocks the drain with a toast, never calling drainAsSteer", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      serf: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    fake.on("turn/drainAsSteer", () => ({}));
+    renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
+
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
+    });
+
+    await screen.findByText(/image attachment is still processing/i);
+    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
   });
 
   test("the drain button disables itself while its own request is in flight", async () => {
