@@ -3,6 +3,7 @@
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { initNotifications } from "../notifications";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
@@ -12,13 +13,16 @@ import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
 import { StackHost } from "./mobile/StackHost";
 import { NotFound } from "./NotFound";
-import { Rail } from "./rail";
+import { CommandPalette } from "./palette/CommandPalette";
+import { openPalette } from "./palette/paletteController";
+import { RailHost } from "./rail";
 import { urlToPane } from "./routing";
 import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
 import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
+import "../panes/spawn"; // registers the "spawn" pane type
 import { initPrefs } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
@@ -26,6 +30,11 @@ import { initPrefs } from "../stores/prefs";
 // the default. Idempotent; sections re-apply on change. (Wave-7 T4's
 // documented wiring line, pre-proven against the full suite by its review.)
 initPrefs();
+
+// Start the notifications engine once, at module evaluation, beside initPrefs.
+// Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
+// notification / sound / single-tab election off the pinned all-OFF prefs).
+initNotifications();
 
 import styles from "./AppShell.module.css";
 
@@ -70,11 +79,6 @@ function createClientSlot(injected: AppwireClientLike | undefined): ClientSlot {
   return { client: real, owned: real };
 }
 
-// /new resolves to the "spawn" pane type, which has no registered component
-// yet (spawn panes are Wave 6) - open the welcome pane with a note instead
-// of a broken lookup until then.
-const SPAWN_NOT_READY_NOTE = "Starting a new session isn't available yet.";
-
 // Hand-rolled rather than react-router (see Task 1's report for the
 // justification): the routing surface here is still exactly "re-render
 // (and, this task, open a pane) when the path changes" - and pushState
@@ -90,15 +94,12 @@ function usePathname(): string {
   return pathname;
 }
 
-// Opens (or focuses) the pane a pathname resolves to. "session" and
-// "settings" map directly (their params pass straight through to their own
-// registered pane type); every other resolved type - including "welcome"
-// itself - falls back to opening the plain welcome singleton ("spawn"
-// keeps its own not-ready note; "transcript"/"doc" aren't registered yet
-// this wave, same as "spawn", and get the same untouched fallback rather
-// than a new bespoke treatment). A null route (genuinely unknown path)
-// opens nothing - NotFound renders in DockHost's place instead, see the
-// component's return below.
+// Opens (or focuses) the pane a pathname resolves to. "session", "settings",
+// and "spawn" map directly (their params pass straight through to their own
+// registered pane type); every other resolved type - "welcome" itself, plus
+// the not-yet-registered "transcript"/"doc" - falls back to the plain welcome
+// singleton. A null route (genuinely unknown path) opens nothing - NotFound
+// renders in DockHost's place instead, see the component's return below.
 function openRouteAsPane(pathname: string): void {
   const route = urlToPane(pathname);
   if (route === null) return;
@@ -110,7 +111,11 @@ function openRouteAsPane(pathname: string): void {
     workspaceStore.getState().openPane("settings", route.params);
     return;
   }
-  workspaceStore.getState().openPane("welcome", route.type === "spawn" ? { note: SPAWN_NOT_READY_NOTE } : {});
+  if (route.type === "spawn") {
+    workspaceStore.getState().openPane("spawn", route.params);
+    return;
+  }
+  workspaceStore.getState().openPane("welcome", {});
 }
 
 export function AppShell({ client: injectedClient }: AppShellProps) {
@@ -145,6 +150,33 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     // ever acts on `owned`, never the interface-typed `client`.
     return () => owned?.close();
   }, [client, owned]);
+
+  // Global command-palette entry points (floor §2.1): ⌘K / Ctrl-K from
+  // anywhere in the app, and a click on any [data-search-trigger] element.
+  // Both open the palette through the one openPalette() the whole app shares
+  // (Composer's leading-"/"-on-empty hook is the third). ⌘B (sidebar cycle,
+  // T5) is a separate, disjoint listener and is never added here (PIN-D).
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        openPalette();
+      }
+    }
+    function onClick(event: MouseEvent): void {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-search-trigger]")) {
+        event.preventDefault();
+        openPalette();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("click", onClick);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("click", onClick);
+    };
+  }, []);
 
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
@@ -192,6 +224,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
       <div className={styles.shell}>
         <ConnectionBanner state={connectionState} />
         <ToastRegion />
+        <CommandPalette />
         <div className={styles.content}>
           {/* Desktop: the rail sits as a flex sibling of DockHost and
               collapses itself. Mobile (<900px): StackHost owns the whole
@@ -199,11 +232,11 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
               (TreeDrawer's children slot, threaded via railSlot), so the
               flex sibling renders only on desktop. Both hosts read the
               same pane registry and workspace store. */}
-          {!isMobile && route !== null && <Rail />}
+          {!isMobile && route !== null && <RailHost />}
           {route === null ? (
             <NotFound />
           ) : isMobile ? (
-            <StackHost railSlot={<Rail />} />
+            <StackHost railSlot={<RailHost />} />
           ) : (
             // fallback={null}: DockHost's own boot sequence (handleReady)
             // already produces the very first meaningful paint (a routed
