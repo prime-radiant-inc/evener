@@ -3,11 +3,14 @@ import { Suspense } from "react";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
 
-// Await the module ONCE up front so React.lazy resolves from a warm module
-// cache (mirrors panes/welcome/index.test.tsx's own beforeAll pattern - see
-// that file for the full reasoning).
+// Await the modules ONCE up front so React.lazy resolves from a warm module
+// cache (mirrors panes/session/index.test.tsx's own beforeAll pattern - see
+// that file for the full reasoning). Warming ./index alone is not enough:
+// the descriptor lazy-loads ./Settings as its own chunk, and that transform
+// is the slow part the render test's findByRole would otherwise race.
 beforeAll(async () => {
   await import("./index");
+  await import("./Settings");
 });
 
 afterEach(() => {
