@@ -246,3 +246,101 @@ test("surfaces the discard notice when a prefilled model is no longer offered (f
   // The stale blob was pruned by the sweep.
   await waitFor(() => expect(localStorage.getItem("serf-hub.spawn-defaults./p")).toBeNull());
 });
+
+// --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
+//
+// The spawn pane is a dockview singleton (paneRegistry.ts: "focus existing
+// instead of second copy"), so unlike a one-shot legacy page load it can
+// still be sitting there, fully mounted, after a successful spawn navigates
+// the workspace to the new session. Legacy clears the pending-attachment bag
+// and resets the paste marker-counter BEFORE navigating away specifically so
+// a returning user can't resend a stale image (spawn.js:1331-1336); Spawn.tsx
+// had no equivalent, so both the prompt text and any attachment chip just
+// sat there, re-sendable, once the pane was revisited.
+
+function pastePngInto(el: HTMLElement, name = "shot.png"): void {
+  const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+  });
+  el.dispatchEvent(event);
+}
+
+// Mirrors Composer.test.tsx's own installCanvasStubs - the same
+// useAttachments/reencodeToPng pipeline underlies both panes' image staging.
+function installCanvasStubs(): void {
+  HTMLCanvasElement.prototype.getContext = (() => ({
+    drawImage() {},
+  })) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.toBlob = (callback: BlobCallback): void => {
+    callback(new Blob([new Uint8Array([9, 9, 9])], { type: "image/png" }));
+  };
+  class FakeImage {
+    onload: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    width = 4;
+    height = 4;
+    private _src = "";
+    set src(value: string) {
+      this._src = value;
+      Promise.resolve().then(() => this.onload?.());
+    }
+    get src(): string {
+      return this._src;
+    }
+  }
+  // @ts-expect-error stubbing the global Image constructor for this test file only
+  globalThis.Image = FakeImage;
+  URL.createObjectURL = () => "blob:fake";
+  URL.revokeObjectURL = () => {};
+}
+
+test("resets the prompt and attachments after a successful spawn, but keeps sticky defaults (floor §1.14 L186)", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await screen.findByLabelText("Harness");
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  await user.type(screen.getByLabelText("Working directory"), "/tmp/project");
+  await user.type(prompt, "do the thing");
+  pastePngInto(prompt);
+  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
+
+  await user.click(screen.getByRole("button", { name: "Spawn" }));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+
+  expect(prompt.value).toBe("");
+  expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
+  // Sticky default (floor §1.9) survives a successful spawn - only the
+  // transient prompt/attachment state resets.
+  expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/tmp/project");
+});
+
+test("a failed spawn leaves the prompt and attachment staged (failure paths keep everything)", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("thread/start", () => {
+      throw new Error("boom");
+    });
+  });
+  renderSpawn(fake);
+  await screen.findByLabelText("Harness");
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
+  await user.type(prompt, "do the thing");
+  pastePngInto(prompt);
+  await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
+  await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
+
+  await user.click(screen.getByRole("button", { name: "Spawn" }));
+
+  await screen.findByText(/spawn failed/i);
+  expect(prompt.value).toBe("do the thing[image 1]");
+  expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+});

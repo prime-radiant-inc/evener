@@ -248,6 +248,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // hoists them into the top-level fields the daemon prefers over overrides.
     const overrides = advancedOverrides;
     const scalars = resolveScalars({ model, reasoningEffort }, overrides);
+    // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
+    // attachment staged WHILE this request is in flight isn't in the set
+    // clearSubmitted removes below - it survives untouched, same contract
+    // useAttachments.ts documents for the composer.
+    const submittedMarkers = new Set(attachments.items.map((item) => item.marker));
     const { ref } = await startThread(client, {
       cwd,
       prompt,
@@ -260,6 +265,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       launchOverrides: Object.keys(overrides).length > 0 ? overrides : undefined,
     });
     saveDefaults({ cwd, harness, model, branch, accessMode, reasoningEffort, harnessUsesSerfModels: usesSerfModels });
+    // Reset transient form state on success, before navigating away (floor
+    // §1.14 L186: the pending-attachment bag is cleared and the paste
+    // marker-counter reset). The spawn pane is a dockview singleton that can
+    // still be mounted behind the session pane this navigates to, so without
+    // this an already-sent prompt/image stays staged and re-sendable if the
+    // user returns to it. Sticky defaults (harness/model/cwd/branch/access
+    // mode, floor §1.9-§1.10) are deliberately left untouched - only the
+    // one-shot prompt/attachments reset.
+    updatePrompt("");
+    attachments.clearSubmitted(submittedMarkers);
     const url = paneToURL("session", { ref });
     if (url) navigate(url);
   }
