@@ -50,11 +50,13 @@ const FONT_SIZE_OPTIONS: RadioGroupOption[] = [
  * legacy's own asymmetry: phone density/sidebar mode/font size get no
  * toast at all in assets/settings-appearance.js either).
  *
- * Known copy gap (not this task's to resolve): "default follows your OS
- * preference" carries over the legacy's exact copy, but src/styles/
- * tokens.css has no prefers-color-scheme media query - "system" always
- * renders the dark tokens today (see prefs.ts's own top comment). Flagged
- * in the wave-7 report rather than silently rewritten.
+ * "Both palettes ship; default follows your OS preference" (the Color
+ * theme help copy below) is a real, live guarantee, not just carried-over
+ * legacy copy: prefs.ts's own setTheme/applyTheme resolve "system" against
+ * prefers-color-scheme and keep tracking it for as long as the tab stays
+ * on "system" - see that file's own top comment for the mechanism (W7
+ * close-fix round; before this, "system" always rendered dark regardless
+ * of the OS, which this exact copy used to overclaim).
  */
 export function ThemeSection() {
   const theme = usePrefsStore((s) => s.theme);

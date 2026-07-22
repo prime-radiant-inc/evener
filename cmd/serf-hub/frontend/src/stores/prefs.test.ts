@@ -47,6 +47,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("defaults (empty localStorage)", () => {
@@ -228,6 +229,88 @@ describe("setTheme", () => {
     expect(localStorage.getItem(KEY("theme"))).toBeNull();
     expect(prefsStore.getState().theme).toBe("system");
     expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+});
+
+// fakeMatchMedia stands in for window.matchMedia (which this project's own
+// jsdom test environment does not implement at all - confirmed empirically,
+// not assumed) so a test can both seed the OS's current preference and
+// simulate it changing later, via the same change-event contract the real
+// MediaQueryList carries.
+function fakeMatchMedia(initialMatches: boolean) {
+  let matches = initialMatches;
+  let listener: (() => void) | null = null;
+  const mql = {
+    get matches() {
+      return matches;
+    },
+    addEventListener: (_event: string, cb: () => void) => {
+      listener = cb;
+    },
+    removeEventListener: () => {
+      listener = null;
+    },
+  };
+  return {
+    mql,
+    setMatches(next: boolean) {
+      matches = next;
+      listener?.();
+    },
+  };
+}
+
+describe("system theme: live OS-scheme tracking", () => {
+  // theme.tsx's own help copy claims "default follows your OS preference" -
+  // until this behavior existed, "system" always rendered dark regardless of
+  // the OS (see this file's own module-level top comment, pre this task).
+  test("system resolves to light when the OS currently prefers light", () => {
+    const { mql } = fakeMatchMedia(false); // prefers-color-scheme: dark does NOT match -> prefers light
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    resetPrefsStoreForTests();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  test("system resolves to dark when the OS currently prefers dark", () => {
+    const { mql } = fakeMatchMedia(true);
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    resetPrefsStoreForTests();
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+
+  test("live-tracks a later OS preference change while theme stays 'system'", () => {
+    const { mql, setMatches } = fakeMatchMedia(true); // starts OS-prefers-dark
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    resetPrefsStoreForTests();
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+
+    setMatches(false); // OS flips to light
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    setMatches(true); // OS flips back to dark
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+  });
+
+  test("does not react to an OS change while an explicit light/dark theme is selected", () => {
+    const { mql, setMatches } = fakeMatchMedia(true);
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => mql),
+    );
+    resetPrefsStoreForTests();
+    prefsStore.getState().setTheme("dark");
+
+    setMatches(false); // OS flips to light - irrelevant, theme is explicitly "dark"
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 });
 

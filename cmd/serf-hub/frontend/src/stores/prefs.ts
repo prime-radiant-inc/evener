@@ -26,12 +26,17 @@
 // Theme is the one preference with a real, already-wired visual consumer
 // (src/styles/tokens.css keys light-theme overrides off `[data-theme="light"]`
 // on the document root; the default `:root` block IS the dark theme, so
-// "dark" has no override block of its own and "system" has never had one -
-// there is no prefers-color-scheme media query in tokens.css, a wave-2
-// decision this store doesn't revisit). setTheme therefore mirrors the
-// legacy's own assets/theme.js exactly, including its "system is absence,
-// never the literal string" contract: light/dark set data-theme, anything
-// else removes both the attribute and the stored key. phoneDensity/fontSize
+// "dark" has no override block of its own). setTheme mirrors the legacy's
+// own assets/theme.js "system is absence, never the literal string"
+// contract: light/dark persist and set data-theme directly; "system"
+// persists nothing and instead resolves live against the OS's own
+// prefers-color-scheme (systemPrefersDark below) to one of the same two
+// document states - tokens.css itself gains no new media query (it still
+// has only the two blocks above), applyTheme just picks between them
+// instead of unconditionally clearing the attribute the way it used to.
+// The section's own help copy ("default follows your OS preference") is
+// what this makes true; before this, "system" always rendered dark
+// regardless of the OS. phoneDensity/fontSize
 // get the same document-mirroring treatment the legacy's settings-
 // appearance.js gave them (onto document.body.dataset), even though no CSS
 // in the new design system keys off those two attributes yet - reproducing
@@ -192,16 +197,59 @@ function loadNotifications(): Record<NotificationKey, boolean> {
   };
 }
 
+// systemPrefersDark resolves the OS's current color-scheme preference for
+// "system" theme mode via the standard prefers-color-scheme media query.
+// Guarded for environments with no matchMedia at all - this project's own
+// jsdom test environment has none (confirmed empirically) - falling back to
+// dark, this file's own pre-existing "system has always rendered dark"
+// default, so a matchMedia-less environment degrades to exactly the
+// behavior this store had before this query existed.
+function systemPrefersDark(): boolean {
+  return typeof window === "undefined" || typeof window.matchMedia !== "function"
+    ? true
+    : window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
 // --- document application: the DOM side effects the legacy mirrored
 // alongside localStorage (assets/theme.js; assets/settings-appearance.js's
 // two script-parse-time IIFEs) - see this file's own top comment for which
 // three get one and why sidebarMode doesn't.
 function applyTheme(value: ThemePref): void {
   if (value === "system") {
-    document.documentElement.removeAttribute("data-theme");
+    // Resolves to one of the same two document states an explicit pick
+    // would - light sets the attribute, dark removes it (never the
+    // literal string "dark"), matching this function's own explicit-value
+    // branch below applied to whichever the OS currently prefers.
+    if (systemPrefersDark()) document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", "light");
   } else {
     document.documentElement.setAttribute("data-theme", value);
   }
+  ensureSystemSchemeListener();
+}
+
+// While theme==="system", re-applies whenever the OS's own color-scheme
+// preference changes - installed lazily (on first applyTheme() call whose
+// environment actually has matchMedia) rather than unconditionally at
+// module load, specifically so a test can stub matchMedia AFTER this
+// module has already been imported (module-eval order would otherwise
+// always see the real, matchMedia-less jsdom environment) and still
+// observe this get wired up on its own next resetPrefsStoreForTests()/
+// applyTheme() call - see resetPrefsStoreForTests's own reset of the
+// installed-flag below. A no-op guard (early return inside the handler)
+// for explicit light/dark, not an add/remove-listener dance, since the one
+// listener never needs to come off - it simply stops doing anything.
+let systemSchemeListenerInstalled = false;
+
+function handleSystemSchemeChange(): void {
+  if (prefsStore.getState().theme === "system") applyTheme("system");
+}
+
+function ensureSystemSchemeListener(): void {
+  if (systemSchemeListenerInstalled) return;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+  systemSchemeListenerInstalled = true;
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", handleSystemSchemeChange);
 }
 
 function applyPhoneDensity(value: PhoneDensityPref): void {
@@ -375,6 +423,14 @@ export function initPrefs(): void {
 // production code should ever call this (mirrors threads.ts's
 // resetThreadsStoreForTests / tree.ts's resetTreeStoreForTests precedent) -
 // use initPrefs() instead for the production "make sure this ran" case.
+//
+// Also resets the module-private system-scheme-listener-installed flag
+// (ensureSystemSchemeListener's own doc comment) - a test that stubs
+// window.matchMedia AFTER this module was first imported needs the next
+// hydrate() to retry installing against that stub rather than seeing the
+// flag already latched true from module-eval time's real, matchMedia-less
+// jsdom environment.
 export function resetPrefsStoreForTests(): void {
+  systemSchemeListenerInstalled = false;
   hydrate();
 }
