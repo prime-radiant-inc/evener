@@ -249,7 +249,7 @@ export function QueueStrip({
         <h3 className={CLASS.title}>Queued messages ({depth})</h3>
         <Tooltip label="Send your message and everything queued into the current turn">
           <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
-            Steer now
+            Steer queue now
           </Button>
         </Tooltip>
       </div>

@@ -596,7 +596,7 @@ describe("drain-as-steer affordance", () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", { serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: { depth: 0 } } });
     renderStrip(defaultProps());
-    expect(screen.queryByRole("button", { name: /steer now/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
@@ -615,7 +615,7 @@ describe("drain-as-steer affordance", () => {
     );
 
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
     });
 
     const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
@@ -642,7 +642,7 @@ describe("drain-as-steer affordance", () => {
     renderStrip(defaultProps());
 
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
     });
 
     await screen.findByText(/queued.*drain failed/i);
@@ -663,7 +663,7 @@ describe("drain-as-steer affordance", () => {
     renderStrip(defaultProps());
 
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
     });
 
     await screen.findByText(/drain failed.*network unreachable/i);
@@ -671,7 +671,7 @@ describe("drain-as-steer affordance", () => {
 
   // Mirrors Composer.tsx's own submit-time guard (handleFormSubmit/
   // handleSteerClick block on attachments.hasPending with the identical
-  // toast) - QueueStrip's "Steer now" button had no equivalent check
+  // toast) - QueueStrip's "Steer queue now" button had no equivalent check
   // (w5-integration-wiring-report.md Concern #3), so a drain triggered
   // mid-encode would silently omit the not-yet-encoded image from the
   // drained payload rather than refusing the whole request like every
@@ -689,7 +689,7 @@ describe("drain-as-steer affordance", () => {
     renderStrip(defaultProps({ getComposerText: () => ({ text: "my current draft", hasPending: true }) }));
 
     await act(async () => {
-      fireEvent.click(await screen.findByRole("button", { name: /steer now/i }));
+      fireEvent.click(await screen.findByRole("button", { name: "Steer queue now" }));
     });
 
     await screen.findByText(/image attachment is still processing/i);
@@ -715,11 +715,11 @@ describe("drain-as-steer affordance", () => {
     );
     render(<DrainBusyHarness />);
 
-    const drainButton = await screen.findByRole("button", { name: /steer now/i });
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     fireEvent.click(drainButton);
 
     await vi.waitFor(() => {
-      expect(isDisabled(screen.getByRole("button", { name: /steer now/i }))).toBe(true);
+      expect(isDisabled(screen.getByRole("button", { name: "Steer queue now" }))).toBe(true);
     });
 
     await act(async () => {
@@ -739,7 +739,7 @@ describe("drain-as-steer affordance", () => {
     fake.on("turn/drainAsSteer", () => ({}));
     renderStrip(defaultProps({ busy: true }));
 
-    const drainButton = await screen.findByRole("button", { name: /steer now/i });
+    const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     expect(isDisabled(drainButton)).toBe(true);
 
     fireEvent.click(drainButton);

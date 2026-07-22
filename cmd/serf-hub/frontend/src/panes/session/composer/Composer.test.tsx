@@ -107,14 +107,18 @@ function submitButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: /^(send|queue)\b/i }) as HTMLButtonElement;
 }
 
-// The negative lookahead excludes QueueStrip's own "Steer now" button (T3's
-// separate drain-as-steer affordance, wired into this component's tree at
-// the wave integration merge - w5-integration-wiring-report.md) - both
-// buttons' accessible names start with "Steer", and a couple of tests below
-// hydrate with a non-empty queue, which renders QueueStrip's button
-// alongside this component's own.
+// The composer's OWN Steer control. Its accessible name carries the
+// Shift+Enter KeyHint ("Steer Shift+Enter"), so it is not exactly "Steer";
+// QueueStrip's own drain button is exactly "Steer queue now" (T3's separate
+// drain-as-steer affordance, wired into this component's tree at the wave
+// integration merge - w5-integration-wiring-report.md). Both accessible
+// names start with "Steer" - a couple of tests below hydrate with a
+// non-empty queue, rendering QueueStrip's button alongside this one - so
+// disambiguate by the one that does NOT carry the "queue" token.
 function steerButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }) as HTMLButtonElement;
+  return screen.getByRole("button", {
+    name: (accessibleName) => accessibleName.startsWith("Steer") && !accessibleName.includes("queue"),
+  }) as HTMLButtonElement;
 }
 
 // --- basic surface ---------------------------------------------------------

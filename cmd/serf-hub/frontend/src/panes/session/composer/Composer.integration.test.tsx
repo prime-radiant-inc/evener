@@ -117,6 +117,22 @@ function textarea(): HTMLTextAreaElement | null {
   return screen.queryByRole("textbox", { name: /message/i }) as HTMLTextAreaElement | null;
 }
 
+// QueueStrip's drain-as-steer button. Its accessible name is exactly
+// "Steer queue now" (no KeyHint), so match it exactly.
+function drainButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: "Steer queue now" }) as HTMLButtonElement;
+}
+
+// The composer's OWN Steer control - accessible name "Steer Shift+Enter"
+// (carries the KeyHint), never exactly "Steer". Both this and the drain
+// button start with "Steer" once a non-empty queue renders both, so
+// disambiguate by the one that does NOT carry the "queue" token.
+function composerSteerButton(): HTMLButtonElement {
+  return screen.getByRole("button", {
+    name: (accessibleName) => accessibleName.startsWith("Steer") && !accessibleName.includes("queue"),
+  }) as HTMLButtonElement;
+}
+
 // --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
 
 function askArgs(questions: Array<Record<string, unknown>>): string {
@@ -191,7 +207,7 @@ test("the strip's drain-as-steer reads the composer's live text at click time, n
   fake.on("turn/drainAsSteer", () => ({}));
 
   await user.type(textarea() as HTMLTextAreaElement, "steer this in live");
-  await user.click(screen.getByRole("button", { name: /steer now/i }));
+  await user.click(drainButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/drainAsSteer")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
@@ -211,7 +227,7 @@ test("a successful strip-triggered drain clears the composer's own text and draf
   fake.on("turn/drainAsSteer", () => ({}));
 
   await user.type(textarea() as HTMLTextAreaElement, "drain me too");
-  await user.click(screen.getByRole("button", { name: /steer now/i }));
+  await user.click(drainButton());
 
   await waitFor(() => expect((textarea() as HTMLTextAreaElement).value).toBe(""));
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBeNull();
@@ -245,7 +261,7 @@ test("text changed while a strip-triggered drain is in flight survives the drain
   );
 
   await user.type(textarea() as HTMLTextAreaElement, "original");
-  await user.click(screen.getByRole("button", { name: /steer now/i })); // fires the request; handleDrain awaits the still-pending promise
+  await user.click(drainButton()); // fires the request; handleDrain awaits the still-pending promise
 
   // The user keeps typing while the drain is in flight - a real, synchronous
   // DOM change event landing between the drain click and its settlement.
@@ -322,7 +338,7 @@ test("clicking a queued row's cancel button fires turn/cancelQueued with that ro
 // --- shared busy gate across Composer and QueueStrip (item 6) ---------------
 // Composer's own busyAction and QueueStrip's drain previously tracked busy
 // state independently, so a user could fire the classic drain (Shift+Enter
-// or this component's own "Steer" button) and QueueStrip's "Steer now"
+// or this component's own "Steer" button) and QueueStrip's "Steer queue now"
 // button concurrently - both ultimately call the SAME drainAsSteer RPC,
 // neither button disabling the other.
 
@@ -345,10 +361,10 @@ test("while a strip-triggered drain is in flight, the composer's own classic ste
       }),
   );
 
-  await user.click(screen.getByRole("button", { name: /steer now/i }));
+  await user.click(drainButton());
 
   await waitFor(() => {
-    expect((screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(composerSteerButton().disabled).toBe(true);
   });
 
   resolveDrain?.();
@@ -375,10 +391,10 @@ test("while the composer's own classic drain is in flight, the strip's Steer-now
   );
 
   await user.type(textarea() as HTMLTextAreaElement, "drain me");
-  await user.click(screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }));
+  await user.click(composerSteerButton());
 
   await waitFor(() => {
-    expect((screen.getByRole("button", { name: /steer now/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(drainButton().disabled).toBe(true);
   });
 
   resolveDrain?.();
@@ -482,7 +498,7 @@ test("a queuedDrainPartial failure clears the composer, removes the pending entr
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "drain"));
 
   await user.type(textarea() as HTMLTextAreaElement, "partial");
-  await user.click(screen.getByRole("button", { name: /^steer(?!\s*now\b)/i }));
+  await user.click(composerSteerButton());
 
   await waitFor(() => expect(result.current).toHaveLength(1)); // registered while in flight
   rejectDrain?.(new WireError("already queued, drain failed", -32013, { serfErrorInfo: "queuedDrainPartial" }));

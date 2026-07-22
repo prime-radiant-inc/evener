@@ -45,7 +45,7 @@ const CLASS = {
 };
 
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
-// "Steer now" button) - never by this component's own submitAction, which
+// "Steer queue now" button) - never by this component's own submitAction, which
 // uses "steer" for its classic drain-as-steer route too (see submitAction's
 // own setBusyAction call). Both surfaces still share this ONE piece of
 // state: whichever one goes busy first disables the other's controls too,
@@ -322,7 +322,7 @@ export function Composer({ ref }: ComposerProps) {
   // identical liveness reason textEditor.read() above reads it, and
   // toInputAttachments() for the same wire shape submitAction's own payload
   // already uses. `hasPending` mirrors this component's own attachments.
-  // hasPending so QueueStrip's "Steer now" button can block with the SAME
+  // hasPending so QueueStrip's "Steer queue now" button can block with the SAME
   // "still processing" toast this component's classic submit paths already
   // use, instead of silently sending a drain payload with a not-yet-encoded
   // image missing (toInputAttachments() itself only ever filters incomplete
