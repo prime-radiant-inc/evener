@@ -48,6 +48,43 @@ in this stream actually carries a broken tree (verified above), but the METHOD w
 and should not be repeated - a future gate chain should redirect to a file and check `$?`
 explicitly, not pipe through `tail`.
 
+**A second, separate marginal-timing finding (`src/panes/session/index.test.tsx`, outside this
+stream's manifest) - investigated, not fixed, evidence below is genuinely mixed:** one full-suite
+run during this investigation showed a SECOND failure alongside tokenFlood's:
+`index.test.tsx > the registered component renders the ref it was opened with`
+(`findByText("ref_abc123")` timing out at its 1000ms default). Investigated seriously (per "all
+test failures are your responsibility") rather than dismissed:
+- That test mounts the REAL `lazy(() => import("./Session"))` component - the full Session/
+  Composer/QueueStrip/AskDock module graph - and its own `beforeAll` comment claims to pre-warm
+  this via `await import("./index")`, but `index.tsx` only eagerly imports the pane-registration
+  file, not the lazy `./Session` target itself (verified by reading `index.tsx`); the FIRST
+  cold transform of that whole graph is genuinely racing `findByText`'s hardcoded 1000ms default.
+  `panes/welcome/index.test.tsx` has the identical (also-broken) pre-warm pattern, apparently never
+  bitten because Welcome's own component subtree is much smaller - this looks like a pre-existing,
+  repeated pattern weakness in this codebase's pane-registration tests generally, not something
+  unique to my code.
+- Isolated, repeated single-file runs of just this test (8 back-to-back invocations, no other
+  activity) showed 6 consistent failures at ~1030-1035ms each, then 2 passes - suspiciously
+  consistent timing, not random jitter. A worktree comparison against the base commit `2510b8adc`
+  (fresh `npm ci`, isolated) showed 3/3 passes at a consistent ~690ms. A one-off widened-timeout
+  diagnostic (`{ timeout: 30000 }`, reverted immediately, zero net diff - confirmed via `git diff`)
+  showed the component resolving correctly and quickly (302ms) when not racing the default budget -
+  i.e., this is a timing race, not a broken/wrong render.
+- However: 5 subsequent REALISTIC full-suite runs (the normal `npx vitest run` invocation the
+  brief's own gate calls for, not my repeated single-file probing) were all clean, 136/136,
+  2031/2031, exit 0 - and the many dozens of full-suite runs earlier in this session (before I
+  started this specific investigation) never showed this failure at all. The evidence for "my
+  specific changes reliably cause this under normal conditions" is genuinely weak; the evidence for
+  "this test's own hardcoded timeout is marginal against Session's current module-graph size, and
+  some combination of system load and cumulative wave-5 code growth can occasionally tip it" is
+  much stronger.
+- Not fixed: the file is outside this stream's manifest (not itself on the FORBIDDEN list, but not
+  on my file manifest either), and the honest fix - widening `findByText`'s timeout, or actually
+  pre-warming the lazy `./Session` import in `beforeAll` - is a test-infrastructure judgment call
+  affecting a shared pattern across multiple pane index-test files, not a narrow composer/queue
+  fix. Flagging for the controller/Jesse's awareness rather than silently touching a file outside
+  scope or silently ignoring a real (if marginal and hard-to-pin-down) finding.
+
 ## Items
 
 ### 1. Missing comment (adversarial-review finding)
