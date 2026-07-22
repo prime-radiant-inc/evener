@@ -185,7 +185,10 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   return (
-    <span className={CLASS.row}>
+    // data-session-ref is the scroll target Rail's reveal effect (the palette's
+    // /project command via railController) queries to bring a session's row
+    // into view - the ref is stable and unique per session, unlike the label.
+    <span className={CLASS.row} data-session-ref={session.ref}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
       <Cadence state={cadenceStateFor(session.state)} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
       {/* Mouse-only shortcut for the same activation Enter already performs

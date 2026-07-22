@@ -5,7 +5,7 @@
 // state, and the rename/delete-project confirmation dialogs; every mutation
 // goes through actions.ts, refetching the tree on success and toasting on
 // failure (no optimistic UI - out of this task's scope).
-import { type ChangeEvent, useEffect, useState } from "react";
+import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   type TreeNode as ApiTreeNode,
   type TreeProject as ApiTreeProject,
@@ -30,7 +30,14 @@ import { workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RailRow, type RailRowActions } from "./RailRow";
-import { archivedProjectNodes, overrideLookup, projectNodes, type RailNode, sessionNodes } from "./railNodes";
+import {
+  archivedProjectNodes,
+  overrideLookup,
+  projectNodeIdForSessionRef,
+  projectNodes,
+  type RailNode,
+  sessionNodes,
+} from "./railNodes";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -118,7 +125,15 @@ function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, acti
   );
 }
 
-export function Rail() {
+export interface RailProps {
+  // The session ref the palette's /project command wants revealed. Rail expands
+  // its project section and scrolls its row into view, then calls
+  // onRevealConsumed so the caller can clear it. See railController (PIN-A).
+  revealTarget?: string | null;
+  onRevealConsumed?: () => void;
+}
+
+export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
@@ -131,10 +146,43 @@ export function Rail() {
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void treeStore.getState().refresh();
   }, []);
+
+  // Reveal a session's row for the palette's /project command (railController).
+  // If the row is already rendered, scroll it into view (block:"center"). If
+  // it's hidden inside a collapsed project, un-collapse that project instead
+  // and return: setting the override changes expandedOverrides, which re-runs
+  // this effect, and the now-rendered row scrolls on that pass. The Tree
+  // renders every expanded row (no virtualization), so a project-bearing ref
+  // always resolves after its one expand; the `!== true` guard makes the
+  // expand happen at most once, so an unknown ref just falls through to consume
+  // rather than looping. Consuming (onRevealConsumed) lets the caller clear the
+  // target.
+  useEffect(() => {
+    if (!revealTarget) return;
+    const rows = bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]");
+    const row = rows ? Array.from(rows).find((el) => el.dataset.sessionRef === revealTarget) : undefined;
+    if (row) {
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+      onRevealConsumed?.();
+      return;
+    }
+    if (!tree) return; // tree still loading - wait for it (tree is in deps), don't give up early
+    const projectId = projectNodeIdForSessionRef([...tree.projects, ...tree.test_runs], revealTarget);
+    if (projectId && expandedOverrides.get(projectId) !== true) {
+      setExpandedOverrides((prev) => {
+        const next = new Map(prev);
+        next.set(projectId, true);
+        return next;
+      });
+      return;
+    }
+    onRevealConsumed?.();
+  }, [revealTarget, tree, expandedOverrides, onRevealConsumed]);
 
   function toggleCollapsed() {
     setCollapsed((prev) => {
@@ -278,7 +326,7 @@ export function Rail() {
           onClick={toggleCollapsed}
         />
       </div>
-      <div className={CLASS.body}>
+      <div className={CLASS.body} ref={bodyRef}>
         {loading && !tree && <Skeleton lines={6} />}
         {!loading && !tree && error && (
           <EmptyState

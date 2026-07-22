@@ -74,6 +74,24 @@ function projectNodeId(key: string): string {
   return `projectnode:${key}`;
 }
 
+// True when `nodes` (a project's session list or a tier) contains a session
+// with `ref`, recursing into subagent-cluster children.
+function sessionListHasRef(nodes: ApiTreeNode[], ref: string): boolean {
+  return nodes.some((n) => n.ref === ref || sessionListHasRef(n.children, ref));
+}
+
+/** The projectnode: id of the project (or test-run) whose sessions include
+ * `ref`, or null when `ref` is a top-level tier entry (needs-you/live/pinned)
+ * or lives in an unloaded archived stub - i.e. nothing to un-collapse before
+ * scrolling. Rail's reveal effect (railController's /project) uses this to
+ * expand the right project section, matching the id projectNodes assigns. */
+export function projectNodeIdForSessionRef(projects: ApiTreeProject[], ref: string): string | null {
+  for (const project of projects) {
+    if (sessionListHasRef(project.sessions, ref)) return projectNodeId(project.key);
+  }
+  return null;
+}
+
 /** Builds rail nodes for the Projects and Test-runs tiers: both are
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
