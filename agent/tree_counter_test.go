@@ -802,6 +802,17 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	if got := sess.driveCounter.n.Load(); got != 0 {
 		t.Fatalf("re-drive launched inside the pacing interval: drive counter = %d", got)
 	}
+	// The counter check alone is necessary but not sufficient: a full pacing
+	// removal launches the fast fake drive at ~0ms, which reserves AND
+	// releases the counter back to 0 well before this 100ms sample — so
+	// counter==0 passes whether the re-drive never launched OR already
+	// launched and finished. An early drive would also have drained the
+	// child's queued notification, so peekNotifications() staying > 0 at the
+	// same sample point is the necessary companion: it can only hold if the
+	// re-drive genuinely has not run yet.
+	if got := coordSub.sess.peekNotifications(); got == 0 {
+		t.Fatalf("re-drive already drained notifications inside the pacing interval: peekNotifications = %d", got)
+	}
 	// After the interval, the paced re-drive launches, runs, and drains the
 	// child's queued attention. Awaiting the drain (peek→0) is the reliable
 	// completion signal that the paced drive actually ran — a drive turn is the
