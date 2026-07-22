@@ -9,6 +9,7 @@ import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } fro
 import { Button, ConfirmDialog, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
+import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -118,6 +119,10 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
     return plugins.some((p) => p.plugin === plugin && p.marketplace === marketplace);
   }
 
+  function findMarketplace(name: string): MarketplaceEntry | undefined {
+    return marketplaces.find((m) => m.name === name);
+  }
+
   async function handleConfirmInstall() {
     const target = pendingInstall;
     if (target === null) return;
@@ -191,9 +196,15 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
         onConfirm={() => void handleConfirmInstall()}
         onCancel={() => setPendingInstall(null)}
       >
-        {pendingInstall !== null
-          ? `Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`
-          : ""}
+        {pendingInstall !== null && (
+          <>
+            <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`}</p>
+            {(() => {
+              const source = findMarketplace(pendingInstall.marketplace)?.source;
+              return source && <p className={CLASS.rowMeta}>{`Source: ${sourceLabel(source)}`}</p>;
+            })()}
+          </>
+        )}
       </ConfirmDialog>
     </section>
   );

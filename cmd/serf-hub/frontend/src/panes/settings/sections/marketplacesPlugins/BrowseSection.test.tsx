@@ -149,6 +149,18 @@ test("Install opens a non-destructive confirm; confirming installs and toasts su
   );
 });
 
+test("the install confirm states the marketplace's actual source, not just its name", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A], plugins: [] });
+  fake.on("serf/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "linter" }] }));
+  render(<Harness />);
+  await user.click(screen.getByRole("button", { name: /acme-plugins/ }));
+  await user.click(await screen.findByRole("button", { name: "Install" }));
+  const dialog = screen.getByRole("dialog", { name: "Install plugin" });
+  expect(within(dialog).getByText(/github: acme\/plugins/)).toBeTruthy();
+});
+
 test("cancelling the install confirm does not call installPlugin", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
