@@ -405,6 +405,8 @@ controller-owned and serial — NOT part of T6.** Suggested tier: **opus**.
 
 ## Genuinely open — controller decision needed
 
+**RULED (Jesse, 2026-07-22): DROP THE ROW.** The spawn pane ships without recent prompts — an accepted parity drop (floor §1.1's `.RecentPrompts` row). T2 builds no recent-prompts UI and no storage for it; the close-task parity sweep records the row as consciously-dropped with this ruling as the citation. The question below is retained for the record.
+
 - **Recent *prompts* (floor §1.1, `spawn.html:117-124` `.RecentPrompts`) has no appwire method**
   (only `serf/projects/recent` for *directories* exists — verified). The legacy sourced them from a
   server-rendered template var that the deletion wave removes. Options: (a) localStorage-back
