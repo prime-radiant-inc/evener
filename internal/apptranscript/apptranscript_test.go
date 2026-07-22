@@ -140,6 +140,63 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	}
 }
 
+// TestProjectTurnStampsFailedStatusOnErroredToolResult (Go follow-up: the
+// projector/transcript hardcoded Status:"completed" on every settled item
+// regardless of IsError, so clients had to infer error state by checking
+// Error's presence instead of trusting Status). Reload must stamp
+// TurnStatusFailed when the persisted tool result carries IsError, matching
+// the live path.
+func TestProjectTurnStampsFailedStatusOnErroredToolResult(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_fail",
+				Name:       "shell",
+				Content:    "boom",
+				IsError:    true,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 {
+		t.Fatalf("items=%+v, want 1", done)
+	}
+	if done[0].Status != appwire.TurnStatusFailed {
+		t.Fatalf("errored tool result Status=%q, want %q", done[0].Status, appwire.TurnStatusFailed)
+	}
+	if done[0].Error != "boom" {
+		t.Fatalf("errored tool result Error=%q, want %q", done[0].Error, "boom")
+	}
+}
+
+// TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult pins the
+// non-error branch alongside the failed-status test above so both sides of
+// the status decision are exercised.
+func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_ok",
+				Name:       "shell",
+				Content:    "ok",
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 {
+		t.Fatalf("items=%+v, want 1", done)
+	}
+	if done[0].Status != appwire.TurnStatusCompleted {
+		t.Fatalf("successful tool result Status=%q, want %q", done[0].Status, appwire.TurnStatusCompleted)
+	}
+}
+
 // TestProjectTurnMapsToolResultExitCode (wire-honesty spec Part A): reload
 // promotes a shell tool's exit code from the persisted ToolState the same way
 // the live projector does.

@@ -2215,3 +2215,44 @@ func TestAppEventProjectorToolCallEndOmitsExitCodeWithoutToolState(t *testing.T)
 		t.Fatalf("completed item ExitCode=%v, want nil for a tool with no ToolState", *item.ExitCode)
 	}
 }
+
+// TestAppEventProjectorToolCallEndStampsFailedStatusOnError (Go follow-up:
+// the projector hardcoded Status:"completed" on every settled item
+// regardless of Error, so clients had to infer error state by checking
+// Error's presence instead of trusting Status). An IsError tool result must
+// settle with TurnStatusFailed.
+func TestAppEventProjectorToolCallEndStampsFailedStatusOnError(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_fail"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_fail",
+		Error:    "boom",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Status != appwire.TurnStatusFailed {
+		t.Fatalf("errored tool item Status=%q, want %q", item.Status, appwire.TurnStatusFailed)
+	}
+	if item.Error != "boom" {
+		t.Fatalf("errored tool item Error=%q, want %q", item.Error, "boom")
+	}
+}
+
+// TestAppEventProjectorToolCallEndKeepsCompletedStatusWithoutError pins the
+// non-error branch alongside the failed-status test above so both sides of
+// the status decision are exercised.
+func TestAppEventProjectorToolCallEndKeepsCompletedStatusWithoutError(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_ok"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_ok",
+		Output:   "ok",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("successful tool item Status=%q, want %q", item.Status, appwire.TurnStatusCompleted)
+	}
+}

@@ -138,6 +138,21 @@ func ExitCodeFromToolState(raw json.RawMessage) *int64 {
 	return v.ExitCode
 }
 
+// SettledToolStatus is the wire-honest terminal status for a settled
+// commandExecution item: TurnStatusFailed when the tool result carries an
+// error, TurnStatusCompleted otherwise. Both the live projector
+// (EventToolCallEnd, internal/appprojector/appwire_projection.go) and reload
+// (ProjectTurn's TurnToolResults case below) call this, so a settled item's
+// Status agrees with its own Error field instead of unconditionally claiming
+// "completed" regardless of outcome — previously clients had to infer error
+// state by checking Error's presence instead of trusting Status.
+func SettledToolStatus(isError bool) string {
+	if isError {
+		return appwire.TurnStatusFailed
+	}
+	return appwire.TurnStatusCompleted
+}
+
 // StringifyToolContent returns transcript text for arbitrary tool result
 // content.
 func StringifyToolContent(v any) string {
@@ -363,7 +378,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				TurnID:   turnID,
 				ToolName: name,
 				CallID:   part.ToolResult.ToolCallID,
-				Status:   appwire.TurnStatusCompleted,
+				Status:   SettledToolStatus(part.ToolResult.IsError),
 				Raw:      part.ToolResult.ToolState,
 				ExitCode: ExitCodeFromToolState(part.ToolResult.ToolState),
 			}
