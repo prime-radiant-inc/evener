@@ -193,23 +193,51 @@ describe("EnvMapField", () => {
     expect(screen.getByText("FOO=bar")).toBeTruthy();
   });
 
-  test("adding 'NAME=value' splits on the first '=' only (values may contain '=')", async () => {
+  test("the add row is two structured fields (name, value), not one combined NAME=value box", () => {
+    render(<EnvMapField option={envOption} value={{}} onChange={() => {}} />);
+    expect(screen.getByRole("textbox", { name: "Variable name" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Variable value" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("NAME=value")).toBeNull();
+  });
+
+  test("typing a name and a value and submitting adds that entry", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
-    await user.type(screen.getByPlaceholderText("NAME=value"), "TOKEN=abc=def");
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "TOKEN");
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "abc=def");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(onChange).toHaveBeenCalledWith({ TOKEN: "abc=def" });
   });
 
-  test("a value with no '=' is rejected with an inline error", async () => {
+  test("a value typed before any name still round-trips intact once a name is added (the '=' join point is code-owned, never user-typed)", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
-    await user.type(screen.getByPlaceholderText("NAME=value"), "NOEQUALSHERE");
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "abc=def=ghi");
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "TOKEN");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith({ TOKEN: "abc=def=ghi" });
+  });
+
+  test("a blank name is still rejected with the same inline error as before (typing only a value)", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "bar");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByText(/use NAME=value/i)).toBeTruthy();
+  });
+
+  test("typing '=' into the name field does not leak into the value field", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<EnvMapField option={envOption} value={{}} onChange={onChange} />);
+    await user.type(screen.getByRole("textbox", { name: "Variable value" }), "bar");
+    await user.type(screen.getByRole("textbox", { name: "Variable name" }), "FOO=BAZ");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith({ FOOBAZ: "bar" });
   });
 
   test("remove drops just that key", () => {

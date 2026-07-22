@@ -28,8 +28,24 @@ export interface CollectionEditorProps<T> {
    * instance vs. plain dir row). */
   onRemove: (item: T) => void;
   emptyMessage: string;
-  addPlaceholder: string;
+  /** Placeholder for the built-in plain-text add field. Unused (optional)
+   * when `renderAddField` is given - the caller's own fields carry their
+   * own placeholders then. */
+  addPlaceholder?: string;
   addButtonLabel?: string;
+  /** Replaces the built-in plain-text add field (and its submit button)
+   * with the caller's own rendering - e.g. a PathPicker (dirListSetting.tsx)
+   * or a structured key/value pair (envMap - collectionFields.tsx).
+   * CollectionEditor still owns `draft`/`busy`/the submit `<form>`, so
+   * `value`/`onChange` are that same draft state and Enter-to-submit keeps
+   * working as long as the caller's own markup stays inside a real
+   * `<input>` in the form; the caller's return value must include its own
+   * submit trigger (a `type="submit"` button) since none is rendered by
+   * default in this mode. Naming the field is the caller's own
+   * responsibility too - the built-in visually-hidden `label` wrapper is
+   * skipped in this mode (it only ever labels the single default input,
+   * which no longer renders). */
+  renderAddField?: (props: { value: string; onChange: (value: string) => void; disabled: boolean }) => ReactNode;
   /** Runs the caller's own validate-then-persist step against the
    * trimmed, non-empty add value (blank/whitespace-only input never
    * reaches this - the Add button stays disabled). Resolving `{ok:true}`
@@ -84,6 +100,7 @@ export function CollectionEditor<T>({
   addPlaceholder,
   addButtonLabel = "Add",
   onAdd,
+  renderAddField,
 }: CollectionEditorProps<T>) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -126,18 +143,24 @@ export function CollectionEditor<T>({
         )}
       </ul>
       <form className={CLASS.addForm} onSubmit={(event) => void handleSubmit(event)}>
-        <label className={CLASS.addField}>
-          <span className={CLASS.visuallyHidden}>{label}</span>
-          <Input
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={addPlaceholder}
-            disabled={busy}
-          />
-        </label>
-        <Button type="submit" variant="quiet" disabled={trimmed === "" || busy}>
-          {addButtonLabel}
-        </Button>
+        {renderAddField ? (
+          renderAddField({ value: draft, onChange: setDraft, disabled: busy })
+        ) : (
+          <>
+            <label className={CLASS.addField}>
+              <span className={CLASS.visuallyHidden}>{label}</span>
+              <Input
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder={addPlaceholder}
+                disabled={busy}
+              />
+            </label>
+            <Button type="submit" variant="quiet" disabled={trimmed === "" || busy}>
+              {addButtonLabel}
+            </Button>
+          </>
+        )}
       </form>
       {error !== null && (
         <p role="alert" className={CLASS.error}>

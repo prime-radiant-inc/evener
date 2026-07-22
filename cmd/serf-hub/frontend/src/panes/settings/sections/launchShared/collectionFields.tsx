@@ -1,23 +1,22 @@
 // collectionFields.tsx renders the 4 collection LaunchOption kinds (pathList/
 // modelList/envMap/mcpServerList - Appendix B), each a CollectionEditor
 // (widgets/collectioneditor) parameterized by its own add-value parsing/
-// validation. CollectionEditor's own add-input is a single plain text field
-// (see its own source), so envMap/mcpServerList parse a delimited string
-// instead of the legacy's separate per-sub-field inputs - stays within
-// CollectionEditor's real, already-built contract rather than forking it
-// (out of this stream's manifest). Itemized in the wave-7 task-2 report's
-// "Deliberate scope/parity decisions" list - two DIFFERENT tradeoffs, not
-// one:
-//   - envMap ("NAME=value"): a genuine UX step-down from the legacy's
-//     separate name/value inputs - a value containing "=" still round-trips
-//     correctly (split on the FIRST "=" only), but typing is less
-//     ergonomic than two plain fields.
-//   - mcpServerList ("name command args..."): expressiveness-equivalent,
-//     not a step-down - the legacy's own 3 separate inputs (name/command/
-//     args) are themselves just concatenated back into one command line by
-//     the user's own shell-argument mental model; a single "name command
-//     args..." field asks for the exact same information in one line
-//     instead of three boxes.
+// validation. pathList/modelList use CollectionEditor's own default plain-
+// text add field; envMap/mcpServerList each need more than one sub-value per
+// row, so they use CollectionEditor's renderAddField slot instead - two
+// DIFFERENT shapes, not one:
+//   - envMap: a real structured NAME/value pair (EnvAddFields below) - two
+//     boxes composed into CollectionEditor's own single `draft` string via
+//     one code-owned "=" join point (never a user-typed delimiter), so a
+//     value containing "=" round-trips with no parsing ambiguity at all.
+//   - mcpServerList ("name command args..."): still one delimited field, not
+//     structured - the legacy's own 3 separate inputs (name/command/args)
+//     are themselves just concatenated back into one command line by the
+//     user's own shell-argument mental model, so a single field asks for the
+//     exact same information in one line instead of three boxes; this is
+//     expressiveness-equivalent, not a step-down, so restructuring it into
+//     boxes the way envMap's own fields were restructured would add surface
+//     without fixing anything.
 //
 // Also out of scope here (and in fields.tsx's own scalar path-kind
 // rendering): the legacy engine's Constraint Validation API integration
@@ -27,9 +26,10 @@
 // already shows). Not ported - the custom inline error is the only
 // validation UI surfaced here.
 
+import { useId } from "react";
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
 import type { CollectionAddResult } from "../../../../widgets";
-import { CollectionEditor, Switch } from "../../../../widgets";
+import { Button, CollectionEditor, Input, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
 import { schemaPathKind } from "./schema";
@@ -39,6 +39,9 @@ const CLASS = {
   header: requireClass(styles.header, "collectionFields.module.css", "header"),
   label: requireClass(styles.label, "collectionFields.module.css", "label"),
   help: requireClass(styles.help, "collectionFields.module.css", "help"),
+  envRow: requireClass(styles.envRow, "collectionFields.module.css", "envRow"),
+  envField: requireClass(styles.envField, "collectionFields.module.css", "envField"),
+  visuallyHidden: requireClass(styles.visuallyHidden, "collectionFields.module.css", "visuallyHidden"),
 };
 
 function SectionHeader({ label, help }: { label: string; help?: string }) {
@@ -168,10 +171,74 @@ interface EnvEntry {
   value: string;
 }
 
-/** envMap kind: `env`. Add syntax is "NAME=value", split on the FIRST '='
- * only so a value that itself contains '=' (e.g. a base64 blob) round-trips
- * intact - no validation on either sub-field beyond requiring a non-empty
- * NAME, matching the legacy's own envMap behavior exactly. */
+/**
+ * The envMap add row: a real structured NAME/value pair (CollectionEditor's
+ * own renderAddField slot), composed into CollectionEditor's single `draft`
+ * string via one code-owned "=" join point that's never user-typed - so
+ * handleAdd below can keep parsing "NAME=value" completely unchanged, and a
+ * value containing "=" (e.g. a base64 blob) round-trips with no ambiguity
+ * at all. Typing "=" into the NAME field itself is stripped rather than
+ * composed through: an env var name can never contain one, so there's
+ * nothing legitimate to preserve, and stripping keeps the FIRST "=" in the
+ * composed string always exactly the name/value boundary. Both boxes are
+ * named for assistive tech via a visually-hidden label (the placeholder
+ * already conveys it sighted), matching widgets/collectioneditor's own
+ * default-field labeling technique.
+ */
+function EnvAddFields({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  const nameId = useId();
+  const valueId = useId();
+  const eq = value.indexOf("=");
+  const name = eq === -1 ? value : value.slice(0, eq);
+  const envValue = eq === -1 ? "" : value.slice(eq + 1);
+
+  return (
+    <>
+      <span className={CLASS.envField}>
+        <label className={CLASS.visuallyHidden} htmlFor={nameId}>
+          Variable name
+        </label>
+        <Input
+          id={nameId}
+          value={name}
+          onChange={(e) => onChange(`${e.target.value.replace(/=/g, "")}=${envValue}`)}
+          placeholder="NAME"
+          disabled={disabled}
+        />
+      </span>
+      <span className={CLASS.envField}>
+        <label className={CLASS.visuallyHidden} htmlFor={valueId}>
+          Variable value
+        </label>
+        <Input
+          id={valueId}
+          value={envValue}
+          onChange={(e) => onChange(`${name}=${e.target.value}`)}
+          placeholder="value"
+          disabled={disabled}
+        />
+      </span>
+      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
+        Add
+      </Button>
+    </>
+  );
+}
+
+/** envMap kind: `env`. Add syntax is still "NAME=value" under the hood
+ * (handleAdd), split on the FIRST '=' only so a value that itself contains
+ * '=' round-trips intact - no validation on either sub-field beyond
+ * requiring a non-empty NAME, matching the legacy's own envMap behavior
+ * exactly. EnvAddFields above is what composes that string now, from two
+ * real boxes instead of asking the user to type the '=' themselves. */
 export function EnvMapField({ option, value, onChange }: EnvMapFieldProps) {
   const entries: EnvEntry[] = Object.entries(value).map(([name, v]) => ({ name, value: v }));
 
@@ -200,8 +267,12 @@ export function EnvMapField({ option, value, onChange }: EnvMapFieldProps) {
           onChange(next);
         }}
         emptyMessage="No environment variables configured."
-        addPlaceholder="NAME=value"
         onAdd={handleAdd}
+        renderAddField={({ value: draft, onChange: setDraft, disabled }) => (
+          <div className={CLASS.envRow}>
+            <EnvAddFields value={draft} onChange={setDraft} disabled={disabled} />
+          </div>
+        )}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { type CollectionAddResult, CollectionEditor } from "./index";
 
 afterEach(cleanup);
@@ -31,6 +31,7 @@ function ControlledCollectionEditor(props: {
   initial: DirItem[];
   onAdd: (value: string) => Promise<CollectionAddResult>;
   onRemove?: (item: DirItem) => void;
+  renderAddField?: Parameters<typeof CollectionEditor<DirItem>>[0]["renderAddField"];
 }) {
   const [items, setItems] = useState(props.initial);
   return (
@@ -51,6 +52,7 @@ function ControlledCollectionEditor(props: {
         if (result.ok) setItems((current) => [...current, { path: value }]);
         return result;
       }}
+      renderAddField={props.renderAddField}
     />
   );
 }
@@ -180,4 +182,86 @@ test("the input and add button are disabled while onAdd is pending, and re-enabl
 
   resolveAdd({ ok: true });
   await waitFor(() => expect(input.disabled).toBe(false));
+});
+
+describe("renderAddField", () => {
+  // A minimal stand-in for a caller-supplied custom add field (e.g.
+  // dirListSetting.tsx's PathPicker, or collectionFields.tsx's two-box
+  // envMap field) - a single labeled text input plus its own submit
+  // button, wired to CollectionEditor's own {value, onChange, disabled}
+  // rather than rendering the built-in plain Input.
+  function customField({
+    value,
+    onChange,
+    disabled,
+  }: Parameters<NonNullable<Parameters<typeof CollectionEditor<DirItem>>[0]["renderAddField"]>>[0]) {
+    return (
+      <>
+        <input
+          aria-label="Custom path field"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          placeholder="custom placeholder"
+        />
+        <button type="submit">Add</button>
+      </>
+    );
+  }
+
+  test("renders the caller's custom add field instead of the built-in Input", () => {
+    render(<CollectionEditor<DirItem> {...baseProps({ renderAddField: customField })} />);
+    expect(screen.getByRole("textbox", { name: "Custom path field" })).toBeTruthy();
+    expect(screen.queryByPlaceholderText("/opt/plugins")).toBeNull();
+  });
+
+  test("typing into the custom field and submitting calls onAdd with the trimmed value", async () => {
+    const user = userEvent.setup();
+    const onAdd = vi.fn(async (): Promise<CollectionAddResult> => ({ ok: true }));
+    render(<CollectionEditor<DirItem> {...baseProps({ onAdd, renderAddField: customField })} />);
+    await user.type(screen.getByRole("textbox", { name: "Custom path field" }), "  /opt/more  {Enter}");
+    expect(onAdd).toHaveBeenCalledWith("/opt/more");
+  });
+
+  test("a successful add through the custom field clears its value (CollectionEditor still owns draft)", async () => {
+    const user = userEvent.setup();
+    render(<ControlledCollectionEditor initial={[]} onAdd={async () => ({ ok: true })} renderAddField={customField} />);
+    const input = screen.getByRole("textbox", { name: "Custom path field" }) as HTMLInputElement;
+    await user.type(input, "/opt/more{Enter}");
+    expect(await screen.findByText("/opt/more")).toBeTruthy();
+    expect(input.value).toBe("");
+  });
+
+  test("a failed add through the custom field shows the inline error below the form", async () => {
+    const user = userEvent.setup();
+    const onAdd = vi.fn(async (): Promise<CollectionAddResult> => ({ ok: false, error: "Path does not exist." }));
+    render(<CollectionEditor<DirItem> {...baseProps({ onAdd, renderAddField: customField })} />);
+    await user.type(screen.getByRole("textbox", { name: "Custom path field" }), "/nope{Enter}");
+    expect(await screen.findByText("Path does not exist.")).toBeTruthy();
+  });
+
+  test("the custom field's disabled arg mirrors the built-in busy state while onAdd is pending", async () => {
+    const user = userEvent.setup();
+    let resolveAdd: (result: CollectionAddResult) => void = () => {};
+    const onAdd = vi.fn(
+      () =>
+        new Promise<CollectionAddResult>((resolve) => {
+          resolveAdd = resolve;
+        }),
+    );
+    render(<CollectionEditor<DirItem> {...baseProps({ onAdd, renderAddField: customField })} />);
+    const input = screen.getByRole("textbox", { name: "Custom path field" }) as HTMLInputElement;
+    await user.type(input, "/opt/more{Enter}");
+    expect(input.disabled).toBe(true);
+    resolveAdd({ ok: true });
+    await waitFor(() => expect(input.disabled).toBe(false));
+  });
+
+  test("with renderAddField given, CollectionEditor renders no default Add button of its own (the caller's field owns it)", () => {
+    render(<CollectionEditor<DirItem> {...baseProps({ renderAddField: customField })} />);
+    // customField above renders exactly one submit button named "Add" -
+    // if CollectionEditor ALSO rendered its own default button, there would
+    // be two.
+    expect(screen.getAllByRole("button", { name: "Add" })).toHaveLength(1);
+  });
 });

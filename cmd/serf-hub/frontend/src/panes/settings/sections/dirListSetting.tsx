@@ -6,30 +6,26 @@
 // own recommendation: pluginsDirs.tsx (wireField:"pluginDirs") and
 // skillsDirs.tsx (wireField:"skillsDirs").
 //
-// Deliberately NOT built on widgets/collectioneditor's CollectionEditor:
-// CollectionEditor unconditionally renders its own add-row (a plain Input
-// bound to state it owns internally) with no slot to swap in a different
-// add-field component - there is no way to compose it with PathPicker's
-// Browse-button-assisted input for the SAME row. Per the dir-picker
-// contract (test-settings-dir-picker.js / assets/settings-pickers.js) this
-// wave's floor docs hold PathListSetting to, both plugins.html AND
-// skills.html wire an explicit Browse button (`data-settings-dir-picker`)
-// alongside inline typeahead on every directory add-row - dropping that to
-// reuse CollectionEditor's plain input would be a real UX regression, not a
-// simplification, so this hand-rolls the list+add-row directly on
-// PathPicker instead (visually mirroring CollectionEditor's own row/list
-// styling for consistency). See the wave-7 task-3 report for the full
-// reasoning.
+// PathListEditor is a widgets/collectioneditor CollectionEditor instance:
+// CollectionEditor's own renderAddField slot swaps in a FormRow-wrapped
+// PathPicker for the add row, keeping the Browse-button-assisted input the
+// dir-picker contract (test-settings-dir-picker.js / assets/settings-
+// pickers.js) requires on every directory add-row, while CollectionEditor
+// itself owns the list rendering and the add field's draft/busy/inline-
+// error state. ConfirmDialog-gated removal (this wave's binding "every
+// destructive action confirms" constraint) is layered outside
+// CollectionEditor's own immediate-fire onRemove, keyed on a `pending` path
+// exactly like every other confirm-gated row in this settings cluster.
 import { useId, useState } from "react";
 import type { LaunchConfigLayer } from "../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
   Button,
   type CollectionAddResult,
+  CollectionEditor,
   ConfirmDialog,
   EmptyState,
   FormRow,
-  IconButton,
   PathPicker,
   Skeleton,
   useToasts,
@@ -42,22 +38,9 @@ const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
   title: requireClass(styles.title, "dirListSetting.module.css", "title"),
   help: requireClass(styles.help, "dirListSetting.module.css", "help"),
-  root: requireClass(styles.root, "dirListSetting.module.css", "root"),
-  list: requireClass(styles.list, "dirListSetting.module.css", "list"),
-  row: requireClass(styles.row, "dirListSetting.module.css", "row"),
-  content: requireClass(styles.content, "dirListSetting.module.css", "content"),
-  empty: requireClass(styles.empty, "dirListSetting.module.css", "empty"),
   addRow: requireClass(styles.addRow, "dirListSetting.module.css", "addRow"),
   addField: requireClass(styles.addField, "dirListSetting.module.css", "addField"),
 };
-
-function RemoveIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -88,10 +71,9 @@ export interface PathListEditorProps {
  * The generic "list of paths" editor: PathPicker-assisted add row (Browse
  * button + inline typeahead, matching plugins.html/skills.html's contract),
  * a ConfirmDialog-gated remove button per row, and an inline validation
- * error next to the add row (matching the legacy's own `.row-error`
- * placement - a save/validate failure is shown right next to the field
- * that caused it, not toasted). Reused by DirListSetting below and by
- * mcp.tsx's "MCP config files" list.
+ * error below the add row (CollectionEditor's own, already on token-
+ * contract.test.ts's --danger allowlist as a widget). Reused by
+ * DirListSetting below and by mcp.tsx's "MCP config files" list.
  */
 export function PathListEditor({
   label,
@@ -105,69 +87,40 @@ export function PathListEditor({
   removeConfirmBody,
   addPlaceholder = "/absolute/path",
 }: PathListEditorProps) {
-  const [draft, setDraft] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const addFieldId = useId();
 
-  const trimmed = draft.trim();
-
-  async function handleAdd() {
-    if (trimmed === "" || busy) return;
-    setBusy(true);
-    const result = await onAdd(trimmed);
-    setBusy(false);
-    if (result.ok) {
-      setDraft("");
-      setError(null);
-    } else {
-      setError(result.error);
-    }
-  }
-
   return (
-    <div className={CLASS.root}>
-      <ul aria-label={label} className={CLASS.list}>
-        {items.length === 0 ? (
-          <li className={CLASS.empty}>{emptyMessage}</li>
-        ) : (
-          items.map((item) => (
-            <li key={item} className={CLASS.row}>
-              <div className={CLASS.content}>{item}</div>
-              <IconButton
-                label={`Remove ${item}`}
-                icon={<RemoveIcon />}
-                variant="quiet"
-                size="sm"
-                onClick={() => setPending(item)}
-              />
-            </li>
-          ))
+    <>
+      <CollectionEditor<string>
+        label={label}
+        items={items}
+        getKey={(item) => item}
+        renderItem={(item) => item}
+        removeLabel={(item) => `Remove ${item}`}
+        onRemove={(item) => setPending(item)}
+        emptyMessage={emptyMessage}
+        onAdd={onAdd}
+        renderAddField={({ value, onChange, disabled }) => (
+          <FormRow label={addLabel} htmlFor={addFieldId}>
+            <div className={CLASS.addRow}>
+              <span className={CLASS.addField}>
+                <PathPicker
+                  id={addFieldId}
+                  value={value}
+                  onChange={onChange}
+                  listChildren={listChildren}
+                  placeholder={addPlaceholder}
+                  disabled={disabled}
+                />
+              </span>
+              <Button type="submit" disabled={value.trim() === "" || disabled}>
+                Add
+              </Button>
+            </div>
+          </FormRow>
         )}
-      </ul>
-      {/* FormRow (not a hand-rolled error paragraph): its error treatment
-          is already on token-contract.test.ts's --danger allowlist, and a
-          pane-level stylesheet like this one's own module.css cannot add
-          itself to that widget-only allowlist - see the wave-7 task-3
-          report for the full reasoning. */}
-      <FormRow label={addLabel} htmlFor={addFieldId} error={error ?? undefined}>
-        <div className={CLASS.addRow}>
-          <span className={CLASS.addField}>
-            <PathPicker
-              id={addFieldId}
-              value={draft}
-              onChange={setDraft}
-              listChildren={listChildren}
-              placeholder={addPlaceholder}
-              disabled={busy}
-            />
-          </span>
-          <Button onClick={() => void handleAdd()} disabled={trimmed === "" || busy}>
-            Add
-          </Button>
-        </div>
-      </FormRow>
+      />
       <ConfirmDialog
         open={pending !== null}
         title={removeConfirmTitle}
@@ -180,7 +133,7 @@ export function PathListEditor({
       >
         {pending !== null ? removeConfirmBody(pending) : ""}
       </ConfirmDialog>
-    </div>
+    </>
   );
 }
 

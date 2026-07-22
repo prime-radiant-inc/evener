@@ -17,48 +17,6 @@
   font-size: var(--font-size-ui);
 }
 
-.root {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-}
-
-.content {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--ink-hi);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.empty {
-  padding: var(--space-2) var(--space-3);
-  color: var(--ink-mid);
-  font-size: var(--font-size-ui);
-}
-
 .addRow {
   display: flex;
   align-items: center;
