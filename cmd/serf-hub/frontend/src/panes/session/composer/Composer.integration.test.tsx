@@ -403,7 +403,7 @@ test("a plain send registers an optimistic pending entry, visible until a wire e
   expect(result.current[0]).toMatchObject({ ref: "ref_a", method: "send", text: "hello agent" });
 });
 
-test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods", async () => {
+test("a queue submit ALSO registers an optimistic pending entry - uniform across all four methods, and it is actually visible in the composed UI", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -416,6 +416,15 @@ test("a queue submit ALSO registers an optimistic pending entry - uniform across
   await user.click(screen.getByRole("button", { name: /^queue\b/i }));
 
   await waitFor(() => expect(result.current).toHaveLength(1));
+  // QueueStrip.test.tsx's own "a pending queue-method entry from another
+  // submission renders as an extra, action-less row" test already proves
+  // QueueStrip renders a pending row given the right store state, but only
+  // in isolation (props handed to it directly) - this is the missing
+  // end-to-end proof that the pending row is ALSO visible once driven
+  // through the REAL, fully composed Composer+QueueStrip tree via an actual
+  // user submit, not just the store's own hook state (queue-strip stream
+  // review, Minor).
+  expect(await screen.findByText("queued message")).toBeTruthy();
 });
 
 // Both failure tests below defer their RPC's rejection via a manually-
