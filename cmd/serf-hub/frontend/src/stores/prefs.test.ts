@@ -139,11 +139,9 @@ describe("hydration from existing localStorage", () => {
     expect(prefsStore.getState().showCost).toBe(false);
   });
 
-  // "0" reads as false is exercised generically above via showCost (same
-  // shared readBool), but enterToSend's own reader was the deleted
-  // enterToSendPref.test.ts's explicit proposition ("reads off for '0' or
-  // any other stored value") - proven directly on enterToSend itself, not
-  // only inferred through a sibling field.
+  // Proves "0" never decodes truthy for enterToSend - not branch-reached:
+  // the false fallback coincides with "0"'s own decoding. showCost's "0"
+  // assertion above (true default) is what actually proves the branch fires.
   test("reads a previously stored enterToSend of '0' as false", () => {
     localStorage.setItem(KEY("enterToSend"), "0");
     resetPrefsStoreForTests();
