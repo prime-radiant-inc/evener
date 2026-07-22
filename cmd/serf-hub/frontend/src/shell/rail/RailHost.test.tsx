@@ -206,6 +206,29 @@ describe("⌘B cycles the sidebar mode (rail -> pane -> auto)", () => {
     pressCmdB();
     expect(prefsStore.getState().sidebarMode).toBe("auto");
   });
+
+  // Ctrl+B is the macOS emacs-style "move cursor back" binding many native
+  // text fields honor - without a focus guard, this chord would hijack it
+  // mid-typing (RailHost.tsx accepts meta OR ctrl for cross-platform ⌘B).
+  test("Ctrl+B does not cycle the mode when the target is a focused textarea, and does not preventDefault", () => {
+    installMatchMedia({ mobile: false, wide: true });
+    prefsStore.setState({ sidebarMode: "rail" });
+    render(
+      <>
+        <RailHost />
+        <textarea aria-label="Composer" />
+      </>,
+    );
+    const textarea = screen.getByRole("textbox", { name: "Composer" });
+    textarea.focus();
+    const event = new KeyboardEvent("keydown", { key: "b", ctrlKey: true, bubbles: true, cancelable: true });
+    act(() => {
+      textarea.dispatchEvent(event);
+    });
+
+    expect(prefsStore.getState().sidebarMode).toBe("rail");
+    expect(event.defaultPrevented).toBe(false);
+  });
 });
 
 describe("hide affordance wiring", () => {

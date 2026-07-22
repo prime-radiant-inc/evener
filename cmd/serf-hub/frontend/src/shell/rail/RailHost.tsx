@@ -34,6 +34,24 @@ const NEXT_MODE: Record<SidebarModePref, SidebarModePref> = {
   auto: "rail",
 };
 
+// Ctrl+B is the macOS emacs-style "move cursor back one character" binding
+// native text fields honor while focused; without this guard, the ⌘B
+// listener below would hijack it mid-typing (it accepts ctrl as well as
+// meta for the cross-platform chord). No shared "is this target editable"
+// predicate exists elsewhere in the codebase yet (checked the other global
+// keydown listeners - AppShell.tsx's ⌘K/Ctrl-K has no such guard, since ⌘K
+// has no native text-editing meaning to collide with) - kept local since
+// RailHost is its only caller today.
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const isMobile = useIsMobile();
   const { collapsed } = useSidebarMode();
@@ -51,6 +69,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   useEffect(() => {
     if (isMobile) return undefined;
     function onKeyDown(event: KeyboardEvent): void {
+      if (isEditableTarget(event.target)) return;
       if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "b") {
         event.preventDefault();
         const current = prefsStore.getState().sidebarMode;
