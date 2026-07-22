@@ -802,13 +802,22 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	if got := sess.driveCounter.n.Load(); got != 0 {
 		t.Fatalf("re-drive launched inside the pacing interval: drive counter = %d", got)
 	}
-	// After the interval, the paced re-drive launches and drains.
-	waitForDriveCount(t, sess.driveCounter, 1)
+	// After the interval, the paced re-drive launches, runs, and drains the
+	// child's queued attention. Awaiting the drain (peek→0) is the reliable
+	// completion signal that the paced drive actually ran — a drive turn is the
+	// only path that drains the child's notifications. The live drive-slot gauge
+	// peaks at 1 for only the turn's brief duration, so sampling it for ==1
+	// races the reserve→release and is the source of the historical flake.
 	<-done
-	waitForDriveCount(t, sess.driveCounter, 0)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && coordSub.sess.peekNotifications() != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	if got := coordSub.sess.peekNotifications(); got != 0 {
 		t.Fatalf("paced re-drive left %d notifications undrained", got)
 	}
+	// The drive released its budget slot once the turn completed.
+	waitForDriveCount(t, sess.driveCounter, 0)
 }
 
 // TestRegressionIdleDelegatesNeverBlockSpawn reproduces the 2026-07-19 field
