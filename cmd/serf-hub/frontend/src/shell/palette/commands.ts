@@ -494,6 +494,13 @@ export function buildCommands(): Command[] {
   ];
 }
 
+// rememberableId is the id a successful ARGLESS command records in recents -
+// empty (never recorded) for a stayOpen command (/search, /help), the command
+// id otherwise (search.js:829).
+export function rememberableId(command: Command): string {
+  return command.stayOpen ? "" : command.id;
+}
+
 // commandsInScope filters the registry by the current context's scope
 // (search.js:581-588): global always; ended-ok whenever a session pane is
 // focused (live OR ended); bare session only for a LIVE focused session.
