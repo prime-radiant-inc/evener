@@ -270,8 +270,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // deps change - never on a bare activeIndex change, so arrow-key navigation
   // doesn't reset the selection (see the reset effect below).
   const view = useMemo<ResultsView>(
-    () => buildView({ mode, query, ctx, searchResp, selectedCommand, enumItems }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems],
+    () => buildView({ mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp }),
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -449,7 +449,11 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         aria-activedescendant={activeId}
         placeholder={placeholder}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          // Typing anything leaves the help panel and resumes filtering (§2.8).
+          setShowingHelp(false);
+        }}
         onKeyDown={onKeyDown}
       />
       {error && (
@@ -502,14 +506,20 @@ function buildView(args: {
   searchResp: SearchResponse | null;
   selectedCommand: Command | null;
   enumItems: CommandArgsEnumItem[];
+  showingHelp: boolean;
 }): ResultsView {
-  const { mode, query, ctx, searchResp, selectedCommand, enumItems } = args;
+  const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp } = args;
   const entries: Entry[] = [];
   const items: PaletteItem[] = [];
   const push = (item: PaletteItem) => {
     entries.push({ type: "row", item, index: items.length });
     items.push(item);
   };
+
+  // The help panel is inert (§2.8, search.js:695-696,713): no navigable rows
+  // underneath, so ArrowDown/Enter can't fire a hidden registry command.
+  // Typing clears showingHelp (input onChange), which returns a real list.
+  if (showingHelp) return { entries, items };
 
   if (mode === "search") {
     const live = searchResp?.live ?? [];

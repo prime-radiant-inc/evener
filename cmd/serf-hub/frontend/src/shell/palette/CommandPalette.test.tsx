@@ -193,6 +193,30 @@ test("/help renders the seven fixed keyboard-shortcut rows", async () => {
   expect(screen.getByText("close the palette (or back out of args mode)")).toBeTruthy();
 });
 
+test("the help panel is inert: ArrowDown+Enter never fires a hidden registry command (§2.8)", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  // No session focused -> command-filter with the empty "/" filter lists the 8
+  // global commands; the last is /upgrade (index 7). Showing help must not
+  // leave that list navigable underneath, or ArrowDown+Enter fires /upgrade
+  // invisibly (with no client it blocks, surfacing the error strip).
+  act(() => openPalette("/"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await user.keyboard("{ArrowDown}{Enter}");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Keyboard shortcuts")).toBeTruthy();
+});
+
+test("typing after /help leaves the help panel and returns to a real command list (§2.8)", async () => {
+  const user = userEvent.setup();
+  render(<CommandPalette />);
+  act(() => openPalette("/"));
+  await user.click(screen.getByRole("option", { name: /Show keyboard shortcuts/ }));
+  await user.type(screen.getByRole("combobox"), "settings");
+  expect(screen.queryByText("Keyboard shortcuts")).toBeNull();
+  expect(screen.getByRole("option", { name: /Open settings/ })).toBeTruthy();
+});
+
 // --- search mode ---
 
 test("search mode renders Live and Past sections from /api/search with highlighting", async () => {
