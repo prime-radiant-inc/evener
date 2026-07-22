@@ -20,11 +20,34 @@ describe("preflightDir", () => {
     expect(fake.calls[0]?.params).toEqual({ path: "/tmp/p", kind: "dir" });
   });
 
-  test("an invalid directory aborts with the validator's message", async () => {
-    const fake = new FakeClient("ready");
-    fake.on("serf/path/validate", () => ({ path: "/nope", valid: false, error: "no such directory" }));
+  test.each(["path is not a directory", "absolute path required", "path is required"])(
+    "a deterministic non-fixable reason (%s) aborts rather than offering to create (floor §1.13)",
+    async (reason) => {
+      const fake = new FakeClient("ready");
+      fake.on("serf/path/validate", () => ({ path: "/x", valid: false, error: reason }));
 
-    expect(await preflightDir(fake, "/nope")).toEqual({ kind: "abort", message: "no such directory" });
+      expect(await preflightDir(fake, "/x")).toEqual({ kind: "abort", message: reason });
+    },
+  );
+
+  test("a not-yet-existing directory offers to create it (any other invalid reason, floor §1.13)", async () => {
+    const fake = new FakeClient("ready");
+    // The dir kind's stat failure surfaces the raw os error verbatim
+    // (fspaths ValidateLaunchPath returns err.Error() when os.Stat fails).
+    fake.on("serf/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+
+    expect(await preflightDir(fake, "/tmp/new")).toEqual({ kind: "offer-create", path: "/tmp/new" });
+  });
+
+  test("an invalid result with no error message still offers to create (not a known abort string)", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("serf/path/validate", () => ({ path: "/tmp/new", valid: false }));
+
+    expect(await preflightDir(fake, "/tmp/new")).toEqual({ kind: "offer-create", path: "/tmp/new" });
   });
 
   test("fails OPEN when the validate check itself throws (spawn.js:573-580)", async () => {

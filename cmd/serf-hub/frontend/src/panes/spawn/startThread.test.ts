@@ -97,6 +97,42 @@ test("a whitespace-only prompt with an attachment sends an image-only input (no 
   });
 });
 
+test("merges the access mode into launchOverrides.sandbox (floor §1.8)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, { cwd: "/tmp/p", prompt: "go", accessMode: "read-only" });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "go" }],
+    launchOverrides: { sandbox: "read-only" },
+  });
+});
+
+test("an advanced-schema sandbox wins over the access mode (floor §1.8)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, {
+    cwd: "/tmp/p",
+    prompt: "go",
+    accessMode: "full",
+    launchOverrides: { sandbox: "workspace-write" },
+  });
+
+  expect(fake.calls[0]?.params).toMatchObject({ launchOverrides: { sandbox: "workspace-write" } });
+});
+
+test("branch is display-only and is never sent on the wire (floor §1.7; thread/start has no branch field)", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, { cwd: "/tmp/p", prompt: "go", branch: "feature/x" });
+
+  expect(fake.calls[0]?.params).toEqual({ cwd: "/tmp/p", input: [{ type: "text", text: "go" }] });
+});
+
 test("passes the direct optional fields (harness/model/provider/effort/overrides) through", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/start", () => startResponse("local:r"));

@@ -6,6 +6,7 @@
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { InputItem, LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
 import type { InputAttachment } from "../../stores/threads";
+import { mergeAccessModeSandbox } from "./accessMode";
 
 export interface SpawnRequest {
   cwd: string; // required (ThreadStartParams.cwd)
@@ -15,8 +16,14 @@ export interface SpawnRequest {
   modelProvider?: string; // serf-model harness: "<provider>/<model>" split -> provider half
   model?: string; // model id (bare id for a non-serf harness - floor §1.4)
   reasoningEffort?: string; // wire camelCase - floor §1.11
-  branch?: string; // T2 resolves -> launchOverrides (floor §1.7)
-  accessMode?: string; // T2 merges -> launchOverrides.sandbox (floor §1.8)
+  // branch is DISPLAY-ONLY (floor §1.7): the branch chip shows the resolved
+  // HEAD ref, but the wire has nowhere to carry it - appwire ThreadStartParams
+  // and LaunchConfigLayer both lack a branch field, and the legacy REST
+  // /api/spawn dropped req.Branch on the floor too (web_spawn.go:135-144, never
+  // threaded into ThreadStartParams). Accepted here so callers can pass the
+  // form value uniformly; startThread never sends it.
+  branch?: string;
+  accessMode?: string; // merged -> launchOverrides.sandbox unless schema set it (floor §1.8)
   launchOverrides?: LaunchConfigLayer;
 }
 
@@ -54,7 +61,8 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   if (req.modelProvider) params.modelProvider = req.modelProvider;
   if (req.model) params.model = req.model;
   if (req.reasoningEffort) params.reasoningEffort = req.reasoningEffort;
-  if (req.launchOverrides) params.launchOverrides = req.launchOverrides;
+  const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
+  if (launchOverrides) params.launchOverrides = launchOverrides;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.serf.ref };
 }
