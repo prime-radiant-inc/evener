@@ -12,12 +12,18 @@ import { createStore } from "zustand/vanilla";
 export interface PaletteState {
   open: boolean;
   query: string;
+  // Bumped on every openPalette call. The overlay keys its body on this so
+  // EVERY open (even one issued while already open) remounts the body fresh,
+  // which is how the atomic "reset state on open" contract (§2.1,
+  // search.js:150-161) is met - a fresh mount seeds its state from `query`
+  // and starts with a cleared error strip / active row.
+  openSeq: number;
 }
 
-export const paletteStore = createStore<PaletteState>(() => ({ open: false, query: "" }));
+export const paletteStore = createStore<PaletteState>(() => ({ open: false, query: "", openSeq: 0 }));
 
 export function openPalette(initialQuery = ""): void {
-  paletteStore.setState({ open: true, query: initialQuery });
+  paletteStore.setState((s) => ({ open: true, query: initialQuery, openSeq: s.openSeq + 1 }));
 }
 
 export function closePalette(): void {
