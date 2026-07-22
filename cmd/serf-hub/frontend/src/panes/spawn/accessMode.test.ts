@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, test } from "vitest";
 import { ACCESS_MODE_OPTIONS, mergeAccessModeSandbox, sandboxForAccessMode } from "./accessMode";
 
