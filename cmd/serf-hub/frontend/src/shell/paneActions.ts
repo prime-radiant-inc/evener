@@ -52,22 +52,20 @@ export function openBeside(pane: PaneRef): void {
 // dockview host (mobile) or the id names no open panel, so a caller can invoke
 // it optimistically without first checking either.
 //
-// DORMANT (investigated wave-8 fix round; a served popout shell is reserved for
-// Jesse). dockview's addPopoutGroup does window.open(popoutUrl) - default
-// same-origin `/popout.html` - waits for that window's `load`, then appends the
-// group's DOM into its document.body (dockview-core 7.0.2 popoutWindow.js:
-// open()). Two hard facts make a frontend-only fix impossible in this version:
-//   1. serf-hub serves no /popout.html; its SPA fallback returns index.html, so
-//      the default URL boots a SECOND full app instance in the popout window.
-//   2. An `about:blank` (or data:/blob:) popoutUrl override is REJECTED by
-//      dockview's own assertSameOriginPopoutUrl guard (popoutWindow.js:19,
-//      enforced at :83): the popoutUrl MUST be same-origin http(s).
-// The only working mechanism is a minimal same-origin http(s) blank shell the
-// server serves (a small Go route) - reserved for Jesse, no route added here.
-// Until then popout stays dormant: popOutPane has NO caller anywhere in the app
-// (popoutDormant.test.ts locks that), so no affordance can open the broken
-// window. The body is left intact so a future served-shell wiring is just a
-// global `popoutUrl` dockview option, nothing more.
+// dockview's addPopoutGroup does window.open on its default same-origin
+// `/popout.html`, waits for that window's `load`, then moves the group's DOM
+// into its document.body and clones this window's stylesheets in (dockview-core
+// 7.0.2 popoutWindow.js:82,128,135-136 + dom.js addStyles). Two constraints
+// shape the wiring:
+//   - the popoutUrl MUST be same-origin http(s): dockview's
+//     assertSameOriginPopoutUrl (popoutWindow.js:19, enforced :83) rejects
+//     about:blank / data: / blob:, so the target has to be a real served page.
+//   - a bare SPA fallback at /popout.html would return index.html and boot a
+//     SECOND full app instance inside the popout window.
+// The hub serves a minimal blank same-origin shell at /popout.html for exactly
+// this (cmd/serf-hub/webnext.go servePopoutShell); dockview clones the app's
+// styles into it, so the shell itself carries no CSS or JS. The one caller is
+// DockHost's PopoutHeaderAction - a per-group "Pop out" header action.
 export function popOutPane(paneId: string): void {
   const api = getDockviewApi();
   if (!api) return;
