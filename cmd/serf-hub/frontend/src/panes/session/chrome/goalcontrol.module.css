@@ -1,10 +1,75 @@
-.row {
-  display: flex;
+.anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+/* Quiet trigger, same recipe as ModelSwitch's own .trigger - the chip reads
+ * as the interactive element, no separate button beside it. */
+.chipButton {
+  display: inline-flex;
   align-items: center;
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+
+.chipButton:hover {
+  background: var(--surface-2);
+}
+
+.chipButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Floating popover - zero layout shift when opened. Recipe matches
+ * widgets/menu's own .popup and ModelSwitch's own .popover - anchored from
+ * the bottom, not the top, for the same reason ModelSwitch's own .popover
+ * is (see that file's own comment): this chip lives in the footer row,
+ * hard against the pane's bottom edge, so opening downward clips off the
+ * viewport entirely. */
+.popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 1020;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
   gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  animation: goalPopoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes goalPopoverFadeScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popover {
+    animation: none;
+  }
+}
+
+.status {
+  margin: 0;
   font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
 }
 
 .field {

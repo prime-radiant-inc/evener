@@ -1,26 +1,37 @@
-// SessionActionsMenu: fork/aside/compact/clear/shutdown/rename, gated by
-// ThreadCapabilities. Destructive actions (clear, shutdown) confirm via the
-// base Dialog widget composed by hand - a ConfirmDialog widget exists only
-// on the parallel settings wave's branch (W7), not this one; a post-merge
-// unification is already tracked, per the wave dispatch. Fork/Aside are the
-// SAME wire method (thread/fork) with mutually exclusive param sets - see
-// stores/threads.ts's own ForkFromTurnOptions doc comment - so both share
-// the one openChildPane success path below.
+// SessionActionsMenu: aside/compact/clear/shutdown/rename/set-goal, gated by
+// ThreadCapabilities, behind a single quiet "⋯" icon trigger (Menu's own
+// popup positioning is zero-layout-shift - see menu.module.css's .popup -
+// so opening this never reflows the status row). Destructive actions
+// (clear, shutdown) confirm via the base Dialog widget composed by hand - a
+// ConfirmDialog widget exists only on the parallel settings wave's branch
+// (W7), not this one; a post-merge unification is already tracked, per the
+// wave dispatch.
+//
+// Fork moved out of this menu to a per-user-message affordance (a sibling
+// stream's work) - a session-chrome menu item had no specific transcript
+// message as its context anyway (sessionActions.ts's own doc comment on
+// lastUserMessageText, now unused here), which per-message placement fixes
+// properly rather than guessing at "the most recent user message". Aside
+// stays: unlike Fork it isn't about any particular message.
 import { type ChangeEvent, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { workspaceStore } from "../../../shell/workspace";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Dialog, Input, Menu, type MenuItem, Textarea, useToasts } from "../../../widgets";
+import { Button, Dialog, Input, Menu, type MenuItem, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { lastUserMessageText } from "./sessionActions";
 import styles from "./sessionactionsmenu.module.css";
 
 export interface SessionActionsMenuProps {
   sessionRef: string;
   model: ThreadModel;
+  // Optional so a caller with no goal-dialog seam to wire up can still
+  // render this menu; SessionChrome, the real caller, always passes it (see
+  // GoalControlProps.dialogOpen's own doc comment - same reasoning).
+  onSetGoal?: () => void;
 }
 
 const CLASS = {
+  srOnly: requireClass(styles.srOnly, "sessionactionsmenu.module.css", "srOnly"),
   field: requireClass(styles.field, "sessionactionsmenu.module.css", "field"),
   label: requireClass(styles.label, "sessionactionsmenu.module.css", "label"),
   footer: requireClass(styles.footer, "sessionactionsmenu.module.css", "footer"),
@@ -31,15 +42,15 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// openChildPane is fork/aside's shared success path: the response describes
-// a DIFFERENT ref (the new child thread, stores/threads.ts's own
-// forkFromTurn doc comment), so the caller here opens it as its own pane
-// rather than touching the parent's tracked model.
+// openChildPane is Aside's success path: the response describes a DIFFERENT
+// ref (the new child thread, stores/threads.ts's own forkFromTurn doc
+// comment), so the caller here opens it as its own pane rather than
+// touching the parent's tracked model.
 function openChildPane(childRef: string): void {
   workspaceStore.getState().openPane("session", { ref: childRef });
 }
 
-export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProps) {
+export function SessionActionsMenu({ sessionRef, model, onSetGoal = () => undefined }: SessionActionsMenuProps) {
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
 
@@ -48,11 +59,6 @@ export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProp
 
   const [clearOpen, setClearOpen] = useState(false);
   const [shutdownOpen, setShutdownOpen] = useState(false);
-
-  const [forkOpen, setForkOpen] = useState(false);
-  const [forkValue, setForkValue] = useState("");
-
-  const lastUserMessage = lastUserMessageText(model);
 
   // runGuarded is the shared shape for every dialog-confirmed action below:
   // disable the confirm control for the duration of the request (guards a
@@ -72,12 +78,6 @@ export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProp
     } finally {
       setBusy(false);
     }
-  }
-
-  function handleFork() {
-    if (!lastUserMessage) return;
-    setForkValue(lastUserMessage.text);
-    setForkOpen(true);
   }
 
   function handleAside() {
@@ -131,25 +131,8 @@ export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProp
     );
   }
 
-  function handleForkSubmit() {
-    if (!lastUserMessage) return;
-    const trimmed = forkValue.trim();
-    if (!trimmed) return;
-    void runGuarded(
-      async () => {
-        const resp = await threadsStore.getState().forkFromTurn(sessionRef, {
-          sourceTurnId: lastUserMessage.turnId,
-          editedInput: trimmed,
-        });
-        openChildPane(resp.thread.serf.ref);
-        setForkOpen(false);
-      },
-      (msg) => `Couldn't fork session: ${msg}`,
-    );
-  }
-
   const items: MenuItem[] = [
-    { id: "fork", label: "Fork", disabled: !model.capabilities.forkFromTurn || !lastUserMessage, onSelect: handleFork },
+    { id: "set-goal", label: "Set goal…", disabled: !model.capabilities.goal, onSelect: onSetGoal },
     { id: "aside", label: "Aside", disabled: !model.capabilities.forkFromTurn, onSelect: handleAside },
     { id: "compact", label: "Compact", disabled: !model.capabilities.compact, onSelect: handleCompact },
     { id: "clear", label: "Clear", disabled: !model.capabilities.clear, onSelect: () => setClearOpen(true) },
@@ -172,7 +155,15 @@ export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProp
 
   return (
     <>
-      <Menu trigger="Session actions" items={items} />
+      <Menu
+        trigger={
+          <>
+            <span aria-hidden="true">⋯</span>
+            <span className={CLASS.srOnly}>Session actions</span>
+          </>
+        }
+        items={items}
+      />
 
       <Dialog
         open={renameOpen}
@@ -237,34 +228,6 @@ export function SessionActionsMenu({ sessionRef, model }: SessionActionsMenuProp
         <p className={CLASS.body}>
           The agent process for this session will stop. You can still read the transcript afterward.
         </p>
-      </Dialog>
-
-      <Dialog
-        open={forkOpen}
-        onClose={() => setForkOpen(false)}
-        title="Fork from your last message"
-        footer={
-          <div className={CLASS.footer}>
-            <Button variant="quiet" onClick={() => setForkOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="primary" onClick={handleForkSubmit} disabled={busy || !forkValue.trim()}>
-              Fork
-            </Button>
-          </div>
-        }
-      >
-        <div className={CLASS.field}>
-          <label className={CLASS.label} htmlFor="session-actions-fork-textarea">
-            Message to fork from
-          </label>
-          <Textarea
-            id="session-actions-fork-textarea"
-            autoGrow
-            value={forkValue}
-            onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setForkValue(e.target.value)}
-          />
-        </div>
       </Dialog>
     </>
   );

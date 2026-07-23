@@ -18,21 +18,42 @@
 // hydrate, e.g. after a reconnect, brought real server truth) - otherwise a
 // stale optimistic value would mask every future update forever, not just
 // bridge the gap until the next one.
-import { type ChangeEvent, useState, useSyncExternalStore } from "react";
+//
+// Row presence: with no goal set, this renders nothing at all - "Set goal…"
+// lives in the session ⋯ menu (SessionActionsMenu) instead of a permanent
+// pair of buttons in the row. The set-goal Dialog's open state is therefore
+// a controlled prop (dialogOpen/onDialogOpenChange) owned by SessionChrome,
+// the nearest common parent of this component and SessionActionsMenu, so
+// either can drive it; everything else (the objective draft, save/clear
+// wiring, the optimistic-override cache above) stays exactly as before. Once
+// a goal IS set, a quiet chip appears; clicking it opens a small popover
+// with the goal's status and a clear action, using this same setGoal(ref,
+// "") wiring.
+import { type ChangeEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import type { GoalState } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Dialog, Textarea, useToasts } from "../../../widgets";
+import { Button, Chip, Dialog, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./goalcontrol.module.css";
 
 export interface GoalControlProps {
   sessionRef: string;
   model: ThreadModel;
+  // Optional so a caller that only needs the goal chip + clear popover (no
+  // "Set goal…" entry point of its own to wire up) can render this without
+  // a dialog-open seam to plumb through. SessionChrome, the real caller,
+  // always passes both - it's the nearest common parent that can trigger
+  // this dialog from SessionActionsMenu's "Set goal…" item.
+  dialogOpen?: boolean;
+  onDialogOpenChange?: (open: boolean) => void;
 }
 
 const CLASS = {
-  row: requireClass(styles.row, "goalcontrol.module.css", "row"),
+  anchor: requireClass(styles.anchor, "goalcontrol.module.css", "anchor"),
+  chipButton: requireClass(styles.chipButton, "goalcontrol.module.css", "chipButton"),
+  popover: requireClass(styles.popover, "goalcontrol.module.css", "popover"),
+  status: requireClass(styles.status, "goalcontrol.module.css", "status"),
   field: requireClass(styles.field, "goalcontrol.module.css", "field"),
   label: requireClass(styles.label, "goalcontrol.module.css", "label"),
   footer: requireClass(styles.footer, "goalcontrol.module.css", "footer"),
@@ -105,18 +126,27 @@ function iterationsLabel(iterations: number): string {
   return `${iterations} iteration${iterations === 1 ? "" : "s"}`;
 }
 
-export function GoalControl({ sessionRef, model }: GoalControlProps) {
+export function GoalControl({
+  sessionRef,
+  model,
+  dialogOpen = false,
+  onDialogOpenChange = () => undefined,
+}: GoalControlProps) {
   const toasts = useToasts();
   const goal = useDisplayedGoal(sessionRef, model.goal);
-  const [dialogOpen, setDialogOpen] = useState(false);
   const [objective, setObjective] = useState("");
   const [busy, setBusy] = useState(false);
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
   const canSetGoal = model.capabilities.goal;
 
-  function openDialog() {
-    setObjective("");
-    setDialogOpen(true);
-  }
+  // The dialog always opens onto a blank objective (mirrors the previous
+  // local openDialog()'s own reset) - there's nothing to prefill anyway,
+  // since GoalState carries only status/iterations, never the objective
+  // text, on the wire.
+  useEffect(() => {
+    if (dialogOpen) setObjective("");
+  }, [dialogOpen]);
 
   async function handleSave() {
     const trimmed = objective.trim();
@@ -125,7 +155,7 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
     try {
       await threadsStore.getState().setGoal(sessionRef, trimmed);
       setGoalOverride(sessionRef, model.goal, { status: "active", iterations: 0 });
-      setDialogOpen(false);
+      onDialogOpenChange(false);
     } catch (err) {
       toasts.push("error", `Couldn't set goal: ${errorMessage(err)}`);
     } finally {
@@ -137,30 +167,57 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
     try {
       await threadsStore.getState().setGoal(sessionRef, "");
       setGoalOverride(sessionRef, model.goal, null);
+      setPopoverOpen(false);
     } catch (err) {
       toasts.push("error", `Couldn't clear goal: ${errorMessage(err)}`);
     }
   }
 
+  // Escape and an outside click dismiss the open popover - same containment
+  // idiom widgets/menu and ModelSwitch's own popover use.
+  useEffect(() => {
+    if (!popoverOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setPopoverOpen(false);
+    }
+    function onMouseDown(event: MouseEvent) {
+      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) setPopoverOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onMouseDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [popoverOpen]);
+
   return (
-    <div className={CLASS.row} data-testid="goal-control">
-      <span>{goal ? `Goal: ${goal.status} · ${iterationsLabel(goal.iterations)}` : "No goal set"}</span>
-      <Button variant="quiet" size="sm" onClick={openDialog} disabled={!canSetGoal}>
-        {goal ? "Change goal" : "Set goal"}
-      </Button>
+    <>
       {goal && (
-        <Button variant="quiet" size="sm" onClick={() => void handleClear()} disabled={!canSetGoal}>
-          Clear goal
-        </Button>
+        <div className={CLASS.anchor} ref={popoverRef}>
+          <button type="button" className={CLASS.chipButton} onClick={() => setPopoverOpen((v) => !v)}>
+            <Chip>Goal: {goal.status}</Chip>
+          </button>
+          {popoverOpen && (
+            <div className={CLASS.popover} data-testid="goal-popover">
+              <p className={CLASS.status}>
+                {goal.status} · {iterationsLabel(goal.iterations)}
+              </p>
+              <Button variant="quiet" size="sm" onClick={() => void handleClear()} disabled={!canSetGoal}>
+                Clear goal
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       <Dialog
         open={dialogOpen}
-        onClose={() => setDialogOpen(false)}
+        onClose={() => onDialogOpenChange(false)}
         title="Set goal"
         footer={
           <div className={CLASS.footer}>
-            <Button variant="quiet" onClick={() => setDialogOpen(false)}>
+            <Button variant="quiet" onClick={() => onDialogOpenChange(false)}>
               Cancel
             </Button>
             <Button variant="primary" onClick={() => void handleSave()} disabled={busy || !objective.trim()}>
@@ -182,6 +239,6 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
           />
         </div>
       </Dialog>
-    </div>
+    </>
   );
 }

@@ -1,22 +1,21 @@
+/* One quiet status-bar row: StatusRow, GoalControl's chip (when a goal is
+ * set), and .right are flat flex siblings here (not nested in their own
+ * left/right wrapper divs) so they wrap onto a shared line as a unit when
+ * the pane is narrow, rather than as two independently-wrapping halves. */
 .chrome {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   flex-wrap: wrap;
   gap: var(--space-3);
   width: 100%;
-}
-
-.left {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  min-width: 0;
 }
 
 .right {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex: none;
+  /* pushes Tasks + the "⋯" menu to the row's trailing edge, same trick
+   * panescaffold.module.css's own .actions uses for the header row. */
+  margin-left: auto;
 }
