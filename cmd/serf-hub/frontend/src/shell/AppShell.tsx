@@ -24,6 +24,13 @@ import "../panes/welcome"; // registers the "welcome" pane type
 import "../panes/session"; // registers the "session" pane type
 import "../panes/settings"; // registers the "settings" pane type
 import "../panes/spawn"; // registers the "spawn" pane type
+// doc and transcript panes open lazily (via openDoc.ts / paneActions.ts), never
+// on the initial route - but a persisted dockview layout CAN contain one, and
+// DockHost restores that layout at boot before any lazy opener runs. Register
+// both eagerly here (their heavy components stay lazy()) so restoreLayout finds
+// the pane type registered instead of discarding the whole saved workspace.
+import "../panes/doc"; // registers the "doc" pane type
+import "../panes/transcript"; // registers the "transcript" pane type
 import { initPrefs } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
