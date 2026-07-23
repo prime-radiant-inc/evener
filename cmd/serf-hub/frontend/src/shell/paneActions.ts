@@ -10,6 +10,14 @@
 // "nothing opens yet", not a crash.
 import type { PaneTypeId } from "./paneRegistry";
 import { getDockviewApi, workspaceStore } from "./workspace";
+// Registers the read-only "transcript" pane type as a side effect. Producers
+// open it via the bare openBeside({type:"transcript", ...}) below (PIN-A), not
+// through a dedicated opener the way the "doc" pane self-registers via
+// openDocBeside - so paneActions is the one module guaranteed to be loaded
+// before any transcript open, and it pulls the registration in. The heavy pane
+// component stays a lazy chunk (see panes/transcript/index.ts); only the tiny
+// registration is eager here.
+import "../panes/transcript";
 
 // A logical pane to open: its registered type plus that type's own params bag
 // (shape validated by the owning pane, same erased-params contract as
