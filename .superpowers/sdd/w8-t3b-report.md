@@ -88,3 +88,68 @@ touch reducer/spec territory that is controller-owned.
   is required by BOTH this task's file cards AND the already-merged T3 turn-failure recovery. Landing
   it once lets me finish the file-card affordance (modulo the cwd/image decisions B/C).
 - **D1 remains open** until (A)+(B) land; **D2 is closed** by the committed sub-task 3.
+
+---
+
+# Round 2 (blockers A/B/C resolved) — file/image cards DONE, D1 closed
+
+**Status:** DONE
+**Commit range (this round):** `5a776fa1f..38df503f9` (branch re-baselined at merge `7f649fb66`; this
+round is the single commit `38df503f9`).
+**Gate:** tsc clean → `242 files / 3463 tests` bare-vitest green (post-merge baseline `241 / 3444` +
+sub-task-3's +1 → 3445; this round +18) → Biome ci exit 0 → build clean + `dist/PLACEHOLDER` restored.
+
+The controller resolved all three blockers: (A) `Session.tsx:182` now passes `sessionRef={ref}` to
+TurnBlock; (B) `ThreadModel.cwd` (always) / `gitBranch?` / `projectPath?` now hydrate from the wire;
+(C) the image-mechanism adjudication. Both remaining sub-tasks are now built.
+
+## Sub-task 1 — file tool cards → open beside (closes presweep D1)
+
+`read_file`/`edit_file`/`write_file` cards now carry an "Open beside" control that opens the
+referenced file in a read-only doc pane beside the session. Wiring, all in-manifest:
+- `sessionRef` threaded from TurnBlock → `ItemRenderProps` → `ToolCallItem` → the new
+  `FileOpenBesideButton` (the descriptor `body`/`ToolRenderProps` were left alone; the control lives
+  in the row summary so it shows collapsed, and its click `stopPropagation`s so opening a file never
+  toggles the row).
+- Each single-file descriptor opts in via a new `openBesidePath?(item)` (returns `file_path ?? path`);
+  multi-target `apply_patch` and directory/pattern `grep`/`list_dir`/`glob` opt out (floor §3.7).
+- `fileOpenBeside.tsx` (new, pure + component): `cwdRelative` makes the arg relative to `ThreadModel.cwd`
+  and **gates out-of-cwd → no affordance** (the legacy `cwdRelative`/`fileOpenBesideSpec` rule,
+  `renderer.js:2201-2251`). It handles BOTH an absolute arg (strip the cwd prefix) and an
+  already-relative arg (accepted unless it escapes via `..`) — the two shapes execenv's `resolve()`
+  accepts (`local.go:1530-1533`), so the affordance isn't dead when the agent passes relative paths.
+- `cwd` is read from the store by ref (`useThreadsStore`), snapshot-only and stable, so no re-renders
+  from streaming.
+
+## Sub-task 2 — image half (DECISION C, binding)
+
+- **Built:** a file-path-bearing card whose path is an image file (e.g. `read_file` on `logo.png`)
+  opens with **`kind:"image"`** (extension set mirrors what `/doc/image` serves — png/jpeg/gif/webp;
+  SVG excluded → opens as a file), so the doc pane renders it via `docImageURL`.
+- **Unbuildable-as-specced (divergence-ledger entry):** the floor §3.7 "Image cards" row —
+  open-beside for a card's `item.outputImages` — cannot be built through `openDocBeside`. Per
+  DECISION C, `ItemModel.outputImages` are flattened sha-URL/`data:` src strings
+  (`outputImagesToStrings`, `reducer.ts:94`) with **no cwd path on the wire**, and `docImageURL`
+  requires a real cwd-relative path. These images **keep the existing ImageGallery lightbox
+  unchanged** (untouched by this stream). Recorded here for the wave report's divergence ledger.
+
+## Deliberate divergence (flagged for the reviewer to ratify)
+
+The affordance opens the doc pane via `paneActions.openBeside({type:"doc", params})` — which is
+exactly `openDocBeside`'s body (`openDocBeside` IS `openBeside({type:"doc", params})`) — rather than
+importing `openDocBeside`. Reason: `panes/doc/openDoc.ts` eagerly registers the doc pane (its own
+`import "./index"`), and pulling that through `ToolCallItem` forces the doc-pane registration into the
+entire transcript tree at module load. That clobbers the doc-pane **test fixtures** `DockHost.test`/
+`StackHost.test` register (their fixture "doc" title is robust; the real doc title
+`filenameOf(params.path)` crashes on their `{ref}`-only params) — 32 pre-existing shell tests went red
+until I broke the eager import. The doc pane is already registered at app boot by `AppShell.tsx:32`
+(the D3 fix), and `paneActions` is already eagerly loaded by this tree (subagentModule), so the direct
+call adds no new module-load side effect while staying functionally identical to the seam. `openDoc`'s
+`DocParams` type is imported type-only (erased, no side effect). `panes/doc/openDoc.ts`,
+`DockHost.test`, and `StackHost.test` are all off-limits, so this in-manifest routing choice is the fix.
+
+## Status of the presweep findings
+
+- **D1 (doc pane had no producer): CLOSED** — file cards open text/markdown/binary files and image
+  files (kind:image) beside; the outputImages sub-case is the recorded DECISION-C divergence.
+- **D2 (transcript pane had no producer): CLOSED** in round 1 (subagent "open transcript").
