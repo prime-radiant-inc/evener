@@ -154,18 +154,14 @@ Mutation proofs:
 
 ## Concerns
 
-1. **Light-theme users get a dark popout.** dockview clones the opener's
-   *stylesheets* into the popout (dom.js addStyles) but NOT the root
-   `data-theme` attribute. tokens.css keys light off `[data-theme="light"]` on
-   `<html>` (`stores/prefs.ts:230,232`); the served shell has no such attribute
-   (per the "nothing more" instruction), so a light-mode user's popout falls
-   back to the `:root` DARK base. This is the same cross-document theme-sync gap
-   floor §3.8:673-679 flags, resurfacing because a popout is again a separate
-   document. Content/layout are correct (cloned styles); only the light/dark
-   palette is wrong for light users. A minimal fix exists — pass `onDidOpen` to
-   `addPopoutGroup` to copy `documentElement`'s theme onto the popout root — but
-   it expands beyond the authorized shell scope and touches the live theme-sync
-   design question, so it is flagged for Jesse rather than added unilaterally.
+1. **Light-theme users get a dark popout.** RESOLVED per controller ruling —
+   see "Addendum — popout theme inheritance" below (commit `9964cd9c8`). Kept
+   here for the trail: dockview clones the opener's *stylesheets* into the
+   popout (dom.js addStyles) but NOT the root `data-theme` attribute. tokens.css
+   keys light off `[data-theme="light"]` on `<html>` (`stores/prefs.ts:230,232`);
+   the served shell has no such attribute, so a light-mode user's popout fell
+   back to the `:root` DARK base — the same cross-document theme-sync gap floor
+   §3.8:673-679 flags, resurfacing because a popout is again a separate document.
 
 2. **No live-browser drive of the popup handshake.** The real
    `window.open('/popout.html')` + dockview DOM-move was not exercised in a
@@ -175,7 +171,43 @@ Mutation proofs:
    integration test proving the affordance renders in the live host; and the CSP
    compatibility check above.
 
-## Gate (tip 82c5f3905)
+## Addendum — popout theme inheritance (controller-ruled, commit 9964cd9c8)
+
+Controller adjudicated Concern 1 under the design-system authority: build the
+minimal fix. Frontend-only, one commit.
+
+Evidence for the hook: `addPopoutGroup(item, options?: DockviewPopoutGroupOptions)`
+(`component.api.d.ts:580`); `DockviewPopoutGroupOptions.onDidOpen?: (event: { id:
+string; window: Window }) => void` (`dockviewComponent.d.ts:44-47`). onDidOpen
+fires at `popoutWindow.js:119` — BEFORE the popout navigates to `/popout.html`
+(the load handler is at `:128`), so the copy is deferred to the popout window's
+`load`.
+
+`paneActions.ts`: `popOutPane` now passes `onDidOpen` to `addPopoutGroup`; on the
+popout window's `load` it calls new `inheritOpenerTheme(document.documentElement,
+popoutWindow.document.documentElement)` — a pure helper that copies the opener
+root's `data-theme` when present and does nothing when absent (dark default
+carries no attribute). Since dockview already clones the tokens.css rules
+(including `[data-theme="light"]`), the copied attribute makes them match.
+
+RED-first (`paneActions.test.ts`): `inheritOpenerTheme(...)` was undefined →
+TypeError; the wiring test's captured `onDidOpen` was undefined → threw; the
+`addPopoutGroup` call-shape assertion failed (no options arg). GREEN after.
+Tests: opener `data-theme="light"` → popout root gets `"light"`; opener with none
+→ popout root has no `data-theme`; plus a wiring test driving the real
+`onDidOpen`→`load`→copy path against a fake popout window.
+
+Mutation proof (theme-copy net): removing the `setAttribute` in
+`inheritOpenerTheme` → both the "copies light" helper test AND the
+`popOutPane`-load wiring test FAIL. Reverted → PASS.
+
+**Conscious divergence (→ wave divergence ledger + M9 observation):** live theme
+changes while a popout is already open do NOT re-sync into it — inheritance is
+open-time only. This is exactly the cross-document theme-sync gap floor
+§3.8:673-679 documents; out of scope by controller ruling, recorded here rather
+than coded.
+
+## Gate (tip 82c5f3905; theme addendum 9964cd9c8)
 
 - `go build ./...` clean; `go test ./cmd/serf-hub/...` ok.
 - frontend `npx tsc --noEmit` clean; `npx vitest run` 243 files / 3482 tests
