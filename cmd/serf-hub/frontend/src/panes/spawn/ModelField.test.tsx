@@ -1,9 +1,20 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
+import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { ModelField } from "./ModelField";
 
+// ModelField now renders the rich ModelCatalog widget, enriching the injected
+// scoped model/list with the /api/models catalog. The wire loader is mocked so
+// these render tests stay hermetic; the default is an empty enrichment, so the
+// picker degrades to the label-only scoped list the interim tests expect.
+vi.mock("../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
+
+beforeEach(() => {
+  vi.mocked(fetchModelCatalog).mockReset();
+  vi.mocked(fetchModelCatalog).mockResolvedValue({ models: [], recent: [], diagnostics: [] });
+});
 afterEach(() => cleanup());
 
 const MODELS: ModelDescriptor[] = [
@@ -61,4 +72,79 @@ test("Cancel returns to the closed display without changing the value", async ()
 
   expect(screen.getByText("openai/gpt-5")).toBeTruthy();
   expect(onChange).not.toHaveBeenCalled();
+});
+
+// --- wave 8: the rich catalog enrichment ---
+
+test("enriches a scoped model with /api/models metadata (display name + capability badge)", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetchModelCatalog).mockResolvedValue({
+    models: [
+      {
+        provider: "openai",
+        model: "gpt-5",
+        displayName: "GPT-5",
+        supportsTools: true,
+        inputCostPerMillion: 1.25,
+        outputCostPerMillion: 10,
+      },
+    ],
+    recent: [],
+    diagnostics: [],
+  });
+  render(
+    <ModelField
+      value=""
+      onChange={vi.fn()}
+      loadModels={vi.fn().mockResolvedValue([{ provider: "openai", model: "gpt-5" }])}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Change model" }));
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "{arrowdown}");
+
+  expect(await screen.findByText("GPT-5")).toBeTruthy(); // prettified display name from the catalog
+  expect(screen.getByText("tools")).toBeTruthy(); // capability badge from the catalog
+});
+
+test("keeps the scoped model SET even when /api/models offers a different one", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetchModelCatalog).mockResolvedValue({
+    models: [{ provider: "anthropic", model: "claude", displayName: "Claude" }],
+    recent: [],
+    diagnostics: [],
+  });
+  render(
+    <ModelField
+      value=""
+      onChange={vi.fn()}
+      loadModels={vi.fn().mockResolvedValue([{ provider: "openai", model: "gpt-5" }])}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Change model" }));
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "{arrowdown}");
+
+  expect(await screen.findByText("openai/gpt-5")).toBeTruthy(); // the scoped model, label-only
+  expect(screen.queryByText("Claude")).toBeNull(); // an enrichment-only model is never launchable here
+});
+
+test("still lists the scoped models when /api/models is unavailable", async () => {
+  const user = userEvent.setup();
+  vi.mocked(fetchModelCatalog).mockRejectedValue(new Error("network down"));
+  render(
+    <ModelField
+      value=""
+      onChange={vi.fn()}
+      loadModels={vi.fn().mockResolvedValue([{ provider: "openai", model: "gpt-5" }])}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Change model" }));
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "{arrowdown}");
+
+  expect(await screen.findByText("openai/gpt-5")).toBeTruthy();
 });
