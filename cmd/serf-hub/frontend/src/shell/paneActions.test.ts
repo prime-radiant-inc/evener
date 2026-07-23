@@ -1,7 +1,7 @@
 import type { DockviewApi } from "dockview-core";
 import { type ComponentType, lazy } from "react";
-import { beforeAll, beforeEach, expect, test, vi } from "vitest";
-import { openBeside, popOutPane } from "./paneActions";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { inheritOpenerTheme, openBeside, popOutPane } from "./paneActions";
 import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
@@ -31,6 +31,12 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+});
+
+afterEach(() => {
+  // The popout-theme tests set data-theme on the shared jsdom root; clear it so
+  // it never leaks into another test's opener-theme reading.
+  document.documentElement.removeAttribute("data-theme");
 });
 
 // A minimal DockviewApi stand-in: openBeside only asks "is there a host at
@@ -102,7 +108,9 @@ test("popOutPane promotes the named pane's panel to a dockview popout window", (
 
   popOutPane("pane_doc_1");
 
-  expect(addPopoutGroup).toHaveBeenCalledWith(panel);
+  // The panel is the first arg; the second is the popout options carrying the
+  // onDidOpen theme hook (see the theme-inheritance test below).
+  expect(addPopoutGroup).toHaveBeenCalledWith(panel, expect.objectContaining({ onDidOpen: expect.any(Function) }));
 });
 
 test("popOutPane is a safe no-op when there is no dockview host", () => {
@@ -116,4 +124,50 @@ test("popOutPane is a safe no-op for an unknown (closed) pane id - never pops ou
 
   expect(() => popOutPane("nope")).not.toThrow();
   expect(addPopoutGroup).not.toHaveBeenCalled();
+});
+
+test("inheritOpenerTheme copies a light opener root's data-theme onto the popout root", () => {
+  const opener = document.createElement("html");
+  opener.setAttribute("data-theme", "light");
+  const popout = document.createElement("html");
+
+  inheritOpenerTheme(opener, popout);
+
+  expect(popout.getAttribute("data-theme")).toBe("light");
+});
+
+test("inheritOpenerTheme leaves the popout root bare when the opener has no data-theme (dark default)", () => {
+  const opener = document.createElement("html"); // dark default carries no attribute
+  const popout = document.createElement("html");
+
+  inheritOpenerTheme(opener, popout);
+
+  expect(popout.hasAttribute("data-theme")).toBe(false);
+});
+
+test("popOutPane copies the opener's theme onto the popout document once it loads", () => {
+  const panel = { id: "pane_doc_1" };
+  const { api, addPopoutGroup } = popoutApi(panel);
+  registerDockviewApi(api);
+  document.documentElement.setAttribute("data-theme", "light");
+
+  popOutPane("pane_doc_1");
+
+  // dockview calls onDidOpen with the popout window BEFORE it navigates to
+  // /popout.html, so the copy is deferred to that window's load. Drive the
+  // captured hook, then fire load, and assert the popout root inherited light.
+  const options = addPopoutGroup.mock.calls[0]?.[1] as { onDidOpen: (e: { id: string; window: Window }) => void };
+  const popoutDoc = document.implementation.createHTMLDocument("");
+  const loadHandlers: Array<() => void> = [];
+  const fakeWindow = {
+    document: popoutDoc,
+    addEventListener: (type: string, cb: () => void) => {
+      if (type === "load") loadHandlers.push(cb);
+    },
+  } as unknown as Window;
+
+  options.onDidOpen({ id: "dv-1", window: fakeWindow });
+  for (const cb of loadHandlers) cb();
+
+  expect(popoutDoc.documentElement.getAttribute("data-theme")).toBe("light");
 });

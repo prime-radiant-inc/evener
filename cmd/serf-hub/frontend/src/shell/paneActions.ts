@@ -71,5 +71,27 @@ export function popOutPane(paneId: string): void {
   if (!api) return;
   const panel = api.getPanel(paneId);
   if (!panel) return;
-  void api.addPopoutGroup(panel);
+  void api.addPopoutGroup(panel, {
+    // dockview calls onDidOpen with the popout window BEFORE it navigates to
+    // /popout.html (popoutWindow.js:119 vs the load handler at :128), so defer
+    // the theme copy to that window's load. Open-time inheritance only: a
+    // theme change while the popout stays open does not re-sync (the
+    // cross-document gap parity floor §3.8:673-679 notes).
+    onDidOpen: ({ window: popoutWindow }) => {
+      popoutWindow.addEventListener("load", () => {
+        inheritOpenerTheme(document.documentElement, popoutWindow.document.documentElement);
+      });
+    },
+  });
+}
+
+// inheritOpenerTheme copies the opener document root's data-theme attribute onto
+// a popout document root. dockview clones the opener's stylesheets into the
+// popout (dom.js addStyles) but not this attribute, which tokens.css keys its
+// light overrides off - so without it a light-theme opener renders a dark
+// popout. A dark opener carries no data-theme at all (the :root default), so
+// there is nothing to copy and the popout keeps that same dark default.
+export function inheritOpenerTheme(openerRoot: Element, popoutRoot: Element): void {
+  const theme = openerRoot.getAttribute("data-theme");
+  if (theme !== null) popoutRoot.setAttribute("data-theme", theme);
 }
