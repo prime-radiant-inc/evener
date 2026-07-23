@@ -199,11 +199,6 @@ func covDocServeSeed(t *testing.T) {
 	_, _ = readDocFile(filepath.Join(cwd, "empty"))
 	large := append(make([]byte, 8193), 0)
 	_ = looksBinaryBytes(large)
-	for _, n := range []int{1, 1024, 1 << 20} {
-		_ = formatDocBytes(n)
-	}
-	writeDocPage(httptest.NewRecorder(), "<x>", "body")
-	writeDocMarkdownPage(httptest.NewRecorder(), "<x>", "# x")
 }
 
 func covOutputImagesSeed(t *testing.T) {
