@@ -42,7 +42,7 @@ func TestInstallHomeGeneratedHome(t *testing.T) {
 		"XDG_CACHE_HOME":  cacheHome,
 	})
 
-	runCommand(t, repoRoot, env, "make", "install")
+	runCommand(t, repoRoot, npmShimEnv(t, env), "make", "install")
 
 	binDir := filepath.Join(home, ".local", "bin")
 	shareBinDir := filepath.Join(home, ".local", "share", "serf", "bin")
@@ -440,6 +440,42 @@ func runCommand(t *testing.T, dir string, env []string, name string, args ...str
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
+}
+
+// npmShimEnv prepends a fake-bin directory containing a no-op npm to env's
+// PATH, for the `make install` invocation above only. install now depends
+// on build-web (Makefile-coherence rule: a shipped/installed hub must embed
+// a fresh SPA, never the tracked PLACEHOLDER), which would otherwise run a
+// real npm ci + vite build inside this test — slow, and it would fail
+// entirely in environments without node. This test's subject is install's
+// layout/symlinks, not web freshness; that is pinned separately by
+// TestMakeRuntimeAliasesBuildThePair in runtime_pair_build_test.go. The
+// shim is a pure no-op (unlike that test's fake npm, it must NOT create
+// node_modules or otherwise touch the checkout): the -nt check in
+// build-web's recipe either skips npm ci (developer has fresh
+// node_modules) or runs this no-op fake ci, the no-op fake "npm run build"
+// leaves dist exactly as-is, and the recipe's trailing PLACEHOLDER restore
+// (git checkout) is a harmless real-git no-op since nothing changed. The
+// real go/git must still resolve from the rest of PATH, so this only
+// prepends.
+func npmShimEnv(t *testing.T, env []string) []string {
+	t.Helper()
+
+	fakeBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fakeBin, "npm"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake npm: %v", err)
+	}
+
+	path := os.Getenv("PATH")
+	for _, item := range env {
+		if name, value, ok := strings.Cut(item, "="); ok && name == "PATH" {
+			path = value
+			break
+		}
+	}
+	return overlayEnv(env, map[string]string{
+		"PATH": fakeBin + string(os.PathListSeparator) + path,
+	})
 }
 
 func writeInstallReleaseArchive(t *testing.T, path, root string) {
