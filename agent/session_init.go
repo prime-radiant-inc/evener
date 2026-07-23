@@ -564,6 +564,22 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// happens once, at creation time, not on every resume.
 	s.origin = meta.Origin
 
+	// Restore any steering/input queue entries that survived a crash (queue
+	// persistence: restart parity for turn/queue and mid-turn Steer). Loaded
+	// directly onto the fields here, before the session is visible to any
+	// other goroutine, so the very first QueueState projection a reconnecting
+	// client sees already reflects the restored queue. A load failure (e.g. a
+	// corrupt queue file) is non-fatal — same posture as a parse failure in
+	// the pending-ask restore below — so a damaged queue snapshot degrades to
+	// "queue lost" (today's status quo for every crash) rather than blocking
+	// the whole session from resuming.
+	if steering, input, err := loadQueues(s.stateDir, s.id); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("restore: queue reload failed: %v", err)})
+	} else {
+		s.steeringQueue = steering
+		s.inputQueue = input
+	}
+
 	// ask_user root-only gating (spec §7.1): a bare `serve --resume
 	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
 	// never persisted), so cfg.spawn.parentSessionID alone would miss it.
