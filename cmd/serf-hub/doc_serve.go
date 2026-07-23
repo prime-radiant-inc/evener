@@ -237,7 +237,6 @@ func formatDocBytes(n int) string {
 func writeDocPage(w http.ResponseWriter, title, bodyHTML string) {
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
 		`<title>` + htmlEscape(title) + `</title>` +
-		`<link rel="stylesheet" href="/assets/style.css">` +
 		`<script>(function(){try{var t=localStorage.getItem("serf-hub.theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>` +
 		`</head><body class="doc-page"><main class="doc-body">` +
 		`<header class="doc-head">` + htmlEscape(title) + `</header>` +
@@ -255,9 +254,7 @@ func writeDocPage(w http.ResponseWriter, title, bodyHTML string) {
 func writeDocMarkdownPage(w http.ResponseWriter, title, md string) {
 	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
 		`<title>` + htmlEscape(title) + `</title>` +
-		`<link rel="stylesheet" href="/assets/style.css">` +
 		`<script>(function(){try{var t=localStorage.getItem("serf-hub.theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>` +
-		`<script src="/assets/marked.min.js"></script>` +
 		`</head><body class="doc-page"><main class="doc-body">` +
 		`<header class="doc-head">` + htmlEscape(title) + `</header>` +
 		`<div class="doc-markdown markdown"></div>` +

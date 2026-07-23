@@ -447,3 +447,22 @@ func TestDocFile_Raw_NonLocalSession404(t *testing.T) {
 		t.Errorf("non-local session should 404, got %d body=%q", rec.Code, rec.Body.String())
 	}
 }
+
+// TestWriteDocPages_NoDeadAssetReferences pins the legacy non-raw document
+// pages to reference no /assets/ URL. M10 deletes assets/style.css and
+// assets/marked.min.js, so a page that linked them would serve dead links.
+// The pages degrade instead — unstyled, and markdown falls back to a <pre>
+// via the inline script's window.marked guard — with no broken references.
+func TestWriteDocPages_NoDeadAssetReferences(t *testing.T) {
+	page := httptest.NewRecorder()
+	writeDocPage(page, "notes.txt", `<pre class="doc-pre">x</pre>`)
+	if strings.Contains(page.Body.String(), "/assets/") {
+		t.Errorf("writeDocPage emitted a dead /assets/ reference: %q", page.Body.String())
+	}
+
+	md := httptest.NewRecorder()
+	writeDocMarkdownPage(md, "README.md", "# Title\n\nbody")
+	if strings.Contains(md.Body.String(), "/assets/") {
+		t.Errorf("writeDocMarkdownPage emitted a dead /assets/ reference: %q", md.Body.String())
+	}
+}
