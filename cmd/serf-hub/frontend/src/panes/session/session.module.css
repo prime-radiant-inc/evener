@@ -1,3 +1,20 @@
 .transcript {
   height: 100%;
 }
+
+/* Composer + status row, stacked in PaneScaffold's pinned footer slot. */
+.footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.measure {
+  /* matches transcript measure — consolidate to a token after the UX settles */
+  width: 100%;
+  max-width: 76rem;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}

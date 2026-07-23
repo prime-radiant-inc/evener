@@ -7,10 +7,15 @@
 // connection-ready gate's local closure, neither of which loses anything a
 // remount can't immediately reconstruct from the store.
 //
-// Wave 5 T1 carves the <Composer>/<SessionChrome> slots below and then
-// FREEZES this file for the wave: T2-T5 build everything else inside those
-// two components' own subtrees (composer/Composer.tsx, chrome/
-// SessionChrome.tsx) and never edit Session.tsx again this wave.
+// Column layout: PaneScaffold's `body` slot (the transcript, scrollable) is
+// the ONLY part of this pane that grows/shrinks with content - composer and
+// status row sit in the `footer` slot instead, which PaneScaffold pins
+// outside the scroll region (flex:none, always after body), so they never
+// scroll out of view regardless of transcript length. PendingChips travels
+// with the composer (it's contextually "chips beside the composer", per its
+// own doc comment) and shares its 76rem measure so the input aligns with the
+// transcript's own content column; SessionChrome (the status row) stays
+// full-width beneath, reading like a status bar.
 import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
@@ -142,7 +147,19 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   };
 
   return (
-    <PaneScaffold title={model.name || ref} cadence={cadence} footer={<SessionChrome ref={ref} />}>
+    <PaneScaffold
+      title={model.name || ref}
+      cadence={cadence}
+      footer={
+        <div className={styles.footer}>
+          <div className={styles.measure}>
+            <PendingChips sessionRef={ref} />
+            <Composer ref={ref} />
+          </div>
+          <SessionChrome ref={ref} />
+        </div>
+      }
+    >
       <SandboxEscalationRail sessionRef={ref} />
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
@@ -184,8 +201,6 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
           </FlowOverlay>
         </div>
       )}
-      <PendingChips sessionRef={ref} />
-      <Composer ref={ref} />
     </PaneScaffold>
   );
 }
