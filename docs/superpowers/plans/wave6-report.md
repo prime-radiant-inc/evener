@@ -212,7 +212,8 @@ persistence behavior, but it points at a session absent from this hub.
 - **Nothing is currently open** on the wave itself — every divergence above is pre-ruled or a
   flagged, non-blocking gap.
 - **The M9/M10 order flip is proposed and awaiting your word** (unchanged from the ledger; not
-  decided here).
+  decided here). *[Erratum 2026-07-22: superseded the same day — Jesse adopted the flip in the
+  pre-flight offline authorities; the ledger carries the ruling.]*
 - Two items you may want to weigh for W8 sequencing (not decisions this task can make): whether the
   **§1.14 re-sendable-image** gap is fixed before the integration merge or folded into W8, and
   whether the **§4.2 FOUC** pre-paint successor is worth restoring now that the new UI is the target
