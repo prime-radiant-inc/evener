@@ -51,8 +51,8 @@ export { Meter } from "./meter";
 // ships the interim-Combobox stub; wave-8 T2 fills the rich catalog). The
 // plain re-export carries BOTH meanings; only the pure-type members need
 // `export type` (a second `export type { ModelCatalog }` would duplicate it).
-export type { ModelCatalogEntry, ModelCatalogProps } from "./modelCatalog";
-export { ModelCatalog } from "./modelCatalog";
+export type { ModelCatalogEntry, ModelCatalogPanelProps, ModelCatalogProps } from "./modelCatalog";
+export { ModelCatalog, ModelCatalogPanel } from "./modelCatalog";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";

@@ -109,44 +109,26 @@ function CatalogRow({ option }: { option: CatalogOption }): JSX.Element {
   );
 }
 
-export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+export interface ModelCatalogPanelProps {
+  loading: boolean;
+  error: string | null;
+  catalog: ModelCatalog | null;
+  onPick: (entry: ModelCatalogEntry) => void;
+  onCancel: () => void;
+}
+
+/**
+ * The open picker's content only (Recent quick-picks, searchable list,
+ * diagnostics affordance, Cancel) with no trigger/closed-state rendering of
+ * its own - extracted so a caller that needs its own trigger affordance
+ * (e.g. a status-row chip opening this as a floating popover, rather than
+ * ModelCatalog's own inline chip+button row below) can reuse the rich
+ * rendering without duplicating it. ModelCatalog itself is this component
+ * plus its own closed-state row and open/loading/catalog state.
+ */
+export function ModelCatalogPanel({ loading, error, catalog, onPick, onCancel }: ModelCatalogPanelProps): JSX.Element {
   const [query, setQuery] = useState("");
   const [showDiagnostics, setShowDiagnostics] = useState(false);
-
-  async function openPicker() {
-    setOpen(true);
-    setQuery("");
-    setError(null);
-    setShowDiagnostics(false);
-    setLoading(true);
-    try {
-      setCatalog(await loadCatalog());
-    } catch (err) {
-      setError(`Couldn't load models: ${errorMessage(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function pick(qualified: string) {
-    setOpen(false);
-    onChange(qualified);
-  }
-
-  if (!open) {
-    return (
-      <div className={CLASS.row}>
-        <Chip>{value === "" ? "(default)" : value}</Chip>
-        <Button variant="quiet" size="sm" onClick={() => void openPicker()}>
-          Change model
-        </Button>
-      </div>
-    );
-  }
 
   const options = catalog ? withGroupHeads(filterCatalog(toCatalogOptions(catalog.models), query)) : [];
   const recent = catalog?.recent ?? [];
@@ -170,7 +152,7 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
                   key={`${entry.provider}/${entry.model}`}
                   variant="quiet"
                   size="sm"
-                  onClick={() => pick(`${entry.provider}/${entry.model}`)}
+                  onClick={() => onPick(entry)}
                 >
                   {entry.displayName || `${entry.provider}/${entry.model}`}
                 </Button>
@@ -180,7 +162,7 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
           <Combobox<CatalogOption>
             options={options}
             onQuery={setQuery}
-            onPick={(option) => pick(option.qualified)}
+            onPick={(option) => onPick(option.entry)}
             renderOption={(option) => <CatalogRow option={option} />}
             aria-label="Model"
           />
@@ -204,9 +186,55 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
           )}
         </>
       )}
-      <Button variant="quiet" size="sm" onClick={() => setOpen(false)}>
+      <Button variant="quiet" size="sm" onClick={onCancel}>
         Cancel
       </Button>
     </div>
+  );
+}
+
+export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
+
+  async function openPicker() {
+    setOpen(true);
+    setError(null);
+    setLoading(true);
+    try {
+      setCatalog(await loadCatalog());
+    } catch (err) {
+      setError(`Couldn't load models: ${errorMessage(err)}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function pick(entry: ModelCatalogEntry) {
+    setOpen(false);
+    onChange(`${entry.provider}/${entry.model}`);
+  }
+
+  if (!open) {
+    return (
+      <div className={CLASS.row}>
+        <Chip>{value === "" ? "(default)" : value}</Chip>
+        <Button variant="quiet" size="sm" onClick={() => void openPicker()}>
+          Change model
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <ModelCatalogPanel
+      loading={loading}
+      error={error}
+      catalog={catalog}
+      onPick={pick}
+      onCancel={() => setOpen(false)}
+    />
   );
 }
