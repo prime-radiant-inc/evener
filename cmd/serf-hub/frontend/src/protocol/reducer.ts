@@ -445,6 +445,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),
         activeTurnId: undefined,
+        // The active turn just ended: its start anchor is now stale (there is
+        // no live push to refresh it), so clear it in lockstep with activeTurnId
+        // to stop the work-clock ticking against a completed turn.
+        activeTurnStartedAt: undefined,
         lastFrameAt: now,
       };
     }
@@ -573,7 +577,18 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "thread/status/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, status: n.params.status, lastFrameAt: now };
+      const status = n.params.status;
+      return {
+        ...model,
+        status,
+        // The work-clock anchor (activeTurnStartedAt) has no live push to
+        // refresh it, so a cold-hydrated live anchor would keep clocking
+        // now-minus-anchor forever once the turn ends (StatusRow.tsx feeds it to
+        // totalWorkMillis unconditionally). Drop it on any non-active
+        // transition so the model never carries a live anchor while at rest.
+        activeTurnStartedAt: status.type === "active" ? model.activeTurnStartedAt : undefined,
+        lastFrameAt: now,
+      };
     }
 
     case "thread/model/changed": {

@@ -1979,6 +1979,90 @@ test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive li
   expect(model.activeTurnStartedAt).toBe(before.activeTurnStartedAt);
 });
 
+// The work-clock anchor (activeTurnStartedAt) is the sole snapshot-only serf
+// field with a rest-state exception to "survives untouched": it has no live
+// push to refresh it, so a cold hydrate mid-turn (server/appwire_runtime.go:865
+// sets serf.activeTurnId, agent stamps ActiveTurnStartedAt) leaves a live anchor
+// that would keep clocking now-minus-anchor forever once the turn ends. The
+// reducer clears it on the two transitions it already handles — thread/status/
+// changed to any non-active status, and turn/completed — so the model never
+// carries a live anchor while at rest. StatusRow.tsx:130 feeds it to
+// totalWorkMillis unconditionally, so a stale anchor is a ticking idle clock.
+test("thread/status/changed to a non-active status clears the live work-clock anchor", () => {
+  // Wire shapes: hydrate serf.activeTurnStartedAt is epoch-ms (reducer.ts:266
+  // epochMsToISO); ThreadStatusChangedParams is {threadId, ref?, status} with
+  // status {type} (types.gen.ts:963-972, reducer.ts:574-577).
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 1_700_000_000_000 },
+  });
+  expect(model.activeTurnStartedAt).toBe(new Date(1_700_000_000_000).toISOString());
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.status.type).toBe("awaiting");
+  expect(model.activeTurnStartedAt).toBeUndefined();
+});
+
+test("turn/completed clears the live work-clock anchor — the active turn just ended", () => {
+  // Wire shapes: serf.activeTurnId sets model.activeTurnId (reducer.ts:231-233,
+  // server/appwire_runtime.go:865); TurnCompletedParams is the bare {turnId,
+  // turn} settle stamp with itemsView "" (reducer.ts:396-412, 430-433 citing
+  // the internal/appprojector live settle sites).
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      activeTurnId: "turn_1",
+      activeTurnStartedAt: 1_700_000_000_000,
+    },
+  });
+  expect(model.activeTurnId).toBe("turn_1");
+  expect(model.activeTurnStartedAt).toBe(new Date(1_700_000_000_000).toISOString());
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.activeTurnId).toBeUndefined();
+  expect(model.activeTurnStartedAt).toBeUndefined();
+});
+
+test("thread/status/changed staying active preserves the live work-clock anchor", () => {
+  // The clear fires only on the rest transition; an active→active status frame
+  // (e.g. an activeFlags change) must not drop a legitimately running anchor.
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 1_700_000_000_000 },
+  });
+  const anchor = model.activeTurnStartedAt;
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
+    } as AnyNotification,
+    2000,
+  );
+
+  expect(model.activeTurnStartedAt).toBe(anchor);
+});
+
 test("pendingEscalations survives a turn/started notification — thread-level state, untouched by turn machinery", () => {
   const escalation = testEscalation();
   let model = testHydrate({
