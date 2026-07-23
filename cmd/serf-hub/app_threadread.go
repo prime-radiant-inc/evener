@@ -210,6 +210,11 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	if cfg.Roster != nil && cfg.Roster.IsSubagentActive(entry.Meta.ID) {
 		status = appwire.ThreadStatusActive
 	}
+	// cumulativeUsage is the persisted full-session token total; the cost stamp
+	// derives its "~$X.XX" from it at the session model's price (empty when
+	// there is no usage or the model is uncataloged), mirroring the per-turn
+	// cost stamp in pastEntryTurns and the live producer in server's appThread.
+	cumulativeUsage := serfUsageFromCumulative(entry.Meta.CumulativeUsage)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -234,7 +239,8 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 				Rename:       true,
 			},
 			WorkMillis: entry.Meta.WorkMillis,
-			Usage:      serfUsageFromCumulative(entry.Meta.CumulativeUsage),
+			Usage:      cumulativeUsage,
+			Cost:       appwire.EstimateCost(entry.Meta.Model, cumulativeUsage),
 			// ActiveTurnStartedAt stays 0 because the parent status payload does not
 			// expose the in-process child's turn start time.
 		},

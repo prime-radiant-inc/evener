@@ -872,6 +872,7 @@ func (s *Server) appThread() appwire.Thread {
 			Queue:                 queue,
 			Goal:                  goalState,
 			Usage:                 usage,
+			Cost:                  appwire.EstimateCost(status.Model, usage),
 			WorkMillis:            workMillis,
 			ActiveTurnStartedAt:   activeTurnStartedAt,
 			AskPending:            askPending,

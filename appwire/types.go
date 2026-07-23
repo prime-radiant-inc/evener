@@ -267,6 +267,22 @@ type SerfThread struct {
 	Usage               *SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64      `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64      `json:"activeTurnStartedAt,omitempty"`
+	// Cost is the session's cumulative estimated dollar total — the "~$X.XX"
+	// string EstimateCost derives from Usage at the thread's model price, the
+	// session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
+	// estimate marker). Empty (omitted) when Usage is nil or the model is
+	// uncataloged: an honest "unknown" that renders no chip, never a
+	// misleading "~$0.00" — the only "~$0.00" a consumer sees is a genuinely
+	// sub-cent priced session. Derived from the authoritative full-session
+	// cumulative Usage (the same total the token cluster trusts), never a
+	// page of client-loaded turns, so it is pagination-proof by construction.
+	// Stamped beside Usage at each SerfThread producer (the server's live
+	// appThread and the hub's past-entry hydrate), so it stays current across
+	// snapshots exactly as WorkMillis/Usage do. The whole cumulative Usage is
+	// priced at the thread's CURRENT model: after a mid-session model switch,
+	// earlier turns are repriced at current rates (the flat CumulativeUsage
+	// carries no per-model breakdown; identical to the legacy computation).
+	Cost string `json:"cost,omitempty"`
 	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
 	// true while an ask_user question is unanswered. Additive: absent on old
 	// daemons and Codex threads, decoding as false.

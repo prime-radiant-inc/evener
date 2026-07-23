@@ -413,3 +413,26 @@ test("shows input/output token counts when usage data is present", () => {
   );
   expect(screen.getByTestId("status-row-usage").textContent).toBe("↑2k ↓320");
 });
+
+// --- cost --------------------------------------------------------------------
+
+test("shows the session cost chip verbatim from the wire string when present", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel({ cost: "~$1.23" })} now={1000} />);
+  const chip = screen.getByTestId("status-row-cost");
+  // The wire string is already formatted server-side (EstimateCost) — the row
+  // displays it verbatim, never re-formatting a number client-side.
+  expect(chip.textContent).toBe("~$1.23");
+  // The row's "key value" tooltip convention (LocationCluster) — the tooltip
+  // names the value as the session cost, not a per-turn one.
+  expect(chip.getAttribute("title")).toContain("~$1.23");
+});
+
+test("shows no cost chip when the wire omits cost as null (honest unknown)", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel({ cost: null })} now={1000} />);
+  expect(screen.queryByTestId("status-row-cost")).toBeNull();
+});
+
+test("shows no cost chip when cost is absent (undefined) from the model", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel({})} now={1000} />);
+  expect(screen.queryByTestId("status-row-cost")).toBeNull();
+});
