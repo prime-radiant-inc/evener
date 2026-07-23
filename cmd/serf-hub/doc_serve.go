@@ -21,10 +21,10 @@ var docOpen = os.Open
 const docFileMaxBytes = 512 * 1024
 
 // handleDocFile serves a read-only document pane for a file inside a LOCAL
-// session's working directory. It is a standalone document route: side-pane
-// iframes navigate to it directly, so it cannot require htmx-only request
-// headers. Markdown renders via marked; other text renders escaped in <pre>;
-// binary gets a notice.
+// session's working directory. It is a standalone document route reached by
+// direct navigation and by the SPA's fetch, so it cannot gate on a special
+// request header. Markdown renders via marked; other text renders escaped in
+// <pre>; binary gets a notice.
 //
 // ?format=raw switches the response from the server-rendered HTML page to
 // the file's literal bytes (writeDocFileRaw), for the native React doc-viewer

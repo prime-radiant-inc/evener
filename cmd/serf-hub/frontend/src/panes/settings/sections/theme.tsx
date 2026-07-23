@@ -40,11 +40,8 @@ const FONT_SIZE_OPTIONS: RadioGroupOption[] = [
 /**
  * Settings -> Theme (parity-m7-settings.md §3): 4 localStorage-only
  * preferences, no wire access - every control here reads/writes prefs.ts
- * directly. Unlike the legacy's own htmx world (server-rendered radios with
- * no `checked` attribute, resynced by a dedicated applyAppearanceState()
- * rerun on every load/swap - see that section's own floor-doc bullet), a
- * RadioGroup driven straight off usePrefsStore is always correct on every
- * render; there is no separate "reapply" step to port.
+ * directly. A RadioGroup driven straight off usePrefsStore is always correct
+ * on every render; there is no separate "reapply" step.
  *
  * Only Color theme toasts on change ("Theme: {value}", matching the
  * legacy's own asymmetry: phone density/sidebar mode/font size get no
