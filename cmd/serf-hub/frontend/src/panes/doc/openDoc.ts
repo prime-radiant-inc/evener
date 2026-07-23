@@ -13,6 +13,10 @@
 // spy openBeside through the module object, the reliable vitest seam for
 // asserting this delegation while the target is still a no-op.
 import * as paneActions from "../../shell/paneActions";
+// Importing the opener registers the "doc" pane type (side effect of ./index):
+// every producer that can open a doc pane already imports this module, so the
+// pane is guaranteed registered before openDocBeside routes it through dockview.
+import "./index";
 
 export interface DocParams {
   session: string;
