@@ -73,7 +73,7 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.URL.Query().Get("format") == "raw" {
-		writeDocFileRaw(w, data)
+		writeDocFileRaw(w, data, docRawTotalSize(abs, len(data)))
 		return
 	}
 
@@ -211,13 +211,37 @@ func looksBinaryBytes(data []byte) bool {
 // fetch) would then execute it same-origin. text/plain and
 // application/octet-stream are both honest about the content and never
 // browser-executable.
-func writeDocFileRaw(w http.ResponseWriter, data []byte) {
+//
+// data is capped at docFileMaxBytes; totalSize is the file's true byte size.
+// When the file is larger than the cap the body is only its head, so an
+// explicit X-Doc-Truncated / X-Doc-Total-Size pair lets the pane render an
+// exact notice instead of inferring truncation from the body length (which is
+// ambiguous at exactly the cap). A file of exactly the cap size is complete,
+// hence not truncated.
+func writeDocFileRaw(w http.ResponseWriter, data []byte, totalSize int64) {
 	if looksBinaryBytes(data) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	} else {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	}
+	if totalSize > docFileMaxBytes {
+		w.Header().Set("X-Doc-Truncated", "true")
+		w.Header().Set("X-Doc-Total-Size", strconv.FormatInt(totalSize, 10))
+	}
 	_, _ = w.Write(data)
+}
+
+// docRawTotalSize returns the file's true byte size for the raw pane's
+// truncation signal. It re-stats the file rather than threading a size out of
+// readDocFile, which the HTML variant shares and this raw-only change must not
+// disturb. On a stat error — unlikely, the file was readable a moment ago — it
+// falls back to the bytes actually read, which reads as "not truncated": an
+// honest degrade to the earlier no-signal behavior.
+func docRawTotalSize(abs string, read int) int64 {
+	if info, err := docStat(abs); err == nil {
+		return info.Size()
+	}
+	return int64(read)
 }
 
 func formatDocBytes(n int) string {
