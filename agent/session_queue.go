@@ -49,15 +49,15 @@ func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context
 // watch origin (nil for human/system-authored steering) so consuming the
 // message folds its watch keys into the turn's active provenance.
 type steeringMessage struct {
-	Text       string
-	Images     []ImageAttachment
-	Provenance *provenance.Causal
+	Text       string             `json:"text,omitempty"`
+	Images     []ImageAttachment  `json:"images,omitempty"`
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
 	// Source marks who sent the steering: events.SteeringSourceUser for
 	// human-sent steering (the UI steer action, or queued user input
 	// drained as steering), empty for daemon/system nudges. Surfaced on the
 	// SteeringInjectedData event and persisted on the transcript turn so
 	// UIs render user steering as a user message (issue #24).
-	Source string
+	Source string `json:"source,omitempty"`
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
@@ -131,11 +131,12 @@ func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAtta
 // for human-sent steering, "" for daemon/system steering).
 func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
 		return false
 	}
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
+		s.mu.Unlock()
 		return false
 	}
 	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source}
@@ -143,6 +144,8 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	return true
 }
 
@@ -193,10 +196,10 @@ func (s *Session) FollowUp(msg string) {
 // queue snapshot so a promote-by-index request can verify the entry it meant
 // is still the entry at that index (review F1, issue #22).
 type queuedInput struct {
-	ID         string
-	Text       string
-	Images     []ImageAttachment
-	Provenance *provenance.Causal
+	ID         string             `json:"id"`
+	Text       string             `json:"text,omitempty"`
+	Images     []ImageAttachment  `json:"images,omitempty"`
+	Provenance *provenance.Causal `json:"provenance,omitempty"`
 }
 
 // queueEntrySeq guarantees queue-entry id uniqueness by construction,
@@ -247,6 +250,7 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 	s.inputQueue = append(s.inputQueue, entry)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 	return nil
 }
@@ -295,6 +299,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	s.inputQueue = nil
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 	texts := make([]string, 0, len(entries))
 	var drainedImages []ImageAttachment
@@ -354,6 +359,7 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 	// The promoted entry is user-typed input steered into the in-flight turn
 	// by a user action, so it keeps user provenance for rendering — same as
@@ -400,6 +406,7 @@ func (s *Session) CancelQueued(ctx context.Context, index int, expectedID string
 	s.inputQueue = append(s.inputQueue[:index], s.inputQueue[index+1:]...)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 	return entry.Text, len(entry.Images), nil
 }
@@ -472,6 +479,7 @@ func (s *Session) popQueueHead() queuedInput {
 	s.inputQueue = s.inputQueue[1:]
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 	return entry
 }
@@ -486,6 +494,7 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 	s.inputQueue = append([]queuedInput{entry}, s.inputQueue...)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	s.emit(events.EventQueueChanged, data)
 }
 
@@ -572,12 +581,14 @@ func queuedInputDrainContext(ctx context.Context, err error) (context.Context, b
 }
 func (s *Session) drainSteering() []steeringMessage {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if len(s.steeringQueue) == 0 {
+		s.mu.Unlock()
 		return nil
 	}
 	out := append([]steeringMessage{}, s.steeringQueue...)
 	s.steeringQueue = nil
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 	return out
 }
 
@@ -612,8 +623,9 @@ func (s *Session) prependSteering(entries []steeringMessage) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.steeringQueue = append(append([]steeringMessage{}, entries...), s.steeringQueue...)
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
 }
 
 // SteeringEntry is a read-only snapshot of one entry on the steering

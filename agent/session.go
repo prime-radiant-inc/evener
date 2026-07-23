@@ -204,6 +204,19 @@ type Session struct {
 	// atomic to external observers (Enqueue/DrainAsSteer/pop/pushQueueHead).
 	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
+	// queuePersistMu serializes persistQueuesSnapshot's own snapshot-then-write
+	// critical section. inputQueue's mutators already serialize end-to-end via
+	// queueEventsMu (held across their persist call too), but steeringQueue's
+	// mutators (trySteerEnqueue/drainSteering/prependSteering) release mu before
+	// persisting and share no other lock — without this, two concurrent
+	// steering mutations could race their disk writes: the slower call's
+	// snapshot (read before the lock, in a naive design) could land on disk
+	// AFTER a faster call's newer one, reverting the file to a stale state even
+	// though both mutations are safely applied in memory. Nesting is strict and
+	// one-directional (queuePersistMu, then briefly mu, for the snapshot copy;
+	// never the reverse, and never held across any other Session lock), so it
+	// cannot invert against queueEventsMu > mu or responseSideEffectsMu > mu.
+	queuePersistMu sync.Mutex
 
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
