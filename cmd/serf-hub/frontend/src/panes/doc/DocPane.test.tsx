@@ -66,12 +66,15 @@ test("a binary file shows a not-shown notice with the filename and human size", 
   expect(screen.getByText(/blob\.bin \(2 KiB\)/)).toBeTruthy();
 });
 
-test("a truncated file shows a truncation notice AND the partial content (beyond-parity honesty fix)", async () => {
-  mockRead.mockResolvedValue(textContent({ text: "partial head", truncated: true, sizeBytes: DOC_FILE_MAX_BYTES }));
+test("a truncated file shows the exact truncation notice (first cap of true total) AND the partial content", async () => {
+  mockRead.mockResolvedValue(
+    textContent({ text: "partial head", truncated: true, sizeBytes: DOC_FILE_MAX_BYTES, totalBytes: 2 * 1024 * 1024 }),
+  );
   renderFile("logs/huge.log");
   expect(await screen.findByText("partial head")).toBeTruthy();
   expect(screen.getByText("Truncated")).toBeTruthy(); // the attention chip
-  expect(screen.getByText(/Showing the first 512 KiB/)).toBeTruthy(); // the explanatory notice
+  // The notice is exact now: the cap shown, and the file's true total.
+  expect(screen.getByText("Showing the first 512 KiB of 2 MiB.")).toBeTruthy();
 });
 
 test("an untruncated file shows no truncation notice", async () => {
