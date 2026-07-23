@@ -1,3 +1,14 @@
+// Side-effect: loads the single-pane chrome-strip stylesheet. AppShell imports
+// this module eagerly for isSinglePaneRoute below, so importing global.css here
+// puts its [data-single-pane]-keyed rules in the eager bundle - present the
+// moment any /thread route paints, inert everywhere else. This is the "fuller
+// presentation" the header comment forward-references (T6), completing it
+// without touching AppShell/DockHost (the marker + rail suppression stay
+// theirs). global.css - not a .module.css - because it targets dockview's own
+// tab-strip class and an accessible-name attribute, which hashed module classes
+// can't address (same rationale as shell/dockview-theme.css).
+import "./singlePane/global.css";
+
 // Single-pane layout mode for the /thread/{ref} share-link target (wave 8).
 // isSinglePaneRoute is the one locked predicate this seam ships in T1: it is
 // true for a /thread/{ref} pathname, and AppShell reads it to strip the shell

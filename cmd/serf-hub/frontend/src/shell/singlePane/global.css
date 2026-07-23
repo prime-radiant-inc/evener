@@ -1,0 +1,41 @@
+/*
+ * Single-pane mode chrome-strip (wave 8 T6).
+ *
+ * The /thread/{ref} share link renders the SESSION pane (composer live) inside
+ * a chrome-stripped single-pane layout. AppShell already suppresses the rail
+ * (and with it the search/settings entry points, floor §2.3) and marks the
+ * shell root with [data-single-pane]; this stylesheet finishes the "fuller"
+ * presentation the singlePane.ts seam comment describes, keyed entirely off
+ * that marker so every rule is inert in normal multi-pane mode.
+ *
+ * It is a GLOBAL stylesheet (not a CSS Module) on purpose: it targets a
+ * third-party library's own generated class (dockview's tab strip) and an
+ * accessible-name attribute, neither of which a hashed .module.css class can
+ * address - the same reason shell/dockview-theme.css is global. It is imported
+ * as a side effect by shell/singlePane.ts (eagerly reachable from AppShell), so
+ * the rules are present the moment any /thread route paints, and it touches no
+ * chromatic literal (token-contract stays satisfied).
+ *
+ * Known residual (T8 sweep): the outer AppShell .content gutter is NOT removed
+ * here - its class is CSS-Module-hashed and lives in a chokepoint this stream
+ * does not edit, so the single pane sits inside the normal content padding
+ * rather than truly edge-to-edge. The visible "single pane" effect (no tab
+ * strip, no rail, no drawer) is delivered; the gutter is cosmetic.
+ */
+
+/* Desktop: dockview renders a tab strip even for a single group. A one-tab
+ * strip on a share-link/document view is noise - hide the whole tabs-and-
+ * actions container so the one pane reads as the whole surface. */
+[data-single-pane] .dv-tabs-and-actions-container {
+  display: none;
+}
+
+/* Mobile (StackHost): AppShell still threads the rail into the tree drawer, so
+ * the marker alone can't drop it - hide the drawer's trigger button. Its
+ * accessible name ("Sessions", from TreeDrawer's IconButton) is the only stable
+ * hook; the drawer it opens is exactly the sidebar/search/settings chrome floor
+ * §2.3 forbids in single-pane mode, so with the trigger gone that chrome is
+ * unreachable (the Sheet only renders its contents once opened). */
+[data-single-pane] button[aria-label="Sessions"] {
+  display: none;
+}
