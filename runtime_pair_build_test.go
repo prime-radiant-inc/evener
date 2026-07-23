@@ -177,7 +177,7 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:31-34: build-web must run before build-runtime so the serf-hub
+// Makefile:31-35: build-web must run before build-runtime so the serf-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -207,7 +207,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:31-34); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:31-35); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
