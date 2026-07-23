@@ -18,12 +18,13 @@
 // case, which updates the reasoning ladder alongside modelProvider/model),
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import type { ModelDescriptor } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, Combobox, type ComboboxOption, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { isTurnActive } from "../composer/submitRouting";
 import styles from "./modelswitch.module.css";
 import { modelLabel } from "./statusFormat";
 
@@ -67,8 +68,15 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const [loading, setLoading] = useState(false);
   const [allOptions, setAllOptions] = useState<ModelOption[]>([]);
   const [query, setQuery] = useState("");
+  const pickerRef = useRef<HTMLDivElement>(null);
+
+  // A model switch mid-turn is refused by the daemon, so the trigger follows
+  // the LIVE turn state, not only the static changeModel capability - the same
+  // isTurnActive predicate Composer's own Stop/Steer gate uses.
+  const busy = isTurnActive(model.status.type, model.activeTurnId);
 
   async function openPicker() {
+    if (busy || !model.capabilities.changeModel) return;
     setOpen(true);
     setQuery("");
     setLoading(true);
@@ -87,6 +95,29 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     setOpen(false);
   }
 
+  // Escape and an outside click dismiss the open picker (not only its Cancel
+  // button). Both listen on document rather than the picker subtree so they
+  // fire wherever focus/the pointer actually is - the same containment idiom
+  // widgets/menu uses for its own outside-click. Escape stays two-stage for
+  // free: while the Combobox popup is open the Combobox consumes Escape and
+  // stops it (index.tsx's own case), so the first Escape only closes the
+  // popup and a second closes the picker here.
+  useEffect(() => {
+    if (!open) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    function onMouseDown(event: MouseEvent) {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onMouseDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [open]);
+
   async function handlePick(option: ModelOption) {
     // Optimistic close (no rollback on failure) - matches the legacy
     // picker's own convention (parity-m5-composer.md §H): "Selecting a
@@ -104,7 +135,12 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     return (
       <div className={CLASS.row}>
         <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
-        <Button variant="quiet" size="sm" onClick={() => void openPicker()} disabled={!model.capabilities.changeModel}>
+        <Button
+          variant="quiet"
+          size="sm"
+          onClick={() => void openPicker()}
+          disabled={busy || !model.capabilities.changeModel}
+        >
           Change model
         </Button>
       </div>
@@ -112,7 +148,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   }
 
   return (
-    <div className={CLASS.row}>
+    <div className={CLASS.row} ref={pickerRef}>
       {loading ? (
         <span className={CLASS.loading}>Loading models…</span>
       ) : (

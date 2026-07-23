@@ -89,6 +89,19 @@ test("the trigger is disabled when the thread's changeModel capability is unavai
   expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(true);
 });
 
+// Busy-gate: a model switch mid-turn is refused by the daemon, so the trigger
+// follows the LIVE turn state (isTurnActive - the same predicate Composer's
+// Stop/Steer gate uses), not only the static changeModel capability.
+test("the trigger is disabled while a turn is active, even when changeModel is capable", () => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
+  expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(true);
+});
+
+test("the trigger is enabled when idle and changeModel-capable", () => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(false);
+});
+
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -170,6 +183,43 @@ test("a failed catalog fetch surfaces an error toast and reverts to the passive 
   await screen.findByText(/catalog boom/i);
   expect(screen.queryByRole("combobox")).toBeNull();
   expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+});
+
+// The picker is dismissable by Escape and by an outside click, not only by
+// its Cancel button (parity with the legacy live picker's dismiss affordances).
+test("pressing Escape closes an open picker", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await screen.findByRole("combobox");
+  await user.keyboard("{Escape}");
+
+  await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+  // Reverts to the passive chip + trigger, unchanged.
+  expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+});
+
+test("a click outside the open picker closes it", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+
+  render(
+    <div>
+      <button type="button" data-testid="outside">
+        outside
+      </button>
+      <ModelSwitch sessionRef="ref_a" model={testModel()} />
+    </div>,
+  );
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await screen.findByRole("combobox");
+  await user.click(screen.getByTestId("outside"));
+
+  await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
 });
 
 test("a failed setModel surfaces an error toast - the picker is already closed (optimistic close), no rollback", async () => {

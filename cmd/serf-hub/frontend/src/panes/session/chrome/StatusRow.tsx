@@ -54,14 +54,28 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// ReasoningEffortControl renders an interactive Select when the model
-// offers a real ladder to choose from; falls back to plain text for the
-// current value when the model supports reasoning but the ladder is empty
-// (ThreadModel.supportsReasoning is always a concrete boolean here, never
-// the wire's "unknown" case - see model.ts - so there is no ambiguous
-// third state to guess a hardcoded ladder for, unlike the legacy picker's
-// own DEFAULT_EFFORT_LEVELS fallback); renders nothing at all when there is
-// neither a ladder nor a current value to show.
+// Fallback effort ladder for a reasoning model whose own ladder the hub does
+// not enumerate. Ported verbatim from the legacy live picker (cmd/serf-hub/
+// assets/model-switch.js:30, itself from spawn.js:1605) so this surface and
+// the spawn form agree; the daemon clamps a request to what the model actually
+// accepts, so an over-broad list is safe.
+const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
+
+// ReasoningEffortControl renders an interactive Select for a reasoning model's
+// effort. The effective ladder is the model's own named levels, or - when it
+// reasons but names none - the DEFAULT_EFFORT_LEVELS fallback: the wire really
+// can emit supportsReasoning:true with an empty ladder (the daemon's Profile
+// sets p.reasoning and p.effortLevels from independent conditions,
+// agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
+// to [], reducer.ts:263). A model that does not reason at all gets no control.
+//
+// none-vs-(default): an unset effort - and serf's "none", which clears the
+// effort to the provider default (llm/types.go:670, providercfg/load.go:76) -
+// both mean "no explicit level, the model decides". They read as "(default)",
+// a real leading option (value ""), never the first ladder level (which a
+// bare value-"" select would display) and never a literal "none" the user
+// appears to have chosen. Mirrors the legacy palette's own option list
+// (search.js:415: a "(default)" head, "none" omitted as redundant with it).
 function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
@@ -74,32 +88,40 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
     }
   }
 
-  if (model.reasoningEffortLevels.length > 0) {
-    return (
-      <>
-        {/* Select forwards only value/onChange/options/disabled/id/name (no
-            rest-spread, no aria-label passthrough - widgets/select's own
-            index.tsx) - a standard <label htmlFor> association is the only
-            way left to name it accessibly. Visually hidden: the row is
-            already compact, and the select's own current value IS the
-            visible readout (matches the legacy chip's own bare-value
-            display, parity-m5-composer.md §H). */}
-        <label className={CLASS.srOnly} htmlFor="status-row-reasoning-effort">
-          Reasoning effort
-        </label>
-        <Select
-          id="status-row-reasoning-effort"
-          value={model.reasoningEffort ?? ""}
-          onChange={(e) => void handleChange(e)}
-          options={model.reasoningEffortLevels.map((level) => ({ value: level, label: level }))}
-        />
-      </>
-    );
-  }
-  if (model.reasoningEffort) {
-    return <span>{model.reasoningEffort}</span>;
-  }
-  return null;
+  const levels =
+    model.reasoningEffortLevels.length > 0
+      ? model.reasoningEffortLevels
+      : model.supportsReasoning
+        ? DEFAULT_EFFORT_LEVELS
+        : [];
+  if (levels.length === 0) return null;
+
+  const current = model.reasoningEffort && model.reasoningEffort !== "none" ? model.reasoningEffort : "";
+  const options = [
+    { value: "", label: "(default)" },
+    ...levels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
+  ];
+
+  return (
+    <>
+      {/* Select forwards only value/onChange/options/disabled/id/name (no
+          rest-spread, no aria-label passthrough - widgets/select's own
+          index.tsx) - a standard <label htmlFor> association is the only
+          way left to name it accessibly. Visually hidden: the row is
+          already compact, and the select's own current value IS the
+          visible readout (matches the legacy chip's own bare-value
+          display, parity-m5-composer.md §H). */}
+      <label className={CLASS.srOnly} htmlFor="status-row-reasoning-effort">
+        Reasoning effort
+      </label>
+      <Select
+        id="status-row-reasoning-effort"
+        value={current}
+        onChange={(e) => void handleChange(e)}
+        options={options}
+      />
+    </>
+  );
 }
 
 export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
