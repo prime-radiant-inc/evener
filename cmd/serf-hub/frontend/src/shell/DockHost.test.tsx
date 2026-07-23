@@ -297,6 +297,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }

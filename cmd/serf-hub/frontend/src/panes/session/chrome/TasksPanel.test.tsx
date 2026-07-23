@@ -47,6 +47,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }
@@ -86,6 +87,16 @@ test("the trigger shows a bare 'Tasks' label when no aggregate has arrived yet",
 test("the trigger shows the done/total counts once the aggregate has arrived", () => {
   render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 7, done: 3 } })} />);
   expect(screen.getByRole("button", { name: "Tasks 3/7" })).toBeTruthy();
+});
+
+// The command palette's "Toggle tasks panel" (/tasks) synthesizes a click on
+// [data-tasks-trigger] (shell/palette/commands.ts clickTrigger). Without the
+// attribute here the command is inert (W6-T3 punch item), so pin that the
+// palette's own selector resolves to exactly this trigger.
+test("the Tasks trigger carries data-tasks-trigger so the palette's /tasks command can reach it", () => {
+  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: null })} />);
+  const trigger = screen.getByRole("button", { name: "Tasks" });
+  expect(document.querySelector("[data-tasks-trigger]")).toBe(trigger);
 });
 
 // --- STATUS_TONE: pinning test (review finding) --------------------------

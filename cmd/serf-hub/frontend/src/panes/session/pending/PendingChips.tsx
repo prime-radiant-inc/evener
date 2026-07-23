@@ -1,16 +1,66 @@
-// Optimistic send/steer/drain chips beside the composer (wave 8 T4 fills; T1
-// mounts this stub in Session.tsx so the seam exists once and T4 never touches
-// the Session chokepoint). T4 reads usePendingTurnEntries(sessionRef) for
-// methods send|steer|drain (the "queue" method is already chipped by
-// QueueStrip) and renders one compact chip per pending entry, reconciled and
-// reaped entirely by the EXISTING 10s pendingTurnsStore logic - it adds NO new
-// store state. Until then this renders nothing.
+// Optimistic send/steer/drain chips beside the composer. Reads the shared
+// pendingTurnsStore (usePendingTurnEntries) and renders one compact chip per
+// pending entry whose method is send, steer, or drain - the "queue" method is
+// already chipped by QueueStrip, so it is filtered out here. Reconciliation
+// and the 10s timeout reaper are owned ENTIRELY by pendingTurnsStore (a
+// matching wire echo, or the reaper, removes an entry and this list re-renders
+// from the store); this component adds NO store state and imports the hook
+// read-only.
+//
+// Deliberately rendered here beside the composer, NOT injected into the
+// virtualized transcript: an optimistic item in the virtual list is beyond the
+// parity bar, and the legacy chip was itself a lightweight out-of-transcript
+// indicator (recorded as a conscious presentation choice in the wave close
+// sweep). Chips are dimmed, never colored - "in flight" is not an
+// attention-family state (color-is-attention).
 import type { JSX } from "react";
+import { useMemo } from "react";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import type { PendingMethod, PendingTurnEntry } from "../composer/queue/pendingReconcile";
+import { usePendingTurnEntries } from "../composer/queue/pendingTurnsStore";
+import { queueEntryPreviewText } from "../composer/queue/queueDisplay";
+import styles from "./pendingchips.module.css";
 
-// Returns null while empty - both here (the T1 stub) and, honestly, in T4's
-// real fill: with no pending send/steer/drain entries there is nothing to
-// render beside the composer, so the component's true type is JSX.Element |
-// null, not the seam block's shorthand JSX.Element.
-export function PendingChips(_props: { sessionRef: string }): JSX.Element | null {
-  return null;
+type OptimisticMethod = Exclude<PendingMethod, "queue">;
+type OptimisticEntry = PendingTurnEntry & { method: OptimisticMethod };
+
+function isOptimistic(entry: PendingTurnEntry): entry is OptimisticEntry {
+  return entry.method !== "queue";
+}
+
+const CLASS = {
+  chips: requireClass(styles.chips, "pendingchips.module.css", "chips"),
+  chip: requireClass(styles.chip, "pendingchips.module.css", "chip"),
+  method: requireClass(styles.method, "pendingchips.module.css", "method"),
+  text: requireClass(styles.text, "pendingchips.module.css", "text"),
+};
+
+// The three optimistic-submission methods this strip owns. "queue" is
+// excluded - QueueStrip renders those. Present-tense labels convey the
+// still-in-flight state a dimmed chip already hints at.
+const METHOD_LABEL: Record<OptimisticMethod, string> = {
+  send: "Sending",
+  steer: "Steering",
+  drain: "Draining",
+};
+
+export function PendingChips({ sessionRef }: { sessionRef: string }): JSX.Element | null {
+  const entries = usePendingTurnEntries(sessionRef);
+  // Filter to the three composer-submission methods (QueueStrip owns "queue").
+  // Memoized against the store-stable entries array so an unrelated re-render
+  // does not rebuild the list.
+  const optimistic = useMemo(() => entries.filter(isOptimistic), [entries]);
+
+  if (optimistic.length === 0) return null;
+
+  return (
+    <ul className={CLASS.chips} data-testid="pending-chips">
+      {optimistic.map((entry) => (
+        <li key={entry.id} className={CLASS.chip}>
+          <span className={CLASS.method}>{METHOD_LABEL[entry.method]}</span>
+          <span className={CLASS.text}>{queueEntryPreviewText(entry.text, entry.imageCount)}</span>
+        </li>
+      ))}
+    </ul>
+  );
 }

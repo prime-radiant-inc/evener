@@ -190,7 +190,10 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
 
   return (
     <>
-      <Button variant="quiet" size="sm" onClick={openPanel}>
+      {/* data-tasks-trigger lets the command palette's "Toggle tasks panel"
+          (/tasks) synthesize a click here (shell/palette/commands.ts) - without
+          it that command is inert. Button forwards data-* to the real <button>. */}
+      <Button variant="quiet" size="sm" onClick={openPanel} data-tasks-trigger="">
         {triggerLabel(model.tasks)}
       </Button>
       <Sheet open={open} onClose={closePanel} title="Tasks">

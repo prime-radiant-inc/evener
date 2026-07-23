@@ -76,7 +76,11 @@ interface WarningInline {
 }
 
 function epochMsToISO(ms: number | undefined): string | undefined {
-  return ms === undefined ? undefined : new Date(ms).toISOString();
+  // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
+  // anchor means "absent", never the 1970 epoch - downstream duration math
+  // must never clock against it. statusFormat.ts rejects bad anchors too,
+  // as defense-in-depth for its own callers.
+  return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
 // ItemModel.images/outputImages are display-ready string[], but the wire
@@ -262,6 +266,9 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
     reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],
     supportsReasoning: thread.serf.supportsReasoning ?? false,
+    cwd: thread.cwd,
+    gitBranch: thread.gitInfo?.branch,
+    projectPath: thread.projectPath,
   };
 }
 

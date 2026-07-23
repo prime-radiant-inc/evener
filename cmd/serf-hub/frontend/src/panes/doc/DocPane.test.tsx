@@ -113,6 +113,16 @@ test("an image pane renders an <img> at the /doc/image URL and never fetches raw
   expect(mockRead).not.toHaveBeenCalled();
 });
 
+test("the click-to-zoom control announces its action, not the image filename", () => {
+  render(<DocPane params={{ session: "s1", path: "out/pic.png", kind: "image" }} paneId="doc-zoom" focused={true} />);
+  // Without an explicit label the button's accessible name falls through to the
+  // nested <img alt> (the filename), which reads as a duplicate of the pane
+  // title rather than an action. The control announces what it DOES instead.
+  expect(screen.getByRole("button", { name: "Zoom image" })).toBeTruthy();
+  // The image itself keeps its filename alt for the picture it shows.
+  expect((screen.getByTestId("doc-image") as HTMLImageElement).getAttribute("alt")).toBe("pic.png");
+});
+
 test("clicking an image opens a full-size lightbox dialog", async () => {
   const user = userEvent.setup();
   render(<DocPane params={{ session: "s1", path: "out/pic.png", kind: "image" }} paneId="doc-3" focused={true} />);

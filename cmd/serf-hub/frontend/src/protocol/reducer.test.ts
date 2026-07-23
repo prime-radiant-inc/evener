@@ -121,6 +121,27 @@ for (const f of ["basic-turn", "streaming-with-reset", "tool-and-jobs", "queue-a
   });
 }
 
+test("hydrate carries the thread's location facts (cwd, git branch, project path)", () => {
+  const model = testHydrate({
+    projectPath: "/home/u/proj",
+    gitInfo: { branch: "main" },
+  });
+  expect(model.cwd).toBe("/tmp/project");
+  expect(model.gitBranch).toBe("main");
+  expect(model.projectPath).toBe("/home/u/proj");
+});
+
+test("a zero or negative activeTurnStartedAt hydrates as absent, never an epoch anchor", () => {
+  const zero = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: 0 },
+  });
+  expect(zero.activeTurnStartedAt).toBeUndefined();
+  const negative = testHydrate({
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, activeTurnStartedAt: -1 },
+  });
+  expect(negative.activeTurnStartedAt).toBeUndefined();
+});
+
 test("delta accumulates into pendingText chunks and joins on completion", () => {
   let model = testHydrate();
   model = applyNotification(

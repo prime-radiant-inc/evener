@@ -4,11 +4,23 @@
   gap: var(--space-3);
 }
 
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
 .title {
   margin: 0;
   color: var(--ink-hi);
   font-size: var(--font-size-pane-title);
   font-weight: var(--font-weight-semibold);
+}
+
+.count {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
 }
 
 .help {
