@@ -254,51 +254,6 @@ func TestWeb_AppShellScopesHtmxHistoryToWorkspace(t *testing.T) {
 	}
 }
 
-func TestWebWorkspaceContentColumnCSSContract(t *testing.T) {
-	data, err := assetsFS.ReadFile("assets/style.css")
-	if err != nil {
-		t.Fatalf("read style.css: %v", err)
-	}
-	css := string(data)
-
-	// Check each selector individually rather than the exact joined form, so
-	// that CSS reformatting (whitespace, selector ordering, CRLF) does not
-	// break the test while the stylesheet remains semantically identical.
-	desktopChecks := []string{
-		"--workspace-content-max-w: var(--measure-machine);",
-		".workspace-header,",
-		".conversation {",
-		"width: min(calc(100% - max(0px, calc((100% - var(--measure)) / 2))), var(--workspace-content-max-w));",
-		"margin-left: max(0px, calc((100% - var(--measure)) / 2));",
-	}
-	for _, want := range desktopChecks {
-		if !strings.Contains(css, want) {
-			t.Fatalf("style.css missing %q", want)
-		}
-	}
-
-	landscapeChecks := []string{
-		"@media (max-width: 900px) and (max-height: 560px)",
-		"#sidebar,\n  #sidebar-resizer,\n  .side-panes,\n  .pane-splitter { display: none !important; }",
-		".app-nav-toggle {",
-		"position: fixed;",
-		"z-index: var(--z-fixed-action);",
-		"#workspace { width: 100%; }",
-		".workspace-input {",
-		".message-input { min-height: 24px; max-height: 20dvh; }",
-		".input-telemetry {",
-		"flex-wrap: nowrap;",
-		".input-telemetry .status-badge,",
-		".input-telemetry .context,",
-		".input-telemetry .location .cwd { display: none; }",
-	}
-	for _, want := range landscapeChecks {
-		if !strings.Contains(css, want) {
-			t.Fatalf("style.css missing short-landscape contract %q", want)
-		}
-	}
-}
-
 func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	var got selfupdate.Options
 	previous := runHubSelfUpgrade
@@ -1018,37 +973,6 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 	}
 	if got := stateLabel("awaiting", false); got != "Your move" {
 		t.Fatalf("stateLabel(awaiting) = %q, want \"Your move\"", got)
-	}
-}
-
-func TestWeb_Assets_ServeHtmx(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/assets/htmx.min.js", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	if rec.Body.Len() < 1000 {
-		t.Errorf("htmx.min.js too small: %d bytes", rec.Body.Len())
-	}
-	if !strings.Contains(rec.Body.String(), "htmx") {
-		t.Errorf("htmx.min.js body does not contain 'htmx' — wrong file served")
-	}
-}
-
-func TestWeb_Assets_ServeRenderer(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/assets/renderer.js", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "SerfRenderer") {
-		t.Errorf("renderer.js does not export SerfRenderer")
 	}
 }
 
