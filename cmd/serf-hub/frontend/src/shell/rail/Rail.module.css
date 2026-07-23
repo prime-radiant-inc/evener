@@ -9,6 +9,16 @@
   border-right: 1px solid var(--edge);
 }
 
+/* Rendered inside a Sheet-based overlay drawer (Rail.tsx's hostedInSheet
+ * prop): the Sheet already frames and borders the panel, so Rail fills that
+ * frame instead of imposing the inline-desktop fixed width beside it - a
+ * narrower, independently-bordered box floating inside a wider one is what
+ * used to read as a panel nested inside a panel. */
+.hosted {
+  width: 100%;
+  border-right: none;
+}
+
 .header {
   flex: none;
   display: flex;

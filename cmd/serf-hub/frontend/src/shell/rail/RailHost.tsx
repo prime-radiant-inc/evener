@@ -7,8 +7,11 @@
 // (Semantics fixed by the shipped Wave-7 help copy, theme.tsx:103-104.)
 // "Collapsed" hides the rail entirely, leaving a top-left ☰ chip that opens it
 // as an overlay drawer. ⌘B cycles rail -> pane -> auto. Mobile is unaffected
-// ("Desktop only"): RailHost renders the plain <Rail/> inside StackHost's tree
-// drawer, with no mode logic.
+// ("Desktop only"): RailHost renders <Rail hostedInSheet/> inside StackHost's
+// tree drawer, with no mode logic - "hostedInSheet" because that Rail ends up
+// inside the mobile TreeDrawer's own Sheet, same as the collapsed overlay
+// drawer below, so it must not render its own redundant header either (see
+// Rail.tsx's own comment on hostedInSheet for why).
 import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 import { prefsStore, type SidebarModePref } from "../../stores/prefs";
 import { useTreeStore } from "../../stores/tree";
@@ -102,7 +105,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   }, [focusedPaneId]);
 
   if (isMobile) {
-    return <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} />;
+    return <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} hostedInSheet />;
   }
 
   if (collapsed) {
@@ -116,7 +119,7 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
           </button>
         </div>
         <Sheet side="left" open={drawerOpen} onClose={() => setDrawerOpen(false)} title="Sessions">
-          <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} />
+          <Rail revealTarget={revealTarget} onRevealConsumed={clearReveal} hostedInSheet />
         </Sheet>
       </>
     );

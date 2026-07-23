@@ -6,6 +6,22 @@
 // actions.ts, refetching the tree on success and toasting on failure (no
 // optimistic UI - out of this task's scope). The header's "Hide sidebar" button
 // is shown only when RailHost passes onHide (the inline desktop case).
+//
+// hostedInSheet (default false) is how Rail avoids nesting a "Sessions" panel
+// inside a "Sessions" panel: RailHost's collapsed ☰ overlay drawer and the
+// mobile TreeDrawer both wrap Rail in a widgets/sheet Sheet that already
+// renders its own "Sessions" title and close (X) button and owns the panel's
+// outer frame. Without this, Rail's OWN header duplicated that exact chrome -
+// two stacked "Sessions" titles, Rail's fixed 280px-wide bordered box floating
+// inside the Sheet's wider (420px) panel like a second, narrower panel nested
+// in the first. hostedInSheet suppresses Rail's own header entirely and fills
+// the Sheet's width instead of imposing the inline-desktop fixed width (see
+// Rail.module.css's .hosted). It is purely a rendering concern - no persisted
+// state ever encodes "nested"; the previous bug reproduced identically on
+// every fresh open with no history required and never compounded across
+// repeated open/close cycles, so there is no saved layout to migrate or
+// normalize - a plain reload with this code already shows exactly one
+// "Sessions" panel.
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
 import {
   type TreeNode as ApiTreeNode,
@@ -41,6 +57,7 @@ import {
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
+  hosted: requireClass(styles.hosted, "Rail.module.css", "hosted"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
   title: requireClass(styles.title, "Rail.module.css", "title"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
@@ -115,9 +132,15 @@ export interface RailProps {
   // onRevealConsumed so the caller can clear it. See railController (PIN-A).
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
+  // True when a Sheet-based overlay drawer already renders this instance's
+  // title/close chrome and owns its outer frame (RailHost's collapsed ☰
+  // drawer; the mobile TreeDrawer) - see this file's own top comment.
+  // Defaults to false: the inline desktop case, where Rail has no enclosing
+  // Sheet and must frame and title itself.
+  hostedInSheet?: boolean;
 }
 
-export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {}) {
+export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = false }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
@@ -278,19 +301,21 @@ export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {})
   const isExpanded = overrideLookup(expandedOverrides);
 
   return (
-    <div className={CLASS.rail}>
-      <div className={CLASS.header}>
-        <h2 className={CLASS.title}>Sessions</h2>
-        {onHide && (
-          <IconButton
-            label="Hide sidebar"
-            icon={<span aria-hidden="true">{"«"}</span>}
-            variant="quiet"
-            size="sm"
-            onClick={onHide}
-          />
-        )}
-      </div>
+    <div className={hostedInSheet ? `${CLASS.rail} ${CLASS.hosted}` : CLASS.rail}>
+      {!hostedInSheet && (
+        <div className={CLASS.header}>
+          <h2 className={CLASS.title}>Sessions</h2>
+          {onHide && (
+            <IconButton
+              label="Hide sidebar"
+              icon={<span aria-hidden="true">{"«"}</span>}
+              variant="quiet"
+              size="sm"
+              onClick={onHide}
+            />
+          )}
+        </div>
+      )}
       <div className={CLASS.body} ref={bodyRef}>
         {loading && !tree && <Skeleton lines={6} />}
         {!loading && !tree && error && (
