@@ -48,6 +48,7 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	for _, target := range []string{"build", "build-hub"} {
 		t.Run(target, func(t *testing.T) {
 			fixture := newRuntimeBuildFixture(t)
+			installFrontendToolchainStubs(t, fixture)
 			copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
 			copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
 
@@ -60,6 +61,10 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 
 			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
 			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
+
+			if target == "build-hub" {
+				assertNpmPrecedesHubGoBuild(t, fixture.logPath)
+			}
 		})
 	}
 }
@@ -109,6 +114,25 @@ printf '%s\n' "$package" > "$output"
 	}
 }
 
+// installFrontendToolchainStubs equips the fixture for make targets that
+// reach build-web (Makefile:37-43): it creates the frontend directory the
+// recipe cd's into, and shadows npm and git on the fixture PATH so the REAL
+// build-web recipe runs end to end without touching the network or the
+// checkout's actual git state.
+func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "serf-hub", "frontend"), 0o755); err != nil {
+		t.Fatalf("mkdir frontend: %v", err)
+	}
+	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
+printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
+exit 0
+`), 0o755)
+	writeTestFile(t, filepath.Join(fixture.fakeBin, "git"), []byte(`#!/bin/sh
+exit 0
+`), 0o755)
+}
+
 func runRuntimePairBuild(fixture runtimeBuildFixture, failPackage string) ([]byte, error) {
 	command := exec.Command("sh", filepath.Join(fixture.repoRoot, "scripts", "build-runtime-pair.sh"))
 	command.Dir = fixture.root
@@ -149,6 +173,45 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	}
 	if err := os.WriteFile(path, data, mode); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
+// Makefile:31-34: build-web must run before build-runtime so the serf-hub
+// go build embeds the dist build-web just produced. It tolerates the
+// DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
+// Makefile's ?= assignments trigger against the fake go shim.
+func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
+	t.Helper()
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake go/npm log: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+
+	hubBuildLine := -1
+	for i, line := range lines {
+		if strings.HasPrefix(line, "package=./cmd/serf-hub/ ") {
+			hubBuildLine = i
+			break
+		}
+	}
+	if hubBuildLine == -1 {
+		t.Fatalf("fake go/npm log has no serf-hub go build; log = %q", logData)
+	}
+
+	sawNpm := false
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "npm ") {
+			continue
+		}
+		sawNpm = true
+		if i > hubBuildLine {
+			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:31-34); log = %q", line, logData)
+		}
+	}
+	if !sawNpm {
+		t.Fatalf("fake go/npm log has no npm invocation; log = %q", logData)
 	}
 }
 
