@@ -278,7 +278,10 @@ type SerfThread struct {
 	// page of client-loaded turns, so it is pagination-proof by construction.
 	// Stamped beside Usage at each SerfThread producer (the server's live
 	// appThread and the hub's past-entry hydrate), so it stays current across
-	// snapshots exactly as WorkMillis/Usage do.
+	// snapshots exactly as WorkMillis/Usage do. The whole cumulative Usage is
+	// priced at the thread's CURRENT model: after a mid-session model switch,
+	// earlier turns are repriced at current rates (the flat CumulativeUsage
+	// carries no per-model breakdown; identical to the legacy computation).
 	Cost string `json:"cost,omitempty"`
 	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
 	// true while an ask_user question is unanswered. Additive: absent on old
