@@ -154,7 +154,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		manifestMarshal = func(any) ([]byte, error) { return nil, errors.New("encode") }
 		call(web.handleManifest, http.MethodGet, "/", "")
 		manifestMarshal = oldMarshal
-		t.Setenv("SERF_HUB_ASSETS_DIR", root)
 		_ = web.Handler()
 
 		// Directory result cap and detached-HEAD short-SHA fallback failure.

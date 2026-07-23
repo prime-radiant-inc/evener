@@ -198,3 +198,35 @@ so it was deleted wholesale.
 | Whole test files deleted (not in inventory counts) | n/a | 3 (`web_launchpad_test.go`, `web_launchconfig_test.go`, `cov_web_settings_pass5_fuzz_test.go`) | — |
 
 Branch diffstat: **312 files changed, 164 insertions(+), 65,828 deletions(-)**.
+
+---
+
+## 8. Fix round — review Minors (commit after review `120a57f09`)
+
+Review verdict: **APPROVED**, repoint **ENDORSED**, three Minor findings closed here.
+
+- **Finding 1 (not-live stragglers, the real one).** `TestWeb_SessionAction_NotLive_404` and
+  `TestWeb_Steer_NotLive_404` were left byte-identical, still POSTing to the deleted `/s/`
+  routes — they passed only via the mux-default 404, not the handlers' not-live logic (vacuous).
+  - `TestWeb_SessionAction_NotLive_404` → **renamed** `TestWeb_APISessionAction_NotLive_404` and
+    **repointed** to `POST /api/sessions/local:{id}/{interrupt,compact,shutdown,clear}` — the kept
+    handlers (`handleSessionAction` for the first three, `handleAPIClear` for clear). Still 404,
+    but now from the real `!isLive` / not-known check. **RED-first proof:** short-circuiting
+    `isLive()` to `return true` makes the test fail 4/4 with **503** (interrupt/shutdown/clear →
+    `actionUnavailable`; compact → `sessionUnavailable`) instead of 404 — the 404 provably comes
+    from the not-live check, not a route default. Mutation reverted (`web_api_tree.go` byte-restored).
+  - `TestWeb_Steer_NotLive_404` → **deleted, not repointed.** Steer has **no** REST successor
+    (the `/api/sessions/{ref}/*` sub-dispatch is send/tasks/interrupt/compact/shutdown/clear/fork/
+    model/rename/reasoning-effort — no steer/queue/drain/promote/cancel/aside; the SPA steers over
+    AppWire `turn/steer`). With no kept handler to exercise, the only correct resolution of a
+    vacuous not-live test is removal.
+- **Finding 2 (vestigial env).** Removed the no-op `t.Setenv("SERF_HUB_ASSETS_DIR", root)` in
+  `cov_small_tails_pass6_fuzz_test.go` (dead since `devAssetsDir()`'s deletion). No comment to
+  keep; the following `_ = web.Handler()` stays (still exercises Handler construction).
+- **Finding 3 (punch-list).** `internal/editorurl` is **unimported-but-kept** at HEAD:
+  kill-list §2.2 predicted this ("Legacy-only internal package candidate"); the zero-whole-Go-file-
+  deletions boundary keeps it; `unused` is clean with it present. **Follow-up package removal is
+  Jesse's call** (out of this deletion's scope).
+
+Fix-commit gates (AND-chained, worktree root): `go build ./...` **0** · `go test ./cmd/serf-hub/...`
+**0** · `make lint` **0 (7 modules)**. Frontend untouched (no frontend files in scope).

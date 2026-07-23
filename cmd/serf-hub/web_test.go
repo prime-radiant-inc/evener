@@ -3328,40 +3328,26 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 // TestWeb_SessionAction_NotLive_404 verifies that posting to an action route
 // for a session with no roster entry returns 404 rather than auto-resuming
 // or otherwise side-effecting.
-func TestWeb_SessionAction_NotLive_404(t *testing.T) {
+// TestWeb_APISessionAction_NotLive_404 pins the not-live behavior of the kept
+// /api/sessions/{ref}/{action} handlers: interrupt/compact/shutdown route to
+// handleSessionAction and clear to handleAPIClear, each of which returns 404
+// when the session is neither live nor a known past thread (proven to reach the
+// real !isLive check, not a route-not-found default, by mutation).
+func TestWeb_APISessionAction_NotLive_404(t *testing.T) {
 	dir := t.TempDir()
 	r := hubcore.NewRoster(dir, fakeProber{})
 	r.Refresh()
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	for _, action := range []string{"interrupt", "compact", "shutdown", "clear"} {
-		req := httptest.NewRequest(http.MethodPost, "/s/02wMz5Txv8Vo4rqb3QYZuV/"+action, nil)
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:02wMz5Txv8Vo4rqb3QYZuV/"+action, nil)
 		req.Host = "127.0.0.1:9180"
 		req.Header.Set("Origin", "http://127.0.0.1:9180")
 		rec := httptest.NewRecorder()
 		web.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusNotFound {
-			t.Errorf("%s: status=%d, want 404 (body=%q)", action, rec.Code, rec.Body.String())
+			t.Errorf("%s: status=%d, want 404 not-live (body=%q)", action, rec.Code, rec.Body.String())
 		}
-	}
-}
-
-// TestWeb_Steer_NotLive_404 verifies that steering an ended session returns
-// 404 (no auto-resume — steering an ended model isn't meaningful).
-func TestWeb_Steer_NotLive_404(t *testing.T) {
-	dir := t.TempDir()
-	r := hubcore.NewRoster(dir, fakeProber{})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodPost, "/s/02wMz5Txv8Vo4rqb3QYZuV/steer", strings.NewReader(`{"text":"hello"}`))
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("status=%d, want 404 (body=%q)", rec.Code, rec.Body.String())
 	}
 }
 
