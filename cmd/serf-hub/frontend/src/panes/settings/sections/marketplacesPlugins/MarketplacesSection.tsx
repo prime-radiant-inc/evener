@@ -61,6 +61,10 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
   const [submitting, setSubmitting] = useState(false);
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  // Keyed by marketplace name so a Refresh in flight on one row never
+  // disables another row's own button (§12f: "withBusy... disables the
+  // triggering button", singular - not every row's Refresh at once).
+  const [refreshBusy, setRefreshBusy] = useState<Set<string>>(new Set());
 
   const urlId = useId();
   const repoId = useId();
@@ -104,6 +108,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
   }
 
   async function handleRefresh(name: string) {
+    setRefreshBusy((prev) => new Set(prev).add(name));
     try {
       await extensionsStore.getState().refreshMarketplace(name);
       // refreshMarketplace already invalidated the browse cache entry for
@@ -114,6 +119,12 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
       toasts.push("success", `Refreshed ${name}`);
     } catch (err) {
       toasts.push("error", `Refresh failed: ${errorMessage(err)}`);
+    } finally {
+      setRefreshBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(name);
+        return next;
+      });
     }
   }
 
@@ -153,7 +164,12 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
                 <div className={CLASS.rowMeta}>{sourceLabel(m.source)}</div>
               </div>
               <div className={CLASS.rowActions}>
-                <Button variant="quiet" size="sm" onClick={() => void handleRefresh(m.name)}>
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onClick={() => void handleRefresh(m.name)}
+                  disabled={refreshBusy.has(m.name)}
+                >
                   Refresh
                 </Button>
                 <Button variant="danger" size="sm" onClick={() => setPendingRemove(m.name)}>
