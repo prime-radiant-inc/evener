@@ -146,6 +146,44 @@
   min-width: 0;
 }
 
+/* Row actions (RailRow's "+"/"..." trigger buttons): quiet by default -
+ * transparent, borderless, invisible - revealed on row hover/focus so the
+ * rail reads as dense and quiet (design bar: Linear/VS Code-quality sidebar)
+ * instead of every row showing a permanently-loud bordered button. `.row` is
+ * a child of the Tree widget's own role=treeitem element (tree.module.css),
+ * which is what actually receives roving-tabindex focus - hence the
+ * [role="treeitem"]:focus selector below, rather than :focus-within on
+ * `.row` itself (a descendant-focus check would never match the ANCESTOR
+ * treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
+ * revealed while ITS OWN menu is open (closing on blur/Escape already
+ * reverts it via Menu's own isOpen state); an ancestor selector is scoped
+ * to `.actions` so an open menu on one row never reveals another's. */
+.actions {
+  display: inline-flex;
+  flex: none;
+  gap: var(--space-1);
+}
+
+.actions button {
+  opacity: 0;
+  transition: opacity 120ms var(--motion-easing-standard);
+}
+
+.row:hover .actions button,
+[role="treeitem"]:focus .actions button,
+.actions:has(button[aria-expanded="true"]) button {
+  opacity: 1;
+}
+
+/* Touch has no hover to reveal these with - stay visible below the mobile
+ * breakpoint (useIsMobile.ts's own 899px threshold), matching TreeDrawer's
+ * touch-first rail presentation. */
+@media (max-width: 899px) {
+  .actions button {
+    opacity: 1;
+  }
+}
+
 .chevron {
   flex: none;
   display: inline-flex;
