@@ -90,7 +90,7 @@ func fuzzScenarioBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 			ForkLabel: "before TDD"},
 		// Unrelated session in same project.
-		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalPrompt: "htmx swap",
+		{ID: "01OTHER", UpdatedAt: now.Add(-15 * time.Minute), OriginalPrompt: "rename column",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 	}
 	live := []LiveEntry{

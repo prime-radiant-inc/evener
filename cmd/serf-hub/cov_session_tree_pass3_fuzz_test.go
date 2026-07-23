@@ -50,7 +50,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = compactDuration(500 * time.Millisecond)
 			_ = compactDuration(90 * time.Second)
 			_ = compactDuration(2*time.Hour + 5*time.Minute)
-			_ = formatWorkMillis(number)
 		case 2:
 			_ = activeTurnIDFromAppwireThread(thread)
 			thread.Serf.ActiveTurnID = ""
@@ -151,21 +150,6 @@ func FuzzSessionTreePass3(f *testing.F) {
 				rec := httptest.NewRecorder()
 				writeSessionActionError(rec, httptest.NewRequest(http.MethodPost, "/", nil), err)
 			}
-		case 13:
-			web := NewWebServer(hubcore.WebConfig{})
-			for _, body := range []string{"{", `{}`, `{"text":"   "}`} {
-				rec := httptest.NewRecorder()
-				web.handleSteer(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), "missing")
-			}
-			for _, body := range []string{"{", `{}`, `{"text":"x"}`} {
-				rec := httptest.NewRecorder()
-				web.handleQueue(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), "missing")
-			}
-			for _, body := range []string{"{", `{}`} {
-				rec := httptest.NewRecorder()
-				req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
-				web.handleDrainAsSteer(rec, req, "missing")
-			}
 		case 14:
 			web := NewWebServer(hubcore.WebConfig{})
 			for _, body := range []string{"{", `{}`, `{"text":"x"}`} {
@@ -177,14 +161,10 @@ func FuzzSessionTreePass3(f *testing.F) {
 				rec := httptest.NewRecorder()
 				web.handleSessionAction(rec, httptest.NewRequest(http.MethodGet, "/", nil), "missing", action)
 			}
-			for _, api := range []bool{false, true} {
+			{
 				rec := httptest.NewRecorder()
 				req := httptest.NewRequest(http.MethodGet, "/", nil)
-				if api {
-					web.handleAPIFork(rec, req, "missing")
-				} else {
-					web.handleFork(rec, req, "missing")
-				}
+				web.handleAPIFork(rec, req, "missing")
 			}
 			_, _, _ = web.forkSession("missing", forkRequest{})
 			_ = waitForRosterMatch(hubcore.NewRosterWithEntries(), "missing", 1, 0)

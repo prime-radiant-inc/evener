@@ -11,7 +11,6 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `SERF_HUB_ADDR` | Default hub address for `serf-tui`. |
 | `SERF_HUB_AUTH_TOKEN` | Hub capability token for `serf-tui`. |
 | `SERF_HUB_BIN` | Path to the `serf-hub` binary used by `serf-tui` autostart. |
-| `SERF_HUB_EDITOR_URL_TEMPLATE` | Open-in-editor URL template; use `{path}` for the encoded path. |
 | `SERF_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
 | `SERF_MODEL` | Default model as `provider/model` when `--model` is omitted. |
 | `SERF_OPENAI_RESPONSES_CONTINUATION` | Default OpenAI Responses continuation mode: `off` or `auto`. The default is `off`; `--openai-responses-continuation` and hub launch settings override it. On resume, an explicit launch value layers over the persisted session snapshot. `auto` is reserved for future continuation enablement and may allow provider-side storage/retention and affect provider-token/cost behavior. |

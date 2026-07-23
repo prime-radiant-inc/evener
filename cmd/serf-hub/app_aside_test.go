@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -138,50 +136,5 @@ func TestHubRPCThreadForkAsideUnavailableForNonLocal(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
 		t.Fatalf("error=%v, want Unavailable wire error", err)
-	}
-}
-
-// TestWeb_Aside_CallsAsideSession verifies the REST fallback the webui command
-// palette uses when appwire is unavailable: POST /s/<id>/aside forks the
-// session at its tip and returns the child session id.
-func TestWeb_Aside_CallsAsideSession(t *testing.T) {
-	root := t.TempDir()
-	stateDir := filepath.Join(root, "projects", "project-aside-0000000000")
-	parentID := buildRPCParentSession(t, stateDir)
-	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:  "127.0.0.1:9180",
-		Roster:   hubcore.NewRoster(t.TempDir(), nil),
-		Past:     past,
-		StateDir: stateDir,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/s/"+parentID+"/aside", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-	}
-	var body struct {
-		ChildSessionID string `json:"child_session_id"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("decode response: %v body=%q", err, rec.Body.String())
-	}
-	if body.ChildSessionID == "" || body.ChildSessionID == parentID {
-		t.Fatalf("child_session_id=%q", body.ChildSessionID)
-	}
-	childMeta, err := schema.LoadSessionMeta(stateDir, body.ChildSessionID)
-	if err != nil {
-		t.Fatalf("LoadSessionMeta(child): %v", err)
-	}
-	if childMeta.ParentSessionID != parentID || childMeta.DivergenceTurn != 4 {
-		t.Fatalf("child meta=%+v", childMeta)
 	}
 }

@@ -18,14 +18,13 @@ func TestPrintHubEnvVars(t *testing.T) {
 	// non-empty Summary; otherwise dropping the description from the
 	// format string would silently pass.
 	wantSummary := map[string]string{
-		"SERF_PROVIDERS_CONFIG":        "Path to providers.toml.",
-		"SERF_STATE_DIR":               "Overrides the Serf state root.",
-		"SERF_HUB_EDITOR_URL_TEMPLATE": "Open-in-editor URL template; use {path} for the encoded path.",
-		"OPENAI_API_KEY":               "OpenAI API key.",
-		"ANTHROPIC_API_KEY":            "Anthropic API key.",
-		"GEMINI_API_KEY":               "Google Gemini API key; checked before GOOGLE_API_KEY.",
-		"GOOGLE_API_KEY":               "Google Gemini API key fallback.",
-		"OPENROUTER_API_KEY":           "OpenRouter API key.",
+		"SERF_PROVIDERS_CONFIG": "Path to providers.toml.",
+		"SERF_STATE_DIR":        "Overrides the Serf state root.",
+		"OPENAI_API_KEY":        "OpenAI API key.",
+		"ANTHROPIC_API_KEY":     "Anthropic API key.",
+		"GEMINI_API_KEY":        "Google Gemini API key; checked before GOOGLE_API_KEY.",
+		"GOOGLE_API_KEY":        "Google Gemini API key fallback.",
+		"OPENROUTER_API_KEY":    "OpenRouter API key.",
 	}
 
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")

@@ -47,10 +47,6 @@ func (s *finalWebspawnSource) ListModels(context.Context, appwire.ModelListParam
 func FuzzFinalWebspawn(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
-		t.Setenv("SERF_MODEL", " final-model ")
-		t.Setenv("SERF_REASONING_EFFORT", " high ")
-		_ = safeSpawnEnv()
-
 		client := llm.NewClient()
 		client.Register(finalWebspawnLister{name: "openrouter-anthropic"})
 		client.Register(finalWebspawnLister{name: "broken", err: errors.New("list")})

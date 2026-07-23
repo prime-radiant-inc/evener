@@ -1,12 +1,7 @@
 package main
 
 import (
-	"context"
-	"encoding/json"
-	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"primeradiant.com/serf/appwire"
 )
@@ -63,64 +58,5 @@ func subagentPreviewItem(item appwire.ThreadItem) appwire.ThreadItem {
 		Status:      item.Status,
 		StartedAt:   item.StartedAt,
 		CompletedAt: item.CompletedAt,
-	}
-}
-
-func (s *WebServer) handleSubagentPreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	ref := strings.TrimSpace(r.URL.Query().Get("ref"))
-	if ref == "" {
-		http.Error(w, "ref required", http.StatusBadRequest)
-		return
-	}
-	limit := 0
-	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
-			return
-		}
-		limit = parsed
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-	source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, ref, "")
-	if err != nil {
-		thread, ok, pastErr := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
-		if pastErr != nil {
-			http.Error(w, "preview unavailable", http.StatusInternalServerError)
-			return
-		}
-		if ok {
-			writeJSON(w, subagentPreviewFromThread(thread, ref, limit))
-			return
-		}
-		http.Error(w, "preview unavailable", http.StatusNotFound)
-		return
-	}
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
-	if err != nil {
-		thread, ok, pastErr := pastThreadForRead(s.cfg, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"})
-		if pastErr != nil {
-			http.Error(w, "preview unavailable", http.StatusInternalServerError)
-			return
-		}
-		if ok {
-			writeJSON(w, subagentPreviewFromThread(thread, ref, limit))
-			return
-		}
-		http.Error(w, "preview unavailable", http.StatusBadGateway)
-		return
-	}
-	writeJSON(w, subagentPreviewFromThread(resp.Thread, ref, limit))
-}
-
-func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	if err := json.NewEncoder(w).Encode(v); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

@@ -10,9 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -62,74 +59,6 @@ func newPromoteHarness() (*WebServer, *promoteRecordingSource) {
 		gotIndex:          -1,
 	}
 	return newPromoteWeb(source), source
-}
-
-func postPromote(web *WebServer, route, body string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, route, strings.NewReader(body))
-	web.Handler().ServeHTTP(rec, req)
-	return rec
-}
-
-func TestWebPromoteQueuedRelaysIndex(t *testing.T) {
-	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":1,"entry_id":"q_7_abc"}`)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if source.calls != 1 || source.gotIndex != 1 {
-		t.Fatalf("promote relay calls=%d index=%d, want 1/1", source.calls, source.gotIndex)
-	}
-	if source.gotExpectedID != "q_7_abc" {
-		t.Fatalf("promote relay expectedEntryId=%q, want q_7_abc", source.gotExpectedID)
-	}
-}
-
-func TestWebPromoteQueuedRejectsNegativeIndex(t *testing.T) {
-	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":-1}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebPromoteQueuedRejectsInvalidJSON(t *testing.T) {
-	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebPromoteQueuedNotLive(t *testing.T) {
-	// A local route id with no roster entry is not live; the hub must 404
-	// before reaching any source.
-	web, source := newPromoteHarness()
-	rec := postPromote(web, "/s/01MISSING/promote-queued", `{"index":0}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s, want 404", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebPromoteQueuedSurfacesDaemonConflict(t *testing.T) {
-	web, source := newPromoteHarness()
-	source.err = appwire.Conflict("no active turn to steer")
-	rec := postPromote(web, "/s/remote%3Athread-1/promote-queued", `{"index":0}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status=%d body=%s, want 409", rec.Code, rec.Body.String())
-	}
-	if source.calls != 1 {
-		t.Fatalf("source called %d times, want 1", source.calls)
-	}
 }
 
 // TestHubRPCPromoteQueuedAsSteerRelays drives the appwire RPC path: the hub

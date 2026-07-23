@@ -12,9 +12,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -71,99 +68,6 @@ func newCancelHarness() (*WebServer, *cancelRecordingSource) {
 	registry.Add(source)
 	web.sources = registry
 	return web, source
-}
-
-func postCancel(web *WebServer, route, body string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, route, strings.NewReader(body))
-	web.Handler().ServeHTTP(rec, req)
-	return rec
-}
-
-// TestWebCancelQueuedWorksWithRealisticMidTurnCaps is the review-C1
-// regression test: with a turn in flight the daemon projects Send=false,
-// Steer=true, Queue=true. The REST path must reach the source (gated on
-// Queue), not 503 with "send is not available for this session".
-func TestWebCancelQueuedWorksWithRealisticMidTurnCaps(t *testing.T) {
-	web, source := newCancelHarness()
-	source.removedText = "mid-turn text"
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":0,"entry_id":"q_1_aaa"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s, want 200 with realistic mid-turn caps {Send:false,Steer:true,Queue:true}", rec.Code, rec.Body.String())
-	}
-	if source.calls != 1 {
-		t.Fatalf("source called %d times, want 1", source.calls)
-	}
-}
-
-func TestWebCancelQueuedRelaysIndexAndEchoesRemoval(t *testing.T) {
-	web, source := newCancelHarness()
-	source.removedText = "the full\nmulti-line text"
-	source.removedImages = 2
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":1,"entry_id":"q_7_abc"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if source.calls != 1 || source.gotIndex != 1 {
-		t.Fatalf("cancel relay calls=%d index=%d, want 1/1", source.calls, source.gotIndex)
-	}
-	if source.gotExpectedID != "q_7_abc" {
-		t.Fatalf("cancel relay expectedEntryId=%q, want q_7_abc", source.gotExpectedID)
-	}
-	var body cancelQueuedResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("response not JSON: %v (%q)", err, rec.Body.String())
-	}
-	if body.RemovedText != "the full\nmulti-line text" || body.RemovedImages != 2 {
-		t.Fatalf("response=%+v, want removed text + image count echoed", body)
-	}
-}
-
-func TestWebCancelQueuedRejectsNegativeIndex(t *testing.T) {
-	web, source := newCancelHarness()
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":-1}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebCancelQueuedRejectsInvalidJSON(t *testing.T) {
-	web, source := newCancelHarness()
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s, want 400", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebCancelQueuedNotLive(t *testing.T) {
-	// A local route id with no roster entry is not live; the hub must 404
-	// before reaching any source.
-	web, source := newCancelHarness()
-	rec := postCancel(web, "/s/01MISSING/cancel-queued", `{"index":0}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status=%d body=%s, want 404", rec.Code, rec.Body.String())
-	}
-	if source.calls != 0 {
-		t.Fatalf("source called %d times, want 0", source.calls)
-	}
-}
-
-func TestWebCancelQueuedSurfacesDaemonConflict(t *testing.T) {
-	web, source := newCancelHarness()
-	source.err = appwire.Conflict("cancel: queue entry at index 0 no longer matches the snapshot (queue changed)")
-	rec := postCancel(web, "/s/remote%3Athread-1/cancel-queued", `{"index":0}`)
-	if rec.Code != http.StatusConflict {
-		t.Fatalf("status=%d body=%s, want 409", rec.Code, rec.Body.String())
-	}
-	if source.calls != 1 {
-		t.Fatalf("source called %d times, want 1", source.calls)
-	}
 }
 
 // TestHubRPCCancelQueuedRelays drives the appwire RPC path: the hub app

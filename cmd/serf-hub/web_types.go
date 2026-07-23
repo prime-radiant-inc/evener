@@ -1,12 +1,10 @@
 package main
 
 import (
-	"html/template"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/hubapi"
 )
 
@@ -28,111 +26,6 @@ type searchResult struct {
 type searchResponse struct {
 	Live []searchResult `json:"live"`
 	Past []searchResult `json:"past"`
-}
-
-// agentDisplay is one row in Settings → Agents.
-type agentDisplay struct {
-	Name     string
-	EditPath template.URL
-}
-
-// pluginCounts summarises components contributed by a plugin.
-type pluginCounts struct {
-	Skills int
-	Agents int
-	Mcps   int
-	Hooks  int
-}
-
-// pluginDisplay is one row in Settings → Plugins.
-type pluginDisplay struct {
-	Name     string
-	Path     string
-	Version  string
-	Counts   pluginCounts
-	EditPath template.URL
-}
-
-// skillDisplay is one row in Settings → Skills.
-type skillDisplay struct {
-	Name        string
-	Plugin      string
-	Description string
-	EditPath    template.URL
-}
-
-// mcpDisplay is one row in Settings → MCP servers.
-type mcpDisplay struct {
-	Name      string
-	Command   string
-	Args      []string
-	Transport string // "stdio", "sse", or "http" — from mcpprobe.Result.Transport
-	Status    string // "available" | "unreachable" | "missing" — from mcpprobe.Result.Status
-	Error     string // populated whenever Status isn't "available"; empty otherwise
-	Tools     int
-	Agents    []string
-	EditPath  template.URL
-}
-
-// settingsData is the template data passed to all settings section templates.
-type settingsData struct {
-	Active            string
-	HubAddr           string
-	RunDir            string
-	StateDir          string
-	SpawnTimeout      string
-	PastPerPage       int
-	Providers         []providerDisplay
-	ModelDiagnostics  []appwire.ModelListDiagnostic
-	Agents            []agentDisplay
-	Plugins           []pluginDisplay
-	PluginsError      string
-	Skills            []skillDisplay
-	Mcps              []mcpDisplay
-	McpsError         string
-	McpConfigPath     string
-	PastCount         int
-	PastIndexPath     string // path to past index SQLite file (e.g. ~/.serf/index.db)
-	PastIndexSize     string // human-readable size of the past index file, empty if unavailable
-	BearerTokenAge    string // human-readable age of the auth token file, empty if unavailable
-	HubVersion        string // Version constant (e.g. "0.1.0")
-	HubCommit         string // git commit hash injected at build time, empty in dev builds
-	CodexLaunches     []codexlaunch.CodexLaunchConfig
-	ProjectCWD        string            // canonical cwd for the per-project settings page
-	AvailableProjects []projectListItem // known projects shown when ProjectCWD is empty
-}
-
-// projectListItem is one row in the project picker on the /settings/project page.
-type projectListItem struct {
-	CWD  string
-	Name string
-}
-
-// providerDisplay groups model descriptors by provider for the providers page.
-type providerDisplay struct {
-	Name   string
-	Models []string
-}
-
-// spawnViewData is the template data for the spawn partial.
-type spawnViewData struct {
-	DefaultModel           string
-	DefaultModelValue      string
-	DefaultHarness         string
-	DefaultWorkingDir      string
-	DefaultWorkingDirValue string
-	DefaultBranch          string
-	DefaultBranchValue     string
-	DefaultAccessMode      string
-	DefaultPrompt          string // optional ?prompt= pre-fill
-	RecentPrompts          []string
-	Harnesses              []launchHarness
-	SafeEnv                map[string]string
-}
-
-type launchHarness struct {
-	ID    string
-	Label string
 }
 
 // spawnRequest is the JSON body for POST /api/spawn. Items
@@ -235,72 +128,8 @@ type sendRequest struct {
 	Items []appwire.InputItem `json:"items,omitempty"`
 }
 
-// steerRequest is the JSON body for POST /s/<id>/steer.
-type steerRequest struct {
-	Text   string `json:"text"`
-	TurnID string `json:"turn_id"`
-}
-
 type sessionActionRequest struct {
 	TurnID string `json:"turn_id"`
-}
-
-// queueRequest is the JSON body for POST /s/<id>/queue (kata 111a). Queues a
-// user message to be drained as a fresh user turn after the active turn
-// completes; the daemon rejects the call when no turn is in flight. Items
-// (kata v80q) carry optional image attachments alongside the text — the
-// daemon's TurnQueue handler routes them through queueWithImagesFunc so
-// the eventual drained user turn preserves the image bytes.
-type queueRequest struct {
-	Text  string              `json:"text"`
-	Items []appwire.InputItem `json:"items,omitempty"`
-}
-
-// drainAsSteerRequest is the JSON body accepted by POST /s/<id>/drain-as-steer.
-// All fields are optional — a body-less request matches the kata 0bq1
-// classic drain shape. Text/Items ride on turn/drainAsSteer so the daemon
-// atomically appends the composer payload and drains the queue.
-type drainAsSteerRequest struct {
-	Text  string              `json:"text,omitempty"`
-	Items []appwire.InputItem `json:"items,omitempty"`
-}
-
-// promoteQueuedRequest is the JSON body for POST /s/<id>/promote-queued
-// (issue #22). Index selects one entry of the daemon's FIFO input queue —
-// matching the row position in the web queue preview — to promote into the
-// in-flight turn as user-sourced steering. EntryID carries the queue-entry
-// id from the client's queue snapshot; the daemon rejects the call
-// (Conflict) when no turn is in flight, the index no longer resolves, or
-// the queue shifted so the id no longer matches the entry at index
-// (review F1).
-type promoteQueuedRequest struct {
-	Index   int    `json:"index"`
-	EntryID string `json:"entry_id,omitempty"`
-}
-
-// cancelQueuedRequest is the JSON body for POST /s/<id>/cancel-queued
-// (issue #23). Index selects one entry of the daemon's FIFO input queue —
-// matching the row position in the web queue preview — to remove so it is
-// never consumed. It is also the removal half of the row's edit action
-// (edit = restore the full text into the composer, then cancel the queued
-// copy). EntryID carries the queue-entry id from the client's queue
-// snapshot; the daemon rejects the call (Conflict) when the index no longer
-// resolves or the queue shifted so the id no longer matches the entry at
-// index (review F1).
-type cancelQueuedRequest struct {
-	Index   int    `json:"index"`
-	EntryID string `json:"entry_id,omitempty"`
-}
-
-// cancelQueuedResponse is the JSON body returned by POST
-// /s/<id>/cancel-queued on success: an echo of what was removed.
-// RemovedText lets the client verify the removal matched its snapshot;
-// RemovedImages counts attachments that were on the entry and are NOT
-// restored by an edit, so the UI can warn instead of silently dropping
-// them.
-type cancelQueuedResponse struct {
-	RemovedText   string `json:"removed_text"`
-	RemovedImages int    `json:"removed_images,omitempty"`
 }
 
 type forkRequest struct {

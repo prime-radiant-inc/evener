@@ -1,12 +1,9 @@
 // Per-ref sticky composer drafts (parity-m5-composer.md §F, contracts
 // §Drafts): unsent textarea text survives a reload, keyed by session ref.
 //
-// Cross-session leak guard, dropped (verified, not assumed): the legacy
-// composer (drafts.js) needed `isOtherSessionsDraft`/a "bound session"
-// check because ONE DOM form element was morphed in place across an htmx
-// session swap, so stale text from session A's textarea could still be
-// sitting there when the SAME element got rebound to session B. Under
-// dockview, that can't happen: shell/paneRegistry.ts registers "session" as
+// No cross-session leak guard is needed (verified, not assumed): a draft can
+// never bleed from one session into another because a Composer element is
+// never reused across refs. shell/paneRegistry.ts registers "session" as
 // NOT a singleton pane type ("distinct refs are distinct panes" - see
 // panes/session/index.tsx's own comment), and shell/DockHost.tsx's PaneHost
 // unmounts a pane's whole React tree when its tab isn't active and mounts a

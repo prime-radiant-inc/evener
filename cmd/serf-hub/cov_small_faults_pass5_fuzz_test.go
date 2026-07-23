@@ -111,12 +111,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		call(web.handleDocImage, http.MethodPost, "/doc/image")
 		_, _ = readDocFile(cwd)
 		_, _ = readDocFile(filepath.Join(cwd, "missing"))
-		for _, n := range []int{1, 1024, 1 << 20} {
-			_ = formatDocBytes(n)
-		}
 		_ = looksBinaryBytes(append(make([]byte, 9000), 0))
-		writeDocPage(httptest.NewRecorder(), "<x>", "body")
-		writeDocMarkdownPage(httptest.NewRecorder(), "<x>", "# hi")
 		docStat = func(string) (os.FileInfo, error) { return nil, errors.New("stat") }
 		_, _ = readDocFile("x")
 		docStat = oldStat

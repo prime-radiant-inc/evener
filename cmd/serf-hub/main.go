@@ -477,7 +477,6 @@ func printHubEnvVars(w io.Writer) {
 	for _, v := range []envvars.Var{
 		envvars.SERFProvidersConfig,
 		envvars.SERFStateDir,
-		envvars.SERFHubEditorURLTemplate,
 		envvars.OpenAIAPIKey,
 		envvars.AnthropicAPIKey,
 		envvars.GeminiAPIKey,

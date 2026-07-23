@@ -80,6 +80,63 @@ func docRawRequest(t *testing.T, web *WebServer, session, path string) *httptest
 	return rec
 }
 
+// docRequestWithFormat issues a /doc/file GET with an explicit format value, so
+// a test can assert how the raw-only route treats a non-raw format token.
+func docRequestWithFormat(t *testing.T, web *WebServer, session, path, format string) *httptest.ResponseRecorder {
+	t.Helper()
+	u := "/doc/file?format=" + format + "&session=" + session + "&path=" + path
+	req := httptest.NewRequest(http.MethodGet, u, nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// /doc/file serves exactly one mode: the file's raw bytes (?format=raw). A
+// request that omits format, or sends any other value, is a client error — 400
+// with a plain-text hint naming the required parameter, not a served document.
+func TestDocFile_MissingFormat_400(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRequest(t, web, session, "notes.txt")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing format: status=%d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "format=raw") {
+		t.Errorf("400 hint must name the required parameter; got %q", rec.Body.String())
+	}
+}
+
+func TestDocFile_NonRawFormat_400(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRequestWithFormat(t, web, session, "notes.txt", "html")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("format=html: status=%d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "format=raw") {
+		t.Errorf("400 hint must name the required parameter; got %q", rec.Body.String())
+	}
+}
+
+func TestDocFile_EmptyFormat_400(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRequestWithFormat(t, web, session, "notes.txt", "")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty format: status=%d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "format=raw") {
+		t.Errorf("400 hint must name the required parameter; got %q", rec.Body.String())
+	}
+}
+
 func TestDocImageServesPNG(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
@@ -152,54 +209,6 @@ func TestDocImageRejectsTraversalAndSVG(t *testing.T) {
 	}
 }
 
-func TestDocFile_ServesTextFileEscaped(t *testing.T) {
-	web, cwd, session := docServeTestServer(t)
-	if err := os.WriteFile(filepath.Join(cwd, "notes.txt"), []byte("hello <script>alert(1)</script>"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rec := docRequest(t, web, session, "notes.txt")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "<pre") {
-		t.Errorf("text file should render inside <pre>; got %q", body)
-	}
-	// The file contents must be HTML-escaped so a file can't inject markup.
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Errorf("file contents must be escaped, found raw <script>: %q", body)
-	}
-	if !strings.Contains(body, "&lt;script&gt;") {
-		t.Errorf("escaped contents missing: %q", body)
-	}
-}
-
-func TestDocFile_RendersMarkdown(t *testing.T) {
-	web, cwd, session := docServeTestServer(t)
-	if err := os.WriteFile(filepath.Join(cwd, "README.md"), []byte("# Title\n\nbody"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rec := docRequest(t, web, session, "README.md")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	// Markdown is rendered client-side via marked in the served page; the page
-	// must carry the raw markdown in a script/data block and load marked.
-	if !strings.Contains(body, "marked") {
-		t.Errorf("markdown page should load marked.js; got %q", body)
-	}
-	if !strings.Contains(body, "doc-markdown") {
-		t.Errorf("markdown page should mark the render target; got %q", body)
-	}
-	// The actual markdown source must be forwarded into the page (embedded in
-	// the hidden #doc-src div). A broken implementation that passes an empty
-	// string still emits "marked" and "doc-markdown", so we verify the content.
-	if !strings.Contains(body, "# Title") {
-		t.Errorf("markdown page must embed the markdown source (heading missing); got %q", body)
-	}
-}
-
 func TestDocFile_RejectsTraversalDotDot(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)
 	// A secret file one level above the cwd — must never be served.
@@ -255,32 +264,6 @@ func TestDocFile_RejectsSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestDocFile_ServesWorktreeRelativePathForPaneNavigation(t *testing.T) {
-	web, cwd, session := docServeTestServer(t)
-	rel := filepath.Join(".worktrees", "sandbox-mode", "agent", "job_delegate_test.go")
-	if err := os.MkdirAll(filepath.Dir(filepath.Join(cwd, rel)), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(cwd, rel), []byte("package agent\n\nfunc TestDelegate() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Side panes load /doc/file through an iframe src. Browser iframe navigations
-	// cannot attach the HX-Request header, so /doc/file must serve valid in-cwd
-	// file paths as normal GET document requests.
-	req := httptest.NewRequest(http.MethodGet, "/doc/file?session="+session+"&path=.worktrees%2Fsandbox-mode%2Fagent%2Fjob_delegate_test.go", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "job_delegate_test.go") || !strings.Contains(body, "package agent") {
-		t.Fatalf("worktree file document missing title/content: %q", body)
-	}
-}
-
 func TestDocFile_UnknownSession404(t *testing.T) {
 	web, _, _ := docServeTestServer(t)
 	rec := docRequest(t, web, "01NOPE", "anything.txt")
@@ -298,27 +281,12 @@ func TestDocFile_NonLocalSession404(t *testing.T) {
 	}
 }
 
-func TestDocFile_BinaryNotice(t *testing.T) {
-	web, cwd, session := docServeTestServer(t)
-	// NUL bytes mark the file as binary.
-	if err := os.WriteFile(filepath.Join(cwd, "blob.bin"), []byte{0x00, 0x01, 0x02, 0x00, 0xff}, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rec := docRequest(t, web, session, "blob.bin")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d", rec.Code)
-	}
-	if !strings.Contains(strings.ToLower(rec.Body.String()), "binary") {
-		t.Errorf("binary file should show a binary notice; got %q", rec.Body.String())
-	}
-}
-
-// The tests below cover the ?format=raw variant, added for the native React
-// doc-viewer pane: it needs the file's actual bytes, not the server-rendered
-// HTML page. The default (no format param) behavior must stay byte-unchanged
-// — proven by the tests above still passing unmodified — and the guard chain
-// (session/path validation, 403-vs-404) must reject a raw request exactly
-// like it rejects the HTML request for the same guarded input.
+// The tests below cover the served mode, ?format=raw: the doc-viewer pane needs
+// the file's actual bytes. The guard chain (session/path validation, 403-vs-404
+// containment) runs before the format check, so a raw request and a non-raw
+// request reject the same guarded input identically — the parity tests below
+// assert that. A fully valid non-raw request is a 400 (see the format tests
+// above).
 
 func TestDocFile_Raw_ServesTextFileVerbatim(t *testing.T) {
 	web, cwd, session := docServeTestServer(t)

@@ -34,7 +34,6 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 			_ = formatCompactContextNumbers(n, 0)
 			_ = formatCompactContextNumbers(n, 1000)
 		}
-		_ = formatWorkMillis(millis)
 		_ = htmlEscape(title)
 		_ = sourceLabelFromRefText(refText)
 		_ = sourceLabelFromRefText("local:x")
@@ -156,14 +155,10 @@ func FuzzCovWebTreeSessionHandlers(f *testing.F) {
 		_ = sb.Web.remoteTreeThreads(t.Context())
 		_ = inputItemsForText("")
 		_ = inputItemsForText(" text ")
-		for _, target := range []string{"/s/missing/fork", "/api/sessions/local%3Amissing/fork"} {
+		{
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
-			if strings.HasPrefix(target, "/api/") {
-				sb.Web.handleAPIFork(rec, req, "missing")
-			} else {
-				sb.Web.handleFork(rec, req, "missing")
-			}
+			req := httptest.NewRequest(http.MethodPost, "/api/sessions/local%3Amissing/fork", bytes.NewReader(body))
+			sb.Web.handleAPIFork(rec, req, "missing")
 		}
 		for _, api := range []bool{false, true} {
 			target := "/s/missing/send"

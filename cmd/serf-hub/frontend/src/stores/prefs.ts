@@ -21,12 +21,8 @@
 // tree.ts), then kept live: every setter writes through to localStorage
 // immediately ("persisting on set") and updates the Zustand state in the
 // same call, so a subscribed component re-renders with no separate
-// "reapply after swap" step - unlike the legacy's own htmx world (server-
-// rendered radios/checkboxes with no `checked` attribute, resynced by a
-// dedicated applyXState() rerun on every htmx:afterSwap), a controlled
-// React input driven straight off this store's state is always correct on
-// every render, so that whole category of legacy machinery has no
-// successor here.
+// "reapply" step: a controlled React input driven straight off this store's
+// state is always correct on every render.
 //
 // Theme is the one preference with a real, already-wired visual consumer
 // (src/styles/tokens.css keys light-theme overrides off `[data-theme="light"]`

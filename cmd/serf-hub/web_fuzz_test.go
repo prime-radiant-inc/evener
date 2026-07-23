@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"testing/fstest"
 
 	"primeradiant.com/serf/internal/fuzzroutes"
 )
@@ -74,6 +76,15 @@ func truncateForLog(s string) string {
 // restricted to GET-only, non-mutating, non-networked routes so a fuzzed request
 // cannot spawn an agent, shell out, or touch anything outside the temp dirs.
 func FuzzWebHandler(f *testing.F) {
+	// Page routes now serve the SPA shell via serveSPAIndex; substitute a built
+	// frontend through the distFS seam so those routes return the shell (200)
+	// rather than the never-built 503 that would trip the never-5xx oracle.
+	prevDist := distFS
+	distFS = func() fs.FS {
+		return fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(`<!doctype html><div id="root"></div>`)}}
+	}
+	f.Cleanup(func() { distFS = prevDist })
+
 	web, secret := newFuzzWebServer(f)
 	handler := web.Handler()
 

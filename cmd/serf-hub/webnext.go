@@ -4,16 +4,11 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
-	"os"
 	"strings"
 )
 
 //go:embed all:frontend/dist
 var frontendDistFS embed.FS
-
-// newWebEnabled reports whether the rewritten SPA serves the page routes.
-// Default is the legacy UI until the M9 cutover flips it.
-func newWebEnabled() bool { return os.Getenv("SERF_HUB_WEB") == "new" }
 
 // distFS returns the built frontend, a fs.FS seam so tests can substitute one.
 var distFS = func() fs.FS {

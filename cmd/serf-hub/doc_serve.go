@@ -20,17 +20,16 @@ var docOpen = os.Open
 // a notice rather than streamed in full.
 const docFileMaxBytes = 512 * 1024
 
-// handleDocFile serves a read-only document pane for a file inside a LOCAL
-// session's working directory. It is a standalone document route: side-pane
-// iframes navigate to it directly, so it cannot require htmx-only request
-// headers. Markdown renders via marked; other text renders escaped in <pre>;
-// binary gets a notice.
+// handleDocFile serves a LOCAL session file's literal bytes for the React
+// doc-viewer pane, which renders the content itself. The route has a single
+// mode, ?format=raw; a request that omits format or sends any other value is a
+// client error (400 with a hint naming the parameter).
 //
-// ?format=raw switches the response from the server-rendered HTML page to
-// the file's literal bytes (writeDocFileRaw), for the native React doc-viewer
-// pane. It reuses every guard below unchanged — only the final response
-// differs — so the two variants reject a given session/path identically. The
-// default (no format param) behavior is byte-for-byte unchanged.
+// The guard chain below (session/path presence, cwd containment) runs before
+// the format check, so a raw and a non-raw request reject the same out-of-cwd
+// or unknown-session input identically — only a fully valid request reaches the
+// format gate, where a raw request is served (writeDocFileRaw) and anything
+// else is refused.
 //
 // Security: the only file paths we serve are ones that resolve to a location
 // inside the session's cwd. We clean the request path, reject any residual
@@ -72,23 +71,11 @@ func (s *WebServer) handleDocFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.URL.Query().Get("format") == "raw" {
-		writeDocFileRaw(w, data, docRawTotalSize(abs, len(data)))
+	if r.URL.Query().Get("format") != "raw" {
+		http.Error(w, "format=raw required", http.StatusBadRequest)
 		return
 	}
-
-	name := filepath.Base(abs)
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if looksBinaryBytes(data) {
-		writeDocPage(w, name, `<div class="doc-binary">binary file — `+htmlEscape(name)+` ('`+formatDocBytes(len(data))+`') not shown</div>`)
-		return
-	}
-	text := string(data)
-	if strings.EqualFold(filepath.Ext(name), ".md") || strings.EqualFold(filepath.Ext(name), ".markdown") {
-		writeDocMarkdownPage(w, name, text)
-		return
-	}
-	writeDocPage(w, name, `<pre class="doc-pre">`+htmlEscape(text)+`</pre>`)
+	writeDocFileRaw(w, data, docRawTotalSize(abs, len(data)))
 }
 
 // handleDocImage serves a validated image file inside a LOCAL session's working
@@ -242,53 +229,4 @@ func docRawTotalSize(abs string, read int) int64 {
 		return info.Size()
 	}
 	return int64(read)
-}
-
-func formatDocBytes(n int) string {
-	switch {
-	case n >= 1<<20:
-		return strconv.Itoa(n>>20) + " MiB"
-	case n >= 1<<10:
-		return strconv.Itoa(n>>10) + " KiB"
-	default:
-		return strconv.Itoa(n) + " B"
-	}
-}
-
-// writeDocPage emits a minimal standalone HTML page for a document pane: no
-// composer, no sidebar — just the document body styled to the grammar via the
-// shared stylesheet.
-func writeDocPage(w http.ResponseWriter, title, bodyHTML string) {
-	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
-		`<title>` + htmlEscape(title) + `</title>` +
-		`<link rel="stylesheet" href="/assets/style.css">` +
-		`<script>(function(){try{var t=localStorage.getItem("serf-hub.theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>` +
-		`</head><body class="doc-page"><main class="doc-body">` +
-		`<header class="doc-head">` + htmlEscape(title) + `</header>` +
-		bodyHTML +
-		`</main></body></html>`))
-}
-
-// writeDocMarkdownPage renders markdown client-side with marked. The raw
-// source is carried HTML-escaped inside a hidden <div>: reading it back via
-// textContent decodes the entities to the original markdown, and because the
-// content is fully escaped no markup in the file can inject into the page
-// before marked runs. (A <script> block would be wrong here — script content
-// is raw text the browser never entity-decodes, so an escaped sequence would
-// survive literally and corrupt the markdown.)
-func writeDocMarkdownPage(w http.ResponseWriter, title, md string) {
-	_, _ = w.Write([]byte(`<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
-		`<title>` + htmlEscape(title) + `</title>` +
-		`<link rel="stylesheet" href="/assets/style.css">` +
-		`<script>(function(){try{var t=localStorage.getItem("serf-hub.theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}})();</script>` +
-		`<script src="/assets/marked.min.js"></script>` +
-		`</head><body class="doc-page"><main class="doc-body">` +
-		`<header class="doc-head">` + htmlEscape(title) + `</header>` +
-		`<div class="doc-markdown markdown"></div>` +
-		`<div id="doc-src" hidden>` + htmlEscape(md) + `</div>` +
-		`<script>(function(){var raw=document.getElementById("doc-src").textContent;` +
-		`var target=document.querySelector(".doc-markdown");` +
-		`if(window.marked&&window.marked.parse){target.innerHTML=window.marked.parse(raw);}` +
-		`else{var pre=document.createElement("pre");pre.textContent=raw;target.appendChild(pre);}})();</script>` +
-		`</main></body></html>`))
 }

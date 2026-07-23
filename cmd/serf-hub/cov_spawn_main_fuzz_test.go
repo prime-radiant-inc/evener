@@ -110,25 +110,8 @@ func FuzzSpawnMainHelpers(f *testing.F) {
 				t.Fatal("identity middleware returned nil")
 			}
 		case 3:
-			root := t.TempDir()
-			if data == "dev" {
-				if err := os.MkdirAll(filepath.Join(root, "assets"), 0o700); err != nil {
-					t.Fatal(err)
-				}
-				t.Setenv("SERF_HUB_ASSETS_DIR", root)
-			} else {
-				t.Setenv("SERF_HUB_ASSETS_DIR", "")
-			}
-			if templatesRoot() == nil || assetsRoot() == nil || devAssetsDir() != os.Getenv("SERF_HUB_ASSETS_DIR") {
-				t.Fatal("asset roots unavailable")
-			}
-			rr := httptest.NewRecorder()
-			noStore(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
-			if rr.Code != http.StatusCreated || rr.Header().Get("Cache-Control") != "no-store" {
-				t.Fatal("no-store wrapper failed")
-			}
-			if !strings.HasPrefix(assetVersionQuery(), "?v=") {
-				t.Fatal("bad asset version")
+			if assetsRoot() == nil {
+				t.Fatal("assets root unavailable")
 			}
 		case 4:
 			workDir := t.TempDir()

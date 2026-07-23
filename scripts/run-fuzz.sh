@@ -538,7 +538,6 @@ TARGETS=(
 	"native:.:./cmd/serf-fuzzcov:FuzzCoverageCLI::"
 	"native:.:./cmd/serf-fuzzcov:FuzzCoveragePolicyEdges::"
 	"native:.:./cmd/serf-fuzzcov:FuzzCoverageSeedScenarios::"
-	"native:.:./cmd/serf-hub/internal/editorurl:FuzzEditorURL::"
 	"native:.:./cmd/serf-hub/internal/fspaths:FuzzResolveInRoot::"
 	"native:.:./cmd/serf-hub/internal/fspaths:FuzzSanitizeDirPrefix::"
 	"native:.:./cmd/serf-hub/internal/fspaths:FuzzFSPathsBehaviorProgram::"

@@ -124,12 +124,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		_ = compactThreadWithResume(context.Background(), web.cfg, registry, appwire.ThreadCompactStartParams{Ref: "local:01TAIL"})
 		_ = compactThreadWithResume(context.Background(), web.cfg, registry, appwire.ThreadCompactStartParams{Ref: "remote:missing"})
 
-		// Preview source errors, including past fallback miss.
-		source.readErr = errors.New("read")
-		call(web.handleSubagentPreview, http.MethodGet, "/_api/subagent-preview?ref=local%3A01TAIL", "")
-		call(web.handleSubagentPreview, http.MethodGet, "/_api/subagent-preview?ref=remote%3Amissing", "")
-		source.readErr = nil
-
 		// Transcript target rejection, list failure, normalization and de-duplication.
 		_, _ = hubThreadTranscriptList(context.Background(), web.cfg, registry, appwire.ThreadTranscriptListParams{})
 		source.listErr = errors.New("list")
@@ -160,9 +154,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		manifestMarshal = func(any) ([]byte, error) { return nil, errors.New("encode") }
 		call(web.handleManifest, http.MethodGet, "/", "")
 		manifestMarshal = oldMarshal
-		t.Setenv("SERF_HUB_ASSETS_DIR", root)
 		_ = web.Handler()
-		call(web.handleInternalPartial, http.MethodGet, "/_partials/workspace/spawn", "")
 
 		// Directory result cap and detached-HEAD short-SHA fallback failure.
 		for i := 0; i < 32; i++ {

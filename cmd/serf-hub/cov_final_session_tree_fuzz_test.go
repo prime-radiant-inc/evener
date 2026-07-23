@@ -75,22 +75,10 @@ func FuzzFinalSessionTree(f *testing.F) {
 			for _, body := range []string{`{"items":[{"type":"image"}` + strings.Repeat(`,{"type":"image"}`, hubcore.SendMaxImageItems) + `]}`, `{"items":[{"type":"text","text":"x","data":"` + huge + `"}]}`} {
 				call(func(w http.ResponseWriter, r *http.Request) { web.handleSend(w, r, "local") }, body)
 			}
-		case 1:
-			web := finalSessionWeb(hubcore.WebConfig{}, thread)
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleSteer(w, r, "remote:thread") }, `{"text":"x"}`)
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleQueue(w, r, "remote:thread") }, `{"text":"x"}`)
-			call(func(w http.ResponseWriter, r *http.Request) { web.handleDrainAsSteer(w, r, "remote:thread") }, `{"text":"x"}`)
 		case 2:
 			web := finalSessionWeb(hubcore.WebConfig{}, thread)
 			for _, action := range []string{"interrupt", "clear", "shutdown", "unknown"} {
 				call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "remote:thread", action) }, `{}`)
-			}
-		case 3:
-			web := NewWebServer(hubcore.WebConfig{})
-			huge := base64.StdEncoding.EncodeToString(make([]byte, hubcore.SendMaxImageBytes+1))
-			for _, fn := range []func(http.ResponseWriter, *http.Request, string){web.handleQueue, web.handleDrainAsSteer} {
-				call(func(w http.ResponseWriter, r *http.Request) { fn(w, r, "missing") }, `{"items":[{"type":"image"}]`+strings.Repeat(`,{"type":"image"}`, hubcore.SendMaxImageItems)+`]}`)
-				call(func(w http.ResponseWriter, r *http.Request) { fn(w, r, "missing") }, `{"items":[{"type":"text","text":"x","data":"`+huge+`"}]}`)
 			}
 		case 4:
 			past := hubcore.NewPastIndex("")
@@ -161,19 +149,9 @@ func FuzzFinalSessionTree(f *testing.F) {
 			web := NewWebServer(hubcore.WebConfig{})
 			_ = web.ensureSessionActionAvailable("missing", "send")
 			web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing", "compact")
-		case 14:
-			disabled := thread
-			disabled.Serf.Capabilities = appwire.ThreadCapabilities{}
-			web := finalSessionWeb(hubcore.WebConfig{}, disabled)
-			for _, fn := range []func(http.ResponseWriter, *http.Request, string){web.handleSteer, web.handleQueue, web.handleDrainAsSteer} {
-				call(func(w http.ResponseWriter, r *http.Request) { fn(w, r, "remote:thread") }, `{"text":"x"}`)
-			}
 		case 15:
 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "local"}, SessionID: "local"})
 			web := NewWebServer(hubcore.WebConfig{Roster: roster})
-			for _, fn := range []func(http.ResponseWriter, *http.Request, string){web.handleSteer, web.handleQueue, web.handleDrainAsSteer} {
-				call(func(w http.ResponseWriter, r *http.Request) { fn(w, r, "local") }, `{"text":"x"}`)
-			}
 			for _, action := range []string{"interrupt", "clear", "shutdown", "unknown"} {
 				call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "local", action) }, `{}`)
 			}
