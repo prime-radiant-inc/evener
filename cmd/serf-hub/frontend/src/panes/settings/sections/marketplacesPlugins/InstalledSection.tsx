@@ -3,7 +3,7 @@
 // ConfirmDialog-gated remove (this wave's binding "every destructive
 // action confirms" constraint; the legacy had none for plugin removal
 // either - `confirm(...)` there, ConfirmDialog here).
-import { useState } from "react";
+import { type Dispatch, type SetStateAction, useState } from "react";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chip, ConfirmDialog, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -27,36 +27,67 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+function pluginKey(plugin: string, marketplace: string): string {
+  return `${plugin}@${marketplace}`;
+}
+
+// Runs fn() with `key` added to the given busy-key Set for its duration,
+// always removing it again in a finally - the "withBusy" shape (§12f:
+// "disables the triggering button... re-enabling in a finally") for a
+// per-row action, without a shared boolean that would also disable every
+// OTHER row's (or this row's OTHER action's) button.
+async function runBusy(setBusy: Dispatch<SetStateAction<Set<string>>>, key: string, fn: () => Promise<void>) {
+  setBusy((prev) => new Set(prev).add(key));
+  try {
+    await fn();
+  } finally {
+    setBusy((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  }
+}
+
 export function InstalledSection() {
   const plugins = useExtensionsStore((s) => s.plugins) ?? [];
   const toasts = useToasts();
   const [pendingRemove, setPendingRemove] = useState<{ plugin: string; marketplace: string } | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  const [toggleBusy, setToggleBusy] = useState<Set<string>>(new Set());
+  const [autoUpgradeBusy, setAutoUpgradeBusy] = useState<Set<string>>(new Set());
+  const [upgradeBusy, setUpgradeBusy] = useState<Set<string>>(new Set());
 
   async function handleToggleEnable(plugin: string, marketplace: string, currentlyEnabled: boolean) {
-    try {
-      if (currentlyEnabled) await extensionsStore.getState().disablePlugin(plugin, marketplace);
-      else await extensionsStore.getState().enablePlugin(plugin, marketplace);
-    } catch (err) {
-      toasts.push("error", `Toggle enable failed: ${errorMessage(err)}`);
-    }
+    await runBusy(setToggleBusy, pluginKey(plugin, marketplace), async () => {
+      try {
+        if (currentlyEnabled) await extensionsStore.getState().disablePlugin(plugin, marketplace);
+        else await extensionsStore.getState().enablePlugin(plugin, marketplace);
+      } catch (err) {
+        toasts.push("error", `Toggle enable failed: ${errorMessage(err)}`);
+      }
+    });
   }
 
   async function handleToggleAutoUpgrade(plugin: string, marketplace: string, currentlyAutoUpgrade: boolean) {
-    try {
-      await extensionsStore.getState().setPluginAutoUpgrade(plugin, marketplace, !currentlyAutoUpgrade);
-    } catch (err) {
-      toasts.push("error", `Toggle auto-upgrade failed: ${errorMessage(err)}`);
-    }
+    await runBusy(setAutoUpgradeBusy, pluginKey(plugin, marketplace), async () => {
+      try {
+        await extensionsStore.getState().setPluginAutoUpgrade(plugin, marketplace, !currentlyAutoUpgrade);
+      } catch (err) {
+        toasts.push("error", `Toggle auto-upgrade failed: ${errorMessage(err)}`);
+      }
+    });
   }
 
   async function handleUpgrade(plugin: string, marketplace: string) {
-    try {
-      await extensionsStore.getState().upgradePlugin(plugin, marketplace);
-      toasts.push("success", `Checked ${plugin} for upgrades`);
-    } catch (err) {
-      toasts.push("error", `Upgrade failed: ${errorMessage(err)}`);
-    }
+    await runBusy(setUpgradeBusy, pluginKey(plugin, marketplace), async () => {
+      try {
+        await extensionsStore.getState().upgradePlugin(plugin, marketplace);
+        toasts.push("success", `Checked ${plugin} for upgrades`);
+      } catch (err) {
+        toasts.push("error", `Upgrade failed: ${errorMessage(err)}`);
+      }
+    });
   }
 
   async function handleConfirmRemove() {
@@ -102,6 +133,7 @@ export function InstalledSection() {
                   variant="quiet"
                   size="sm"
                   onClick={() => void handleToggleEnable(p.plugin, p.marketplace, p.enabled)}
+                  disabled={toggleBusy.has(pluginKey(p.plugin, p.marketplace))}
                 >
                   {p.enabled ? "Disable" : "Enable"}
                 </Button>
@@ -109,10 +141,16 @@ export function InstalledSection() {
                   variant="quiet"
                   size="sm"
                   onClick={() => void handleToggleAutoUpgrade(p.plugin, p.marketplace, p.autoUpgrade)}
+                  disabled={autoUpgradeBusy.has(pluginKey(p.plugin, p.marketplace))}
                 >
                   {p.autoUpgrade ? "Auto-upgrade: on" : "Auto-upgrade: off"}
                 </Button>
-                <Button variant="quiet" size="sm" onClick={() => void handleUpgrade(p.plugin, p.marketplace)}>
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onClick={() => void handleUpgrade(p.plugin, p.marketplace)}
+                  disabled={upgradeBusy.has(pluginKey(p.plugin, p.marketplace))}
+                >
                   Upgrade
                 </Button>
                 <Button
