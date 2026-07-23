@@ -10,10 +10,11 @@
 // Field mapping (all snapshot-only, reducer.ts hydrateThread, no live push):
 //   branch  <- model.gitBranch   (Thread.gitInfo.branch)
 //   project <- model.projectPath (Thread.ProjectPath, the hub-resolved
-//              CANONICAL PROJECT root - appwire/types.go:186-191, deliberately
-//              separate from cwd: a linked worktree keeps a different cwd within
-//              the same project. Labeled "project", not the legacy "worktree",
-//              which the new snapshot does not carry.)
+//              CANONICAL PROJECT root - see its doc comment in
+//              appwire/types.go - deliberately separate from cwd: a linked
+//              worktree keeps a different cwd within the same project. Labeled
+//              "project", not the legacy "worktree", which the new snapshot
+//              does not carry.)
 //   cwd     <- model.cwd         (Thread.cwd)
 import type { ThreadModel } from "../../../protocol/model";
 import { requireClass } from "../../../widgets/internal/requireClass";
