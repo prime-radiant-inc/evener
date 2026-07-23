@@ -1,5 +1,7 @@
+/* No position: relative here - the popup is a portal (see widgets/menu's
+ * own index.tsx), position: fixed off the trigger's own measured rect, not
+ * an absolutely-positioned child anchored to this box. */
 .root {
-  position: relative;
   display: inline-block;
 }
 
@@ -27,10 +29,30 @@
   outline-offset: 2px;
 }
 
+/* "quiet" variant (index.tsx's own MenuProps.variant doc comment): no
+ * border at rest - border-color: transparent (not `border: none`) keeps
+ * this pixel-identical in size to the default variant, the same convention
+ * Button's own .quiet uses (widgets/button/button.module.css). Hover comes
+ * for free from .trigger:hover above, which applies regardless of variant;
+ * this adds the same surface-2 wash while OPEN, since a borderless trigger
+ * otherwise has no persistent affordance left to show which one currently
+ * owns an open popup. */
+.triggerQuiet {
+  border-color: transparent;
+}
+
+.triggerQuiet[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+
+/* position: fixed (not absolute): the popup portals to document.body (see
+ * index.tsx) and gets its top/left as an inline style, computed off the
+ * trigger's own getBoundingClientRect() - never these two static values,
+ * which is what used to clip the popup at a scrolling ancestor's edge or
+ * overflow the viewport's own, with no way for a mere descendant to escape
+ * either via CSS alone. */
 .popup {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  left: 0;
+  position: fixed;
   z-index: 1020;
   min-width: 180px;
   margin: 0;

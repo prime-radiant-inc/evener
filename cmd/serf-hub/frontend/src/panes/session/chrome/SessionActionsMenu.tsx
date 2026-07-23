@@ -156,6 +156,7 @@ export function SessionActionsMenu({ sessionRef, model, onSetGoal = () => undefi
   return (
     <>
       <Menu
+        variant="quiet"
         trigger={
           <>
             <span aria-hidden="true">⋯</span>

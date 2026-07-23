@@ -126,6 +126,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
       // must never also bubble into Tree's onKeyDown and move the roving
       // tabindex to a different row out from under an open menu.
       triggerTabIndex={-1}
+      variant="quiet"
       trigger={
         <>
           <span aria-hidden="true">{"⋯"}</span>
