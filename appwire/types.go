@@ -261,6 +261,9 @@ type SerfThread struct {
 	// (unlike the other two scalars) because SerfUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/old-daemon/codex thread
 	// signals "no token data" rather than rendering ↑0 ↓0.
+	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
+	// scale, and the web reducer's epoch-ms read), 0 when no turn is running.
+	// Emitting seconds here would mix units with the consumer's ms clock.
 	Usage               *SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64      `json:"workMillis,omitempty"`
 	ActiveTurnStartedAt int64      `json:"activeTurnStartedAt,omitempty"`
