@@ -192,16 +192,33 @@ When expanded, the card shows three layers:
 
 Collapsed state stays a one-liner: title + status pill (with a step count).
 
-### 4.3 The summary rides a new wire field
+### 4.3 The summary and live status come from the live child watch
 
-**Decision (Option A over on-demand fetch):** carry the subagent summary as a
-**field on the delegate item** (Go `appwire`/`hubapi` → `types.gen.ts` →
-`ItemModel`). Rationale: it's the same mechanism that already carries status, it
-survives reload trivially, and threading status through the same live-updated
-item **also fixes the stale-pill defect (yd16)** in one stroke. The rejected
-alternative (fetch the child's last `agentMessage` on expand) needs no Go change
-but adds a per-expand fetch and shows nothing after reload if the child thread
-is gone.
+**Decision (revised 2026-07-23 — live child watch over a new wire field):** the
+card already opens a live `includeTurns: true` watch on the child transcript
+while expanded (§4.2). Source both the **Summary** (the child's last
+`agentMessage`) and the **live status pill (yd16)** from that same watch — no Go,
+wire, or codegen change.
+
+Rationale: the two objections that sank on-demand fetch at the first brainstorm —
+an extra per-expand fetch, and nothing after reload — are void here. It is the
+*same* watch §4.2 already needs (no extra fetch), and the child's `transcript_ref`
+is durable and reconciled back onto the delegate item on cold read
+(`reconcileDelegateThreadItem`), so the watch re-opens after reload. Threading the
+live child status off that watch into the row **also fixes the stale-pill defect
+(yd16)** — `WatchedChildIndicator` already subscribes to exactly this status; it
+simply never wrote it back.
+
+The recon reversed the original decision: the child's final report is
+`subagentResult.Output`, written to the delegate tool-result JSON **only for
+foreground delegates** (`marshalDelegateResult` gates on `!RunningInBackground`).
+A subagent in the tree runs in the background, so its report never rides the item;
+it lives only in the background job's output store behind `transcript_ref`, and
+`HistoricalJobRecord` carries no summary. A wire field would therefore mean a full
+`HistoricalJobRecord` + jobstore-persistence + reconcile + typed `ThreadItem` field
++ `make generate` + reducer + `ItemModel` stream — and a generated-types chokepoint
+every other stream sequences behind. Its only unique gain is surviving explicit
+deletion/pruning of the child transcript, a rare case not worth the coupling.
 
 ### 4.4 "Open full transcript" works while running
 
@@ -285,8 +302,12 @@ TDD; the token-contract test in particular must stay green (it enforces §0).
   initial full-width-header mock).
 - Dock: **≥900px, drop 1200px threshold** (Option A over lowered-threshold B).
 - Model/dir/all pickers: **float, never reflow**; Advanced **below prompt**.
-- Subagent summary: **wire field** (Option A over on-demand fetch); card body
-  **Mandate → live Activity → Summary**; transcript link **live while running**.
+- Subagent summary + live status: **from §4.2's live child-transcript watch**
+  (revised 2026-07-23 — reversed the earlier "new wire field" decision after
+  recon showed a background delegate's report never rides the item; the watch is
+  already open while expanded, and sourcing status off it also fixes yd16). Card
+  body **Mandate → live Activity → Summary**; transcript link **live while
+  running**.
 - Paste: **thumbnail tiles + lightbox** (over chip-with-swatch).
 - Sidebar: **project hierarchy retained**, attention **inline (no duplicate
   group)** — the old attention grouping's duplication was the defect; deep
