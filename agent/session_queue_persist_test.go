@@ -12,6 +12,7 @@ package agent
 // hand-rolled imitation, and asserts the restored queue matches.
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -146,6 +147,58 @@ func TestQueuePersist_HookSourcedSteering_DoesNotPersist(t *testing.T) {
 	want := []SteeringEntry{{Text: "please check the tests"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("restored SteeringQueueSnapshot = %#v, want %#v (only the user-sent entry should survive)", got, want)
+	}
+}
+
+// TestQueuePersist_SystemSourcedSteering_DoesNotTouchFile locks in design
+// review Important-2: a system/hook-sourced Steer() call (Source=="") must
+// not trigger a write at all, since userSourcedSteering filters it out of
+// the persisted view regardless. This matters because vision-description
+// steering (session_tool_round.go) fires via plain Steer() once per
+// image-bearing tool result — a real hot path across a multi-round turn, not
+// a theoretical one — so an unconditional persist cycle there would be
+// avoidable write amplification on every such call.
+func TestQueuePersist_SystemSourcedSteering_DoesNotTouchFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	path := queuePersistFilePath(dir, id)
+	defer sess.Close()
+
+	// A system-sourced steer on its own must never create the file.
+	sess.Steer("<SYSTEM-REMINDER>vision description</SYSTEM-REMINDER>")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("queue file created by a system-sourced steer alone: stat err=%v", err)
+	}
+
+	// Once a user-sourced entry exists (file present), a later
+	// system-sourced steer must not rewrite it either.
+	sess.SteerFromUser("please check the tests")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue file after user-sourced steer: %v", err)
+	}
+	infoBefore, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat queue file after user-sourced steer: %v", err)
+	}
+
+	sess.Steer("<SYSTEM-REMINDER>another vision description</SYSTEM-REMINDER>")
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue file after system-sourced steer: %v", err)
+	}
+	infoAfter, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat queue file after system-sourced steer: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("queue file content changed after a system-sourced steer:\nbefore=%s\nafter=%s", before, after)
+	}
+	if !infoBefore.ModTime().Equal(infoAfter.ModTime()) {
+		t.Fatalf("queue file mtime changed after a system-sourced steer (want untouched): before=%v after=%v", infoBefore.ModTime(), infoAfter.ModTime())
 	}
 }
 
@@ -339,5 +392,60 @@ func TestQueuePersist_CrashBetweenDequeueAndConsume_ItemNotDuplicated(t *testing
 	gotTexts := restored.QueueTexts()
 	if !reflect.DeepEqual(gotTexts, []string{"bravo"}) {
 		t.Fatalf("restored QueueTexts = %#v, want [bravo] (alpha lost in the dequeue-to-consume window, never duplicated)", gotTexts)
+	}
+}
+
+// TestQueuePersist_DrainSteering_CrashLosesAllButConsumed pins the honest,
+// wider crash-window bound for the steering queue (design review
+// Important-1): unlike popQueueHead (input queue: at-most-one, I/O-free),
+// drainSteeringForTurn empties and persists the WHOLE steering queue in one
+// step, before injectDrainedSteering's loop durably records each drained
+// message individually (real transcript I/O per message — see
+// consumeSteeringMessage). A crash after only the first of several drained
+// messages has been consumed loses the rest — never duplicates them, but the
+// loss can span more than one item, across a window that includes real I/O.
+func TestQueuePersist_DrainSteering_CrashLosesAllButConsumed(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+
+	sess.SteerFromUser("alpha")
+	sess.SteerFromUser("bravo")
+	sess.SteerFromUser("charlie")
+
+	// drainSteeringForTurn is the exact primitive injectDrainedSteering calls:
+	// it atomically empties (and persists-empty) the whole queue in one step,
+	// before any of the three messages is durably recorded anywhere else.
+	drained := sess.drainSteeringForTurn()
+	if len(drained) != 3 {
+		t.Fatalf("drained = %d entries, want 3", len(drained))
+	}
+
+	// Simulate the daemon crashing after durably consuming only the first
+	// drained message. consumeSteeringMessage is the exact per-message body
+	// injectDrainedSteering's loop runs — not a hand-rolled imitation.
+	// Deliberately NOT calling it for drained[1]/drained[2], and NOT calling
+	// Close(): this is the "crashed mid-loop" state.
+	sess.consumeSteeringMessage(drained[0])
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+
+	// bravo and charlie are gone: lost, not duplicated, and not resurrected
+	// (the persisted queue was already emptied when the batch was drained).
+	if got := restored.SteeringQueueSnapshot(); len(got) != 0 {
+		t.Fatalf("restored SteeringQueueSnapshot = %#v, want empty (bravo/charlie must be lost, not resurrected, in the drain crash window)", got)
+	}
+	// alpha survived because consumeSteeringMessage durably appended it to
+	// the transcript/history before the simulated crash.
+	foundAlpha := false
+	for _, turn := range restored.history {
+		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "alpha" {
+			foundAlpha = true
+		}
+	}
+	if !foundAlpha {
+		t.Fatalf("restored history missing alpha's steering turn (should have been durably recorded before the crash); kinds=%v", restored.history)
 	}
 }

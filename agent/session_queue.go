@@ -145,7 +145,17 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	s.mu.Unlock()
-	s.persistQueuesSnapshot()
+	// Design review Important-2: only a user-sourced entry can change the
+	// persisted view (persistQueuesSnapshot's userSourcedSteering filter drops
+	// everything else before writing), so skip the lock-acquire+syscall cycle
+	// entirely for daemon/hook-authored steering. Vision descriptions
+	// (session_tool_round.go) call plain Steer() once per image-bearing tool
+	// result — a real hot path across a multi-round turn, not a theoretical
+	// one — and every one of those calls was otherwise persisting unchanged
+	// (filtered-to-nothing-new) content.
+	if source == events.SteeringSourceUser {
+		s.persistQueuesSnapshot()
+	}
 	return true
 }
 
@@ -598,18 +608,48 @@ func (s *Session) drainSteering() []steeringMessage {
 // reload/hydration renders user-sent steering as user speech (issue #24) —
 // and emits the steering-injected event. It is the single path every drain
 // site uses so live and replayed steering stay consistent.
+//
+// Crash-window note (design review Important-1): drainSteeringForTurn removes
+// and persists the steering queue as empty in ONE step, before any message in
+// the batch is durably recorded here — unlike popQueueHead (input queue),
+// which persists the shrunk queue once per consumed entry. A crash partway
+// through this loop can therefore lose every not-yet-consumed message from
+// the batch (not just one), across a window that spans this loop's own
+// transcript.Append calls (real I/O per message), not just in-process
+// statements. This is intentionally NOT tightened to match popQueueHead:
+// doing so would require interleaving each message's removal from the queue
+// with its transcript append, which would also reorder when that message's
+// provenance is folded into s.activeProvenance relative to this loop's other
+// emit() calls (every emit stamps the CURRENT active provenance,
+// session_events.go's emit/emitWithProvenance) — a change to the
+// causal-provenance timeline the watch-loop-suppression machinery
+// (agent/provenance) depends on, not merely a persistence-timing tweak. The
+// failure mode stays safe (loss, never duplication — same invariant as
+// popQueueHead) but is not "at most one" the way the input queue's is. See
+// TestQueuePersist_DrainSteering_CrashLosesAllButConsumed for the pinned
+// behavior.
 func (s *Session) injectDrainedSteering() {
 	for _, msg := range s.drainSteeringForTurn() {
-		t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
-		t.SteeringSource = msg.Source
-		s.mu.Lock()
-		s.history = append(s.history, t)
-		s.mu.Unlock()
-		if err := s.transcript.Append(t); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-		}
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.consumeSteeringMessage(msg)
 	}
+}
+
+// consumeSteeringMessage durably records one drained steering message as a
+// steering turn (history + transcript) and emits the steering-injected
+// event. Factored out of injectDrainedSteering's loop body so a test can
+// drive the exact per-message consumption step the production loop uses,
+// rather than reimplementing it, when pinning the crash-window behavior
+// documented above.
+func (s *Session) consumeSteeringMessage(msg steeringMessage) {
+	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+	t.SteeringSource = msg.Source
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	if err := s.transcript.Append(t); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 }
 
 func (s *Session) hasPendingSteering() bool {
