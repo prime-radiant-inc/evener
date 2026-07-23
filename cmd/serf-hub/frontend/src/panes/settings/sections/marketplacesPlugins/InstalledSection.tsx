@@ -4,8 +4,9 @@
 // action confirms" constraint; the legacy had none for plugin removal
 // either - `confirm(...)` there, ConfirmDialog here).
 import { type Dispatch, type SetStateAction, useState } from "react";
+import type { PluginEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
-import { Button, Chip, ConfirmDialog, useToasts } from "../../../../widgets";
+import { Button, type CadenceState, Chip, ConfirmDialog, StatusDot, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
 
@@ -29,6 +30,17 @@ function errorMessage(err: unknown): string {
 
 function pluginKey(plugin: string, marketplace: string): string {
   return `${plugin}@${marketplace}`;
+}
+
+// §12e: "Status dot: warning if broken, else ended if !enabled, else idle".
+// StatusDot (widgets/statusdot) is built on the shared CadenceState enum,
+// which has no "warning" state - broken maps onto "failed" (the only
+// failure-family state, giving the danger/red treatment a broken plugin
+// warrants) rather than inventing a state the shared widget doesn't have.
+function pluginStatus(plugin: PluginEntry): CadenceState {
+  if (plugin.broken) return "failed";
+  if (!plugin.enabled) return "ended";
+  return "idle";
 }
 
 // Runs fn() with `key` added to the given busy-key Set for its duration,
@@ -121,6 +133,7 @@ export function InstalledSection() {
             <li key={`${p.plugin}@${p.marketplace}`} className={CLASS.row}>
               <div className={CLASS.rowMain}>
                 <div className={CLASS.rowText}>
+                  <StatusDot state={pluginStatus(p)} />
                   {p.plugin} <span className={CLASS.rowMeta}>@ {p.marketplace}</span>
                   {p.broken && <Chip tone="danger">broken</Chip>}
                   {!p.enabled && <Chip tone="neutral">disabled</Chip>}

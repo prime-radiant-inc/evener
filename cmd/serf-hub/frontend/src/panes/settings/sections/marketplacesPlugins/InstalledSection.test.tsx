@@ -83,6 +83,21 @@ test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () =>
   expect(screen.queryByText("auto-upgrade")).toBeNull();
 });
 
+test("the status dot reads broken > disabled > idle, in that priority order", () => {
+  connectFakeClient();
+  extensionsStore.setState({
+    plugins: [
+      { ...LINTER, plugin: "broken-one", broken: true, enabled: false },
+      { ...LINTER, plugin: "disabled-one", broken: false, enabled: false },
+      { ...LINTER, plugin: "healthy-one", broken: false, enabled: true },
+    ],
+  });
+  render(<InstalledSection />);
+  expect(screen.getAllByRole("img", { name: "Failed" })).toHaveLength(1);
+  expect(screen.getAllByRole("img", { name: "Ended" })).toHaveLength(1);
+  expect(screen.getAllByRole("img", { name: "Idle" })).toHaveLength(1);
+});
+
 test("Disable calls pluginDisable (enabled plugin); no success toast", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
