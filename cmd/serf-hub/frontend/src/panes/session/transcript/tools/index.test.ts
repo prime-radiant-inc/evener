@@ -27,6 +27,7 @@ test("importing the barrel registers descriptors for every T3 tool family", () =
     "delegate_send",
     "delegate",
     "ask_user",
+    "task_list",
   ];
   for (const name of registered) {
     expect(toolRendererFor(name).body).not.toBe(RawToolOutput);

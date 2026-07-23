@@ -17,6 +17,14 @@ export interface ToolRendererDescriptor {
   summary(item: ItemModel): string; // one-line purpose-first summary
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
+  // suppress removes the whole tool-call row from the transcript when true -
+  // no summary, no body, nothing (ToolCallItem renders null). Used for a
+  // task_list `action:"view"` (a read that legacy renders nothing for) and a
+  // malformed non-mutation call: the same "fully suppressed - no card, no
+  // divider, no tool-call row" the legacy renderer applied. An errored call is
+  // never suppressed here, so its error still surfaces via the generic
+  // failed-row treatment in ToolCallItem.
+  suppress?(item: ItemModel): boolean;
 }
 
 const registry: ToolRendererDescriptor[] = [];

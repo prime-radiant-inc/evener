@@ -12,6 +12,13 @@
   color: var(--ink-low);
 }
 
+/* The optional " · <detail>" suffix on the divider summary (e.g. a
+ * current-task id, a task-list count) - a touch quieter than the label. */
+.detail {
+  color: var(--ink-low);
+  opacity: 0.8;
+}
+
 .body {
   margin: var(--space-1) 0 0;
   padding: var(--space-2);

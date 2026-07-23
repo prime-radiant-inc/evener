@@ -62,6 +62,27 @@ test("handles a missing toolName gracefully (falls back to the default descripto
   expect(() => render(<ToolCallItem item={item({ toolName: undefined })} turn={turn} live={false} />)).not.toThrow();
 });
 
+// --- suppress: a descriptor can remove its whole row (task_list view /
+// malformed non-mutation) - ToolCallItem renders null ---------------------
+
+test("a descriptor whose suppress returns true renders nothing at all", () => {
+  registerToolRenderer({ match: "tci_suppress", summary: () => "s", body: () => <div>b</div>, suppress: () => true });
+  render(<ToolCallItem item={item({ toolName: "tci_suppress" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-call-item")).toBe(null);
+});
+
+test("suppress returning false renders the row normally", () => {
+  registerToolRenderer({
+    match: "tci_unsuppress",
+    summary: () => "kept",
+    body: () => <div>b</div>,
+    suppress: () => false,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_unsuppress" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  expect(screen.getByText("kept")).toBeTruthy();
+});
+
 // --- expand/collapse: collapsed by default, descriptor.autoExpand can pop
 // it open at settle (parity-m4-transcript.md's own Highlights: "every tool
 // row, including diffs, starts collapsed" - the only default-expanded
@@ -143,6 +164,93 @@ test("outputImages render even for a body-less descriptor (the row still becomes
   const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
   expect(details.tagName).toBe("DETAILS");
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
+});
+
+// --- ItemModel.error rendering: a failed/denied tool call surfaces its
+// error text, force-expands, and earns a failure marker (parity-m4 §11:261
+// "only failure earns the eye"; §2:100 renderer-tools.js:589-594 force-open
+// on error). Keyed off item.error PRESENCE as primary (present on old-daemon
+// reloads whose status is still "completed"), with the honest status:"failed"
+// as corroboration (appwire_projection.go:438 SettledToolStatus). ----------
+
+test("a settled tool call carrying item.error surfaces the error text", () => {
+  registerToolRenderer({ match: "tci_err_text", summary: () => "s" });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_err_text", error: "permission denied by sandbox" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByText("permission denied by sandbox")).toBeTruthy();
+});
+
+test("an errored tool row force-expands even for a descriptor with no autoExpand", () => {
+  registerToolRenderer({ match: "tci_err_expand", summary: () => "s", body: () => <div>body text</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+});
+
+test("an errored tool row earns a failure marker in its summary", () => {
+  registerToolRenderer({ match: "tci_err_glyph", summary: () => "did a thing" });
+  render(<ToolCallItem item={item({ toolName: "tci_err_glyph", error: "nope" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
+  expect(screen.getByText("Failed")).toBeTruthy();
+});
+
+test("a clean tool call earns NO failure marker and stays collapsed (success recedes)", () => {
+  registerToolRenderer({ match: "tci_ok_glyph", summary: () => "did a thing", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_ok_glyph" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
+  expect(screen.queryByText("Failed")).toBe(null);
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a body-less descriptor still becomes an expandable details when the call errored (shows the error)", () => {
+  registerToolRenderer({ match: "tci_err_no_body", summary: () => "s" });
+  render(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.tagName).toBe("DETAILS");
+  expect(details.open).toBe(true);
+  expect(screen.getByText("denied")).toBeTruthy();
+});
+
+test('honest status:"failed" corroborates a failure even with no error text', () => {
+  registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(details.open).toBe(true);
+});
+
+test('old-daemon reload: error present but status still "completed" is treated as failed (error presence is primary)', () => {
+  registerToolRenderer({ match: "tci_old_daemon", summary: () => "s" });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_old_daemon", error: "old daemon denial", status: "completed" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
+  expect(screen.getByText("old daemon denial")).toBeTruthy();
+});
+
+test("an empty-string error is not a failure (the wire only stamps failed when error is non-empty)", () => {
+  registerToolRenderer({ match: "tci_empty_err", summary: () => "s", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_empty_err", error: "" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a manual collapse of an errored row sticks (the reader's own choice wins over force-expand)", () => {
+  registerToolRenderer({ match: "tci_err_toggle", summary: () => "s", body: () => <div>body text</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_err_toggle", error: "boom" })} turn={turn} live={false} />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(true);
+  fireEvent.click(details.querySelector("summary")!);
+  expect(details.open).toBe(false);
 });
 
 test("live -> settled transition applies autoExpand exactly once", () => {
