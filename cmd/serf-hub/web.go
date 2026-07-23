@@ -166,6 +166,11 @@ func (s *WebServer) Handler() http.Handler {
 	// hashed filenames are immutable, so aggressive caching is safe).
 	mux.Handle("/webassets/", webassetsHandler(distFS()))
 
+	// Same-origin blank shell dockview opens for a popped-out pane (its default
+	// popoutUrl). Always registered — inert, and only the SPA's dockview loads
+	// it; auth-gated by the guard below.
+	mux.HandleFunc("/popout.html", servePopoutShell)
+
 	// PWA manifest — served dynamically (not as a static asset) so start_url can
 	// carry the auth token. A home-screen launch on iOS gets its own cookie jar,
 	// separate from the browser that authorized the hub, so it must re-auth via

@@ -70,6 +70,16 @@ test("renders the focused pane's component full-screen, with focused=true", asyn
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
 });
 
+test("renders no 'Pop out' affordance - popout is a desktop dockview capability, absent on the mobile stack", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<StackHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  // The popout affordance lives only in DockHost's dockview group headers
+  // (see PopoutHeaderAction); the StackHost has no group chrome to host it,
+  // and popOutPane is a no-op with no dockview api registered anyway.
+  expect(screen.queryByRole("button", { name: "Pop out" })).toBeNull();
+});
+
 test("renders only the focused pane - a second open pane is not mounted at all", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // focused, most recently opened

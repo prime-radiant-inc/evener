@@ -76,7 +76,9 @@ function DocFileView({ session, path }: { session: string; path: string }) {
         <div className={CLASS.notice}>
           <Chip tone="attention">Truncated</Chip>
           <span className={CLASS.noticeText}>
-            Showing the first {formatDocBytes(DOC_FILE_MAX_BYTES)} — this file was truncated.
+            {content.totalBytes !== undefined
+              ? `Showing the first ${formatDocBytes(DOC_FILE_MAX_BYTES)} of ${formatDocBytes(content.totalBytes)}.`
+              : `Showing the first ${formatDocBytes(DOC_FILE_MAX_BYTES)}.`}
           </span>
         </div>
       )}

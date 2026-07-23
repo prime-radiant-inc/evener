@@ -15,13 +15,18 @@ export interface DocFileContent {
   mediaType: string;
   truncated: boolean;
   sizeBytes: number;
+  // The file's true total size in bytes, present only when the server
+  // truncated it (from the X-Doc-Total-Size header). Lets the pane say
+  // exactly how much was elided, not just that something was.
+  totalBytes?: number;
 }
 
 // The server reads at most this many bytes into a doc pane and never streams
 // more (docFileMaxBytes in cmd/serf-hub/doc_serve.go:21, enforced by the fixed
-// read buffer at :185). The raw response carries NO true-size or truncation
-// header, so a body that reaches this cap is the only signal we get that the
-// file was larger and got cut - see the truncated derivation in readDocFile.
+// read buffer at :185). When it truncates, it says so explicitly via the
+// X-Doc-Truncated / X-Doc-Total-Size headers (writeDocFileRaw), so this cap is
+// the "first N shown" figure the pane pairs with the header's true total - it
+// is no longer inferred from the body length.
 export const DOC_FILE_MAX_BYTES = 512 * 1024;
 
 export type DocFileErrorKind = "forbidden" | "not-found" | "error";
@@ -61,11 +66,11 @@ export function docFileRawURL(session: string, path: string): string {
 //
 // sizeBytes is the count of bytes actually received (the response body is the
 // authority, since the endpoint's Content-Length is unreliable: absent under
-// chunked transfer, and never larger than the server-side cap). truncated is
-// derived from that count reaching DOC_FILE_MAX_BYTES - the endpoint gives no
-// explicit truncation flag, and the legacy silently truncated with no notice
-// at all, so surfacing this at the cap boundary is a conscious beyond-parity
-// honesty fix (floor cross-cutting #9).
+// chunked transfer, and never larger than the server-side cap). truncated and
+// totalBytes come from the server's own X-Doc-Truncated / X-Doc-Total-Size
+// headers (writeDocFileRaw), present only when the file exceeded the cap - so a
+// file of exactly the cap reads as complete, no longer a false positive from
+// the old body>=cap inference (floor cross-cutting #9).
 export async function readDocFile(session: string, path: string): Promise<DocFileContent> {
   // same-origin credentials so the hub's auth cookie rides along, exactly as
   // the manifest and every other same-origin fetch in this app do.
@@ -78,9 +83,12 @@ export async function readDocFile(session: string, path: string): Promise<DocFil
   const mediaType = contentType.split(";")[0]?.trim() ?? "";
   const buf = await res.arrayBuffer();
   const sizeBytes = buf.byteLength;
-  const truncated = sizeBytes >= DOC_FILE_MAX_BYTES;
+  const truncated = res.headers.get("X-Doc-Truncated") === "true";
+  const totalHeader = res.headers.get("X-Doc-Total-Size");
+  const parsedTotal = totalHeader === null ? Number.NaN : Number.parseInt(totalHeader, 10);
+  const totalBytes = Number.isFinite(parsedTotal) ? parsedTotal : undefined;
   const text = binary ? "" : new TextDecoder().decode(buf);
-  return { text, binary, mediaType, truncated, sizeBytes };
+  return { text, binary, mediaType, truncated, sizeBytes, totalBytes };
 }
 
 // docImageURL builds the /doc/image href for a session-scoped, cwd-relative

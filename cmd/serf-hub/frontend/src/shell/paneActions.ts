@@ -52,26 +52,46 @@ export function openBeside(pane: PaneRef): void {
 // dockview host (mobile) or the id names no open panel, so a caller can invoke
 // it optimistically without first checking either.
 //
-// DORMANT (investigated wave-8 fix round; a served popout shell is reserved for
-// Jesse). dockview's addPopoutGroup does window.open(popoutUrl) - default
-// same-origin `/popout.html` - waits for that window's `load`, then appends the
-// group's DOM into its document.body (dockview-core 7.0.2 popoutWindow.js:
-// open()). Two hard facts make a frontend-only fix impossible in this version:
-//   1. serf-hub serves no /popout.html; its SPA fallback returns index.html, so
-//      the default URL boots a SECOND full app instance in the popout window.
-//   2. An `about:blank` (or data:/blob:) popoutUrl override is REJECTED by
-//      dockview's own assertSameOriginPopoutUrl guard (popoutWindow.js:19,
-//      enforced at :83): the popoutUrl MUST be same-origin http(s).
-// The only working mechanism is a minimal same-origin http(s) blank shell the
-// server serves (a small Go route) - reserved for Jesse, no route added here.
-// Until then popout stays dormant: popOutPane has NO caller anywhere in the app
-// (popoutDormant.test.ts locks that), so no affordance can open the broken
-// window. The body is left intact so a future served-shell wiring is just a
-// global `popoutUrl` dockview option, nothing more.
+// dockview's addPopoutGroup does window.open on its default same-origin
+// `/popout.html`, waits for that window's `load`, then moves the group's DOM
+// into its document.body and clones this window's stylesheets in (dockview-core
+// 7.0.2 popoutWindow.js:82,128,135-136 + dom.js addStyles). Two constraints
+// shape the wiring:
+//   - the popoutUrl MUST be same-origin http(s): dockview's
+//     assertSameOriginPopoutUrl (popoutWindow.js:19, enforced :83) rejects
+//     about:blank / data: / blob:, so the target has to be a real served page.
+//   - a bare SPA fallback at /popout.html would return index.html and boot a
+//     SECOND full app instance inside the popout window.
+// The hub serves a minimal blank same-origin shell at /popout.html for exactly
+// this (cmd/serf-hub/webnext.go servePopoutShell); dockview clones the app's
+// styles into it, so the shell itself carries no CSS or JS. The one caller is
+// DockHost's PopoutHeaderAction - a per-group "Pop out" header action.
 export function popOutPane(paneId: string): void {
   const api = getDockviewApi();
   if (!api) return;
   const panel = api.getPanel(paneId);
   if (!panel) return;
-  void api.addPopoutGroup(panel);
+  void api.addPopoutGroup(panel, {
+    // dockview calls onDidOpen with the popout window BEFORE it navigates to
+    // /popout.html (popoutWindow.js:119 vs the load handler at :128), so defer
+    // the theme copy to that window's load. Open-time inheritance only: a
+    // theme change while the popout stays open does not re-sync (the
+    // cross-document gap parity floor §3.8:673-679 notes).
+    onDidOpen: ({ window: popoutWindow }) => {
+      popoutWindow.addEventListener("load", () => {
+        inheritOpenerTheme(document.documentElement, popoutWindow.document.documentElement);
+      });
+    },
+  });
+}
+
+// inheritOpenerTheme copies the opener document root's data-theme attribute onto
+// a popout document root. dockview clones the opener's stylesheets into the
+// popout (dom.js addStyles) but not this attribute, which tokens.css keys its
+// light overrides off - so without it a light-theme opener renders a dark
+// popout. A dark opener carries no data-theme at all (the :root default), so
+// there is nothing to copy and the popout keeps that same dark default.
+export function inheritOpenerTheme(openerRoot: Element, popoutRoot: Element): void {
+  const theme = openerRoot.getAttribute("data-theme");
+  if (theme !== null) popoutRoot.setAttribute("data-theme", theme);
 }

@@ -73,24 +73,34 @@ describe("readDocFile", () => {
     });
   });
 
-  test("a body that reaches the server cap is reported truncated (the only honest signal the raw endpoint gives)", async () => {
+  test("truncation is read from the X-Doc-Truncated header, with the true total from X-Doc-Total-Size", async () => {
+    const body = "a".repeat(DOC_FILE_MAX_BYTES);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(body, {
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "X-Doc-Truncated": "true",
+          "X-Doc-Total-Size": "2097152",
+        },
+      }),
+    );
+    const doc = await readDocFile("s1", "big.log");
+    expect(doc.truncated).toBe(true);
+    expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES); // received (head) bytes
+    expect(doc.totalBytes).toBe(2097152); // the file's true size, from the header
+  });
+
+  test("no X-Doc-Truncated header means not truncated - even for a body exactly at the cap (no false positive)", async () => {
+    // A file of exactly the cap serves its whole self and sends no truncation
+    // header; the old body>=cap derivation wrongly flagged this boundary.
     const body = "a".repeat(DOC_FILE_MAX_BYTES);
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(body, { headers: headers("text/plain; charset=utf-8") }),
     );
-    const doc = await readDocFile("s1", "big.log");
-    expect(doc.truncated).toBe(true);
-    expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
-  });
-
-  test("a body one byte under the cap is NOT truncated - pins the >= boundary, not >", async () => {
-    const body = "a".repeat(DOC_FILE_MAX_BYTES - 1);
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(body, { headers: headers("text/plain; charset=utf-8") }),
-    );
-    const doc = await readDocFile("s1", "big.log");
+    const doc = await readDocFile("s1", "exact.log");
     expect(doc.truncated).toBe(false);
-    expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES - 1);
+    expect(doc.totalBytes).toBeUndefined();
+    expect(doc.sizeBytes).toBe(DOC_FILE_MAX_BYTES);
   });
 
   test("a 403 (path escapes the session cwd) rejects with a forbidden DocFileError", async () => {
