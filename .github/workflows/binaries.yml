@@ -35,6 +35,12 @@ jobs:
         with:
           go-version-file: go.work
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cmd/serf-hub/frontend/package-lock.json
+
       - name: Build archive
         env:
           BUILD_CHANNEL: ${{ github.ref == 'refs/heads/main' && 'snapshot' || 'release' }}
