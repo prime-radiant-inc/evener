@@ -37,3 +37,17 @@ export function firstLine(text: string, maxLen: number): string {
   if (line.length <= maxLen) return line;
   return `${line.slice(0, maxLen).trimEnd()}…`;
 }
+
+// formatCharCount renders a plain character count for a scaffolding
+// disclosure's summary line (SystemNoticeItem's "System prompt · 8.2k
+// chars"): the exact count under 1000, otherwise one decimal place of
+// thousands with a stripped trailing ".0" (mirrors formatDurationMs's own
+// stripping above). Deliberately its own helper rather than reusing
+// formatTokenCount - that one rounds to a whole "k" with no decimal, fine
+// for a token count but too coarse here, where the reader is deciding
+// whether a many-thousand-character block is worth expanding.
+export function formatCharCount(n: number): string {
+  const clamped = Number.isFinite(n) && n > 0 ? n : 0;
+  if (clamped < 1000) return `${clamped} chars`;
+  return `${(clamped / 1000).toFixed(1).replace(/\.0$/, "")}k chars`;
+}
