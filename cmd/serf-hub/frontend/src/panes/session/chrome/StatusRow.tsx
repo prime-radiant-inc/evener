@@ -21,6 +21,7 @@ import { Meter, Select, StatusDot, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
+import { LocationCluster } from "./LocationCluster";
 import { ModelSwitch } from "./ModelSwitch";
 import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
@@ -139,6 +140,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       <span className={CLASS.item} data-testid="status-row-work-time">
         {formatWorkDuration(workMs)}
       </span>
+      <LocationCluster model={model} />
       {hasContext && (
         <span className={CLASS.item}>
           <span className={CLASS.meter}>
