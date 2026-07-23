@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,8 +157,8 @@ func TestHubTasksList_UnknownRefReturnsNotFoundError(t *testing.T) {
 	sources := newExitedLocalRegistry()
 
 	_, err = hubTasksList(context.Background(), cfg, sources, appwire.TaskListParams{Ref: "local:" + sessionID})
-	if !isSessionUnavailableError(err) {
-		t.Fatalf("err = %v, want a SessionUnavailable thread-not-found error", err)
+	if !isDeadSessionTasksError(err) {
+		t.Fatalf("err = %v, want entryForRef's thread-not-found SessionUnavailable error", err)
 	}
 }
 
@@ -184,12 +185,14 @@ func TestHubTasksList_LiveSourceTakesPrecedenceOverPast(t *testing.T) {
 	}
 }
 
-// TestHubTasksList_TransientLiveErrorIsNotMaskedByPast proves a live daemon
-// error that is NOT the SessionUnavailable dead-session condition (here a
-// generic InternalError) is returned unchanged, even though a matching past
-// index entry with a persisted task exists: a running daemon's transient
-// failure must never be silently masked by a stale past read.
-func TestHubTasksList_TransientLiveErrorIsNotMaskedByPast(t *testing.T) {
+// TestHubTasksList_InternalErrorFromLiveSourceIsNotMaskedByPast proves a live
+// daemon error with a wire code that was never at risk of confusion with
+// SessionUnavailable (a generic InternalError) is returned unchanged, even
+// though a matching past index entry with a persisted task exists. This is
+// the trivial end of the "don't mask live errors" requirement; see
+// TestHubTasksList_LiveDialFailureIsNotMaskedByPast for the real risk class
+// (a SessionUnavailable-SHAPED transient failure against a live daemon).
+func TestHubTasksList_InternalErrorFromLiveSourceIsNotMaskedByPast(t *testing.T) {
 	cfg, sessionID, _ := seedPastSessionWithTasks(t, []task.TaskInput{
 		{Type: task.TaskTypeImplement, Description: "stale past task", Prompt: "do it"},
 	})
@@ -200,5 +203,67 @@ func TestHubTasksList_TransientLiveErrorIsNotMaskedByPast(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError || wire.Message != "boom" {
 		t.Fatalf("err = %v, want the live source's own InternalError(\"boom\") unmasked", err)
+	}
+}
+
+// TestHubTasksList_LiveDialFailureIsNotMaskedByPast reproduces the real risk:
+// a LIVE rendezvous entry (entryForRef finds a match on ThreadID/SessionID —
+// this is NOT the dead-session case) whose endpoint is unreachable. The dial
+// failure (ECONNREFUSED) is mapped by localDaemonDialError to the identical
+// SessionUnavailable Code+SerfErrorInfo shape entryForRef's own dead-session
+// error uses — only the message differs ("local daemon unavailable: ..." vs
+// "thread not found: ..."). isSessionUnavailableError alone cannot tell these
+// apart; isDeadSessionTasksError must, and hubTasksList must propagate this
+// as an error rather than silently serving the stale past-index task list —
+// the daemon has not exited, it just failed to dial.
+func TestHubTasksList_LiveDialFailureIsNotMaskedByPast(t *testing.T) {
+	cfg, sessionID, _ := seedPastSessionWithTasks(t, []task.TaskInput{
+		{Type: task.TaskTypeImplement, Description: "stale past task", Prompt: "do it"},
+	})
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return []appsource.LocalDaemonEntry{{Entry: rendezvous.Entry{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc", // reserved port: dial fails ECONNREFUSED
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		}}}
+	}, nil))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := hubTasksList(ctx, cfg, sources, appwire.TaskListParams{Ref: "local:" + sessionID})
+	if err == nil {
+		t.Fatal("hubTasksList returned nil error, want the dial failure (a live entry exists; the daemon has not exited)")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || !strings.Contains(wire.Message, "local daemon unavailable") {
+		t.Fatalf("err = %v, want localDaemonDialError's \"local daemon unavailable\" SessionUnavailable (sanity check the reproduction hit the dial path, not something else)", err)
+	}
+	if isDeadSessionTasksError(err) {
+		t.Fatalf("err = %v misclassified as the dead-session condition; it is a dial failure against a LIVE entry", err)
+	}
+}
+
+// TestHubTasksList_CorruptTaskFileReturnsErrorNotEmptySuccess proves a
+// corrupt/truncated persisted task file surfaces as a real error rather than
+// being swallowed into an empty success. A loadPersistedTasks (or
+// TaskStore.Load) that mapped every read/decode error to "no tasks" would
+// pass every other test in this file while silently hiding real data loss.
+func TestHubTasksList_CorruptTaskFileReturnsErrorNotEmptySuccess(t *testing.T) {
+	cfg, sessionID, stateDir := seedPastSessionWithTasks(t, nil)
+	tasksPath := filepath.Join(stateDir, "tasks", sessionID+".json")
+	if err := os.MkdirAll(filepath.Dir(tasksPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Truncated mid-array: a torn write, not merely empty or absent.
+	if err := os.WriteFile(tasksPath, []byte(`[{"id":1,"description":"partial`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sources := newExitedLocalRegistry()
+
+	_, err := hubTasksList(context.Background(), cfg, sources, appwire.TaskListParams{Ref: "local:" + sessionID})
+	if err == nil {
+		t.Fatal("hubTasksList returned nil error for a truncated task file, want a real error, not empty success")
 	}
 }
