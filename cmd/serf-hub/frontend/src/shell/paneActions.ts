@@ -52,16 +52,24 @@ export function openBeside(pane: PaneRef): void {
 // dockview host (mobile) or the id names no open panel, so a caller can invoke
 // it optimistically without first checking either.
 //
-// RUNTIME DEPENDENCY (flagged for the controller / T8 live proof, not fixable
-// from a frontend stream): dockview's addPopoutGroup opens window.open() at
-// options.popoutUrl, defaulting to a same-origin `/popout.html`, then moves the
-// group's DOM into that window's <body>. serf-hub serves no /popout.html today,
-// and its SPA fallback would boot a SECOND full app instance there instead of a
-// blank shell. Reliable native popout therefore needs the server to serve a
-// minimal same-origin popout shell (a small Go route, the MW-* precedent) - or
-// this call to pass an `about:blank` popoutUrl override, which carries its own
-// cross-browser quirks. Left on dockview's default so the controller picks the
-// mechanism with T8's live proof; there is no caller of popOutPane yet.
+// DORMANT (investigated wave-8 fix round; a served popout shell is reserved for
+// Jesse). dockview's addPopoutGroup does window.open(popoutUrl) - default
+// same-origin `/popout.html` - waits for that window's `load`, then appends the
+// group's DOM into its document.body (dockview-core 7.0.2 popoutWindow.js:
+// open()). Two hard facts make a frontend-only fix impossible in this version:
+//   1. serf-hub serves no /popout.html; its SPA fallback returns index.html, so
+//      the default URL boots a SECOND full app instance in the popout window.
+//   2. An `about:blank` (or data:/blob:) popoutUrl override is REJECTED by
+//      dockview's own assertSameOriginPopoutUrl guard (popoutWindow.js:81-93):
+//      the popoutUrl MUST be same-origin http(s). That guard is newer than the
+//      build T6's review read, which is why its about:blank suggestion no longer
+//      holds against the installed 7.0.2.
+// The only working mechanism is a minimal same-origin http(s) blank shell the
+// server serves (a small Go route) - reserved for Jesse, no route added here.
+// Until then popout stays dormant: popOutPane has NO caller anywhere in the app
+// (popoutDormant.test.ts locks that), so no affordance can open the broken
+// window. The body is left intact so a future served-shell wiring is just a
+// global `popoutUrl` dockview option, nothing more.
 export function popOutPane(paneId: string): void {
   const api = getDockviewApi();
   if (!api) return;
