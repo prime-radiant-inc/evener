@@ -6,15 +6,26 @@
 // an actions Menu. Pure presentation: every mutation goes back out through
 // the `actions` prop, which Rail.tsx implements against actions.ts + the
 // tree store's refresh().
+//
+// CLASS.actions (Rail.module.css) is what makes the "..." trigger (and a
+// project row's "+") quiet: transparent/borderless by default, revealed only
+// on row hover/focus, matching the design bar (Linear/VS Code-quality
+// sidebar - quiet, hover-revealed, zero layout shift) instead of a
+// permanently-visible bordered button on every row. See Rail.module.css's
+// own comment on .actions for the exact selectors (row hover, treeitem
+// focus, open-menu, and the <900px touch fallback that keeps it visible
+// with no hover to reveal it).
 import type { ReactNode } from "react";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import { Badge, Cadence, type CadenceState, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
+import { Badge, Cadence, type CadenceState, IconButton, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { navigate } from "../routing";
 import styles from "./Rail.module.css";
 import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
+  actions: requireClass(styles.actions, "Rail.module.css", "actions"),
   chevron: requireClass(styles.chevron, "Rail.module.css", "chevron"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
   meta: requireClass(styles.meta, "Rail.module.css", "meta"),
@@ -161,9 +172,28 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
 // component has no reliable way to distinguish from "would actually work".
 const NO_PROJECT_KEY = "no-project";
 
+// Opens a fresh spawn targeted at this project's working directory, via the
+// same /new?dir= URL prefill the palette's "Spawn with prompt" command
+// already uses for /new?prompt= (shell/palette/commands.ts): Spawn.tsx reads
+// both off window.location.search (panes/spawn/urlPrefill.ts), never pane
+// params - the spawn pane's own params type is deliberately empty (see
+// panes/spawn/Spawn.tsx), so a URL prefill is the only way to hand it a
+// directory. Falls back to a bare /new when a project has no working_dir
+// (shouldn't happen for a real project, but degrades gracefully rather than
+// silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
+// ever called, same as every other project-scoped action here.
+function spawnInProject(project: ApiTreeProject): void {
+  navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
+}
+
 function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
+    {
+      id: "new-session",
+      label: "New session",
+      onSelect: () => spawnInProject(project),
+    },
     {
       id: "favorite",
       label: project.favorite ? "Remove from pinned" : "Add to pinned",
@@ -209,7 +239,9 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       {session.tier !== undefined && session.tier !== "current" && session.tier !== "" && (
         <span className={CLASS.meta}>{session.tier}</span>
       )}
-      <ActionsMenu label={session.title} items={sessionMenuItems(session, actions)} />
+      <span className={CLASS.actions}>
+        <ActionsMenu label={session.title} items={sessionMenuItems(session, actions)} />
+      </span>
     </span>
   );
 }
@@ -233,7 +265,19 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
         </span>
       )}
       {attentionCount > 0 && <Badge count={attentionCount} tone="attention" />}
-      <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
+      <span className={CLASS.actions}>
+        {project.key !== NO_PROJECT_KEY && (
+          <IconButton
+            label={`New session in ${project.name}`}
+            icon={<span aria-hidden="true">{"+"}</span>}
+            variant="quiet"
+            size="sm"
+            tabIndex={-1}
+            onClick={() => spawnInProject(project)}
+          />
+        )}
+        <ActionsMenu label={project.name} items={projectMenuItems(project, actions)} />
+      </span>
     </span>
   );
 }
