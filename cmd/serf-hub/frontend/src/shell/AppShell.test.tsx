@@ -320,6 +320,33 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("ref_new_session");
 });
 
+// --- single-pane mode (/thread/{ref} share link, wave 8 T1) -----------
+
+test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail hidden, marker set)", async () => {
+  window.history.pushState({}, "", "/thread/ref_shared");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  // /thread/{ref} routes to the SESSION pane (its loading text proves the
+  // pane mounted), not the never-URL'd transcript pane.
+  expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
+  // The shell root carries the single-pane marker T6 keys its layout off.
+  expect(document.querySelector("[data-single-pane]")).not.toBeNull();
+  // The rail chrome (its "Sessions" heading, and with it the search/settings
+  // entry points, floor §2.3) is stripped - RailHost isn't rendered at all.
+  expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+});
+
+test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", async () => {
+  window.history.pushState({}, "", "/s/ref_normal");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
+  expect(document.querySelector("[data-single-pane]")).toBeNull();
+  // Desktop rail renders (default auto mode, jsdom's wide no-matchMedia
+  // viewport) - the contrast that proves the /thread case actually suppressed it.
+  expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+});
+
 // --- settings routing (this task) -------------------------------------
 
 test("deep-linking to /settings/{section} opens the settings pane showing that section", async () => {

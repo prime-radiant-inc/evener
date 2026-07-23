@@ -47,6 +47,12 @@ export type { MenuItem, MenuProps } from "./menu";
 export { Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
+// ModelCatalog is both the component and the /api/models envelope type (T1
+// ships the interim-Combobox stub; wave-8 T2 fills the rich catalog). The
+// plain re-export carries BOTH meanings; only the pure-type members need
+// `export type` (a second `export type { ModelCatalog }` would duplicate it).
+export type { ModelCatalogEntry, ModelCatalogProps } from "./modelCatalog";
+export { ModelCatalog } from "./modelCatalog";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";

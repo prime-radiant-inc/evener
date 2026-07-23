@@ -67,3 +67,22 @@ test("totalWorkMillis adds the in-flight turn's live elapsed time on top of work
   const startedAt = new Date(1_000_000).toISOString();
   expect(totalWorkMillis(60_000, startedAt, 1_030_000)).toBe(90_000);
 });
+
+// A wire ActiveTurnStartedAt of 0 (the daemon's zero value) does NOT reach the
+// reducer omitted - when it arrives present-but-zero, epochMsToISO (reducer.ts:
+// 78-80, which guards only `undefined`, never 0) turns it into
+// "1970-01-01T00:00:00.000Z". Trusting that as a real turn start makes the
+// in-flight term now-minus-epoch - an absurd ~500000h clock. The honest
+// reading: an anchor at or before the Unix epoch is the wire's "unset"
+// sentinel leaking through, not a turn that has run since 1970, so fall back
+// to the banked total. No clock beats an absurd one.
+test("ignores an at-epoch activeTurnStartedAt (the epochMsToISO(0) sentinel) instead of clocking now-minus-epoch", () => {
+  const epochAnchor = new Date(0).toISOString(); // exactly what epochMsToISO(0) produces
+  expect(totalWorkMillis(45_000, epochAnchor, 1_800_000_000_000)).toBe(45_000);
+});
+
+test("ignores a pre-epoch (Go zero-time) or unparseable activeTurnStartedAt, falling back to the banked total", () => {
+  const preEpoch = new Date(-6_000_000_000).toISOString(); // parses to a negative epoch-ms
+  expect(totalWorkMillis(45_000, preEpoch, 1_800_000_000_000)).toBe(45_000);
+  expect(totalWorkMillis(45_000, "not-a-timestamp", 1_800_000_000_000)).toBe(45_000);
+});

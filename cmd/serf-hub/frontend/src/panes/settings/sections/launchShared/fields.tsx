@@ -4,11 +4,14 @@
 // fold 4 leaf wire fields into one control each. Collection kinds (pathList/
 // modelList/envMap/mcpServerList) live in collectionFields.tsx instead.
 //
-// Two deliberate, documented scope simplifications from the legacy engine
-// (see this task's own report for the write-up):
-//   - modelPicker renders as a plain free-text "provider/model" input, not
-//     the searchable popup (settings-pickers.js Appendix A infrastructure -
-//     a REST-backed widget outside this stream's manifest).
+// modelPicker renders the rich searchable ModelCatalog widget (wave 8 restore
+// of the legacy settings-pickers.js Appendix A popup): the /api/models catalog
+// with display names, capability badges, cost, and a Recent section. Wave 7
+// shipped a plain free-text input as the interim; wave 8 swaps in the real
+// widget, value/onChange unchanged so the schema/collect path is untouched.
+//
+// One deliberate, documented scope simplification remains from the legacy
+// engine (see this task's own report for the write-up):
 //   - path/pathList kinds never render PathPicker: the widget's own
 //     listChildren contract only ever lists DIRECTORIES (serf/dirs/complete
 //     filters to entry.IsDir()), so it cannot serve file/outputFile kind
@@ -20,7 +23,7 @@
 //     happens - see collectionFields.tsx and LaunchConfigForm's own
 //     validate step).
 //
-// A third, smaller one, also not ported: the legacy engine's Constraint
+// A second, smaller one, also not ported: the legacy engine's Constraint
 // Validation API integration (validatePathInput/validateMCPCommandInput's
 // setCustomValidity() + reportValidity() calls), which additionally pops
 // the browser's own native validation-bubble UI alongside the custom
@@ -34,6 +37,7 @@ import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
   FormRow,
   Input,
+  ModelCatalog,
   RadioGroup,
   type RadioGroupOption,
   Select,
@@ -41,6 +45,7 @@ import {
   Textarea,
 } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./fields.module.css";
 import { emptyChoiceLabel, PROMPT_COMPOSITE_SPECS, resolvedEmptyChoice } from "./schema";
 
@@ -49,6 +54,9 @@ const CLASS = {
   radioBlock: requireClass(styles.radioBlock, "fields.module.css", "radioBlock"),
   radioHelp: requireClass(styles.radioHelp, "fields.module.css", "radioHelp"),
   compositeControls: requireClass(styles.compositeControls, "fields.module.css", "compositeControls"),
+  modelBlock: requireClass(styles.modelBlock, "fields.module.css", "modelBlock"),
+  modelLabel: requireClass(styles.modelLabel, "fields.module.css", "modelLabel"),
+  modelHelp: requireClass(styles.modelHelp, "fields.module.css", "modelHelp"),
 };
 
 function nonEmptyChoices(option: LaunchOption): RadioGroupOption[] {
@@ -117,9 +125,24 @@ export function ScalarField({ option, layer, value, onChange, globalDefaultHint,
     );
   }
 
-  // text, integer, modelPicker, path - all a plain (possibly numeric) input.
-  // See this file's own top comment for why modelPicker/path don't get their
-  // legacy-specific widgets here.
+  if (option.kind === "modelPicker") {
+    // A composite widget, not a single labelable control, so the field label
+    // is a plain span (mirroring the spawn form's own Model field) rather than
+    // a FormRow's <label htmlFor> - the ModelCatalog's inner combobox carries
+    // its own accessible name. loadCatalog is the unscoped /api/models call
+    // (launch defaults aren't harness/cwd-scoped the way a live spawn is).
+    return (
+      <div className={CLASS.modelBlock}>
+        <span className={CLASS.modelLabel}>{option.label}</span>
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={() => fetchModelCatalog()} />
+        {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
+        <DefaultHint text={globalDefaultHint} />
+      </div>
+    );
+  }
+
+  // text, integer, path - all a plain (possibly numeric) input. See this
+  // file's own top comment for why path doesn't get its legacy-specific widget.
   return (
     <FormRow label={option.label} htmlFor={fieldId} help={option.description} error={error}>
       <Input

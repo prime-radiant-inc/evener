@@ -35,8 +35,15 @@ test("urlToPane resolves /credentials to the settings pane's credentials section
   expect(urlToPane("/credentials")).toEqual({ type: "settings", params: { section: "credentials" } });
 });
 
-test("urlToPane resolves /thread/{ref} to a transcript pane", () => {
-  expect(urlToPane("/thread/ref_abc123")).toEqual({ type: "transcript", params: { ref: "ref_abc123" } });
+test("urlToPane resolves /settings/providers to the credentials section (old-bookmark redirect)", () => {
+  expect(urlToPane("/settings/providers")).toEqual({ type: "settings", params: { section: "credentials" } });
+});
+
+test("urlToPane resolves /thread/{ref} to a session pane (single-pane share link)", () => {
+  // /thread/{ref} is the share-link target: it opens the SESSION pane, which
+  // the shell then renders chrome-stripped (isSinglePaneRoute). It no longer
+  // maps to the never-URL'd read-only transcript pane.
+  expect(urlToPane("/thread/ref_abc123")).toEqual({ type: "session", params: { ref: "ref_abc123" } });
 });
 
 test("urlToPane returns null for an unknown path", () => {
@@ -65,8 +72,10 @@ test("paneToURL formats a session pane as /s/{ref}", () => {
   expect(paneToURL("session", { ref: "ref_abc123" })).toBe("/s/ref_abc123");
 });
 
-test("paneToURL formats a transcript pane as /thread/{ref}", () => {
-  expect(paneToURL("transcript", { ref: "ref_abc123" })).toBe("/thread/ref_abc123");
+test("paneToURL returns null for a transcript pane (open-beside only, no deep link)", () => {
+  // The read-only transcript pane is reached via openBeside, not a URL - the
+  // same as the doc pane. /thread/{ref} belongs to the session pane now.
+  expect(paneToURL("transcript", { ref: "ref_abc123" })).toBeNull();
 });
 
 test("paneToURL formats settings with no section as /settings", () => {
@@ -88,8 +97,9 @@ test("paneToURL returns null for a session pane with no ref", () => {
   expect(paneToURL("session", {})).toBeNull();
 });
 
-test("paneToURL returns null for a transcript pane with an empty ref", () => {
+test("paneToURL returns null for a transcript pane regardless of ref", () => {
   expect(paneToURL("transcript", { ref: "" })).toBeNull();
+  expect(paneToURL("transcript", { ref: "ref_xyz" })).toBeNull();
 });
 
 test("paneToURL returns null for a doc pane (no deep link defined yet)", () => {
@@ -108,10 +118,13 @@ test("round trip: session URL", () => {
   expect(urlToPane(url!)).toEqual({ type: "session", params: { ref: "ref_xyz" } });
 });
 
-test("round trip: transcript URL", () => {
-  const url = paneToURL("transcript", { ref: "ref_xyz" });
-  expect(url).not.toBeNull();
-  expect(urlToPane(url!)).toEqual({ type: "transcript", params: { ref: "ref_xyz" } });
+test("inbound alias: /thread/{ref} resolves to a session pane, which serializes back to /s/{ref}", () => {
+  // /thread/{ref} has no round trip of its own (like /credentials): it is an
+  // inbound-only share link. It resolves to a session pane, and a session
+  // pane's own canonical URL is /s/{ref}, so the app never emits /thread.
+  const inbound = urlToPane("/thread/ref_xyz");
+  expect(inbound).toEqual({ type: "session", params: { ref: "ref_xyz" } });
+  expect(paneToURL("session", { ref: "ref_xyz" })).toBe("/s/ref_xyz");
 });
 
 test("round trip: settings with section URL", () => {

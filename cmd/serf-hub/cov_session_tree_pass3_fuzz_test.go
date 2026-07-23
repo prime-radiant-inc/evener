@@ -25,8 +25,8 @@ func FuzzSessionTreePass3(f *testing.F) {
 		f.Add(op, "alpha\r\nbeta", int64(90_000))
 	}
 	f.Fuzz(func(t *testing.T, op uint8, text string, number int64) {
-		now := time.Now().Unix()
-		started := now - 90
+		now := time.Now().UnixMilli()
+		started := now - 90000
 		usage := &appwire.SerfUsage{InputTokens: 11, OutputTokens: 7, CacheReadTokens: 3, TotalTokens: 18}
 		thread := appwire.Thread{
 			ID: "thread-1", SessionID: "session-1", Source: "remote", Name: text,

@@ -76,7 +76,11 @@ interface WarningInline {
 }
 
 function epochMsToISO(ms: number | undefined): string | undefined {
-  return ms === undefined ? undefined : new Date(ms).toISOString();
+  // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
+  // anchor means "absent", never the 1970 epoch - downstream duration math
+  // must never clock against it. statusFormat.ts rejects bad anchors too,
+  // as defense-in-depth for its own callers.
+  return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
 // ItemModel.images/outputImages are display-ready string[], but the wire
@@ -258,10 +262,14 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     contextWindow: thread.serf.contextWindow ?? 0,
     contextPressure: thread.serf.contextPressure ?? 0,
     usage: thread.serf.usage ?? null,
+    cost: thread.serf.cost ?? null,
     workMillis: thread.serf.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
     reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],
     supportsReasoning: thread.serf.supportsReasoning ?? false,
+    cwd: thread.cwd,
+    gitBranch: thread.gitInfo?.branch,
+    projectPath: thread.projectPath,
   };
 }
 
@@ -438,6 +446,10 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         ...model,
         turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),
         activeTurnId: undefined,
+        // The active turn just ended: its start anchor is now stale (there is
+        // no live push to refresh it), so clear it in lockstep with activeTurnId
+        // to stop the work-clock ticking against a completed turn.
+        activeTurnStartedAt: undefined,
         lastFrameAt: now,
       };
     }
@@ -566,7 +578,18 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "thread/status/changed": {
       if (!notificationTargetsThread(n, model)) return model;
-      return { ...model, status: n.params.status, lastFrameAt: now };
+      const status = n.params.status;
+      return {
+        ...model,
+        status,
+        // The work-clock anchor (activeTurnStartedAt) has no live push to
+        // refresh it, so a cold-hydrated live anchor would keep clocking
+        // now-minus-anchor forever once the turn ends (StatusRow.tsx feeds it to
+        // totalWorkMillis unconditionally). Drop it on any non-active
+        // transition so the model never carries a live anchor while at rest.
+        activeTurnStartedAt: status.type === "active" ? model.activeTurnStartedAt : undefined,
+        lastFrameAt: now,
+      };
     }
 
     case "thread/model/changed": {

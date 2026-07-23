@@ -10,9 +10,3 @@ export function harnessUsesSerfModels(harnessId: string, harnesses: HarnessDescr
   const found = harnesses.find((h) => h.id === harnessId);
   return found ? found.kind === "serf" : false;
 }
-
-// Display label for a model, matching statusFormat.modelLabel: "provider/model"
-// unless the model repeats or is missing the provider (then just the provider).
-export function modelLabel(provider: string, model: string): string {
-  return model && model !== provider ? `${provider}/${model}` : provider;
-}

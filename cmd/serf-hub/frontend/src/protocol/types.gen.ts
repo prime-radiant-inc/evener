@@ -658,6 +658,7 @@ export interface SerfThread {
   usage?: SerfUsage;
   workMillis?: number;
   activeTurnStartedAt?: number;
+  cost?: string;
   askPending?: boolean;
   pendingEscalations?: SandboxEscalationRequested[];
   reasoningEffort?: string;

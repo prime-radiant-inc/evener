@@ -170,6 +170,57 @@ test("Refresh on an expanded marketplace also re-browses it (the cache the refre
   await waitFor(() => expect(browseSpy).toHaveBeenCalledWith({ name: "acme-plugins" }));
 });
 
+test("Refresh disables its own button while the RPC is in flight, and re-enables after", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
+  let resolveRefresh: (v: { marketplaces: MarketplaceEntry[] }) => void = () => {};
+  fake.on(
+    "serf/marketplace/refresh",
+    () =>
+      new Promise((resolve) => {
+        resolveRefresh = resolve;
+      }),
+  );
+  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  const refreshButton = screen.getByRole("button", { name: "Refresh" });
+  await user.click(refreshButton);
+  expect((refreshButton as HTMLButtonElement).disabled).toBe(true);
+
+  resolveRefresh({ marketplaces: [MARKETPLACE_A] });
+  await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("Refresh only disables the clicked row's own button, not other rows'", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const MARKETPLACE_B: MarketplaceEntry = {
+    name: "other-plugins",
+    source: { kind: "url", url: "https://x" },
+    lastUpdated: 1,
+  };
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A, MARKETPLACE_B] });
+  fake.on("serf/marketplace/refresh", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  const buttons = screen.getAllByRole("button", { name: "Refresh" });
+  await user.click(buttons[0]!);
+  expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+  expect((buttons[1] as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("a failed refresh re-enables the button too", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [MARKETPLACE_A] });
+  fake.on("serf/marketplace/refresh", () => {
+    throw new Error("boom");
+  });
+  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  const refreshButton = screen.getByRole("button", { name: "Refresh" });
+  await user.click(refreshButton);
+  await waitFor(() => expect((refreshButton as HTMLButtonElement).disabled).toBe(false));
+});
+
 test("Remove opens a confirm dialog; confirming removes and toasts success", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();

@@ -15,14 +15,17 @@ func (s *Session) WorkMillisSnapshot() int64 {
 	return s.workMillis
 }
 
-// ActiveTurnStartedAtUnix returns the Unix timestamp (seconds) the in-flight
-// turn began, or 0 when no turn is running. Mirrors the same
-// state-plus-turnStartedAt guard as accumulateWorkLocked (WS2 A7).
-func (s *Session) ActiveTurnStartedAtUnix() int64 {
+// ActiveTurnStartedAtMillis returns the Unix timestamp in milliseconds the
+// in-flight turn began, or 0 when no turn is running. Milliseconds is the wire
+// contract for appwire.SerfThread.ActiveTurnStartedAt (the web reducer reads it
+// as epoch-ms; the sibling WorkMillis is likewise ms) — emitting seconds here
+// mixes units with the frontend's ms `now` and clocks a ~500000h phantom span.
+// Mirrors the same state-plus-turnStartedAt guard as accumulateWorkLocked (WS2 A7).
+func (s *Session) ActiveTurnStartedAtMillis() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state == SessionProcessing && !s.turnStartedAt.IsZero() {
-		return s.turnStartedAt.Unix()
+		return s.turnStartedAt.UnixMilli()
 	}
 	return 0
 }

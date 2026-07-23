@@ -106,14 +106,14 @@ func statusSupportStatusAndMetrics(t *testing.T, token string) {
 	if got, want := s.WorkMillisSnapshot(), int64(len(token)*17); got != want {
 		t.Fatalf("WorkMillisSnapshot = %d, want %d", got, want)
 	}
-	if got, want := s.ActiveTurnStartedAtUnix(), clock.Now().Unix(); got != want {
-		t.Fatalf("ActiveTurnStartedAtUnix = %d, want %d", got, want)
+	if got, want := s.ActiveTurnStartedAtMillis(), clock.Now().UnixMilli(); got != want {
+		t.Fatalf("ActiveTurnStartedAtMillis = %d, want %d", got, want)
 	}
 	s.mu.Lock()
 	s.state = SessionIdle
 	s.mu.Unlock()
-	if got := s.ActiveTurnStartedAtUnix(); got != 0 {
-		t.Fatalf("idle ActiveTurnStartedAtUnix = %d, want 0", got)
+	if got := s.ActiveTurnStartedAtMillis(); got != 0 {
+		t.Fatalf("idle ActiveTurnStartedAtMillis = %d, want 0", got)
 	}
 
 	usage := llm.Usage{InputTokens: len(token), OutputTokens: len(token) + 1}

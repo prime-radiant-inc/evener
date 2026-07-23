@@ -79,6 +79,19 @@ export function registerDockviewApi(api: DockviewApi | null): void {
   dockviewApi = api;
 }
 
+// getDockviewApi exposes the live api (or null when no dockview host is
+// mounted - a mobile StackHost session, or before DockHost's onReady) for the
+// two imperative pane actions that genuinely need it: shell/paneActions.ts's
+// popOutPane (dockview-native popout has no store-level equivalent) and its
+// openBeside (a null api is the "no split capability here" signal that drives
+// the mobile degrade-to-plain-open). A read-only accessor beside the existing
+// registerDockviewApi/layoutJSON/restoreLayout, NOT store state - the same
+// "the live thing a store rides but doesn't own the lifecycle of" precedent
+// those already follow.
+export function getDockviewApi(): DockviewApi | null {
+  return dockviewApi;
+}
+
 // Type predicate: true only for a value that's both a string AND
 // currently registered in the pane registry. paneFor() (imported above) is
 // the single source of truth for "is this a real pane type" - registering

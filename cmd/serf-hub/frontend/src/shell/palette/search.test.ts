@@ -111,6 +111,7 @@ function modelWithTurns(turns: TurnModel[]): ThreadModel {
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
   };
 }
 

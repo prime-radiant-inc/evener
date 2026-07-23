@@ -6,10 +6,11 @@ import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
+import type { DockviewApi } from "dockview-core";
 import type { ItemModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { registerPane } from "../../../../shell/paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 
@@ -33,7 +34,15 @@ afterEach(() => {
   cleanup();
   resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
+  registerDockviewApi(null); // never leak a fake dockview host to another test
 });
+
+// A minimal DockviewApi stand-in: openBeside only asks "is there a host at all"
+// (non-null) to decide split-vs-plain-open, so a bare object suffices (mirrors
+// shell/paneActions.test.ts's own fakeApi).
+function fakeApi(): DockviewApi {
+  return {} as unknown as DockviewApi;
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -212,6 +221,30 @@ test("a running row shows the task and a running status", () => {
   expect(row.dataset.kind).toBe("running");
 });
 
+// Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
+// reducer produces via epochMsToISO from the wire's epoch-MILLISECONDS
+// ThreadItem timestamps (reducer.ts:124-125; appwire/types.go stamps them via
+// time.Time.UnixMilli). durationLabel diffs those two ISO instants, so a real
+// 12-second span at a realistic ms epoch must read "12s" — reading the wire as
+// seconds would place both instants ~12ms apart (1970-relative) and floor to
+// "12ms". This locks the honest ms duration end to end at the consumer.
+test("a settled delegate row renders an honest ms-scale duration", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const startedMs = 1_700_000_000_000; // 2023-11-14T22:13:20Z — a realistic epoch-ms
+  const settled = delegateItem({
+    id: "d_done",
+    callId: "call_done",
+    argumentsJSON: JSON.stringify({ task: "did the thing" }),
+    output: JSON.stringify({ job_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
+    startedAt: new Date(startedMs).toISOString(),
+    completedAt: new Date(startedMs + 12_000).toISOString(),
+  });
+  render(<Body item={settled} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByText("12s")).toBeTruthy();
+});
+
 test("a running row with a transcriptRef watches the child and shows a live Cadence indicator", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => ({
@@ -333,22 +366,41 @@ test("clicking '+N more' expands to show every done row, and offers a collapse c
 
 // --- open-transcript action -----------------------------------------------
 
-test("open transcript calls workspaceStore.openPane('session', {ref: transcriptRef})", async () => {
-  const user = userEvent.setup();
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
-  const withRef = delegateItem({
+function delegateWithTranscriptRef(ref: string): ItemModel {
+  return delegateItem({
     id: "d_ref",
     callId: "call_ref",
     argumentsJSON: JSON.stringify({ task: "has a transcript" }),
-    output: JSON.stringify({ job_id: "job_ref", status: "running", transcript_ref: "ref_child_open" }),
+    output: JSON.stringify({ job_id: "job_ref", status: "running", transcript_ref: ref }),
   });
-  render(<Body item={withRef} live={false} />);
-  const button = screen.getByRole("button", { name: /open transcript/i });
-  await user.click(button);
-  expect(workspaceStore.getState().panes).toContainEqual(
-    expect.objectContaining({ type: "session", params: { ref: "ref_child_open" } }),
-  );
+}
+
+test("open transcript opens the read-only transcript pane (mobile / no dockview host): plain full-screen open, not a session pane", async () => {
+  registerDockviewApi(null); // StackHost registers no api - the mobile signal
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const panes = workspaceStore.getState().panes;
+  // The DISTINCT read-only "transcript" pane (plan §Ambiguities #1 / PIN-A:
+  // reachable via openBeside, never a URL) - opened against the child's own ref.
+  const opened = panes.find((p) => p.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(opened?.beside).toBeUndefined(); // no split on mobile
+  // The row must no longer open a live SESSION pane for the child.
+  expect(panes.some((p) => p.type === "session")).toBe(false);
+});
+
+test("open transcript splits the transcript pane BESIDE the focused pane (desktop host present)", async () => {
+  registerDockviewApi(fakeApi());
+  const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(opened?.beside).toBe(anchor); // split beside the pane that was focused
 });
 
 test("no open-transcript button when the row has no transcriptRef yet", () => {

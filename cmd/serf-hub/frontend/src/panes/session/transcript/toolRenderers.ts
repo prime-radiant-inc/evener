@@ -17,6 +17,21 @@ export interface ToolRendererDescriptor {
   summary(item: ItemModel): string; // one-line purpose-first summary
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
+  // suppress removes the whole tool-call row from the transcript when true -
+  // no summary, no body, nothing (ToolCallItem renders null). Used for a
+  // task_list `action:"view"` (a read that legacy renders nothing for) and a
+  // malformed non-mutation call: the same "fully suppressed - no card, no
+  // divider, no tool-call row" the legacy renderer applied. An errored call is
+  // never suppressed here, so its error still surfaces via the generic
+  // failed-row treatment in ToolCallItem.
+  suppress?(item: ItemModel): boolean;
+  // openBesidePath returns the single file path this tool card references (its
+  // file arg), or undefined when it references none - the ONLY tools that opt in
+  // are the single-file ones (read_file/edit_file/write_file, floor §3.7;
+  // multi-target apply_patch and directory/pattern grep/ls/glob are excluded).
+  // ToolCallItem turns a non-undefined path into an "open beside" affordance
+  // (relativized against the session cwd, out-of-cwd gated - fileOpenBeside.tsx).
+  openBesidePath?(item: ItemModel): string | undefined;
 }
 
 const registry: ToolRendererDescriptor[] = [];

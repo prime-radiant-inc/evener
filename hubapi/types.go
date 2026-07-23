@@ -126,8 +126,8 @@ type SessionDetail struct {
 	ContextWindow    int     `json:"context_window,omitempty"`
 	ContextRemaining int     `json:"context_remaining,omitempty"`
 	// WorkMillis is the session's accumulated wall-clock work time in
-	// milliseconds; ActiveTurnStartedAt is the unix-seconds timestamp the
-	// current in-flight turn began, 0 when idle/ended (WS2).
+	// milliseconds; ActiveTurnStartedAt is the Unix epoch-milliseconds timestamp
+	// the current in-flight turn began, 0 when idle/ended (WS2).
 	WorkMillis          int64  `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64  `json:"active_turn_started_at,omitempty"`
 	ParentSessionID     string `json:"parent_session_id,omitempty"`

@@ -104,8 +104,8 @@ func TestTurnCacheBoundedPagesMatchFullProjection(t *testing.T) {
 	}
 	for i, ts := range fixture.times[:4] {
 		turn := full[i+1]
-		if turn.StartedAt == nil || *turn.StartedAt != ts.Unix() {
-			t.Fatalf("%s StartedAt=%v want=%d", turn.ID, turn.StartedAt, ts.Unix())
+		if turn.StartedAt == nil || *turn.StartedAt != ts.UnixMilli() {
+			t.Fatalf("%s StartedAt=%v want=%d", turn.ID, turn.StartedAt, ts.UnixMilli())
 		}
 	}
 	if full[2].Usage == nil || full[2].Usage.InputTokens != 11 || full[2].Usage.OutputTokens != 7 || full[2].Usage.TotalTokens != 18 {
@@ -355,8 +355,8 @@ func TestTurnCacheBoundedReadCompletesAppendedPartialLine(t *testing.T) {
 	if gotIDs := turnIDs(got); !reflect.DeepEqual(gotIDs, []string{"turn_4", "turn_5", "turn_6"}) {
 		t.Fatalf("after append IDs=%v", gotIDs)
 	}
-	if got[2].StartedAt == nil || *got[2].StartedAt != fixture.times[4].Unix() {
-		t.Fatalf("completed partial StartedAt=%v want=%d", got[2].StartedAt, fixture.times[4].Unix())
+	if got[2].StartedAt == nil || *got[2].StartedAt != fixture.times[4].UnixMilli() {
+		t.Fatalf("completed partial StartedAt=%v want=%d", got[2].StartedAt, fixture.times[4].UnixMilli())
 	}
 }
 

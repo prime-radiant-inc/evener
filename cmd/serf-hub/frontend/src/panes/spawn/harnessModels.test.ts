@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
 import type { HarnessDescriptor } from "../../protocol/types.gen";
-import { harnessUsesSerfModels, modelLabel } from "./harnessModels";
+import { harnessUsesSerfModels } from "./harnessModels";
 
 const HARNESSES: HarnessDescriptor[] = [
   { id: "serf", label: "serf", kind: "serf" },
@@ -23,16 +23,5 @@ describe("harnessUsesSerfModels", () => {
 
   test("an unknown harness id is treated as non-serf", () => {
     expect(harnessUsesSerfModels("mystery", HARNESSES)).toBe(false);
-  });
-});
-
-describe("modelLabel", () => {
-  test("qualifies a provider/model pair", () => {
-    expect(modelLabel("anthropic", "claude-sonnet-4-5")).toBe("anthropic/claude-sonnet-4-5");
-  });
-
-  test("collapses to the provider when the model repeats it or is empty", () => {
-    expect(modelLabel("openai", "openai")).toBe("openai");
-    expect(modelLabel("openai", "")).toBe("openai");
   });
 });

@@ -33,6 +33,13 @@ registerToolRenderer({
     return `Read ${target} · ${readLineRange(args, item.output ?? "")}`;
   },
   body: TailFoldedOutputBody,
+  // read_file references a single file (floor §3.7): expose it for the "open
+  // beside" affordance. grep/list_dir/glob below reference a directory or
+  // pattern, not a single file, so they opt OUT (no openBesidePath).
+  openBesidePath: (item) => {
+    const args = parseArgs(item.argumentsJSON);
+    return str(args, "file_path") ?? str(args, "path");
+  },
 });
 
 function grepTarget(args: Record<string, unknown>): string {

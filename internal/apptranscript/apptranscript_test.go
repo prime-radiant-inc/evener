@@ -62,10 +62,10 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 	turn := turns[0]
 	if turn.StartedAt == nil {
-		t.Fatalf("turn.StartedAt is nil, want %d", ts.Unix())
+		t.Fatalf("turn.StartedAt is nil, want %d", ts.UnixMilli())
 	}
-	if *turn.StartedAt != ts.Unix() {
-		t.Fatalf("turn.StartedAt=%d, want %d", *turn.StartedAt, ts.Unix())
+	if *turn.StartedAt != ts.UnixMilli() {
+		t.Fatalf("turn.StartedAt=%d, want %d", *turn.StartedAt, ts.UnixMilli())
 	}
 	if turn.DurationMS != nil {
 		t.Fatalf("turn.DurationMS=%v, want nil (message records cannot span a duration)", *turn.DurationMS)
@@ -909,8 +909,8 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	if len(items) != 1 || items[0].Type != "commandExecution" {
 		t.Fatalf("tool start items=%+v", items)
 	}
-	if items[0].StartedAt == nil || *items[0].StartedAt != start.Unix() {
-		t.Fatalf("tool call item StartedAt=%v, want %d (entry timestamp)", items[0].StartedAt, start.Unix())
+	if items[0].StartedAt == nil || *items[0].StartedAt != start.UnixMilli() {
+		t.Fatalf("tool call item StartedAt=%v, want %d (entry timestamp)", items[0].StartedAt, start.UnixMilli())
 	}
 
 	items = ProjectTurn("turn_2", 2, schema.Turn{
@@ -927,8 +927,8 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 	if len(items) != 1 || items[0].Type != "commandExecution" {
 		t.Fatalf("tool result items=%+v", items)
 	}
-	if items[0].CompletedAt == nil || *items[0].CompletedAt != end.Unix() {
-		t.Fatalf("tool result item CompletedAt=%v, want %d (entry timestamp)", items[0].CompletedAt, end.Unix())
+	if items[0].CompletedAt == nil || *items[0].CompletedAt != end.UnixMilli() {
+		t.Fatalf("tool result item CompletedAt=%v, want %d (entry timestamp)", items[0].CompletedAt, end.UnixMilli())
 	}
 
 	// A zero entry timestamp mints no stamps.

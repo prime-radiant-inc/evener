@@ -56,16 +56,16 @@ type AppEventProjector struct {
 	lastAssistantTurnID string
 	lastAssistantText   string
 
-	// pendingTurnID/pendingCompletedAtUnix/pendingDurationMS record the most
+	// pendingTurnID/pendingCompletedAtMillis/pendingDurationMS record the most
 	// recent EventTurnEnded's timing until the turn it names is actually
 	// completed by one of the existing completion sites (EventUserInput,
 	// EventGoalContinuation, EventError, EventSessionEnd). EventTurnEnded fires
 	// before those sites on some paths (interrupt/close) and after on others
 	// (a failed turn), so this is a stash, not a completion — see
 	// applyPendingTiming.
-	pendingTurnID          string
-	pendingCompletedAtUnix int64
-	pendingDurationMS      int64
+	pendingTurnID            string
+	pendingCompletedAtMillis int64
+	pendingDurationMS        int64
 
 	// activeTurnUsage/activeTurnModel accumulate the current turn's own
 	// (not cumulative-session) usage across every EventAssistantTextEnd
@@ -378,8 +378,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// started; a zero timestamp leaves StartedAt unset rather than
 		// reporting the Unix epoch (issue #37).
 		if !event.Timestamp.IsZero() {
-			unix := event.Timestamp.Unix()
-			startedItem.StartedAt = &unix
+			ms := event.Timestamp.UnixMilli()
+			startedItem.StartedAt = &ms
 			p.toolStartByKey[data.CallID] = event.Timestamp
 		}
 		if data.ToolName == "use_skill" {
@@ -452,11 +452,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// this event's own timestamp; StartedAt/DurationMS from the recorded
 		// call start. Anything not honestly recorded stays unset.
 		if !event.Timestamp.IsZero() {
-			unix := event.Timestamp.Unix()
-			item.CompletedAt = &unix
+			ms := event.Timestamp.UnixMilli()
+			item.CompletedAt = &ms
 			if start, ok := p.toolStartByKey[data.CallID]; ok && !start.IsZero() {
-				startUnix := start.Unix()
-				item.StartedAt = &startUnix
+				startMs := start.UnixMilli()
+				item.StartedAt = &startMs
 				duration := event.Timestamp.Sub(start).Milliseconds()
 				if duration >= 0 {
 					item.DurationMS = &duration
@@ -817,7 +817,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		data := eventData[events.TurnEndedData](event.Data)
 		p.pendingTurnID = p.activeTurnID
-		p.pendingCompletedAtUnix = event.Timestamp.Unix()
+		p.pendingCompletedAtMillis = event.Timestamp.UnixMilli()
 		p.pendingDurationMS = data.TurnDurationMS
 		return nil
 	case events.EventSessionEnd:
@@ -910,8 +910,8 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 func startedTurn(id string, startedAt time.Time) appwire.Turn {
 	turn := appwire.Turn{ID: id, Status: appwire.TurnStatusInProgress}
 	if !startedAt.IsZero() {
-		unix := startedAt.Unix()
-		turn.StartedAt = &unix
+		ms := startedAt.UnixMilli()
+		turn.StartedAt = &ms
 	}
 	return turn
 }
@@ -925,12 +925,12 @@ func (p *AppEventProjector) applyPendingTiming(turnID string, turn *appwire.Turn
 	if p.pendingTurnID == "" || p.pendingTurnID != turnID {
 		return
 	}
-	c := p.pendingCompletedAtUnix
+	c := p.pendingCompletedAtMillis
 	d := p.pendingDurationMS
 	turn.CompletedAt = &c
 	turn.DurationMS = &d
 	p.pendingTurnID = ""
-	p.pendingCompletedAtUnix = 0
+	p.pendingCompletedAtMillis = 0
 	p.pendingDurationMS = 0
 }
 
