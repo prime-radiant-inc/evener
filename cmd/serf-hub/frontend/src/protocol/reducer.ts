@@ -262,6 +262,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     contextWindow: thread.serf.contextWindow ?? 0,
     contextPressure: thread.serf.contextPressure ?? 0,
     usage: thread.serf.usage ?? null,
+    cost: thread.serf.cost ?? null,
     workMillis: thread.serf.workMillis ?? 0,
     activeTurnStartedAt: epochMsToISO(thread.serf.activeTurnStartedAt),
     reasoningEffortLevels: thread.serf.reasoningEffortLevels ?? [],

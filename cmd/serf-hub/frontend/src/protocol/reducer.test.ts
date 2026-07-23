@@ -1883,6 +1883,19 @@ test("hydrateThread defaults pendingEscalations to an empty array when serf.pend
   expect(model.pendingEscalations).toEqual([]);
 });
 
+// SerfThread.Cost is the session-level estimated dollar total (the sibling of
+// per-turn Turn.Cost), snapshot-authoritative like usage/workMillis: only a
+// wire snapshot (hydrateThread) sets it, and everything else preserves it via
+// the reducer's ...model spread. It is null when the daemon omits it (no usage,
+// or an uncataloged model) — an honest "unknown" the status row renders as no
+// chip, never a misleading ~$0.00.
+test("hydrateThread maps serf.cost into the model, null when absent", () => {
+  const withCost = testHydrate({ serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, cost: "~$1.23" } });
+  expect(withCost.cost).toBe("~$1.23");
+
+  expect(testHydrate().cost).toBeNull();
+});
+
 // Wave 5 T1: ThreadModel gains capabilities/goal/context*/usage/workMillis/
 // activeTurnStartedAt/reasoningEffortLevels/supportsReasoning, all hydrated
 // from thread.serf (appwire/types.go's SerfThread, lines 223-274). None of

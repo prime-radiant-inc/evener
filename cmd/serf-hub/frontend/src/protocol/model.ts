@@ -115,6 +115,16 @@ export interface ThreadModel {
   // own doc comment: "nil is how a fresh/old-daemon/codex thread signals 'no
   // token data' rather than rendering ↑0 ↓0." No live push.
   usage: SerfUsage | null;
+  // Cost is the session-level estimated dollar total (wire: SerfThread.Cost) -
+  // the "~$X.XX" string EstimateCost derives SERVER-SIDE from the cumulative
+  // usage at the thread's model price (the pricing table never crosses the
+  // wire), the session-scope sibling of TurnModel.cost. undefined/null (never
+  // "") when the daemon omits it: no token data, or an uncataloged model - an
+  // honest "unknown" the status row renders as NO cost chip, never a
+  // misleading "~$0.00". Snapshot-only like usage/workMillis: hydrateThread
+  // sets it and the reducer's ...model spread preserves it; no live push, so
+  // it refreshes on the next thread/read (e.g. a reconnect re-hydrate).
+  cost?: string | null;
   workMillis: number;
   // activeTurnStartedAt is undefined when no turn is active (an ISO string,
   // like every other timestamp on this model, converted from the wire's
