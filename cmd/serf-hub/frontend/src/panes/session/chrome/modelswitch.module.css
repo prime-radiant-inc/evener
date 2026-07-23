@@ -1,11 +1,91 @@
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+.anchor {
+  position: relative;
+  display: inline-flex;
 }
 
-.loading {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
+/* Quiet trigger: no border/background until hover, so the chip itself reads
+ * as the interactive element rather than a separate button beside it. */
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+
+.trigger:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.chevron {
   color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* Standard visually-hidden recipe (see statusrow.module.css's own copy of
+ * this comment) - names the trigger's action for assistive tech without
+ * hiding the model name itself, which stays in the chip's visible text. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Floating popover - zero layout shift when opened. Recipe matches
+ * widgets/menu's own .popup (position/z-index/surface/motion), the
+ * established pattern for this app's overlays - EXCEPT anchored from the
+ * bottom, not the top: this trigger lives in the footer row, hard against
+ * the pane's bottom edge, so a downward-opening popover has nowhere to go
+ * and clips off the viewport entirely. Opening upward puts it over the
+ * transcript area instead, which always has room. */
+.popover {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 1020;
+  width: max(360px, 100%);
+  max-height: min(400px, 70vh);
+  overflow-y: auto;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes popoverFadeScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popover {
+    animation: none;
+  }
 }

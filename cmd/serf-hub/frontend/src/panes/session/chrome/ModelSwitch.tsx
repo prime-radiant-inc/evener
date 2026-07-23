@@ -1,16 +1,18 @@
-// ModelSwitch: the mid-session model-switch Combobox, unblocked by the T1
-// addendum (`threadsStore.listModels`, commit da1b43f85 on w5-interaction,
-// cherry-picked here). Shows the current model as a passive chip; a
-// "Change model" trigger reveals a Combobox loaded from the catalog.
+// ModelSwitch: the mid-session model-switch trigger. The current model chip
+// IS the trigger (quiet hover affordance + a small chevron) - clicking it
+// opens the SAME rich catalog picker the spawn flow uses (ModelCatalogPanel:
+// search, capability badges, cost, context window, Recent, provider
+// diagnostics), as a floating popover so opening it never shifts the status
+// row's layout.
 //
-// The catalog is re-fetched on every open rather than cached in component
-// state: listModels() is ALREADY session-lifetime cached in the store
-// (da1b43f85's own doc comment), so a repeat call after the first is
-// effectively free - keeping a SECOND, component-local cache on top would
-// only add a staleness risk (a remount, e.g. a dockview tab switch, would
-// otherwise show a pointless "Loading models…" flash the store already
-// has the answer for, or worse, diverge from the store's own cache
-// lifetime) for no benefit.
+// The launchable SET still comes from threadsStore.listModels() (session-
+// lifetime cached in the store, da1b43f85's own doc comment - a repeat call
+// after the first is effectively free) since that's what's actually valid to
+// switch THIS session to; mergeScopedCatalog enriches those bare provider/
+// model pairs with the unscoped /api/models catalog's metadata, exactly the
+// way ModelField.tsx's settings (unscoped) call site already does - so this
+// reuses both the rendering AND the enrichment plumbing rather than
+// duplicating either.
 //
 // reasoningEffortLevels/supportsReasoning need no special handling here:
 // StatusRow already re-renders from the live ThreadModel on every store
@@ -20,10 +22,11 @@
 // for free.
 import { useEffect, useRef, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
-import type { ModelDescriptor } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Chip, Combobox, type ComboboxOption, useToasts } from "../../../widgets";
+import { Chip, type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
+import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
 import { isTurnActive } from "../composer/submitRouting";
 import styles from "./modelswitch.module.css";
 import { modelLabel } from "./statusFormat";
@@ -34,29 +37,12 @@ export interface ModelSwitchProps {
 }
 
 const CLASS = {
-  row: requireClass(styles.row, "modelswitch.module.css", "row"),
-  loading: requireClass(styles.loading, "modelswitch.module.css", "loading"),
+  anchor: requireClass(styles.anchor, "modelswitch.module.css", "anchor"),
+  trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
+  chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
+  srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
+  popover: requireClass(styles.popover, "modelswitch.module.css", "popover"),
 };
-
-interface ModelOption extends ComboboxOption {
-  provider: string;
-  model: string;
-}
-
-function toOptions(models: ModelDescriptor[]): ModelOption[] {
-  return models.map((m) => ({
-    id: `${m.provider}/${m.model}`,
-    label: modelLabel(m.provider, m.model),
-    provider: m.provider,
-    model: m.model,
-  }));
-}
-
-function filterOptions(options: ModelOption[], query: string): ModelOption[] {
-  const q = query.trim().toLowerCase();
-  if (!q) return options;
-  return options.filter((opt) => opt.label.toLowerCase().includes(q));
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -66,26 +52,29 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const toasts = useToasts();
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [allOptions, setAllOptions] = useState<ModelOption[]>([]);
-  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
 
   // A model switch mid-turn is refused by the daemon, so the trigger follows
   // the LIVE turn state, not only the static changeModel capability - the same
   // isTurnActive predicate Composer's own Stop/Steer gate uses.
   const busy = isTurnActive(model.status.type, model.activeTurnId);
+  const disabled = busy || !model.capabilities.changeModel;
 
   async function openPicker() {
-    if (busy || !model.capabilities.changeModel) return;
+    if (disabled) return;
     setOpen(true);
-    setQuery("");
+    setError(null);
     setLoading(true);
     try {
-      const resp = await threadsStore.getState().listModels();
-      setAllOptions(toOptions(resp.data));
+      const [scoped, enrichment] = await Promise.all([
+        threadsStore.getState().listModels(),
+        fetchModelCatalog().catch(() => null),
+      ]);
+      setCatalog(mergeScopedCatalog(scoped.data, enrichment));
     } catch (err) {
-      toasts.push("error", `Couldn't load models: ${errorMessage(err)}`);
-      setOpen(false);
+      setError(`Couldn't load models: ${errorMessage(err)}`);
     } finally {
       setLoading(false);
     }
@@ -95,13 +84,8 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     setOpen(false);
   }
 
-  // Escape and an outside click dismiss the open picker (not only its Cancel
-  // button). Both listen on document rather than the picker subtree so they
-  // fire wherever focus/the pointer actually is - the same containment idiom
-  // widgets/menu uses for its own outside-click. Escape stays two-stage for
-  // free: while the Combobox popup is open the Combobox consumes Escape and
-  // stops it (index.tsx's own case), so the first Escape only closes the
-  // popup and a second closes the picker here.
+  // Escape and an outside click dismiss the open popover - same containment
+  // idiom widgets/menu uses for its own outside-click.
   useEffect(() => {
     if (!open) return;
     function onKeyDown(event: KeyboardEvent) {
@@ -118,50 +102,44 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     };
   }, [open]);
 
-  async function handlePick(option: ModelOption) {
+  async function handlePick(entry: ModelCatalogEntry) {
     // Optimistic close (no rollback on failure) - matches the legacy
     // picker's own convention (parity-m5-composer.md §H): "Selecting a
     // model closes the picker immediately... a rejection surfaces as a
     // toast, with no rollback of the (already-closed) picker."
     setOpen(false);
     try {
-      await threadsStore.getState().setModel(sessionRef, option.provider, option.model);
+      await threadsStore.getState().setModel(sessionRef, entry.provider, entry.model);
     } catch (err) {
       toasts.push("error", `Couldn't change model: ${errorMessage(err)}`);
     }
   }
 
-  if (!open) {
-    return (
-      <div className={CLASS.row}>
-        <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
-        <Button
-          variant="quiet"
-          size="sm"
-          onClick={() => void openPicker()}
-          disabled={busy || !model.capabilities.changeModel}
-        >
-          Change model
-        </Button>
-      </div>
-    );
-  }
-
   return (
-    <div className={CLASS.row} ref={pickerRef}>
-      {loading ? (
-        <span className={CLASS.loading}>Loading models…</span>
-      ) : (
-        <Combobox
-          options={filterOptions(allOptions, query)}
-          onQuery={setQuery}
-          onPick={(option) => void handlePick(option)}
-          aria-label="Model"
-        />
+    <div className={CLASS.anchor} ref={pickerRef}>
+      <button
+        type="button"
+        className={CLASS.trigger}
+        onClick={() => (open ? closePicker() : void openPicker())}
+        disabled={disabled}
+      >
+        <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
+        <span className={CLASS.chevron} aria-hidden="true">
+          ▾
+        </span>
+        <span className={CLASS.srOnly}>— change model</span>
+      </button>
+      {open && (
+        <div className={CLASS.popover}>
+          <ModelCatalogPanel
+            loading={loading}
+            error={error}
+            catalog={catalog}
+            onPick={(entry) => void handlePick(entry)}
+            onCancel={closePicker}
+          />
+        </div>
       )}
-      <Button variant="quiet" size="sm" onClick={closePicker}>
-        Cancel
-      </Button>
     </div>
   );
 }
