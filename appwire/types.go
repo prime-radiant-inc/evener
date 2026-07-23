@@ -489,14 +489,17 @@ type SerfJobInfo struct {
 }
 
 type Turn struct {
-	ID          string       `json:"id"`
-	Items       []ThreadItem `json:"items,omitempty"`
-	ItemsView   string       `json:"itemsView"`
-	Status      string       `json:"status"`
-	Error       *TurnError   `json:"error,omitempty"`
-	StartedAt   *int64       `json:"startedAt,omitempty"`
-	CompletedAt *int64       `json:"completedAt,omitempty"`
-	DurationMS  *int64       `json:"durationMs,omitempty"`
+	ID        string       `json:"id"`
+	Items     []ThreadItem `json:"items,omitempty"`
+	ItemsView string       `json:"itemsView"`
+	Status    string       `json:"status"`
+	Error     *TurnError   `json:"error,omitempty"`
+	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
+	// the same scale as DurationMS and the web reducer's epoch-ms read. The
+	// appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
+	StartedAt   *int64 `json:"startedAt,omitempty"`
+	CompletedAt *int64 `json:"completedAt,omitempty"`
+	DurationMS  *int64 `json:"durationMs,omitempty"`
 	// Usage and Cost are the turn's own (not cumulative-session) token totals
 	// and estimated dollar cost — nil/empty when not computable (no usage
 	// data for this turn, or an uncataloged model). Populated live by
@@ -563,8 +566,11 @@ type ThreadItem struct {
 	Error                string        `json:"error,omitempty"`
 	OutputImages         []OutputImage `json:"outputImages,omitempty"`
 	Status               string        `json:"status,omitempty"`
-	StartedAt            *int64        `json:"startedAt,omitempty"`
-	CompletedAt          *int64        `json:"completedAt,omitempty"`
+	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil when unset),
+	// matching DurationMS's scale and the web reducer's epoch-ms read; stamped
+	// by the appprojector/apptranscript producers via time.Time.UnixMilli.
+	StartedAt   *int64 `json:"startedAt,omitempty"`
+	CompletedAt *int64 `json:"completedAt,omitempty"`
 	// DurationMS is the item's real server-measured runtime in milliseconds
 	// (tool-call items only). Stamped live from the event stream's own
 	// timestamps; nil when no honest span was recorded (issue #37: the web

@@ -26,7 +26,7 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		f.Add(mode, "alpha\r\nbeta")
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, text string) {
-		started := time.Now().Add(-90 * time.Second).Unix()
+		started := time.Now().Add(-90 * time.Second).UnixMilli()
 		thread := appwire.Thread{
 			ID: "thread", SessionID: "thread", Source: "remote", Name: text,
 			Preview: "preview", CWD: "/tmp/work", ModelProvider: "openai/gpt-4o",

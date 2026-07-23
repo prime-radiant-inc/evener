@@ -23,7 +23,7 @@ func FuzzCovWebTreeSessionPure(f *testing.F) {
 		if len(refText) > 256 || len(title) > 512 {
 			t.Skip()
 		}
-		now := time.Now().Unix() - 2
+		now := time.Now().UnixMilli() - 2000
 		for _, d := range []time.Duration{-time.Second, 0, time.Second, time.Minute, time.Hour + time.Minute} {
 			_ = compactDuration(d)
 		}

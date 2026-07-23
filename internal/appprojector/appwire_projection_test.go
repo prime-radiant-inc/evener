@@ -257,10 +257,10 @@ func TestAppEventProjectorTurnStartedCarriesStartedAt(t *testing.T) {
 		t.Fatalf("turn/started json: %v", err)
 	}
 	if params.Turn.StartedAt == nil {
-		t.Fatalf("turn/started StartedAt is nil, want %d", ts.Unix())
+		t.Fatalf("turn/started StartedAt is nil, want %d", ts.UnixMilli())
 	}
-	if *params.Turn.StartedAt != ts.Unix() {
-		t.Fatalf("turn/started StartedAt=%d, want %d", *params.Turn.StartedAt, ts.Unix())
+	if *params.Turn.StartedAt != ts.UnixMilli() {
+		t.Fatalf("turn/started StartedAt=%d, want %d", *params.Turn.StartedAt, ts.UnixMilli())
 	}
 }
 
@@ -729,8 +729,8 @@ func TestProjectorTurnEndedStampsTiming(t *testing.T) {
 	if turn.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("turn status=%s, want completed", turn.Status)
 	}
-	if turn.CompletedAt == nil || *turn.CompletedAt != ts.Unix() {
-		t.Fatalf("turn CompletedAt=%v, want %d", turn.CompletedAt, ts.Unix())
+	if turn.CompletedAt == nil || *turn.CompletedAt != ts.UnixMilli() {
+		t.Fatalf("turn CompletedAt=%v, want %d", turn.CompletedAt, ts.UnixMilli())
 	}
 	if turn.DurationMS == nil || *turn.DurationMS != 4200 {
 		t.Fatalf("turn DurationMS=%v, want 4200", turn.DurationMS)
@@ -2082,8 +2082,8 @@ func TestAppEventProjectorStampsToolItemTiming(t *testing.T) {
 		CallID:   "call_timed",
 	}})
 	item := notificationThreadItem(t, out, appwire.NotifyItemStarted)
-	if item.StartedAt == nil || *item.StartedAt != start.Unix() {
-		t.Fatalf("started item StartedAt=%v, want %d", item.StartedAt, start.Unix())
+	if item.StartedAt == nil || *item.StartedAt != start.UnixMilli() {
+		t.Fatalf("started item StartedAt=%v, want %d", item.StartedAt, start.UnixMilli())
 	}
 
 	out = projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Timestamp: end, Data: events.ToolCallEndData{
@@ -2092,11 +2092,11 @@ func TestAppEventProjectorStampsToolItemTiming(t *testing.T) {
 		Output:   "ok",
 	}})
 	item = notificationThreadItem(t, out, appwire.NotifyItemCompleted)
-	if item.StartedAt == nil || *item.StartedAt != start.Unix() {
-		t.Fatalf("completed item StartedAt=%v, want %d", item.StartedAt, start.Unix())
+	if item.StartedAt == nil || *item.StartedAt != start.UnixMilli() {
+		t.Fatalf("completed item StartedAt=%v, want %d", item.StartedAt, start.UnixMilli())
 	}
-	if item.CompletedAt == nil || *item.CompletedAt != end.Unix() {
-		t.Fatalf("completed item CompletedAt=%v, want %d", item.CompletedAt, end.Unix())
+	if item.CompletedAt == nil || *item.CompletedAt != end.UnixMilli() {
+		t.Fatalf("completed item CompletedAt=%v, want %d", item.CompletedAt, end.UnixMilli())
 	}
 	if item.DurationMS == nil || *item.DurationMS != 2500 {
 		t.Fatalf("completed item DurationMS=%v, want 2500", item.DurationMS)
