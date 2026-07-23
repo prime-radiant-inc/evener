@@ -25,7 +25,14 @@
 // old daemon with no tasksFn registered, which responds with null data
 // rather than rejecting - server/appwire_runtime.go:713-721) is folded into
 // the SAME "not available" state, for the same reason: nothing actually
-// went wrong at the transport level. Any other rejection is a genuine
+// went wrong at the transport level. A thread with no live local daemon
+// behind it (a one-shot CLI session that already exited, or one never
+// resumed) rejects ListTasks the same way its ref lookup fails: "thread not
+// found" (isThreadNotFound, below) - that folds into the SAME empty list a
+// real `[]` response renders, since the frontend has no way to distinguish
+// "never had tasks" from "can't currently ask", and the former is the
+// common case. Any other rejection - including the SAME sessionUnavailable
+// code for a daemon that's merely unreachable this instant - is a genuine
 // failure: toast (the wave's failure-feedback convention) AND an inline
 // error state, since there is nothing left to show in its place.
 import { useEffect, useState } from "react";
@@ -97,6 +104,25 @@ function isActionUnavailable(err: unknown): boolean {
   return err instanceof WireError && err.serfErrorInfo === "actionUnavailable";
 }
 
+// A local-source thread with no live daemon behind it (a one-shot CLI
+// session that already exited, or one never resumed) rejects ListTasks with
+// appwire.SessionUnavailable("thread not found: " + threadID) - the ONLY
+// call site that prefixes a sessionUnavailable message this way
+// (cmd/serf-hub/internal/appsource/local_daemon.go:551, entryForRef finding
+// no matching rendezvous entry). A live daemon that's merely unreachable
+// for a moment (connection reset, broken pipe, i/o timeout) is ALSO
+// sessionUnavailable, but as "local/codex daemon unavailable: ..."
+// (local_daemon.go:438-501, codex_source.go:522-591) - that must still
+// surface as a real error, so this checks the message prefix too, not just
+// the serfErrorInfo code.
+function isThreadNotFound(err: unknown): boolean {
+  return (
+    err instanceof WireError &&
+    err.serfErrorInfo === "sessionUnavailable" &&
+    err.message.startsWith("thread not found: ")
+  );
+}
+
 function TaskRowView({ task }: { task: TaskRow }) {
   return (
     <li className={CLASS.row} data-testid="task-row">
@@ -144,6 +170,10 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
         if (isActionUnavailable(err)) {
           setUnsupported(true);
           setRows(null);
+          return;
+        }
+        if (isThreadNotFound(err)) {
+          setRows([]);
           return;
         }
         setRows(null);
