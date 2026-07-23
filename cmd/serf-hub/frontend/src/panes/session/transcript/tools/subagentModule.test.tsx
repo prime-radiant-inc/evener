@@ -221,6 +221,30 @@ test("a running row shows the task and a running status", () => {
   expect(row.dataset.kind).toBe("running");
 });
 
+// Wire-true duration net: ItemModel.startedAt/completedAt are ISO strings the
+// reducer produces via epochMsToISO from the wire's epoch-MILLISECONDS
+// ThreadItem timestamps (reducer.ts:124-125; appwire/types.go stamps them via
+// time.Time.UnixMilli). durationLabel diffs those two ISO instants, so a real
+// 12-second span at a realistic ms epoch must read "12s" — reading the wire as
+// seconds would place both instants ~12ms apart (1970-relative) and floor to
+// "12ms". This locks the honest ms duration end to end at the consumer.
+test("a settled delegate row renders an honest ms-scale duration", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const startedMs = 1_700_000_000_000; // 2023-11-14T22:13:20Z — a realistic epoch-ms
+  const settled = delegateItem({
+    id: "d_done",
+    callId: "call_done",
+    argumentsJSON: JSON.stringify({ task: "did the thing" }),
+    output: JSON.stringify({ job_id: "job_d", status: "completed", transcript_ref: "ref_d" }),
+    startedAt: new Date(startedMs).toISOString(),
+    completedAt: new Date(startedMs + 12_000).toISOString(),
+  });
+  render(<Body item={settled} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByText("12s")).toBeTruthy();
+});
+
 test("a running row with a transcriptRef watches the child and shows a live Cadence indicator", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => ({
