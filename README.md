@@ -390,7 +390,6 @@ Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run
 ### Operating notes
 
 - **Daemons keep the binary they were spawned from.** Rebuilding `serf` does not update already-running daemons; live sessions continue to run the old code until they shut down. To pick up changes mid-session, end the session (which terminates its daemon), rebuild, and resume — resume reads the new binary. This matches typical daemonized-server behavior and is the same model as restarting a long-lived service after a deploy.
-- **Open-in-editor links** in `/settings/*` use `vscode://file/<path>` by default. Override with `SERF_HUB_EDITOR_URL_TEMPLATE` — a template string with the literal token `{path}` (URL-encoded but with `/` preserved). Examples: `cursor://file/{path}`, `zed://file/{path}`, `idea://open?file={path}`.
 - **Remote hosts**: see `docs/serf-hub-remote-operations.md` for the current deployment runbook, including credential handling, state directories, browser/TUI access, health checks, and Codex app-server sources.
 
 Design spec, plans, and notes live under `docs/superpowers/`.
