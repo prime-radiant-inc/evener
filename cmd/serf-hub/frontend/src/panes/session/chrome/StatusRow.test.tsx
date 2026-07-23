@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
+import { hydrateThread } from "../../../protocol/reducer";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
@@ -230,6 +231,43 @@ test("adds the live elapsed time of the in-flight turn to workMillis while one i
   );
   // 60s accumulated + 30s of the still-running turn = 90s = "1m".
   expect(screen.getByText("1m")).toBeTruthy();
+});
+
+// Wire-true reproduction of the W6-close punch item: a present-but-zero
+// SerfThread.ActiveTurnStartedAt (the daemon's zero value) runs through the
+// REAL reducer, whose epochMsToISO turns it into "1970-01-01T00:00:00.000Z"
+// (proven here first), and the status row must NOT render the resulting
+// now-minus-epoch span as an absurd "500000h" clock.
+test("renders the banked work time, not a now-minus-epoch clock, for a zero-valued activeTurnStartedAt off the wire", () => {
+  const now = 1_800_000_000_000;
+  const model = hydrateThread(
+    {
+      thread: {
+        id: "thr_a",
+        sessionId: "sess_a",
+        preview: "",
+        ephemeral: false,
+        modelProvider: "anthropic/claude-sonnet-4-5",
+        createdAt: 1000,
+        updatedAt: 1000,
+        status: { type: "active" },
+        cwd: "/tmp/project",
+        cliVersion: "1.0.0",
+        source: "serf",
+        serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, workMillis: 45_000, activeTurnStartedAt: 0 },
+      },
+    },
+    "ref_a",
+    now,
+  );
+  // The reducer really does surface the epoch sentinel - this is the wire
+  // truth the render has to survive.
+  expect(model.activeTurnStartedAt).toBe(new Date(0).toISOString());
+
+  render(<StatusRow sessionRef="ref_a" model={model} now={now} />);
+  const workTime = screen.getByTestId("status-row-work-time");
+  // Honest banked total (45s), never the ~500000h now-minus-epoch clock.
+  expect(workTime.textContent).toBe("45s");
 });
 
 // --- context gauge -----------------------------------------------------------
