@@ -68,16 +68,15 @@ test("totalWorkMillis adds the in-flight turn's live elapsed time on top of work
   expect(totalWorkMillis(60_000, startedAt, 1_030_000)).toBe(90_000);
 });
 
-// A wire ActiveTurnStartedAt of 0 (the daemon's zero value) does NOT reach the
-// reducer omitted - when it arrives present-but-zero, epochMsToISO (reducer.ts:
-// 78-80, which guards only `undefined`, never 0) turns it into
-// "1970-01-01T00:00:00.000Z". Trusting that as a real turn start makes the
-// in-flight term now-minus-epoch - an absurd ~500000h clock. The honest
-// reading: an anchor at or before the Unix epoch is the wire's "unset"
-// sentinel leaking through, not a turn that has run since 1970, so fall back
-// to the banked total. No clock beats an absurd one.
-test("ignores an at-epoch activeTurnStartedAt (the epochMsToISO(0) sentinel) instead of clocking now-minus-epoch", () => {
-  const epochAnchor = new Date(0).toISOString(); // exactly what epochMsToISO(0) produces
+// The reducer's epochMsToISO now maps a present-but-zero wire anchor to
+// absent at the source, so a 1970 ISO string should never arrive via hydrate.
+// This exercises statusFormat's own independent guard - defense-in-depth for
+// an epoch anchor reaching the model by any other path. Trusting one as a
+// real turn start makes the in-flight term now-minus-epoch - an absurd
+// ~500000h clock. An anchor at or before the Unix epoch is an unset sentinel,
+// not a turn that has run since 1970, so fall back to the banked total.
+test("ignores an at-epoch activeTurnStartedAt (defense-in-depth) instead of clocking now-minus-epoch", () => {
+  const epochAnchor = new Date(0).toISOString(); // the epoch sentinel shape
   expect(totalWorkMillis(45_000, epochAnchor, 1_800_000_000_000)).toBe(45_000);
 });
 

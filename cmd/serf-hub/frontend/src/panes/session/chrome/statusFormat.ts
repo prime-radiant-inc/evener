@@ -49,12 +49,12 @@ export function modelLabel(modelProvider: string, model: string): string {
 //
 // A real turn start is a positive Unix-epoch-ms wall-clock time. An anchor at
 // or before the epoch (or an unparseable one) is not a turn that has been
-// running since 1970 - it is the wire's "unset" sentinel leaking through: the
-// daemon's zero-valued SerfThread.ActiveTurnStartedAt, converted by the
-// reducer's epochMsToISO (reducer.ts:78-80, which guards only `undefined`,
-// never 0) into "1970-01-01T00:00:00.000Z". Trusting it would clock the whole
-// now-minus-epoch span (~500000h). Ignore it and show the banked total instead
-// - no clock beats an absurd one.
+// running since 1970 - it is the wire's "unset" sentinel leaking through. The
+// reducer's epochMsToISO now maps non-positive anchors to absent at the
+// source, so a 1970 ISO string should never arrive from hydrate; this guard
+// stays as defense-in-depth for an anchor reaching the model by any other
+// path. Trusting one would clock the whole now-minus-epoch span (~500000h).
+// Ignore it and show the banked total instead - no clock beats an absurd one.
 export function totalWorkMillis(workMillis: number, activeTurnStartedAt: string | undefined, now: number): number {
   if (!activeTurnStartedAt) return workMillis;
   const startedMs = Date.parse(activeTurnStartedAt);
