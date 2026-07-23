@@ -181,6 +181,43 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
   expect(screen.getByText("hi")).toBeTruthy();
 });
 
+// --- turn-failure recovery wiring (wave 8) -------------------------------
+//
+// TurnFailureEndCap's Retry/Reconnect action renders only when TurnBlock
+// receives the session ref (its canRetry gate), and TurnBlock gets that ref
+// solely from Session.tsx's own renderRow. TurnFailureEndCap.test.tsx already
+// proves the end-cap in isolation; this closes the gap that the feature is
+// actually LIVE in the real Session tree - without `sessionRef={ref}` on the
+// TurnBlock render, the diagnostic still renders but the recovery button is
+// dark (a shipped, tested feature silently non-functional).
+test("a failed turn's Retry action renders in the real Session tree (sessionRef wired through)", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "failed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "do the thing", status: "completed" }],
+          error: { message: "the provider exploded" },
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  // The diagnostic end-cap renders either way; the recovery button renders
+  // ONLY once the session ref threads through to TurnFailureEndCap.
+  expect(await screen.findByTestId("turn-failure")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
 test("ensureThread fires exactly once when the client is already ready at mount time", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
