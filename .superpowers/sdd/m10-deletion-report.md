@@ -230,3 +230,90 @@ Review verdict: **APPROVED**, repoint **ENDORSED**, three Minor findings closed 
 
 Fix-commit gates (AND-chained, worktree root): `go build ./...` **0** · `go test ./cmd/serf-hub/...`
 **0** · `make lint` **0 (7 modules)**. Frontend untouched (no frontend files in scope).
+
+## 9. M10 completion commits — raw-only /doc/file + delete internal/editorurl
+
+Two Jesse rulings executed on this branch (progress.md:491, items 3 and 5). Deletion discipline held:
+every deleted symbol was verified caller-free first; two consequential edits and one out-of-ruling
+discovery are called out explicitly.
+
+### Item 1 — raw-only /doc/file (`5d04baf7e` "webui m10: raw-only /doc/file, delete legacy HTML writers")
+
+`/doc/file` now serves one mode: the file's raw bytes (`?format=raw`). A request that omits format, or
+sends any other value, is `400` with the plain-text hint `format=raw required`. The format gate sits
+**after** the containment guard chain, so a raw and a non-raw request still reject the same
+out-of-cwd / unknown-session input identically — required to keep the existing raw parity tests
+(`TestDocFile_Raw_RejectsTraversalDotDot`, `TestDocFile_Raw_RejectsAbsolutePathEscape`, which assert
+`rawRec.Code == htmlRec.Code` where `htmlRec` is a non-raw request) passing. Placing the check before
+the guards (early 400) would have broken those two raw tests, so the ordering is load-bearing. The raw
+path (`writeDocFileRaw`, `docRawTotalSize`, `X-Doc-Truncated`/`X-Doc-Total-Size`) and `/doc/image` are
+byte-untouched. CSP/httpsec untouched — its `unsafe-inline` rationale names app.html/settings/
+credentials, not the doc pages, so no httpsec comment went stale.
+
+**RED-first evidence** — the 3 new tests, run against pre-deletion code, all failed serving the legacy
+HTML page:
+```
+--- FAIL: TestDocFile_MissingFormat_400  status=200 body="<!DOCTYPE html>...<pre class=\"doc-pre\">hello</pre>..."
+--- FAIL: TestDocFile_NonRawFormat_400    status=200 (format=html served the HTML page)
+--- FAIL: TestDocFile_EmptyFormat_400     status=200 (format= served the HTML page)
+```
+Post-implementation all three PASS, alongside the untouched raw + guard-rejection tests.
+
+**Deleted-symbol inventory** (each verified zero-caller before removal):
+
+| symbol | kind | callers removed |
+|---|---|---|
+| `writeDocPage` | func, doc_serve.go | 2 non-raw branches in `handleDocFile` + 2 fuzz call sites |
+| `writeDocMarkdownPage` | func, doc_serve.go | markdown branch in `handleDocFile` + 2 fuzz call sites |
+| `formatDocBytes` | func, doc_serve.go (Go) | binary-notice branch + 2 fuzz `for` loops |
+| `TestWriteDocPages_NoDeadAssetReferences` | test | task-directed; called the deleted writers directly |
+
+Also deleted 4 now-subjectless legacy HTML-serve tests (they asserted `200` + server-rendered HTML,
+the exact behavior removed): `TestDocFile_ServesTextFileEscaped`, `TestDocFile_RendersMarkdown`,
+`TestDocFile_BinaryNotice`, `TestDocFile_ServesWorktreeRelativePathForPaneNavigation`. Equivalent
+text/markdown/binary serving is fully covered by the kept `TestDocFile_Raw_Serves*` trio; guard
+rejection by the kept `TestDocFile_Rejects*` / `_UnknownSession404` / `_NonLocalSession404` (which pass
+unchanged — guards run before the format gate). No net loss of coverage of surviving behavior.
+
+Grep receipt (post): `git grep -E '\b(writeDocPage|writeDocMarkdownPage|formatDocBytes)\b' -- '*.go'`
+→ zero Go hits. (The surviving `formatDocBytes` is the separate TypeScript mirror in
+`frontend/src/panes/doc/docFile.ts`, untouched.)
+
+### Item 2 — delete internal/editorurl (this final commit "webui m10: delete internal/editorurl")
+
+Grep receipt (pre): `git grep 'serf/cmd/serf-hub/internal/editorurl' -- '*.go'` → no import-path
+reference anywhere; `git grep '\.EditorURL('` / `EditorURL(` → only inside the package. The package was
+genuinely unimported. Deleted the directory: `editorurl.go`, `editorurl_test.go`,
+`editorurl_fuzz_test.go` (symbol `EditorURL`, fuzz target `FuzzEditorURL`).
+
+**Consequential edit:** removed the now-dangling `FuzzEditorURL` registration at
+`scripts/run-fuzz.sh:541` — leaving it would aim the fuzz harness at a deleted package. `bash -n
+scripts/run-fuzz.sh` clean after.
+
+**Discovery OUTSIDE the ruling (reported, not acted on):** env var `SERF_HUB_EDITOR_URL_TEMPLATE`
+(`envvars.SERFHubEditorURLTemplate`) loses its ONLY consumer with editorurl gone, yet stays registered
+in the catalog — `envvars/envvars.go:66,171`, `cmd/serf-hub/main.go:480`, and asserted in
+`main_test.go` / `testmain_test.go`. It remains referenced (a slice member), so `unused` stays green and
+the build is unaffected; semantically it is now a dead knob. Removing it is a separate change to the
+public env-var catalog + its tests — outside the "delete the package" ruling — so it is left in place
+for Jesse's call.
+
+### Pre-existing observation on the `git grep htmx` gate
+
+`git grep htmx` outside `docs/` / `.superpowers/` is **not** empty at this branch's baseline: one prose
+hit, `test/scenarios/ask-cross-session-notify.md:107` ("...not an htmx partial, so no `HX-Request`
+header is needed"). It predates this work, is unchanged by it, and is outside both items' scope —
+flagged, not touched.
+
+### Gates
+
+| gate | Item 1 (`5d04baf7e`) | Item 2 (final) |
+|---|---|---|
+| `go build ./...` | 0 | 0 |
+| `go test ./cmd/serf-hub/...` | 0 | 0 |
+| `make lint` (7 modules, incl. `unused`) | 0 | 0 |
+| frontend `tsc --noEmit` | — | 0 |
+| frontend `vitest run` (bare, logged) | — | 243 files / 3490 tests pass (baseline unchanged) |
+| frontend `npm run lint` (biome, 668 files) | — | 0 |
+| frontend `npm run build` + `git restore dist/PLACEHOLDER` | — | 0, dist tree clean |
+| `git grep htmx` outside docs/.superpowers | — | unchanged (1 pre-existing prose hit, above) |
