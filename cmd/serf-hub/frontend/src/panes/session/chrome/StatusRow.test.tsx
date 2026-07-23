@@ -327,14 +327,28 @@ test("renders the banked work time, not a now-minus-epoch clock, for a zero-valu
     "ref_a",
     now,
   );
-  // The reducer really does surface the epoch sentinel - this is the wire
-  // truth the render has to survive.
-  expect(model.activeTurnStartedAt).toBe(new Date(0).toISOString());
+  // The reducer's source guard maps the wire's zero sentinel to absent, so
+  // the render takes the no-active-turn path.
+  expect(model.activeTurnStartedAt).toBeUndefined();
 
   render(<StatusRow sessionRef="ref_a" model={model} now={now} />);
   const workTime = screen.getByTestId("status-row-work-time");
   // Honest banked total (45s), never the ~500000h now-minus-epoch clock.
   expect(workTime.textContent).toBe("45s");
+});
+
+test("renders the banked work time even if an epoch anchor reaches the model by another path", () => {
+  // Defense-in-depth: statusFormat rejects at-or-before-epoch anchors on its
+  // own, independent of the reducer's source guard.
+  const now = 1_800_000_000_000;
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ workMillis: 45_000, activeTurnStartedAt: new Date(0).toISOString() })}
+      now={now}
+    />,
+  );
+  expect(screen.getByTestId("status-row-work-time").textContent).toBe("45s");
 });
 
 // --- context gauge -----------------------------------------------------------
