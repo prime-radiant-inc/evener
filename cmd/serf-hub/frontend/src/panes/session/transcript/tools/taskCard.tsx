@@ -56,10 +56,6 @@ function asObjectArray(value: unknown): Record<string, unknown>[] {
   return value.filter((v): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v));
 }
 
-function taskAction(item: ItemModel): string {
-  return str(parseArgs(item.argumentsJSON), "action") ?? "";
-}
-
 // A valid mutation is exactly what the legacy validAppend/validUpdate gates
 // accepted (renderer.js:4786-4788): append with a non-empty tasks array, or
 // update with a non-empty updates array. Anything else (view, or a malformed
