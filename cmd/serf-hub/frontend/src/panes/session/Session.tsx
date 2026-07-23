@@ -179,7 +179,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => <TurnBlock turn={turnAt(index)} />}
+              renderRow={(index) => <TurnBlock turn={turnAt(index)} sessionRef={ref} />}
             />
           </FlowOverlay>
         </div>

@@ -102,7 +102,7 @@ function DocImageView({ session, path }: { session: string; path: string }) {
 
   return (
     <>
-      <button type="button" className={CLASS.imageButton} onClick={() => setZoomed(true)}>
+      <button type="button" aria-label="Zoom image" className={CLASS.imageButton} onClick={() => setZoomed(true)}>
         <img data-testid="doc-image" className={CLASS.image} src={src} alt={name} onError={() => setFailed(true)} />
       </button>
       {zoomed && (

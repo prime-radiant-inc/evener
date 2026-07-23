@@ -107,8 +107,16 @@ test("a malformed / non-mutation task_list with no error renders nothing", () =>
   expect(screen.queryByTestId("tool-call-item")).toBe(null);
 });
 
-test("a note-only update (no recognized status change, no progress footer) shows the head but no per-row status change", () => {
-  renderItem(taskItem({ action: "update", updates: [{ id: 1, notes: "added a caveat" }] }, "Updated 1."));
+test("a reopen update (status open, not a flagged touch) shows the head but no per-row status change", () => {
+  // Wire-true fixture: the Go tool rejects a status-less update (task_store.go
+  // Update: status must be open/in_progress/done/cancelled), so a bare
+  // {id, notes} → "Updated 1." pair can never reach the frontend. The real
+  // update that touches a task without earning a row is a reopen to "open",
+  // which formatTaskUpdates renders as "1→open" and the card treats as no
+  // flagged touch (TOUCH_BY_STATUS covers only done/cancelled/in_progress).
+  renderItem(
+    taskItem({ action: "update", updates: [{ id: 1, status: "open", notes: "added a caveat" }] }, "Updated 1→open."),
+  );
   expect(screen.getByTestId("task-card")).toBeTruthy();
   expect(screen.queryByTestId("task-card-row")).toBe(null);
 });
