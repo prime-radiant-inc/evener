@@ -76,10 +76,12 @@ subset:
 
 **Not in this list because already reviewed:** the W6 spawn-hygiene pair (`d0d186106`/`8469050e2`,
 review approved, ledger), the W6 close micro-items, MW5 and its fix round (reviewed on main), the two
-perf passes (reviewed on their branches). **Still to be added at final-review time:** the W8 →
-integration merge + any W8 controller wiring; the M10 deletion + flag-flip series (itself
-`deletion-review-approved` per ledger — but its **merge resolution + flag flip** is controller work);
-and any fix commits M9 surfaces.
+perf passes (reviewed on their branches). **Get a focused re-review as they land, not audited in this
+pass** (controller ruling, ledgered 2026-07-22): the W8 → integration merge + any W8 controller wiring;
+the M10 deletion + flag-flip series (itself `deletion-review-approved` per ledger — but its **merge
+resolution + flag flip** is controller work). The final review confirms each of those landed
+re-reviews happened, then audits the residue directly — any fix commits M9 surfaces — via the
+re-enumeration recipe (§2a).
 
 ---
 
@@ -101,8 +103,10 @@ has silently changed and that the ratified ones stayed ratified — it does **no
 
 ## 4. The final review's own duties (a checklist, not new analysis)
 
-1. **Audit the controller-authored layer** (§2, re-enumerated) — merge resolutions are supersets of
-   both parents; `make generate` yields zero diff; the deletion merge + flag-flip are correct.
+1. **Audit the controller-authored layer** (§2, re-enumerated), scoped to the residue — the M10
+   deletion merge/flag-flip and the W8 → integration merge each already got a focused re-review as
+   they landed (§2); confirm those ran, then audit what remains: merge resolutions are supersets of
+   both parents; `make generate` yields zero diff.
 2. **Confirm the five cross-wave seams still cohere** on the final tree (last review's Duty 2 is the
    baseline — re-confirm, don't re-derive): prefs single-source; requireclass over the union; `initPrefs`
    + single scheme-listener; settings dispatch-map vs section registry; `ItemModel.error`/`exitCode`
@@ -325,6 +329,6 @@ review flags any deletion decision that outran the pre-approval.
   re-analysis; §10 reads M9's S7 evidence rather than re-testing.
 - **The controller layer is the audit target**, correctly identified as the only never-adversarially-
   reviewed work, with a method that survives the commits landing between now and the final review.
-- **Open question for the controller** — see the return note: whether the deletion series and the W8
-  merge should each get a *focused* controller-commit re-review as they land (keeping the final review's
-  audit surface small), or all be audited in one pass at the end.
+- **Focused per-landing re-review is the operating procedure.** The M10 deletion series and the W8 →
+  integration merge each get a focused controller-commit re-review as they land (ruling, ledgered
+  2026-07-22); this final pass audits only the residue via the re-enumeration recipe (§2, §4 Duty 1).
