@@ -1,0 +1,40 @@
+/* Tokens-only layout (this directory isn't a widgets/<name> module, so it is
+ * not eligible for the token-contract allowlist - same note as
+ * queuestrip.module.css). An optimistic chip is "in flight", which is NOT one
+ * of the four attention-family meanings this app reserves a hue for, so it is
+ * dimmed rather than colored. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  font-size: var(--font-size-caption);
+  opacity: 0.6;
+}
+
+.method {
+  flex: 0 0 auto;
+  color: var(--ink-mid);
+  font-weight: var(--font-weight-medium);
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink-hi);
+}
