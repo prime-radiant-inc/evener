@@ -23,3 +23,25 @@
   padding-left: var(--space-4);
   border-left: 2px solid var(--edge);
 }
+
+/* modelPicker field: the ModelCatalog is a composite widget, so the row is a
+ * plain label + widget + help block (like the spawn form's Model field), not a
+ * FormRow with a single labelable control. */
+.modelBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  align-items: flex-start;
+}
+
+.modelLabel {
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+.modelHelp {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

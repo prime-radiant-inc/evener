@@ -1,10 +1,31 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LaunchOption } from "../../../../protocol/types.gen";
+import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import { PromptCompositeField, ScalarField } from "./fields";
 
+// The modelPicker kind renders the rich ModelCatalog widget, which calls the
+// REST /api/models loader on open; mock it so these render tests stay hermetic.
+vi.mock("../../../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
+
+beforeEach(() => {
+  vi.mocked(fetchModelCatalog).mockReset();
+  vi.mocked(fetchModelCatalog).mockResolvedValue({ models: [], recent: [], diagnostics: [] });
+});
 afterEach(cleanup);
+
+function modelPickerOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
+  return {
+    field: "model",
+    wireField: "model",
+    label: "Model",
+    group: "Model",
+    kind: "modelPicker",
+    perLaunch: true,
+    ...overrides,
+  };
+}
 
 function textOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
   return {
@@ -18,25 +39,13 @@ function textOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
   };
 }
 
-describe("ScalarField: text/modelPicker/path kinds render as a plain labeled input", () => {
+describe("ScalarField: text/path kinds render as a plain labeled input", () => {
   test("text kind renders an Input with the option's label", async () => {
     const onChange = vi.fn();
     render(<ScalarField option={textOption()} layer="global" value="" onChange={onChange} />);
     const input = screen.getByLabelText("Agent");
     await userEvent.type(input, "x");
     expect(onChange).toHaveBeenCalledWith("x");
-  });
-
-  test("modelPicker kind renders as a free-text input (Appendix A's search popup is out of scope)", () => {
-    render(
-      <ScalarField
-        option={textOption({ field: "model", wireField: "model", label: "Model", kind: "modelPicker" })}
-        layer="global"
-        value="anthropic/claude"
-        onChange={() => {}}
-      />,
-    );
-    expect(screen.getByLabelText("Model")).toHaveProperty("value", "anthropic/claude");
   });
 
   test("path kind renders as a free-text input (PathPicker only supports dir listing, not file/outputFile)", () => {
@@ -88,6 +97,51 @@ describe("ScalarField: text/modelPicker/path kinds render as a plain labeled inp
     );
     expect(screen.getByText("invalid path")).toBeTruthy();
     expect(screen.queryByText("Write a trace here.")).toBeNull();
+  });
+});
+
+describe("ScalarField: modelPicker renders the rich model catalog", () => {
+  test("shows the current qualified value and a Change model affordance, not a free-text input", () => {
+    render(<ScalarField option={modelPickerOption()} layer="global" value="anthropic/claude" onChange={() => {}} />);
+    expect(screen.getByText("Model")).toBeTruthy(); // the field label
+    expect(screen.getByText("anthropic/claude")).toBeTruthy(); // current value chip
+    expect(screen.getByRole("button", { name: "Change model" })).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull(); // no free-text input anymore
+  });
+
+  test("an empty value shows the default marker", () => {
+    render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={() => {}} />);
+    expect(screen.getByText("(default)")).toBeTruthy();
+  });
+
+  test("picking a model from the catalog reports its qualified id via onChange", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    vi.mocked(fetchModelCatalog).mockResolvedValue({
+      models: [{ provider: "openai", model: "gpt-5", displayName: "GPT-5" }],
+      recent: [],
+      diagnostics: [],
+    });
+    render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={onChange} />);
+
+    await user.click(screen.getByRole("button", { name: "Change model" }));
+    const combo = await screen.findByRole("combobox", { name: "Model" });
+    await user.type(combo, "gpt");
+    await user.click(await screen.findByText("GPT-5"));
+
+    expect(onChange).toHaveBeenCalledWith("openai/gpt-5");
+  });
+
+  test("renders the field description as help text", () => {
+    render(
+      <ScalarField
+        option={modelPickerOption({ description: "The model to launch with." })}
+        layer="global"
+        value=""
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByText("The model to launch with.")).toBeTruthy();
   });
 });
 
