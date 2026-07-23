@@ -351,6 +351,33 @@ test("renders the banked work time even if an epoch anchor reaches the model by 
   expect(screen.getByTestId("status-row-work-time").textContent).toBe("45s");
 });
 
+// --- location cluster -------------------------------------------------------
+// Composition proof only - LocationCluster.test.tsx owns the omit/order/title
+// behavior; this confirms StatusRow actually mounts it with the live model.
+test("surfaces the session's location facts (branch/project/cwd) in the row", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ gitBranch: "feature/x", projectPath: "/proj", cwd: "/proj/wt" })}
+      now={1000}
+    />,
+  );
+  const location = screen.getByTestId("status-row-location");
+  expect(location.textContent).toContain("feature/x");
+  expect(location.textContent).toContain("/proj");
+});
+
+test("shows no location cluster when the thread carries no location facts", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ gitBranch: undefined, projectPath: undefined, cwd: "" })}
+      now={1000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-location")).toBeNull();
+});
+
 // --- context gauge -----------------------------------------------------------
 
 test("renders no context gauge when the thread has no context window data", () => {
