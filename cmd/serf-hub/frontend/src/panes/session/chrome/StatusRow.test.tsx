@@ -47,6 +47,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }
@@ -142,6 +143,7 @@ test("renders an interactive select from reasoningEffortLevels, valued at the cu
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
+        cwd: "/tmp/project",
         reasoningEffortLevels: ["low", "medium", "high"],
         reasoningEffort: "medium",
       })}
@@ -203,6 +205,7 @@ test("collapses a ladder-listed 'none' into (default) rather than a duplicate op
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
+        cwd: "/tmp/project",
         reasoningEffortLevels: ["none", "low", "medium", "high"],
         reasoningEffort: "none",
       })}
@@ -229,6 +232,7 @@ test("changing the reasoning-effort select calls setReasoningEffort with the new
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
+        cwd: "/tmp/project",
         reasoningEffortLevels: ["low", "medium", "high"],
         reasoningEffort: "medium",
       })}

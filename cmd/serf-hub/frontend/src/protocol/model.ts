@@ -125,4 +125,11 @@ export interface ThreadModel {
   // profile - see reducer.ts's own case) - never independently pushed.
   reasoningEffortLevels: string[];
   supportsReasoning: boolean;
+  // Location facts from the wire Thread snapshot: cwd is always present;
+  // gitBranch/projectPath only when known. Consumed by the session chrome's
+  // location cluster and doc-pane cwd-relativization. Snapshot-only - a
+  // reconnect re-hydrates them; nothing pushes them live.
+  cwd: string;
+  gitBranch?: string;
+  projectPath?: string;
 }
