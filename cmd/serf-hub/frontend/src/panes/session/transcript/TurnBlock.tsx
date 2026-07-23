@@ -54,7 +54,7 @@ export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
     <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
       {turn.items.map((item) => {
         const ItemRenderer = itemRendererFor(item.type);
-        return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} />;
+        return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} sessionRef={sessionRef} />;
       })}
       {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
       <TurnSeparator turn={turn} />

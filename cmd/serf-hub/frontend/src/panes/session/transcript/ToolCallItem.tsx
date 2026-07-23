@@ -7,6 +7,7 @@
 import { memo, useLayoutEffect, useRef, useState } from "react";
 import { Chip } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
 import styles from "./toolcallitem.module.css";
 import { toolRendererFor } from "./toolRenderers";
@@ -35,9 +36,18 @@ function toolFailed(item: ItemRenderProps["item"]): boolean {
 // toolRenderers.ts's ToolRenderProps), so a fresh turn object on every
 // streaming delta targeting a DIFFERENT item must not re-render an
 // already-settled tool call.
-export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRenderProps) {
+export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef }: ItemRenderProps) {
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
+  // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
+  // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
+  // beside" control in the row's summary (floor §3.7). The control itself gates
+  // out-of-cwd paths (renders nothing), so this only needs the path + the ref.
+  const openBesidePath = descriptor.openBesidePath?.(item);
+  const openBesideButton =
+    openBesidePath !== undefined && sessionRef !== undefined ? (
+      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
+    ) : null;
   // outputImages is a generic ItemModel field any tool call can carry (the
   // wire's ToolCallEndData.OutputImages, agent/events/payloads.go), not
   // owned by any one descriptor - rendered here, once, so every current and
@@ -83,6 +93,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <span className={CLASS.summary}>{descriptor.summary(item)}</span>
+        {openBesideButton}
       </div>
     );
   }
@@ -118,6 +129,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live }: ItemRende
             the one thing that needs the eye (parity §11:261). */}
         {failed && <Chip tone="danger">Failed</Chip>}
         {descriptor.summary(item)}
+        {openBesideButton}
       </summary>
       {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
       {Body && <Body item={item} live={live} />}
