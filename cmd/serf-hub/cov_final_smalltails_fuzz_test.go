@@ -72,12 +72,9 @@ func FuzzFinalSmalltails(f *testing.F) {
 		)
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, StateDir: state, PokeAttention: func() {}})
 
-		_ = web.detailsSections("live")
 		_ = web.workspaceData("live")
-		_ = web.detailsSections("status-only")
 		_ = web.workspaceData("status-only")
 		status.Model, status.WorkingDir, status.State, status.Usage, status.WorkMillis, status.ContextWindow = "", "", "", nil, 0, 0
-		_ = web.detailsSections("live")
 		_ = web.workspaceData("live")
 		_ = workspaceDataFromAppThread(appwire.Thread{Status: appwire.ThreadStatus{}, Serf: appwire.SerfThread{Goal: &appwire.GoalState{Status: "active", Iterations: 2}}})
 
@@ -105,9 +102,6 @@ func FuzzFinalSmalltails(f *testing.F) {
 
 		thread := appwire.Thread{ID: "child", Source: "remote", Serf: appwire.SerfThread{Kind: "subagent", ParentRef: "remote:root"}, Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "agentMessage", Text: "x"}}}}}
 		_ = subagentPreviewFromThread(thread, "", 1)
-		for _, target := range []string{"/?ref=missing:child", "/?ref=missing:child&limit=1"} {
-			web.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
-		}
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, web.sources, appwire.ThreadTranscriptListParams{})
 		_ = threadRef(appwire.Thread{})
 		_ = transcriptTargetSource("bad", "fallback")

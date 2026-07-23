@@ -12,68 +12,14 @@ import (
 	"unicode"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/envvars"
 	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
 var webSpawnLoadClient = cmdutil.LoadClient
-
-// handleWorkspaceSpawn renders the prompt-first spawn surface partial.
-// Accepts an optional ?dir=<absolute path> query param. When present and the
-// path is absolute and exists, it pre-fills the working_dir chip — used by
-// the sidebar's per-project "+" button to open spawn already scoped to a
-// project.
-func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request) {
-	defaultWorkingDir := "(pick a directory)"
-	defaultWorkingDirValue := ""
-	if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
-		if resolved, err := fspaths.CanonicalizeDir(dir); err == nil {
-			defaultWorkingDir = resolved
-			defaultWorkingDirValue = resolved
-		}
-	}
-	data := spawnViewData{
-		DefaultModel:           "(pick a model)",
-		DefaultHarness:         "serf",
-		DefaultWorkingDir:      defaultWorkingDir,
-		DefaultWorkingDirValue: defaultWorkingDirValue,
-		DefaultBranch:          "(default)",
-		DefaultAccessMode:      "full",
-		DefaultPrompt:          r.URL.Query().Get("prompt"),
-		SafeEnv:                safeSpawnEnv(),
-	}
-	for _, descriptor := range launchHarnessDescriptors(s.cfg) {
-		data.Harnesses = append(data.Harnesses, launchHarness{ID: descriptor.ID, Label: descriptor.Label})
-	}
-	if s.cfg.Past != nil {
-		results := s.cfg.Past.Search("", 5, 0)
-		for _, e := range results {
-			if e.Meta.OriginalPrompt != "" {
-				data.RecentPrompts = append(data.RecentPrompts, e.Meta.OriginalPrompt)
-			}
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.spawnTmpl.ExecuteTemplate(w, "spawn", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-}
-
-func safeSpawnEnv() map[string]string {
-	out := map[string]string{}
-	for _, v := range []envvars.Var{envvars.SERFModel, envvars.SERFReasoningEffort} {
-		if value := v.Trimmed(); value != "" {
-			out[v.Name] = value
-		}
-	}
-	return out
-}
 
 func sandboxForAccessMode(mode string) string {
 	mode = strings.TrimSpace(mode)
@@ -236,16 +182,6 @@ func writeModelsResponse(w http.ResponseWriter, models []map[string]any, diagnos
 		"diagnostics": diagnostics,
 		"recent":      recent,
 	})
-}
-
-func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {
-	info := diagnostic.FromFields(string(diagnostic.SourceHub), "Model list unavailable", "", err.Error())
-	return appwire.ModelListDiagnostic{
-		Source:  string(info.Source),
-		Title:   info.Title,
-		Message: err.Error(),
-		Hint:    info.Hint,
-	}
 }
 
 // datedSnapshotSuffix matches a trailing dated-snapshot suffix on a bare

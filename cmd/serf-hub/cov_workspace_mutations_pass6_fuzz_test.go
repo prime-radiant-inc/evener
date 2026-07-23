@@ -106,11 +106,9 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			web.handleSession(httptest.NewRecorder(), r)
 		case 1:
 			bad := template.New("bad")
-			web.appTmpl, web.workspaceTmpl, web.threadTmpl, web.inputStripTmpl = bad, bad, bad, bad
+			web.appTmpl, web.threadTmpl = bad, bad
 			web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/s/remote:thread", nil))
-			web.renderWorkspacePartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
 			web.renderThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:missing")
-			web.renderInputStrip(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "ended")
 		case 2:
 			web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/ended", nil))
 			web.renderThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:missing")

@@ -14,7 +14,3 @@ func (s *WebServer) handleCredentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
-
-func (s *WebServer) handleCredentialsPartial(w http.ResponseWriter, r *http.Request) {
-	s.renderSettingsPartial(w, r, "credentials")
-}

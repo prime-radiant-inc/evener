@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -107,28 +105,13 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 				web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
 			}
 		case 7:
-			web.renderWorkspacePartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
-			web.renderWorkspacePartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
 			for _, target := range []string{"/thread/remote:thread", "/thread/remote:missing", "/thread/", "/thread/a/b"} {
 				web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
 			}
-		case 8:
-			web.renderDetailsPanel(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "child")
-			_ = web.detailsSections("missing")
-			var b bytes.Buffer
-			renderDetailsRow(&b, detailsRow{Label: text, Value: text, HTML: "<b>x</b>", Copy: true, Mono: true, Wide: true, DataRow: text})
-			_ = tokensAndCostRows(text, nil)
-			_ = tokensAndCostRows("openai/gpt-4o", thread.Serf.Usage)
-			_ = contextMeterHTML(-1, 2, 1, -1)
-			_ = contextMeterHTML(2, 2, 1, 0)
-			_ = appwireUsageFromHub(nil)
 		case 9:
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
-			web.renderInputStrip(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?thread_document=1", nil), "remote:thread")
 		case 10:
-			web.handleWorkspaceSpawn(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/new?dir="+t.TempDir()+"&prompt=x", nil))
-			_ = safeSpawnEnv()
 			_ = launchHarnessIDs(web.cfg)
 			for _, body := range []string{"{", `{}`, `{"prompt":"x"}`} {
 				web.handleApiSpawn(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(body)))
@@ -142,7 +125,6 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 			_ = web.overlayLiveEntries(models)
 			_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", text)
 			_ = behaviorTagFor(nil, text)
-			_ = launchModelListErrorDiagnostic(errors.New(text))
 			_ = prettifyModelDisplayName(text)
 			_ = isDatedSnapshotModelID(text)
 			_ = isDatedSnapshotModelID("provider/model-20251101-v1")

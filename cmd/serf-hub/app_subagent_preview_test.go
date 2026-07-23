@@ -1,15 +1,9 @@
 package main
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
 func TestSubagentPreviewBoundsLatestDirectItems(t *testing.T) {
@@ -66,50 +60,4 @@ func TestSubagentPreviewClampLimit(t *testing.T) {
 	if got := len(subagentPreviewFromThread(thread, "local:child", -2).Items); got != 3 {
 		t.Fatalf("negative limit should default to 3, got %d", got)
 	}
-}
-
-func TestSubagentPreviewEndpointReadsRefWithoutChangingJobSemantics(t *testing.T) {
-	fake := &previewScriptedSource{thread: appwire.Thread{
-		ID: "child-preview", SessionID: "child-preview", Serf: appwire.SerfThread{Ref: "local:child-preview"},
-		Turns: []appwire.Turn{{ID: "turn_1", Items: []appwire.ThreadItem{
-			{Type: "agentMessage", Text: "first"},
-			{Type: "commandExecution", ToolName: "grep_files", Description: "search billing", Status: "completed"},
-			{Type: "agentMessage", Text: "third"},
-			{Type: "agentMessage", Text: "fourth"},
-		}}},
-	}}
-	sources := appsource.NewRegistry()
-	sources.Add(fake)
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
-	web.sources = sources
-
-	req := httptest.NewRequest(http.MethodGet, "/_api/subagent-preview?ref=local%3Achild-preview&limit=2", nil)
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	if fake.readParams.Ref != "local:child-preview" || !fake.readParams.IncludeTurns || fake.readParams.ItemsView != "full" {
-		t.Fatalf("read params=%+v", fake.readParams)
-	}
-	if strings.Contains(rec.Body.String(), "first") || strings.Contains(rec.Body.String(), "search billing") {
-		t.Fatalf("response should be bounded to latest two items, got %s", rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "third") || !strings.Contains(rec.Body.String(), "fourth") {
-		t.Fatalf("response missing expected preview snippets: %s", rec.Body.String())
-	}
-}
-
-type previewScriptedSource struct {
-	relayLifecycleSource
-	thread     appwire.Thread
-	readParams appwire.ThreadReadParams
-}
-
-func (s *previewScriptedSource) ID() string { return "local" }
-
-func (s *previewScriptedSource) ReadThread(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	s.readParams = params
-	return appwire.ThreadReadResponse{Thread: s.thread}, nil
 }

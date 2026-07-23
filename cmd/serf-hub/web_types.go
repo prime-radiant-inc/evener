@@ -1,12 +1,10 @@
 package main
 
 import (
-	"html/template"
 	"sync"
 	"time"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/hubapi"
 )
 
@@ -28,111 +26,6 @@ type searchResult struct {
 type searchResponse struct {
 	Live []searchResult `json:"live"`
 	Past []searchResult `json:"past"`
-}
-
-// agentDisplay is one row in Settings → Agents.
-type agentDisplay struct {
-	Name     string
-	EditPath template.URL
-}
-
-// pluginCounts summarises components contributed by a plugin.
-type pluginCounts struct {
-	Skills int
-	Agents int
-	Mcps   int
-	Hooks  int
-}
-
-// pluginDisplay is one row in Settings → Plugins.
-type pluginDisplay struct {
-	Name     string
-	Path     string
-	Version  string
-	Counts   pluginCounts
-	EditPath template.URL
-}
-
-// skillDisplay is one row in Settings → Skills.
-type skillDisplay struct {
-	Name        string
-	Plugin      string
-	Description string
-	EditPath    template.URL
-}
-
-// mcpDisplay is one row in Settings → MCP servers.
-type mcpDisplay struct {
-	Name      string
-	Command   string
-	Args      []string
-	Transport string // "stdio", "sse", or "http" — from mcpprobe.Result.Transport
-	Status    string // "available" | "unreachable" | "missing" — from mcpprobe.Result.Status
-	Error     string // populated whenever Status isn't "available"; empty otherwise
-	Tools     int
-	Agents    []string
-	EditPath  template.URL
-}
-
-// settingsData is the template data passed to all settings section templates.
-type settingsData struct {
-	Active            string
-	HubAddr           string
-	RunDir            string
-	StateDir          string
-	SpawnTimeout      string
-	PastPerPage       int
-	Providers         []providerDisplay
-	ModelDiagnostics  []appwire.ModelListDiagnostic
-	Agents            []agentDisplay
-	Plugins           []pluginDisplay
-	PluginsError      string
-	Skills            []skillDisplay
-	Mcps              []mcpDisplay
-	McpsError         string
-	McpConfigPath     string
-	PastCount         int
-	PastIndexPath     string // path to past index SQLite file (e.g. ~/.serf/index.db)
-	PastIndexSize     string // human-readable size of the past index file, empty if unavailable
-	BearerTokenAge    string // human-readable age of the auth token file, empty if unavailable
-	HubVersion        string // Version constant (e.g. "0.1.0")
-	HubCommit         string // git commit hash injected at build time, empty in dev builds
-	CodexLaunches     []codexlaunch.CodexLaunchConfig
-	ProjectCWD        string            // canonical cwd for the per-project settings page
-	AvailableProjects []projectListItem // known projects shown when ProjectCWD is empty
-}
-
-// projectListItem is one row in the project picker on the /settings/project page.
-type projectListItem struct {
-	CWD  string
-	Name string
-}
-
-// providerDisplay groups model descriptors by provider for the providers page.
-type providerDisplay struct {
-	Name   string
-	Models []string
-}
-
-// spawnViewData is the template data for the spawn partial.
-type spawnViewData struct {
-	DefaultModel           string
-	DefaultModelValue      string
-	DefaultHarness         string
-	DefaultWorkingDir      string
-	DefaultWorkingDirValue string
-	DefaultBranch          string
-	DefaultBranchValue     string
-	DefaultAccessMode      string
-	DefaultPrompt          string // optional ?prompt= pre-fill
-	RecentPrompts          []string
-	Harnesses              []launchHarness
-	SafeEnv                map[string]string
-}
-
-type launchHarness struct {
-	ID    string
-	Label string
 }
 
 // spawnRequest is the JSON body for POST /api/spawn. Items

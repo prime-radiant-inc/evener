@@ -166,15 +166,6 @@ func FuzzExactTails(f *testing.F) {
 		_, _ = hubThreadList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadListParams{Limit: 1})
 		_, _ = hubThreadTranscriptList(context.Background(), hubcore.WebConfig{}, reg, appwire.ThreadTranscriptListParams{})
 
-		// Defensive HTTP branches that require no ambient services.
-		web.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=remote:missing", nil))
-		pastWeb := NewWebServer(hubcore.WebConfig{Past: past})
-		pastWeb.sources = appsource.NewRegistry()
-		pastWeb.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=local:past", nil))
-		errSource := &pass6TailSource{scriptedAppSource: &scriptedAppSource{id: "local"}, readErr: errors.New("read")}
-		pastWeb.sources.Add(errSource)
-		pastWeb.handleSubagentPreview(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/?ref=local:past", nil))
-
 		// Missing live sources are a distinct API failure from ended sessions.
 		roster := hubcore.NewRosterWithEntries(
 			hubcore.LiveEntry{SessionID: "live-a", Entry: rendezvous.Entry{SessionID: "live-a"}},
@@ -261,11 +252,6 @@ func FuzzExactTails(f *testing.F) {
 		_ = appendProjectDeleteLiveSkip(nil, "id")
 		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
 		t.Setenv(envvars.Home.Name, "")
-		writeJSON(httptest.NewRecorder(), make(chan int))
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
-		partialReq := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
-		partialReq.Header.Set("HX-Request", "true")
-		web.handleInternalPartial(httptest.NewRecorder(), partialReq)
-		web.handleInternalPartial(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_partials/unknown", nil))
 	})
 }

@@ -115,13 +115,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		web.cfg.AuthToken = "a b"
 		web.handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 
-		call(web.handleInternalPartial, "POST", "/_partials/workspace/empty", "")
-		call(web.handleInternalPartial, http.MethodGet, "/_partials/workspace/empty", "")
-		for _, p := range []string{"/_partials/s/", "/_partials/s/local:ended/workspace", "/_partials/s/ended/state", "/_partials/s/ended/details", "/_partials/s/ended/tasks", "/_partials/s/ended/nope", "/_partials/nope"} {
-			r := httptest.NewRequest(http.MethodGet, p, nil)
-			r.Header.Set("HX-Request", "true")
-			web.handleInternalPartial(httptest.NewRecorder(), r)
-		}
 		_ = canonicalRouteID("local:x")
 
 		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")

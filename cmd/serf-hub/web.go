@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,18 +23,12 @@ import (
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg                 hubcore.WebConfig
-	appTmpl             *template.Template
-	workspaceTmpl       *template.Template
-	workspaceEmptyTmpl  *template.Template
-	threadTmpl          *template.Template
-	spawnTmpl           *template.Template
-	inputStripTmpl      *template.Template
-	projectSettingsTmpl *template.Template
-	settingsTmpls       map[string]*template.Template
-	appRPC              *appserver.Server
-	sources             *appsource.Registry
-	startedAt           time.Time
+	cfg        hubcore.WebConfig
+	appTmpl    *template.Template
+	threadTmpl *template.Template
+	appRPC     *appserver.Server
+	sources    *appsource.Registry
+	startedAt  time.Time
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -68,52 +61,25 @@ var manifestMarshal = json.Marshal
 // NewWebServer constructs the web server. Templates are parsed from embed.FS.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
-	workspaceTmpl := template.Must(template.New("workspace.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
-		"templates/partials/workspace.html",
-		"templates/partials/input_strip.html",
-	))
-	workspaceEmptyTmpl := template.Must(template.New("workspace_empty.html").ParseFS(templatesRoot(), "templates/partials/workspace_empty.html"))
 	threadTmpl := template.Must(template.New("thread.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
 		"templates/thread.html",
 		"templates/partials/workspace.html",
 		"templates/partials/input_strip.html",
 	))
-	spawnTmpl := template.Must(template.ParseFS(templatesRoot(),
-		"templates/partials/spawn.html",
-	))
-	inputStripTmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
-		"templates/partials/input_strip.html",
-	))
-	projectSettingsTmpl := template.Must(template.ParseFS(templatesRoot(),
-		"templates/partials/settings/project.html",
-	))
-	settingsSections := []string{"general", "theme", "transcript", "display", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "plugins-manager", "skills", "mcp", "hub", "storage", "credentials"}
-	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
-	for _, sec := range settingsSections {
-		files := []string{"templates/partials/settings.html"}
-		if sec == "credentials" {
-			files = append(files, "templates/partials/credentials.html")
-		} else {
-			files = append(files, "templates/partials/settings/"+sec+".html")
-		}
-		settingsTmpls[sec] = template.Must(template.ParseFS(templatesRoot(), files...))
-	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
 		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl,
-		workspaceTmpl: workspaceTmpl, workspaceEmptyTmpl: workspaceEmptyTmpl, threadTmpl: threadTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
-		projectSettingsTmpl: projectSettingsTmpl,
-		settingsTmpls:       settingsTmpls,
-		sources:             sources,
-		startedAt:           time.Now().UTC(),
-		resumeLocks:         map[string]*sync.Mutex{},
-		lastGoodThreads:     map[string][]appwire.Thread{},
-		liveModels:          &modelsCache{},
-		treeCache:           &hubcore.TreeCache{},
-		manifestFS:          assetsRoot(),
+		threadTmpl:      threadTmpl,
+		sources:         sources,
+		startedAt:       time.Now().UTC(),
+		resumeLocks:     map[string]*sync.Mutex{},
+		lastGoodThreads: map[string][]appwire.Thread{},
+		liveModels:      &modelsCache{},
+		treeCache:       &hubcore.TreeCache{},
+		manifestFS:      assetsRoot(),
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web
@@ -181,7 +147,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/s/", s.handleSession)
 	mux.HandleFunc("/thread/", s.handleThreadDocument)
 	mux.HandleFunc("/new", s.handleIndex)
-	mux.HandleFunc("/_partials/", s.handleInternalPartial)
 
 	// Document panes — read-only file/markdown viewer framed by a side pane.
 	mux.HandleFunc("/doc/file", s.handleDocFile)
@@ -193,7 +158,6 @@ func (s *WebServer) Handler() http.Handler {
 
 	// Credentials
 	mux.HandleFunc("/credentials", s.handleCredentials)
-	mux.HandleFunc("/_partials/credentials", s.handleCredentialsPartial)
 
 	// API
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
@@ -204,7 +168,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
-	mux.HandleFunc("/_api/subagent-preview", s.handleSubagentPreview)
 	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
 	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)
@@ -288,65 +251,6 @@ func (s *WebServer) handleManifest(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(out)
 }
 
-// handleInternalPartial is the only route family that serves HTMX fragments.
-// Keeping fragments under /_partials prevents direct navigation to app-shell
-// internals that need sidebar scripts, client state, or a containing pane.
-func (s *WebServer) handleInternalPartial(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	if r.Header.Get("HX-Request") != "true" {
-		http.NotFound(w, r)
-		return
-	}
-
-	switch {
-	case r.URL.Path == "/_partials/workspace/empty":
-		s.handleWorkspaceEmpty(w, r)
-	case r.URL.Path == "/_partials/workspace/spawn":
-		s.handleWorkspaceSpawn(w, r)
-	case strings.HasPrefix(r.URL.Path, "/_partials/s/"):
-		s.handleSessionPartial(w, r)
-	case strings.HasPrefix(r.URL.Path, "/_partials/settings"):
-		section := strings.TrimPrefix(r.URL.Path, "/_partials/settings")
-		section = strings.TrimPrefix(section, "/")
-		if section == "" {
-			section = "general"
-		}
-		s.renderSettingsPartial(w, r, section)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
-func (s *WebServer) handleSessionPartial(w http.ResponseWriter, r *http.Request) {
-	path := strings.TrimPrefix(r.URL.Path, "/_partials/s/")
-	parts := strings.SplitN(path, "/", 2)
-	id := parts[0]
-	if id == "" {
-		http.NotFound(w, r)
-		return
-	}
-	id = canonicalRouteID(id)
-	sub := ""
-	if len(parts) == 2 {
-		sub = parts[1]
-	}
-	switch sub {
-	case "workspace":
-		s.renderWorkspacePartial(w, r, id)
-	case "state":
-		s.renderInputStrip(w, r, id)
-	case "details":
-		s.renderDetailsPanel(w, r, id)
-	case "tasks":
-		s.renderSessionTasks(w, r, id)
-	default:
-		http.NotFound(w, r)
-	}
-}
-
 func localAppRef(threadID string) string {
 	return appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 }
@@ -380,66 +284,4 @@ func splitProviderModel(raw string) (string, string) {
 		return "", strings.TrimSpace(raw)
 	}
 	return provider, model
-}
-
-type launchpadRow struct {
-	ID, Href, PartialHref, Title, Project, Age string
-}
-
-type workspaceEmptyData struct {
-	Rows        []launchpadRow
-	AllArchived bool
-}
-
-// handleWorkspaceEmpty renders the home launchpad: up to 8 sessions across
-// projects from the Current+Recent tiers, most-recently-touched first. No
-// live status dots — the home page has no appwire connection, so age-only
-// markup can't go stale.
-func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
-	tree, _ := s.memoTree(r.Context())
-	var sessions []hubcore.TreeNode
-	for _, p := range tree.Projects {
-		if p.IsArchived || p.IsTestRun {
-			continue
-		}
-		for _, n := range append(append([]hubcore.TreeNode{}, p.Current...), p.Recent...) {
-			if n.Kind == "session" || n.Kind == "fork" {
-				sessions = append(sessions, n)
-			}
-		}
-	}
-	// Stable, matching the web_api_tree.go ordering precedent: equal UpdatedAt
-	// rows keep their tree order instead of shuffling between renders.
-	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt) })
-	if len(sessions) > 8 {
-		sessions = sessions[:8]
-	}
-	data := workspaceEmptyData{}
-	for _, n := range sessions {
-		title := n.Title
-		if title == "" {
-			title = "Untitled session"
-		}
-		data.Rows = append(data.Rows, launchpadRow{
-			ID: n.ID, Href: "/s/" + n.ID, PartialHref: "/_partials/s/" + n.ID + "/workspace",
-			Title: title, Project: n.Project, Age: n.Age,
-		})
-	}
-	// Every session archived (or none): the quiet wordmark welcome is honest;
-	// when archived sessions exist the search affordance says so. Require an
-	// actual archived session — rows can also be empty for non-archive
-	// reasons (e.g. tiers holding only clusters/subagents), and then the
-	// "search all sessions" label would be a lie.
-	archivedAny := len(tree.ArchivedProjects) > 0
-	for _, p := range tree.Projects {
-		if p.IsArchived || len(p.Archived) > 0 {
-			archivedAny = true
-			break
-		}
-	}
-	data.AllArchived = len(sessions) == 0 && archivedAny
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.workspaceEmptyTmpl.ExecuteTemplate(w, "workspace_empty", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
 }

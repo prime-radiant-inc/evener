@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -185,33 +182,6 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 	f.Fuzz(func(t *testing.T, selector byte) {
 		ctx := context.Background()
 		switch selector % 11 {
-		case 0, 1, 2, 3, 4:
-			registry := appsource.NewRegistry()
-			if selector%11 == 4 {
-				registry.Add(&previewScriptedSource{thread: appwire.Thread{
-					ID: "child", Serf: appwire.SerfThread{Ref: appwire.Ref{SourceID: "local", ThreadID: "child"}.String()},
-					Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{Type: "message", Text: "done"}}}},
-				}})
-			}
-			web := NewWebServer(hubcore.WebConfig{})
-			web.sources = registry
-			method, target := http.MethodGet, "/_api/subagent-preview?ref=local%3Achild&limit=1"
-			switch selector % 11 {
-			case 0:
-				method = http.MethodPost
-			case 1:
-				target = "/_api/subagent-preview"
-			case 2:
-				target = "/_api/subagent-preview?ref=local%3Achild&limit=nope"
-			case 3:
-				target = "/_api/subagent-preview?ref=missing%3Achild"
-			}
-			rec := httptest.NewRecorder()
-			web.handleSubagentPreview(rec, httptest.NewRequest(method, target, nil))
-			want := []int{http.StatusMethodNotAllowed, http.StatusBadRequest, http.StatusBadRequest, http.StatusNotFound, http.StatusOK}[selector%11]
-			if rec.Code != want {
-				t.Fatalf("preview status=%d want %d body=%s", rec.Code, want, rec.Body.String())
-			}
 		case 5:
 			source := &scriptedAppSource{id: "local", thread: appwire.Thread{Serf: appwire.SerfThread{Capabilities: appwire.ThreadCapabilities{}}}}
 			if err := ensureThreadActionAvailable(ctx, source, "local:id", "", "compact"); err == nil {
@@ -240,40 +210,6 @@ func FuzzCovRPCThreadsHandlers(f *testing.F) {
 			server := appserver.NewServer(appserver.ServerConfig{})
 			notifyMarketplaceUpdated(server)
 			notifyPluginUpdated(server)
-		case 9:
-			writer := &failingResponseWriter{header: make(http.Header)}
-			writeJSON(writer, map[string]string{"ok": "yes"})
-			if writer.status != http.StatusInternalServerError {
-				t.Fatalf("writeJSON status=%d", writer.status)
-			}
-		case 10:
-			registry := appsource.NewRegistry()
-			registry.Add(&previewErrorSource{})
-			web := NewWebServer(hubcore.WebConfig{})
-			web.sources = registry
-			rec := httptest.NewRecorder()
-			web.handleSubagentPreview(rec, httptest.NewRequest(http.MethodGet, "/_api/subagent-preview?ref=local%3Achild", nil))
-			if rec.Code != http.StatusBadGateway {
-				t.Fatalf("read-error preview status=%d body=%s", rec.Code, rec.Body.String())
-			}
 		}
 	})
-}
-
-type previewErrorSource struct{ relayLifecycleSource }
-
-func (*previewErrorSource) ID() string { return "local" }
-func (*previewErrorSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-	return appwire.ThreadReadResponse{}, errors.New("scripted read failure")
-}
-
-type failingResponseWriter struct {
-	header http.Header
-	status int
-}
-
-func (w *failingResponseWriter) Header() http.Header  { return w.header }
-func (w *failingResponseWriter) WriteHeader(code int) { w.status = code }
-func (w *failingResponseWriter) Write([]byte) (int, error) {
-	return 0, errors.New("scripted write failure")
 }
