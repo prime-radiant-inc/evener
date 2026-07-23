@@ -89,13 +89,6 @@ func FuzzSessionLivePass4(f *testing.F) {
 		case 0:
 			_ = record(http.MethodPost, "/api/sessions/remote%3Athread-1/send", `{"text":"hello"}`)
 			_ = record(http.MethodPost, "/api/sessions/remote%3Athread-1/send", `{"items":[{"type":"text","text":"item"}]}`)
-		case 1:
-			rec := httptest.NewRecorder()
-			web.handleSteer(rec, httptest.NewRequest(http.MethodPost, "/steer", strings.NewReader(`{"text":" steer ","turn_id":" t "}`)), ref)
-			web.handleQueue(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/queue", strings.NewReader(`{"text":" queued "}`)), ref)
-		case 2:
-			web.handleDrainAsSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/drain", strings.NewReader(`{"text":" drained "}`)), ref)
-			web.handleDrainAsSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/drain", nil), ref)
 		case 3:
 			for _, action := range []string{"interrupt", "clear", "shutdown"} {
 				web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/"+action, strings.NewReader(`{"turn_id":"turn-2"}`)), ref, action)
@@ -152,7 +145,6 @@ func FuzzSessionLivePass4(f *testing.F) {
 				t.Fatal(err)
 			}
 			forkWeb := NewWebServer(hubcore.WebConfig{StateDir: stateDir})
-			forkWeb.handleFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/fork", strings.NewReader(`{"turn":1,"edited_message":"revised","label":"branch"}`)), parentID)
 			forkWeb.handleAPIFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/fork", strings.NewReader(`{"turn":1,"edited_message":"again"}`)), parentID)
 		}
 	})

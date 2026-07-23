@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -140,9 +139,6 @@ func FuzzCovExactWebSession(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { secondHit.handleSend(w, r, "hit") }, http.MethodPost, "/s/hit/send", `{"text":"hi"}`)
 		webRosterFind = oldRosterFind
 		webSourceForThread = oldSourceForThread
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleSteer(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/steer", `{"text":"go"}`)
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleQueue(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/queue", `{"text":"later"}`)
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleDrainAsSteer(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/drain-as-steer", `{}`)
 		for _, action := range []string{"interrupt", "clear", "shutdown", "unknown"} {
 			call(func(w http.ResponseWriter, r *http.Request) { web.handleSessionAction(w, r, "remote:live", action) }, http.MethodPost, "/s/remote:live/"+action, `{}`)
 		}
@@ -175,32 +171,12 @@ func FuzzCovExactWebSession(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { managedWeb.handleSend(w, r, "managed:thread") }, http.MethodPost, "/s/managed:thread/send", `{"text":"hi"}`)
 		webManagedLaunchSourceIDForRef = oldManaged
 
-		invalidItems := make([]appwire.InputItem, 9)
-		for i := range invalidItems {
-			invalidItems[i].Type = "image"
-		}
-		invalidBody, err := json.Marshal(queueRequest{Items: invalidItems})
-		if err != nil {
-			t.Fatal(err)
-		}
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleQueue(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/queue", string(invalidBody))
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleDrainAsSteer(w, r, "remote:live") }, http.MethodPost, "/s/remote:live/drain-as-steer", string(invalidBody))
-
 		vanishing := func(run func(*WebServer)) {
 			w := NewWebServer(hubcore.WebConfig{Roster: roster})
 			v := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, registry: w.sources, removeAt: 2}
 			w.sources.Add(v)
 			run(w)
 		}
-		vanishing(func(w *WebServer) {
-			call(func(rw http.ResponseWriter, r *http.Request) { w.handleSteer(rw, r, "remote:live") }, http.MethodPost, "/s/remote:live/steer", `{"text":"go"}`)
-		})
-		vanishing(func(w *WebServer) {
-			call(func(rw http.ResponseWriter, r *http.Request) { w.handleQueue(rw, r, "remote:live") }, http.MethodPost, "/s/remote:live/queue", `{"text":"later"}`)
-		})
-		vanishing(func(w *WebServer) {
-			call(func(rw http.ResponseWriter, r *http.Request) { w.handleDrainAsSteer(rw, r, "remote:live") }, http.MethodPost, "/s/remote:live/drain-as-steer", `{}`)
-		})
 		vanishing(func(w *WebServer) {
 			call(func(rw http.ResponseWriter, r *http.Request) {
 				w.handleSessionAction(rw, r, "remote:live", "interrupt")

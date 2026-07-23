@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,13 +104,9 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 			r.Header.Set("HX-Request", "true")
 			web.handleSession(httptest.NewRecorder(), r)
 		case 1:
-			bad := template.New("bad")
-			web.appTmpl, web.threadTmpl = bad, bad
 			web.handleSession(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/s/remote:thread", nil))
-			web.renderThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:missing")
 		case 2:
 			web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/ended", nil))
-			web.renderThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:missing")
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "remote:thread")
 			source.tasksErr = errors.New("tasks")
 			web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "ended")

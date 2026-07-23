@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,8 +15,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/net/html"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -95,77 +92,6 @@ func TestLocalRouteID_CleanBreakAndExternalRefs(t *testing.T) {
 	}
 }
 
-// controlTag returns the opening <button …> tag whose attributes contain the
-// given marker (a stable hook like a data-* attribute). Assertions check a
-// control's state — disabled, capability flags — off this tag instead of
-// pinning the exact class list or inner markup, which churn with styling.
-func controlTag(t *testing.T, body, marker string) string {
-	t.Helper()
-	i := strings.Index(body, marker)
-	if i == -1 {
-		t.Fatalf("control %q not found in:\n%s", marker, body)
-	}
-	start := strings.LastIndex(body[:i], "<button")
-	if start == -1 {
-		t.Fatalf("no <button> opening tag precedes %q", marker)
-	}
-	rel := strings.Index(body[start:], ">")
-	if rel == -1 {
-		t.Fatalf("unterminated <button> tag for %q", marker)
-	}
-	return body[start : start+rel+1]
-}
-
-func findElement(root *html.Node, matches func(*html.Node) bool) *html.Node {
-	if root.Type == html.ElementNode && matches(root) {
-		return root
-	}
-	for child := root.FirstChild; child != nil; child = child.NextSibling {
-		if found := findElement(child, matches); found != nil {
-			return found
-		}
-	}
-	return nil
-}
-
-func hasHTMLAttribute(node *html.Node, name string) bool {
-	for _, attr := range node.Attr {
-		if attr.Key == name {
-			return true
-		}
-	}
-	return false
-}
-
-func hasHTMLClass(node *html.Node, class string) bool {
-	for _, attr := range node.Attr {
-		if attr.Key == "class" {
-			for _, nodeClass := range strings.Fields(attr.Val) {
-				if nodeClass == class {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func isHTMLDescendant(ancestor, node *html.Node) bool {
-	for node = node.Parent; node != nil; node = node.Parent {
-		if node == ancestor {
-			return true
-		}
-	}
-	return false
-}
-
-func requireHTMLDescendant(t *testing.T, ancestor, node *html.Node, description string) {
-	t.Helper()
-	if ancestor == nil || node == nil || !isHTMLDescendant(ancestor, node) {
-		t.Fatalf("%s", description)
-	}
-}
-
 // injectMetasForTest replaces the past index with one holding the given metas.
 func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 	idx := hubcore.NewPastIndex("")
@@ -197,61 +123,6 @@ func allTreeProjects(t *testing.T, web *WebServer, resp hubapi.TreeResponse) []h
 		out = append(out, full)
 	}
 	return out
-}
-
-func TestWeb_Landing_Renders(t *testing.T) {
-	r := hubcore.NewRoster(t.TempDir(), nil)
-	idx := hubcore.NewPastIndex("")
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  r,
-		Past:    idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `id="sidebar"`) {
-		t.Errorf("body missing #sidebar: %q", body)
-	}
-	if !strings.Contains(body, `id="workspace"`) {
-		t.Errorf("body missing #workspace: %q", body)
-	}
-}
-
-// The htmx history element must be #workspace, not the default <body>. A
-// body-wide history snapshot includes every asset <script> tag, and htmx
-// re-executes them on history restore (e.g. iOS swipe-back), double-binding
-// all delegated handlers so each tap toggles twice — every button "dead".
-func TestWeb_AppShellScopesHtmxHistoryToWorkspace(t *testing.T) {
-	r := hubcore.NewRoster(t.TempDir(), nil)
-	idx := hubcore.NewPastIndex("")
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  r,
-		Past:    idx,
-	})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	start := strings.Index(body, `<main id="workspace"`)
-	if start == -1 {
-		t.Fatalf("body missing <main id=\"workspace\">")
-	}
-	tag := body[start : strings.Index(body[start:], ">")+start+1]
-	if !strings.Contains(tag, "hx-history-elt") {
-		t.Errorf("#workspace must carry hx-history-elt so history restores never re-run body scripts; got tag %q", tag)
-	}
 }
 
 func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
@@ -836,7 +707,7 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 	})
 	web.sources.Add(source)
 
-	req := httptest.NewRequest(http.MethodPost, "/s/th_no_send/send", strings.NewReader(`{"text":"hi"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:th_no_send/send", strings.NewReader(`{"text":"hi"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -850,47 +721,6 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "send is not available") {
 		t.Fatalf("body=%s", rec.Body.String())
-	}
-}
-
-func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	// The sidebar is now an empty client-rendered mount point (sidebar.js owns
-	// its content via /api/tree, not an htmx-fetched partial), so only the
-	// mount points themselves are app-shell assertions worth pinning here.
-	if !strings.Contains(body, `id="sidebar"`) {
-		t.Errorf("missing #sidebar")
-	}
-	if !strings.Contains(body, `id="workspace"`) {
-		t.Errorf("missing #workspace")
-	}
-	if !strings.Contains(body, `hx-get="/_partials/workspace/empty"`) {
-		t.Errorf("missing workspace partial hx-get")
-	}
-}
-
-func TestWeb_AppShellHasSidePaneRegion(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	for _, want := range []string{`id="side-panes"`, `id="pane-splitter"`, `panes.js`} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("app shell missing %q", want)
-		}
 	}
 }
 
@@ -919,50 +749,6 @@ func TestWeb_APITreeProjectUnknownKeyErrors(t *testing.T) {
 	}
 }
 
-func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	for _, path := range []string{
-		"/_partials/workspace/empty",
-		"/_partials/workspace/spawn",
-		"/_partials/settings/general",
-	} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s status=%d body=%q", path, rec.Code, rec.Body.String())
-		}
-	}
-}
-
-func TestWeb_LegacyPartialRoutesDoNotServeFragments(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	for _, path := range []string{"/sidebar", "/workspace/empty", "/workspace/spawn"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("%s status=%d body=%q", path, rec.Code, rec.Body.String())
-		}
-	}
-}
-
-func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), `hx-get="/_partials/settings/theme"`) {
-		t.Fatalf("settings full page did not load internal partial:\n%s", rec.Body.String())
-	}
-}
-
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
 // render lane requires: "awaiting" reads as "Your move" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than
@@ -973,30 +759,6 @@ func TestStateLabel_ErroredAndNeedsYou(t *testing.T) {
 	}
 	if got := stateLabel("awaiting", false); got != "Your move" {
 		t.Fatalf("stateLabel(awaiting) = %q, want \"Your move\"", got)
-	}
-}
-
-// TestWeb_Index_NewRouteForwardsPromptToWorkspace verifies that /new?prompt=<text>
-// renders the app shell wired to /_partials/workspace/spawn?prompt=<text> so the textarea
-// pre-fill kicks in once the workspace partial loads.
-func TestWeb_Index_NewRouteForwardsPromptToWorkspace(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodGet, "/new?prompt="+url.QueryEscape("hello world"), nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	// html/template escapes "+" → "&#43;" inside attribute values.
-	want := `/_partials/workspace/spawn?prompt=hello&#43;world`
-	if !strings.Contains(body, want) {
-		t.Fatalf("app shell missing forwarded ?prompt in workspace url %q:\n%s", want, body)
 	}
 }
 
@@ -1836,141 +1598,6 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 	}
 }
 
-// TestWeb_SessionRoute_FullPage_ServesAppShell verifies that GET /s/<id> without
-// HX-Request returns the app shell (not the workspace partial).
-func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodGet, "/s/anysession", nil)
-	req.Host = "127.0.0.1:9180"
-	// No HX-Request header — should serve full app shell.
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `id="sidebar"`) {
-		t.Errorf("full-page /s/<id> missing app shell sidebar")
-	}
-	if !strings.Contains(body, `id="workspace"`) {
-		t.Errorf("full-page /s/<id> missing app shell workspace mount")
-	}
-	if !strings.Contains(body, `hx-get="/_partials/s/anysession/workspace"`) {
-		t.Errorf("full-page /s/<id> missing internal workspace partial URL")
-	}
-}
-
-func TestWeb_ThreadDocument_DirectGet_ServesChromeLessThreadDocument(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/thread/anysession", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		`<!DOCTYPE html>`,
-		`<body class="thread-document"`,
-		`id="conversation"`,
-		`data-input-form`,
-		`/assets/renderer.js`,
-		`/assets/appwire.js`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("thread document missing %q in %q", want, body)
-		}
-	}
-	for _, forbidden := range []string{
-		`id="sidebar"`,
-		`id="search-dialog"`,
-		`data-sidebar-toggle`,
-		`settings-link`,
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("thread document should not contain %q in %q", forbidden, body)
-		}
-	}
-}
-
-func TestWeb_ThreadDocument_RouteEncoding(t *testing.T) {
-	// Seed the past index with a local session whose canonical ID is valid.
-	// (what canonicalRouteID produces by stripping the "local:" source prefix).
-	// The test then requests an encoded local ref — the %3A must be decoded
-	// to ':' before the prefix is stripped, otherwise the wrong key is used and
-	// the registered session is not found.
-	stateParent := t.TempDir()
-	stateDir := filepath.Join(stateParent, "project-route-0000000000")
-	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
-	sessionMeta := schema.SessionMeta{
-		ID:   sessionID,
-		Name: "route-encoding-test-title",
-	}
-	if err := schema.SaveSessionMeta(stateDir, sessionMeta); err != nil {
-		t.Fatalf("SaveSessionMeta: %v", err)
-	}
-	past := hubcore.NewPastIndex(stateParent + "/*")
-	if _, err := past.Rebuild(); err != nil {
-		t.Fatalf("past.Rebuild: %v", err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    past,
-	})
-
-	// Encoded local ref: %3A must decode to ':' so the source prefix is stripped
-	// and the local session is resolved from the past index.
-	t.Run("encoded-local-ref", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/thread/local%3A"+sessionID, nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status=%d", rec.Code)
-		}
-		if !strings.Contains(rec.Body.String(), "route-encoding-test-title") {
-			t.Errorf("body should contain session title after URL decode; got:\n%s", rec.Body.String())
-		}
-	})
-
-	// Non-local source: encoded separator still decoded, handler returns OK with
-	// fallback workspace (no codex source configured in this test).
-	t.Run("encoded-remote-ref", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/thread/codex%3Ath_active", nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status=%d", rec.Code)
-		}
-	})
-
-	// Plain session ID with no encoding needed.
-	t.Run("bare-session", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/thread/bare-session", nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status=%d", rec.Code)
-		}
-	})
-}
-
 func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -1986,160 +1613,6 @@ func TestWeb_ThreadDocument_SecurityHeaders(t *testing.T) {
 	csp := rec.Header().Get("Content-Security-Policy")
 	if !strings.Contains(csp, "frame-ancestors 'self'") {
 		t.Fatalf("thread document should preserve same-origin frame policy, CSP=%q", csp)
-	}
-}
-
-func TestWeb_ThreadDocument_CompactsSubagentChromeAndFooter(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	data := WorkspaceData{
-		ID:                 "local:child",
-		Title:              "child",
-		SourceLabel:        "local",
-		State:              "ended",
-		StateLabel:         "ended",
-		TurnCount:          36,
-		WorkingDir:         "/projects/serf",
-		Branch:             "main",
-		Model:              "gpt-5.5",
-		ParentRouteID:      "local:parent",
-		ParentTitle:        "parent",
-		ThreadDocumentMode: true,
-		ShowSidebarToggle:  false,
-	}
-	rec := httptest.NewRecorder()
-	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	body := rec.Body.String()
-	for _, forbidden := range []string{
-		`class="subagent-parent-banner"`,
-		`subagent-parent-esc`,
-		`<span class="status-key">src</span>`,
-		`<span class="status-key">cwd</span>`,
-		`<span class="status-key">branch</span>`,
-		`class="status-item turns"`,
-	} {
-		if strings.Contains(body, forbidden) {
-			t.Fatalf("thread document contains compact-forbidden markup %q in:\n%s", forbidden, body)
-		}
-	}
-	for _, required := range []string{
-		`class="workspace-title-row"`,
-		`class="message-input"`,
-		`data-task-status-text`,
-		`class="status-badge"`,
-		`class="input-telemetry" data-input-telemetry`,
-	} {
-		if !strings.Contains(body, required) {
-			t.Fatalf("thread document missing compact-required markup %q in:\n%s", required, body)
-		}
-	}
-	if !strings.Contains(body, `hx-get="/_partials/s/local:child/state?thread_document=1"`) {
-		t.Fatalf("thread document status refresh must preserve thread-document mode:\n%s", body)
-	}
-}
-
-func TestWeb_ThreadDocument_ComposerControlsLiveInsideInputCard(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	data := WorkspaceData{
-		ID:                 "local:child",
-		Title:              "child",
-		State:              "idle",
-		StateLabel:         "idle",
-		Model:              "gpt-5.5",
-		Capabilities:       hubapi.SessionCapabilities{Send: true, Steer: true},
-		ThreadDocumentMode: true,
-		ShowSidebarToggle:  false,
-	}
-	rec := httptest.NewRecorder()
-	if err := web.threadTmpl.ExecuteTemplate(rec, "thread_document", data); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	body := rec.Body.String()
-	document, err := html.Parse(strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("parse rendered thread document: %v", err)
-	}
-	composerSurface := findElement(document, func(node *html.Node) bool { return hasHTMLAttribute(node, "data-composer-surface") })
-	inputCard := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-card") })
-	messageInput := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "message-input") })
-	inputControls := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-controls") })
-	controlsLeft := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "controls-left") })
-	taskTrigger := findElement(document, func(node *html.Node) bool { return hasHTMLAttribute(node, "data-tasks-trigger") })
-	composerModel := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "composer-model") })
-	inputStatus := findElement(document, func(node *html.Node) bool {
-		for _, attr := range node.Attr {
-			if attr.Key == "id" && attr.Val == "input-status" {
-				return true
-			}
-		}
-		return false
-	})
-	if composerSurface == nil || inputCard == nil || messageInput == nil || inputControls == nil || controlsLeft == nil || taskTrigger == nil || composerModel == nil || inputStatus == nil {
-		t.Fatalf("missing composer structure in rendered thread document")
-	}
-	requireHTMLDescendant(t, composerSurface, inputCard, "input-card should be inside data-composer-surface")
-	requireHTMLDescendant(t, inputCard, messageInput, "message-input should be inside input-card")
-	requireHTMLDescendant(t, inputCard, inputControls, "input-controls should be inside input-card")
-	requireHTMLDescendant(t, inputControls, controlsLeft, "controls-left should be inside input-controls")
-	requireHTMLDescendant(t, composerSurface, taskTrigger, "task trigger should be a descendant of data-composer-surface")
-	statusRail := findElement(document, func(node *html.Node) bool { return hasHTMLClass(node, "input-status-rail") })
-	if statusRail == nil {
-		t.Fatalf("missing input-status-rail in rendered thread document")
-	}
-	requireHTMLDescendant(t, composerSurface, statusRail, "input-status-rail should be inside data-composer-surface")
-	requireHTMLDescendant(t, statusRail, taskTrigger, "task trigger should live on the status rail, not in the input card")
-	requireHTMLDescendant(t, statusRail, inputStatus, "input status should live on the status rail")
-	if isHTMLDescendant(inputCard, taskTrigger) {
-		t.Fatalf("task trigger must not live inside the input card")
-	}
-	if isHTMLDescendant(inputStatus, taskTrigger) {
-		t.Fatalf("task trigger must sit outside the htmx input-status swap target so it survives swaps")
-	}
-	requireHTMLDescendant(t, composerSurface, composerModel, "composer model should be inside data-composer-surface")
-	requireHTMLDescendant(t, composerSurface, inputStatus, "input status should be inside data-composer-surface")
-	if strings.Contains(body, `send as steer`) {
-		t.Fatalf("composer should use short steer label, not send as steer")
-	}
-	if tag := controlTag(t, body, "data-steer-trigger"); !strings.Contains(body, ">steer<") {
-		t.Fatalf("composer should render the short steer button label: %s", tag)
-	}
-}
-
-func TestWeb_WorkspacePartial_RemainsHXGated(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/_partials/s/anysession/workspace", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("workspace partial without HX should remain hidden: status=%d body=%q", rec.Code, rec.Body.String())
-	}
-}
-
-func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Roster:  hubcore.NewRoster(t.TempDir(), nil),
-		Past:    hubcore.NewPastIndex(""),
-	})
-	req := httptest.NewRequest(http.MethodGet, "/s/local:01LOCAL", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `hx-get="/_partials/s/01LOCAL/workspace"`) {
-		t.Fatalf("local ref route did not canonicalize workspace partial URL:\n%s", body)
 	}
 }
 
@@ -2411,7 +1884,7 @@ func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
 		Past:    hubcore.NewPastIndex(""),
 	})
 	body := strings.NewReader(`{"text":"hi"}`)
-	req := httptest.NewRequest(http.MethodPost, "/s/NOSESSION/send", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:NOSESSION/send", body)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -2482,7 +1955,7 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 		Past: past,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -2583,7 +2056,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		Past:    past,
 	})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+sessionID+"/send", strings.NewReader(`{"text":"resume work"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -2596,158 +2069,6 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		t.Fatalf("prompt=%q, want resume work", gotPrompt)
 	}
 
-}
-
-// TestWeb_Fork_CallsForkSession verifies end-to-end fork: set up a parent transcript
-// + meta, POST /s/<id>/fork, expect 200 + JSON child_session_id.
-func TestWeb_Fork_CallsForkSession(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-x-0123456789")
-
-	// Build the parent session using the shared helper from agent fork tests.
-	// We mirror the logic inline here since it's in a different package.
-	parentID := "02wMz5Txv5aIxgf9yVdd0N"
-	sessionsDir := filepath.Join(proj, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tpath := filepath.Join(sessionsDir, parentID+".transcript.jsonl")
-	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: parentID, ProfileID: "openai", Model: "gpt-5",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first task"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("second task"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: parentID, UpdatedAt: time.Now(), OriginalPrompt: "test fork",
-		ProfileID: "openai", Model: "gpt-5",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:  "127.0.0.1:9180",
-		Roster:   hubcore.NewRoster(t.TempDir(), nil),
-		Past:     idx,
-		StateDir: proj,
-	})
-	reqBody := strings.NewReader(`{"turn":3,"edited_message":"second task revised","label":"old branch"}`)
-	req := httptest.NewRequest(http.MethodPost, "/s/"+parentID+"/fork", reqBody)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-	}
-	respBody := rec.Body.String()
-	if !strings.Contains(respBody, "child_session_id") {
-		t.Errorf("response missing child_session_id: %q", respBody)
-	}
-}
-
-// TestWeb_Fork_DeferInput verifies the fork-from-message REST flow (issue
-// #42): POST /s/<id>/fork with defer_input forks at the turn without
-// appending a replacement message, and the response carries the original
-// input text so the client can stage it in the composer for editing.
-func TestWeb_Fork_DeferInput(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-x-0123456789")
-
-	parentID := "02wMz5Txv5aIxgf9yVdd0N"
-	sessionsDir := filepath.Join(proj, "sessions")
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tpath := filepath.Join(sessionsDir, parentID+".transcript.jsonl")
-	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: parentID, ProfileID: "openai", Model: "gpt-5",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first task"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("second task"))); err != nil {
-		t.Fatal(err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: parentID, UpdatedAt: time.Now(), OriginalPrompt: "test fork",
-		ProfileID: "openai", Model: "gpt-5",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:  "127.0.0.1:9180",
-		Roster:   hubcore.NewRoster(t.TempDir(), nil),
-		Past:     idx,
-		StateDir: proj,
-	})
-	reqBody := strings.NewReader(`{"turn":3,"defer_input":true}`)
-	req := httptest.NewRequest(http.MethodPost, "/s/"+parentID+"/fork", reqBody)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		ChildSessionID string `json:"child_session_id"`
-		OriginalInput  string `json:"original_input"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v body=%q", err, rec.Body.String())
-	}
-	if resp.ChildSessionID == "" || resp.ChildSessionID == parentID {
-		t.Fatalf("child_session_id=%q", resp.ChildSessionID)
-	}
-	if resp.OriginalInput != "second task" {
-		t.Errorf("original_input=%q, want %q", resp.OriginalInput, "second task")
-	}
-	// The child transcript must hold only the prefix: no trailing USER_INPUT
-	// turn that would auto-run the message on open.
-	raw, err := os.ReadFile(filepath.Join(sessionsDir, resp.ChildSessionID+".transcript.jsonl"))
-	if err != nil {
-		t.Fatalf("read child transcript: %v", err)
-	}
-	if strings.Contains(string(raw), "second task") {
-		t.Errorf("deferred fork must not copy the diverging user message:\n%s", raw)
-	}
 }
 
 // TestWeb_APIFork_DeferInputParity verifies the /api fork endpoint enforces
@@ -2802,8 +2123,8 @@ func TestWeb_APIFork_DeferInputParity(t *testing.T) {
 		StateDir: proj,
 	})
 
-	// Mutual exclusion: defer_input + edited_message is rejected with 400 by
-	// both REST endpoints, matching the RPC thread/fork validation.
+	// Mutual exclusion: defer_input + edited_message is rejected with 400 by the
+	// REST fork endpoint, matching the RPC thread/fork validation.
 	for _, tc := range []struct {
 		name string
 		body string
@@ -2815,11 +2136,6 @@ func TestWeb_APIFork_DeferInputParity(t *testing.T) {
 		web.handleAPIFork(rec, httptest.NewRequest(http.MethodPost, "/api/fork", strings.NewReader(tc.body)), parentID)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("/api fork %s: status %d, want 400 (body=%q)", tc.name, rec.Code, rec.Body.String())
-		}
-		rec = httptest.NewRecorder()
-		web.handleFork(rec, httptest.NewRequest(http.MethodPost, "/fork", strings.NewReader(tc.body)), parentID)
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("web fork %s: status %d, want 400 (body=%q)", tc.name, rec.Code, rec.Body.String())
 		}
 	}
 
@@ -3680,7 +2996,7 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/s/01SENDIMG/send", strings.NewReader(string(reqBody)))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01SENDIMG/send", strings.NewReader(string(reqBody)))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -3742,7 +3058,7 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/s/02wMz5TxvHIJQPOuIBJQct/send", strings.NewReader(string(reqBody)))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:02wMz5TxvHIJQPOuIBJQct/send", strings.NewReader(string(reqBody)))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -3786,7 +3102,7 @@ func TestWeb_Send_RejectsEmptyTextAndNoItems(t *testing.T) {
 
 	cases := []string{`{}`, `{"text":""}`, `{"text":"","items":[]}`}
 	for _, payload := range cases {
-		req := httptest.NewRequest(http.MethodPost, "/s/01NOEMPTY/send", strings.NewReader(payload))
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01NOEMPTY/send", strings.NewReader(payload))
 		req.Host = "127.0.0.1:9180"
 		req.Header.Set("Origin", "http://127.0.0.1:9180")
 		req.Header.Set("Content-Type", "application/json")
@@ -3825,7 +3141,7 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/s/01TOOBIG/send", bytes.NewReader(payload))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01TOOBIG/send", bytes.NewReader(payload))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -3854,7 +3170,7 @@ func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/01ACTINT/interrupt", strings.NewReader(`{"turn_id":"turn_1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01ACTINT/interrupt", strings.NewReader(`{"turn_id":"turn_1"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -3884,7 +3200,7 @@ func TestWeb_SessionAction_CompactForwards(t *testing.T) {
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCMP/compact", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01ACTCMP/compact", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	rec := httptest.NewRecorder()
@@ -3963,7 +3279,7 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, nil)
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/compact", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+sessionID+"/compact", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	rec := httptest.NewRecorder()
@@ -3995,7 +3311,7 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/01ACTSHD/shutdown", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01ACTSHD/shutdown", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	rec := httptest.NewRecorder()
@@ -4006,35 +3322,6 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 	}
 	if !called {
 		t.Error("shutdown appwire handler was not called")
-	}
-}
-
-func TestWeb_SessionAction_ClearForwards(t *testing.T) {
-	var called bool
-	dir := t.TempDir()
-	daemon := startAppwireTestDaemon(t, dir, "01ACTCLR", func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-			called = true
-			return appwire.ThreadClearResponse{Ref: "local:01ACTCLR"}, nil
-		})
-	})
-	defer daemon.Close()
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01ACTCLR", status: "idle"})
-	r.Refresh()
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCLR/clear", nil)
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
-	}
-	if !called {
-		t.Error("clear appwire handler was not called")
 	}
 }
 
@@ -4056,58 +3343,6 @@ func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("%s: status=%d, want 404 (body=%q)", action, rec.Code, rec.Body.String())
 		}
-	}
-}
-
-// TestWeb_Steer_ForwardsBodyToDaemon verifies that POST /s/<id>/steer with a
-// JSON body forwards both path and body to the daemon's /steer endpoint.
-func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
-	var got appwire.TurnSteerParams
-	dir := t.TempDir()
-	daemon := startAppwireTestDaemon(t, dir, "01STEER", func(app *appserver.Server) {
-		appserver.HandleTyped(app.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-			got = params
-			return appwire.EmptyResponse{}, nil
-		})
-	})
-	defer daemon.Close()
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01STEER", status: appwire.ThreadStatusActive})
-	r.Refresh()
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodPost, "/s/01STEER/steer", strings.NewReader(`{"text":"stop using mocks"}`))
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
-	}
-	if got.Ref != "local:01STEER" || inputTextForTest(got.Input) != "stop using mocks" {
-		t.Errorf("steer params=%+v", got)
-	}
-}
-
-// TestWeb_Steer_RejectsEmptyText verifies that empty text returns 400
-// without forwarding to the daemon.
-func TestWeb_Steer_RejectsEmptyText(t *testing.T) {
-	dir := t.TempDir()
-	writeRendezvous(t, dir, rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"})
-	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: appwire.ThreadStatusActive})
-	r.Refresh()
-
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodPost, "/s/01STEEREMPTY/steer", strings.NewReader(`{"text":"   "}`))
-	req.Host = "127.0.0.1:9180"
-	req.Header.Set("Origin", "http://127.0.0.1:9180")
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d, want 400 (body=%q)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -4803,98 +4038,6 @@ func TestHandleApiModels_DiagnosticsEnvelopeIncludesRecent(t *testing.T) {
 	}
 	if body.Recent == nil {
 		t.Fatal("recent should be an empty array, not null, when the envelope is requested")
-	}
-}
-
-// The footer status row must show ONE live indicator. The legacy
-// running-indicator ("running") duplicated the status badge ("Working" for an
-// active session), so it was removed — an active session shows the StateLabel
-// badge only, not a second "running" pill.
-func TestInputStatus_NoDuplicateRunningIndicator(t *testing.T) {
-	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
-	data := map[string]any{
-		"Branch": "main", "Worktree": "task-2", "WorkingDir": "/workspace/serf",
-		"ContextWindow": 100000, "ContextPercent": 42,
-		"ContextNumbers": "42k / 100k tokens (58k left)", "CompactContextNumbers": "42k / 100k",
-		"State": "active", "StateLabel": "Working",
-	}
-	var buf bytes.Buffer
-	if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {
-		t.Fatalf("render: %v", err)
-	}
-	out := buf.String()
-	if !strings.Contains(out, `class="status-badge"`) || !strings.Contains(out, "Working") {
-		t.Fatalf("active status row should show the StateLabel badge:\n%s", out)
-	}
-	if strings.Count(out, "Working") != 1 {
-		t.Fatalf("active status rail should render exactly one visible Working state label:\n%s", out)
-	}
-	for _, want := range []string{
-		`class="input-telemetry" data-input-telemetry`,
-		`class="status-item location" data-status-location`,
-		`class="status-item context" data-status-context`,
-		`class="status-value context-numbers">42k / 100k<`,
-		`class="status-location-part worktree"`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("compact input status missing %q:\n%s", want, out)
-		}
-	}
-	for _, unwanted := range []string{
-		`class="status-item source"`,
-		`class="status-item turns"`,
-		`class="status-item work"`,
-		`class="status-item tokens"`,
-		`class="status-item cost"`,
-		`class="status-item goal"`,
-	} {
-		if strings.Contains(out, unwanted) {
-			t.Errorf("compact input status unexpectedly rendered %q:\n%s", unwanted, out)
-		}
-	}
-}
-
-// The context gauge must stay NEUTRAL until ~80% used, then turn AMBER with a
-// glyph (mockup #17 Alt A). The threshold lives in the input_status template
-// using the real ContextPercent; below 80% no warn class / glyph appears, at or
-// above 80% the .context-fill carries .context-warn and a ⚠ glyph renders.
-func TestInputStatusGaugeAmberThreshold(t *testing.T) {
-	tmpl := template.Must(template.New("input_strip.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesFS, "templates/partials/input_strip.html"))
-	render := func(percent int) string {
-		data := map[string]any{
-			"ContextWindow":         272000,
-			"ContextPercent":        percent,
-			"ContextNumbers":        "23k / 272k tokens",
-			"CompactContextNumbers": "23k / 272k",
-			"State":                 "active",
-			"StateLabel":            "Active",
-			"TurnCount":             3,
-		}
-		var buf bytes.Buffer
-		if err := tmpl.ExecuteTemplate(&buf, "input_status", data); err != nil {
-			t.Fatalf("render percent=%d: %v", percent, err)
-		}
-		return buf.String()
-	}
-
-	for _, percent := range []int{0, 8, 50, 79} {
-		out := render(percent)
-		if strings.Contains(out, "context-warn") {
-			t.Errorf("percent=%d: gauge must stay neutral (no context-warn), got:\n%s", percent, out)
-		}
-		if strings.Contains(out, "⚠") {
-			t.Errorf("percent=%d: gauge must not show ⚠ glyph below threshold", percent)
-		}
-	}
-
-	for _, percent := range []int{80, 85, 100} {
-		out := render(percent)
-		if !strings.Contains(out, "context-warn") {
-			t.Errorf("percent=%d: gauge must turn amber (.context-warn), got:\n%s", percent, out)
-		}
-		if !strings.Contains(out, "⚠") {
-			t.Errorf("percent=%d: gauge must show a ⚠ glyph near the limit", percent)
-		}
 	}
 }
 

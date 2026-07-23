@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,36 +23,10 @@ var builtinAgentNames = []string{"default", "explorer", "subagent"}
 // hubSettingsOverview for the same reason as builtinAgentNames above.
 const settingsSpawnTimeoutDisplay = "30s"
 
+// handleSettings serves the SPA shell for /settings and /settings/{section};
+// client-side routing selects the section.
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {
-	if newWebEnabled() {
-		serveSPAIndex(w, r, distFS())
-		return
-	}
-	if r.Header.Get("HX-Request") == "true" {
-		http.NotFound(w, r)
-		return
-	}
-	section := strings.TrimPrefix(r.URL.Path, "/settings")
-	section = strings.TrimPrefix(section, "/")
-	if section == "" {
-		section = "general"
-	}
-	// Redirect the legacy /settings/launch URL to the serf-specific tab.
-	if section == "launch" {
-		http.Redirect(w, r, "/settings/launch-serf", http.StatusFound)
-		return
-	}
-	partialURL := "/_partials/settings/" + section
-	// For the per-project settings page, forward the cwd query param.
-	if section == "project" {
-		if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
-			partialURL += "?cwd=" + url.QueryEscape(cwd)
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": partialURL}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	serveSPAIndex(w, r, distFS())
 }
 
 // tildeHome replaces the user's home directory prefix in path with "~".

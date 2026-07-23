@@ -83,10 +83,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			// Decode, empty-input, missing-live, method, and unknown-action gates.
 			for _, body := range []string{"{", `{}`, `{"text":" "}`} {
 				web.handleSend(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(body)), ref)
-				web.handleSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/steer", strings.NewReader(body)), ref)
-				web.handleQueue(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/queue", strings.NewReader(body)), ref)
 			}
-			web.handleDrainAsSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/drain", strings.NewReader("{")), ref)
 			web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/action", nil), ref, "clear")
 			web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/action", nil), ref, "unknown")
 
@@ -95,9 +92,6 @@ func FuzzSessionTreePass6(f *testing.F) {
 			for _, err := range []error{nil, appwire.Conflict("busy")} {
 				web = pass6SessionWeb(thread, err)
 				web.handleSend(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"text":"x"}`)), ref)
-				web.handleSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/steer", strings.NewReader(`{"text":"x"}`)), ref)
-				web.handleQueue(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/queue", strings.NewReader(`{"items":[{"type":"text","text":"x"}]}`)), ref)
-				web.handleDrainAsSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/drain", strings.NewReader(`{"text":"x"}`)), ref)
 				for _, action := range []string{"interrupt", "clear", "shutdown"} {
 					web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/"+action, strings.NewReader(`{"turn_id":" t "}`)), ref, action)
 				}
@@ -172,7 +166,6 @@ func FuzzSessionTreePass6(f *testing.F) {
 			for _, target := range []string{"/api/sessions/x%3Ay%3Az", "/api/sessions/bad", "/api/sessions/remote%3Athread-6", "/api/sessions/remote%3Athread-6/details", "/api/sessions/remote%3Athread-6/nope"} {
 				web.handleAPISession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPut, target, nil))
 			}
-			web.handleFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/fork", strings.NewReader("{")), ref)
 			web.handleAPIFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/fork", nil), ref)
 			web.handleAPIFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/fork", strings.NewReader("{")), ref)
 

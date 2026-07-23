@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"html/template"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -100,7 +99,6 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		hx := httptest.NewRequest(http.MethodGet, "/settings", nil)
 		hx.Header.Set("HX-Request", "true")
 		sb.Web.handleSettings(httptest.NewRecorder(), hx)
-		_ = sb.Web.workspaceDataForRender(sandboxSessionID)
 		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), sandboxSessionID)
 		sb.Web.renderSessionTasks(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
 		sb.Web.fillForkLineage(&WorkspaceData{}, schema.SessionMeta{})
@@ -128,8 +126,6 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		}
 		sb.Web.handleThreadDocument(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/thread/x", nil))
 
-		broken := template.Must(template.New("root").Parse(`{{define "app"}}{{.Missing.Field}}{{end}}{{define "thread_document"}}{{.Missing.Field}}{{end}}`))
-		web.appTmpl, web.threadTmpl = broken, broken
 		for _, target := range []string{"/settings", "/credentials", "/thread/missing"} {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, target, nil)

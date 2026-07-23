@@ -18,6 +18,10 @@ import (
 // handleSession is the router for public /s/<id>[/<sub>] routes.
 // Session fragments live under /_partials/s/... so direct navigation always
 // lands in the app shell instead of a standalone workspace fragment.
+// handleSession routes the public /s/<id>[/<sub>] paths. The bare page route
+// serves the SPA shell (client routing owns the path); /s/<id>/images/<sha> is
+// the sha-addressed image fetch the SPA consumes directly. Every legacy sub-
+// route (the /_partials fragments and the /s/<id>/<action> form-POSTs) is gone.
 func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/s/")
 	parts := strings.SplitN(path, "/", 2)
@@ -32,147 +36,19 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 		sub = parts[1]
 	}
 
-	switch sub {
-	case "":
-		// Only the bare page GET (no sub-path) is a page route. Every other
-		// case below — images and the POST actions — is either consumed by
-		// the future SPA client directly (images) or legacy-client-only and
-		// due to be replaced in a later wave (actions); neither should ever
-		// see an HTML shell in place of its real response.
-		if newWebEnabled() {
-			serveSPAIndex(w, r, distFS())
-			return
-		}
-		if r.Header.Get("HX-Request") == "true" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": "/_partials/s/" + id + "/workspace"}); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	case "state":
-		http.NotFound(w, r)
-	case "details":
-		http.NotFound(w, r)
-	case "tasks":
-		http.NotFound(w, r)
-	case "send":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleSend(w, r, id)
-	case "fork":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleFork(w, r, id)
-	case "aside":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleAside(w, r, id)
-	case "interrupt":
-		s.handleSessionAction(w, r, id, "interrupt")
-	case "compact":
-		s.handleSessionAction(w, r, id, "compact")
-	case "shutdown":
-		s.handleSessionAction(w, r, id, "shutdown")
-	case "clear":
-		s.handleSessionAction(w, r, id, "clear")
-	case "steer":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleSteer(w, r, id)
-	case "queue":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleQueue(w, r, id)
-	case "drain-as-steer":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleDrainAsSteer(w, r, id)
-	case "promote-queued":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handlePromoteQueued(w, r, id)
-	case "cancel-queued":
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		s.handleCancelQueued(w, r, id)
+	switch {
+	case sub == "":
+		serveSPAIndex(w, r, distFS())
+	case strings.HasPrefix(sub, "images/"):
+		sha := strings.TrimPrefix(sub, "images/")
+		s.handleSessionImage(w, r, id, sha)
 	default:
-		// /s/<id>/images/<sha> — sha-addressed image fetch for replay.
-		if strings.HasPrefix(sub, "images/") {
-			sha := strings.TrimPrefix(sub, "images/")
-			s.handleSessionImage(w, r, id, sha)
-			return
-		}
 		http.NotFound(w, r)
 	}
-}
-
-func (s *WebServer) workspaceDataForRender(id string) WorkspaceData {
-	data := s.workspaceData(id)
-	if data.ID == "" {
-		return data
-	}
-	if data.HomeDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			data.HomeDir = home
-		}
-	}
-	return data
 }
 
 func (s *WebServer) handleThreadDocument(w http.ResponseWriter, r *http.Request) {
-	if newWebEnabled() {
-		serveSPAIndex(w, r, distFS())
-		return
-	}
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/thread/")
-	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
-		return
-	}
-	id = canonicalRouteID(id)
-	s.renderThreadDocument(w, r, id)
-}
-
-func (s *WebServer) renderThreadDocument(w http.ResponseWriter, r *http.Request, id string) {
-	data := s.workspaceDataForRender(id)
-	if data.ID == "" {
-		data = WorkspaceData{
-			ID:           id,
-			SourceLabel:  sourceLabelFromRefText(appRefFromRouteID(id)),
-			Title:        id,
-			State:        "idle",
-			StateLabel:   stateLabel("idle", false),
-			Capabilities: s.apiSessionCapabilities(id, false),
-		}
-	}
-	data.ShowSidebarToggle = false
-	data.ThreadDocumentMode = true
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.threadTmpl.ExecuteTemplate(w, "thread_document", data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	serveSPAIndex(w, r, distFS())
 }
 
 // renderSessionTasks returns the session's task list as JSON. For live

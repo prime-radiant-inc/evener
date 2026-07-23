@@ -129,21 +129,11 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			// Remote action source failures after capability checks succeed.
 			web := pass5Web(thread, appwire.Conflict("busy"), nil, 0)
 			for action, body := range map[string]string{
-				"steer": `{"text":"x"}`, "queue": `{"text":"x"}`,
-				"drain": `{"text":"x"}`, "interrupt": `{}`, "clear": `{}`, "shutdown": `{}`,
+				"interrupt": `{}`, "clear": `{}`, "shutdown": `{}`,
 			} {
 				rec := httptest.NewRecorder()
 				req := httptest.NewRequest(http.MethodPost, "/api/"+action, strings.NewReader(body))
-				switch action {
-				case "steer":
-					web.handleSteer(rec, req, ref)
-				case "queue":
-					web.handleQueue(rec, req, ref)
-				case "drain":
-					web.handleDrainAsSteer(rec, req, ref)
-				default:
-					web.handleSessionAction(rec, req, ref, action)
-				}
+				web.handleSessionAction(rec, req, ref, action)
 			}
 
 		case 4:
@@ -199,8 +189,6 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			bodies := []string{`{"items":[{"type":"image","name":"x","data":"bad"}]}`, `{"items":[{"type":"text","text":"x","data":"` + oversized + `"}]}`}
 			for _, body := range bodies {
 				web.handleSend(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(body)), "local")
-				web.handleQueue(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/queue", strings.NewReader(body)), "local")
-				web.handleDrainAsSteer(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/drain", strings.NewReader(body)), "local")
 			}
 
 		case 9:

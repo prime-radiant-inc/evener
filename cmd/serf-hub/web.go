@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"html/template"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -21,14 +20,12 @@ import (
 	"primeradiant.com/serf/internal/appserver"
 )
 
-// WebServer wires routes, templates, and middleware.
+// WebServer wires routes and middleware.
 type WebServer struct {
-	cfg        hubcore.WebConfig
-	appTmpl    *template.Template
-	threadTmpl *template.Template
-	appRPC     *appserver.Server
-	sources    *appsource.Registry
-	startedAt  time.Time
+	cfg       hubcore.WebConfig
+	appRPC    *appserver.Server
+	sources   *appsource.Registry
+	startedAt time.Time
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -47,32 +44,16 @@ type WebServer struct {
 	manifestFS fs.FS
 }
 
-// inputStripTemplateFuncs supplies the input-status partial's formatting
-// helpers: formatWorkMillis renders WS2's accumulated work time compactly;
-// formatTokenCount mirrors web_format.formatTokenCount but takes the int64
-// token counts carried on hubapi.Usage/appwire.SerfUsage.
-var inputStripTemplateFuncs = template.FuncMap{
-	"formatWorkMillis": formatWorkMillis,
-	"formatTokenCount": func(n int64) string { return formatTokenCount(int(n)) },
-}
-
 var manifestMarshal = json.Marshal
 
-// NewWebServer constructs the web server. Templates are parsed from embed.FS.
+// NewWebServer constructs the web server.
 func NewWebServer(cfg hubcore.WebConfig) *WebServer {
-	appTmpl := template.Must(template.New("app.html").Funcs(template.FuncMap{"assetv": assetVersionQuery}).ParseFS(templatesRoot(), "templates/app.html"))
-	threadTmpl := template.Must(template.New("thread.html").Funcs(inputStripTemplateFuncs).ParseFS(templatesRoot(),
-		"templates/thread.html",
-		"templates/partials/workspace.html",
-		"templates/partials/input_strip.html",
-	))
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
 		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
 	web := &WebServer{
-		cfg: cfg, appTmpl: appTmpl,
-		threadTmpl:      threadTmpl,
+		cfg:             cfg,
 		sources:         sources,
 		startedAt:       time.Now().UTC(),
 		resumeLocks:     map[string]*sync.Mutex{},
@@ -118,18 +99,12 @@ func validAssetPath(next http.Handler) http.Handler {
 func (s *WebServer) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Assets — served from disk when SERF_HUB_ASSETS_DIR is set (dev), else embed.
+	// Assets — the embedded PWA icons + manifest, auth-exempt per hubedge.
 	assetHandler := http.StripPrefix("/assets/", validAssetPath(http.FileServer(http.FS(assetsRoot()))))
-	if devAssetsDir() != "" {
-		// In the on-disk dev mode, disable caching so CSS/JS edits take effect on
-		// reload without the browser serving a stale heuristically-cached copy.
-		assetHandler = noStore(assetHandler)
-	}
 	mux.Handle("/assets/", assetHandler)
 
-	// Rewritten SPA's hashed Vite output — always registered regardless of
-	// SERF_HUB_WEB, mirroring /assets/ above (same auth-guard wrapping below;
-	// hashed filenames are immutable, so aggressive caching is safe).
+	// Rewritten SPA's hashed Vite output (same auth-guard wrapping below; hashed
+	// filenames are immutable, so aggressive caching is safe).
 	mux.Handle("/webassets/", webassetsHandler(distFS()))
 
 	// PWA manifest — served dynamically (not as a static asset) so start_url can
@@ -185,36 +160,11 @@ func (s *WebServer) Handler() http.Handler {
 	return record(auth(httpsec.CSPMiddleware(mux)))
 }
 
+// handleIndex serves the SPA shell for "/", "/new", and every other page route
+// the mux doesn't match more specifically; client-side routing owns the path
+// (including the ?dir=/?prompt= spawn pre-fill the SPA reads itself).
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if newWebEnabled() {
-		serveSPAIndex(w, r, distFS())
-		return
-	}
-	if r.URL.Path != "/" && r.URL.Path != "/new" {
-		http.NotFound(w, r)
-		return
-	}
-	workspaceURL := "/_partials/workspace/empty"
-	if r.URL.Path == "/new" {
-		workspaceURL = "/_partials/workspace/spawn"
-		// Forward optional pre-fill params:
-		//   ?dir=<path> — sidebar's per-project "+" button uses this.
-		//   ?prompt=<text> — the palette's /spawn command seeds the textarea.
-		params := url.Values{}
-		if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
-			params.Set("dir", dir)
-		}
-		if prompt := r.URL.Query().Get("prompt"); prompt != "" {
-			params.Set("prompt", prompt)
-		}
-		if encoded := params.Encode(); encoded != "" {
-			workspaceURL += "?" + encoded
-		}
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.appTmpl.ExecuteTemplate(w, "app", map[string]string{"WorkspaceURL": workspaceURL}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+	serveSPAIndex(w, r, distFS())
 }
 
 // handleManifest serves the PWA manifest with the auth token injected into

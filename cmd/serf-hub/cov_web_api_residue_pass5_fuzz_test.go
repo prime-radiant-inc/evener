@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"html/template"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +93,7 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 			fn(w, r)
 		}
 
-		_ = inputStripTemplateFuncs["formatTokenCount"].(func(int64) string)(12)
+		_ = formatTokenCount(12)
 		web.lockForSession("a")
 		web.lockForSession("a")
 		next := false
@@ -105,7 +104,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		_ = next
 		web.handleIndex(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/missing", nil))
 		web.handleIndex(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/new?dir=%20/tmp/x%20&prompt=hi", nil))
-		web.appTmpl = template.Must(template.New("app").Parse(`{{define "app"}}{{template "missing" .}}{{end}}`))
 		web.handleIndex(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 		web.manifestFS = fstest.MapFS{}
 		web.handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))

@@ -128,72 +128,8 @@ type sendRequest struct {
 	Items []appwire.InputItem `json:"items,omitempty"`
 }
 
-// steerRequest is the JSON body for POST /s/<id>/steer.
-type steerRequest struct {
-	Text   string `json:"text"`
-	TurnID string `json:"turn_id"`
-}
-
 type sessionActionRequest struct {
 	TurnID string `json:"turn_id"`
-}
-
-// queueRequest is the JSON body for POST /s/<id>/queue (kata 111a). Queues a
-// user message to be drained as a fresh user turn after the active turn
-// completes; the daemon rejects the call when no turn is in flight. Items
-// (kata v80q) carry optional image attachments alongside the text — the
-// daemon's TurnQueue handler routes them through queueWithImagesFunc so
-// the eventual drained user turn preserves the image bytes.
-type queueRequest struct {
-	Text  string              `json:"text"`
-	Items []appwire.InputItem `json:"items,omitempty"`
-}
-
-// drainAsSteerRequest is the JSON body accepted by POST /s/<id>/drain-as-steer.
-// All fields are optional — a body-less request matches the kata 0bq1
-// classic drain shape. Text/Items ride on turn/drainAsSteer so the daemon
-// atomically appends the composer payload and drains the queue.
-type drainAsSteerRequest struct {
-	Text  string              `json:"text,omitempty"`
-	Items []appwire.InputItem `json:"items,omitempty"`
-}
-
-// promoteQueuedRequest is the JSON body for POST /s/<id>/promote-queued
-// (issue #22). Index selects one entry of the daemon's FIFO input queue —
-// matching the row position in the web queue preview — to promote into the
-// in-flight turn as user-sourced steering. EntryID carries the queue-entry
-// id from the client's queue snapshot; the daemon rejects the call
-// (Conflict) when no turn is in flight, the index no longer resolves, or
-// the queue shifted so the id no longer matches the entry at index
-// (review F1).
-type promoteQueuedRequest struct {
-	Index   int    `json:"index"`
-	EntryID string `json:"entry_id,omitempty"`
-}
-
-// cancelQueuedRequest is the JSON body for POST /s/<id>/cancel-queued
-// (issue #23). Index selects one entry of the daemon's FIFO input queue —
-// matching the row position in the web queue preview — to remove so it is
-// never consumed. It is also the removal half of the row's edit action
-// (edit = restore the full text into the composer, then cancel the queued
-// copy). EntryID carries the queue-entry id from the client's queue
-// snapshot; the daemon rejects the call (Conflict) when the index no longer
-// resolves or the queue shifted so the id no longer matches the entry at
-// index (review F1).
-type cancelQueuedRequest struct {
-	Index   int    `json:"index"`
-	EntryID string `json:"entry_id,omitempty"`
-}
-
-// cancelQueuedResponse is the JSON body returned by POST
-// /s/<id>/cancel-queued on success: an echo of what was removed.
-// RemovedText lets the client verify the removal matched its snapshot;
-// RemovedImages counts attachments that were on the entry and are NOT
-// restored by an edit, so the UI can warn instead of silently dropping
-// them.
-type cancelQueuedResponse struct {
-	RemovedText   string `json:"removed_text"`
-	RemovedImages int    `json:"removed_images,omitempty"`
 }
 
 type forkRequest struct {
