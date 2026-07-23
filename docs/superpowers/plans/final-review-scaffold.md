@@ -76,10 +76,12 @@ subset:
 
 **Not in this list because already reviewed:** the W6 spawn-hygiene pair (`d0d186106`/`8469050e2`,
 review approved, ledger), the W6 close micro-items, MW5 and its fix round (reviewed on main), the two
-perf passes (reviewed on their branches). **Still to be added at final-review time:** the W8 →
-integration merge + any W8 controller wiring; the M10 deletion + flag-flip series (itself
-`deletion-review-approved` per ledger — but its **merge resolution + flag flip** is controller work);
-and any fix commits M9 surfaces.
+perf passes (reviewed on their branches). **Get a focused re-review as they land, not audited in this
+pass** (controller ruling, ledgered 2026-07-22): the W8 → integration merge + any W8 controller wiring;
+the M10 deletion + flag-flip series (itself `deletion-review-approved` per ledger — but its **merge
+resolution + flag flip** is controller work). The final review confirms each of those landed
+re-reviews happened, then audits the residue directly — any fix commits M9 surfaces — via the
+re-enumeration recipe (§2a).
 
 ---
 
@@ -101,8 +103,10 @@ has silently changed and that the ratified ones stayed ratified — it does **no
 
 ## 4. The final review's own duties (a checklist, not new analysis)
 
-1. **Audit the controller-authored layer** (§2, re-enumerated) — merge resolutions are supersets of
-   both parents; `make generate` yields zero diff; the deletion merge + flag-flip are correct.
+1. **Audit the controller-authored layer** (§2, re-enumerated), scoped to the residue — the M10
+   deletion merge/flag-flip and the W8 → integration merge each already got a focused re-review as
+   they landed (§2); confirm those ran, then audit what remains: merge resolutions are supersets of
+   both parents; `make generate` yields zero diff.
 2. **Confirm the five cross-wave seams still cohere** on the final tree (last review's Duty 2 is the
    baseline — re-confirm, don't re-derive): prefs single-source; requireclass over the union; `initPrefs`
    + single scheme-listener; settings dispatch-map vs section registry; `ItemModel.error`/`exitCode`
@@ -289,12 +293,14 @@ pre-approved by Jesse (§9, authority #2). The final review confirms the conditi
   deletion diff against `docs/superpowers/plans/m10-kill-list.md` §1.
 - **All 24 protected endpoints survive** — kill-list §2.1. **M9's S7 suite proves this live** (SPA-side
   via the browser + TUI-side via the 13-route `hubapi.Client` contract). The final review reads S7's
-  evidence rather than re-testing; it confirms S7 covered all 24, especially the **TUI-only** ones the
-  SPA can't reveal.
-- **The `/api/search` reclassification** — the ⌘K palette made `/api/search` **SPA-consumed** (W6-T3),
-  flipping it from the §1.6 orphaned cluster to **protected**. Confirm the deletion **kept** it (and the
-  other §1.6 orphaned endpoints, per the safe-default) — the kill-list Appendix-C re-validation and the
-  dry-run agent both check this.
+  evidence rather than re-testing; it confirms S7 covered all 29 (kill-list §2.1's 24 as amended by
+  Appendix D), especially the **TUI-only** ones the SPA can't reveal.
+- **The Appendix-D reclassifications** — wave 6 gave three §1.6 endpoints live SPA consumers
+  (`/api/search` via the ⌘K palette, `/api/dirs/create` via spawn preflight, `/api/git/head` via
+  branch auto-resolution), and wave 8 consumed both `/doc` routes — all five flipped to **protected**.
+  Confirm the deletion **kept** all five, and kept the three still-orphaned endpoints
+  (`/api/upgrade`, reasoning-effort, `/api/path/validate`) per the safe-default — the kill-list
+  Appendix-C re-validation and the dry-run agent both check this.
 - **Flag flip is a true no-op** — `newWebEnabled()` deleted; `SERF_HUB_WEB` read nowhere; the default
   serves the SPA at every page route (M9 S7 card 4).
 - **No legacy residue** — `git grep htmx` empty; no live reference to a deleted `assets/*.js` /
@@ -319,12 +325,12 @@ review flags any deletion decision that outran the pre-approval.
   (159/78/13); **2** M9 ratification items. Commit SHAs are copied from `git log`, not reconstructed.
 - **Internal consistency.** The last-reviewed tip `2e2dccab5` and report commit `18e049f5f` are used
   identically in §1, §2, §11; the two ratification items map §5→§8 the same way; the deletion authority
-  in §9 and the deletion duty in §10 agree on the 24-endpoint + safe-default conditions.
+  in §9 and the deletion duty in §10 agree on the 29-endpoint (Appendix-D-amended) + safe-default conditions.
 - **Verify-not-re-derive** is enforced structurally: §1 fences off already-audited work; §2 gives the
   re-enumeration recipe + subtract-the-reviewed-ranges rule; §3/§5/§6 are pointer tables, not
   re-analysis; §10 reads M9's S7 evidence rather than re-testing.
 - **The controller layer is the audit target**, correctly identified as the only never-adversarially-
   reviewed work, with a method that survives the commits landing between now and the final review.
-- **Open question for the controller** — see the return note: whether the deletion series and the W8
-  merge should each get a *focused* controller-commit re-review as they land (keeping the final review's
-  audit surface small), or all be audited in one pass at the end.
+- **Focused per-landing re-review is the operating procedure.** The M10 deletion series and the W8 →
+  integration merge each get a focused controller-commit re-review as they land (ruling, ledgered
+  2026-07-22); this final pass audits only the residue via the re-enumeration recipe (§2, §4 Duty 1).
