@@ -4,7 +4,10 @@ import { ToolCallItem } from "./ToolCallItem";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
 import "./tools/shellTool"; // registers the real "shell" descriptor, incl. its own autoExpand heuristic
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import "./tools/fsTools"; // registers the real "read_file" (openBesidePath) + grep/list_dir/glob (opt-out)
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
+import * as paneActions from "../../../shell/paneActions";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 
 afterEach(cleanup);
 
@@ -269,4 +272,115 @@ test("live -> settled transition applies autoExpand exactly once", () => {
   // A further re-render at the SAME settled state must not re-invoke it.
   rerender(<ToolCallItem item={settledItem} turn={turn} live={false} />);
   expect(autoExpand).toHaveBeenCalledTimes(1);
+});
+
+// --- file "open beside" affordance (floor §3.7 / PIN-A): a file-referencing
+// tool card (read_file/edit_file/write_file) exposes descriptor.openBesidePath,
+// which ToolCallItem turns into an "Open beside" control that routes through
+// openDocBeside with the cwd-relativized path. Non-file tools (grep/ls/glob)
+// opt out; out-of-cwd paths and a missing ref get no control. -------------
+
+function seedThreadCwd(ref: string, cwd: string): void {
+  threadsStore.setState({ threads: new Map([[ref, { ref, cwd } as unknown as ThreadModel]]) });
+}
+
+test("a read_file card in the session cwd shows an Open beside control that opens the doc pane", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  render(
+    <ToolCallItem
+      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/src/a.ts" }) })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
+  spy.mockRestore();
+});
+
+test("a read_file card OUTSIDE the session cwd shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  render(
+    <ToolCallItem
+      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/etc/passwd" }) })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("a read_file card with no session ref shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  render(
+    <ToolCallItem
+      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }) })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("a grep card (a directory/pattern tool, not a single file) shows no Open beside control", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  render(
+    <ToolCallItem
+      item={item({ toolName: "grep", argumentsJSON: JSON.stringify({ pattern: "foo", path: "/home/proj/src" }) })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  expect(screen.queryByRole("button", { name: /open beside/i })).toBe(null);
+});
+
+test("clicking Open beside does not toggle the row open (the summary's own toggle is not fired)", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "read_file",
+        argumentsJSON: JSON.stringify({ file_path: "/home/proj/a.ts" }),
+        output: "x",
+      })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expect(details.open).toBe(false); // still collapsed - the open-beside click did not toggle it
+  vi.restoreAllMocks();
+});
+
+test("a read_file card on an image file opens beside as an image (DECISION C: kind:image)", () => {
+  resetThreadsStoreForTests();
+  seedThreadCwd("ref_a", "/home/proj");
+  const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
+  render(
+    <ToolCallItem
+      item={item({ toolName: "read_file", argumentsJSON: JSON.stringify({ file_path: "/home/proj/assets/logo.png" }) })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_a"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
+  expect(spy).toHaveBeenCalledWith({
+    type: "doc",
+    params: { session: "ref_a", path: "assets/logo.png", kind: "image" },
+  });
+  spy.mockRestore();
 });

@@ -57,6 +57,13 @@ function EditFileBody({ item }: ToolRenderProps) {
   return <DiffBlock unified={editDiffText(path, oldString, newString)} />;
 }
 
+// filePathArg reads the single-file arg the file tools share (file_path, or the
+// legacy `path` alias) - the path the "open beside" affordance references.
+function filePathArg(item: ItemModel): string | undefined {
+  const args = parseArgs(item.argumentsJSON);
+  return str(args, "file_path") ?? str(args, "path");
+}
+
 registerToolRenderer({
   match: "edit_file",
   summary(item: ItemModel) {
@@ -67,6 +74,7 @@ registerToolRenderer({
     return `Edited ${path} · ${diffResultText(editDiffText(path, oldString, newString))}`;
   },
   body: EditFileBody,
+  openBesidePath: filePathArg, // single-file mutation (floor §3.7)
 });
 
 function WriteFileBody({ item }: ToolRenderProps) {
@@ -83,7 +91,12 @@ registerToolRenderer({
     return `Wrote ${path}`;
   },
   body: WriteFileBody,
+  openBesidePath: filePathArg, // single-file write (floor §3.7)
 });
+
+// apply_patch is deliberately NOT given openBesidePath: it can touch several
+// files in one call (patchTargets), so there is no single file to open beside
+// (floor §3.7 excludes multi-target tools).
 
 // patchTargets extracts unique file paths from v4a section headers
 // ("*** Add/Update/Delete File: <path>"), preserving first-seen order -

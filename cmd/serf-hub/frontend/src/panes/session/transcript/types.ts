@@ -13,6 +13,11 @@ export interface ItemRenderProps {
   item: ItemModel;
   turn: TurnModel;
   live: boolean;
+  // The owning session's ref, threaded from Session.tsx via TurnBlock so an
+  // item renderer that needs a session-scoped action can wire it (ToolCallItem's
+  // file "open beside" affordance, floor §3.7). Constant for the pane's life
+  // (it IS the pane's identity), so `ignoringTurn` below need not compare it.
+  sessionRef?: string;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
