@@ -100,8 +100,9 @@ exactly this against each other). Therefore:
   **that** suite's Chrome, never a shared instance across suites.
 - **Cheapest real model, from `.env`.** Drive `openai/gpt-5-nano` (the wave-6-close precedent — the
   cheapest real model that completes real turns), materialized from the repo `.env` via
-  `set -a; . ./.env; set +a` (the zsh bare-`. .env` gotcha, ledger). No mocks anywhere — M9 is a
-  real-hub, real-model, real-browser pass.
+  `set -a; . ./.env; set +a` (the zsh bare-`. .env` gotcha, ledger). The model id is verified at
+  dispatch time; the session's proven fallback is `oai-work/gpt-5.4-mini` with the repo `.env`
+  sourced. No mocks anywhere — M9 is a real-hub, real-model, real-browser pass.
 - **Never echo credentials.** Tokens/keys are masked in every screenshot, log, and report line (the
   standing invariant; W7 verified the "UI never displays stored values" copy). A card that would
   capture a live device code or bearer token blurs/omits it.
@@ -115,10 +116,10 @@ exactly this against each other). Therefore:
 
 ## 4. Pacing
 
-Suites are heavy (each = a hub + spawned daemons + a Chrome instance + real model turns). The fleet
-practice adopted for W8 binds **≤ 4 heavy agents concurrent**, and M9 runs **with nothing else heavy
-alongside** (W8 is merged, the deletion is done — M9 is the only load). Seven suites therefore run in
-**two paced batches**:
+Suites are heavy (each = a hub + spawned daemons + a Chrome instance + real model turns). The pacing
+cap is a **controller knob**, not a fixed ceiling — currently **16 heavy agents concurrent** (ledger,
+2026-07-22) — and M9 runs **with nothing else heavy alongside** (W8 is merged, the deletion is done —
+M9 is the only load). Seven suites therefore run in **two paced batches**:
 
 - **Batch 1 (de-risk the artifact first):** **S7** (deletion blast radius), **S1** (core interaction
   spine), **S2** (transcript + doc pane), **S4** (settings + credentials).
@@ -128,7 +129,8 @@ alongside** (W8 is merged, the deletion is done — M9 is the only load). Seven 
 S7 leads batch 1 deliberately: it validates the shared-endpoint foundation, so a shared-endpoint
 regression surfaces as an S7 finding rather than as confusing failures scattered across S1/S2/S4. The
 suites are otherwise independent (own hub each), so the batching is a de-risking preference, not a
-hard dependency — the controller may reorder within the ≤4 cap.
+hard dependency — the controller may reorder within the pacing cap (a controller knob, currently
+16-heavy as of 2026-07-22).
 
 ## 5. The suites (7)
 
@@ -227,8 +229,10 @@ widths (e.g. 390 / 768 / 900 / 1100 / 1200) and assert no horizontal-scroll / cl
 regressions at each.
 
 ### S7 — Deletion blast radius (the final-artifact safety net) — runs first
-**Surfaces:** the 24 protected shared endpoints (kill-list §2.1), the flag no-op, the dead legacy
-routes, the `/doc` reshape, the PWA/auth-exempt assets, and the post-deletion gate health.
+**Surfaces:** the 29 protected shared endpoints (kill-list §2.1's 24, amended by Appendix D's 5
+reclassifications — `/api/search`, `/api/dirs/create`, `/api/git/head`, `/doc/file`, `/doc/image`),
+the flag no-op, the dead legacy routes, the `/doc` reshape, the PWA/auth-exempt assets, and the
+post-deletion gate health.
 **Dedup:** entirely novel — no wave close could test a deletion that hadn't happened. This is the suite
 that catches a mis-scoped excision.
 **Cards:**
@@ -244,8 +248,15 @@ that catches a mis-scoped excision.
    reveal.
 3. **`/api/search` reclassified to protected** — the ⌘K palette consumes REST `/api/search` (W6-T3);
    confirm palette **search → open** works live (the endpoint the kill-list's dry-run re-validation
-   flips from orphaned to protected). Confirm the other §1.6 orphaned endpoints were **kept** per
-   Jesse's safe-default (contract changes aren't drive-bys), not silently deleted.
+   flips from orphaned to protected). Confirm **spawn preflight dir-creation** drives `POST
+   /api/dirs/create` live from the spawn pane's directory field (falsify: creating a directory during
+   preflight 404s, or the created directory never appears in the picker). Confirm **branch-HEAD
+   auto-resolution** drives `GET /api/git/head` live when a git-backed directory is chosen at spawn
+   (falsify: the branch field fails to populate, or the request 404s). Confirm the 3 genuinely-orphaned
+   §1.6 endpoints — `GET /api/upgrade`, `POST /api/sessions/{ref}/reasoning-effort`, `POST
+   /api/path/validate` — are **kept, not deleted** per Jesse's safe-default (contract changes aren't
+   drive-bys): issue an authenticated request to each post-deletion (falsify: any of the three returns
+   404, meaning the safe-default was silently violated).
 4. **Flag no-op** — the hub launched with **no** `SERF_HUB_WEB` serves the SPA at every page route
    (`/`, `/new`, `/s/{ref}`, `/thread/{ref}`, `/settings`, `/settings/{section}`, `/credentials`);
    setting `SERF_HUB_WEB=new` or `=garbage` behaves identically (falsify: any page route returns legacy
@@ -327,7 +338,9 @@ evidence for post-hoc veto** — M9 does not block on them, it *documents* them.
   contract + **6** orphaned §1.6 + **5** flag sites + **262** deleted files (kill-list §0/§2/§3);
   **17** settings sections (wave7-report); the **2** ratification items (ledger 2026-07-22). The model
   `openai/gpt-5-nano` and ports 19280/19281/19286 are the *actual* wave-close values, not invented;
-  M9 suites pick their own unique ports (stated as a convention, not a pinned number).
+  M9 suites pick their own unique ports (stated as a convention, not a pinned number). The model id is
+  verified at dispatch time; the session's proven fallback is `oai-work/gpt-5.4-mini` with the repo
+  `.env` sourced.
 - **Internal consistency.** Suite IDs S1–S7 are used identically in §4 (pacing), §5 (definitions), §6
   (report contract), and §7 (ratification homes). The two ratification items map S2→#1, S3→#2 in both
   §5 and §7. The flag-fate analysis in §1 and S7 card 4 agree (post-flip `SERF_HUB_WEB` is a no-op).
@@ -338,4 +351,4 @@ evidence for post-hoc veto** — M9 does not block on them, it *documents* them.
   hygiene, cleanup — each tied to the ledger lesson that earned it.
 - **Open question for the controller** — see the return note; the port allocation and the exact
   batch-1/batch-2 membership are the only execution-time knobs, and are stated as controller-adjustable
-  within the ≤4 cap.
+  within the pacing cap (§4; a controller knob, currently 16-heavy as of 2026-07-22).

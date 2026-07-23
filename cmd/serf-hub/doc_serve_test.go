@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -464,5 +465,75 @@ func TestWriteDocPages_NoDeadAssetReferences(t *testing.T) {
 	writeDocMarkdownPage(md, "README.md", "# Title\n\nbody")
 	if strings.Contains(md.Body.String(), "/assets/") {
 		t.Errorf("writeDocMarkdownPage emitted a dead /assets/ reference: %q", md.Body.String())
+	}
+}
+
+// A file larger than the cap is served truncated to the first docFileMaxBytes,
+// with an explicit truncation signal AND the file's true total size so the
+// pane can render an exact "showing the first 512 KiB of <total>" notice
+// instead of guessing from the body length.
+func TestDocFile_Raw_OverCapEmitsTruncationHeaders(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	const total = docFileMaxBytes + 100
+	if err := os.WriteFile(filepath.Join(cwd, "huge.log"), bytes.Repeat([]byte("a"), total), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "huge.log")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Doc-Truncated"); got != "true" {
+		t.Fatalf("X-Doc-Truncated=%q, want true", got)
+	}
+	if got := rec.Header().Get("X-Doc-Total-Size"); got != strconv.Itoa(total) {
+		t.Fatalf("X-Doc-Total-Size=%q, want %d (the true total)", got, total)
+	}
+	if rec.Body.Len() != docFileMaxBytes {
+		t.Fatalf("served %d bytes, want the first %d (cap)", rec.Body.Len(), docFileMaxBytes)
+	}
+}
+
+// A file of exactly the cap size is served in full and is NOT truncated: the
+// whole file fits, so no truncation signal is emitted (the false-positive the
+// old body>=cap derivation produced at exactly this boundary).
+func TestDocFile_Raw_ExactlyCapIsNotTruncated(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "exact.log"), bytes.Repeat([]byte("a"), docFileMaxBytes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "exact.log")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Doc-Truncated"); got != "" {
+		t.Fatalf("X-Doc-Truncated=%q, want absent (a cap-sized file is complete)", got)
+	}
+	if got := rec.Header().Get("X-Doc-Total-Size"); got != "" {
+		t.Fatalf("X-Doc-Total-Size=%q, want absent for an untruncated file", got)
+	}
+	if rec.Body.Len() != docFileMaxBytes {
+		t.Fatalf("served %d bytes, want the whole %d-byte file", rec.Body.Len(), docFileMaxBytes)
+	}
+}
+
+// A small file carries no truncation headers at all.
+func TestDocFile_Raw_UnderCapEmitsNoTruncationHeaders(t *testing.T) {
+	web, cwd, session := docServeTestServer(t)
+	content := []byte("a short file")
+	if err := os.WriteFile(filepath.Join(cwd, "small.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := docRawRequest(t, web, session, "small.txt")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	if got := rec.Header().Get("X-Doc-Truncated"); got != "" {
+		t.Fatalf("X-Doc-Truncated=%q, want absent", got)
+	}
+	if got := rec.Header().Get("X-Doc-Total-Size"); got != "" {
+		t.Fatalf("X-Doc-Total-Size=%q, want absent", got)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), content) {
+		t.Fatalf("body=%q, want %q", rec.Body.Bytes(), content)
 	}
 }

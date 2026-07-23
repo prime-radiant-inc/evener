@@ -3,8 +3,14 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Mirrors tokens.css's dark --surface-0 and the PWA manifest's
+         background_color/theme_color; src/styles/pwa-manifest-colors.test.ts
+         locks all three together. -->
+    <meta name="theme-color" content="#0e1116" />
     <title>serf</title>
-    <link rel="manifest" href="/manifest.webmanifest" />
+    <!-- crossorigin="use-credentials" so the manifest fetch carries the auth
+         cookie (floor §4.5 REQUIRED). -->
+    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
   </head>
   <body>
     <div id="root"></div>

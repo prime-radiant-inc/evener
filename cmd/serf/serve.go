@@ -558,7 +558,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetWorkMetricsFunc(func() (int64, *appwire.SerfUsage, int64) {
 		sess := getSession()
-		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtUnix()
+		return sess.WorkMillisSnapshot(), serfUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
 	})
 	srv.SetSessionMetaFunc(func() schema.SessionMeta { return getSession().Meta() })
 	srv.SetPendingAskFunc(func() bool { return getSession().HasPendingAsk() })

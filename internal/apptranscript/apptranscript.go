@@ -351,8 +351,8 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 				// The entry's recorded timestamp is the server truth for when the
 				// call was issued (issue #37); a zero timestamp mints no stamp.
 				if !turn.Timestamp.IsZero() {
-					unix := turn.Timestamp.Unix()
-					item.StartedAt = &unix
+					ms := turn.Timestamp.UnixMilli()
+					item.StartedAt = &ms
 				}
 				items = append(items, item)
 			}
@@ -387,8 +387,8 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			// matching StartedAt rides the earlier assistant entry's item; the
 			// client merges the two by call id.
 			if !turn.Timestamp.IsZero() {
-				unix := turn.Timestamp.Unix()
-				item.CompletedAt = &unix
+				ms := turn.Timestamp.UnixMilli()
+				item.CompletedAt = &ms
 			}
 			if part.ToolResult.IsError {
 				item.Error = StringifyToolContent(part.ToolResult.Content)
@@ -559,7 +559,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 			return err
 		}
 		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.Unix()
+			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
 		}
 		if usage := appwire.SerfUsageFromLLM(entry.Turn.Usage); usage != nil {

@@ -913,7 +913,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 		}
 		turn := appwire.Turn{ID: fmt.Sprintf("turn_%d", record.Index), Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 		if !entry.Turn.Timestamp.IsZero() {
-			startedAt := entry.Turn.Timestamp.Unix()
+			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
 		}
 		turn.Usage = appwire.SerfUsageFromLLM(entry.Turn.Usage)

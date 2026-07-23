@@ -102,6 +102,8 @@ type StatusInfo struct {
 	// two scalars) because appwire.SerfUsage is a value struct whose
 	// omitempty would never omit — nil is how a fresh/unwired daemon signals
 	// "no token data" rather than rendering ↑0 ↓0.
+	// ActiveTurnStartedAt is Unix epoch MILLISECONDS (like WorkMillis's scale
+	// and the web reducer's epoch-ms read), 0 when no turn is running.
 	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64              `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`

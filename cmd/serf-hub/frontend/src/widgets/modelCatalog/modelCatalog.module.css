@@ -1,0 +1,85 @@
+/* Rich model-catalog picker. Tokens only; a neutral field that never uses
+ * color for attention - capability badges, cost, context, and the provider
+ * diagnostics list are all passive metadata, so they stay ink-neutral. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The open picker stacks its Recent quick-picks, the searchable list, the
+ * diagnostics affordance, and Cancel vertically. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-start;
+}
+
+.error {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+}
+
+.recent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.recentLabel {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+/* One catalog row: the provider group head (when this row opens a new
+ * provider run), the model name with its capability badges, then the
+ * cost/context metadata line. */
+.optionRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.groupHead {
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+}
+
+.optionMain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.optionName {
+  font-weight: var(--font-weight-medium);
+}
+
+.optionMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.metaItem {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+.diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.diagnosticsList {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}

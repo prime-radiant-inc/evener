@@ -13,6 +13,7 @@ import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { threadsStore, useThreadsStore } from "../stores/threads";
 import styles from "./DockHost.module.css";
+import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
 import { type PanePanelParams, registerDockviewApi, useWorkspaceStore, workspaceStore } from "./workspace";
 
@@ -301,7 +302,12 @@ export function DockHost() {
 
   return (
     <div className={styles.host}>
-      <DockviewReact components={COMPONENTS} onReady={handleReady} className="dockview-theme-serf" />
+      <DockviewReact
+        components={COMPONENTS}
+        onReady={handleReady}
+        className="dockview-theme-serf"
+        rightHeaderActionsComponent={PopoutHeaderAction}
+      />
     </div>
   );
 }

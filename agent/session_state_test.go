@@ -80,18 +80,20 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 	}
 }
 
-// TestActiveTurnStartedAtUnix_MidTurnVsIdle pins the WS2 A7 accessor: an idle
+// TestActiveTurnStartedAtMillis_MidTurnVsIdle pins the WS2 A7 accessor: an idle
 // session reports 0, while a session mid-turn (SessionProcessing with a
-// stamped turnStartedAt) reports that instant as a Unix timestamp. Directly
-// sets the unexported state/turnStartedAt fields to simulate mid-turn without
-// driving a real model call, mirroring TestWorkMillis_CloseMidTurnCounts'
-// established idiom in session_workmillis_test.go.
-func TestActiveTurnStartedAtUnix_MidTurnVsIdle(t *testing.T) {
+// stamped turnStartedAt) reports that instant as a Unix timestamp in
+// milliseconds — the wire contract for SerfThread.ActiveTurnStartedAt, which
+// the web reducer reads as epoch-ms. Directly sets the unexported
+// state/turnStartedAt fields to simulate mid-turn without driving a real model
+// call, mirroring TestWorkMillis_CloseMidTurnCounts' established idiom in
+// session_workmillis_test.go.
+func TestActiveTurnStartedAtMillis_MidTurnVsIdle(t *testing.T) {
 	clk := agenttest.NewFakeClock()
 	sess := newSession(t, withConfig(SessionConfig{clock: clk}))
 
-	if got := sess.ActiveTurnStartedAtUnix(); got != 0 {
-		t.Fatalf("idle ActiveTurnStartedAtUnix() = %d, want 0", got)
+	if got := sess.ActiveTurnStartedAtMillis(); got != 0 {
+		t.Fatalf("idle ActiveTurnStartedAtMillis() = %d, want 0", got)
 	}
 
 	sess.mu.Lock()
@@ -99,8 +101,8 @@ func TestActiveTurnStartedAtUnix_MidTurnVsIdle(t *testing.T) {
 	sess.turnStartedAt = clk.Now()
 	sess.mu.Unlock()
 
-	if want, got := clk.Now().Unix(), sess.ActiveTurnStartedAtUnix(); got != want {
-		t.Fatalf("mid-turn ActiveTurnStartedAtUnix() = %d, want %d", got, want)
+	if want, got := clk.Now().UnixMilli(), sess.ActiveTurnStartedAtMillis(); got != want {
+		t.Fatalf("mid-turn ActiveTurnStartedAtMillis() = %d, want %d", got, want)
 	}
 }
 

@@ -151,3 +151,44 @@ test("suppression only ever applies to the daemon divider path - a 'user'-source
   expect(screen.getByTestId("user-message-item")).toBeTruthy();
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
+
+// --- wave 8: the divider now carries its classified label (not one generic
+// "Steering injected" for every kind), and a job-notification steer renders as
+// a card instead of a divider (parity-m4 §8, contracts §17). -----------------
+
+test("loop-detection steering keeps a divider labeled by its own kind, not the generic label", () => {
+  render(<SteeringItem item={item({ text: "You appear to be stuck in a loop." })} turn={turn} live={false} />);
+  const summary = screen.getByTestId("steering-item").querySelector("summary");
+  expect(summary?.textContent).toContain("Loop detection");
+});
+
+test("a tasks-done steer is labeled 'Tasks done', not 'Steering injected'", () => {
+  render(<SteeringItem item={item({ text: TASKS_DONE_STEERING })} turn={turn} live={false} />);
+  expect(screen.getByTestId("steering-item").querySelector("summary")?.textContent).toContain("Tasks done");
+});
+
+const JOB_NOTIFICATION_STEERING = `<job-notification job_id="job_7" event="completed" job_type="delegate" status="completed" reason="" output_bytes="9" transcript_ref="ref_x">
+Job job_7 completed.
+excerpt:
+finished the lane
+</job-notification>`;
+
+test("a job-notification steer renders a notification card (not a steering divider)", () => {
+  render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
+  expect(screen.getByTestId("notification-card")).toBeTruthy();
+  expect(screen.queryByTestId("steering-item")).toBeNull();
+  expect(screen.getByText("Job completed")).toBeTruthy();
+});
+
+test("a notification card always keeps the verbatim block inspectable in a raw disclosure", () => {
+  render(<SteeringItem item={item({ text: JOB_NOTIFICATION_STEERING })} turn={turn} live={false} />);
+  expect(screen.getByTestId("notification-raw").textContent).toContain("job_7");
+});
+
+test("two job-notification blocks in one steer render two distinct cards", () => {
+  const two = `${JOB_NOTIFICATION_STEERING}\n<job-notification job_id="job_8" event="failed" job_type="shell" status="failed" reason="bad" output_bytes="1" exit_code="3">
+Job job_8 failed.
+</job-notification>`;
+  render(<SteeringItem item={item({ text: two })} turn={turn} live={false} />);
+  expect(screen.getAllByTestId("notification-card")).toHaveLength(2);
+});

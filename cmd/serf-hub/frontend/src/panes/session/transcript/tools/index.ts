@@ -25,3 +25,4 @@ import "./useSkillTool";
 import "./jobTools";
 import "./subagentModule";
 import "./askUser";
+import "./taskCard";

@@ -124,6 +124,16 @@ test("applies the dockview-theme-serf class dockview-theme.css targets", async (
   expect(container.querySelector(".dockview-theme-serf")).not.toBeNull();
 });
 
+test("wires the 'Pop out' group-header affordance into the live dockview host", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: ref_a/);
+  // The affordance is a dockview right-header action rendered by the real
+  // host - proof popout is actually reachable (no longer dormant), which the
+  // isolated PopoutHeaderAction unit test cannot establish on its own.
+  expect(await screen.findByRole("button", { name: "Pop out" })).toBeTruthy();
+});
+
 test("renders the content of a pane opened via workspace.openPane", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
@@ -297,6 +307,7 @@ function fixtureThread(ref: string, overrides: Partial<ThreadModel> = {}): Threa
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }

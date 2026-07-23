@@ -34,6 +34,28 @@ func serveSPAIndex(w http.ResponseWriter, r *http.Request, dist fs.FS) {
 	_, _ = w.Write(b)
 }
 
+// popoutShellHTML is the minimal same-origin document dockview opens for a
+// popped-out pane. dockview-core waits for this page's `load`, appends the
+// popped group into its document.body, and clones the opener's stylesheets
+// into it (popoutWindow.js:128-136; dom.js addStyles) — so the shell carries
+// no app CSS or JS of its own, only a body to append into and the app's
+// identity. A bare SPA fallback here would instead return index.html and boot
+// a second full app in the popout window, which is the failure this route
+// exists to prevent.
+const popoutShellHTML = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>serf</title></head><body></body></html>`
+
+// servePopoutShell serves popoutShellHTML at dockview's default /popout.html.
+// It is auth-gated like every other route (NOT in hubedge.isAuthExempt): a
+// same-origin window.open carries the SameSite=Lax session cookie, so an
+// authorized browser loads it and an anonymous client is refused. Registered
+// unconditionally (like /webassets/) — the document is inert and only the
+// rewritten SPA's dockview ever requests it.
+func servePopoutShell(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(popoutShellHTML))
+}
+
 // webassetsHandler serves the hashed Vite output rooted at dist/webassets/.
 // Hashed filenames are immutable by construction, so far-future caching is
 // correct. Only the leading "/" is stripped from the request path — not

@@ -69,6 +69,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }

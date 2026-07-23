@@ -421,6 +421,42 @@ func TestPastEntryThread_CarriesWorkMetrics(t *testing.T) {
 	}
 }
 
+// TestPastEntryThread_CarriesCostTotal proves the past-entry hydrate stamps
+// the session-level dollar total on SerfThread from the cumulative usage at
+// the session model's price — the honest full-session figure, never a page
+// of loaded turns — and honestly omits it when there is no usage or the model
+// is uncataloged (the absent-vs-zero distinction).
+func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
+	priced := hubcore.PastEntry{
+		Meta: schema.SessionMeta{
+			Model:           "claude-opus-4-5",
+			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
+		},
+	}
+	thread := requirePastEntryThread(t, hubcore.WebConfig{}, priced, false)
+	if want := appwire.EstimateCost("claude-opus-4-5", thread.Serf.Usage); thread.Serf.Cost != want || want == "" {
+		t.Fatalf("thread.Serf.Cost = %q, want non-empty %q", thread.Serf.Cost, want)
+	}
+	if !strings.HasPrefix(thread.Serf.Cost, "~$") {
+		t.Fatalf("thread.Serf.Cost = %q, want ~$ prefix", thread.Serf.Cost)
+	}
+
+	noUsage := hubcore.PastEntry{Meta: schema.SessionMeta{Model: "claude-opus-4-5"}}
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, noUsage, false); got.Serf.Cost != "" {
+		t.Fatalf("no-usage thread.Serf.Cost = %q, want \"\" (absent)", got.Serf.Cost)
+	}
+
+	uncataloged := hubcore.PastEntry{
+		Meta: schema.SessionMeta{
+			Model:           "totally-unknown-model-xyz",
+			CumulativeUsage: schema.CumulativeUsage{InputTokens: 100_000, OutputTokens: 20_000, TotalTokens: 120_000},
+		},
+	}
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, uncataloged, false); got.Serf.Cost != "" {
+		t.Fatalf("uncataloged-model thread.Serf.Cost = %q, want \"\" (absent, not ~$0.00)", got.Serf.Cost)
+	}
+}
+
 func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 	t.Helper()
 	root := t.TempDir()

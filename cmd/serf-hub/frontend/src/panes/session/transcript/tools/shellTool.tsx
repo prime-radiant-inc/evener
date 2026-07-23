@@ -2,13 +2,16 @@
 // §2's shellRenderer). Failure signal for a settled call: the daemon promotes
 // the process exit code onto the item as a typed wire field
 // (ItemModel.exitCode), so that structured number is the PRIMARY source for
-// both the exit-code summary suffix and autoExpand. Two facts still shape the
-// logic: ItemModel.status is ALWAYS "completed" for a finished tool call
-// regardless of exit code (internal/appprojector/appwire_projection.go
-// hard-codes Status: "completed" on EventToolCallEnd), and ItemModel.error
-// carries a denial/failure message when the call itself failed or was denied
-// (mapped by reducer.ts's wireItemToModel) — a distinct signal from a nonzero
-// exit, which is a command that ran and returned. When exitCode is absent (an
+// both the exit-code summary suffix and autoExpand. One fact still shapes the
+// logic: a nonzero EXIT is not a tool error. The wire stamps an honest settled
+// status — "failed" only when the tool RESULT carried an error, "completed"
+// otherwise (apptranscript.SettledToolStatus, appwire_projection.go:438) — and
+// a command that ran and returned nonzero is a clean tool result (empty
+// ItemModel.error, status "completed") that this descriptor still flags via
+// exitCode alone. ItemModel.error carries a denial/failure message when the
+// call itself failed or was denied (mapped by reducer.ts's wireItemToModel); it
+// drives the generic failed-row treatment in ToolCallItem and is a distinct
+// signal from a nonzero exit, handled there, not here. When exitCode is absent (an
 // old daemon that doesn't populate it), the descriptor falls back to the
 // output-footer text heuristic below: agent/session_tools_shell.go's
 // formatShellResult appends a trailing "[exit <N> · ...]" bracketed footer

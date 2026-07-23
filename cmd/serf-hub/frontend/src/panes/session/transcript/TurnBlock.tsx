@@ -10,11 +10,18 @@ import "./ToolCallItem";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TurnSeparator } from "./messages";
+import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import styles from "./turnblock.module.css";
+import { asTurnError } from "./turnFailure";
 import { itemRendererFor } from "./types";
 
 export interface TurnBlockProps {
   turn: TurnModel;
+  // The owning session's ref, threaded from Session.tsx so the turn-failure
+  // end-cap can wire its recovery action (re-issue the turn). Optional: the
+  // diagnostic renders without it, only the recovery button is withheld until
+  // Session.tsx passes it down.
+  sessionRef?: string;
 }
 
 const CLASS = {
@@ -37,13 +44,19 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
-export function TurnBlock({ turn }: TurnBlockProps) {
+export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
+  // A failed turn carries a TurnError (only genuine failures do - the projector
+  // sets it alongside status "failed", never on a completed or user-cancelled
+  // turn); its presence is the signal to close the turn with a diagnostic
+  // end-cap, corroborated by the honest status "failed" the wire stamps.
+  const failure = asTurnError(turn.error);
   return (
     <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
       {turn.items.map((item) => {
         const ItemRenderer = itemRendererFor(item.type);
-        return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} />;
+        return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} sessionRef={sessionRef} />;
       })}
+      {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
       <TurnSeparator turn={turn} />
     </div>
   );

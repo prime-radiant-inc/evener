@@ -2,11 +2,32 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/hubapi"
 )
+
+// TestActiveTurnRunningForReadsStartedAtAsMillis locks the wire unit for
+// appwire.Turn.StartedAt: it is epoch-MILLISECONDS (the appprojector/apptranscript
+// stamps emit UnixMilli, and the web reducer reads epoch-ms), so the
+// server-rendered "running for" duration must read it via time.UnixMilli. Reading
+// an ms value as seconds places the start ~55000 CE, a negative elapsed the
+// compactDuration clamp floors to "1s" — never the true 2m span.
+func TestActiveTurnRunningForReadsStartedAtAsMillis(t *testing.T) {
+	startedMs := time.Now().Add(-2 * time.Minute).UnixMilli()
+	thread := appwire.Thread{
+		Turns: []appwire.Turn{{
+			ID:        "turn_1",
+			Status:    appwire.TurnStatusInProgress,
+			StartedAt: &startedMs,
+		}},
+	}
+	if got := activeTurnRunningFor(thread); got != "2m" {
+		t.Fatalf("activeTurnRunningFor = %q, want \"2m\" (Turn.StartedAt is epoch-ms)", got)
+	}
+}
 
 // TestWorkspaceDataFromAppThreadCarriesWorkMetrics asserts that
 // thread.Serf.{Usage,WorkMillis,ActiveTurnStartedAt} (WS2) flow onto

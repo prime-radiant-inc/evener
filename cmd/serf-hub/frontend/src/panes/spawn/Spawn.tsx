@@ -351,7 +351,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             <span className={CLASS.fieldLabel} id="spawn-model-label">
               Model
             </span>
-            <ModelField value={model} onChange={handleModelChange} loadModels={loadModels} />
+            <ModelField
+              value={model}
+              onChange={handleModelChange}
+              loadModels={loadModels}
+              harness={harness || undefined}
+              cwd={cwd || undefined}
+            />
           </div>
 
           <FormRow label="Reasoning effort" htmlFor="spawn-reasoning">

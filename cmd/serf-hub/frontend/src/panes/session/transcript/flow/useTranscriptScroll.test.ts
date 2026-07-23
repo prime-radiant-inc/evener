@@ -57,6 +57,7 @@ function model(turns: TurnModel[], overrides: Partial<ThreadModel> = {}): Thread
     workMillis: 0,
     reasoningEffortLevels: [],
     supportsReasoning: false,
+    cwd: "/tmp/project",
     ...overrides,
   };
 }

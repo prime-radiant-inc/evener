@@ -330,10 +330,33 @@ func TestSerfThreadMetricsOmitEmpty(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	got := string(raw)
-	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`} {
+	for _, banned := range []string{`"usage"`, `"workMillis"`, `"activeTurnStartedAt"`, `"cost"`} {
 		if strings.Contains(got, banned) {
 			t.Fatalf("marshal=%s should have omitted %s", got, banned)
 		}
+	}
+}
+
+// TestSerfThreadCostJSONRoundTrip verifies SerfThread.Cost is the
+// session-level estimated dollar total that rides the thread snapshot in
+// camelCase, exactly like the per-turn Turn.Cost string — same "~$X.XX"
+// shape, same omit-when-absent honesty.
+func TestSerfThreadCostJSONRoundTrip(t *testing.T) {
+	in := SerfThread{Usage: &SerfUsage{InputTokens: 1}, Cost: "~$0.42"}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, `"cost":"~$0.42"`) {
+		t.Fatalf("marshal=%s missing cost", got)
+	}
+	var out SerfThread
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Cost != in.Cost {
+		t.Fatalf("roundtrip cost=%q, want %q", out.Cost, in.Cost)
 	}
 }
 
