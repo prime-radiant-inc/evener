@@ -554,3 +554,5 @@ ENDGAME PARALLELIZATION (Jesse-prompted, 3 moves, checks preserved by REORDERING
 - **ALL THREE DELETION-GATE CONDITIONS NOW MET:** wave merged (5fe6804c1) ✓; final re-validation clean (28454f115) ✓; deletion review approved (+ every follow-up commit delta-reviewed) ✓.
 - **Jesse ruled live: REMOVE the orphaned SERF_HUB_EDITOR_URL_TEMPLATE registration** — completion agent resumed for the catalog/main/test removal (one commit); the re-validation agent will delta-bless that single commit; THEN the deletion merges into integration (from the integration checkout) and M9 batch 1 dispatches (S7 leads).
 - Load: m10 env-var removal = 1/16.
+
+**2026-07-23 SEQUENCE AMENDMENT (Jesse, live):** After the deletion merge lands on integration (gates green), PAUSE before dispatching M9 batch 1 — Jesse wants to click around the SPA himself first. Hand him run instructions (serf-hub from the integration worktree; SPA is the only web UI post-deletion, no env var needed). M9 dispatches only on his go-ahead; anything he finds becomes a pre-M9 finding/fix.
