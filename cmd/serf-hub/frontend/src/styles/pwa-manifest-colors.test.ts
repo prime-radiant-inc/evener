@@ -22,17 +22,27 @@ const SERF_HUB_ROOT = dirname(FRONTEND_ROOT); // frontend/.. = cmd/serf-hub
 
 const TOKENS_CSS = readFileSync(join(STYLES_DIR, "tokens.css"), "utf8");
 const MANIFEST_RAW = readFileSync(join(SERF_HUB_ROOT, "assets", "manifest.webmanifest"), "utf8");
+const INDEX_HTML = readFileSync(join(FRONTEND_ROOT, "index.html"), "utf8");
 
-test("the PWA manifest's background_color/theme_color match tokens.css's dark --surface-0", () => {
+function darkSurface0(): string {
   // The bare `:root { ... }` block (dark, the default theme) is declared
   // before the `[data-theme="light"]` override further down the file, so
   // the FIRST --surface-0 match is the dark value - the one the manifest
-  // (and index.html's theme-color meta) is meant to mirror.
+  // and index.html's theme-color meta are meant to mirror.
   const match = /--surface-0:\s*(#[0-9a-fA-F]{6})/.exec(TOKENS_CSS);
   if (!match) throw new Error("pwa-manifest-colors test: could not locate --surface-0 in tokens.css");
-  const brandBackground = match[1]!.toLowerCase();
+  return match[1]!.toLowerCase();
+}
 
+test("the PWA manifest's background_color/theme_color match tokens.css's dark --surface-0", () => {
+  const brandBackground = darkSurface0();
   const manifest = JSON.parse(MANIFEST_RAW) as { background_color: string; theme_color: string };
   expect(manifest.background_color.toLowerCase()).toBe(brandBackground);
   expect(manifest.theme_color.toLowerCase()).toBe(brandBackground);
+});
+
+test("index.html's theme-color meta matches tokens.css's dark --surface-0", () => {
+  const metaMatch = /<meta name="theme-color" content="(#[0-9a-fA-F]{6})"/.exec(INDEX_HTML);
+  if (!metaMatch) throw new Error("pwa-manifest-colors test: could not locate the theme-color meta in index.html");
+  expect(metaMatch[1]!.toLowerCase()).toBe(darkSurface0());
 });
