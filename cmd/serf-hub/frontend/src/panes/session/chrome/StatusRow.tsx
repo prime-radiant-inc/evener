@@ -1,19 +1,20 @@
 // StatusRow: the footer chrome's compact glanceable strip - state dot, model
-// chip, reasoning-effort switcher, work-time clock, context gauge, usage.
-// Promotes work-time and cost/usage into this ONE compact row rather than
-// replicating the legacy split (compact strip vs. a separate details panel,
-// parity-m5-composer.md finding #4) - a decision the wave plan already made
-// explicitly (design doc lines 94-97 list them together under "status row").
+// chip, reasoning-effort switcher, work-time clock, context gauge, usage,
+// session cost. Promotes work-time and cost/usage into this ONE compact row
+// rather than replicating the legacy split (compact strip vs. a separate
+// details panel, parity-m5-composer.md finding #4) - a decision the wave plan
+// already made explicitly (design doc lines 94-97 list them together under
+// "status row").
 //
-// Dollar cost is deliberately NOT shown: appwire.EstimateCost (cmd/serf-hub/
-// web_format.go:61, appwire/cost.go) is a Go-side computation over a
-// pricing table that never crosses the wire - ThreadModel carries raw
-// SerfUsage token counts only, no cost field, and Turn.cost (protocol/
-// model.ts's TurnModel.cost) is a PER-TURN formatted string covering only
-// whatever turns are currently loaded client-side (the last N via
-// thread/read's turnLimit, older pages fetched on demand) - summing those
-// would silently under-count a session's real total. Token counts (usage)
-// are real wire truth at the thread level and are shown instead.
+// Session dollar cost rides the wire as SerfThread.Cost (appwire/types.go) -
+// the "~$X.XX" string appwire.EstimateCost derives SERVER-SIDE from the
+// thread's authoritative full-session cumulative Usage at the model's catalog
+// price. The pricing table never crosses the wire, so the string is computed
+// once server-side and shown verbatim (no client-side re-formatting). This is
+// the honest full-session total, NOT a client sum of the turns currently
+// loaded (thread/read's turnLimit windows those, so summing them would
+// silently under-count). Absent (no chip) when the daemon omits it: no token
+// data, or an uncataloged model - an honest "unknown", never a bogus "~$0.00".
 import type { ChangeEvent } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
@@ -159,6 +160,16 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       {model.usage && (
         <span className={CLASS.item} data-testid="status-row-usage">
           ↑{formatTokenCount(model.usage.inputTokens ?? 0)} ↓{formatTokenCount(model.usage.outputTokens ?? 0)}
+        </span>
+      )}
+      {/* Session cost: the server-formatted SerfThread.Cost string shown
+          verbatim (no client-side formatter — the pricing table is Go-side).
+          A falsy cost (null/undefined/"" — the daemon's honest "unknown")
+          renders nothing rather than a misleading "~$0.00". The title follows
+          the row's "key value" tooltip convention (LocationCluster). */}
+      {model.cost && (
+        <span className={CLASS.item} data-testid="status-row-cost" title={`session cost ${model.cost}`}>
+          {model.cost}
         </span>
       )}
     </div>
