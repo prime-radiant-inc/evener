@@ -130,6 +130,19 @@ test("an Observer callback classifies as a notification", () => {
   expect(notif(c, 0).title).toBe("Observer callback");
 });
 
+test("an Observer callback with no output surfaces its message prose (not just the raw disclosure)", () => {
+  // The daemon emits `Observer callback:\nmessage: X` with no `\noutput:` when
+  // the callback carries no tool output (agent/session_tools_communicate.go:117).
+  // The prose is then the ONLY content, so it must reach the card body (floor
+  // parity-m4 §8:239 "body = observer-callback prose"), not be dropped to the
+  // raw disclosure alone.
+  const c = classifySteering("Observer callback:\nmessage: the sidecar noticed the build broke");
+  expect(c.kind).toBe("notification");
+  const n = notif(c, 0);
+  expect(n.title).toBe("Observer callback");
+  expect(n.excerpt).toBe("the sidecar noticed the build broke");
+});
+
 test("leftover text around a notification block is preserved for a trailing divider", () => {
   const c = classifySteering(`some preface\n${oneBlock}\nsome epilogue`);
   expect(c.kind).toBe("notification");

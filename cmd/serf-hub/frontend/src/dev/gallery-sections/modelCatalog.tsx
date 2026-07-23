@@ -3,11 +3,12 @@
 import { ModelCatalog } from "../../widgets/modelCatalog";
 import { ThemeFlip } from "../ThemeFlip";
 
-// Interim-Combobox stub (T1); wave-8 T2 fills the rich catalog (provider
-// grouping, capability badges, cost, Recent) inside the same widget. The
-// gallery shows its two resting displays: the harness-default marker, and a
-// chosen qualified provider/model. loadCatalog is a static in-memory fake -
-// the gallery never hits the wire.
+// The rich model catalog widget (wave-8 T2 filled it: provider grouping,
+// capability badges, cost, and a Recent section). The gallery drives it with a
+// small static in-memory fake, just enough to show the two resting displays -
+// the harness-default marker and a chosen qualified provider/model; it never
+// hits the wire, so the badges/cost/Recent affordances only light up against a
+// live /api/models envelope.
 const CATALOG: ModelCatalog = {
   models: [
     { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5" },

@@ -205,6 +205,13 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   const marker = "\noutput: ";
   const idx = withoutHeader.indexOf(marker);
   const output = idx === -1 ? "" : withoutHeader.slice(idx + marker.length).trim();
+  // The observer's own `message:` prose is the real signal (floor parity-m4
+  // §8:239 "body = observer-callback prose"). With an `output:` envelope the
+  // communicate message/excerpt carries the body; with NO output (the daemon's
+  // `Observer callback:\nmessage: X` shape, session_tools_communicate.go:117)
+  // the prose is the ONLY content, so surface it rather than dropping it to the
+  // raw disclosure alone.
+  const proseOnly = idx === -1 ? withoutHeader.replace(/^message: /, "").trim() : "";
   const communicate = parseCommunicateEnvelope(output);
   // Observer callbacks are coerced from success to warning - a callback firing
   // at all is a thing the reader should notice (legacy renderer-format.js:392).
@@ -214,7 +221,7 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
     title: "Observer callback",
     tone: rawTone === "success" ? "warning" : rawTone,
     secondary: "",
-    excerpt: output,
+    excerpt: output || proseOnly,
     message: communicate?.message || undefined,
     concerns: communicate?.concerns ?? [],
     rawText: stripped,
