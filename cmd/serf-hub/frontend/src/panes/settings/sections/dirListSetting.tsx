@@ -36,7 +36,9 @@ import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   section: requireClass(styles.section, "dirListSetting.module.css", "section"),
+  header: requireClass(styles.header, "dirListSetting.module.css", "header"),
   title: requireClass(styles.title, "dirListSetting.module.css", "title"),
+  count: requireClass(styles.count, "dirListSetting.module.css", "count"),
   help: requireClass(styles.help, "dirListSetting.module.css", "help"),
   addRow: requireClass(styles.addRow, "dirListSetting.module.css", "addRow"),
   addField: requireClass(styles.addField, "dirListSetting.module.css", "addField"),
@@ -206,10 +208,22 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
   }
 
   const lowerLabel = label.toLowerCase();
+  const items = layer?.[wireField] ?? [];
+  // The count only means something once the layer has actually loaded - show
+  // it neither during the Skeleton (would flash a misleading "0 entries")
+  // nor on a load failure (the count isn't known, not zero).
+  const showCount = error === null && !(loading && layer === null);
 
   return (
     <section className={CLASS.section}>
-      <h2 className={CLASS.title}>{label}</h2>
+      <header className={CLASS.header}>
+        <h2 className={CLASS.title}>{label}</h2>
+        {showCount && (
+          <span className={CLASS.count}>
+            {items.length} {items.length === 1 ? "entry" : "entries"}
+          </span>
+        )}
+      </header>
       <p className={CLASS.help}>{copy}</p>
       {error !== null ? (
         <EmptyState title="Failed to load" hint={error} />
@@ -219,7 +233,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
         <PathListEditor
           label={label}
           addLabel="New directory"
-          items={layer?.[wireField] ?? []}
+          items={items}
           onAdd={handleAdd}
           onRemove={handleRemove}
           listChildren={(path) => extensionsStore.getState().listDirChildren(path)}
