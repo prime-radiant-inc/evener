@@ -108,3 +108,39 @@ Non-blocking observations, all pre-disclosed and correct as-is, none actionable 
   is correctly retained and untouched (discrepancy #3; unrelated to the three new commits).
 - The absorb's combined diff surfaces `web.go` as an auto-merged union (expected `--cc` behavior; `web_test.go`
   is compressed out because OURS matches one parent) — verified a correct union, not improvised resolution.
+
+---
+
+## Addendum — 2026-07-23: delta-bless two env-var removal commits (CLEAN)
+
+After the GATE-CLEAN verdict above, Jesse ruled **REMOVE** on the orphaned `SERF_HUB_EDITOR_URL_TEMPLATE`
+knob. Two follow-up commits landed on `m10-deletion` (tip now `6e0bdbc7d`, atop my report `28454f115`).
+**This supersedes the FINDINGS-observation "stays registered — Jesse's call": the knob is now removed.**
+Both commits re-reviewed against the merged tree; each does exactly and only what it claims.
+
+- **`ac9d1ebf9`** (env registration removal) — CLEAN. Removes `SERFHubEditorURLTemplate` from all four Go
+  sites and nothing else: `envvars/envvars.go` (the `Var` catalog entry + its `allVars` registration),
+  `cmd/serf-hub/main.go` (`printHubEnvVars` slice line), `cmd/serf-hub/testmain_test.go` (TestMain unset
+  list line), `cmd/serf-hub/main_test.go` (the `wantSummary` map entry, with gofmt re-aligning the map
+  because the removed key was the longest — pure formatting-tool churn, remaining 7 entries content-identical).
+  Plus a `m10-deletion-report.md` §9-follow-up addendum recording the receipts (doc, expected).
+- **`6e0bdbc7d`** (user-doc removal) — CLEAN. Removes exactly the two stale rows that still named the knob:
+  the `README.md` "Open-in-editor links" bullet (it described the legacy `/settings/*` `vscode://` feature
+  deleted with the old UI; the SPA has no editor links — confirmed by grep) and the `docs/environment.md`
+  table row. Two single-line deletions, nothing else.
+
+**Receipts (re-run against `6e0bdbc7d`):** Go-sites grep `SERF_HUB_EDITOR_URL_TEMPLATE|SERFHubEditorURLTemplate`
+`-- '*.go'` → **0**; whole-tree residue → only the two internal sdd reports (prior-state refs), user docs now
+clean; `frontend/src` editor-link grep (`vscode://|editor-url|SERF_HUB_EDITOR`) → **0** (README bullet was
+legacy-only); `go build ./...` → **0**; `go test . -run TestSupportedEnvVars -count=1` → **PASS 2/2**
+(`AreDocumented` + `UseRegistryRows`, catalog ⊆ doc holds); `go test ./cmd/serf-hub/... ./envvars/...` → **0**;
+`make lint` → **PASS (7 modules)**. **Appendix-C protected inventory untouched** — the 7 changed files include
+no `hubapi/`, `web*.go` route/handler, `auth_token`, `/assets/`, `doc_serve`, `app_rpc`, or `webnext` surface.
+Working tree clean at `6e0bdbc7d`.
+
+Noted (not mine to act on, disclosed by the committer): root-package `go test .` fails
+`TestMakeRuntimeAliasesBuildThePair/build-hub` — a `make build-hub`→`build-web` fixture needing the frontend
+dir from a temp dir; independent of the env-var removal (which touches only the 7 files above) and outside
+the scoped receipts. The env-var removal cannot affect a build-web Makefile fixture.
+
+### Addendum verdict: **CLEAN** — validated tree == merged tree at `6e0bdbc7d`.
