@@ -1,5 +1,7 @@
+/* No position: relative here - the popup is a portal (see widgets/menu's
+ * own index.tsx), position: fixed off the trigger's own measured rect, not
+ * an absolutely-positioned child anchored to this box. */
 .root {
-  position: relative;
   display: inline-block;
 }
 
@@ -27,10 +29,14 @@
   outline-offset: 2px;
 }
 
+/* position: fixed (not absolute): the popup portals to document.body (see
+ * index.tsx) and gets its top/left as an inline style, computed off the
+ * trigger's own getBoundingClientRect() - never these two static values,
+ * which is what used to clip the popup at a scrolling ancestor's edge or
+ * overflow the viewport's own, with no way for a mere descendant to escape
+ * either via CSS alone. */
 .popup {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  left: 0;
+  position: fixed;
   z-index: 1020;
   min-width: 180px;
   margin: 0;
