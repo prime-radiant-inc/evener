@@ -9,7 +9,8 @@ import "./subagentModule";
 import type { ItemModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { registerPane } from "../../../../shell/paneRegistry";
-import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import type { DockviewApi } from "dockview-core";
+import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 
@@ -33,7 +34,15 @@ afterEach(() => {
   cleanup();
   resetSubagentModuleStoreForTests();
   resetWorkspaceStoreForTests();
+  registerDockviewApi(null); // never leak a fake dockview host to another test
 });
+
+// A minimal DockviewApi stand-in: openBeside only asks "is there a host at all"
+// (non-null) to decide split-vs-plain-open, so a bare object suffices (mirrors
+// shell/paneActions.test.ts's own fakeApi).
+function fakeApi(): DockviewApi {
+  return {} as unknown as DockviewApi;
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -333,22 +342,41 @@ test("clicking '+N more' expands to show every done row, and offers a collapse c
 
 // --- open-transcript action -----------------------------------------------
 
-test("open transcript calls workspaceStore.openPane('session', {ref: transcriptRef})", async () => {
-  const user = userEvent.setup();
-  const d = toolRendererFor("delegate");
-  const Body = d.body!;
-  const withRef = delegateItem({
+function delegateWithTranscriptRef(ref: string): ItemModel {
+  return delegateItem({
     id: "d_ref",
     callId: "call_ref",
     argumentsJSON: JSON.stringify({ task: "has a transcript" }),
-    output: JSON.stringify({ job_id: "job_ref", status: "running", transcript_ref: "ref_child_open" }),
+    output: JSON.stringify({ job_id: "job_ref", status: "running", transcript_ref: ref }),
   });
-  render(<Body item={withRef} live={false} />);
-  const button = screen.getByRole("button", { name: /open transcript/i });
-  await user.click(button);
-  expect(workspaceStore.getState().panes).toContainEqual(
-    expect.objectContaining({ type: "session", params: { ref: "ref_child_open" } }),
-  );
+}
+
+test("open transcript opens the read-only transcript pane (mobile / no dockview host): plain full-screen open, not a session pane", async () => {
+  registerDockviewApi(null); // StackHost registers no api - the mobile signal
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const panes = workspaceStore.getState().panes;
+  // The DISTINCT read-only "transcript" pane (plan §Ambiguities #1 / PIN-A:
+  // reachable via openBeside, never a URL) - opened against the child's own ref.
+  const opened = panes.find((p) => p.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(opened?.beside).toBeUndefined(); // no split on mobile
+  // The row must no longer open a live SESSION pane for the child.
+  expect(panes.some((p) => p.type === "session")).toBe(false);
+});
+
+test("open transcript splits the transcript pane BESIDE the focused pane (desktop host present)", async () => {
+  registerDockviewApi(fakeApi());
+  const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+  expect(opened?.beside).toBe(anchor); // split beside the pane that was focused
 });
 
 test("no open-transcript button when the row has no transcriptRef yet", () => {

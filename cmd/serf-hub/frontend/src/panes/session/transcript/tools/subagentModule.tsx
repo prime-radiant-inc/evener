@@ -30,7 +30,7 @@
 // rows would need far more inference than the wire actually supports.
 import { useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
-import { workspaceStore } from "../../../../shell/workspace";
+import { openBeside } from "../../../../shell/paneActions";
 import { Button, Chip, type ChipTone } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
@@ -131,12 +131,14 @@ function durationLabel(row: SubagentRow): string | undefined {
 }
 
 function openTranscript(ref: string): void {
-  // "session" stands in for a dedicated "transcript" pane type, which
-  // registers in Wave 8 (per the wave-4 plan's own T3 scope note) - opening
-  // a session pane against the child's own ref is the closest available
-  // affordance today and shares the same underlying ThreadModel/transcript
-  // rendering the child would get from a real transcript pane.
-  workspaceStore.getState().openPane("session", { ref });
+  // The read-only "transcript" pane is the DISTINCT contextual surface for
+  // viewing another thread beside the current one (plan §Ambiguities #1 / PIN-A:
+  // reachable via openBeside, never a URL) - not the live SESSION pane (which is
+  // the /thread/{ref} single-pane target). openBeside splits it beside the
+  // focused pane on desktop and degrades to a plain full-screen open on the
+  // mobile StackHost (openBeside's own no-dockview path); re-opening the same
+  // child ref just focuses the existing pane (the store's same-params dedup).
+  openBeside({ type: "transcript", params: { ref } });
 }
 
 function SubagentRowView({ row }: { row: SubagentRow }) {
