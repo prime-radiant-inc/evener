@@ -51,6 +51,17 @@ export function openBeside(pane: PaneRef): void {
 // entirely; this is the thin imperative entry point. A no-op when there is no
 // dockview host (mobile) or the id names no open panel, so a caller can invoke
 // it optimistically without first checking either.
+//
+// RUNTIME DEPENDENCY (flagged for the controller / T8 live proof, not fixable
+// from a frontend stream): dockview's addPopoutGroup opens window.open() at
+// options.popoutUrl, defaulting to a same-origin `/popout.html`, then moves the
+// group's DOM into that window's <body>. serf-hub serves no /popout.html today,
+// and its SPA fallback would boot a SECOND full app instance there instead of a
+// blank shell. Reliable native popout therefore needs the server to serve a
+// minimal same-origin popout shell (a small Go route, the MW-* precedent) - or
+// this call to pass an `about:blank` popoutUrl override, which carries its own
+// cross-browser quirks. Left on dockview's default so the controller picks the
+// mechanism with T8's live proof; there is no caller of popOutPane yet.
 export function popOutPane(paneId: string): void {
   const api = getDockviewApi();
   if (!api) return;
