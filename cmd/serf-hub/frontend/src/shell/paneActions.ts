@@ -60,10 +60,8 @@ export function openBeside(pane: PaneRef): void {
 //   1. serf-hub serves no /popout.html; its SPA fallback returns index.html, so
 //      the default URL boots a SECOND full app instance in the popout window.
 //   2. An `about:blank` (or data:/blob:) popoutUrl override is REJECTED by
-//      dockview's own assertSameOriginPopoutUrl guard (popoutWindow.js:81-93):
-//      the popoutUrl MUST be same-origin http(s). That guard is newer than the
-//      build T6's review read, which is why its about:blank suggestion no longer
-//      holds against the installed 7.0.2.
+//      dockview's own assertSameOriginPopoutUrl guard (popoutWindow.js:19,
+//      enforced at :83): the popoutUrl MUST be same-origin http(s).
 // The only working mechanism is a minimal same-origin http(s) blank shell the
 // server serves (a small Go route) - reserved for Jesse, no route added here.
 // Until then popout stays dormant: popOutPane has NO caller anywhere in the app
