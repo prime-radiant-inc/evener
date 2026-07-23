@@ -20,6 +20,8 @@ export interface MenuItem {
   disabled?: boolean;
 }
 
+export type MenuVariant = "default" | "quiet";
+
 export interface MenuProps {
   /** Visible content of the trigger button Menu renders (its own aria and
    * open/close wiring - see this task's report for why the trigger isn't
@@ -39,11 +41,24 @@ export interface MenuProps {
    * stopPropagation for the other half of that same containment - a
    * consumed key must not also reach the ancestor that owns Tab order). */
   triggerTabIndex?: number;
+  /** "quiet" drops the trigger's border for a "ghost" icon-only look: no
+   * border at rest (the base trigger's rest background is already
+   * transparent, for every variant), the same hover wash the default
+   * trigger already has, plus a persistent highlight while its own popup is
+   * open - the one affordance this variant keeps, having given up the
+   * border (see menu.module.css's own .triggerQuiet). For a trigger nested
+   * in a dense row alongside other quiet/borderless controls (a rail row's
+   * actions, a session's status row - see shell/rail/RailRow.tsx and
+   * SessionActionsMenu.tsx), the default's permanent bordered pill reads as
+   * visually loud. Omitted (the default) keeps every existing consumer's
+   * look unchanged. */
+  variant?: MenuVariant;
 }
 
 const CLASS = {
   root: requireClass(styles.root, "menu.module.css", "root"),
   trigger: requireClass(styles.trigger, "menu.module.css", "trigger"),
+  triggerQuiet: requireClass(styles.triggerQuiet, "menu.module.css", "triggerQuiet"),
   popup: requireClass(styles.popup, "menu.module.css", "popup"),
   item: requireClass(styles.item, "menu.module.css", "item"),
   itemDisabled: requireClass(styles.itemDisabled, "menu.module.css", "itemDisabled"),
@@ -149,7 +164,7 @@ function computeMenuPosition(triggerRect: DOMRect, popupSize: { width: number; h
  * own popover isn't portaled, so it scrolls for free with whatever it's
  * anchored to).
  */
-export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
+export function Menu({ trigger, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(() => firstEnabledIndex(items));
   const [position, setPosition] = useState<MenuPosition | null>(null);
@@ -324,6 +339,8 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
     };
   }, [isOpen, closeMenu]);
 
+  const triggerClassName = variant === "quiet" ? `${CLASS.trigger} ${CLASS.triggerQuiet}` : CLASS.trigger;
+
   return (
     <div ref={rootRef} className={CLASS.root}>
       <button
@@ -331,7 +348,7 @@ export function Menu({ trigger, items, triggerTabIndex }: MenuProps) {
         id={triggerId}
         type="button"
         tabIndex={triggerTabIndex}
-        className={CLASS.trigger}
+        className={triggerClassName}
         aria-haspopup="menu"
         aria-expanded={isOpen}
         onClick={handleTriggerClick}
