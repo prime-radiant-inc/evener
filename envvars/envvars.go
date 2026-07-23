@@ -63,7 +63,6 @@ var (
 	SERFHubAddr                     = Var{Name: "SERF_HUB_ADDR", Summary: "Default hub address for serf-tui.", Visibility: Public}
 	SERFHubAuthToken                = Var{Name: "SERF_HUB_AUTH_TOKEN", Summary: "Hub capability token for serf-tui.", Secret: true, Visibility: Public}
 	SERFHubBin                      = Var{Name: "SERF_HUB_BIN", Summary: "Path to the serf-hub binary used by serf-tui autostart.", Visibility: Public}
-	SERFHubEditorURLTemplate        = Var{Name: "SERF_HUB_EDITOR_URL_TEMPLATE", Summary: "Open-in-editor URL template; use {path} for the encoded path.", Visibility: Public}
 	SERFHubSpawned                  = Var{Name: "SERF_HUB_SPAWNED", Summary: "Set by serf-hub for spawned serf serve daemons.", Visibility: Internal}
 	SERFHubSpawnedCodex             = Var{Name: "SERF_HUB_SPAWNED_CODEX", Summary: "Set by serf-hub for spawned Codex app-server processes.", Visibility: Internal}
 	SERFHubToken                    = Var{Name: "SERF_HUB_TOKEN", Summary: "Per-hub bearer token passed to spawned serf serve daemons.", Secret: true, Visibility: Internal}
@@ -168,7 +167,6 @@ var allVars = []Var{
 	SERFHubAddr,
 	SERFHubAuthToken,
 	SERFHubBin,
-	SERFHubEditorURLTemplate,
 	SERFHubSpawned,
 	SERFHubSpawnedCodex,
 	SERFHubToken,

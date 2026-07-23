@@ -317,3 +317,37 @@ flagged, not touched.
 | frontend `npm run lint` (biome, 668 files) | — | 0 |
 | frontend `npm run build` + `git restore dist/PLACEHOLDER` | — | 0, dist tree clean |
 | `git grep htmx` outside docs/.superpowers | — | unchanged (1 pre-existing prose hit, above) |
+
+### §9 follow-up — REMOVE the orphaned SERF_HUB_EDITOR_URL_TEMPLATE (Jesse ruling)
+
+Jesse ruled on the orphan surfaced above: **remove it.** Done in a third commit on this branch. The env
+var `SERF_HUB_EDITOR_URL_TEMPLATE` / `envvars.SERFHubEditorURLTemplate` is deleted from the public
+catalog and all its Go wiring.
+
+Grep receipt — **before**, 5 Go sites (`git grep -E 'SERF_HUB_EDITOR_URL_TEMPLATE|SERFHubEditorURLTemplate' -- '*.go'`):
+`envvars/envvars.go:66` (catalog `Var` entry) · `envvars/envvars.go:171` (`allVars` registration) ·
+`cmd/serf-hub/main.go:480` (`printHubEnvVars` list) · `cmd/serf-hub/main_test.go:23` (`TestPrintHubEnvVars`
+assertion) · `cmd/serf-hub/testmain_test.go:37` (TestMain unset list). **After: zero `.go` references.**
+
+All 5 sites removed; nothing else. `gofmt` re-aligned the `TestPrintHubEnvVars` map — the removed key was
+the longest, so the alignment column shrank (formatting-tool churn, not hand-edited whitespace). Catalog
+audit tests pass unchanged: `TestSupportedEnvVarsAreDocumented` (catalog ⊆ doc; the removed var is simply
+no longer required) and `TestSupportedEnvVarsUseRegistryRows`.
+
+**Further orphans (reported, NOT chased — per the ruling's "nothing else"):** stale user-facing docs still
+name the removed knob — `README.md:393` (open-in-editor bullet) and `docs/environment.md:14` (env-var
+table row). Neither is gate-blocking: the audit test only checks catalog ⊆ doc, so a leftover doc row is
+harmless (there is no doc ⊆ catalog check). The internal reports `m10-final-revalidation.md:58,106` and
+the §9 discovery note above also reference it as prior state. These want a deliberate docs pass; left for
+Jesse.
+
+**Pre-existing unrelated failure (discovery, not mine):** `go test .` (root package) fails
+`TestMakeRuntimeAliasesBuildThePair/build-hub` — its fixture runs `make build-hub` from a temp dir, and
+`build-hub: build-web` (Makefile:35) then does `cd cmd/serf-hub/frontend && npm ...`, which the temp dir
+lacks (`No such file or directory`). **Proven identical on the clean base `28454f115`** (throwaway
+detached worktree, change-free tree), so it predates and is independent of this removal (which touches
+only the 4 Go files above). Outside the coordinator's gate scope (`./cmd/serf-hub/... ./envvars/...`) and
+outside this ruling; flagged, not touched.
+
+Gates (AND-chained, worktree root): `go build ./...` **0** · `go test ./cmd/serf-hub/... ./envvars/...`
+**0** · catalog audit `go test . -run TestSupportedEnvVars` **0 (2/2)** · `make lint` **0 (7 modules)**.
