@@ -24,11 +24,8 @@ build: build-runtime
 # target's prerequisites COMPLETE before its recipe runs — even under
 # parallel make (-j) — so hanging build-web off build-runtime structurally
 # guarantees every serf/serf-hub pair build embeds the dist build-web just
-# produced. The old shape (build-web and build-runtime as sibling
-# prerequisites of build-hub) was only ordered under serial make, and left
-# build/build-all/dist/install shipping whatever dist was lying around,
-# including the empty tracked PLACEHOLDER. No target may ship a serf-hub
-# binary with a stale or empty embedded web UI.
+# produced. No target may ship a serf-hub binary with a stale or empty
+# embedded web UI.
 build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
 

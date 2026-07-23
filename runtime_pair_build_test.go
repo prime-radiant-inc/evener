@@ -97,26 +97,41 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 			}
 		}
 
-		logData, err := os.ReadFile(fixture.logPath)
-		if err != nil {
-			t.Fatalf("read fake go/npm log: %v", err)
-		}
-		lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
-
-		var npmCiCount, npmBuildCount int
-		for _, line := range lines {
-			switch line {
-			case "npm ci":
-				npmCiCount++
-			case "npm run build":
-				npmBuildCount++
-			}
-		}
+		npmCiCount, npmBuildCount, logData := countNpmInvocations(t, fixture.logPath)
 		if npmCiCount != 1 {
 			t.Fatalf("npm ci ran %d times across two make build-hub runs, want 1 (the -nt gate should skip the second run); log = %q", npmCiCount, logData)
 		}
 		if npmBuildCount != 2 {
 			t.Fatalf("npm run build ran %d times across two make build-hub runs, want 2 (the vite build is unconditional); log = %q", npmBuildCount, logData)
+		}
+
+		// Re-CI transition: a lockfile change must re-trigger npm ci, the
+		// deterministic mirror of the backdate above. Advance
+		// package-lock.json strictly past node_modules's mtime (rather than
+		// relying on the wall clock advancing between here and the third
+		// run) so the -nt check flips back to "run npm ci" without a race.
+		nodeModulesInfo, err := os.Stat(filepath.Join(frontendDir, "node_modules"))
+		if err != nil {
+			t.Fatalf("stat node_modules: %v", err)
+		}
+		renewed := nodeModulesInfo.ModTime().Add(1 * time.Hour)
+		if err := os.Chtimes(filepath.Join(frontendDir, "package-lock.json"), renewed, renewed); err != nil {
+			t.Fatalf("renew package-lock.json: %v", err)
+		}
+
+		command := exec.Command("make", "LDFLAGS=make-test-flags", "build-hub")
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("make build-hub (run 3): %v\n%s", err, output)
+		}
+
+		npmCiCount, npmBuildCount, logData = countNpmInvocations(t, fixture.logPath)
+		if npmCiCount != 2 {
+			t.Fatalf("npm ci ran %d times across three make build-hub runs, want 2 (the lockfile change before run 3 should re-trigger it); log = %q", npmCiCount, logData)
+		}
+		if npmBuildCount != 3 {
+			t.Fatalf("npm run build ran %d times across three make build-hub runs, want 3 (the vite build is unconditional); log = %q", npmBuildCount, logData)
 		}
 	})
 
@@ -200,7 +215,7 @@ printf '%s\n' "$package" > "$output"
 }
 
 // installFrontendToolchainStubs equips the fixture for make targets that
-// reach build-web (Makefile:43-54): it creates the frontend directory the
+// reach build-web (Makefile:40-51): it creates the frontend directory the
 // recipe cd's into, and shadows npm and git on the fixture PATH so the REAL
 // build-web recipe runs end to end without touching the network or the
 // checkout's actual git state.
@@ -264,8 +279,28 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	}
 }
 
+// countNpmInvocations tallies exact "npm ci" and "npm run build" log lines
+// (see the fake npm stub in installFrontendToolchainStubs) and returns the
+// raw log alongside the counts so callers can report it on failure.
+func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCount int, logData []byte) {
+	t.Helper()
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake go/npm log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+		switch line {
+		case "npm ci":
+			npmCiCount++
+		case "npm run build":
+			npmBuildCount++
+		}
+	}
+	return npmCiCount, npmBuildCount, logData
+}
+
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:23-32: build-web must run before build-runtime so the serf-hub
+// Makefile:23-29: build-web must run before build-runtime so the serf-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -295,7 +330,7 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:23-32); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:23-29); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
