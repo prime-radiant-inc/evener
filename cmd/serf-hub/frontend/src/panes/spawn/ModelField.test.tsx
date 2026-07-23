@@ -108,6 +108,29 @@ test("enriches a scoped model with /api/models metadata (display name + capabili
   expect(screen.getByText("tools")).toBeTruthy(); // capability badge from the catalog
 });
 
+test("scopes the /api/models enrichment to the spawn harness and cwd", async () => {
+  const user = userEvent.setup();
+  render(
+    <ModelField
+      value=""
+      onChange={vi.fn()}
+      loadModels={vi.fn().mockResolvedValue([{ provider: "openai", model: "gpt-5" }])}
+      harness="codex"
+      cwd="/tmp/project"
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "Change model" }));
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "{arrowdown}");
+  await screen.findByText("openai/gpt-5"); // loadCatalog (incl. the enrichment fetch) has resolved
+
+  // The enrichment must be scoped to the SAME harness+cwd as the authoritative
+  // model/list SET, so a non-default harness enriches its own models rather than
+  // the default serf catalog.
+  expect(fetchModelCatalog).toHaveBeenCalledWith(expect.objectContaining({ harness: "codex", cwd: "/tmp/project" }));
+});
+
 test("keeps the scoped model SET even when /api/models offers a different one", async () => {
   const user = userEvent.setup();
   vi.mocked(fetchModelCatalog).mockResolvedValue({
