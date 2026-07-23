@@ -63,9 +63,9 @@ type AppEventProjector struct {
 	// before those sites on some paths (interrupt/close) and after on others
 	// (a failed turn), so this is a stash, not a completion — see
 	// applyPendingTiming.
-	pendingTurnID          string
+	pendingTurnID            string
 	pendingCompletedAtMillis int64
-	pendingDurationMS      int64
+	pendingDurationMS        int64
 
 	// activeTurnUsage/activeTurnModel accumulate the current turn's own
 	// (not cumulative-session) usage across every EventAssistantTextEnd
