@@ -20,7 +20,16 @@ SERF_DIST_ARCHIVE := $(DIST_DIR)/$(SERF_DIST_NAME).tar.gz
 
 build: build-runtime
 
-build-runtime:
+# build-runtime depends on build-web (not the reverse): make guarantees a
+# target's prerequisites COMPLETE before its recipe runs — even under
+# parallel make (-j) — so hanging build-web off build-runtime structurally
+# guarantees every serf/serf-hub pair build embeds the dist build-web just
+# produced. The old shape (build-web and build-runtime as sibling
+# prerequisites of build-hub) was only ordered under serial make, and left
+# build/build-all/dist/install shipping whatever dist was lying around,
+# including the empty tracked PLACEHOLDER. No target may ship a serf-hub
+# binary with a stale or empty embedded web UI.
+build-runtime: build-web
 	LDFLAGS="$(LDFLAGS)" scripts/build-runtime-pair.sh
 
 # Cross-compile for Linux (eval deployments). Invalidates the agent package
@@ -29,24 +38,27 @@ build-linux:
 	go clean -cache -x ./agent/ 2>/dev/null; \
 	GOOS=linux GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o serf-linux-amd64 ./cmd/serf/
 
-# Prerequisite ORDER is load-bearing under serial make: build-web must run
-# first so build-runtime's go build embeds the dist it just produced —
-# reversed, every build-hub ships the PREVIOUS build's frontend.
-build-hub: build-web build-runtime
+build-hub: build-runtime
 
 # build-web builds the frontend TypeScript/React app (cmd/serf-hub/frontend)
 # into frontend/dist, which build-hub embeds via go:embed. npm ci installs
-# exactly what's pinned in the committed package-lock.json. vite's
-# emptyOutDir wipes the tracked dist/PLACEHOLDER on every build; restore it
-# from git so `git status` stays clean after a build.
+# exactly what's pinned in the committed package-lock.json; skip it when
+# node_modules is already newer than the lockfile (a missing node_modules or
+# a changed lockfile both trigger a fresh npm ci). The vite build itself
+# stays unconditional — dist freshness is the entire point, the install
+# step is the only cacheable part. vite's emptyOutDir wipes the tracked
+# dist/PLACEHOLDER on every build; restore it from git so `git status` stays
+# clean after a build. (`-nt` is a POSIX test(1) primitive, supported by
+# /bin/sh on macOS and dash on Linux.)
 build-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run build && git checkout -- dist/PLACEHOLDER
+	cd cmd/serf-hub/frontend && { [ node_modules -nt package-lock.json ] || npm ci; } && npm run build && git checkout -- dist/PLACEHOLDER
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain
-# doesn't need separate targets per check).
+# doesn't need separate targets per check). Same npm ci freshness gate as
+# build-web.
 test-web:
-	cd cmd/serf-hub/frontend && npm ci && npm run typecheck && npm run test && npm run lint
+	cd cmd/serf-hub/frontend && { [ node_modules -nt package-lock.json ] || npm ci; } && npm run typecheck && npm run test && npm run lint
 
 build-tui:
 	go build -o serf-tui ./cmd/serf-tui/
@@ -60,7 +72,8 @@ build-all: build-runtime build-tui build-doctor
 build-llmcall:
 	go build -o llmcall ./cmd/llmcall/
 
-dist:
+# A shipped dist archive must embed a fresh SPA, not the tracked PLACEHOLDER.
+dist: build-web
 	rm -rf "$(SERF_DIST_BIN_DIR)" "$(SERF_DIST_ARCHIVE)"
 	install -d "$(SERF_DIST_BIN_DIR)"
 	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -ldflags "$(LDFLAGS)" -o "$(SERF_DIST_BIN_DIR)/serf" ./cmd/serf/
@@ -69,7 +82,8 @@ dist:
 	CGO_ENABLED=0 GOOS=$(DIST_GOOS) GOARCH=$(DIST_GOARCH) go build -o "$(SERF_DIST_BIN_DIR)/serf-doctor" ./cmd/serf-doctor/
 	tar -C "$(DIST_DIR)" -czf "$(SERF_DIST_ARCHIVE)" "$(SERF_DIST_NAME)"
 
-install:
+# An installed hub must embed a fresh SPA, not the tracked PLACEHOLDER (install-home/install-system inherit via install).
+install: build-web
 	install -d "$(INSTALL_BUILD_DIR)"
 	go build -ldflags "$(LDFLAGS)" -o "$(INSTALL_BUILD_DIR)/serf" ./cmd/serf/
 	go build -o "$(INSTALL_BUILD_DIR)/serf-hub" ./cmd/serf-hub/

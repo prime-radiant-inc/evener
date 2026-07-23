@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimePairBuildPublishesBothWithSameLinkerFlags(t *testing.T) {
@@ -47,10 +48,7 @@ func TestRuntimePairBuildFailureLeavesExistingPairUntouched(t *testing.T) {
 func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 	for _, target := range []string{"build", "build-hub"} {
 		t.Run(target, func(t *testing.T) {
-			fixture := newRuntimeBuildFixture(t)
-			installFrontendToolchainStubs(t, fixture)
-			copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
-			copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
+			fixture := newBuildWebFixture(t)
 
 			command := exec.Command("make", "LDFLAGS=make-test-flags", target)
 			command.Dir = fixture.root
@@ -62,11 +60,98 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 			assertTextFile(t, filepath.Join(fixture.root, "serf"), "./cmd/serf/\n")
 			assertTextFile(t, filepath.Join(fixture.root, "serf-hub"), "./cmd/serf-hub/\n")
 
-			if target == "build-hub" {
-				assertNpmPrecedesHubGoBuild(t, fixture.logPath)
-			}
+			// build must build the web too: build-runtime depends on
+			// build-web (Makefile), so both aliases order the same way.
+			assertNpmPrecedesHubGoBuild(t, fixture.logPath)
 		})
 	}
+
+	// The -nt freshness gate in build-web's recipe: npm ci only runs when
+	// node_modules is missing or older than package-lock.json, but the vite
+	// build stays unconditional every run.
+	t.Run("build-hub/repeat-run-skips-cached-npm-ci", func(t *testing.T) {
+		fixture := newBuildWebFixture(t)
+
+		// package-lock.json must exist BEFORE the first make run, backdated
+		// well clear of it: the fake npm's node_modules mkdir (triggered by
+		// that run's npm ci) is only microseconds behind this write, and an
+		// mtime comparison that close to the wall clock is a coin flip on
+		// filesystems/shells with whole-second mtime granularity — a real
+		// flake, not a fixture quirk (Jesse: root-cause flakes, never rely
+		// on timing). Backdating removes the race: node_modules is
+		// unambiguously newer the instant it's created.
+		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+		writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+		backdated := time.Now().Add(-1 * time.Hour)
+		if err := os.Chtimes(filepath.Join(frontendDir, "package-lock.json"), backdated, backdated); err != nil {
+			t.Fatalf("backdate package-lock.json: %v", err)
+		}
+
+		for run := 1; run <= 2; run++ {
+			command := exec.Command("make", "LDFLAGS=make-test-flags", "build-hub")
+			command.Dir = fixture.root
+			command.Env = fixture.environment("")
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("make build-hub (run %d): %v\n%s", run, err, output)
+			}
+		}
+
+		logData, err := os.ReadFile(fixture.logPath)
+		if err != nil {
+			t.Fatalf("read fake go/npm log: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(logData)), "\n")
+
+		var npmCiCount, npmBuildCount int
+		for _, line := range lines {
+			switch line {
+			case "npm ci":
+				npmCiCount++
+			case "npm run build":
+				npmBuildCount++
+			}
+		}
+		if npmCiCount != 1 {
+			t.Fatalf("npm ci ran %d times across two make build-hub runs, want 1 (the -nt gate should skip the second run); log = %q", npmCiCount, logData)
+		}
+		if npmBuildCount != 2 {
+			t.Fatalf("npm run build ran %d times across two make build-hub runs, want 2 (the vite build is unconditional); log = %q", npmBuildCount, logData)
+		}
+	})
+
+	// dist and install both gained the build-web prerequisite, so the
+	// dependency graph itself (not just build/build-hub) must order the web
+	// build before the hub go build. make -n prints recipes without running
+	// them, so this is cheap and side-effect-free.
+	for _, target := range []string{"dist", "install"} {
+		t.Run(target+"/dry-run-orders-web-before-hub-build", func(t *testing.T) {
+			fixture := newBuildWebFixture(t)
+
+			command := exec.Command("make", "-n", target)
+			command.Dir = fixture.root
+			command.Env = fixture.environment("")
+			output, err := command.CombinedOutput()
+			if err != nil {
+				t.Fatalf("make -n %s: %v\n%s", target, err, output)
+			}
+
+			assertNpmBuildPrecedesHubGoBuild(t, target, output)
+		})
+	}
+}
+
+// newBuildWebFixture prepares a runtimeBuildFixture whose fixture root has
+// the frontend toolchain stubbed and the Makefile plus
+// scripts/build-runtime-pair.sh copied in, ready for any make target that
+// reaches build-web.
+func newBuildWebFixture(t *testing.T) runtimeBuildFixture {
+	t.Helper()
+	fixture := newRuntimeBuildFixture(t)
+	installFrontendToolchainStubs(t, fixture)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "Makefile", 0o644)
+	copyRepositoryFile(t, fixture.repoRoot, fixture.root, "scripts/build-runtime-pair.sh", 0o755)
+	return fixture
 }
 
 type runtimeBuildFixture struct {
@@ -115,7 +200,7 @@ printf '%s\n' "$package" > "$output"
 }
 
 // installFrontendToolchainStubs equips the fixture for make targets that
-// reach build-web (Makefile:37-43): it creates the frontend directory the
+// reach build-web (Makefile:43-54): it creates the frontend directory the
 // recipe cd's into, and shadows npm and git on the fixture PATH so the REAL
 // build-web recipe runs end to end without touching the network or the
 // checkout's actual git state.
@@ -126,6 +211,9 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	}
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
 printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
+if [ "$1" = "ci" ]; then
+  mkdir -p node_modules
+fi
 exit 0
 `), 0o755)
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "git"), []byte(`#!/bin/sh
@@ -177,7 +265,7 @@ func writeTestFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 }
 
 // assertNpmPrecedesHubGoBuild pins the load-bearing prerequisite order at
-// Makefile:31-35: build-web must run before build-runtime so the serf-hub
+// Makefile:23-32: build-web must run before build-runtime so the serf-hub
 // go build embeds the dist build-web just produced. It tolerates the
 // DIST_GOOS/DIST_GOARCH parse-time "go env" pollution lines that the
 // Makefile's ?= assignments trigger against the fake go shim.
@@ -207,11 +295,43 @@ func assertNpmPrecedesHubGoBuild(t *testing.T, logPath string) {
 		}
 		sawNpm = true
 		if i > hubBuildLine {
-			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:31-35); log = %q", line, logData)
+			t.Fatalf("npm call %q ran after the serf-hub go build; build-web must run before build-runtime (Makefile:23-32); log = %q", line, logData)
 		}
 	}
 	if !sawNpm {
 		t.Fatalf("fake go/npm log has no npm invocation; log = %q", logData)
+	}
+}
+
+// assertNpmBuildPrecedesHubGoBuild pins the dist/install prerequisite graph:
+// both now depend on build-web, so a `make -n` dry run must print the vite
+// build before the serf-hub go build. make -n also forces the Makefile's
+// parse-time `$(shell go env GOOS)`/GOARCH assignments (SERF_DIST_NAME's
+// immediate `:=`) against the fake go shim, which doesn't understand the
+// `env` subcommand; the resulting noise log lines and stderr complaints are
+// expected and harmless here — this only checks relative order of the two
+// substrings it cares about.
+func assertNpmBuildPrecedesHubGoBuild(t *testing.T, target string, output []byte) {
+	t.Helper()
+	lines := strings.Split(string(output), "\n")
+
+	npmBuildLine, hubBuildLine := -1, -1
+	for i, line := range lines {
+		if npmBuildLine == -1 && strings.Contains(line, "npm run build") {
+			npmBuildLine = i
+		}
+		if hubBuildLine == -1 && strings.Contains(line, "./cmd/serf-hub/") {
+			hubBuildLine = i
+		}
+	}
+	if npmBuildLine == -1 {
+		t.Fatalf("make -n %s has no npm run build line; output = %s", target, output)
+	}
+	if hubBuildLine == -1 {
+		t.Fatalf("make -n %s has no ./cmd/serf-hub/ go build line; output = %s", target, output)
+	}
+	if npmBuildLine > hubBuildLine {
+		t.Fatalf("make -n %s: npm run build (line %d) printed after the serf-hub go build (line %d); %s must build the web first; output = %s", target, npmBuildLine, hubBuildLine, target, output)
 	}
 }
 
