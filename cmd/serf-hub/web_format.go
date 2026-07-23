@@ -71,7 +71,7 @@ func activeTurnRunningFor(thread appwire.Thread) string {
 		if turn.Status != appwire.TurnStatusInProgress || turn.StartedAt == nil || *turn.StartedAt <= 0 {
 			continue
 		}
-		return compactDuration(time.Since(time.Unix(*turn.StartedAt, 0)))
+		return compactDuration(time.Since(time.UnixMilli(*turn.StartedAt)))
 	}
 	return ""
 }

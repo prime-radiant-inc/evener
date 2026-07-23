@@ -557,7 +557,7 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 
 func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
-	started := time.Now().Add(-2 * time.Minute).Unix()
+	started := time.Now().Add(-2 * time.Minute).UnixMilli()
 	web.sources.Add(&scriptedAppSource{
 		id: "codex",
 		thread: appwire.Thread{
