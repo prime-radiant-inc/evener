@@ -83,6 +83,21 @@ test("no badges render for a healthy, enabled, non-auto-upgrading plugin", () =>
   expect(screen.queryByText("auto-upgrade")).toBeNull();
 });
 
+test("the status dot reads broken > disabled > idle, in that priority order", () => {
+  connectFakeClient();
+  extensionsStore.setState({
+    plugins: [
+      { ...LINTER, plugin: "broken-one", broken: true, enabled: false },
+      { ...LINTER, plugin: "disabled-one", broken: false, enabled: false },
+      { ...LINTER, plugin: "healthy-one", broken: false, enabled: true },
+    ],
+  });
+  render(<InstalledSection />);
+  expect(screen.getAllByRole("img", { name: "Failed" })).toHaveLength(1);
+  expect(screen.getAllByRole("img", { name: "Ended" })).toHaveLength(1);
+  expect(screen.getAllByRole("img", { name: "Idle" })).toHaveLength(1);
+});
+
 test("Disable calls pluginDisable (enabled plugin); no success toast", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
@@ -180,6 +195,87 @@ test("a failed upgrade toasts failure", async () => {
   await waitFor(() =>
     expect(getToasts().some((t) => t.kind === "error" && t.text === "Upgrade failed: boom")).toBe(true),
   );
+});
+
+test("Disable disables its own button while the RPC is in flight, and re-enables after", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER] });
+  let resolveDisable: (v: { plugins: PluginEntry[] }) => void = () => {};
+  fake.on(
+    "serf/plugin/disable",
+    () =>
+      new Promise((resolve) => {
+        resolveDisable = resolve;
+      }),
+  );
+  render(<InstalledSection />);
+  const disableButton = screen.getByRole("button", { name: "Disable" });
+  await user.click(disableButton);
+  expect((disableButton as HTMLButtonElement).disabled).toBe(true);
+
+  resolveDisable({ plugins: [{ ...LINTER, enabled: false }] });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Enable" })).toBeTruthy());
+});
+
+test("a failed enable/disable toggle re-enables the button too", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER] });
+  fake.on("serf/plugin/disable", () => {
+    throw new Error("boom");
+  });
+  render(<InstalledSection />);
+  const disableButton = screen.getByRole("button", { name: "Disable" });
+  await user.click(disableButton);
+  await waitFor(() => expect((disableButton as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("the auto-upgrade toggle disables its own button while in flight, without disabling this row's other actions", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER] });
+  fake.on("serf/plugin/setAutoUpgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  render(<InstalledSection />);
+  const autoUpgradeButton = screen.getByRole("button", { name: "Auto-upgrade: off" });
+  await user.click(autoUpgradeButton);
+  expect((autoUpgradeButton as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("button", { name: "Disable" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole("button", { name: "Upgrade" }) as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("Upgrade disables its own button while in flight, and re-enables after", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ plugins: [LINTER] });
+  let resolveUpgrade: (v: { plugins: PluginEntry[] }) => void = () => {};
+  fake.on(
+    "serf/plugin/upgrade",
+    () =>
+      new Promise((resolve) => {
+        resolveUpgrade = resolve;
+      }),
+  );
+  render(<InstalledSection />);
+  const upgradeButton = screen.getByRole("button", { name: "Upgrade" });
+  await user.click(upgradeButton);
+  expect((upgradeButton as HTMLButtonElement).disabled).toBe(true);
+
+  resolveUpgrade({ plugins: [LINTER] });
+  await waitFor(() => expect((upgradeButton as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("a busy row action does not disable the same action on a different row", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  const OTHER: PluginEntry = { ...LINTER, plugin: "formatter" };
+  extensionsStore.setState({ plugins: [LINTER, OTHER] });
+  fake.on("serf/plugin/upgrade", () => new Promise(() => {})); // never resolves - observe mid-flight only
+  render(<InstalledSection />);
+  const upgradeButtons = screen.getAllByRole("button", { name: "Upgrade" });
+  await user.click(upgradeButtons[0]!);
+  expect((upgradeButtons[0] as HTMLButtonElement).disabled).toBe(true);
+  expect((upgradeButtons[1] as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("Remove opens a destructive confirm; confirming removes and toasts success", async () => {

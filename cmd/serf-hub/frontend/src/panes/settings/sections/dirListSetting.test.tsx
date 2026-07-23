@@ -164,6 +164,44 @@ describe("DirListSetting", () => {
     expect(screen.queryByText("/opt/skills")).toBeNull();
   });
 
+  test("shows a count header that pluralizes N entries", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins", "/opt/more"] }));
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    expect(await screen.findByText("2 entries")).toBeTruthy();
+  });
+
+  test("shows a singular count for exactly one entry", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    expect(await screen.findByText("1 entry")).toBeTruthy();
+  });
+
+  test("shows a 0 entries count when the list is empty", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    expect(await screen.findByText("0 entries")).toBeTruthy();
+  });
+
+  test("does not show a count while the launch layer is still loading", () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => new Promise(() => {}));
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
+  });
+
+  test("does not show a count when the launch layer fails to load", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => {
+      throw new Error("boom");
+    });
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    await screen.findByText("Failed to load");
+    expect(screen.queryByText(/^\d+ entr(y|ies)$/)).toBeNull();
+  });
+
   test("shows a failed-to-load error when the launch layer fetch rejects", async () => {
     const fake = connectFakeClient();
     fake.on("serf/launch/getLayer", () => {
