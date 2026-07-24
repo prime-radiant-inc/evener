@@ -12,10 +12,10 @@ import (
 )
 
 func CompletePaths(params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
-	return completePaths(params, os.ReadDir)
+	return completePaths(params, os.ReadDir, os.Stat)
 }
 
-func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error)) (appwire.PathsCompleteResponse, error) {
+func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) (appwire.PathsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
 		prefix = envvars.Home.Getenv()
@@ -65,9 +65,18 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 		// With files in the mix the client needs to know which entries it can
 		// descend into; a trailing separator carries that bit and is already
 		// the prefix protocol's own "list this directory's children" form.
-		// Dirs-only responses stay unsuffixed for every existing caller.
-		if params.IncludeFiles && entry.IsDir() {
-			path += string(filepath.Separator)
+		// Dirs-only responses stay unsuffixed for every existing caller, so
+		// they skip the stat entirely.
+		//
+		// ReadDir does not follow symlinks, so entry.IsDir() is false for a
+		// link to a directory: only stat resolves it. An entry we cannot stat
+		// (a broken link, a permissions failure, a race with a deletion) goes
+		// out unsuffixed - a path we cannot stat is not one we can promise is
+		// descendable.
+		if params.IncludeFiles {
+			if info, statErr := stat(path); statErr == nil && info.IsDir() {
+				path += string(filepath.Separator)
+			}
 		}
 		matches = append(matches, match{path: path, score: score})
 	}

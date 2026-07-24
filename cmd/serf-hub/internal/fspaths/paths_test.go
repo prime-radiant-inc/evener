@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 )
@@ -19,7 +20,7 @@ func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {
 	resp, err := completePaths(appwire.PathsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
 		gotDir = dir
 		return nil, nil
-	})
+	}, statDirs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,6 +54,26 @@ func fakeReadDir(entries ...fakeDirEntry) func(string) ([]os.DirEntry, error) {
 	}
 }
 
+// fakeFileInfo stands in for a stat result: completePaths only reads IsDir.
+type fakeFileInfo struct {
+	dir bool
+}
+
+func (i fakeFileInfo) Name() string       { return "" }
+func (i fakeFileInfo) Size() int64        { return 0 }
+func (i fakeFileInfo) Mode() fs.FileMode  { return 0 }
+func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeFileInfo) IsDir() bool        { return i.dir }
+func (i fakeFileInfo) Sys() any           { return nil }
+
+// statDirs reports every named path as a directory and everything else as a
+// regular file, standing in for os.Stat's symlink-following behavior.
+func statDirs(dirs ...string) func(string) (os.FileInfo, error) {
+	return func(path string) (os.FileInfo, error) {
+		return fakeFileInfo{dir: slices.Contains(dirs, path)}, nil
+	}
+}
+
 // basePath names an entry inside the fake listed directory, "/base".
 func basePath(name string) string {
 	return filepath.Join(string(filepath.Separator), "base", name)
@@ -67,7 +88,7 @@ func checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed(t *testing.T) {
 	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "file.txt"},
-	))
+	), statDirs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +104,7 @@ func checkCompletePaths_IncludeFilesReturnsBoth(t *testing.T) {
 	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "file.txt"},
-	))
+	), statDirs(basePath("sub")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +117,7 @@ func checkCompletePaths_IncludeFilesMarksDirsWithSeparator(t *testing.T) {
 	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "afile.txt"},
-	))
+	), statDirs(basePath("sub")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,10 +133,11 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 		fakeDirEntry{name: ".env"},
 		fakeDirEntry{name: "extra"},
 	)
+	stat := statDirs()
 	dotEnv := basePath(".env")
 	for _, filter := range []string{"", "e"} {
 		prefix := baseDirPrefix(filter)
-		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: prefix, IncludeFiles: true}, readDir)
+		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: prefix, IncludeFiles: true}, readDir, stat)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,7 +145,7 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 			t.Fatalf("prefix %q returned %v, want no dotfile until a leading dot is typed", prefix, resp.Data)
 		}
 	}
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(".e"), IncludeFiles: true}, readDir)
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(".e"), IncludeFiles: true}, readDir, stat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,13 +162,69 @@ func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
 		fakeDirEntry{name: "zed2", dir: true},
 		fakeDirEntry{name: "apex1"},
 		fakeDirEntry{name: "apex2"},
-	))
+	), statDirs(basePath("zed1"), basePath("zed2")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{basePath("apex1"), basePath("apex2"), basePath("zed1") + string(filepath.Separator)}
 	if !reflect.DeepEqual(resp.Data, want) {
 		t.Fatalf("limited data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesSuffixesSymlinkedDirs(t *testing.T) {
+	// os.ReadDir does not follow symlinks, so a link to a directory reports
+	// IsDir false; only a stat of the target says it is descendable.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "link"},
+	), statDirs(basePath("link")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("link") + string(filepath.Separator)}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("symlinked-dir data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesUnstattableEntryStaysUnsuffixed(t *testing.T) {
+	// A broken symlink, a permissions failure, or a race with a deletion: a
+	// path we cannot stat is one we cannot promise is descendable, so it is
+	// listed without the separator rather than dropped.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "broken"},
+	), func(string) (os.FileInfo, error) {
+		return nil, errors.New("stat failed")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("broken")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("unstattable data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_DirsOnlySkipsStat(t *testing.T) {
+	// Dirs-only is the hot path for every existing caller: nothing is
+	// suffixed, so entry.IsDir() alone decides and no stat is warranted.
+	stats := 0
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "link"},
+	), func(string) (os.FileInfo, error) {
+		stats++
+		return fakeFileInfo{dir: true}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != 0 {
+		t.Fatalf("dirs-only made %d stat calls, want none", stats)
+	}
+	want := []string{basePath("sub")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
 	}
 }
 
