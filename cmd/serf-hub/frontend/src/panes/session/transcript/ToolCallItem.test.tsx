@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
 import { registerToolRenderer, type ToolRenderProps } from "./toolRenderers";
 import { ignoringTurn, itemRendererFor } from "./types";
@@ -9,7 +10,13 @@ import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model"
 import * as paneActions from "../../../shell/paneActions";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 
-afterEach(cleanup);
+// The expand/collapse state now lives in the shared disclosureStore keyed by
+// item.id (yt2q), so it MUST be reset between tests - every test's default
+// item id is "item_1", so a prior test's toggle would otherwise leak in.
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
@@ -106,6 +113,22 @@ test("clicking the summary manually expands a collapsed row", () => {
   expect(details.open).toBe(false);
   fireEvent.click(details.querySelector("summary")!);
   expect(details.open).toBe(true);
+});
+
+// yt2q: the open/closed state lives in the shared disclosureStore keyed by
+// item.id, so an expanded tool row survives the VirtualList/dockview remount
+// that would reset a component-local useState.
+test("an expanded tool row stays expanded across an unmount+remount with the same item id (store-backed)", () => {
+  registerToolRenderer({ match: "tci_remount", summary: () => "s", body: () => <div>body text</div> });
+  const toolItem = item({ id: "item_remount_1", toolName: "tci_remount" });
+  const { unmount } = render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
+  fireEvent.click((screen.getByTestId("tool-call-item") as HTMLDetailsElement).querySelector("summary")!);
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+
+  unmount();
+  render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
+  // Still open after the remount - the state came from the store, not useState.
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("shell: a failing exit code auto-expands the row once it settles (the real parseShellExitCode heuristic)", () => {

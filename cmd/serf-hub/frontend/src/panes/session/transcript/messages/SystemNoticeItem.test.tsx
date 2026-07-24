@@ -1,11 +1,15 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { itemRendererFor } from "../types";
 import { SystemNoticeItem } from "./SystemNoticeItem";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 function item(id: string, overrides: Partial<ItemModel> = {}): ItemModel {
   return { id, turnId: "turn_1", type: "systemMessage", text: `notice ${id}`, ...overrides };
@@ -58,6 +62,22 @@ test("the group's summary names the count and the first event", () => {
   render(<TurnBlock turn={turnWith(items)} />);
   const summary = screen.getByTestId("system-notice-group").querySelector("summary");
   expect(summary?.textContent).toBe("3 system events · first thing happened");
+});
+
+// yt2q: the grouped-system-events disclosure's open/closed state lives in the
+// shared disclosureStore keyed by the run's first item id, so expanding it
+// survives the remount that would reset a native uncontrolled <details>.
+test("an expanded system-events group stays open across an unmount+remount (store-backed by the run's first item id)", () => {
+  const items = [item("a"), item("b"), item("c")];
+  const { unmount } = render(<TurnBlock turn={turnWith(items)} />);
+  const group = screen.getByTestId("system-notice-group") as HTMLDetailsElement;
+  expect(group.open).toBe(false);
+  fireEvent.click(group.querySelector("summary")!);
+  expect((screen.getByTestId("system-notice-group") as HTMLDetailsElement).open).toBe(true);
+
+  unmount();
+  render(<TurnBlock turn={turnWith(items)} />);
+  expect((screen.getByTestId("system-notice-group") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("expanding the group reveals every individual line", () => {

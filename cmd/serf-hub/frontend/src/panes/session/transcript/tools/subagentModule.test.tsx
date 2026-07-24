@@ -418,6 +418,24 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   expect(screen.queryByRole("button", { name: /open transcript/i })).toBeNull();
 });
 
+// yt2q §4.4: the child-transcript link must be available while the subagent is
+// still RUNNING, not gated on the child being done - the opened pane watches
+// the live child thread.
+test("a still-running row (with a transcriptRef) offers Open transcript, not gated on the child being done", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const running = delegateItem({
+    id: "d_run_link",
+    callId: "call_run_link",
+    argumentsJSON: JSON.stringify({ task: "still running" }),
+    output: JSON.stringify({ job_id: "job_rl", status: "running", transcript_ref: "ref_run_link" }),
+  });
+  render(<Body item={running} live={false} />);
+  const row = screen.getByTestId("subagent-row");
+  expect(row.dataset.kind).toBe("running"); // genuinely still running
+  expect(within(row).getByRole("button", { name: /open transcript/i })).toBeTruthy();
+});
+
 // --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
 
 // A child thread/read that carries a real Activity feed (two tool-call items

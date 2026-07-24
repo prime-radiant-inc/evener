@@ -1,11 +1,15 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { ThinkBlock } from "./ThinkBlock";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
 
@@ -106,6 +110,22 @@ test("settled collapses to a closed details with a preview of the first paragrap
 test("settled body holds the full reasoning text (not just the preview) once expanded", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["full reasoning text here"]] })} turn={turn} live={false} />);
   expect(screen.getByText("full reasoning text here")).toBeTruthy();
+});
+
+// yt2q: the settled think block's open/closed state lives in the shared
+// disclosureStore keyed by item.id, so expanding it survives the remount that
+// would reset a native uncontrolled <details>.
+test("an expanded settled think block stays open across an unmount+remount with the same item id (store-backed)", () => {
+  const think = item({ id: "item_think_remount", reasoningSummaries: [["deep thoughts here"]] });
+  const { unmount } = render(<ThinkBlock item={think} turn={turn} live={false} />);
+  const details = screen.getByRole("group") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
+
+  unmount();
+  render(<ThinkBlock item={think} turn={turn} live={false} />);
+  expect((screen.getByRole("group") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {

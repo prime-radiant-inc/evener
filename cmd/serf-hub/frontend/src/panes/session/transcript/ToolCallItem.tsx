@@ -4,8 +4,9 @@
 // (toolRenderers.ts) by ItemModel.toolName, which pairs a raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
-import { memo, useLayoutEffect, useRef, useState } from "react";
+import { memo, useLayoutEffect, useState } from "react";
 import { Chip } from "../../../widgets";
+import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
@@ -62,22 +63,28 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // via descriptor.autoExpand OR a tool error/denial (item.error, parity §11:
   // "only failure earns the eye"; §2:100's force-open on error)). autoExpand
   // only means anything once the call has actually finished (e.g. shell's own
-  // exit-code heuristic can't resolve mid-stream), so this is applied exactly
-  // once, at the live -> settled transition - never on every render, which is
-  // also what lets a user's own manual toggle afterward stick rather than
-  // being fought back open/closed.
-  const [expanded, setExpanded] = useState(false);
-  const userToggledRef = useRef(false);
+  // exit-code heuristic can't resolve mid-stream), so it is consulted exactly
+  // once, at the live -> settled transition, and stashed as autoDefault -
+  // never re-consulted on every render (both to honor that "once" contract and
+  // so a settled row's later re-renders never re-fight the reader's toggle).
+  //
+  // The open/closed state itself lives in the shared disclosureStore keyed by
+  // item.id (yt2q), so it survives the VirtualList/dockview remount that would
+  // reset a component-local useState. autoDefault is only the store's FALLBACK:
+  // the moment the reader toggles, the store holds an explicit entry that wins.
+  const [autoDefault, setAutoDefault] = useState(false);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: deliberately edge-triggered on live only, see the comment inside
   useLayoutEffect(() => {
-    if (live || userToggledRef.current) return;
-    setExpanded((descriptor.autoExpand?.(item) ?? false) || failed);
+    if (live) return;
+    setAutoDefault((descriptor.autoExpand?.(item) ?? false) || failed);
     // Edge-triggered on the live -> settled transition (and on an
     // already-settled initial mount) - deliberately NOT depending on
     // `item`/`descriptor`/`failed` too, so a settled row's later re-renders
     // never re-run this and re-fight a manual toggle.
   }, [live]);
+
+  const expanded = isDisclosureOpen(item.id, autoDefault);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -117,12 +124,12 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         onClick={(e) => {
           // Fully controlled rather than relying on <details>' own native
           // toggle: preventDefault stops the browser from also flipping
-          // `open` itself, so `expanded` state stays the single source of
-          // truth. The user's own choice, once made, always wins over
-          // autoExpand/force-open from here on (see the effect above).
+          // `open` itself, so the disclosureStore stays the single source of
+          // truth. toggleDisclosure writes an explicit store entry against
+          // this id, so the user's own choice wins over autoDefault (the
+          // fallback) from here on AND survives a remount (yt2q).
           e.preventDefault();
-          userToggledRef.current = true;
-          setExpanded((prev) => !prev);
+          toggleDisclosure(item.id, autoDefault);
         }}
       >
         {/* Only failure earns a glyph - a danger-toned marker, colour spent on

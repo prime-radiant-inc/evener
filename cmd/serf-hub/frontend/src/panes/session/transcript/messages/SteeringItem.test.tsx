@@ -1,10 +1,14 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { SteeringItem } from "./SteeringItem";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
 
@@ -58,6 +62,21 @@ test("the divider's summary uses sentence case, not shouting chrome", () => {
   render(<SteeringItem item={item({ text: "nudge text" })} turn={turn} live={false} />);
   const summary = screen.getByTestId("steering-item").querySelector("summary");
   expect(summary?.textContent).toBe("Steering injected");
+});
+
+// yt2q: the steering divider's open/closed state lives in the shared
+// disclosureStore keyed by item.id, so expanding it survives a remount.
+test("an expanded steering divider stays open across an unmount+remount with the same item id (store-backed)", () => {
+  const steer = item({ id: "item_steer_remount", text: "the raw steering body" });
+  const { unmount } = render(<SteeringItem item={steer} turn={turn} live={false} />);
+  const details = screen.getByTestId("steering-item") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+  fireEvent.click(details.querySelector("summary")!);
+  expect((screen.getByTestId("steering-item") as HTMLDetailsElement).open).toBe(true);
+
+  unmount();
+  render(<SteeringItem item={steer} turn={turn} live={false} />);
+  expect((screen.getByTestId("steering-item") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("blank text with no source and no images renders nothing distinguishable", () => {

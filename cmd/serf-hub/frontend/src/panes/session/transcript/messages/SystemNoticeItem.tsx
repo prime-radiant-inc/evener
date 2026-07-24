@@ -23,6 +23,7 @@
 
 import type { ItemModel } from "../../../../protocol/model";
 import { Markdown } from "../../../../widgets";
+import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { firstLine, formatCharCount } from "./format";
@@ -86,9 +87,20 @@ function scaffoldLabel(item: ItemModel): string {
 // other message body uses, since the wire's own text is markdown (## headers
 // etc.) that would otherwise show as literal, unformatted characters.
 function ScaffoldDisclosure({ item }: { item: ItemModel }) {
+  // Open/closed state lives in the shared disclosureStore keyed by item.id
+  // (yt2q), so an expanded scaffold survives the VirtualList/dockview remount
+  // that would reset a native uncontrolled <details>. Collapsed by default.
+  const open = isDisclosureOpen(item.id, false);
   return (
-    <details className={CLASS.scaffold} data-testid="system-notice-scaffold">
-      <summary className={CLASS.scaffoldSummary}>
+    <details className={CLASS.scaffold} data-testid="system-notice-scaffold" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
+      <summary
+        className={CLASS.scaffoldSummary}
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(item.id, false);
+        }}
+      >
         {scaffoldLabel(item)} · {formatCharCount(item.text.length)}
       </summary>
       <div className={CLASS.scaffoldBody}>
@@ -116,9 +128,21 @@ function SystemGroup({ run }: { run: SystemRun }) {
   const firstItem = run.items[0];
   if (!firstItem) throw new Error("SystemGroup rendered with an empty run");
   const first = firstLine(noticeText(firstItem), 60);
+  // Open/closed state lives in the shared disclosureStore keyed by the run's
+  // first item id (yt2q) - the run's stable identity across renders - so an
+  // expanded group survives the VirtualList/dockview remount that would reset
+  // a native uncontrolled <details>. Collapsed by default.
+  const open = isDisclosureOpen(firstItem.id, false);
   return (
-    <details className={CLASS.group} data-testid="system-notice-group">
-      <summary className={CLASS.summary}>
+    <details className={CLASS.group} data-testid="system-notice-group" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
+      <summary
+        className={CLASS.summary}
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(firstItem.id, false);
+        }}
+      >
         {count} system events · {first}
       </summary>
       <div className={CLASS.groupBody}>

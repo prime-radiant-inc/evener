@@ -20,6 +20,7 @@
 // does.
 
 import { memo } from "react";
+import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
@@ -79,11 +80,24 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
 
   const seconds = thoughtSeconds(item.startedAt, item.completedAt, item.observedStartedAt, item.observedCompletedAt);
   const preview = reasoningPreview(item.reasoningSummaries);
+  // Open/closed state lives in the shared disclosureStore keyed by item.id
+  // (yt2q), so an expanded thought survives the VirtualList/dockview remount
+  // that would reset a native uncontrolled <details>. Collapsed by default.
+  const open = isDisclosureOpen(item.id, false);
 
   return (
     <div className={CLASS.block} data-testid="think-block" data-live="false">
-      <details className={CLASS.details}>
-        <summary className={CLASS.summary}>{thoughtLabel(seconds, preview)}</summary>
+      <details className={CLASS.details} open={open}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
+        <summary
+          className={CLASS.summary}
+          onClick={(e) => {
+            e.preventDefault();
+            toggleDisclosure(item.id, false);
+          }}
+        >
+          {thoughtLabel(seconds, preview)}
+        </summary>
         <div className={CLASS.body}>
           {paragraphs.map((text, i) => (
             // This settled view only renders once item.reasoningSummaries
