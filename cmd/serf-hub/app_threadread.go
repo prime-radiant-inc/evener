@@ -232,9 +232,20 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			ParentRef: parentRef,
 			Kind:      kind,
 			Profile:   entry.Meta.ProfileID,
+			// A past/exited thread advertises exactly the actions the hub can
+			// carry out for it once qp94's auto-resume runs: the resume-and-retry
+			// session mutations (compact, clear, change model, shutdown) plus the
+			// always-available ones (send, fork, goal, rename). Steer, Interrupt,
+			// and Queue stay false — they gate on an active turn a cold exited
+			// session has none of, so the hub deliberately does not resume for
+			// them (kata xr4x trues this up to qp94's wiring).
 			Capabilities: appwire.ThreadCapabilities{
 				Send:         true,
 				ForkFromTurn: true,
+				Compact:      true,
+				Clear:        true,
+				ChangeModel:  true,
+				Shutdown:     true,
 				Goal:         true,
 				Rename:       true,
 			},
