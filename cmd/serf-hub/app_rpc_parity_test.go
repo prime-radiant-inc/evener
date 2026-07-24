@@ -237,3 +237,48 @@ func TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess(t *testing.T) {
 		t.Fatal("shutdown resurrected an exited session; must be a no-op")
 	}
 }
+
+// TestHubRPCThreadForkExitedSessionSucceeds proves forking a local session
+// that has no live daemon works without a resume: the local fork reads the
+// parent's transcript from the state dir directly, so an exited session forks
+// identically to a live one (kata qp94 fork parity).
+func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+		Ref:          "local:" + sessionID,
+		SourceTurnID: "turn_1",
+		EditedInput:  "edited",
+	})
+	if err != nil {
+		t.Fatalf("ThreadFork on exited session: %v", err)
+	}
+	if resp.Thread.ID == "" || resp.Thread.ID == sessionID {
+		t.Fatalf("fork child id=%q, want a fresh child id", resp.Thread.ID)
+	}
+	if resumeCalled {
+		t.Fatal("local fork resurrected the parent daemon; it should read the state dir directly")
+	}
+}
