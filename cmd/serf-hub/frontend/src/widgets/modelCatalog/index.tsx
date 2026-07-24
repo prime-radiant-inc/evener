@@ -15,6 +15,7 @@ import { Button } from "../button";
 import { Chip } from "../chip";
 import { Combobox } from "../combobox";
 import { requireClass } from "../internal/requireClass";
+import { Popover } from "../popover";
 import {
   type CatalogOption,
   capabilityLabels,
@@ -27,7 +28,10 @@ import {
 import styles from "./modelCatalog.module.css";
 
 const CLASS = {
-  row: requireClass(styles.row, "modelCatalog.module.css", "row"),
+  trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
+  chevron: requireClass(styles.chevron, "modelCatalog.module.css", "chevron"),
+  srOnly: requireClass(styles.srOnly, "modelCatalog.module.css", "srOnly"),
+  popoverPanel: requireClass(styles.popoverPanel, "modelCatalog.module.css", "popoverPanel"),
   panel: requireClass(styles.panel, "modelCatalog.module.css", "panel"),
   error: requireClass(styles.error, "modelCatalog.module.css", "error"),
   recent: requireClass(styles.recent, "modelCatalog.module.css", "recent"),
@@ -121,10 +125,10 @@ export interface ModelCatalogPanelProps {
  * The open picker's content only (Recent quick-picks, searchable list,
  * diagnostics affordance, Cancel) with no trigger/closed-state rendering of
  * its own - extracted so a caller that needs its own trigger affordance
- * (e.g. a status-row chip opening this as a floating popover, rather than
- * ModelCatalog's own inline chip+button row below) can reuse the rich
- * rendering without duplicating it. ModelCatalog itself is this component
- * plus its own closed-state row and open/loading/catalog state.
+ * (e.g. ModelSwitch's status-row chip, or ModelCatalog's own chip-as-button
+ * trigger below, both opening this as a floating popover) can reuse the
+ * rich rendering without duplicating it. ModelCatalog itself is this
+ * component plus its own trigger and open/loading/catalog state.
  */
 export function ModelCatalogPanel({ loading, error, catalog, onPick, onCancel }: ModelCatalogPanelProps): JSX.Element {
   const [query, setQuery] = useState("");
@@ -193,6 +197,15 @@ export function ModelCatalogPanel({ loading, error, catalog, onPick, onCancel }:
   );
 }
 
+/**
+ * The closed state IS the trigger (4y12): the current-value chip plus a
+ * chevron, clicking either opens the rich picker as a floating Popover
+ * (portaled, never reflows) rather than swapping in an inline sibling that
+ * shifts layout - mirrors ModelSwitch's own trigger shape
+ * (panes/session/chrome/ModelSwitch.tsx:118-131) so both consumers
+ * (spawn's ModelField, Settings' launchShared modelPicker field) inherit
+ * one combobox interaction from this shared widget.
+ */
 export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -212,29 +225,32 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
     }
   }
 
+  function closePicker() {
+    setOpen(false);
+  }
+
   function pick(entry: ModelCatalogEntry) {
     setOpen(false);
     onChange(`${entry.provider}/${entry.model}`);
   }
 
-  if (!open) {
-    return (
-      <div className={CLASS.row}>
-        <Chip>{value === "" ? "(default)" : value}</Chip>
-        <Button variant="quiet" size="sm" onClick={() => void openPicker()}>
-          Change model
-        </Button>
-      </div>
-    );
-  }
-
   return (
-    <ModelCatalogPanel
-      loading={loading}
-      error={error}
-      catalog={catalog}
-      onPick={pick}
-      onCancel={() => setOpen(false)}
-    />
+    <Popover
+      open={open}
+      onClose={closePicker}
+      trigger={
+        <button type="button" className={CLASS.trigger} onClick={() => (open ? closePicker() : void openPicker())}>
+          <Chip>{value === "" ? "(default)" : value}</Chip>
+          <span className={CLASS.chevron} aria-hidden="true">
+            ▾
+          </span>
+          <span className={CLASS.srOnly}>— change model</span>
+        </button>
+      }
+    >
+      <div className={CLASS.popoverPanel}>
+        <ModelCatalogPanel loading={loading} error={error} catalog={catalog} onPick={pick} onCancel={closePicker} />
+      </div>
+    </Popover>
   );
 }

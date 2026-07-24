@@ -38,7 +38,7 @@ test("Change model loads the catalog and picking one reports the qualified id", 
   const loadModels = vi.fn().mockResolvedValue(MODELS);
   render(<ModelField value="" onChange={onChange} loadModels={loadModels} />);
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "gpt");
   await user.click(await screen.findByText("openai/gpt-5"));
@@ -57,7 +57,7 @@ test("surfaces an inline error when the model catalog fails to load", async () =
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   expect(await screen.findByText(/providers unavailable/i)).toBeTruthy();
 });
 
@@ -66,7 +66,7 @@ test("Cancel returns to the closed display without changing the value", async ()
   const onChange = vi.fn();
   render(<ModelField value="openai/gpt-5" onChange={onChange} loadModels={vi.fn().mockResolvedValue(MODELS)} />);
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   await screen.findByRole("combobox", { name: "Model" });
   await user.click(screen.getByRole("button", { name: "Cancel" }));
 
@@ -100,7 +100,7 @@ test("enriches a scoped model with /api/models metadata (display name + capabili
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "{arrowdown}");
 
@@ -120,7 +120,7 @@ test("scopes the /api/models enrichment to the spawn harness and cwd", async () 
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "{arrowdown}");
   await screen.findByText("openai/gpt-5"); // loadCatalog (incl. the enrichment fetch) has resolved
@@ -146,7 +146,7 @@ test("keeps the scoped model SET even when /api/models offers a different one", 
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "{arrowdown}");
 
@@ -165,7 +165,7 @@ test("still lists the scoped models when /api/models is unavailable", async () =
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "{arrowdown}");
 
