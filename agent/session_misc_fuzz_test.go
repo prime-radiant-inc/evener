@@ -14,8 +14,8 @@ import (
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/identifier"
 	taskpkg "primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
