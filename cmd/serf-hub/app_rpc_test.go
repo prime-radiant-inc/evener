@@ -6663,7 +6663,7 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	}
 }
 
-func TestHubRPCDirsCompleteReturnsMatchingDirectories(t *testing.T) {
+func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 	root := t.TempDir()
 	alpha := filepath.Join(root, "alpha")
 	if err := os.Mkdir(alpha, 0o755); err != nil {
@@ -6693,25 +6693,25 @@ func TestHubRPCDirsCompleteReturnsMatchingDirectories(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.DirsComplete(context.Background(), appwire.DirsCompleteParams{Prefix: filepath.Join(root, "alph")})
+	resp, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
 	if err != nil {
-		t.Fatalf("DirsComplete: %v", err)
+		t.Fatalf("PathsComplete: %v", err)
 	}
 	if len(resp.Data) != 1 || resp.Data[0] != alpha {
 		t.Fatalf("dirs=%+v, want [%s]", resp.Data, alpha)
 	}
 
-	all, err := client.DirsComplete(context.Background(), appwire.DirsCompleteParams{Prefix: root + "/"})
+	all, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: root + "/"})
 	if err != nil {
-		t.Fatalf("DirsComplete all children: %v", err)
+		t.Fatalf("PathsComplete all children: %v", err)
 	}
 	if len(all.Data) != 38 {
 		t.Fatalf("all dirs=%d, want every one of 38 children", len(all.Data))
 	}
 
-	fuzzy, err := client.DirsComplete(context.Background(), appwire.DirsCompleteParams{Prefix: filepath.Join(root, "nwprj")})
+	fuzzy, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "nwprj")})
 	if err != nil {
-		t.Fatalf("DirsComplete fuzzy: %v", err)
+		t.Fatalf("PathsComplete fuzzy: %v", err)
 	}
 	if len(fuzzy.Data) != 1 || fuzzy.Data[0] != newProject {
 		t.Fatalf("fuzzy dirs=%+v, want [%s]", fuzzy.Data, newProject)
@@ -7515,7 +7515,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodModelList,
 		appwire.MethodSerfTasksList,
 		appwire.MethodSerfThreadTranscriptsList,
-		appwire.MethodSerfDirsComplete,
+		appwire.MethodSerfPathsComplete,
 		appwire.MethodSerfProjectsRecent,
 		appwire.MethodSerfPathValidate,
 		appwire.MethodSerfHarnessesList,

@@ -11,11 +11,11 @@
 // Config files deliberately DOES get a Browse button here (via
 // PathListEditor), a small beyond-parity evening-up: the legacy gave dirs
 // (plugins/skills) a Browse button but left config-files inline-typeahead-
-// only, an asymmetry with no principled reason (serf/dirs/complete only
-// ever lists directories regardless, so Browse still just helps navigate
-// toward the right directory - the final filename is still typed by hand
-// either way, same as the legacy's own inline-only path). See the wave-7
-// task-3 report.
+// only, an asymmetry with no principled reason (PathListEditor calls
+// serf/paths/complete without includeFiles, so Browse lists directories
+// only regardless and still just helps navigate toward the right directory
+// - the final filename is still typed by hand either way, same as the
+// legacy's own inline-only path). See the wave-7 task-3 report.
 import { type FormEvent, useEffect, useId, useState } from "react";
 import type { MCPServerSpec, SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";

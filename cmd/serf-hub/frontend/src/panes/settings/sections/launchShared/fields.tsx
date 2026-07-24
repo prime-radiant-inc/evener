@@ -13,12 +13,13 @@
 // One deliberate, documented scope simplification remains from the legacy
 // engine (see this task's own report for the write-up):
 //   - path/pathList kinds never render PathPicker: the widget's own
-//     listChildren contract only ever lists DIRECTORIES (serf/dirs/complete
-//     filters to entry.IsDir()), so it cannot serve file/outputFile kind
-//     scalars, and no scalar dir-kind field exists in the real schema
-//     (cmd/serf-hub/internal/launchconfig/schema.go) - only pathList fields
-//     (skillsDirs/pluginDirs) are dir-kind, and serf/dirs/complete is not
-//     part of this task's assigned wire ground truth. Every path-kind field
+//     listChildren contract only ever lists DIRECTORIES (serf/paths/complete
+//     filters to entry.IsDir() unless includeFiles is set), so it cannot
+//     serve file/outputFile kind scalars, and no scalar dir-kind field exists
+//     in the real schema (cmd/serf-hub/internal/launchconfig/schema.go) - only
+//     pathList fields (skillsDirs/pluginDirs) are dir-kind, and
+//     serf/paths/complete is not part of this task's assigned wire ground
+//     truth. Every path-kind field
 //     renders as a validated free-text input instead (validation still
 //     happens - see collectionFields.tsx and LaunchConfigForm's own
 //     validate step).

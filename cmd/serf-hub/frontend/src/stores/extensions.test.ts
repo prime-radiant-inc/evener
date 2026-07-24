@@ -435,9 +435,9 @@ describe("validatePath", () => {
 });
 
 describe("listDirChildren", () => {
-  test("calls serf/dirs/complete with a trailing slash appended and returns the children", async () => {
+  test("calls serf/paths/complete with a trailing slash appended and returns the children", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/dirs/complete", (params) => {
+    fake.on("serf/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/opt/plugins/" });
       return { data: ["/opt/plugins/a", "/opt/plugins/b"] };
     });
@@ -449,7 +449,7 @@ describe("listDirChildren", () => {
 
   test("does not double a trailing slash already present", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/dirs/complete", (params) => {
+    fake.on("serf/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/opt/plugins/" });
       return { data: [] };
     });
@@ -458,11 +458,31 @@ describe("listDirChildren", () => {
 
   test("an empty path lists the filesystem root's children", async () => {
     const fake = connectFakeClient();
-    fake.on("serf/dirs/complete", (params) => {
+    fake.on("serf/paths/complete", (params) => {
       expect(params).toEqual({ prefix: "/" });
       return { data: ["/opt", "/home"] };
     });
     await expect(extensionsStore.getState().listDirChildren("")).resolves.toEqual(["/opt", "/home"]);
+  });
+});
+
+describe("completePaths", () => {
+  test("passes the prefix through verbatim, with no trailing-slash normalization", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/paths/complete", (params) => {
+      expect(params).toEqual({ prefix: "/opt/plug", includeFiles: false });
+      return { data: ["/opt/plugins"] };
+    });
+    await expect(extensionsStore.getState().completePaths("/opt/plug", false)).resolves.toEqual(["/opt/plugins"]);
+  });
+
+  test("forwards includeFiles so file-kind fields get files as well as directories", async () => {
+    const fake = connectFakeClient();
+    fake.on("serf/paths/complete", (params) => {
+      expect(params).toEqual({ prefix: "/etc/", includeFiles: true });
+      return { data: ["/etc/ssl/", "/etc/hosts"] };
+    });
+    await expect(extensionsStore.getState().completePaths("/etc/", true)).resolves.toEqual(["/etc/ssl/", "/etc/hosts"]);
   });
 });
 

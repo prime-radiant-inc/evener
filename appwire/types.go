@@ -32,7 +32,7 @@ const (
 	MethodSerfThreadNameSet         = "serf/thread/name/set"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
-	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfPathsComplete         = "serf/paths/complete"
 	MethodSerfProjectsRecent        = "serf/projects/recent"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
@@ -962,12 +962,16 @@ type TaskListResponse struct {
 	Data any `json:"data"`
 }
 
-type DirsCompleteParams struct {
-	Prefix string `json:"prefix"`
-	Limit  int    `json:"limit,omitempty"`
+// PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
+// regular files to the directory-only default; in that mode directory entries
+// come back with a trailing separator so the client can tell the two apart.
+type PathsCompleteParams struct {
+	Prefix       string `json:"prefix"`
+	Limit        int    `json:"limit,omitempty"`
+	IncludeFiles bool   `json:"includeFiles,omitempty"`
 }
 
-type DirsCompleteResponse struct {
+type PathsCompleteResponse struct {
 	Data []string `json:"data"`
 }
 

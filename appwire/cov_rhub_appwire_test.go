@@ -176,13 +176,13 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
-		{"DirsComplete", MethodSerfDirsComplete, DirsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
-			out, err := c.DirsComplete(ctx, DirsCompleteParams{Prefix: "/", Limit: 10})
+		{"PathsComplete", MethodSerfPathsComplete, PathsCompleteResponse{Data: []string{"/a", "/b"}}, func(ctx context.Context, c *Client) error {
+			out, err := c.PathsComplete(ctx, PathsCompleteParams{Prefix: "/", Limit: 10})
 			if err != nil {
 				return err
 			}
 			if len(out.Data) != 2 {
-				return errors.New("DirsComplete decode mismatch")
+				return errors.New("PathsComplete decode mismatch")
 			}
 			return nil
 		}},

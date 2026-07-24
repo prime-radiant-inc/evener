@@ -2,21 +2,25 @@ package fspaths
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 )
 
-func checkCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
+func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {
 	t.Setenv("HOME", "")
 	var gotDir string
-	resp, err := completeDirs(appwire.DirsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
+	resp, err := completePaths(appwire.PathsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
 		gotDir = dir
 		return nil, nil
-	})
+	}, statDirs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,6 +29,202 @@ func checkCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Fatalf("fake empty root returned %v", resp.Data)
+	}
+}
+
+// fakeDirEntry stands in for a real directory entry: completePaths only reads
+// Name and IsDir, so nothing else needs a real inode behind it.
+type fakeDirEntry struct {
+	name string
+	dir  bool
+}
+
+func (e fakeDirEntry) Name() string               { return e.name }
+func (e fakeDirEntry) IsDir() bool                { return e.dir }
+func (e fakeDirEntry) Type() fs.FileMode          { return 0 }
+func (e fakeDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("unused") }
+
+func fakeReadDir(entries ...fakeDirEntry) func(string) ([]os.DirEntry, error) {
+	return func(string) ([]os.DirEntry, error) {
+		out := make([]os.DirEntry, len(entries))
+		for i := range entries {
+			out[i] = entries[i]
+		}
+		return out, nil
+	}
+}
+
+// fakeFileInfo stands in for a stat result: completePaths only reads IsDir.
+type fakeFileInfo struct {
+	dir bool
+}
+
+func (i fakeFileInfo) Name() string       { return "" }
+func (i fakeFileInfo) Size() int64        { return 0 }
+func (i fakeFileInfo) Mode() fs.FileMode  { return 0 }
+func (i fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeFileInfo) IsDir() bool        { return i.dir }
+func (i fakeFileInfo) Sys() any           { return nil }
+
+// statDirs reports every named path as a directory and everything else as a
+// regular file, standing in for os.Stat's symlink-following behavior.
+func statDirs(dirs ...string) func(string) (os.FileInfo, error) {
+	return func(path string) (os.FileInfo, error) {
+		return fakeFileInfo{dir: slices.Contains(dirs, path)}, nil
+	}
+}
+
+// basePath names an entry inside the fake listed directory, "/base".
+func basePath(name string) string {
+	return filepath.Join(string(filepath.Separator), "base", name)
+}
+
+// baseDirPrefix is the prefix that lists /base's children (trailing separator).
+func baseDirPrefix(filter string) string {
+	return basePath("") + string(filepath.Separator) + filter
+}
+
+func checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed(t *testing.T) {
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "file.txt"},
+	), statDirs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without IncludeFiles the response is byte-for-byte what it always was:
+	// directories only, and no trailing separator for any caller to strip.
+	want := []string{basePath("sub")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesReturnsBoth(t *testing.T) {
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "file.txt"},
+	), statDirs(basePath("sub")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("includeFiles data = %v, want one directory and one file", resp.Data)
+	}
+}
+
+func checkCompletePaths_IncludeFilesMarksDirsWithSeparator(t *testing.T) {
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "afile.txt"},
+	), statDirs(basePath("sub")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Equal-scoring entries sort by path, so the file sorts ahead of the dir.
+	want := []string{basePath("afile.txt"), basePath("sub") + string(filepath.Separator)}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("includeFiles data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
+	readDir := fakeReadDir(
+		fakeDirEntry{name: ".env"},
+		fakeDirEntry{name: "extra"},
+	)
+	stat := statDirs()
+	dotEnv := basePath(".env")
+	for _, filter := range []string{"", "e"} {
+		prefix := baseDirPrefix(filter)
+		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: prefix, IncludeFiles: true}, readDir, stat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(resp.Data, dotEnv) {
+			t.Fatalf("prefix %q returned %v, want no dotfile until a leading dot is typed", prefix, resp.Data)
+		}
+	}
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(".e"), IncludeFiles: true}, readDir, stat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(resp.Data, dotEnv) {
+		t.Fatalf("dot-filtered data = %v, want %s", resp.Data, dotEnv)
+	}
+}
+
+func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
+	// The files sort ahead of the directories, so a cap that only counted
+	// directories would let all four through.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true, Limit: 3}, fakeReadDir(
+		fakeDirEntry{name: "zed1", dir: true},
+		fakeDirEntry{name: "zed2", dir: true},
+		fakeDirEntry{name: "apex1"},
+		fakeDirEntry{name: "apex2"},
+	), statDirs(basePath("zed1"), basePath("zed2")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("apex1"), basePath("apex2"), basePath("zed1") + string(filepath.Separator)}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("limited data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesSuffixesSymlinkedDirs(t *testing.T) {
+	// os.ReadDir does not follow symlinks, so a link to a directory reports
+	// IsDir false; only a stat of the target says it is descendable.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "link"},
+	), statDirs(basePath("link")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("link") + string(filepath.Separator)}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("symlinked-dir data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesUnstattableEntryStaysUnsuffixed(t *testing.T) {
+	// A broken symlink, a permissions failure, or a race with a deletion: a
+	// path we cannot stat is one we cannot promise is descendable, so it is
+	// listed without the separator rather than dropped.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "broken"},
+	), func(string) (os.FileInfo, error) {
+		return nil, errors.New("stat failed")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("broken")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("unstattable data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_DirsOnlySkipsStat(t *testing.T) {
+	// Dirs-only is the hot path for every existing caller: nothing is
+	// suffixed, so entry.IsDir() alone decides and no stat is warranted.
+	stats := 0
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "link"},
+	), func(string) (os.FileInfo, error) {
+		stats++
+		return fakeFileInfo{dir: true}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats != 0 {
+		t.Fatalf("dirs-only made %d stat calls, want none", stats)
+	}
+	want := []string{basePath("sub")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
 	}
 }
 

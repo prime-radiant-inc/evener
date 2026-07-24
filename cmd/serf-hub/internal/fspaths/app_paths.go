@@ -11,11 +11,11 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
-	return completeDirs(params, os.ReadDir)
+func CompletePaths(params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
+	return completePaths(params, os.ReadDir, os.Stat)
 }
 
-func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.DirEntry, error)) (appwire.DirsCompleteResponse, error) {
+func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) (appwire.PathsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
 		prefix = envvars.Home.Getenv()
@@ -25,7 +25,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	}
 	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
+		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
 	}
 	prefix = cleaned
 
@@ -42,7 +42,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 
 	entries, err := readDir(listDir)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
+		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}
 	type match struct {
 		path  string
@@ -50,7 +50,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	}
 	matches := make([]match, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() && !params.IncludeFiles {
 			continue
 		}
 		name := entry.Name()
@@ -61,7 +61,24 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 		if !matched {
 			continue
 		}
-		matches = append(matches, match{path: filepath.Join(listDir, name), score: score})
+		path := filepath.Join(listDir, name)
+		// With files in the mix the client needs to know which entries it can
+		// descend into; a trailing separator carries that bit and is already
+		// the prefix protocol's own "list this directory's children" form.
+		// Dirs-only responses stay unsuffixed for every existing caller, so
+		// they skip the stat entirely.
+		//
+		// ReadDir does not follow symlinks, so entry.IsDir() is false for a
+		// link to a directory: only stat resolves it. An entry we cannot stat
+		// (a broken link, a permissions failure, a race with a deletion) goes
+		// out unsuffixed - a path we cannot stat is not one we can promise is
+		// descendable.
+		if params.IncludeFiles {
+			if info, statErr := stat(path); statErr == nil && info.IsDir() {
+				path += string(filepath.Separator)
+			}
+		}
+		matches = append(matches, match{path: path, score: score})
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].score != matches[j].score {
@@ -76,7 +93,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	for i := range matches {
 		results[i] = matches[i].path
 	}
-	return appwire.DirsCompleteResponse{Data: results}, nil
+	return appwire.PathsCompleteResponse{Data: results}, nil
 }
 
 func directoryMatchScore(query, name string) (int, bool) {

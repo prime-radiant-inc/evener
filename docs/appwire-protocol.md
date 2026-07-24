@@ -111,7 +111,7 @@ no router (reserved).
 | `serf/tasks/list` | both | `TaskListParams` | `TaskListResponse` | Lists the session's tasks. |
 | `serf/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `serf/subagentPreview` | hub | `SerfSubagentPreviewParams` | `SerfSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
-| `serf/dirs/complete` | hub | `DirsCompleteParams` | `DirsCompleteResponse` | Directory-path autocompletion for a prefix. |
+| `serf/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `serf/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `serf/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `serf/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
@@ -345,21 +345,6 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `commands` | `[]appwire.CommandDescriptor` |  |  |
-
-
-### `DirsCompleteParams`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `prefix` | `string` |  |  |
-| `limit` | `int` | yes |  |
-
-
-### `DirsCompleteResponse`
-
-| Field | Go type | Omitempty | Embedded |
-|-------|---------|-----------|----------|
-| `data` | `[]string` |  |  |
 
 
 ### `EmptyParams`
@@ -620,6 +605,22 @@ _(no fields)_
 | `path` | `string` |  |  |
 | `valid` | `bool` |  |  |
 | `error` | `string` | yes |  |
+
+
+### `PathsCompleteParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `prefix` | `string` |  |  |
+| `limit` | `int` | yes |  |
+| `includeFiles` | `bool` | yes |  |
+
+
+### `PathsCompleteResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `data` | `[]string` |  |  |
 
 
 ### `PluginCheckNowResponse`

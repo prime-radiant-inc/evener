@@ -235,7 +235,7 @@ func FuzzAppWireDispatch(f *testing.F) {
 		{appwire.MethodSerfLaunchSetLayer, `{"cwd":"x","layer":"project","config":{}}`},
 		{appwire.MethodSerfLaunchGetLayer, `{"cwd":"x","layer":"global"}`},
 		{appwire.MethodSerfLaunchTrustRepo, `{"cwd":"x","hash":"deadbeef"}`},
-		{appwire.MethodSerfDirsComplete, `{"prefix":"/tmp"}`},
+		{appwire.MethodSerfPathsComplete, `{"prefix":"/tmp"}`},
 		{appwire.MethodSerfProjectsRecent, `{}`},
 		{appwire.MethodSerfPathValidate, `{"path":"/tmp","kind":"dir"}`},
 		{appwire.MethodSerfHarnessesList, `{}`},

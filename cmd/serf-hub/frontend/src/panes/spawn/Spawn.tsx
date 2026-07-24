@@ -147,7 +147,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   );
   const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data), [client]);
   const complete = useCallback(
-    (prefix: string) => client.request("serf/dirs/complete", { prefix }).then((r) => r.data),
+    // DirField browses directories only, so includeFiles stays false and its
+    // responses come back unsuffixed.
+    (prefix: string) => client.request("serf/paths/complete", { prefix, includeFiles: false }).then((r) => r.data),
     [client],
   );
   const validatePath = useCallback(
