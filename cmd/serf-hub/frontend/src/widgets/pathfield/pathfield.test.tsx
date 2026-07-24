@@ -236,6 +236,24 @@ test("typing filters the listing by the last path component", async () => {
   await waitFor(() => expect(screen.getAllByRole("option", { name: /src|tmp/ })).toHaveLength(1));
 });
 
+// Typing past a "/" and straight on into the next component happens inside
+// one debounce window: the keystrokes after the slash must not cancel the
+// listing the slash asked for, or a fast typist gets the previous directory's
+// entries filtered by a name that isn't in it.
+test("keystrokes that only narrow the last component don't cancel the pending listing", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"], "/var/": ["/var/log"] }),
+  });
+
+  await open(user);
+  await user.keyboard("/var/lo");
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/var/", false));
+  expect(await screen.findByRole("option", { name: /log/ })).toBeTruthy();
+});
+
 // A stale response overwriting a fresher one is the defect the monotonic
 // request id exists to prevent.
 test("a completion resolving AFTER a newer one never overwrites the newer entries", async () => {

@@ -277,12 +277,15 @@ export function PathFieldPanel({
     // Nothing is active while typing, which is what lets Enter commit the
     // typed literal (an outputFile naming a file that doesn't exist yet).
     setActiveIndex(-1);
-    const dir = typedDir(next);
-    clearTimeout(debounceRef.current);
     // Only the DIRECTORY part needs a fresh listing; a narrower last component
-    // filters the entries already in hand.
+    // filters the entries already in hand. The timer is cleared only when a
+    // new request replaces it - typing on past a "/" into the next component
+    // happens inside one debounce window, and cancelling unconditionally there
+    // would drop the listing the slash just asked for.
+    const dir = typedDir(next);
     if (dir === currentDir) return;
     setCurrentDir(dir);
+    clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => runCompletion(childrenPrefix(dir)), COMPLETE_DEBOUNCE_MS);
   }
 
