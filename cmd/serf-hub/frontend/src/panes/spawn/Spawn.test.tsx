@@ -98,6 +98,29 @@ function renderSpawn(client: FakeClient) {
   );
 }
 
+// The working directory is a PathField: the closed field is a trigger holding
+// the path as text, and the value is entered inside its browse panel (which is
+// portaled to document.body, so it is queried from `screen`, not the form).
+const LAST_WORKING_DIR_KEY = "serf-hub.spawn-defaults.global.last-working-dir";
+
+function workingDir(): HTMLElement {
+  return screen.getByLabelText("Working directory");
+}
+
+/** The trigger's rendered path. It also carries a chevron and a screen-reader
+ * hint, so the value is matched inside the text rather than compared whole. */
+function expectWorkingDir(path: string): void {
+  expect(workingDir().textContent).toContain(path);
+}
+
+async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: string): Promise<void> {
+  await user.click(workingDir());
+  // The panel opens pre-filled and fully selected, so typing replaces whatever
+  // was there; Enter with no row highlighted commits the typed literal.
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard(`${path}{Enter}`);
+}
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeAll(() => {
@@ -154,7 +177,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   await screen.findByLabelText("Harness");
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
-  await user.type(screen.getByLabelText("Working directory"), "/tmp/project");
+  await setWorkingDir(user, "/tmp/project");
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.click(screen.getByRole("button", { name: "Spawn" }));
@@ -189,9 +212,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   localStorage.setItem("serf-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
   renderSpawn(readyClient());
 
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/saved/project"),
-  );
+  await waitFor(() => expectWorkingDir("/saved/project"));
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
@@ -203,7 +224,7 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
   await waitFor(() =>
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
   );
-  expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app");
+  expectWorkingDir("/home/me/app");
 });
 
 // kata 11ee: the spawn pane is a dockview singleton (index.tsx), so a second
@@ -220,18 +241,14 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
 test("kata 11ee: a second ?dir= navigation while already mounted still prefills the working dir", async () => {
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
-  );
+  await waitFor(() => expectWorkingDir("/home/me/app"));
 
   act(() => {
     window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/other"),
-  );
+  await waitFor(() => expectWorkingDir("/home/other"));
 });
 
 // Same defect class as the ?dir= case above - readUrlPrefill's ?prompt= entry
@@ -265,9 +282,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
   const user = userEvent.setup();
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
-  );
+  await waitFor(() => expectWorkingDir("/home/me/app"));
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed by hand");
 
   act(() => {
@@ -275,8 +290,26 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
-  expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app");
+  expectWorkingDir("/home/me/app");
   expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed by hand");
+});
+
+// Spec 3.7: browsing writes the working-directory field continuously, so the
+// last-used-directory global is stamped once when the panel closes rather than
+// on every browse step.
+test("stamps the last-working-directory global when the browse panel closes", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient((f) => f.on("serf/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
+  await screen.findByLabelText("Harness");
+
+  await user.click(workingDir());
+  await screen.findByRole("combobox", { name: "Path" });
+  // Browsing alone must not stamp - only the close does.
+  await user.click(await screen.findByText("src"));
+  expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBeNull();
+
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src"));
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
@@ -292,7 +325,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
   await screen.findByLabelText("Harness");
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
-  await user.type(screen.getByLabelText("Working directory"), "/tmp/new");
+  await setWorkingDir(user, "/tmp/new");
   await user.click(screen.getByRole("button", { name: "Spawn" }));
 
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
@@ -320,7 +353,7 @@ test("aborts with the validator message for a non-fixable working dir", async ()
   await screen.findByLabelText("Harness");
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
-  await user.type(screen.getByLabelText("Working directory"), "/etc/hosts");
+  await setWorkingDir(user, "/etc/hosts");
   await user.click(screen.getByRole("button", { name: "Spawn" }));
 
   expect(await screen.findByText("path is not a directory")).toBeTruthy();
@@ -397,7 +430,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   await screen.findByLabelText("Harness");
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
-  await user.type(screen.getByLabelText("Working directory"), "/tmp/project");
+  await setWorkingDir(user, "/tmp/project");
   await user.type(prompt, "do the thing");
   pastePngInto(prompt);
   await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
@@ -411,7 +444,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
   // Sticky default (floor §1.9) survives a successful spawn - only the
   // transient prompt/attachment state resets.
-  expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/tmp/project");
+  expectWorkingDir("/tmp/project");
 });
 
 test("a failed spawn leaves the prompt and attachment staged (failure paths keep everything)", async () => {

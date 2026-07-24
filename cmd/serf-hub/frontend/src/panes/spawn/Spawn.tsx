@@ -21,6 +21,7 @@ import {
   IconButton,
   Input,
   PaneScaffold,
+  PathField,
   Select,
   Textarea,
   useToasts,
@@ -33,13 +34,12 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { DirField } from "./DirField";
 import { harnessUsesSerfModels } from "./harnessModels";
 import { ModelField } from "./ModelField";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchSerfOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
-import { resolveInitialDefaults, saveDefaults, sweepStaleModels } from "./spawnDefaults";
+import { resolveInitialDefaults, saveDefaults, setGlobalLastWorkingDir, sweepStaleModels } from "./spawnDefaults";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 
@@ -146,10 +146,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     [loadModels, harness, cwd],
   );
   const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data), [client]);
+  // Injected into every PathField on this pane (the working directory here and
+  // the advanced panel's path/pathList fields): the widget derives includeFiles
+  // from its own kind, so this just forwards it.
   const complete = useCallback(
-    // DirField browses directories only, so includeFiles stays false and its
-    // responses come back unsuffixed.
-    (prefix: string) => client.request("serf/paths/complete", { prefix, includeFiles: false }).then((r) => r.data),
+    (prefix: string, includeFiles: boolean) =>
+      client.request("serf/paths/complete", { prefix, includeFiles }).then((r) => r.data),
     [client],
   );
   const validatePath = useCallback(
@@ -416,13 +418,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </FormRow>
 
           <FormRow label="Working directory" htmlFor="spawn-cwd">
-            <DirField
+            <PathField
               id="spawn-cwd"
               value={cwd}
               onChange={setCwd}
+              kind="dir"
               listRecents={listRecents}
               complete={complete}
               placeholder="Working directory"
+              // Browsing writes the field on every step, so the last-used
+              // directory is recorded once the panel closes rather than
+              // continuously (spec 3.7).
+              onPanelClose={setGlobalLastWorkingDir}
             />
           </FormRow>
 
