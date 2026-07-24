@@ -74,9 +74,10 @@ export function popOutPane(paneId: string): void {
   void api.addPopoutGroup(panel, {
     // dockview calls onDidOpen with the popout window BEFORE it navigates to
     // /popout.html (popoutWindow.js:119 vs the load handler at :128), so defer
-    // the theme copy to that window's load. Open-time inheritance only: a
-    // theme change while the popout stays open does not re-sync (the
-    // cross-document gap parity floor §3.8:673-679 notes).
+    // the theme copy to that window's load. This is the ONE-TIME open-time
+    // copy; the module-level MutationObserver below (see inheritOpenerTheme's
+    // own following comment) is what keeps it in sync for as long as the
+    // popout stays open afterward.
     onDidOpen: ({ window: popoutWindow }) => {
       popoutWindow.addEventListener("load", () => {
         inheritOpenerTheme(document.documentElement, popoutWindow.document.documentElement);
@@ -95,3 +96,31 @@ export function inheritOpenerTheme(openerRoot: Element, popoutRoot: Element): vo
   const theme = openerRoot.getAttribute("data-theme");
   if (theme !== null) popoutRoot.setAttribute("data-theme", theme);
 }
+
+// A live theme flip (Settings -> Theme, or the palette's "Switch theme") re-
+// syncs every popout dockview currently has open, keeping each one's theme
+// live for as long as it stays open (not just at the moment popOutPane's own
+// onDidOpen above ran) - the cross-document gap parity floor §3.8 flags. The
+// opener's data-theme attribute, not the prefs store, is the signal watched:
+// prefs.ts's setTheme sets it directly, but so does its OS-driven "system"
+// re-apply (handleSystemSchemeChange), which never touches the prefs store's
+// own state - data-theme is the one thing common to both, and it is already
+// inheritOpenerTheme's own source of truth. A MutationObserver on it needs no
+// separate registry of open popout windows of this module's own:
+// api.getPopouts() (component.api.d.ts) is dockview's own live enumeration -
+// the exact channel popOutPane's onDidOpen callback above already receives
+// one popout window through - so re-sync just walks that same list instead
+// of inventing a second one. A popout that later closes drops out of
+// getPopouts() on its own; there is nothing here to tear down. Installed
+// unconditionally at module load (never lazily): unlike prefs.ts's
+// matchMedia-gated listener, MutationObserver needs no environment feature-
+// detection, and this module is already guaranteed loaded (by openDoc.ts /
+// DockHost's PopoutHeaderAction) before any popout could exist to react to
+// in the first place.
+new MutationObserver(() => {
+  const api = getDockviewApi();
+  if (!api) return;
+  for (const popout of api.getPopouts()) {
+    inheritOpenerTheme(document.documentElement, popout.window.document.documentElement);
+  }
+}).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });

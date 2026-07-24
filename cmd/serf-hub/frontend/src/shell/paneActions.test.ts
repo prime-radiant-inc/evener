@@ -1,6 +1,7 @@
 import type { DockviewApi } from "dockview-core";
 import { type ComponentType, lazy } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { inheritOpenerTheme, openBeside, popOutPane } from "./paneActions";
 import { type PaneDescriptor, type PaneProps, registerPane } from "./paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
@@ -31,6 +32,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
+  resetPrefsStoreForTests();
 });
 
 afterEach(() => {
@@ -41,10 +43,14 @@ afterEach(() => {
 
 // A minimal DockviewApi stand-in: openBeside only asks "is there a host at
 // all" (non-null), so most tests just need a non-null object; popOutPane needs
-// getPanel + addPopoutGroup. Cast through unknown - the real api is far wider
-// than either function reads.
+// getPanel + addPopoutGroup. getPopouts defaults to empty - the module-level
+// theme-resync observer (paneActions.ts) calls it on every data-theme
+// mutation as long as ANY api is registered, including in tests that
+// registered one for something else entirely and never expected it read.
+// Cast through unknown - the real api is far wider than any one function
+// here reads.
 function fakeApi(overrides: Partial<DockviewApi> = {}): DockviewApi {
-  return overrides as unknown as DockviewApi;
+  return { getPopouts: () => [], ...overrides } as unknown as DockviewApi;
 }
 
 // A DockviewApi that resolves getPanel(id) to `panel` (and nothing else) and
@@ -170,4 +176,41 @@ test("popOutPane copies the opener's theme onto the popout document once it load
   for (const cb of loadHandlers) cb();
 
   expect(popoutDoc.documentElement.getAttribute("data-theme")).toBe("light");
+});
+
+test("flipping the opener's theme after a popout is open re-syncs the popout's data-theme (y2ct)", async () => {
+  // Same fake shape popOutPane's own theme-inheritance test above already
+  // uses for a popout window; getPopouts() is dockview's own live-enumeration
+  // API (component.api.d.ts) - a real popout registers with it the instant
+  // addPopoutGroup resolves, before this test ever runs.
+  const popoutDoc = document.implementation.createHTMLDocument("");
+  const api = fakeApi({
+    getPopouts: (() => [
+      { id: "dv-1", group: {}, window: { document: popoutDoc } },
+    ]) as unknown as DockviewApi["getPopouts"],
+  });
+  registerDockviewApi(api);
+  document.documentElement.setAttribute("data-theme", "light"); // opener starts light
+
+  prefsStore.getState().setTheme("dark"); // flip in the opener, popout already open
+
+  // The re-sync is a MutationObserver callback - a microtask, not synchronous
+  // with the attribute write above.
+  await vi.waitFor(() => {
+    expect(popoutDoc.documentElement.getAttribute("data-theme")).toBe("dark");
+  });
+});
+
+test("flipping the opener's theme with no popout open is a safe no-op (nothing to walk, never throws)", async () => {
+  registerDockviewApi(fakeApi({ getPopouts: (() => []) as unknown as DockviewApi["getPopouts"] }));
+
+  expect(() => prefsStore.getState().setTheme("light")).not.toThrow();
+  await Promise.resolve(); // let the observer callback run; still nothing to assert on
+});
+
+test("flipping the opener's theme with no dockview host at all is a safe no-op (mobile StackHost)", async () => {
+  registerDockviewApi(null); // StackHost registers no api - the mobile signal
+
+  expect(() => prefsStore.getState().setTheme("light")).not.toThrow();
+  await Promise.resolve(); // let the observer callback run; still nothing to assert on
 });
