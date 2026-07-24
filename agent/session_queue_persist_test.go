@@ -395,16 +395,18 @@ func TestQueuePersist_CrashBetweenDequeueAndConsume_ItemNotDuplicated(t *testing
 	}
 }
 
-// TestQueuePersist_DrainSteering_CrashLosesAllButConsumed pins the honest,
-// wider crash-window bound for the steering queue (design review
-// Important-1): unlike popQueueHead (input queue: at-most-one, I/O-free),
-// drainSteeringForTurn empties and persists the WHOLE steering queue in one
-// step, before injectDrainedSteering's loop durably records each drained
-// message individually (real transcript I/O per message — see
-// consumeSteeringMessage). A crash after only the first of several drained
-// messages has been consumed loses the rest — never duplicates them, but the
-// loss can span more than one item, across a window that includes real I/O.
-func TestQueuePersist_DrainSteering_CrashLosesAllButConsumed(t *testing.T) {
+// TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem pins the
+// at-most-one crash-window bound for the steering queue (kata 5em1, closing
+// design review Important-1's wider window). injectDrainedSteering consumes the
+// steering batch pop-one/persist/consume per message (peekSteeringForTurn to
+// fold provenance upfront, then popSteeringHead + consumeSteeringMessage per
+// item), so the persisted queue shrinks as each message is durably recorded —
+// exactly like popQueueHead for the input queue. A crash between a message's
+// pop (persist-shrunk) and its durable consume loses only that single
+// in-flight message; every message not yet popped stays durably queued (never
+// duplicated, never resurrected past the persisted state), and every message
+// already consumed survives in the transcript.
+func TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sess := newQueuePersistTestSession(t, dir)
@@ -414,35 +416,52 @@ func TestQueuePersist_DrainSteering_CrashLosesAllButConsumed(t *testing.T) {
 	sess.SteerFromUser("bravo")
 	sess.SteerFromUser("charlie")
 
-	// drainSteeringForTurn is the exact primitive injectDrainedSteering calls:
-	// it atomically empties (and persists-empty) the whole queue in one step,
-	// before any of the three messages is durably recorded anywhere else.
-	drained := sess.drainSteeringForTurn()
-	if len(drained) != 3 {
-		t.Fatalf("drained = %d entries, want 3", len(drained))
+	// Drive the exact primitives injectDrainedSteering's loop runs — not a
+	// hand-rolled imitation. peekSteeringForTurn folds the whole batch's
+	// provenance upfront without removing anything; then each iteration pops the
+	// head (persisting the shrunk queue) and durably records it.
+	peeked := sess.peekSteeringForTurn()
+	if len(peeked) != 3 {
+		t.Fatalf("peeked = %d entries, want 3", len(peeked))
 	}
 
-	// Simulate the daemon crashing after durably consuming only the first
-	// drained message. consumeSteeringMessage is the exact per-message body
-	// injectDrainedSteering's loop runs — not a hand-rolled imitation.
-	// Deliberately NOT calling it for drained[1]/drained[2], and NOT calling
-	// Close(): this is the "crashed mid-loop" state.
-	sess.consumeSteeringMessage(drained[0])
+	// Iteration 1 completes: pop alpha (persists queue as [bravo charlie]) and
+	// durably consume it.
+	first, ok := sess.popSteeringHead()
+	if !ok || first.Text != "alpha" {
+		t.Fatalf("first pop = %q ok=%v, want alpha", first.Text, ok)
+	}
+	sess.consumeSteeringMessage(first)
+
+	// Iteration 2 crashes mid-window: pop bravo (persists queue as [charlie]),
+	// then the daemon dies BEFORE consumeSteeringMessage durably records it.
+	// Deliberately NOT consuming bravo and NOT calling Close().
+	second, ok := sess.popSteeringHead()
+	if !ok || second.Text != "bravo" {
+		t.Fatalf("second pop = %q ok=%v, want bravo", second.Text, ok)
+	}
 
 	restored := restoreQueuePersistTestSession(t, dir, id)
 	defer restored.Close()
 
-	// bravo and charlie are gone: lost, not duplicated, and not resurrected
-	// (the persisted queue was already emptied when the batch was drained).
-	if got := restored.SteeringQueueSnapshot(); len(got) != 0 {
-		t.Fatalf("restored SteeringQueueSnapshot = %#v, want empty (bravo/charlie must be lost, not resurrected, in the drain crash window)", got)
+	// charlie survives: it was never popped, so the pop-one/persist-per-item
+	// drain left it durably queued. bravo — the single in-flight item at crash
+	// time — is the only loss, proving the window is bounded to one message, not
+	// the whole remaining batch.
+	got := restored.SteeringQueueSnapshot()
+	if len(got) != 1 || got[0].Text != "charlie" {
+		t.Fatalf("restored SteeringQueueSnapshot = %#v, want [charlie] (only the in-flight bravo may be lost; the not-yet-popped charlie must survive)", got)
 	}
-	// alpha survived because consumeSteeringMessage durably appended it to
-	// the transcript/history before the simulated crash.
+	// alpha survived because consumeSteeringMessage durably appended it to the
+	// transcript/history before the crash; bravo did not (popped, never
+	// consumed) and must not be resurrected into the queue.
 	foundAlpha := false
 	for _, turn := range restored.history {
 		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "alpha" {
 			foundAlpha = true
+		}
+		if turn.Kind == schema.TurnSteering && turn.Message.Text() == "bravo" {
+			t.Fatalf("restored history unexpectedly contains bravo (lost in the pop-to-consume window, must not resurrect); kinds=%v", restored.history)
 		}
 	}
 	if !foundAlpha {

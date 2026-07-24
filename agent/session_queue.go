@@ -602,6 +602,25 @@ func (s *Session) drainSteering() []steeringMessage {
 	return out
 }
 
+// popSteeringHead removes and returns the next steering message, persisting the
+// shrunk queue before returning. The second result is false when the queue is
+// empty. It mirrors popQueueHead (input queue): injectDrainedSteering consumes
+// the steering batch one message at a time so the persisted queue shrinks as
+// each message is durably recorded, bounding a mid-drain crash's loss to the
+// single in-flight message rather than the whole batch.
+func (s *Session) popSteeringHead() (steeringMessage, bool) {
+	s.mu.Lock()
+	if len(s.steeringQueue) == 0 {
+		s.mu.Unlock()
+		return steeringMessage{}, false
+	}
+	entry := s.steeringQueue[0]
+	s.steeringQueue = s.steeringQueue[1:]
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+	return entry, true
+}
+
 // injectDrainedSteering drains any pending steering messages at a turn
 // boundary (or mid-turn injection point), records each as a steering turn in
 // history and the transcript — preserving the message's provenance source so
@@ -609,27 +628,30 @@ func (s *Session) drainSteering() []steeringMessage {
 // and emits the steering-injected event. It is the single path every drain
 // site uses so live and replayed steering stay consistent.
 //
-// Crash-window note (design review Important-1): drainSteeringForTurn removes
-// and persists the steering queue as empty in ONE step, before any message in
-// the batch is durably recorded here — unlike popQueueHead (input queue),
-// which persists the shrunk queue once per consumed entry. A crash partway
-// through this loop can therefore lose every not-yet-consumed message from
-// the batch (not just one), across a window that spans this loop's own
-// transcript.Append calls (real I/O per message), not just in-process
-// statements. This is intentionally NOT tightened to match popQueueHead:
-// doing so would require interleaving each message's removal from the queue
-// with its transcript append, which would also reorder when that message's
-// provenance is folded into s.activeProvenance relative to this loop's other
-// emit() calls (every emit stamps the CURRENT active provenance,
-// session_events.go's emit/emitWithProvenance) — a change to the
-// causal-provenance timeline the watch-loop-suppression machinery
-// (agent/provenance) depends on, not merely a persistence-timing tweak. The
-// failure mode stays safe (loss, never duplication — same invariant as
-// popQueueHead) but is not "at most one" the way the input queue's is. See
-// TestQueuePersist_DrainSteering_CrashLosesAllButConsumed for the pinned
+// Crash-window note (design review Important-1, kata 5em1): the steering batch
+// is consumed pop-one/persist/consume per message — the persisted queue shrinks
+// as each message is durably recorded — so a crash partway through this loop
+// loses AT MOST the single message currently being consumed, matching
+// popQueueHead's input-queue bound (loss, never duplication). Provenance is
+// still folded into s.activeProvenance for the WHOLE batch UPFRONT
+// (peekSteeringForTurn), before any message is consumed: interleaving the
+// union with each per-message consume would reorder when a message's
+// provenance lands relative to this loop's emit() calls (every emit stamps the
+// CURRENT active provenance, session_events.go's emit/emitWithProvenance) — a
+// change to the causal-provenance timeline the watch-loop-suppression
+// machinery (agent/provenance) depends on. Peeking-then-popping preserves that
+// timeline exactly while narrowing the crash window. The peeked count bounds
+// how many messages this drain consumes, so a steering message appended
+// concurrently at the tail is left for the next drain (and unioned then), not
+// swept into this batch without its provenance. See
+// TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
 // behavior.
 func (s *Session) injectDrainedSteering() {
-	for _, msg := range s.drainSteeringForTurn() {
+	for range s.peekSteeringForTurn() {
+		msg, ok := s.popSteeringHead()
+		if !ok {
+			break
+		}
 		s.consumeSteeringMessage(msg)
 	}
 }
