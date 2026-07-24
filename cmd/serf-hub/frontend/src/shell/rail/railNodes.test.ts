@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import {
   archivedProjectNodes,
+  needsYouDescendantCount,
   overrideLookup,
   projectNodeIdForSessionRef,
   projectNodes,
@@ -71,6 +72,30 @@ describe("sessionNodes", () => {
   });
 });
 
+describe("needsYouDescendantCount", () => {
+  test("counts needs-you nodes in the subtree, not the node itself", () => {
+    const root = node({
+      row_id: "s1",
+      ref: "r1",
+      state: "active",
+      children: [
+        node({ row_id: "s1a", ref: "r1a", state: "awaiting" }),
+        node({
+          row_id: "s1b",
+          ref: "r1b",
+          state: "warning",
+          children: [node({ row_id: "s1b1", ref: "r1b1", state: "active" })],
+        }),
+      ],
+    });
+    expect(needsYouDescendantCount(root)).toBe(2); // s1a + s1b, not the active root or grandchild
+  });
+
+  test("a leaf node (no children) counts zero", () => {
+    expect(needsYouDescendantCount(node({ row_id: "leaf", state: "awaiting" }))).toBe(0);
+  });
+});
+
 describe("projectNodes", () => {
   test("ids are namespaced separately from any session row_id so they never collide within a section", () => {
     const [rail] = projectNodes([project({ key: "p1" })], NEVER_EXPANDED);
@@ -89,6 +114,29 @@ describe("projectNodes", () => {
   test("a project with no sessions renders as a leaf", () => {
     const [rail] = projectNodes([project({ sessions: [] })], NEVER_EXPANDED);
     expect(rail?.children).toEqual([]);
+  });
+
+  test("sorts a project's sessions needs-you-first, preserving relative order otherwise (vbh8)", () => {
+    const [rail] = projectNodes(
+      [
+        project({
+          sessions: [
+            node({ row_id: "idle1", ref: "r1", state: "idle" }),
+            node({ row_id: "needsYou1", ref: "r2", state: "awaiting" }),
+            node({ row_id: "idle2", ref: "r3", state: "idle" }),
+            // Needs-you via a descendant, not its own state - still sorts first.
+            node({
+              row_id: "hasNeedsYouChild",
+              ref: "r4",
+              state: "active",
+              children: [node({ ref: "r4a", state: "warning" })],
+            }),
+          ],
+        }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(rail?.children?.map((c) => c.id)).toEqual(["needsYou1", "hasNeedsYouChild", "idle1", "idle2"]);
   });
 
   test("expanded defaults to the project's own default_expanded wire field", () => {

@@ -1,11 +1,13 @@
 // RailRow is the Tree widget's renderRow implementation for the sidebar:
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
-// a chevron (branches only), a Cadence liveness dot, the row's label, a
-// favorite star / secondary tier tag / attention Badge as applicable, and
-// an actions Menu. Pure presentation: every mutation goes back out through
-// the `actions` prop, which Rail.tsx implements against actions.ts + the
-// tree store's refresh().
+// a chevron (branches only), a Cadence liveness dot, a two-line text column
+// (title + a humanized activity gloss - see humanizeState), a favorite star
+// / secondary tier tag / attention Badge as applicable, a right-aligned
+// relative timestamp (session rows only, when there's no Badge to show
+// instead), and an actions Menu. Pure presentation: every mutation goes back
+// out through the `actions` prop, which Rail.tsx implements against
+// actions.ts + the tree store's refresh().
 //
 // CLASS.actions (Rail.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
@@ -21,13 +23,16 @@ import { Badge, Cadence, type CadenceState, IconButton, Menu, type MenuItem, typ
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import styles from "./Rail.module.css";
-import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
+import { needsYouDescendantCount, type ProjectRailNode, type RailNode, type SessionRailNode } from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
   actions: requireClass(styles.actions, "Rail.module.css", "actions"),
   chevron: requireClass(styles.chevron, "Rail.module.css", "chevron"),
+  textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
+  activity: requireClass(styles.activity, "Rail.module.css", "activity"),
+  time: requireClass(styles.time, "Rail.module.css", "time"),
   meta: requireClass(styles.meta, "Rail.module.css", "meta"),
   star: requireClass(styles.star, "Rail.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "Rail.module.css", "loadingRow"),
@@ -66,6 +71,26 @@ export function cadenceStateFor(wireState: string): CadenceState {
       return "needs-you";
     case "active":
       return "working";
+    case "ended":
+      return "ended";
+    default: // "idle", "notLoaded", "", and any future/unknown value
+      return "idle";
+  }
+}
+
+// A short, human-facing gloss for a row's second activity line (§2.3) - the
+// same wire state vocabulary cadenceStateFor reads, worded for a person
+// rather than mapped to a Cadence family. "warning" reads the same as
+// "awaiting" here (both already share Cadence's "needs-you" dot above).
+function humanizeState(wireState: string): string {
+  switch (wireState) {
+    case "active":
+      return "working";
+    case "awaiting":
+    case "warning":
+      return "waiting on you";
+    case "errored":
+      return "failed";
     case "ended":
       return "ended";
     default: // "idle", "notLoaded", "", and any future/unknown value
@@ -215,6 +240,7 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
+  const needsYouCount = needsYouDescendantCount(session);
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
@@ -222,14 +248,21 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     <span className={CLASS.row} data-session-ref={session.ref}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
       <Cadence state={cadenceStateFor(session.state)} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
-      {/* Mouse-only shortcut for the same activation Enter already performs
-          on the owning treeitem (see Chevron's own comment above) - can't
-          use aria-hidden the way Chevron does, since this text IS the
-          treeitem's accessible name (no separate aria-label on the row). */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see above */}
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see above */}
-      <span className={CLASS.label} onClick={info.activate}>
-        {session.title}
+      {/* Two-line text column (§2.3): the title, then a humanized activity
+          gloss - row anatomy for the subagent tree's already-existing
+          recursion (toSessionNode/Tree), not new recursion of its own. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
+      <span className={CLASS.textCol} onClick={info.activate}>
+        {/* Mouse-only shortcut for the same activation Enter already performs
+            on the owning treeitem - can't use aria-hidden the way Chevron
+            does, since this text IS the treeitem's accessible name (no
+            separate aria-label on the row). */}
+        <span className={CLASS.label}>{session.title}</span>
+        <span data-testid="rail-row-activity" className={CLASS.activity}>
+          {humanizeState(session.state)}
+          {session.model !== undefined && session.model !== "" ? ` · ${session.model}` : ""}
+        </span>
       </span>
       {session.favorite === true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
@@ -239,6 +272,24 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
       {session.branch !== undefined && session.branch !== "" && <span className={CLASS.meta}>{session.branch}</span>}
       {session.tier !== undefined && session.tier !== "current" && session.tier !== "" && (
         <span className={CLASS.meta}>{session.tier}</span>
+      )}
+      {/* Right slot: either the Task-7 needs-you-descendant Badge, or (when
+          there's nothing to flag) a relative timestamp - never both, so the
+          slot never widens the row by more than one small element (vbh8
+          new capability, §2.3). The session's OWN needs-you already shows
+          via its amber Cadence dot above (cadenceStateFor maps
+          awaiting/warning to "needs-you"), so a leaf needs-you session with
+          no needs-you descendants correctly shows its timestamp here, not a
+          redundant "0"/"1" badge. */}
+      {needsYouCount > 0 ? (
+        <Badge count={needsYouCount} tone="attention" />
+      ) : (
+        session.age !== undefined &&
+        session.age !== "" && (
+          <span data-testid="rail-row-time" className={CLASS.time}>
+            {session.age}
+          </span>
+        )
       )}
       <span className={CLASS.actions}>
         <ActionsMenu label={session.title} items={sessionMenuItems(session, actions)} />

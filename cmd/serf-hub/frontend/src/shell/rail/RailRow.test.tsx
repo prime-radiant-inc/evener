@@ -133,6 +133,78 @@ describe("session row", () => {
     expect(screen.queryByTestId("favorite-star")).toBeNull();
   });
 
+  // vbh8/§2.2: a derived amber count of needs-you descendants - distinct
+  // from the row's own Cadence dot (which already goes amber when the
+  // SESSION ITSELF needs you - see cadenceStateFor above). A leaf session
+  // with no needs-you descendants shows no badge at all, even if it needs
+  // you itself - the dot alone covers that case, so a redundant "0"/"1"
+  // badge would double up on the same signal.
+  test("shows a derived needs-you-descendant count Badge when a child needs you", () => {
+    const session = apiNode({
+      state: "active",
+      children: [{ ...apiNode({ row_id: "child", ref: "local:child", state: "awaiting" }) }],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+    expect(screen.getByText("1")).toBeTruthy();
+  });
+
+  test("shows no Badge for a leaf session that itself needs you (the Cadence dot already covers it)", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ state: "awaiting" }))} info={info()} actions={actions()} />);
+    expect(screen.queryByText("1")).toBeNull();
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
+  // vbh8 new capability, §2.3: row anatomy for the (already-existing)
+  // subagent tree - a humanized second activity line, and a right-aligned
+  // relative timestamp OR the Task-7 Badge, whichever slot applies.
+  test("shows a humanized activity line and a relative timestamp", () => {
+    const session = apiNode({ state: "active", age: "2m" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working/i);
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
+  });
+
+  test.each([
+    ["active", /working/i],
+    ["awaiting", /waiting on you/i],
+    ["warning", /waiting on you/i],
+    ["errored", /failed/i],
+    ["ended", /ended/i],
+    ["idle", /idle/i],
+    ["notLoaded", /idle/i],
+  ] as const)("humanizes wire state %s as %s in the activity line", (state, expected) => {
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
+  });
+
+  test("appends the model name to the activity line when present", () => {
+    const session = apiNode({ state: "active", model: "opus" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working.*opus/i);
+  });
+
+  test("a needs-you count takes the right slot instead of the timestamp", () => {
+    const session = apiNode({
+      state: "active",
+      age: "2m",
+      children: [apiNode({ row_id: "child", ref: "local:child", state: "awaiting" })],
+    });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("rail-row-time")).toBeNull();
+    expect(screen.getByText("1")).toBeTruthy(); // the Badge from Task 7
+  });
+
+  test("shows no timestamp when the session carries no age", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", age: undefined }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("rail-row-time")).toBeNull();
+  });
+
   test("menu offers 'Add to pinned' for an unfavorited session and calls onToggleFavorite on select", async () => {
     const acts = actions();
     const session = apiNode({ favorite: false, ref: "local:a" });

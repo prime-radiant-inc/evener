@@ -233,6 +233,21 @@
   min-width: 0;
 }
 
+/* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
+ * its own on its nested-children container (only aria-level on each
+ * treeitem), so this reaches into its role=group element by attribute,
+ * scoped to `.section` the same way `.actions`'s own [role="treeitem"]
+ * selector below already reaches into Tree's DOM. tree.module.css's own
+ * `.group` is a flex column with `padding-left: var(--space-4)`, so a
+ * border-left on the group box itself sits just inside a level's own
+ * indentation and compounds naturally as groups nest (same padding
+ * comment tree.module.css makes) - one hairline per level, applying
+ * equally to a project's own session nesting and a session's subagent
+ * nesting, since Tree's role=group mechanism is the same for both. */
+.section [role="group"] {
+  border-left: 1px solid var(--edge);
+}
+
 /* Row actions (RailRow's "+"/"..." trigger buttons): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the
  * rail reads as dense and quiet (design bar: Linear/VS Code-quality sidebar)
@@ -283,16 +298,47 @@
   cursor: default;
 }
 
-.label {
+/* Two-line text column (§2.3): title over a humanized activity gloss. A
+ * column rather than two siblings directly in `.row` so the row's own
+ * `align-items: center` centers the PAIR vertically instead of stretching
+ * each line to the row's full height. */
+.textCol {
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   /* min-width: 0 is required for ellipsis truncation inside a flex row -
    * without it a flex item won't shrink below its content's natural width. */
   min-width: 0;
+}
+
+.label {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--ink-hi);
   font-size: var(--font-size-ui);
+}
+
+/* Second line: a short, honest gloss of the row's own state (RailRow.tsx's
+ * humanizeState) - never a faked liveness cue, just the same state the dot
+ * above already encodes, worded for a person. */
+.activity {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+/* Right-aligned relative timestamp - the row's OTHER right-slot occupant
+ * (the Task-7 needs-you Badge) renders in this same position; RailRow.tsx
+ * shows at most one of the two, never both. */
+.time {
+  flex: none;
+  margin-left: auto;
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
 }
 
 .meta {

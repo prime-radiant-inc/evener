@@ -217,7 +217,7 @@ function treeGetCallCount(): number {
 describe("initial load", () => {
   test("fetches the tree on mount", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     expect(treeGetCallCount()).toBe(1);
   });
 
@@ -232,7 +232,7 @@ describe("initial load", () => {
     renderRail();
     expect(screen.getByRole("status", { name: /loading/i })).toBeTruthy();
     resolveFetch(jsonResponse(SAMPLE_WIRE_TREE));
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
   });
 
   test("shows an error state with a retry action when the fetch fails, and retry re-fetches successfully", async () => {
@@ -242,7 +242,7 @@ describe("initial load", () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /retry/i }));
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
   });
 
   test("shows an empty state when every tier is empty", async () => {
@@ -255,10 +255,9 @@ describe("initial load", () => {
 describe("sections", () => {
   test("renders each non-empty tier as its own heading, in tier order", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     const headingNames = screen.getAllByRole("heading").map((h) => h.textContent);
-    expect(headingNames).toContain("Needs you");
-    const order = ["Needs you", "Live", "Pinned", "Projects", "Test runs"];
+    const order = ["Live", "Pinned", "Projects", "Test runs"];
     const positions = order.map((name) => headingNames.indexOf(name));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(positions.every((p) => p >= 0)).toBe(true);
@@ -267,14 +266,14 @@ describe("sections", () => {
   test("omits a tier's heading entirely when it has no rows", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ...SAMPLE_WIRE_TREE, live: [], test_runs: [] }));
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Pinned session");
     expect(screen.queryByText("Live")).toBeNull();
     expect(screen.queryByText("Test runs")).toBeNull();
   });
 
   test("the Archived disclosure is present but collapsed by default", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     const disclosure = screen.getByRole("button", { name: /archived/i });
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("old-project")).toBeNull();
@@ -283,8 +282,52 @@ describe("sections", () => {
   test("omits the Archived disclosure entirely when there are no archived projects", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ...SAMPLE_WIRE_TREE, archived_projects: [] }));
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /archived/i })).toBeNull();
+  });
+
+  // vbh8/§2.2: the auto-grouped "Needs you" RailSection is gone - attention
+  // surfaces inline instead (the session's own Cadence dot, plus a derived
+  // descendant-count Badge - see RailRow.test.tsx). Before this fix, a
+  // needs-you session listed twice: once here, once under its project. The
+  // tree still carries a populated needs_you tier on the wire (the store
+  // tiers themselves are untouched - only this RailSection is removed), so
+  // this seeds one to prove the removal, not just an empty-tier no-op.
+  test("drops the auto-grouped 'Needs you' section; a needs-you session renders only once, under its project (vbh8)", async () => {
+    const sharedRef = "local:shared1";
+    const sharedInProject = wireNode({
+      row_id: "project:sharedproj:local:shared1",
+      ref: sharedRef,
+      title: "Shared session",
+      state: "awaiting",
+    });
+    const sharedInNeedsYou = wireNode({
+      row_id: "needsyou:local:shared1",
+      ref: sharedRef,
+      title: "Shared session",
+      state: "awaiting",
+    });
+    const sharedProject = wireProject({
+      key: "sharedproj",
+      name: "shared-project",
+      default_expanded: true,
+      sessions: [sharedInProject],
+    });
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...EMPTY_WIRE_TREE,
+        needs_you: [sharedInNeedsYou],
+        favorites: [PINNED_NODE],
+        projects: [sharedProject],
+        attentionSummary: { needsYou: 1, error: 0, working: 0 },
+      }),
+    );
+    renderRail();
+    await screen.findByText("Shared session");
+
+    expect(screen.getAllByText("Shared session")).toHaveLength(1); // no duplicate listing
+    expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Pinned" })).toBeTruthy(); // other sections unaffected
   });
 });
 
@@ -322,17 +365,17 @@ describe("in-sidebar chrome (c8gt)", () => {
 describe("row activation", () => {
   test("activating a session row opens its pane via workspaceStore.openPane", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
-    await userEvent.setup().click(screen.getByText("Needs you session"));
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByText("Live session"));
     const panes = workspaceStore.getState().panes;
     expect(panes).toHaveLength(1);
-    expect(panes[0]).toMatchObject({ type: "session", params: { ref: "local:ny1" } });
+    expect(panes[0]).toMatchObject({ type: "session", params: { ref: "local:live1" } });
   });
 
   test("Enter on a focused row activates it the same as a click", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
-    const row = rowFor("Needs you session");
+    await screen.findByText("Live session");
+    const row = rowFor("Live session");
     row.focus();
     fireEvent.keyDown(row, { key: "Enter" });
     expect(workspaceStore.getState().panes).toHaveLength(1);
@@ -378,7 +421,7 @@ describe("project expansion", () => {
 
   test("expanding the Archived disclosure reveals its projects; expanding an archived project lazily loads and shows its sessions", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: /archived/i }));
@@ -407,17 +450,17 @@ describe("hide affordance (onHide)", () => {
         <Toast />
       </>,
     );
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
 
     await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
     expect(onHide).toHaveBeenCalledTimes(1);
     // Rail itself never hides - RailHost owns visibility; the tree stays put.
-    expect(screen.getByText("Needs you session")).toBeTruthy();
+    expect(screen.getByText("Live session")).toBeTruthy();
   });
 
   test("renders no Hide sidebar button when onHide is absent (mobile / overlay-drawer instance)", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();
   });
 });
@@ -533,7 +576,7 @@ describe("rename flow", () => {
 describe("delete project flow", () => {
   test("opens a confirmation dialog; confirming POSTs the delete and refetches", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     await userEvent.setup().click(screen.getByRole("button", { name: /archived/i }));
     await screen.findByText("old-project");
 
@@ -554,7 +597,7 @@ describe("delete project flow", () => {
 
   test("canceling the delete confirmation does not POST anything", async () => {
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     await userEvent.setup().click(screen.getByRole("button", { name: /archived/i }));
     await screen.findByText("old-project");
 
@@ -574,7 +617,7 @@ describe("delete project flow", () => {
       body: { deleted: [], skipped: [{ id: "local:old1", reason: "resumed live" }] },
     };
     renderRail();
-    await screen.findByText("Needs you session");
+    await screen.findByText("Live session");
     await userEvent.setup().click(screen.getByRole("button", { name: /archived/i }));
     await screen.findByText("old-project");
 
@@ -602,11 +645,22 @@ describe("reveal (railController /project)", () => {
     default_expanded: false, // starts collapsed: reveal must un-collapse it
     sessions: [REVEAL_SESSION],
   });
+  // A top-level-tier entry (no project to expand) that is always visible -
+  // the auto-grouped "Needs you" tier this test previously targeted (vbh8)
+  // no longer renders as its own section, so "Live" (still retained per
+  // Jesse's decision - see Rail.tsx's own comment) stands in for "a
+  // top-level tier session with nothing to expand."
+  const REVEAL_LIVE_NODE = wireNode({
+    row_id: "live:local:live-reveal",
+    ref: "local:live-reveal",
+    title: "Reveal live session",
+    state: "active",
+  });
   const REVEAL_TREE = {
     ...EMPTY_WIRE_TREE,
-    needs_you: [NEEDS_YOU_NODE],
+    live: [REVEAL_LIVE_NODE],
     projects: [COLLAPSED_PROJECT],
-    attentionSummary: { needsYou: 1, error: 0, working: 0 },
+    attentionSummary: { needsYou: 0, error: 0, working: 1 },
   };
 
   // jsdom implements no scrollIntoView at all (verified: the property is
@@ -650,9 +704,9 @@ describe("reveal (railController /project)", () => {
     treeResponseBody = REVEAL_TREE;
     const onRevealConsumed = vi.fn();
 
-    renderRailWith({ revealTarget: "local:ny1", onRevealConsumed }); // NEEDS_YOU_NODE, always shown
+    renderRailWith({ revealTarget: "local:live-reveal", onRevealConsumed }); // REVEAL_LIVE_NODE, always shown
 
-    await screen.findByText("Needs you session");
+    await screen.findByText("Reveal live session");
     await vi.waitFor(() => expect(scrollSpy).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(onRevealConsumed).toHaveBeenCalledTimes(1));
   });
@@ -664,7 +718,7 @@ describe("reveal (railController /project)", () => {
     renderRailWith({ revealTarget: "local:ghost", onRevealConsumed });
 
     // The tree must have loaded before the effect gives up (it waits for it).
-    await screen.findByText("Needs you session");
+    await screen.findByText("Reveal live session");
     await vi.waitFor(() => expect(onRevealConsumed).toHaveBeenCalled());
     expect(scrollSpy).not.toHaveBeenCalled();
   });
@@ -675,7 +729,7 @@ describe("reveal (railController /project)", () => {
 
     renderRailWith({ revealTarget: null, onRevealConsumed });
 
-    await screen.findByText("Needs you session");
+    await screen.findByText("Reveal live session");
     expect(scrollSpy).not.toHaveBeenCalled();
     expect(onRevealConsumed).not.toHaveBeenCalled();
   });
