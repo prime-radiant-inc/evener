@@ -304,6 +304,32 @@ test("deleting the leading dot re-lists the plain directory", async () => {
   expect(await screen.findByRole("option", { name: /src/ })).toBeTruthy();
 });
 
+// The header and the "../" row describe currentDir, which moves the instant a
+// new directory is typed, while the listing only arrives 150ms later. Rendering
+// the OLD directory's children under the NEW directory's header for that whole
+// window makes the panel lie: clicking a row navigates somewhere the user never
+// pointed at.
+test("a newly typed directory clears the stale listing immediately, before the debounce fires", async () => {
+  const complete = lister({
+    "/home/jesse/": ["/home/jesse/src"],
+    "/var/s": ["/var/spool"],
+  });
+  renderField({ value: "/home/jesse", complete });
+  fireEvent.click(trigger());
+  const input = (await screen.findByRole("combobox", { name: "Path" })) as HTMLInputElement;
+  await waitFor(() => expect(screen.getByRole("option", { name: /src/ })).toBeTruthy());
+
+  // Synchronous: no awaited tick, so the debounced request has NOT fired yet.
+  fireEvent.change(input, { target: { value: "/var/s" } });
+
+  expect(screen.getByText("/var")).toBeTruthy();
+  expect(screen.queryByRole("option", { name: /src/ })).toBeNull();
+  expect(screen.getByText("Loading…")).toBeTruthy();
+
+  // And the real listing still lands once the window closes.
+  expect(await screen.findByRole("option", { name: /spool/ })).toBeTruthy();
+});
+
 // The dot can be typed and then narrowed inside ONE debounce window, so the
 // dot-ness comparison has to be against the pending request's filter rather
 // than the last one that actually fired - otherwise ".c" is judged against the

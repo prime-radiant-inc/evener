@@ -298,6 +298,13 @@ export function PathFieldPanel({
     const dotnessChanged = nextFilter.startsWith(".") !== requestedFilterRef.current.startsWith(".");
     if (dir === currentDir && !dotnessChanged) return;
     setCurrentDir(dir);
+    // Drop the old directory's children the INSTANT the header moves, not when
+    // the debounced request finally fires: the header and the "../" row already
+    // describe the new directory, and rendering the previous one's rows under
+    // them for a whole debounce window makes every row a lie (clicking one
+    // navigates somewhere the user never pointed at). "Loading…" for that
+    // window is truthful.
+    setEntries(null);
     clearTimeout(debounceRef.current);
     // With a filter present, the typed text itself IS the prefix: the hub
     // splits it into listDir + filter and does the matching (and the dotfile
