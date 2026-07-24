@@ -157,6 +157,18 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     expect(screen.getByLabelText("Agent command").tagName).toBe("INPUT");
   });
 
+  test("an unkinded path option stays a plain input - there is nothing to browse for", () => {
+    render(
+      <ScalarField
+        option={pathOption({ field: "future", wireField: "future", label: "Future path", pathKind: undefined })}
+        layer="global"
+        value=""
+        onChange={() => {}}
+      />,
+    );
+    expect(screen.getByLabelText("Future path").tagName).toBe("INPUT");
+  });
+
   test("a submit-time path-validation error replaces the help text (FormRow's own error-over-help contract)", () => {
     render(
       <ScalarField

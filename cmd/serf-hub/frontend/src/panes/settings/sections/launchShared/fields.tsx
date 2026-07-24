@@ -78,7 +78,7 @@ const BROWSABLE_PATH_KINDS: Record<string, PathFieldKind> = {
 };
 
 function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
-  return pathKind === undefined ? undefined : BROWSABLE_PATH_KINDS[pathKind];
+  return BROWSABLE_PATH_KINDS[pathKind ?? ""];
 }
 
 /** The completion loader every path picker on this page shares. Imported off
