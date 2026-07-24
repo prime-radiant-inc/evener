@@ -1,0 +1,31 @@
+.details {
+  display: block;
+}
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+  list-style: none;
+  color: var(--ink-mid);
+}
+
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.chevron {
+  display: inline-flex;
+  color: var(--ink-low);
+  font-size: 10px;
+  transition: transform var(--motion-duration-overlay) ease;
+}
+
+.chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.body {
+  margin-top: var(--space-1);
+}
