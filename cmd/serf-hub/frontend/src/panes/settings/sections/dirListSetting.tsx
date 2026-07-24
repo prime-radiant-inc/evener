@@ -41,6 +41,7 @@ const CLASS = {
   title: requireClass(styles.title, "dirListSetting.module.css", "title"),
   count: requireClass(styles.count, "dirListSetting.module.css", "count"),
   help: requireClass(styles.help, "dirListSetting.module.css", "help"),
+  addBlock: requireClass(styles.addBlock, "dirListSetting.module.css", "addBlock"),
   addRow: requireClass(styles.addRow, "dirListSetting.module.css", "addRow"),
   addField: requireClass(styles.addField, "dirListSetting.module.css", "addField"),
 };
@@ -130,24 +131,26 @@ export function PathListEditor({
         emptyMessage={emptyMessage}
         onAdd={onAdd}
         renderAddField={({ value, onChange, disabled }) => (
-          <FormRow label={addLabel} htmlFor={addFieldId}>
-            <div className={CLASS.addRow}>
-              <span className={CLASS.addField}>
-                <PathField
-                  id={addFieldId}
-                  value={value}
-                  onChange={onChange}
-                  kind={kind}
-                  complete={complete}
-                  placeholder={addPlaceholder}
-                  disabled={disabled}
-                />
-              </span>
-              <Button type="submit" disabled={value.trim() === "" || disabled}>
-                Add
-              </Button>
-            </div>
-          </FormRow>
+          <div className={CLASS.addBlock}>
+            <FormRow label={addLabel} htmlFor={addFieldId}>
+              <div className={CLASS.addRow}>
+                <span className={CLASS.addField}>
+                  <PathField
+                    id={addFieldId}
+                    value={value}
+                    onChange={onChange}
+                    kind={kind}
+                    complete={complete}
+                    placeholder={addPlaceholder}
+                    disabled={disabled}
+                  />
+                </span>
+                <Button type="submit" disabled={value.trim() === "" || disabled}>
+                  Add
+                </Button>
+              </div>
+            </FormRow>
+          </div>
         )}
       />
       <ConfirmDialog
