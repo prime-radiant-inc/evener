@@ -10,11 +10,13 @@
 // picker as the top-level Model field - the modelPicker kind (model,
 // fastCheapModel) and the modelList kind (modelFallbacks) both. They used to
 // be plain free-text boxes, which made a model id something you had to
-// remember and type exactly.
+// remember and type exactly. Every browsable path-valued field (the path and
+// pathList kinds) renders the shared PathField the same way, for the same
+// reason.
 import { type ReactNode, useId, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
-import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
-import { Button, CollectionEditor, FormRow, Input, ModelCatalog, RadioGroup, Select } from "../../widgets";
+import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
+import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./advancedOptions.module.css";
 import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
@@ -26,8 +28,8 @@ const CLASS = {
   modelBlock: requireClass(styles.modelBlock, "advancedOptions.module.css", "modelBlock"),
   modelLabel: requireClass(styles.modelLabel, "advancedOptions.module.css", "modelLabel"),
   modelHelp: requireClass(styles.modelHelp, "advancedOptions.module.css", "modelHelp"),
-  modelAddRow: requireClass(styles.modelAddRow, "advancedOptions.module.css", "modelAddRow"),
-  modelAddField: requireClass(styles.modelAddField, "advancedOptions.module.css", "modelAddField"),
+  pickerAddRow: requireClass(styles.pickerAddRow, "advancedOptions.module.css", "pickerAddRow"),
+  pickerAddField: requireClass(styles.pickerAddField, "advancedOptions.module.css", "pickerAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
   resolved: requireClass(styles.resolved, "advancedOptions.module.css", "resolved"),
@@ -43,6 +45,9 @@ export interface AdvancedOptionsProps {
   /** Loads the model catalog for this panel's model-valued fields, scoped the
    * same way the top-level Model field is (harness + cwd). */
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
+  /** Path completions for this panel's browsable path fields (serf/paths/
+   * complete). Each field's PathField derives includeFiles from its own kind. */
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   /** Rendered first inside the expanded panel, ahead of the schema controls
    * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
   children?: ReactNode;
@@ -54,6 +59,7 @@ export function AdvancedOptions({
   validatePath,
   resolveConfig,
   loadCatalog,
+  complete,
   children,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
@@ -117,6 +123,7 @@ export function AdvancedOptions({
               value={values[opt.wireField]}
               error={errors[opt.wireField]}
               loadCatalog={loadCatalog}
+              complete={complete}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
             />
@@ -148,13 +155,39 @@ interface ControlProps {
   value: AdvancedFieldValue | undefined;
   error?: string;
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
 }
 
-function Control({ option, value, error, loadCatalog, onScalar, onValue }: ControlProps) {
+/** The schema's browsable path kinds, mapped onto the widget's. A "command"
+ * pathKind names an executable to resolve on PATH and "" names no path at all,
+ * so neither is browsable - those stay plain text boxes. */
+function pathFieldKind(pathKind: string | undefined): PathFieldKind | null {
+  switch (pathKind) {
+    case "dir":
+    case "file":
+    case "outputFile":
+      return pathKind;
+    default:
+      return null;
+  }
+}
+
+function Control({ option, value, error, loadCatalog, complete, onScalar, onValue }: ControlProps) {
   const controlId = useId();
   const current = typeof value?.value === "string" ? value.value : "";
+
+  /** The plain text box: the text kind, plus any path field whose pathKind
+   * isn't browsable. Path-kind fields carry live validation surfaced through
+   * FormRow's error slot. */
+  function textRow() {
+    return (
+      <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
+        <Input id={controlId} value={current} onChange={(e) => onScalar(e.target.value)} />
+      </FormRow>
+    );
+  }
 
   switch (option.kind) {
     case "boolean":
@@ -201,6 +234,21 @@ function Control({ option, value, error, loadCatalog, onScalar, onValue }: Contr
           <Input id={controlId} type="number" value={current} onChange={(e) => onScalar(e.target.value)} />
         </FormRow>
       );
+    case "path": {
+      // A path field browses; only a non-browsable pathKind (a command name, or
+      // none at all) stays a plain text box.
+      const pathKind = pathFieldKind(option.pathKind);
+      if (pathKind === null) return textRow();
+      // PathField's trigger is a <button>, which FormRow's own <label htmlFor>
+      // labels natively - so unlike the ModelCatalog rows this keeps the FormRow
+      // shell, and with it the error slot carrying the submit-time
+      // serf/path/validate failure.
+      return (
+        <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
+          <PathField id={controlId} value={current} onChange={onScalar} kind={pathKind} complete={complete} />
+        </FormRow>
+      );
+    }
     case "modelPicker":
       // A composite widget, not a single labelable control, so the label is a
       // plain span (mirroring the spawn form's own Model field) - the picker's
@@ -223,9 +271,10 @@ function Control({ option, value, error, loadCatalog, onScalar, onValue }: Contr
       );
     case "pathList":
       return (
-        <ListControl
+        <PathListControl
           option={option}
           items={Array.isArray(value?.value) ? (value.value as string[]) : []}
+          complete={complete}
           onValue={onValue}
         />
       );
@@ -234,13 +283,7 @@ function Control({ option, value, error, loadCatalog, onScalar, onValue }: Contr
     case "mcpServerList":
       return <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />;
     default:
-      // text - path-kind fields carry live validation surfaced through
-      // FormRow's error slot.
-      return (
-        <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
-          <Input id={controlId} value={current} onChange={(e) => onScalar(e.target.value)} />
-        </FormRow>
-      );
+      return textRow();
   }
 }
 
@@ -252,15 +295,23 @@ function isMcpList(v: unknown): v is MCPServerSpec[] {
   return Array.isArray(v) && v.every((item) => typeof item === "object" && item !== null && "name" in item);
 }
 
-function ListControl({
+/**
+ * skillsDirs/pluginDirs/mcpConfigs: adds come from the same browse widget every
+ * other path field uses rather than a hand-typed path. The picked path lands in
+ * CollectionEditor's own draft, which the Add button submits.
+ */
+function PathListControl({
   option,
   items,
+  complete,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
+  const pathKind = pathFieldKind(option.pathKind);
   return (
     <CollectionEditor<string>
       label={option.label}
@@ -276,6 +327,28 @@ function ListControl({
         onValue({ value: [...items, entry] });
         return { ok: true };
       }}
+      // A non-browsable pathKind keeps the built-in plain-text add field.
+      renderAddField={
+        pathKind === null
+          ? undefined
+          : ({ value, onChange, disabled }) => (
+              <div className={CLASS.pickerAddRow}>
+                <span className={CLASS.pickerAddField}>
+                  <PathField
+                    value={value}
+                    onChange={onChange}
+                    kind={pathKind}
+                    complete={complete}
+                    disabled={disabled}
+                    placeholder="Browse for a path"
+                  />
+                </span>
+                <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
+                  Add
+                </Button>
+              </div>
+            )
+      }
     />
   );
 }
@@ -312,8 +385,8 @@ function ModelListControl({
         return { ok: true };
       }}
       renderAddField={({ value, onChange, disabled }) => (
-        <div className={CLASS.modelAddRow}>
-          <span className={CLASS.modelAddField}>
+        <div className={CLASS.pickerAddRow}>
+          <span className={CLASS.pickerAddField}>
             <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} />
           </span>
           <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>

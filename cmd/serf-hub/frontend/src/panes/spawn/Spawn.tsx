@@ -497,6 +497,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           validatePath={validatePath}
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}
+          complete={complete}
         >
           <FormRow label="Access mode" htmlFor="spawn-access">
             <Select

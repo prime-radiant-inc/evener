@@ -80,10 +80,11 @@
   font-size: var(--font-size-caption);
 }
 
-/* modelList add row: the picker takes the row's free width, Add sits beside. */
+/* modelList/pathList add row: the picker takes the row's free width, Add sits
+ * beside. */
 /* The row is itself a flex child of CollectionEditor's own add <form>, so it
  * needs to grow before its picker has any free width to take. */
-.modelAddRow {
+.pickerAddRow {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
@@ -94,7 +95,7 @@
  * sibling lists' plain Input add fields do; a bare `flex: 1` with min-width 0
  * collapsed it to its content, since the trigger's own width is 100% of a
  * container that was itself sized by content. */
-.modelAddField {
+.pickerAddField {
   display: flex;
   flex: 1 1 0;
   min-width: 0;
