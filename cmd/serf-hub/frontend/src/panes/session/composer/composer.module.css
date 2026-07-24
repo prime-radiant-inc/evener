@@ -10,7 +10,75 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1);
+  gap: var(--space-2);
+}
+
+.imageTile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 80px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color var(--motion-duration-overlay);
+}
+
+.imageTile:hover {
+  border-color: var(--accent);
+}
+
+.imageThumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dimensionsOverlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: color-mix(in oklab, var(--surface-0) 90%, transparent);
+  color: var(--ink-hi);
+  font-size: 11px;
+  padding: 2px 4px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
+
+.removeImageButton {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--motion-duration-overlay);
+  color: var(--ink-mid);
+  padding: 0;
+}
+
+.imageTile:hover .removeImageButton {
+  opacity: 1;
+}
+
+.removeImageButton:hover {
+  background: var(--accent);
+  color: var(--surface-0);
+  border-color: var(--accent);
 }
 
 .inputCard {

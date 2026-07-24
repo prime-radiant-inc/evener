@@ -23,6 +23,7 @@ import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { ImageGallery } from "../transcript/flow/ImageGallery";
 import { AskDock, useAskDockPending } from "./askDock";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
@@ -43,7 +44,19 @@ export interface ComposerProps {
 // working references is outside this fix's own scope.
 const CLASS = {
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
+  imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
+  imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
+  dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
+  removeImageButton: requireClass(styles.removeImageButton, "composer.module.css", "removeImageButton"),
 };
+
+function RemoveIcon() {
+  return (
+    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+      <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
 // "Steer queue now" button) - never by this component's own submitAction, which
@@ -550,16 +563,47 @@ export function Composer({ ref }: ComposerProps) {
       />
       {hasAttachments && (
         <div className={styles.chips} hidden={askPending} inert={askPending}>
-          {attachments.items.map((item) => (
-            <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
-              {/* A single template-literal string, not several sibling
-                  expressions: Chip's own removeLabelFor only folds children
-                  into the remove button's accessible name ("Remove <text>")
-                  when children is unambiguously a string - multiple child
-                  nodes would silently fall back to a bare "Remove". */}
-              {`${item.name}${typeof item.width === "number" && typeof item.height === "number" ? ` (${item.width}×${item.height})` : ""}`}
-            </Chip>
-          ))}
+          {attachments.items.map((item) => {
+            const isImage =
+              item.mediaType.startsWith("image/") &&
+              item.data &&
+              typeof item.width === "number" &&
+              typeof item.height === "number";
+
+            if (isImage) {
+              const imageUrl = `data:${item.mediaType};base64,${item.data}`;
+              return (
+                <div key={item.marker} className={CLASS.imageTile}>
+                  <ImageGallery images={[imageUrl]} />
+                  <img className={CLASS.imageThumbnail} src={imageUrl} alt={item.name} />
+                  {item.width !== undefined && item.height !== undefined && (
+                    <div className={CLASS.dimensionsOverlay}>
+                      {item.width}×{item.height}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className={CLASS.removeImageButton}
+                    aria-label={`Remove ${item.name}`}
+                    onClick={() => attachments.removeItem(item.marker)}
+                  >
+                    <RemoveIcon />
+                  </button>
+                </div>
+              );
+            }
+
+            return (
+              <Chip key={item.marker} tone="neutral" onRemove={() => attachments.removeItem(item.marker)}>
+                {/* A single template-literal string, not several sibling
+                    expressions: Chip's own removeLabelFor only folds children
+                    into the remove button's accessible name ("Remove <text>")
+                    when children is unambiguously a string - multiple child
+                    nodes would silently fall back to a bare "Remove". */}
+                {`${item.name}${typeof item.width === "number" && typeof item.height === "number" ? ` (${item.width}×${item.height})` : ""}`}
+              </Chip>
+            );
+          })}
         </div>
       )}
       <form ref={formRef} onSubmit={handleFormSubmit}>
