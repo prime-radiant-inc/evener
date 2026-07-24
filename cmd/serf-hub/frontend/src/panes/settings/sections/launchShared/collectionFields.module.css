@@ -71,3 +71,19 @@
   flex: 1 1 0;
   min-width: 0;
 }
+
+/* pathList add row: same recipe as the modelList row above - the picker's
+ * trigger is a full-width form control, so both the row and the picker's own
+ * wrapper have to grow before it has any width to fill. */
+.pathAddRow {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pathAddField {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+}
