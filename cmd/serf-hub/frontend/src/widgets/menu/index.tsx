@@ -11,6 +11,16 @@ import {
 import { createPortal } from "react-dom";
 import { FocusScope } from "../focusscope";
 import { requireClass } from "../internal/requireClass";
+// Flip-then-clamp overlay placement, shared verbatim with the Popover
+// primitive (§3.4). computeMenuPosition/resolveAxis/EDGE_MARGIN/TRIGGER_GAP
+// were extracted from here into widgets/popover/computePosition.ts so Menu
+// and Popover position identically; the aliases keep every call site below
+// byte-identical to the pre-extraction Menu.
+import {
+  computePopoverPosition as computeMenuPosition,
+  type PopoverPosition as MenuPosition,
+  TRIGGER_GAP,
+} from "../popover/computePosition";
 import styles from "./menu.module.css";
 
 export interface MenuItem {
@@ -94,50 +104,9 @@ function stepEnabledIndex(items: MenuItem[], from: number, delta: 1 | -1): numbe
   return from;
 }
 
-interface MenuPosition {
-  top: number;
-  left: number;
-}
-
-// Clear space the popup always keeps from the viewport's own edge (matches
-// --space-2 - a plain number here, not a custom-property read, since this
-// feeds arithmetic against getBoundingClientRect() values, not a CSS
-// declaration).
-const EDGE_MARGIN = 8;
-// Gap between the trigger and the popup when it opens below/above it -
-// matches the pre-portal popup's own `top: calc(100% + var(--space-1))`.
-const TRIGGER_GAP = 4;
-
-// One axis (horizontal or vertical) of the flip-then-clamp placement: try
-// `primary` (the popup's default, unflipped offset - left-aligned to the
-// trigger, or opening below it); if the popup would overflow the far edge
-// there, try `flipped` instead (the other side - right-aligned to the
-// trigger, or opening above it); if NEITHER fits, clamp `primary` into
-// [0, viewportSize] so the popup stays as fully within the viewport as the
-// available space allows, rather than settling for whichever of the two
-// overflows less.
-function resolveAxis(primary: number, flipped: number, size: number, viewportSize: number): number {
-  if (primary + size <= viewportSize - EDGE_MARGIN) return primary;
-  if (flipped >= EDGE_MARGIN) return flipped;
-  return Math.max(EDGE_MARGIN, Math.min(primary, viewportSize - size - EDGE_MARGIN));
-}
-
-// The popup's position:fixed viewport coordinates, computed fresh every
-// time it opens from the trigger's and popup's OWN measured rects (never
-// assumed) - see the measuring useLayoutEffect below for why the popup has
-// to already be in the DOM, rendered at some placeholder position, before
-// this can run.
-function computeMenuPosition(triggerRect: DOMRect, popupSize: { width: number; height: number }): MenuPosition {
-  return {
-    left: resolveAxis(triggerRect.left, triggerRect.right - popupSize.width, popupSize.width, window.innerWidth),
-    top: resolveAxis(
-      triggerRect.bottom + TRIGGER_GAP,
-      triggerRect.top - TRIGGER_GAP - popupSize.height,
-      popupSize.height,
-      window.innerHeight,
-    ),
-  };
-}
+// MenuPosition, EDGE_MARGIN, TRIGGER_GAP, resolveAxis, and computeMenuPosition
+// now live in widgets/popover/computePosition.ts (imported above), shared with
+// the Popover primitive - see that module and this file's import comment.
 
 /**
  * Trigger + popup menu: click or Enter/Space/ArrowDown/ArrowUp on the
