@@ -1,11 +1,12 @@
 // The spawn pane: starts a new session. Fills T1's minimal skeleton into the
-// full form on the startThread/preflight seams - the six-field launch bar
-// (harness / model / reasoning effort / working dir / branch / access mode),
-// sticky-default layering + stale-model cleanup, the schema-driven advanced
-// options, image attachments, working-dir preflight, and ?dir=/?prompt= URL
-// prefill (floor §1, parity-m6-surfaces.md). The rich model/reasoning catalog
-// is the interim model/list picker (Jesse-decided Wave 8 for the rich version);
-// the recent-prompts row is a decided parity drop (Jesse 2026-07-22).
+// full form on the startThread/preflight seams - the five-field launch bar
+// (harness / model / reasoning effort / working dir / branch), sticky-default
+// layering + stale-model cleanup, the schema-driven advanced options (which
+// also host the access-mode field, 9ct0 §3.3), image attachments,
+// working-dir preflight, and ?dir=/?prompt= URL prefill (floor §1,
+// parity-m6-surfaces.md). The rich model/reasoning catalog is the interim
+// model/list picker (Jesse-decided Wave 8 for the rich version); the
+// recent-prompts row is a decided parity drop (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
@@ -389,15 +390,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               placeholder="(default)"
             />
           </FormRow>
-
-          <FormRow label="Access mode" htmlFor="spawn-access">
-            <Select
-              id="spawn-access"
-              value={accessMode}
-              onChange={(e) => setAccessMode(e.target.value)}
-              options={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
-            />
-          </FormRow>
         </div>
 
         {staleNotice !== null && (
@@ -448,14 +440,21 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
-        {schemaOptions.length > 0 && (
-          <AdvancedOptions
-            options={schemaOptions}
-            onOverridesChange={setAdvancedOverrides}
-            validatePath={validatePath}
-            resolveConfig={resolveConfig}
-          />
-        )}
+        <AdvancedOptions
+          options={schemaOptions}
+          onOverridesChange={setAdvancedOverrides}
+          validatePath={validatePath}
+          resolveConfig={resolveConfig}
+        >
+          <FormRow label="Access mode" htmlFor="spawn-access">
+            <Select
+              id="spawn-access"
+              value={accessMode}
+              onChange={(e) => setAccessMode(e.target.value)}
+              options={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+            />
+          </FormRow>
+        </AdvancedOptions>
 
         <div className={CLASS.actions}>
           <Button variant="primary" onClick={() => void handleSpawn()} disabled={busy}>

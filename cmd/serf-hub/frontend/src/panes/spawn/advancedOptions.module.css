@@ -39,10 +39,8 @@
 }
 
 .resolved {
-  max-height: 280px;
   margin: 0;
   padding: var(--space-2);
-  overflow: auto;
   border-radius: var(--radius-control);
   background: var(--surface-1);
   color: var(--ink-hi);

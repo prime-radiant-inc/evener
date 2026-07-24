@@ -128,13 +128,22 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
 });
 
-test("renders the six-field launch bar", async () => {
+test("renders the five-field launch bar", async () => {
   renderSpawn(readyClient());
   expect(await screen.findByLabelText("Harness")).toBeTruthy();
   expect(screen.getByText("Model")).toBeTruthy();
   expect(screen.getByLabelText("Reasoning effort")).toBeTruthy();
   expect(screen.getByLabelText("Working directory")).toBeTruthy();
   expect(screen.getByLabelText("Branch")).toBeTruthy();
+});
+
+test("Access mode moved from the top-level bar into Advanced options (9ct0)", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await screen.findByLabelText("Harness");
+
+  expect(screen.queryByLabelText("Access mode")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
   expect(screen.getByLabelText("Access mode")).toBeTruthy();
 });
 
@@ -146,6 +155,7 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
   await user.type(screen.getByLabelText("Working directory"), "/tmp/project");
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
   await user.click(screen.getByRole("button", { name: "Spawn" }));
 
@@ -174,6 +184,7 @@ test("blocks an empty prompt with no attachment", async () => {
 });
 
 test("loads sticky defaults from localStorage on mount", async () => {
+  const user = userEvent.setup();
   localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/saved/project");
   localStorage.setItem("serf-hub.spawn-defaults./saved/project", JSON.stringify({ access_mode: "workspace-write" }));
   renderSpawn(readyClient());
@@ -181,6 +192,7 @@ test("loads sticky defaults from localStorage on mount", async () => {
   await waitFor(() =>
     expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/saved/project"),
   );
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
   expect((screen.getByLabelText("Access mode") as HTMLSelectElement).value).toBe("workspace-write");
 });
 
