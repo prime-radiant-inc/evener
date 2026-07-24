@@ -404,14 +404,7 @@ func registerThreadHandlers(
 		return source.CancelQueued(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadClear, func(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
-			return appwire.ThreadClearResponse{}, err
-		}
-		return source.ClearThread(ctx, params)
+		return clearThreadWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
