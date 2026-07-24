@@ -95,6 +95,39 @@ test("a dir field opens listing the value's own children, files excluded", async
   expect(complete).toHaveBeenCalledWith("/home/jesse/", false);
 });
 
+// "" means "no value, let the hub default to home"; "/" is a real directory.
+// Stripping the trailing slash off "/" collapses the two, and the field opens on
+// home while the panel confidently labels it "Home".
+test("a field holding / opens on the filesystem root, not on home", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({ value: "/", complete: lister({ "/": ["/etc", "/var"] }) });
+
+  await open(user);
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/", false));
+  expect(await screen.findByRole("option", { name: /etc/ })).toBeTruthy();
+  // Scoped to the list: the closed trigger renders the same "/" text.
+  const header = screen.getByRole("listbox").firstElementChild;
+  expect(header?.textContent).toBe("/");
+  expect(screen.queryByText("Home")).toBeNull();
+  // Root has no parent to climb to.
+  expect(screen.queryByRole("option", { name: "../" })).toBeNull();
+});
+
+test("typing / lists the filesystem root", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"], "/": ["/etc"] }),
+  });
+
+  await open(user);
+  await user.keyboard("/");
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/", false));
+  expect(await screen.findByRole("option", { name: /etc/ })).toBeTruthy();
+});
+
 test("a file field opens listing its parent directory, files included", async () => {
   const user = userEvent.setup();
   const { complete } = renderField({

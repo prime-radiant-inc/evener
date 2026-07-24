@@ -85,6 +85,21 @@ describe("buildPathRows", () => {
     }
   });
 
+  // "/" is a real directory the user can browse; "" is the absence of a value,
+  // which the hub resolves to $HOME. Conflating them labels the root "Home".
+  test("the filesystem root's header reads / and not Home", () => {
+    const rows = buildPathRows({
+      kind: "dir",
+      currentDir: "/",
+      entries: ["/etc"],
+      value: "/",
+      recents: [],
+      showRecents: false,
+    });
+
+    expect(shape(rows)).toEqual(["group:/", "dir:/etc"]);
+  });
+
   test("a file field classifies trailing-slash entries as directories and bare ones as files, dirs first", () => {
     const rows = buildPathRows({
       kind: "file",
@@ -279,5 +294,7 @@ describe("path helpers", () => {
     expect(childrenPrefix("/home/jesse/")).toBe("/home/jesse/");
     // The hub resolves an empty prefix to $HOME, so it must stay empty.
     expect(childrenPrefix("")).toBe("");
+    // The root is a directory like any other: it lists ITS children, not home's.
+    expect(childrenPrefix("/")).toBe("/");
   });
 });

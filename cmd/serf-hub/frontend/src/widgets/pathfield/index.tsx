@@ -72,13 +72,23 @@ function includesFiles(kind: PathFieldKind): boolean {
   return kind !== "dir";
 }
 
+/** A directory naming itself without its trailing slash - but "/" names the
+ * filesystem root, which is a real directory and NOT the empty string. Those
+ * two must stay distinct all the way down: "" means "no value, let the hub
+ * default to $HOME", so collapsing "/" into it opens home instead of root and
+ * labels the panel "Home". */
+function withoutTrailingSlash(dir: string): string {
+  const stripped = dir.replace(/\/+$/, "");
+  return stripped === "" && dir !== "" ? "/" : stripped;
+}
+
 /** The directory the panel opens on: a directory field browses the value
  * itself, a file field browses the file's parent. An empty value browses ""
  * which the hub resolves to $HOME. */
 function openingDir(kind: PathFieldKind, value: string): string {
   const trimmed = value.trim();
   if (trimmed === "") return "";
-  if (kind === "dir") return trimmed.replace(/\/+$/, "");
+  if (kind === "dir") return withoutTrailingSlash(trimmed);
   return trimmed.includes("/") ? parentOf(trimmed) : "";
 }
 
@@ -86,7 +96,7 @@ function openingDir(kind: PathFieldKind, value: string): string {
  * text already names the directory, otherwise the last component is a partial
  * name being filtered. */
 function typedDir(text: string): string {
-  if (text.endsWith("/")) return text.replace(/\/+$/, "");
+  if (text.endsWith("/")) return withoutTrailingSlash(text);
   return text.includes("/") ? parentOf(text) : "";
 }
 
