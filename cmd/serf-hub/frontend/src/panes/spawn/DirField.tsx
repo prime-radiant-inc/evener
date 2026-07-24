@@ -158,6 +158,7 @@ export function DirField({ id, value, onChange, listRecents, complete, placehold
       <Popover
         open={open}
         onClose={() => setOpen(false)}
+        autoFocus={false}
         trigger={
           <div className={CLASS.field}>
             <Input id={id} value={value} onChange={handleType} placeholder={placeholder} />

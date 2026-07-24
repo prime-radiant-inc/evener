@@ -28,6 +28,10 @@ export interface PopoverProps {
   trigger: ReactElement;
   /** The floating panel content, portaled to document.body when open. */
   children: ReactNode;
+  /** When false, opening the panel does NOT move focus into it (combobox
+   * pattern: the anchoring input keeps focus for continued typing). Tab
+   * still cycles within the panel once focus moves there. Default true. */
+  autoFocus?: boolean;
   "data-testid"?: string;
 }
 
@@ -47,7 +51,7 @@ export interface PopoverProps {
  * Built on FocusScope with trap so Tab/Shift+Tab cycle within the panel while
  * open, matching Menu.
  */
-export function Popover({ open, onClose, trigger, children, ...rest }: PopoverProps) {
+export function Popover({ open, onClose, trigger, children, autoFocus = true, ...rest }: PopoverProps) {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
@@ -113,7 +117,7 @@ export function Popover({ open, onClose, trigger, children, ...rest }: PopoverPr
       {trigger}
       {open &&
         createPortal(
-          <FocusScope trap>
+          <FocusScope trap autoFocus={autoFocus}>
             {/* biome-ignore lint/a11y/noStaticElementInteractions: keydown only closes on Escape; the panel is a portaled overlay container, not itself interactive */}
             <div
               ref={panelRef}

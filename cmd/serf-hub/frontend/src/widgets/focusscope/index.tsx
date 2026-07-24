@@ -7,6 +7,11 @@ export interface FocusScopeProps {
    * (default), focus still moves in on mount and is restored on unmount,
    * but Tab is left to the browser's normal traversal. */
   trap?: boolean;
+  /** When false, the scope neither moves focus in on mount nor restores it
+   * on unmount — for combobox-style popovers whose focus must STAY in the
+   * anchoring input while the panel is open (Popover autoFocus={false}).
+   * Default true (Dialog/Sheet/Menu behavior). */
+  autoFocus?: boolean;
   children: ReactNode;
 }
 
@@ -23,13 +28,16 @@ export interface FocusScopeProps {
  * Dialog/Sheet/Menu own all visible chrome) so there is always a valid
  * fallback focus target even when the scope's content has nothing tabbable.
  */
-export function FocusScope({ trap = false, children }: FocusScopeProps) {
+export function FocusScope({ trap = false, autoFocus = true, children }: FocusScopeProps) {
   const ref = useRef<HTMLDivElement>(null);
   const restoreTargetRef = useRef<Element | null>(null);
 
   // Mount: capture the restore target, then move focus in. Unmount:
   // restore, if the target is still focusable and still in the document.
+  // Skipped entirely for autoFocus={false} scopes (combobox popovers), whose
+  // anchoring input must keep focus for continued typing.
   useEffect(() => {
+    if (!autoFocus) return;
     restoreTargetRef.current = document.activeElement;
     const scope = ref.current;
     if (scope) {
@@ -42,7 +50,7 @@ export function FocusScope({ trap = false, children }: FocusScopeProps) {
         target.focus();
       }
     };
-  }, []);
+  }, [autoFocus]);
 
   // Tab-cycling, active only while trapping. Re-binds if `trap` changes.
   useEffect(() => {

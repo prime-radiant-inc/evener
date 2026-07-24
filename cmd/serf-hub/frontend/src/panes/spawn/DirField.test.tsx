@@ -52,6 +52,21 @@ function renderField(overrides: Partial<Harness> = {}, value = ""): Harness {
   return { onChange, complete, listRecents };
 }
 
+test("typing keeps focus in the input while the completion panel is open", async () => {
+  const user = userEvent.setup();
+  const { onChange } = renderField();
+
+  const input = screen.getByRole("textbox");
+  await user.click(input);
+  await user.type(input, "/tmp");
+
+  // The completion popover opens on the first keystroke; it must NOT steal
+  // focus from the input (combobox pattern), or every character after the
+  // first is lost — the exact regression Spawn.test.tsx caught (cwd "/").
+  expect(document.activeElement).toBe(input);
+  expect(onChange).toHaveBeenCalledTimes(4);
+});
+
 test("the Browse button opens a popup listing recent projects", async () => {
   const user = userEvent.setup();
   renderField({ listRecents: vi.fn().mockResolvedValue(["/home/me/alpha", "/home/me/beta"]) });
