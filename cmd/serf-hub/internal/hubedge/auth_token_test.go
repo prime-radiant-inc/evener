@@ -68,6 +68,58 @@ func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	}
 }
 
+// A browser reloading a hub must keep its authorization even after it has
+// separately authorized another hub on the same host. Cookies are not
+// isolated by port (RFC 6265), so a shared cookie name lets the most recent
+// hub's /auth overwrite the earlier hub's cookie — 401ing the earlier hub on
+// its very next reload until the user re-visits its /auth?token= URL. This
+// models the browser's by-name cookie jar to prove reloads survive it.
+func checkAuthGuard_ReloadSurvivesAnotherSameHostHub(t *testing.T) {
+	// The browser stores one cookie per (host, path, name); a later Set-Cookie
+	// with the same name replaces the earlier one. A map keyed by name models
+	// exactly that.
+	jar := map[string]*http.Cookie{}
+	authorize := func(token string) {
+		rec := httptest.NewRecorder()
+		HandleAuth(token)(rec, httptest.NewRequest(http.MethodGet, "/auth?token="+token, nil))
+		for _, c := range rec.Result().Cookies() {
+			jar[c.Name] = c
+		}
+	}
+	// User authorizes hub A, then later authorizes hub B on the same host.
+	authorize("token-hub-A")
+	authorize("token-hub-B")
+
+	// Now reload hub A, presenting every cookie the shared jar holds.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	for _, c := range jar {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	AuthGuard("token-hub-A")(okHandler()).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reload of hub A after authorizing hub B on the same host: code = %d, want 200", rec.Code)
+	}
+}
+
+// The per-hub cookie name must depend on the hub's token, so two hubs sharing
+// a host never collide on a single shared cookie slot.
+func checkCookieName_DistinctPerToken(t *testing.T) {
+	a := cookieName("token-hub-A")
+	b := cookieName("token-hub-B")
+	if a == b {
+		t.Fatalf("cookie name must differ per token, both = %q", a)
+	}
+	if !strings.HasPrefix(a, authCookiePrefix) || !strings.HasPrefix(b, authCookiePrefix) {
+		t.Fatalf("cookie names must share the %q prefix: %q, %q", authCookiePrefix, a, b)
+	}
+	// The suffix is a hash, never the token itself, so the name reveals no more
+	// than the Cookie header's value beside it.
+	if strings.Contains(a, "token-hub-A") {
+		t.Fatalf("cookie name must not embed the raw token: %q", a)
+	}
+}
+
 func checkAuthGuard_AllowsExemptRoutes(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
@@ -105,7 +157,7 @@ func checkAuthGuard_AcceptsCookie(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: authCookieName, Value: "secret"})
+	req.AddCookie(&http.Cookie{Name: cookieName("secret"), Value: "secret"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -129,7 +181,7 @@ func checkAuthGuard_RejectsWrongToken(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: authCookieName, Value: "nope"})
+	req.AddCookie(&http.Cookie{Name: cookieName("secret"), Value: "nope"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -158,7 +210,7 @@ func checkHandleAuth_ValidatesAndSetsCookie(t *testing.T) {
 		t.Errorf("code = %d, want 302", rec.Code)
 	}
 	got := rec.Result().Cookies()
-	if len(got) != 1 || got[0].Name != authCookieName || got[0].Value != "secret" {
+	if len(got) != 1 || got[0].Name != cookieName("secret") || got[0].Value != "secret" {
 		t.Errorf("cookie = %+v", got)
 	}
 	// Lax, not Strict: iOS standalone (home-screen) launches are treated as
@@ -322,7 +374,7 @@ func checkAuthGuard_AcceptsQueryTokenOnAnyGET(t *testing.T) {
 		t.Errorf("Location = %q, want same path with token stripped and other params kept", loc)
 	}
 	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != authCookieName || cookies[0].Value != "secret" {
+	if len(cookies) != 1 || cookies[0].Name != cookieName("secret") || cookies[0].Value != "secret" {
 		t.Errorf("query-token auth should set the auth cookie, got %+v", cookies)
 	}
 }
@@ -377,14 +429,14 @@ func checkAuthGuard_RefreshesCookieOnAuthenticatedRequest(t *testing.T) {
 	guard := AuthGuard("secret")
 	h := guard(okHandler())
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.AddCookie(&http.Cookie{Name: authCookieName, Value: "secret"})
+	req.AddCookie(&http.Cookie{Name: cookieName("secret"), Value: "secret"})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200", rec.Code)
 	}
 	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != authCookieName || cookies[0].MaxAge != authCookieMaxAgeSeconds {
+	if len(cookies) != 1 || cookies[0].Name != cookieName("secret") || cookies[0].MaxAge != authCookieMaxAgeSeconds {
 		t.Errorf("authenticated request should refresh the auth cookie, got %+v", cookies)
 	}
 }

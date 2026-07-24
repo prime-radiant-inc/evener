@@ -29,7 +29,7 @@ func FuzzAuthGuard(f *testing.F) {
 			return
 		}
 		if cookie != "" {
-			req.AddCookie(&http.Cookie{Name: authCookieName, Value: cookie})
+			req.AddCookie(&http.Cookie{Name: cookieName("secret"), Value: cookie})
 		}
 		if bearer != "" {
 			req.Header.Set("Authorization", "Bearer "+bearer)

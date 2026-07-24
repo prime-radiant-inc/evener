@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"os"
@@ -22,16 +23,25 @@ import (
 // The hub generates (or loads) a long-lived random token at startup and
 // prints an auth URL with the token in a query parameter. A user visits
 // the URL once per browser; the /auth handler validates the token and
-// sets a httpOnly + SameSite=Strict cookie. Every subsequent request
-// must carry the cookie (or an "Authorization: Bearer" header for
+// sets a httpOnly + SameSite=Lax cookie, named per-hub (cookieName) so
+// hubs sharing a host don't clobber each other's cookie. Every subsequent
+// request must carry the cookie (or an "Authorization: Bearer" header for
 // scripted clients).
 //
 // The token lives in $hub_state_root/auth-token (mode 0600). Delete the
 // file (or use --rotate-auth-token) to invalidate existing sessions.
 
 const (
-	// authCookieName is the cookie key set after a successful /auth visit.
-	authCookieName = "serf_hub_auth"
+	// authCookiePrefix begins the cookie key set after a successful /auth
+	// visit. The full name is per-hub (cookieName): a stable suffix derived
+	// from the hub's own token. Cookies are not isolated by port (RFC 6265),
+	// so two hubs sharing a host (a persistent hub plus an ephemeral test
+	// one, a restart with a rotated token) would otherwise collide on one
+	// shared cookie slot — the later hub's /auth overwrites the earlier
+	// hub's cookie, 401ing the earlier hub on its next reload until the user
+	// re-visits its /auth?token= URL. A per-token name gives each hub its
+	// own slot in the browser's by-name jar.
+	authCookiePrefix = "serf_hub_auth"
 
 	// TokenFileName is the basename inside hub_state_root for the token.
 	TokenFileName = "auth-token"
@@ -40,6 +50,21 @@ const (
 	// the cookie, so long expiry is fine.
 	authCookieMaxAgeSeconds = 365 * 24 * 60 * 60
 )
+
+// cookieName is the auth cookie's per-hub name: authCookiePrefix plus a short
+// hash of the hub's token. Distinct tokens yield distinct names, so hubs on
+// the same host never clobber each other's cookie. The name is only a jar-slot
+// key, never an authentication input — the guard still compares the cookie
+// *value* against the expected token in constant time (tokensEqual). So a
+// fast non-cryptographic hash (fnv, as hubcore/roster.go and past.go already
+// use for namespacing) is right-sized here; the suffix is a hash, never the
+// token itself, and reveals no more than the token value it sits beside in
+// the Cookie header.
+func cookieName(token string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(token))
+	return authCookiePrefix + "_" + base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
 
 // LoadOrCreateAuthToken returns the existing token at
 // $hubStateRoot/auth-token, or generates a fresh 256-bit token and
@@ -81,10 +106,12 @@ func loadOrCreateAuthToken(hubStateRoot string, random io.Reader, rename func(st
 	return tok, nil
 }
 
-// tokenFromRequest extracts the presented token from cookie or
-// Authorization: Bearer. Empty string means "not presented."
-func tokenFromRequest(r *http.Request) string {
-	if c, err := r.Cookie(authCookieName); err == nil {
+// tokenFromRequest extracts the presented token for the hub whose token is
+// `expected`, from that hub's own cookie (cookieName) or an Authorization:
+// Bearer header. Empty string means "not presented." The cookie name is
+// per-hub so a co-located hub's cookie is never mistaken for this one's.
+func tokenFromRequest(r *http.Request, expected string) string {
+	if c, err := r.Cookie(cookieName(expected)); err == nil {
 		return c.Value
 	}
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
@@ -133,7 +160,7 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			if !tokensEqual(tokenFromRequest(r), token) {
+			if !tokensEqual(tokenFromRequest(r, token), token) {
 				// Self-heal: accept the capability token in the query string
 				// on any GET, set the cookie, and redirect with the token
 				// stripped. An iOS standalone (home-screen) relaunch restores
@@ -166,7 +193,7 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 			// Slide the cookie's expiry forward on every cookie-authed
 			// request so an installed PWA's jar never ages out while the
 			// app is in use. Bearer (scripted) clients get no cookie.
-			if c, err := r.Cookie(authCookieName); err == nil && tokensEqual(c.Value, token) {
+			if c, err := r.Cookie(cookieName(token)); err == nil && tokensEqual(c.Value, token) {
 				setAuthCookie(w, token)
 			}
 			next.ServeHTTP(w, r)
@@ -181,7 +208,7 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 // cross-site subresource and POST requests.
 func setAuthCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     authCookieName,
+		Name:     cookieName(token),
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
