@@ -145,13 +145,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       ]).then(([scoped, enrichment]) => mergeScopedCatalog(scoped, enrichment)),
     [loadModels, harness, cwd],
   );
-  const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data), [client]);
+  // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
+  // null rather than [] - a hub with no remembered projects, or a directory with
+  // no children. types.gen.ts declares `data: string[]`, so the compiler is no
+  // help here; these coalesce so a consumer counting entries never sees null.
+  const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data ?? []), [client]);
   // Injected into every PathField on this pane (the working directory here and
   // the advanced panel's path/pathList fields): the widget derives includeFiles
   // from its own kind, so this just forwards it.
   const complete = useCallback(
     (prefix: string, includeFiles: boolean) =>
-      client.request("serf/paths/complete", { prefix, includeFiles }).then((r) => r.data),
+      client.request("serf/paths/complete", { prefix, includeFiles }).then((r) => r.data ?? []),
     [client],
   );
   const validatePath = useCallback(

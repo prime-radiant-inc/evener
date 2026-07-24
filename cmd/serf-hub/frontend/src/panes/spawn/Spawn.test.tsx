@@ -312,6 +312,28 @@ test("stamps the last-working-directory global when the browse panel closes", as
   await waitFor(() => expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src"));
 });
 
+// Both list RPCs behind the working-directory field return a Go slice, which
+// marshals as JSON null rather than [] when it is empty - a hub with no
+// remembered projects, or a directory with no children, answers `null`. Caught
+// against a real hub: the panel crashed on mount reading .length of null.
+test("survives a null data payload from either list RPC", async () => {
+  const user = userEvent.setup();
+  const nulled = { data: null as unknown as string[] };
+  renderSpawn(
+    readyClient((f) => {
+      f.on("serf/projects/recent", () => nulled);
+      f.on("serf/paths/complete", () => nulled);
+    }),
+  );
+  await screen.findByLabelText("Harness");
+
+  await user.click(workingDir());
+
+  // The panel is up, listing nothing, rather than having thrown its tree away.
+  expect(await screen.findByRole("combobox", { name: "Path" })).toBeTruthy();
+  expect(await screen.findByText("Nothing here.")).toBeTruthy();
+});
+
 test("offers to create a missing directory, then creates it and spawns", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
