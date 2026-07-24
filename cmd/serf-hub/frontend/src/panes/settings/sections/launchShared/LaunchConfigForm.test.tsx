@@ -1,19 +1,33 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
   PathValidateResponse,
 } from "../../../../protocol/types.gen";
+import { connectionStore } from "../../../../stores/connection";
+import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { Toast } from "../../../../widgets";
 import { LaunchConfigForm } from "./LaunchConfigForm";
 
 afterEach(cleanup);
 
+// The path-kind rows render PathField, whose completion loader is the
+// extensions store's own completePaths - so opening one needs a connected
+// client behind it.
+function connectFakeClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
 beforeEach(() => {
   vi.useRealTimers();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetExtensionsStoreForTests();
 });
 
 const OPTIONS: LaunchOption[] = [
@@ -223,8 +237,13 @@ describe("rendering", () => {
 });
 
 describe("validation blocks save", () => {
+  // The path row is a picker now, so the value gets there by picking a row -
+  // and serf/path/validate still gates the save exactly as it did when the
+  // same value was typed into a text box.
   test("an invalid path-kind scalar shows an inline error and does not call onSave", async () => {
     const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/paths/complete", () => ({ data: ["/tmp/not-real.jsonl"] }));
     const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "invalid path" });
     const onSave = vi.fn().mockResolvedValue(RESOLVED);
     render(
@@ -237,10 +256,36 @@ describe("validation blocks save", () => {
         onSave={onSave}
       />,
     );
-    await user.type(screen.getByLabelText("Trace file"), "/not/real");
+    await user.click(screen.getByLabelText("Trace file"));
+    // The panel portals to document.body, so its rows are queried from screen.
+    await user.click(await screen.findByRole("option", { name: /not-real\.jsonl/ }));
     await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
     await waitFor(() => expect(screen.getByText("invalid path")).toBeTruthy());
+    expect(validatePath).toHaveBeenCalledWith("/tmp/not-real.jsonl", "output-file");
     expect(onSave).not.toHaveBeenCalled();
+  });
+
+  test("a picked path-kind value reaches onSave once it validates", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/paths/complete", () => ({ data: ["/tmp/trace.jsonl"] }));
+    const onSave = vi.fn().mockResolvedValue(RESOLVED);
+    render(
+      <LaunchConfigForm
+        options={OPTIONS}
+        layer="global"
+        current={{}}
+        successToast="Launch defaults saved"
+        validatePath={OK_VALIDATE}
+        onSave={onSave}
+      />,
+    );
+    await user.click(screen.getByLabelText("Trace file"));
+    await user.click(await screen.findByRole("option", { name: /trace\.jsonl/ }));
+    await user.click(screen.getByRole("button", { name: "Save launch defaults" }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ traceFile: "/tmp/trace.jsonl" })),
+    );
   });
 });
 

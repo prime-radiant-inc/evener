@@ -7,7 +7,7 @@
 import { type FormEvent, useId, useState } from "react";
 import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
-import { Button, ConfirmDialog, FormRow, Input, PathPicker, RadioGroup, useToasts } from "../../../../widgets";
+import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
 import { sourceLabel } from "./sourceLabel";
@@ -210,11 +210,12 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
           )}
           {kind === "directory" && (
             <FormRow label="Local path" htmlFor={pathId}>
-              <PathPicker
+              <PathField
                 id={pathId}
                 value={pathValue}
                 onChange={setPathValue}
-                listChildren={(path) => extensionsStore.getState().listDirChildren(path)}
+                kind="dir"
+                complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
                 placeholder="/absolute/path"
               />
             </FormRow>
