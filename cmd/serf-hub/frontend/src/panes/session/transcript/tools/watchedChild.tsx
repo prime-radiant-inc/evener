@@ -11,14 +11,18 @@ import { useEffect } from "react";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Cadence } from "../../../../widgets";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
+import { rowKindFromChildStatus } from "./subagentModule";
+import { updateSubagentRowIfExists } from "./subagentModuleStore";
 
 export interface WatchedChildIndicatorProps {
   ref: string;
+  turnId: string;
+  rowKey: string;
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function WatchedChildIndicator({ ref: childRef }: WatchedChildIndicatorProps) {
+export function WatchedChildIndicator({ ref: childRef, turnId, rowKey }: WatchedChildIndicatorProps) {
   useEffect(() => {
     // Best-effort: a failed watch leaves this indicator rendering nothing
     // rather than crashing the whole subagent module over a live-status
@@ -34,6 +38,16 @@ export function WatchedChildIndicator({ ref: childRef }: WatchedChildIndicatorPr
   const model = useThreadsStore((s) => s.watchedThreads.get(childRef));
   const frameTimes = useThreadsStore((s) => s.watchedFrameTimes.get(childRef) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
+
+  // Write the live child status back onto the row as its liveKind overlay
+  // (yd16). Effect-guarded and keyed on the derived liveKind so it fires only
+  // on an actual status change - never a render-time store write, which would
+  // be an infinite re-render loop (updateSubagentRowIfExists returns a fresh
+  // useSubagentRows reference every call).
+  const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
+  useEffect(() => {
+    if (liveKind) updateSubagentRowIfExists(turnId, rowKey, { liveKind });
+  }, [turnId, rowKey, liveKind]);
 
   if (!model) return null;
   return <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;

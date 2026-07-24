@@ -4,6 +4,12 @@ import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import {
+  resetSubagentModuleStoreForTests,
+  type SubagentRowKind,
+  upsertSubagentRow,
+  useSubagentRows,
+} from "./subagentModuleStore";
 import { WatchedChildIndicator } from "./watchedChild";
 
 // WatchedChildIndicator is the subagent module's live view into a running
@@ -68,7 +74,17 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetSubagentModuleStoreForTests();
 });
+
+// A tiny reactive probe: reads the row's watch-written liveKind overlay out
+// of subagentModuleStore so a test can assert the effect-guarded write-back
+// (yd16) landed, without reaching for a non-hook store accessor.
+function LiveKindProbe({ turnId, rowKey }: { turnId: string; rowKey: string }) {
+  const rows = useSubagentRows(turnId);
+  const liveKind: SubagentRowKind | "none" = rows.find((r) => r.rowKey === rowKey)?.liveKind ?? "none";
+  return <span data-testid="live-kind">{liveKind}</span>;
+}
 
 test("calls watchThread with the given ref on mount, using the leaner includeTurns:false read", async () => {
   const fake = connectFakeClient();
@@ -78,7 +94,7 @@ test("calls watchThread with the given ref on mount, using the leaner includeTur
     return readResponse("child_ref_1");
   });
 
-  render(<WatchedChildIndicator ref="child_ref_1" />);
+  render(<WatchedChildIndicator ref="child_ref_1" turnId="turn_1" rowKey="dlg:child_ref_1" />);
   await flushUntil(() => sawParams !== undefined);
 
   expect(sawParams).toEqual({
@@ -93,7 +109,7 @@ test("calls watchThread with the given ref on mount, using the leaner includeTur
 
 test("renders nothing before the watched model has hydrated", () => {
   connectFakeClient().on("thread/read", () => new Promise(() => {})); // never resolves
-  const { container } = render(<WatchedChildIndicator ref="child_ref_2" />);
+  const { container } = render(<WatchedChildIndicator ref="child_ref_2" turnId="turn_1" rowKey="dlg:child_ref_2" />);
   expect(container.textContent).toBe("");
 });
 
@@ -101,7 +117,7 @@ test("renders a Cadence indicator once the watched model hydrates", async () => 
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_3"));
 
-  render(<WatchedChildIndicator ref="child_ref_3" />);
+  render(<WatchedChildIndicator ref="child_ref_3" turnId="turn_1" rowKey="dlg:child_ref_3" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_3"));
   await act(async () => {});
 
@@ -112,7 +128,7 @@ test("releaseWatchedThread fires on unmount", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_4"));
 
-  const { unmount } = render(<WatchedChildIndicator ref="child_ref_4" />);
+  const { unmount } = render(<WatchedChildIndicator ref="child_ref_4" turnId="turn_1" rowKey="dlg:child_ref_4" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_4"));
 
   unmount();
@@ -123,7 +139,7 @@ test("a live notification updates the rendered Cadence's underlying frameTimes w
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_5"));
 
-  render(<WatchedChildIndicator ref="child_ref_5" />);
+  render(<WatchedChildIndicator ref="child_ref_5" turnId="turn_1" rowKey="dlg:child_ref_5" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_5"));
 
   await act(async () => {
@@ -134,4 +150,69 @@ test("a live notification updates the rendered Cadence's underlying frameTimes w
   });
 
   expect(threadsStore.getState().watchedFrameTimes.get("child_ref_5")?.length).toBe(1);
+});
+
+// yd16: the pill froze at the settled tool-output kind. WatchedChildIndicator
+// now writes the LIVE child status back onto the row as a `liveKind` overlay
+// (effect-guarded, keyed on the derived kind - never a render-time store
+// write), mapping the WIRE thread-status vocabulary via rowKindFromChildStatus
+// (which reuses cadenceStateForStatus, NOT classifyJobStatus).
+
+test("writes back liveKind 'failed' when the watched child reports a systemError status", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("child_wb_1", { status: { type: "systemError" } }));
+  upsertSubagentRow("turn_wb", { rowKey: "dlg:child_wb_1", kind: "running", task: "t", resultPreview: "" });
+
+  render(
+    <>
+      <WatchedChildIndicator ref="child_wb_1" turnId="turn_wb" rowKey="dlg:child_wb_1" />
+      <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_1" />
+    </>,
+  );
+  await flushUntil(() => threadsStore.getState().watchedThreads.has("child_wb_1"));
+  await act(async () => {});
+
+  expect(screen.getByTestId("live-kind").textContent).toBe("failed");
+});
+
+test("writes back liveKind 'done' when the watched child status is closed (wire vocabulary, not classifyJobStatus)", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("child_wb_2", { status: { type: "closed" } }));
+  upsertSubagentRow("turn_wb", { rowKey: "dlg:child_wb_2", kind: "running", task: "t", resultPreview: "" });
+
+  render(
+    <>
+      <WatchedChildIndicator ref="child_wb_2" turnId="turn_wb" rowKey="dlg:child_wb_2" />
+      <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_2" />
+    </>,
+  );
+  await flushUntil(() => threadsStore.getState().watchedThreads.has("child_wb_2"));
+  await act(async () => {});
+
+  expect(screen.getByTestId("live-kind").textContent).toBe("done");
+});
+
+test("a live status/changed notification updates the written-back liveKind without a remount", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("child_wb_3", { status: { type: "active" } }));
+  upsertSubagentRow("turn_wb", { rowKey: "dlg:child_wb_3", kind: "running", task: "t", resultPreview: "" });
+
+  render(
+    <>
+      <WatchedChildIndicator ref="child_wb_3" turnId="turn_wb" rowKey="dlg:child_wb_3" />
+      <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_3" />
+    </>,
+  );
+  await flushUntil(() => threadsStore.getState().watchedThreads.has("child_wb_3"));
+  await act(async () => {});
+  expect(screen.getByTestId("live-kind").textContent).toBe("running"); // active -> running
+
+  await act(async () => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_child_wb_3", ref: "child_wb_3", status: { type: "systemError" } },
+    } as never);
+  });
+
+  expect(screen.getByTestId("live-kind").textContent).toBe("failed");
 });

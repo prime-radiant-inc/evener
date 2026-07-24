@@ -25,6 +25,11 @@ export interface SubagentRow {
   rowKey: string;
   spawnIndex: number;
   kind: SubagentRowKind;
+  // Live-child-status overlay written back by watchedChild.tsx's watch (yd16).
+  // The pill prefers this over the frozen tool-output `kind`. WATCH-OWNED: the
+  // delegate upsert must never clobber it (see upsertSubagentRow), since
+  // DelegateBody re-upserts the frozen output on every incidental render.
+  liveKind?: SubagentRowKind;
   task: string;
   jobId?: string;
   transcriptRef?: string;
@@ -84,7 +89,12 @@ export function upsertSubagentRow(turnId: string, row: SubagentRowInput): void {
     const existingRow = rows.get(row.rowKey);
     const nextIndexBefore = s.turnNextSpawnIndex.get(turnId) ?? 0;
     const spawnIndex = existingRow?.spawnIndex ?? nextIndexBefore;
-    rows.set(row.rowKey, { ...row, spawnIndex });
+    // Preserve the watch-owned liveKind: DelegateBody re-upserts the frozen
+    // tool output on every incidental render and must never wipe the live
+    // status overlay watchedChild.tsx wrote (yd16). An explicit liveKind in
+    // `row` still wins (the spread lands after), but the delegate input never
+    // carries one.
+    rows.set(row.rowKey, { liveKind: existingRow?.liveKind, ...row, spawnIndex });
 
     const turnRowsByKey = new Map(s.turnRowsByKey);
     turnRowsByKey.set(turnId, rows);

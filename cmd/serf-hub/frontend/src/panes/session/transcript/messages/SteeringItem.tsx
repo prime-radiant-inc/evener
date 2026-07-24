@@ -20,6 +20,7 @@
 // a placeholder baked into the text server-side (apptranscript.go's
 // ImagePlaceholder) - so, unlike UserMessageView, there is no images branch.
 import { memo } from "react";
+import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import { NotificationCard } from "./NotificationCard";
@@ -45,11 +46,22 @@ function sentenceCase(label: string): string {
 // The quiet collapsed-by-default steering divider (parity-m4 §8:
 // appendSteeringDivider) - summary is the classified label plus an optional
 // " · detail"; body is the verbatim classified text in a <pre> (never
-// re-rendered as markdown).
-function SteeringDivider({ label, detail, text }: { label: string; detail: string; text: string }) {
+// re-rendered as markdown). Open/closed state lives in the shared
+// disclosureStore keyed by `id` (yt2q), so an expanded divider survives the
+// VirtualList/dockview remount that would reset a native uncontrolled
+// <details>. Collapsed by default.
+function SteeringDivider({ id, label, detail, text }: { id: string; label: string; detail: string; text: string }) {
+  const open = isDisclosureOpen(id, false);
   return (
-    <details className={CLASS.details} data-testid="steering-item">
-      <summary className={CLASS.summary}>
+    <details className={CLASS.details} data-testid="steering-item" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
+      <summary
+        className={CLASS.summary}
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(id, false);
+        }}
+      >
         {sentenceCase(label)}
         {detail && <span className={CLASS.detail}> · {detail}</span>}
       </summary>
@@ -73,13 +85,18 @@ export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps
           <NotificationCard key={n.rawText} notification={n} />
         ))}
         {classification.leftover && (
-          <SteeringDivider label="steering injected" detail="" text={classification.leftover} />
+          <SteeringDivider id={item.id} label="steering injected" detail="" text={classification.leftover} />
         )}
       </>
     );
   }
   return (
-    <SteeringDivider label={classification.label} detail={classification.detail} text={classification.cleanText} />
+    <SteeringDivider
+      id={item.id}
+      label={classification.label}
+      detail={classification.detail}
+      text={classification.cleanText}
+    />
   );
 }, ignoringTurn);
 

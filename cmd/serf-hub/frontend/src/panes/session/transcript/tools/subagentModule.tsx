@@ -28,11 +28,14 @@
 // orientation calls over MANY jobs at once, not a check-in on one
 // specific child, and correlating an arbitrary listing back to individual
 // rows would need far more inference than the wire actually supports.
-import { useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../../protocol/model";
 import { openBeside } from "../../../../shell/paneActions";
+import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Chip, type ChipTone } from "../../../../widgets";
+import { Disclosure } from "../../../../widgets/disclosure";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { cadenceStateForStatus } from "../../liveness";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
@@ -55,9 +58,18 @@ const CLASS = {
   header: requireClass(styles.header, "subagentmodule.module.css", "header"),
   rows: requireClass(styles.rows, "subagentmodule.module.css", "rows"),
   row: requireClass(styles.row, "subagentmodule.module.css", "row"),
+  summary: requireClass(styles.summary, "subagentmodule.module.css", "summary"),
   task: requireClass(styles.task, "subagentmodule.module.css", "task"),
   meta: requireClass(styles.meta, "subagentmodule.module.css", "meta"),
   preview: requireClass(styles.preview, "subagentmodule.module.css", "preview"),
+  body: requireClass(styles.body, "subagentmodule.module.css", "body"),
+  section: requireClass(styles.section, "subagentmodule.module.css", "section"),
+  sectionLabel: requireClass(styles.sectionLabel, "subagentmodule.module.css", "sectionLabel"),
+  mandate: requireClass(styles.mandate, "subagentmodule.module.css", "mandate"),
+  activity: requireClass(styles.activity, "subagentmodule.module.css", "activity"),
+  activityItem: requireClass(styles.activityItem, "subagentmodule.module.css", "activityItem"),
+  activityLatest: requireClass(styles.activityLatest, "subagentmodule.module.css", "activityLatest"),
+  summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
 };
 
 // classifyJobStatus mirrors renderer.js's classifyJobStatus (parity §12):
@@ -71,6 +83,23 @@ export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
   if (["completed", "done", "cancelled", "stopped", "succeeded"].includes(status)) return "done";
   if (status === "unknown") return "unknown";
+  return "running";
+}
+
+// rowKindFromChildStatus maps the child's LIVE thread status onto a row kind
+// for the status pill (yd16). model.status.type is the WIRE thread-status
+// vocabulary (active/closed/systemError/awaiting/warning/idle/notLoaded), NOT
+// the job-status words classifyJobStatus reads - feeding thread-status to
+// classifyJobStatus misclassifies ("closed"->"running", "systemError"->
+// "running"). So this reuses cadenceStateForStatus (the one canonical wire-
+// status interpreter) and adapts its CadenceState to a SubagentRowKind: a
+// failed child is "failed", an ended (closed) child is "done", and everything
+// still live from the parent's view (working / needs-you / idle) stays
+// "running".
+export function rowKindFromChildStatus(type: string): SubagentRowKind {
+  const state = cadenceStateForStatus(type);
+  if (state === "failed") return "failed";
+  if (state === "ended") return "done";
   return "running";
 }
 
@@ -141,18 +170,87 @@ function openTranscript(ref: string): void {
   openBeside({ type: "transcript", params: { ref } });
 }
 
-function SubagentRowView({ row }: { row: SubagentRow }) {
+// ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
+// §4.1/§4.2): Mandate (the delegation task), a live Activity feed (the child's
+// tool-call purpose/description fields, latest emphasized while the child is
+// still running), and Summary (the child's last agentMessage). It opens its
+// OWN rich watch (Task 9's { includeTurns: true } upgrade) so the Activity feed
+// has the child's turn history, and reads that turn content back out of
+// watchedThreads. Mounted only while the card is expanded, so the row-dot's
+// lean watch stays lean for the common never-expanded case (§4.2).
+function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcriptRef: string }) {
+  useEffect(() => {
+    threadsStore
+      .getState()
+      .watchThread(transcriptRef, { includeTurns: true })
+      .catch(() => {});
+    return () => threadsStore.getState().releaseWatchedThread(transcriptRef);
+  }, [transcriptRef]);
+
+  const model = useThreadsStore((s) => s.watchedThreads.get(transcriptRef));
+  const items = model ? model.turns.flatMap((t) => t.items) : [];
+  const activity = items.filter((it) => it.description);
+  const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
+  const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
+
+  return (
+    <div className={CLASS.body}>
+      <section className={CLASS.section} data-testid="subagent-mandate">
+        <div className={CLASS.sectionLabel}>Mandate</div>
+        <div className={CLASS.mandate}>{row.task}</div>
+      </section>
+      {activity.length > 0 && (
+        <section className={CLASS.section} data-testid="subagent-activity">
+          <div className={CLASS.sectionLabel}>Activity</div>
+          <ol className={CLASS.activity}>
+            {activity.map((it, idx) => {
+              const latest = childRunning && idx === activity.length - 1;
+              return (
+                <li
+                  key={it.id}
+                  className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}
+                >
+                  {it.description}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
+      {summaryText && (
+        <section className={CLASS.section} data-testid="subagent-summary">
+          <div className={CLASS.sectionLabel}>Summary</div>
+          <div className={CLASS.summaryText}>{summaryText}</div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) {
   const duration = durationLabel(row);
   // Captured once so the onClick closure below references this narrowed
   // local, not row.transcriptRef re-read through a closure TS can't narrow.
   const transcriptRef = row.transcriptRef;
-  return (
-    <div className={CLASS.row} data-testid="subagent-row" data-kind={row.kind}>
-      <Chip tone={KIND_TONE[row.kind]}>{KIND_LABEL[row.kind]}</Chip>
+  // The pill prefers the live-child-status overlay written back by the watch
+  // (yd16) over the frozen tool-output kind; falls back to the frozen kind
+  // before any live status has arrived.
+  const displayKind = row.liveKind ?? row.kind;
+
+  // Collapsed one-liner: status pill + (live cadence while running) + task +
+  // duration/preview + the always-available "Open transcript" link. Clicking
+  // anywhere here toggles the disclosure except the button, which stops the
+  // click from bubbling to the summary's toggle.
+  const summary = (
+    <span className={CLASS.summary}>
+      <Chip tone={KIND_TONE[displayKind]}>{KIND_LABEL[displayKind]}</Chip>
       {/* Live watched-child indicator: only while the row is genuinely
           still running AND we know where to watch (transcriptRef) - a
-          done/failed/unknown row has nothing live left to show. */}
-      {row.kind === "running" && transcriptRef && <WatchedChildIndicator ref={transcriptRef} />}
+          done/failed/unknown row has nothing live left to show. It also
+          writes the live child status back onto the row as liveKind. */}
+      {row.kind === "running" && transcriptRef && (
+        <WatchedChildIndicator ref={transcriptRef} turnId={turnId} rowKey={row.rowKey} />
+      )}
       <span className={CLASS.task}>{row.task}</span>
       {(duration ?? row.resultPreview) && (
         <span className={CLASS.meta}>
@@ -162,10 +260,36 @@ function SubagentRowView({ row }: { row: SubagentRow }) {
         </span>
       )}
       {transcriptRef && (
-        <Button variant="quiet" size="sm" onClick={() => openTranscript(transcriptRef)}>
+        <Button
+          variant="quiet"
+          size="sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            openTranscript(transcriptRef);
+          }}
+        >
           Open transcript
         </Button>
       )}
+    </span>
+  );
+
+  return (
+    <div className={CLASS.row} data-testid="subagent-row" data-kind={displayKind}>
+      {/* id is turn-scoped AND rowKey-scoped so it is both stable across the
+          VirtualList/dockview remount (yt2q) and collision-free across turns. */}
+      <Disclosure id={`subagent:${turnId}:${row.rowKey}`} summary={summary}>
+        {transcriptRef ? (
+          <ChildActivityBody row={row} transcriptRef={transcriptRef} />
+        ) : (
+          <div className={CLASS.body}>
+            <section className={CLASS.section} data-testid="subagent-mandate">
+              <div className={CLASS.sectionLabel}>Mandate</div>
+              <div className={CLASS.mandate}>{row.task}</div>
+            </section>
+          </div>
+        )}
+      </Disclosure>
     </div>
   );
 }
@@ -202,7 +326,7 @@ function SubagentModule({ turnId }: { turnId: string }) {
       <div className={CLASS.header}>{tally(rows)}</div>
       <div className={CLASS.rows}>
         {visibleRows.map((row) => (
-          <SubagentRowView key={row.rowKey} row={row} />
+          <SubagentRowView key={row.rowKey} row={row} turnId={turnId} />
         ))}
       </div>
       {foldedCount > 0 && (

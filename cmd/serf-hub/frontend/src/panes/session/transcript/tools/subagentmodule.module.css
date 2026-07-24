@@ -40,3 +40,67 @@
 .preview {
   color: var(--ink-mid);
 }
+
+/* The collapsed one-liner inside the Disclosure summary: the status pill,
+   task, meta and transcript link, laid out in a row beside the chevron. */
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The expanded body: Mandate / Activity / Summary sections stacked. */
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sectionLabel {
+  font-size: var(--font-size-caption);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-low);
+}
+
+.mandate {
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+.activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+  list-style: decimal;
+}
+
+.activityItem {
+  font-size: var(--font-size-ui);
+  color: var(--ink-mid);
+}
+
+/* The latest activity line while the child is still running - emphasized via
+   ink weight/color, not a status hue (this stylesheet is not allowlisted). */
+.activityLatest {
+  color: var(--ink-hi);
+  font-weight: 600;
+}
+
+.summaryText {
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+  white-space: pre-wrap;
+}
