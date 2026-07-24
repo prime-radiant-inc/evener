@@ -105,3 +105,48 @@ func TestHubRPCThreadClearResumesPastThread(t *testing.T) {
 		t.Fatal("clear was not routed after resume")
 	}
 }
+
+// TestHubRPCThreadNameSetResumesPastThread proves renaming an exited session
+// resumes the daemon and retries (kata qp94).
+func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
+	var sessionID string
+	renamedTo := ""
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Serf: appwire.SerfThread{
+					Ref:          params.Ref,
+					Capabilities: appwire.ThreadCapabilities{Rename: true},
+				},
+			}}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodSerfThreadNameSet, func(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
+			if params.Ref != "local:"+sessionID {
+				t.Fatalf("rename ref=%q", params.Ref)
+			}
+			renamedTo = params.Name
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	sessionID = sid
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadNameSet(context.Background(), appwire.ThreadNameSetParams{Ref: "local:" + sessionID, Name: "renamed"}); err != nil {
+		t.Fatalf("ThreadNameSet: %v", err)
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if renamedTo != "renamed" {
+		t.Fatalf("renamedTo=%q, want %q", renamedTo, "renamed")
+	}
+}
