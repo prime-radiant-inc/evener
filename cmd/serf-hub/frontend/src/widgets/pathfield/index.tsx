@@ -184,6 +184,10 @@ export function PathFieldPanel({
   // is dropped, so an out-of-order resolution never overwrites fresher
   // entries (PathPicker's `active` guard and DirField's reqId, kept).
   const reqIdRef = useRef(0);
+  // The filter the entries in hand were fetched WITH. The hub hides dotfiles
+  // unless the filter itself starts with a dot, so the listing's contents
+  // depend on more than the directory - see handleType.
+  const requestedFilterRef = useRef("");
   const listboxId = useId();
 
   const text = typed ?? value;
@@ -201,6 +205,7 @@ export function PathFieldPanel({
   const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
 
   function runCompletion(prefix: string): void {
+    requestedFilterRef.current = typedFilter(prefix);
     reqIdRef.current += 1;
     const reqId = reqIdRef.current;
     setEntries(null);
@@ -277,16 +282,28 @@ export function PathFieldPanel({
     // Nothing is active while typing, which is what lets Enter commit the
     // typed literal (an outputFile naming a file that doesn't exist yet).
     setActiveIndex(-1);
-    // Only the DIRECTORY part needs a fresh listing; a narrower last component
-    // filters the entries already in hand. The timer is cleared only when a
-    // new request replaces it - typing on past a "/" into the next component
-    // happens inside one debounce window, and cancelling unconditionally there
-    // would drop the listing the slash just asked for.
+    // A narrower last component usually filters the entries already in hand,
+    // so only two things force a fresh listing: a different directory, or a
+    // filter that crosses the leading-dot boundary. That second condition is
+    // not cosmetic - the hub hides every dotted name unless the FILTER starts
+    // with a dot, so the entries fetched for a dotless filter provably contain
+    // no dotfile and no amount of client-side narrowing can surface one.
+    //
+    // The timer is cleared only when a new request replaces it - typing on
+    // past a "/" into the next component happens inside one debounce window,
+    // and cancelling unconditionally there would drop the listing the slash
+    // just asked for.
     const dir = typedDir(next);
-    if (dir === currentDir) return;
+    const nextFilter = typedFilter(next);
+    const dotnessChanged = nextFilter.startsWith(".") !== requestedFilterRef.current.startsWith(".");
+    if (dir === currentDir && !dotnessChanged) return;
     setCurrentDir(dir);
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => runCompletion(childrenPrefix(dir)), COMPLETE_DEBOUNCE_MS);
+    // With a filter present, the typed text itself IS the prefix: the hub
+    // splits it into listDir + filter and does the matching (and the dotfile
+    // decision) server-side, which is what DirField did too.
+    const prefix = nextFilter === "" ? childrenPrefix(dir) : next;
+    debounceRef.current = setTimeout(() => runCompletion(prefix), COMPLETE_DEBOUNCE_MS);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {

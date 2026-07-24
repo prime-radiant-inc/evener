@@ -1,9 +1,12 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import { PathField, type PathFieldProps } from "./index";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 /** A completion stub driven by a prefix -> entries table; an unlisted prefix
  * lists nothing, which is what the hub itself returns for a path it can't
@@ -252,6 +255,75 @@ test("keystrokes that only narrow the last component don't cancel the pending li
 
   await waitFor(() => expect(complete).toHaveBeenCalledWith("/var/", false));
   expect(await screen.findByRole("option", { name: /log/ })).toBeTruthy();
+});
+
+// The hub hides dotfiles unless the FILTER itself starts with a dot
+// (app_paths.go: `HasPrefix(name, ".") && !HasPrefix(filter, ".")`), so
+// "the directory didn't change" is not enough to skip a request: the entries
+// in hand were fetched with a dotless filter and cannot contain a single
+// dotted name, whatever the client-side narrowing does with them.
+test("typing a leading dot re-lists, so dotfiles the hub hides by default are reachable", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "/home/jesse",
+    complete: lister({
+      "/home/jesse/": ["/home/jesse/src"],
+      "/home/jesse/.": ["/home/jesse/.config"],
+    }),
+  });
+
+  await open(user);
+  await waitFor(() => expect(screen.getByRole("option", { name: /src/ })).toBeTruthy());
+  await user.keyboard("/home/jesse/.");
+
+  // The typed text itself is the prefix, filter and all - the hub splits it
+  // into listDir + filter, and only the filter tells it to show dotfiles.
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/jesse/.", false));
+  expect(await screen.findByRole("option", { name: /\.config/ })).toBeTruthy();
+});
+
+// Deleting back to a dotless filter must re-list too: the dotted response the
+// hub sent is ONLY dotfiles, so the plain listing has to be fetched again.
+test("deleting the leading dot re-lists the plain directory", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "/home/jesse",
+    complete: lister({
+      "/home/jesse/": ["/home/jesse/src"],
+      "/home/jesse/.": ["/home/jesse/.config"],
+    }),
+  });
+
+  await open(user);
+  await user.keyboard("/home/jesse/.");
+  expect(await screen.findByRole("option", { name: /\.config/ })).toBeTruthy();
+
+  await user.keyboard("{Backspace}");
+
+  await waitFor(() => expect(complete).toHaveBeenLastCalledWith("/home/jesse/", false));
+  expect(await screen.findByRole("option", { name: /src/ })).toBeTruthy();
+});
+
+// The dot can be typed and then narrowed inside ONE debounce window, so the
+// dot-ness comparison has to be against the pending request's filter rather
+// than the last one that actually fired - otherwise ".c" is judged against the
+// dotless listing on screen, matches nothing new, and the request never goes.
+test("a dot typed and narrowed inside one debounce window still sends the dotted prefix", async () => {
+  const complete = lister({
+    "/home/jesse/": ["/home/jesse/src"],
+    "/home/jesse/.co": ["/home/jesse/.config"],
+  });
+  renderField({ value: "/home/jesse", complete });
+  fireEvent.click(trigger());
+  const input = (await screen.findByRole("combobox", { name: "Path" })) as HTMLInputElement;
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/jesse/", false));
+
+  // fireEvent, not userEvent: two change events with no awaited delay between
+  // them, so both land inside the single 150ms window.
+  fireEvent.change(input, { target: { value: "/home/jesse/." } });
+  fireEvent.change(input, { target: { value: "/home/jesse/.co" } });
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/jesse/.co", false));
 });
 
 // A stale response overwriting a fresher one is the defect the monotonic
