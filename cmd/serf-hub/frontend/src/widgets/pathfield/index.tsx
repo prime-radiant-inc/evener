@@ -502,26 +502,31 @@ export function PathField({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // Popover's FocusScope is opted out of focus management entirely
-  // (autoFocus={false}) so the panel's own input can hold focus and its
-  // selection, which means returning focus to the trigger on close is this
-  // component's job - otherwise focus falls to <body>.
+  /** The single close path, so every way out of the panel - Escape, an outside
+   * click, a file or recent commit, a trigger click - behaves identically.
+   *
+   * Focus returns to the trigger on ALL of them, commits included. Popover's
+   * FocusScope is opted out of focus management (autoFocus={false}) so the
+   * panel's own input can hold focus and its selection, which means nothing
+   * restores focus unless this does and it falls to <body> - and from <body> a
+   * keyboard user's Tab position restarts at the top of the document rather than
+   * continuing on through the form. The trigger is where focus was before
+   * opening, so tabbing onward from it is the correct next stop. */
   function closePanel(): void {
     setOpen(false);
     triggerRef.current?.focus();
   }
 
-  // Committing deliberately does NOT refocus the trigger: it's a completed
-  // choice, and yanking focus back would fight a keyboard user tabbing onward
-  // through the form.
   function commit(path: string): void {
-    setOpen(false);
     onChange(path);
+    closePanel();
   }
 
   return (
     <Popover
       open={open}
+      // Escape and an outside click both dismiss with whatever browsing left
+      // in the field - there is no Cancel to undo it (spec 3.4).
       onClose={closePanel}
       // The panel's own list scrolls, and a page scroll behind it must not
       // dismiss it mid-interaction.

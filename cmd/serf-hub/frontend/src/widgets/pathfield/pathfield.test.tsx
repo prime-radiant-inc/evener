@@ -565,6 +565,21 @@ test("closing returns focus to the trigger", async () => {
   expect(document.activeElement).toBe(button);
 });
 
+// Landing on <body> restarts a keyboard user's Tab position at the top of the
+// document, which is strictly worse than restoring the trigger they came from -
+// tabbing onward from there is the correct next stop.
+test("committing returns focus to the trigger, like every other close", async () => {
+  const user = userEvent.setup();
+  renderField({ kind: "file", value: "/etc/hosts", complete: lister({ "/etc/": ["/etc/passwd"] }) });
+  const button = trigger();
+
+  await open(user);
+  await user.click(await screen.findByRole("option", { name: /passwd/ }));
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(document.activeElement).toBe(button);
+});
+
 test("Escape keeps whatever browsing left in the field - there is no Cancel", async () => {
   const user = userEvent.setup();
   const { onChange } = renderField({
