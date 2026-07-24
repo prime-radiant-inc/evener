@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { Popover } from "./index";
 
 afterEach(() => cleanup());
@@ -44,4 +44,41 @@ test("when open, the panel is portaled to document.body, not nested under the tr
     ancestor = ancestor.parentElement;
   }
   expect(reachedBody).toBe(true);
+});
+
+// closeOnScroll: the model picker's own list scrolls, and a page scroll behind
+// the panel must not dismiss a picker mid-interaction - so the scroll/resize
+// close pair is an opt-out. Menu-shaped consumers keep the default.
+test("by default a window scroll closes the panel", () => {
+  const onClose = vi.fn();
+  render(
+    <Popover open onClose={onClose} trigger={<button type="button">open</button>} data-testid="panel">
+      <div>panel body</div>
+    </Popover>,
+  );
+
+  window.dispatchEvent(new Event("scroll"));
+
+  expect(onClose).toHaveBeenCalled();
+});
+
+test("closeOnScroll={false} keeps the panel open through a window scroll and a resize", () => {
+  const onClose = vi.fn();
+  render(
+    <Popover
+      open
+      onClose={onClose}
+      closeOnScroll={false}
+      trigger={<button type="button">open</button>}
+      data-testid="panel"
+    >
+      <div>panel body</div>
+    </Popover>,
+  );
+
+  window.dispatchEvent(new Event("scroll"));
+  window.dispatchEvent(new Event("resize"));
+
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByTestId("panel")).toBeTruthy();
 });

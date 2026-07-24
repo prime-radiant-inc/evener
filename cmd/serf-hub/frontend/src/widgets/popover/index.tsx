@@ -20,9 +20,10 @@ const CLASS = {
 
 export interface PopoverProps {
   open: boolean;
-  /** Fired on outside click, Escape, scroll, or resize. The trigger's own
-   * toggle is the consumer's job; Popover never fires onClose for a click on
-   * the trigger itself (it's inside the trigger wrapper, see below). */
+  /** Fired on outside click, Escape, and — unless closeOnScroll is false —
+   * scroll or resize. The trigger's own toggle is the consumer's job; Popover
+   * never fires onClose for a click on the trigger itself (it's inside the
+   * trigger wrapper, see below). */
   onClose: () => void;
   /** Rendered in-flow inside a measuring wrapper; its rect anchors the panel. */
   trigger: ReactElement;
@@ -32,6 +33,13 @@ export interface PopoverProps {
    * pattern: the anchoring input keeps focus for continued typing). Tab
    * still cycles within the panel once focus moves there. Default true. */
   autoFocus?: boolean;
+  /** When false, neither a window scroll (capture-phase) nor a viewport
+   * resize closes the panel. For a panel whose own content scrolls and whose
+   * interaction must survive a page scroll behind it — the model picker.
+   * Trade-off: without the close, a page scroll can visually detach the
+   * panel from its trigger, since placement is computed once per open.
+   * Default true (Menu-shaped behavior). */
+  closeOnScroll?: boolean;
   "data-testid"?: string;
 }
 
@@ -51,7 +59,15 @@ export interface PopoverProps {
  * Built on FocusScope with trap so Tab/Shift+Tab cycle within the panel while
  * open, matching Menu.
  */
-export function Popover({ open, onClose, trigger, children, autoFocus = true, ...rest }: PopoverProps) {
+export function Popover({
+  open,
+  onClose,
+  trigger,
+  children,
+  autoFocus = true,
+  closeOnScroll = true,
+  ...rest
+}: PopoverProps) {
   const triggerRef = useRef<HTMLSpanElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<PopoverPosition | null>(null);
@@ -91,16 +107,17 @@ export function Popover({ open, onClose, trigger, children, autoFocus = true, ..
   }, [open, onClose]);
 
   // A scroll anywhere (capture-phase) or a viewport resize closes the popover -
-  // simpler than continuously repositioning, matching Menu.
+  // simpler than continuously repositioning, matching Menu. Consumers whose
+  // panel content scrolls opt out with closeOnScroll={false}.
   useEffect(() => {
-    if (!open) return;
+    if (!open || !closeOnScroll) return;
     window.addEventListener("scroll", onClose, true);
     window.addEventListener("resize", onClose);
     return () => {
       window.removeEventListener("scroll", onClose, true);
       window.removeEventListener("resize", onClose);
     };
-  }, [open, onClose]);
+  }, [open, onClose, closeOnScroll]);
 
   function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Escape") {
