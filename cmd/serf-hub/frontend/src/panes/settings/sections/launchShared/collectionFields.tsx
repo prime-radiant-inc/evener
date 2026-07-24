@@ -122,9 +122,12 @@ export interface PathListFieldProps {
 }
 
 /** The pathList add field's empty-state text - the picker's closed trigger
- * shows it in place of a value, so it reads the same as the plain-text add
- * field's placeholder did. */
-const PATH_ADD_PLACEHOLDER = "/path/to/directory";
+ * shows it in place of a value, so it's the field's whole visible content when
+ * empty and has to name what the field holds: mcpConfigs is a list of .json
+ * files, the two dir lists are directories. */
+function pathAddPlaceholder(kind: PathFieldKind): string {
+  return kind === "dir" ? "/path/to/directory" : "/path/to/file";
+}
 
 /** The browse kind for a pathList option. Every pathList field in the schema
  * names a real filesystem path - skillsDirs/pluginDirs are directories,
@@ -142,12 +145,14 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
  * "blocks the add on failure, shows a field-level error" / "uses
  * valid.path if present else the raw trimmed input" behaviors. */
 export function PathListField({ option, items, onChange, validatePath }: PathListFieldProps) {
+  const kind = pathFieldKind(option.pathKind);
+  const placeholder = pathAddPlaceholder(kind);
   return (
     <StringListField
       option={option}
       items={items}
       onChange={onChange}
-      addPlaceholder={PATH_ADD_PLACEHOLDER}
+      addPlaceholder={placeholder}
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
       validateAdd={async (trimmed) => {
         const result = await validatePath(trimmed, schemaPathKind(option.pathKind));
@@ -159,8 +164,8 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
           <PathAddField
             value={value}
             onChange={setDraft}
-            kind={pathFieldKind(option.pathKind)}
-            placeholder={PATH_ADD_PLACEHOLDER}
+            kind={kind}
+            placeholder={placeholder}
             ariaLabel={option.label}
             disabled={disabled}
           />

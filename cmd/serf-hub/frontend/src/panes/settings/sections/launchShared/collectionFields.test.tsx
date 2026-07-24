@@ -166,7 +166,11 @@ describe("PathListField", () => {
         validatePath={async () => ({ path: "", valid: true })}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /browse/i }));
+    // The closed trigger IS the field now, so its resting text has to name a
+    // file: this list holds .json config files, not directories.
+    const browse = screen.getByRole("button", { name: /browse/i });
+    expect(browse.textContent).toMatch(/\/path\/to\/file/);
+    await user.click(browse);
     await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
     expect(lister.calls[0]).toEqual(["", true]);
     await waitFor(() =>
