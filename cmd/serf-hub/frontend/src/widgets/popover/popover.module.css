@@ -37,3 +37,11 @@
     animation: none;
   }
 }
+
+/* stretchTrigger: the wrapper fills its container instead of hugging, for a
+ * trigger that IS a form control and must align with the fields beside it
+ * (the model picker). Still in normal flow, still the panel's anchor rect. */
+.triggerStretch {
+  display: flex;
+  width: 100%;
+}

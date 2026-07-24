@@ -15,6 +15,7 @@ import styles from "./popover.module.css";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "popover.module.css", "trigger"),
+  triggerStretch: requireClass(styles.triggerStretch, "popover.module.css", "triggerStretch"),
   panel: requireClass(styles.panel, "popover.module.css", "panel"),
 };
 
@@ -40,6 +41,11 @@ export interface PopoverProps {
    * panel from its trigger, since placement is computed once per open.
    * Default true (Menu-shaped behavior). */
   closeOnScroll?: boolean;
+  /** When true, the in-flow trigger wrapper fills its container's width
+   * instead of hugging the trigger. For a popover whose trigger IS a form
+   * control (the model picker) and so must line up with the Input/Select
+   * fields beside it. Default false (hug — Menu, Tooltip, chrome triggers). */
+  stretchTrigger?: boolean;
   "data-testid"?: string;
 }
 
@@ -66,6 +72,7 @@ export function Popover({
   children,
   autoFocus = true,
   closeOnScroll = true,
+  stretchTrigger = false,
   ...rest
 }: PopoverProps) {
   const triggerRef = useRef<HTMLSpanElement>(null);
@@ -150,7 +157,7 @@ export function Popover({
   }
 
   return (
-    <span ref={triggerRef} className={CLASS.trigger}>
+    <span ref={triggerRef} className={`${CLASS.trigger} ${stretchTrigger ? CLASS.triggerStretch : ""}`}>
       {trigger}
       {open &&
         createPortal(

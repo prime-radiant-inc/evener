@@ -2,12 +2,19 @@
 // per-launch options as design-system controls, collects them into
 // launchOverrides via schema.ts's collectAdvancedOverrides, validates path-kind
 // inputs live, and previews the fully resolved config. Collapsed by default and
-// wire-free (the parent injects validatePath/resolveConfig closures over the
-// appwire client). The rich per-control fidelity (multiline text, model-picker
-// popups) is interim; the pure collect/precedence logic is fully in schema.ts.
+// wire-free (the parent injects validatePath/resolveConfig/loadCatalog closures
+// over the appwire client). The pure collect/precedence logic is fully in
+// schema.ts.
+//
+// Every model-valued field here renders the SAME searchable ModelCatalog
+// picker as the top-level Model field - the modelPicker kind (model,
+// fastCheapModel) and the modelList kind (modelFallbacks) both. They used to
+// be plain free-text boxes, which made a model id something you had to
+// remember and type exactly.
 import { type ReactNode, useId, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
-import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
+import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
+import { Button, CollectionEditor, FormRow, Input, ModelCatalog, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./advancedOptions.module.css";
 import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
@@ -16,6 +23,11 @@ const BOOLEAN_DEFAULT = "(default)";
 
 const CLASS = {
   root: requireClass(styles.root, "advancedOptions.module.css", "root"),
+  modelBlock: requireClass(styles.modelBlock, "advancedOptions.module.css", "modelBlock"),
+  modelLabel: requireClass(styles.modelLabel, "advancedOptions.module.css", "modelLabel"),
+  modelHelp: requireClass(styles.modelHelp, "advancedOptions.module.css", "modelHelp"),
+  modelAddRow: requireClass(styles.modelAddRow, "advancedOptions.module.css", "modelAddRow"),
+  modelAddField: requireClass(styles.modelAddField, "advancedOptions.module.css", "modelAddField"),
   toggle: requireClass(styles.toggle, "advancedOptions.module.css", "toggle"),
   panel: requireClass(styles.panel, "advancedOptions.module.css", "panel"),
   resolved: requireClass(styles.resolved, "advancedOptions.module.css", "resolved"),
@@ -28,6 +40,9 @@ export interface AdvancedOptionsProps {
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
   validatePath: (path: string, kind: string) => Promise<{ valid: boolean; error?: string }>;
   resolveConfig: (overrides: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
+  /** Loads the model catalog for this panel's model-valued fields, scoped the
+   * same way the top-level Model field is (harness + cwd). */
+  loadCatalog: () => Promise<ModelCatalogEnvelope>;
   /** Rendered first inside the expanded panel, ahead of the schema controls
    * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
   children?: ReactNode;
@@ -38,6 +53,7 @@ export function AdvancedOptions({
   onOverridesChange,
   validatePath,
   resolveConfig,
+  loadCatalog,
   children,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
@@ -100,6 +116,7 @@ export function AdvancedOptions({
               option={opt}
               value={values[opt.wireField]}
               error={errors[opt.wireField]}
+              loadCatalog={loadCatalog}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
             />
@@ -130,11 +147,12 @@ interface ControlProps {
   option: LaunchOption;
   value: AdvancedFieldValue | undefined;
   error?: string;
+  loadCatalog: () => Promise<ModelCatalogEnvelope>;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
 }
 
-function Control({ option, value, error, onScalar, onValue }: ControlProps) {
+function Control({ option, value, error, loadCatalog, onScalar, onValue }: ControlProps) {
   const controlId = useId();
   const current = typeof value?.value === "string" ? value.value : "";
 
@@ -183,8 +201,27 @@ function Control({ option, value, error, onScalar, onValue }: ControlProps) {
           <Input id={controlId} type="number" value={current} onChange={(e) => onScalar(e.target.value)} />
         </FormRow>
       );
-    case "pathList":
+    case "modelPicker":
+      // A composite widget, not a single labelable control, so the label is a
+      // plain span (mirroring the spawn form's own Model field) - the picker's
+      // inner combobox carries its own accessible name.
+      return (
+        <div className={CLASS.modelBlock}>
+          <span className={CLASS.modelLabel}>{option.label}</span>
+          <ModelCatalog value={current} onChange={onScalar} loadCatalog={loadCatalog} />
+          {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
+        </div>
+      );
     case "modelList":
+      return (
+        <ModelListControl
+          option={option}
+          items={Array.isArray(value?.value) ? (value.value as string[]) : []}
+          loadCatalog={loadCatalog}
+          onValue={onValue}
+        />
+      );
+    case "pathList":
       return (
         <ListControl
           option={option}
@@ -197,8 +234,8 @@ function Control({ option, value, error, onScalar, onValue }: ControlProps) {
     case "mcpServerList":
       return <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />;
     default:
-      // text / modelPicker (interim: a plain text field) - path-kind fields
-      // carry live validation surfaced through FormRow's error slot.
+      // text - path-kind fields carry live validation surfaced through
+      // FormRow's error slot.
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
           <Input id={controlId} value={current} onChange={(e) => onScalar(e.target.value)} />
@@ -239,6 +276,51 @@ function ListControl({
         onValue({ value: [...items, entry] });
         return { ok: true };
       }}
+    />
+  );
+}
+
+/**
+ * modelFallbacks (and any future modelList field): the ordered fallback list,
+ * with adds coming from the same searchable picker as every other model field
+ * rather than a hand-typed "provider/model". The picked id lands in
+ * CollectionEditor's own draft, which the Add button submits.
+ */
+function ModelListControl({
+  option,
+  items,
+  loadCatalog,
+  onValue,
+}: {
+  option: LaunchOption;
+  items: string[];
+  loadCatalog: () => Promise<ModelCatalogEnvelope>;
+  onValue: (field: AdvancedFieldValue) => void;
+}) {
+  return (
+    <CollectionEditor<string>
+      label={option.label}
+      items={items}
+      getKey={(item) => item}
+      renderItem={(item) => item}
+      removeLabel={(item) => `Remove ${item}`}
+      onRemove={(item) => onValue({ value: items.filter((i) => i !== item) })}
+      emptyMessage="None."
+      onAdd={(entry) => {
+        if (items.includes(entry)) return { ok: false, error: "Already added." };
+        onValue({ value: [...items, entry] });
+        return { ok: true };
+      }}
+      renderAddField={({ value, onChange, disabled }) => (
+        <div className={CLASS.modelAddRow}>
+          <span className={CLASS.modelAddField}>
+            <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} />
+          </span>
+          <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
+            Add
+          </Button>
+        </div>
+      )}
     />
   );
 }

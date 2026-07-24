@@ -26,11 +26,12 @@
 // already shows). Not ported - the custom inline error is the only
 // validation UI surfaced here.
 
-import { useId } from "react";
+import { type ReactNode, useId } from "react";
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
 import type { CollectionAddResult } from "../../../../widgets";
-import { Button, CollectionEditor, Input, Switch } from "../../../../widgets";
+import { Button, CollectionEditor, Input, ModelCatalog, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./collectionFields.module.css";
 import { schemaPathKind } from "./schema";
 
@@ -41,6 +42,8 @@ const CLASS = {
   help: requireClass(styles.help, "collectionFields.module.css", "help"),
   envRow: requireClass(styles.envRow, "collectionFields.module.css", "envRow"),
   envField: requireClass(styles.envField, "collectionFields.module.css", "envField"),
+  modelAddRow: requireClass(styles.modelAddRow, "collectionFields.module.css", "modelAddRow"),
+  modelAddField: requireClass(styles.modelAddField, "collectionFields.module.css", "modelAddField"),
   visuallyHidden: requireClass(styles.visuallyHidden, "collectionFields.module.css", "visuallyHidden"),
 };
 
@@ -63,6 +66,9 @@ interface StringListFieldProps {
   emptyMessage: string;
   validateAdd: (trimmed: string) => Promise<{ ok: true; value: string } | { ok: false; error: string }>;
   explicitEmpty?: { checked: boolean; onChange: (checked: boolean) => void; label: string };
+  /** Replaces CollectionEditor's plain-text add field (modelList uses the
+   * searchable model picker, so a model id is never hand-typed). */
+  renderAddField?: (props: { value: string; onChange: (value: string) => void; disabled: boolean }) => ReactNode;
 }
 
 function StringListField({
@@ -73,6 +79,7 @@ function StringListField({
   emptyMessage,
   validateAdd,
   explicitEmpty,
+  renderAddField,
 }: StringListFieldProps) {
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
     const outcome = await validateAdd(trimmed);
@@ -95,6 +102,7 @@ function StringListField({
         emptyMessage={emptyMessage}
         addPlaceholder={addPlaceholder}
         onAdd={handleAdd}
+        renderAddField={renderAddField}
       />
       {explicitEmpty && (
         <Switch checked={explicitEmpty.checked} onChange={explicitEmpty.onChange} label={explicitEmpty.label} />
@@ -140,10 +148,15 @@ export interface ModelListFieldProps {
   onExplicitEmptyChange: (checked: boolean) => void;
 }
 
-/** modelList kind: model_fallbacks is the only field today. Accepts a bare
- * "provider/model" string with no server validation (no RPC validates a
- * model id in isolation) - the searchable model picker (Appendix A) is out
- * of scope, see this file's sibling fields.tsx top comment. */
+/**
+ * modelList kind: model_fallbacks is the only field today. Adds come from the
+ * SAME searchable ModelCatalog picker every other model field uses, rather
+ * than a hand-typed "provider/model" string - picking writes the qualified id
+ * into CollectionEditor's own draft and submits it, so nothing about the
+ * add/validate path changes. A model id still needs no server validation (no
+ * RPC validates one in isolation), but now it can only be a real catalog
+ * entry rather than an unverifiable typo.
+ */
 export function ModelListField({ option, items, onChange, explicitEmpty, onExplicitEmptyChange }: ModelListFieldProps) {
   return (
     <StringListField
@@ -152,9 +165,48 @@ export function ModelListField({ option, items, onChange, explicitEmpty, onExpli
       onChange={onChange}
       addPlaceholder="provider/model"
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
-      validateAdd={async (trimmed) => ({ ok: true, value: trimmed })}
+      validateAdd={async (trimmed) => {
+        if (items.includes(trimmed)) return { ok: false, error: "Already added." };
+        return { ok: true, value: trimmed };
+      }}
       explicitEmpty={{ checked: explicitEmpty, onChange: onExplicitEmptyChange, label: "No model fallbacks" }}
+      renderAddField={({ value, onChange: setDraft, disabled }) => (
+        <div className={CLASS.modelAddRow}>
+          <ModelAddField value={value} onChange={setDraft} disabled={disabled} />
+        </div>
+      )}
     />
+  );
+}
+
+/**
+ * The modelList add row: the shared model picker plus CollectionEditor's own
+ * submit button. The picker is unscoped (/api/models with no harness/cwd) -
+ * a launch-config fallback list isn't scoped to one live spawn - matching the
+ * scalar modelPicker field in this section's sibling fields.tsx.
+ *
+ * The picked id lands in CollectionEditor's `draft`; the Add button submits it
+ * (the picker's own panel is portaled outside this <form>, so Enter inside the
+ * picker picks a model rather than submitting the row).
+ */
+function ModelAddField({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <>
+      <span className={CLASS.modelAddField}>
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={() => fetchModelCatalog()} />
+      </span>
+      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
+        Add
+      </Button>
+    </>
   );
 }
 

@@ -16,7 +16,6 @@ import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useSta
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor/pathpicker import ../button directly).
-import { Chip } from "../chip";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
@@ -25,6 +24,8 @@ import { buildPickerRows, pickableRows } from "./pickerRows";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),
+  triggerValue: requireClass(styles.triggerValue, "modelCatalog.module.css", "triggerValue"),
+  triggerDefault: requireClass(styles.triggerDefault, "modelCatalog.module.css", "triggerDefault"),
   chevron: requireClass(styles.chevron, "modelCatalog.module.css", "chevron"),
   srOnly: requireClass(styles.srOnly, "modelCatalog.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelCatalog.module.css", "popoverPanel"),
@@ -364,6 +365,9 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
       // The panel's input owns focus and its own text selection - see
       // closePicker for why FocusScope must not manage focus here.
       autoFocus={false}
+      // The trigger is a form control: it fills its field slot so it lines up
+      // with the Input/Select siblings beside it.
+      stretchTrigger
       trigger={
         <button
           ref={triggerRef}
@@ -371,7 +375,12 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
           className={CLASS.trigger}
           onClick={() => (open ? closePicker() : void openPicker())}
         >
-          <Chip>{value === "" ? "(default)" : value}</Chip>
+          {/* Plain text, not a Chip: the trigger already draws the control's
+              own border, and a bordered chip inside it read as a double
+              border. */}
+          <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>
+            {value === "" ? "(default)" : value}
+          </span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾
           </span>

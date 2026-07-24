@@ -7,21 +7,47 @@
  * trigger (panes/session/chrome/modelswitch.module.css's .trigger/.chevron/
  * .srOnly) so the in-session switcher and this widget share one interaction
  * shape. */
+/* Control-shaped (32px + one edge border, matching Input/Select) so the
+ * trigger scans as one of the form's controls between the Harness and
+ * Reasoning selects. It FILLS its container the way Input/Select do
+ * (width: 100%, box-sizing so the border stays inside that width) rather
+ * than hugging the model name — a form control whose width tracked its
+ * value read as a stray tag wedged between two full-width fields. The
+ * in-session ModelSwitch keeps its own quiet chrome-style trigger; this is
+ * the form-context variant of the same interaction. */
 .trigger {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: var(--space-1);
-  /* Control-shaped (32px + edge border, matching Input/Select) so the
-   * trigger scans as one of the form's controls between the Harness and
-   * Reasoning selects — not a borderless chip floating on an uneven
-   * baseline. The in-session ModelSwitch keeps its own quiet chrome-style
-   * trigger; this is the form-context variant of the same interaction. */
+  box-sizing: border-box;
+  width: 100%;
   height: 32px;
-  padding: 0 var(--space-2);
+  padding: 0 var(--space-3);
   border: 1px solid var(--edge);
   border-radius: var(--radius-control);
   background: var(--surface-1);
   cursor: pointer;
+  /* Matches Input/Select's own field text, since the value is now plain text
+   * in the field rather than a Chip with its own border and caption size. */
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  text-align: left;
+}
+
+/* The current value, filling the field so the chevron stays at the trailing
+ * edge. Long qualified ids ellipsize rather than widening the control. */
+.triggerValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* No model chosen: the harness default, in placeholder ink like Input's own. */
+.triggerDefault {
+  color: var(--ink-low);
 }
 
 .trigger:hover {

@@ -1,10 +1,34 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { LaunchOption } from "../../../../protocol/types.gen";
+import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 
+// modelList adds come from the shared searchable ModelCatalog picker, which
+// fetches /api/models; the wire loader is mocked so these stay hermetic.
+vi.mock("../../../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
+
+beforeEach(() => {
+  vi.mocked(fetchModelCatalog).mockReset();
+  vi.mocked(fetchModelCatalog).mockResolvedValue({
+    models: [
+      { provider: "openai", model: "gpt-5-mini", displayName: "GPT-5 Mini" },
+      { provider: "anthropic", model: "claude-haiku-4-5", displayName: "Claude Haiku 4.5" },
+    ],
+    recent: [],
+    diagnostics: [],
+  });
+});
+
 afterEach(cleanup);
+
+/** Opens the modelList add row's picker and clicks one model by display name,
+ * which lands its qualified id in the add field. */
+async function pickModel(user: ReturnType<typeof userEvent.setup>, displayName: string) {
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(await screen.findByText(displayName));
+}
 
 function pathListOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
   return {
@@ -127,7 +151,7 @@ describe("ModelListField", () => {
     perLaunch: true,
   };
 
-  test("adding a bare provider/model string accepts it without server validation", async () => {
+  test("adds come from the shared model picker, not a free-text provider/model box", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(
@@ -139,9 +163,33 @@ describe("ModelListField", () => {
         onExplicitEmptyChange={() => {}}
       />,
     );
-    await user.type(screen.getByPlaceholderText("provider/model"), "openai/gpt-5-mini");
+
+    // The hand-typed box is gone; the picker's trigger is the add affordance.
+    expect(screen.queryByPlaceholderText("provider/model")).toBeNull();
+    await pickModel(user, "GPT-5 Mini");
     await user.click(screen.getByRole("button", { name: "Add" }));
+
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(["openai/gpt-5-mini"]));
+  });
+
+  test("a model already in the list is rejected rather than duplicated", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={["openai/gpt-5-mini"]}
+        onChange={onChange}
+        explicitEmpty={false}
+        onExplicitEmptyChange={() => {}}
+      />,
+    );
+
+    await pickModel(user, "GPT-5 Mini");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   test("the explicit-empty toggle is the only way to send an explicit []", async () => {
@@ -172,7 +220,7 @@ describe("ModelListField", () => {
         onExplicitEmptyChange={onExplicitEmptyChange}
       />,
     );
-    await user.type(screen.getByPlaceholderText("provider/model"), "openai/gpt-5-mini");
+    await pickModel(user, "GPT-5 Mini");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(onExplicitEmptyChange).toHaveBeenCalledWith(false));
   });

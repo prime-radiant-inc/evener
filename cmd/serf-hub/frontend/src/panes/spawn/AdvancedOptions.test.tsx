@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { LaunchConfigResolved, LaunchOption } from "../../protocol/types.gen";
+import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets";
 import { AdvancedOptions } from "./AdvancedOptions";
 
 afterEach(() => cleanup());
@@ -10,6 +11,16 @@ afterEach(() => cleanup());
 function option(partial: Partial<LaunchOption> & { wireField: string; kind: string; label: string }): LaunchOption {
   return { field: partial.wireField, group: "general", perLaunch: true, ...partial };
 }
+
+// Every model-valued advanced field renders the shared ModelCatalog picker, so
+// the panel needs a catalog loader; this is the smallest real envelope.
+const CATALOG: ModelCatalogEnvelope = {
+  models: [
+    { provider: "openai", model: "gpt-5", displayName: "GPT-5" },
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5" },
+  ],
+  recent: [],
+};
 
 const RESOLVED: LaunchConfigResolved = {
   effective: { sandbox: "off", maxRounds: 5 },
@@ -25,17 +36,19 @@ function renderPanel(
   const onOverridesChange = over.onOverridesChange ?? vi.fn();
   const validatePath = over.validatePath ?? vi.fn().mockResolvedValue({ valid: true });
   const resolveConfig = over.resolveConfig ?? vi.fn().mockResolvedValue(RESOLVED);
+  const loadCatalog = over.loadCatalog ?? vi.fn().mockResolvedValue(CATALOG);
   render(
     <AdvancedOptions
       options={options}
       onOverridesChange={onOverridesChange as (o: unknown) => void}
       validatePath={validatePath as (p: string, k: string) => Promise<{ valid: boolean; error?: string }>}
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
+      loadCatalog={loadCatalog}
     >
       {children}
     </AdvancedOptions>,
   );
-  return { onOverridesChange, validatePath, resolveConfig };
+  return { onOverridesChange, validatePath, resolveConfig, loadCatalog };
 }
 
 test("is collapsed by default and reveals the panel on toggle", async () => {
@@ -131,4 +144,59 @@ test("renders children inside the expanded panel, before any schema control (9ct
 
   // The child slot is the panel's first child, ahead of the schema controls.
   expect(panel.firstElementChild).toBe(screen.getByTestId("child-slot"));
+});
+
+// --- model-valued fields all use the shared searchable picker ---------------
+
+test("a modelPicker field renders the shared model picker, not a free-text box", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "fastCheapModel", kind: "modelPicker", label: "Fast cheap model" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByText("Fast cheap model")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(await screen.findByText("GPT-5"));
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenCalledWith({ fastCheapModel: "openai/gpt-5" }));
+});
+
+test("a modelList field adds from the picker instead of a hand-typed provider/model", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(await screen.findByText("Claude Sonnet 4.5"));
+  await user.click(screen.getByRole("button", { name: "Add" }));
+
+  await waitFor(() =>
+    expect(onOverridesChange).toHaveBeenCalledWith({ modelFallbacks: ["anthropic/claude-sonnet-4-5"] }),
+  );
+});
+
+test("a modelList field rejects a model already in the list", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  async function addSonnet() {
+    await user.click(screen.getByRole("button", { name: /change model/i }));
+    await user.click(await screen.findByText("Claude Sonnet 4.5"));
+    await user.click(screen.getByRole("button", { name: "Add" }));
+  }
+  await addSonnet();
+  await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
+  vi.mocked(onOverridesChange as (o: unknown) => void).mockClear();
+  await addSonnet();
+
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalled();
 });

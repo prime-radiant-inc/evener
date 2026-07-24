@@ -31,7 +31,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  align-items: flex-start;
+  /* Matches widgets/formrow's own root inset (2px transparent error border +
+   * space-3 padding) so this composite field's label and control line up
+   * exactly with the FormRow-wrapped fields above and below it. */
+  padding-left: var(--space-3);
+  border-left: 2px solid transparent;
 }
 
 .modelLabel {

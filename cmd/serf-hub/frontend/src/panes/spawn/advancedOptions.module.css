@@ -53,3 +53,49 @@
   color: var(--ink-mid);
   font-size: var(--font-size-ui);
 }
+
+/* Model-valued fields: the ModelCatalog picker is a composite widget, so the
+ * row is a plain label + widget + help block (like the spawn form's own Model
+ * field) rather than a FormRow around one labelable control. */
+.modelBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* Matches widgets/formrow's own root inset (2px transparent error border +
+   * space-3 padding) so this composite field's label and control line up
+   * exactly with the FormRow-wrapped fields above and below it. */
+  padding-left: var(--space-3);
+  border-left: 2px solid transparent;
+}
+
+.modelLabel {
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.modelHelp {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* modelList add row: the picker takes the row's free width, Add sits beside. */
+/* The row is itself a flex child of CollectionEditor's own add <form>, so it
+ * needs to grow before its picker has any free width to take. */
+.modelAddRow {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* flex-basis 0 + grow makes the picker take the row's free width the way the
+ * sibling lists' plain Input add fields do; a bare `flex: 1` with min-width 0
+ * collapsed it to its content, since the trigger's own width is 100% of a
+ * container that was itself sized by content. */
+.modelAddField {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+}

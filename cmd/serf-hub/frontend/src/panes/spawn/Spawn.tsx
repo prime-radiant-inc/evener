@@ -26,6 +26,8 @@ import {
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
+import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { AdvancedOptions } from "./AdvancedOptions";
@@ -126,6 +128,22 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const loadModels = useCallback(
     () => client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined }).then((r) => r.data),
     [client, harness, cwd],
+  );
+  // The advanced panel's model-valued fields use the same scoped catalog the
+  // top-level Model field does: model/list is the authoritative launchable SET
+  // for this harness+cwd, enriched best-effort with /api/models metadata (a
+  // failed enrichment degrades to the plain scoped list, never an empty
+  // picker) - the identical composition ModelField.tsx documents.
+  const loadCatalog = useCallback(
+    () =>
+      Promise.all([
+        loadModels(),
+        // A failed enrichment degrades to the plain scoped list
+        // (mergeScopedCatalog tolerates null); a failed model/list still
+        // rejects, so the picker surfaces the real error.
+        fetchModelCatalog({ harness: harness || undefined, cwd: cwd || undefined }).catch(() => null),
+      ]).then(([scoped, enrichment]) => mergeScopedCatalog(scoped, enrichment)),
+    [loadModels, harness, cwd],
   );
   const listRecents = useCallback(() => client.request("serf/projects/recent", {}).then((r) => r.data), [client]);
   const complete = useCallback(
@@ -469,6 +487,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           onOverridesChange={setAdvancedOverrides}
           validatePath={validatePath}
           resolveConfig={resolveConfig}
+          loadCatalog={loadCatalog}
         >
           <FormRow label="Access mode" htmlFor="spawn-access">
             <Select
