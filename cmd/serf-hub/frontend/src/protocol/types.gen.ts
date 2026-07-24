@@ -126,15 +126,6 @@ export interface DiagnosticCause {
   status?: number;
 }
 
-export interface DirsCompleteParams {
-  prefix: string;
-  limit?: number;
-}
-
-export interface DirsCompleteResponse {
-  data: string[];
-}
-
 export interface EmptyParams {
 }
 
@@ -462,6 +453,16 @@ export interface PathValidateResponse {
   path: string;
   valid: boolean;
   error?: string;
+}
+
+export interface PathsCompleteParams {
+  prefix: string;
+  limit?: number;
+  includeFiles?: boolean;
+}
+
+export interface PathsCompleteResponse {
+  data: string[];
 }
 
 export interface PluginCheckNowResponse {
@@ -1152,7 +1153,7 @@ export type MethodName =
   | "serf/tasks/list"
   | "serf/thread/transcripts/list"
   | "serf/subagentPreview"
-  | "serf/dirs/complete"
+  | "serf/paths/complete"
   | "serf/projects/recent"
   | "serf/path/validate"
   | "serf/harnesses/list"
@@ -1250,7 +1251,7 @@ export interface MethodTypes {
   "serf/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "serf/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "serf/subagentPreview": { params: SerfSubagentPreviewParams; result: SerfSubagentPreviewResponse };
-  "serf/dirs/complete": { params: DirsCompleteParams; result: DirsCompleteResponse };
+  "serf/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
   "serf/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "serf/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "serf/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
