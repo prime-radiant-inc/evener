@@ -442,10 +442,23 @@ describe("project expansion", () => {
   });
 });
 
-describe("no hide affordance", () => {
-  // Collapsed mode was removed 2026-07-24: the sidebar cannot be hidden, so
-  // no Rail instance ever renders a "Hide sidebar" button.
-  test("renders no Hide sidebar button", async () => {
+describe("hide affordance (onHide)", () => {
+  // The « button renders only when RailHost passes onHide (desktop); the
+  // mobile drawer instance passes none - the drawer is its own show/hide.
+  test("renders a Hide sidebar button that calls onHide when provided", async () => {
+    const onHide = vi.fn();
+    render(
+      <>
+        <Rail onHide={onHide} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
+    expect(onHide).toHaveBeenCalledTimes(1);
+  });
+
+  test("renders no Hide sidebar button when onHide is absent (mobile drawer instance)", async () => {
     renderRail();
     await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();

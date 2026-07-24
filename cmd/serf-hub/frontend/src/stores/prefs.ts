@@ -43,9 +43,11 @@
 // keys off both: the type ramp scales off <body data-font-size> and the
 // phone line-height off <body data-phone-density> (its "font-size + phone-
 // density preference application" block), so the mirror changes what renders.
-// (The former sidebarMode pref was removed 2026-07-24 with collapsed mode
-// itself — the sidebar is always docked on desktop. A stale
-// serf.prefs.sidebarMode key left in localStorage is simply never read.)
+// sidebarHidden is a plain persisted BOOLEAN (desktop only): true = the
+// docked rail is hidden behind the top-left ☰ chip. It replaced the former
+// tri-state sidebarMode (auto/pane/rail overlay-drawer system, removed
+// 2026-07-24) — a stale serf.prefs.sidebarMode key is simply never read.
+// No document mirror: RailHost reads it directly.
 //
 // No cross-tab `storage` event sync: deliberately omitted, matching the
 // legacy exactly - none of assets/{theme,settings-appearance,settings-
@@ -67,6 +69,7 @@ export type NotificationsLoudScopePref = "asks" | "all";
 export interface PrefsStoreState {
   theme: ThemePref;
   phoneDensity: PhoneDensityPref;
+  sidebarHidden: boolean;
   fontSize: FontSizePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
@@ -78,6 +81,7 @@ export interface PrefsStoreState {
 
   setTheme(value: ThemePref): void;
   setPhoneDensity(value: PhoneDensityPref): void;
+  setSidebarHidden(value: boolean): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
@@ -261,6 +265,7 @@ function loadInitialState(): Omit<
   PrefsStoreState,
   | "setTheme"
   | "setPhoneDensity"
+  | "setSidebarHidden"
   | "setFontSize"
   | "setTranscriptStatus"
   | "setEnterToSend"
@@ -277,6 +282,7 @@ function loadInitialState(): Omit<
   return {
     theme,
     phoneDensity,
+    sidebarHidden: readBool("sidebarHidden", false),
     fontSize,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
@@ -305,6 +311,11 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     writeRaw("phoneDensity", value);
     applyPhoneDensity(value);
     set({ phoneDensity: value });
+  },
+
+  setSidebarHidden(value) {
+    writeBool("sidebarHidden", value);
+    set({ sidebarHidden: value });
   },
 
   setFontSize(value) {

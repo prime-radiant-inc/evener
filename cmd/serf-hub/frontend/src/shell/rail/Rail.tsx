@@ -115,6 +115,10 @@ function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, acti
 }
 
 export interface RailProps {
+  // Renders the header's « "Hide sidebar" button when provided (the desktop
+  // case; RailHost wires it to the persisted sidebarHidden boolean). The
+  // mobile drawer instance passes none — the drawer is its own show/hide.
+  onHide?: () => void;
   // The session ref the palette's /project command wants revealed. Rail expands
   // its project section and scrolls its row into view, then calls
   // onRevealConsumed so the caller can clear it. See railController (PIN-A).
@@ -122,7 +126,7 @@ export interface RailProps {
   onRevealConsumed?: () => void;
 }
 
-export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
+export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
@@ -291,13 +295,15 @@ export function Rail({ revealTarget, onRevealConsumed }: RailProps = {}) {
       <div className={CLASS.header}>
         <div className={CLASS.brand}>
           <span className={CLASS.brandName}>serf</span>
-          <IconButton
-            label="Home"
-            icon={<span aria-hidden="true">{"⌂"}</span>}
-            variant="quiet"
-            size="sm"
-            onClick={() => navigate("/")}
-          />
+          {onHide && (
+            <IconButton
+              label="Hide sidebar"
+              icon={<span aria-hidden="true">{"«"}</span>}
+              variant="quiet"
+              size="sm"
+              onClick={onHide}
+            />
+          )}
         </div>
         {/* A palette opener styled as a search field, not a text input: it
             carries data-search-trigger so AppShell's global click handler
