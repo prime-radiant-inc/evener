@@ -105,7 +105,7 @@ describe("ScalarField: modelPicker renders the rich model catalog", () => {
     render(<ScalarField option={modelPickerOption()} layer="global" value="anthropic/claude" onChange={() => {}} />);
     expect(screen.getByText("Model")).toBeTruthy(); // the field label
     expect(screen.getByText("anthropic/claude")).toBeTruthy(); // current value chip
-    expect(screen.getByRole("button", { name: "Change model" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
     expect(screen.queryByRole("textbox")).toBeNull(); // no free-text input anymore
   });
 
@@ -124,7 +124,7 @@ describe("ScalarField: modelPicker renders the rich model catalog", () => {
     });
     render(<ScalarField option={modelPickerOption()} layer="global" value="" onChange={onChange} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     const combo = await screen.findByRole("combobox", { name: "Model" });
     await user.type(combo, "gpt");
     await user.click(await screen.findByText("GPT-5"));

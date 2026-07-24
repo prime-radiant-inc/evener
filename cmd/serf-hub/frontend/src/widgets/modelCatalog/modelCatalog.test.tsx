@@ -31,7 +31,7 @@ test("Change model loads the catalog and picking one (by display name) reports t
   const loadCatalog = vi.fn().mockResolvedValue(CATALOG);
   render(<ModelCatalog value="" onChange={onChange} loadCatalog={loadCatalog} />);
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   const combo = await screen.findByRole("combobox", { name: "Model" });
   await user.type(combo, "GPT");
   await user.click(await screen.findByText("GPT-5"));
@@ -50,7 +50,7 @@ test("surfaces an inline error when the catalog fails to load", async () => {
     />,
   );
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   expect(await screen.findByText(/providers unavailable/i)).toBeTruthy();
 });
 
@@ -59,12 +59,66 @@ test("Cancel returns to the closed display without changing the value", async ()
   const onChange = vi.fn();
   render(<ModelCatalog value="openai/gpt-5" onChange={onChange} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />);
 
-  await user.click(screen.getByRole("button", { name: "Change model" }));
+  await user.click(screen.getByRole("button", { name: /change model/i }));
   await screen.findByRole("combobox", { name: "Model" });
   await user.click(screen.getByRole("button", { name: "Cancel" }));
 
   expect(screen.getByText("openai/gpt-5")).toBeTruthy();
   expect(onChange).not.toHaveBeenCalled();
+});
+
+// --- chip-as-button combobox (4y12): the closed state IS the trigger, and
+// the open panel is a floating Popover (portaled, never reflows) rather than
+// an inline sibling that shifts layout - see widgets/popover.
+
+test("the closed state has no separate Change-model button - the chip itself is the trigger", () => {
+  render(<ModelCatalog value="openai/gpt-5" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />);
+  expect(screen.queryByRole("button", { name: "Change model" })).toBeNull();
+  expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+});
+
+test("clicking the chip trigger opens the panel as a portaled overlay, not an inline sibling that reflows", async () => {
+  const user = userEvent.setup();
+  render(<ModelCatalog value="openai/gpt-5" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />);
+
+  const trigger = screen.getByRole("button", { name: /change model/i });
+  const triggerWrapper = trigger.parentElement;
+  expect(triggerWrapper).not.toBeNull();
+  await user.click(trigger);
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+
+  // The trigger stays mounted in place (the chip IS the trigger, not a row
+  // that gets replaced) - still inside its original in-flow wrapper.
+  expect(screen.getByRole("button", { name: /change model/i }).parentElement).toBe(triggerWrapper);
+  expect(triggerWrapper && document.body.contains(triggerWrapper)).toBe(true);
+
+  // The panel is portaled to document.body: walk up from the combobox and
+  // confirm it never passes through the trigger's own in-flow wrapper.
+  let ancestor: HTMLElement | null = combo.parentElement;
+  let reachedBody = false;
+  while (ancestor) {
+    expect(ancestor).not.toBe(triggerWrapper);
+    if (ancestor === document.body) {
+      reachedBody = true;
+      break;
+    }
+    ancestor = ancestor.parentElement;
+  }
+  expect(reachedBody).toBe(true);
+});
+
+test("picking an entry from the floating panel reports the qualified id and closes it", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  render(<ModelCatalog value="" onChange={onChange} loadCatalog={vi.fn().mockResolvedValue(CATALOG)} />);
+
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "GPT");
+  await user.click(await screen.findByText("GPT-5"));
+
+  expect(onChange).toHaveBeenCalledWith("openai/gpt-5");
+  expect(screen.queryByRole("combobox")).toBeNull();
 });
 
 // --- rich catalog: badges, cost, context, provider grouping, Recent, diagnostics ---
@@ -96,7 +150,7 @@ describe("rich catalog rows", () => {
     const user = userEvent.setup();
     render(<ModelCatalog value="" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(RICH)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     const combo = await screen.findByRole("combobox", { name: "Model" });
     await user.type(combo, "sonnet");
     // Scope to the Sonnet row: the query debounces, so both rows are briefly
@@ -116,7 +170,7 @@ describe("rich catalog rows", () => {
     const user = userEvent.setup();
     render(<ModelCatalog value="" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(RICH)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     const combo = await screen.findByRole("combobox", { name: "Model" });
     // ArrowDown reveals the full (unfiltered) list so both provider runs show.
     await user.type(combo, "{arrowdown}");
@@ -133,7 +187,7 @@ describe("Recent section", () => {
     const withRecent: ModelCatalog = { models: [SONNET, GPT5], recent: [GPT5] };
     render(<ModelCatalog value="" onChange={onChange} loadCatalog={vi.fn().mockResolvedValue(withRecent)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     await user.click(await screen.findByRole("button", { name: "GPT-5" }));
 
     expect(onChange).toHaveBeenCalledWith("openai/gpt-5");
@@ -143,7 +197,7 @@ describe("Recent section", () => {
     const user = userEvent.setup();
     render(<ModelCatalog value="" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(RICH)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     await screen.findByRole("combobox", { name: "Model" });
     expect(screen.queryByText("Recent")).toBeNull();
   });
@@ -159,7 +213,7 @@ describe("diagnostics affordance", () => {
     };
     render(<ModelCatalog value="" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(withDiag)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     const toggle = await screen.findByRole("button", { name: /unavailable/i });
     expect(screen.queryByText(/HTTP 401/)).toBeNull();
 
@@ -171,7 +225,7 @@ describe("diagnostics affordance", () => {
     const user = userEvent.setup();
     render(<ModelCatalog value="" onChange={vi.fn()} loadCatalog={vi.fn().mockResolvedValue(RICH)} />);
 
-    await user.click(screen.getByRole("button", { name: "Change model" }));
+    await user.click(screen.getByRole("button", { name: /change model/i }));
     await screen.findByRole("combobox", { name: "Model" });
     expect(screen.queryByRole("button", { name: /unavailable/i })).toBeNull();
   });

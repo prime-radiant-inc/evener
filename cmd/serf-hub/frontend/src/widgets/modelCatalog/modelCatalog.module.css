@@ -1,10 +1,60 @@
 /* Rich model-catalog picker. Tokens only; a neutral field that never uses
  * color for attention - capability badges, cost, context, and the provider
  * diagnostics list are all passive metadata, so they stay ink-neutral. */
-.row {
-  display: flex;
+
+/* Floating combobox trigger (4y12): the chip itself IS the button - no
+ * separate "Change model" button beside it. Mirrors ModelSwitch's own
+ * trigger (panes/session/chrome/modelswitch.module.css's .trigger/.chevron/
+ * .srOnly) so the in-session switcher and this widget share one interaction
+ * shape. */
+.trigger {
+  display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: none;
+  border-radius: var(--radius-control);
+  background: transparent;
+  cursor: pointer;
+}
+
+.trigger:hover {
+  background: var(--surface-2);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chevron {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* Standard visually-hidden recipe (see modelswitch.module.css's own copy of
+ * this comment) - names the trigger's action for assistive tech without
+ * hiding the chip's own visible text. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The floating panel's own content padding/sizing - widgets/popover's shared
+ * chassis supplies position/background/border/radius/animation; this widget
+ * only adds the padding and a sane minimum width so the combobox/Recent
+ * chips/diagnostics list don't read as cramped. */
+.popoverPanel {
+  padding: var(--space-3);
+  min-width: 280px;
+  max-width: min(360px, calc(100vw - var(--space-4)));
 }
 
 /* The open picker stacks its Recent quick-picks, the searchable list, the
