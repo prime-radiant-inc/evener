@@ -44,6 +44,9 @@ workdir="$(mktemp -d -t serf-e2e-cover.XXXXXX)"
 covdir="$workdir/gocov"; mkdir -p "$covdir"
 serf="$workdir/serf"; tui="$workdir/serf-tui"
 
+echo "==> building web UI (frontend/dist with Vite hashed assets)"
+make build-web >/dev/null 2>&1 || { echo "build-web failed" >&2; exit 1; }
+
 echo "==> building instrumented binaries (go build -cover)"
 go build -cover -o "$serf" ./cmd/serf || { echo "build serf failed" >&2; exit 1; }
 go build -cover -o "$tui" ./cmd/serf-tui || { echo "build serf-tui failed" >&2; exit 1; }
@@ -76,7 +79,8 @@ run "$tui" --bogus
 # Web-hub battery: start the real hub HTTP server (instrumented) on a loopback
 # port, drive its routes with curl, then stop it. Captures the web handler /
 # API / static-asset paths that only run inside the serving binary. Skipped if
-# curl is unavailable.
+# curl is unavailable. Routes are verified against the real built dist/ to
+# ensure asset coverage exercises actual Vite hashed paths, not stale routes.
 if command -v curl >/dev/null 2>&1; then
 	echo "==> driving the web-hub HTTP battery"
 	hub="$workdir/serf-hub"
@@ -88,11 +92,35 @@ if command -v curl >/dev/null 2>&1; then
 		# wait up to ~5s for the listener line.
 		for _ in $(seq 1 50); do grep -q 'listening on' "$workdir/hub.log" 2>/dev/null && break; sleep 0.1; done
 		base="http://127.0.0.1:$port"
+
+		# Extract real asset paths from the built index.html to verify /webassets/ routes work.
+		# Vite outputs hashed filenames like /webassets/index-<hash>.js; grep index.html to find them.
+		if [ -f "cmd/serf-hub/frontend/dist/index.html" ]; then
+			# Extract all /webassets/* paths from index.html (e.g., src="/webassets/index-CmdW429A.js")
+			webasset_routes=$(grep -oE '"/webassets/[^"]+' "cmd/serf-hub/frontend/dist/index.html" | tr -d '"' | sort -u)
+		else
+			webasset_routes=""
+		fi
+
 		for route in / /api/health /api/models /api/tree "/api/search?q=x" \
-			/api/spawn-schema /credentials /auth /assets/style.css /assets/renderer.js \
+			/api/spawn-schema /credentials /auth \
 			/api/sessions/nonexistent /doc/file /nonexistent-route; do
 			curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
 		done
+
+		# Test real /webassets/* routes (Vite-hashed assets, only available after build-web).
+		# These are auth-gated so expect 401, not 404. A 404 would indicate stale coverage.
+		if [ -n "$webasset_routes" ]; then
+			for asset_route in $webasset_routes; do
+				http_code=$(curl -s -w '%{http_code}' --max-time 5 "$base$asset_route" -o /dev/null 2>&1)
+				case "$http_code" in
+					401|200) ;; # auth-gated (401) or open (200) — both OK, route exists
+					404) echo "    ERR: /webassets route returned 404 (stale/missing): $asset_route" >&2; exit 1 ;;
+					*) echo "    WARN: /webassets route returned HTTP $http_code: $asset_route" >&2 ;;
+				esac
+			done
+		fi
+
 		# a couple of POSTs against validate/create (error paths, no real spawn).
 		curl -fsS --max-time 5 -X POST "$base/api/path/validate" -d '{}' >/dev/null 2>&1 || true
 		kill -TERM "$hub_pid" 2>/dev/null || true
