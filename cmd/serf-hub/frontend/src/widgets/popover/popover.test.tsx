@@ -82,3 +82,45 @@ test("closeOnScroll={false} keeps the panel open through a window scroll and a r
   expect(onClose).not.toHaveBeenCalled();
   expect(screen.getByTestId("panel")).toBeTruthy();
 });
+
+// A panel whose content arrives asynchronously (the model picker's catalog
+// fetch: a narrow loading skeleton, then a full-width list) changes size after
+// the open-time measure. Placement must follow, or a flipped panel computed
+// off the small size hangs off the viewport edge - observed live at 390px: a
+// 98px skeleton right-aligned to its trigger, grown to 368px, 6px off-screen.
+test("re-measures placement when the panel's own size changes after opening", async () => {
+  // jsdom ships no ResizeObserver; a manual stub lets the test drive the
+  // observation callback the same way a real size change would.
+  const callbacks: ResizeObserverCallback[] = [];
+  class StubResizeObserver {
+    constructor(cb: ResizeObserverCallback) {
+      callbacks.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  const original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  // Every element reports the same rect in jsdom (all zeros), so assert on the
+  // re-measure happening at all: a second computePopoverPosition pass runs and
+  // the panel keeps a concrete inline placement.
+  try {
+    render(
+      <Popover open onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
+        <div>panel body</div>
+      </Popover>,
+    );
+    const panel = screen.getByTestId("panel");
+    expect(callbacks).toHaveLength(1);
+
+    const grow = callbacks[0];
+    if (!grow) throw new Error("expected Popover to observe its panel for size changes");
+    grow([], {} as ResizeObserver);
+
+    expect(panel.style.top).not.toBe("");
+    expect(panel.style.left).not.toBe("");
+  } finally {
+    globalThis.ResizeObserver = original;
+  }
+});

@@ -80,7 +80,9 @@ describe("buildPickerRows", () => {
     );
     const last = rows[rows.length - 1];
     if (last?.kind !== "unavailable") throw new Error("expected an unavailable row last");
-    expect(last.text).toBe("ollama — connection refused — Is it running?");
+    // The wire's `hint` is a fixed ~300-character essay identical for every
+    // provider, so the picker line carries provider + message only.
+    expect(last.text).toBe("ollama — connection refused");
   });
 
   test("an unavailable line survives a query that matches its provider, and filters out otherwise", () => {

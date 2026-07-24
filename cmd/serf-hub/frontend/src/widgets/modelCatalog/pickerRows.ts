@@ -45,14 +45,21 @@ export function rowMeta(entry: ModelCatalogEntry, withProvider: boolean): string
   return parts.join(" · ");
 }
 
-/** A diagnostic as one line: who, what, and what to do about it. The label
- * prefers the provider name (that's what the user was looking for in the
- * list), falling back to the diagnostic's own title/source before a generic
- * word - a launch check that names neither still reads as a sentence. */
+/** A diagnostic as one line: who, and what went wrong. The label prefers the
+ * provider name (that's what the user was looking for in the list), falling
+ * back to the diagnostic's own title/source before a generic word - a launch
+ * check that names neither still reads as a sentence.
+ *
+ * The diagnostic's `hint` is deliberately NOT shown here. Live /api/models
+ * hints are a fixed multi-sentence essay about provider errors in general
+ * (identical text for every provider, ~300 characters); rendering it made
+ * each unavailable line dwarf the whole model list while the `message`
+ * already names the actual cause ("no OpenAI credentials configured",
+ * "connection refused"). The picker states who is unavailable and why; full
+ * remediation prose belongs where there's room for it. */
 export function unavailableLine(diag: ModelCatalogDiagnostic): string {
   const label = diag.provider || diag.title || diag.source || "provider";
-  const hint = diag.hint ? ` — ${diag.hint}` : "";
-  return `${label} — ${diag.message}${hint}`;
+  return `${label} — ${diag.message}`;
 }
 
 /** An unavailable line is only about its provider, so it survives a query

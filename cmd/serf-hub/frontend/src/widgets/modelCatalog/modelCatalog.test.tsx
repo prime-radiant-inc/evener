@@ -243,7 +243,7 @@ describe("Recent group", () => {
 // --- unavailable providers, in place, in small text ------------------------
 
 describe("unavailable providers", () => {
-  test("render as non-interactive in-place lines carrying message and hint", async () => {
+  test("render as non-interactive in-place lines carrying provider and message", async () => {
     const user = userEvent.setup();
     const withDiag: ModelCatalog = {
       models: [SONNET],
@@ -254,7 +254,8 @@ describe("unavailable providers", () => {
 
     await openPicker(user);
 
-    const line = await screen.findByText("ollama — connection refused — Is it running?");
+    // The wire's `hint` is generic boilerplate, so it stays out of the list.
+    const line = await screen.findByText("ollama — connection refused");
     expect(line.closest("li")?.getAttribute("role")).toBe("presentation");
     // No toggle button gating them anymore.
     expect(screen.queryByRole("button", { name: /unavailable/i })).toBeNull();

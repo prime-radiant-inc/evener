@@ -88,7 +88,27 @@ export function Popover({
     const triggerEl = triggerRef.current;
     const panelEl = panelRef.current;
     if (!triggerEl || !panelEl) return;
-    setPosition(computePopoverPosition(triggerEl.getBoundingClientRect(), panelEl.getBoundingClientRect()));
+
+    function measure() {
+      if (!triggerEl || !panelEl) return;
+      setPosition(computePopoverPosition(triggerEl.getBoundingClientRect(), panelEl.getBoundingClientRect()));
+    }
+    measure();
+
+    // A panel whose content arrives asynchronously (the model picker's
+    // catalog fetch: a narrow loading skeleton, then a full-width list) is a
+    // DIFFERENT size than the one just measured, and a flipped placement
+    // computed off the small size leaves the grown panel hanging off the
+    // viewport edge - measured live: a 98px-wide skeleton right-aligned to
+    // its trigger, then grown to 368px, pushed 6px past a 390px viewport.
+    // Re-measure whenever the panel's own box changes so the placement always
+    // describes the panel actually on screen. Feature-detected: jsdom (the
+    // test environment) implements no ResizeObserver, and the open-time
+    // measure above is the whole behavior without it.
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(panelEl);
+    return () => observer.disconnect();
   }, [open]);
 
   // Outside click closes. A click on the trigger is inside triggerRef, so this
