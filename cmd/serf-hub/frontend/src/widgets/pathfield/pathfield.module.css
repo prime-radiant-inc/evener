@@ -1,0 +1,173 @@
+/* The path field: a control-shaped trigger plus a floating browse panel.
+ * Tokens only; a neutral surface that never signals attention with color. */
+
+/* The closed field. Composed from the shared picker-trigger box (widgets/
+ * internal/fieldTrigger.module.css) so the model picker and this one stay one
+ * object rather than two copies; only the monospace face is this widget's own,
+ * since a path is read character by character. */
+.trigger {
+  composes: trigger from "../internal/fieldTrigger.module.css";
+  font-family: var(--font-mono);
+}
+
+.triggerValue {
+  composes: value from "../internal/fieldTrigger.module.css";
+}
+
+.triggerDefault {
+  composes: default from "../internal/fieldTrigger.module.css";
+}
+
+.chevron {
+  composes: chevron from "../internal/fieldTrigger.module.css";
+}
+
+.srOnly {
+  composes: srOnly from "../internal/fieldTrigger.module.css";
+}
+
+/* The floating panel's own content padding/sizing - widgets/popover's shared
+ * chassis supplies position/background/border/radius/animation. Width is
+ * capped against the viewport so the same panel works on a phone, reserving
+ * both of computePosition's EDGE_MARGINs (8px a side). */
+.popoverPanel {
+  padding: var(--space-3);
+  width: 380px;
+  max-width: calc(100dvw - var(--space-4));
+}
+
+/* The open panel: the path field over one internally-scrolling list. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+/* Matches Input's own field recipe (32px control height, hairline edge,
+ * control radius); monospace, like the trigger, because it holds a path. */
+.input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--ink-hi);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The list scrolls INTERNALLY (the popover never grows past the viewport, and
+ * scrolling here never dismisses the panel - see closeOnScroll at the
+ * PathField call site). */
+.list {
+  margin: 0;
+  padding: 0;
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  list-style: none;
+}
+
+/* Section eyebrow: "Recent projects", and the directory being listed (the
+ * "you are here" affordance). Small, quiet, not an option. The directory can
+ * be long, so it ellipsizes rather than widening the panel. */
+.groupRow {
+  padding: var(--space-2) var(--space-2) var(--space-1);
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0.04em;
+}
+
+/* The current directory reads as a path, not as a section title, so it keeps
+ * the monospace face and the mixed case it actually has. */
+.groupPath {
+  font-family: var(--font-mono);
+  text-transform: none;
+}
+
+.groupLabel {
+  text-transform: uppercase;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--surface-2);
+}
+
+/* The active option is a virtual one (aria-activedescendant), not real DOM
+ * focus - real focus stays on the input the whole time - so this is a plain
+ * background wash, not a :focus-visible rule. */
+.rowActive {
+  background: var(--accent-bg);
+}
+
+/* The row's own name (a basename, or "../") is what the user is reading and
+ * choosing by, so it NEVER yields: flex-shrink 0 keeps it at its natural
+ * width and the meta absorbs the whole overflow (see .meta). Basenames are
+ * short; the full path on a Recent row is what runs long. It still ellipsizes
+ * rather than overflowing, for a pathologically long name. */
+.rowName {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The entry-kind glyph: a folder or a document outline, in passive ink. */
+.icon {
+  flex: 0 0 auto;
+  color: var(--ink-mid);
+}
+
+/* The current file's marker. Paired with aria-selected on the row, never
+ * carrying the meaning alone. */
+.check {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+}
+
+/* A Recent row's full path: passive small text at the row's trailing edge.
+ * min-width: 0 is what lets a nowrap flex item shrink at all - without it
+ * this long line would refuse to give and would starve the name instead. */
+.meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Loading / nothing-here: in place where the rows would be, dim, small, and
+ * not an option. */
+.status {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
