@@ -75,7 +75,37 @@ test("only the field matching the checked source radio is shown", async () => {
   expect(screen.queryByPlaceholderText("https://github.com/owner/repo.git")).toBeNull();
 
   await user.click(screen.getByRole("radio", { name: "Local path" }));
-  expect(screen.getByPlaceholderText("/absolute/path")).toBeTruthy();
+  expect(screen.getByText("/absolute/path")).toBeTruthy(); // the picker's own empty-value marker
+});
+
+test("the local-path field browses real directories and sends the picked one", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  extensionsStore.setState({ marketplaces: [] });
+  fake.on("serf/paths/complete", (params) => {
+    // Directories only, and the prefix goes over the wire verbatim.
+    expect(params).toEqual({ prefix: "", includeFiles: false });
+    return { data: ["/opt/marketplaces"] };
+  });
+  fake.on("serf/marketplace/add", (params) => {
+    expect(params).toEqual({ name: "", source: { kind: "directory", path: "/opt/marketplaces" } });
+    return { marketplaces: [] };
+  });
+  render(<MarketplacesSection expandedMarketplaces={new Set()} />);
+  await user.click(screen.getByRole("button", { name: "+ Add marketplace" }));
+  await user.click(screen.getByRole("radio", { name: "Local path" }));
+
+  await user.click(screen.getByLabelText("Local path"));
+  // The picker's panel portals to document.body, so its rows come off screen,
+  // not from inside the add form. A directory row descends AND becomes the
+  // value, so the panel stays open - close it before reaching for Add.
+  await user.click(await screen.findByRole("option", { name: /marketplaces/ }));
+  await user.keyboard("{Escape}");
+
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  await waitFor(() =>
+    expect(getToasts().some((t) => t.kind === "success" && t.text === "Added marketplace")).toBe(true),
+  );
 });
 
 test("submitting the github kind sends {kind:github,repo} and closes on success", async () => {
