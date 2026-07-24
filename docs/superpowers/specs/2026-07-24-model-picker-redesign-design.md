@@ -1,7 +1,7 @@
 # Model Picker Redesign
 
 **Date:** 2026-07-24
-**Status:** Approved pending Jesse's spec review
+**Status:** Implemented (plan: `docs/superpowers/plans/2026-07-24-model-picker-redesign.md`)
 **Surfaces:** `widgets/modelCatalog` (`ModelCatalogPanel`, `ModelCatalog`), `widgets/combobox`, `widgets/popover`, `panes/session/chrome/ModelSwitch`, `panes/spawn/ModelField`
 
 ## Problem
