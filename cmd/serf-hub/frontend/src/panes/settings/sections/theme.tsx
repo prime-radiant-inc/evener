@@ -98,7 +98,7 @@ export function ThemeSection() {
         />
         <p className={CLASS.help}>
           Desktop only. Collapsed hides the sidebar entirely — reopen it with the ☰ chip (top-left) as an overlay
-          drawer; Auto collapses below 1200px and expands above it. <Code>⌘B</Code> cycles collapsed → pane → auto.
+          drawer; Auto docks the sidebar on any desktop width (≥900px). <Code>⌘B</Code> cycles collapsed → pane → auto.
         </p>
       </div>
 

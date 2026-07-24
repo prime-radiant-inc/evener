@@ -50,7 +50,29 @@ function installMatchMediaStub(initialMatches: boolean) {
   return { matchMedia, lists };
 }
 
-const WIDE_QUERY = "(min-width: 1200px)";
+// Width-parametrized matchMedia stub: unlike installMatchMediaStub (which
+// forces one fixed match state for every query), this evaluates each
+// "(min-width: Npx)" query the hook issues against a concrete viewport width,
+// so a test can assert the resolved dock behavior at a specific px WITHOUT
+// hardcoding which breakpoint the code queries. That makes "docks at 1000px" a
+// genuine breakpoint-value test: it resolves not-collapsed only because the
+// code queries a threshold at or below 1000px.
+function installViewportWidth(width: number) {
+  const lists = new Map<string, FakeMediaQueryList>();
+  const matchMedia = vi.fn((query: string) => {
+    let list = lists.get(query);
+    if (!list) {
+      const min = /min-width:\s*(\d+)px/.exec(query);
+      list = new FakeMediaQueryList(query, min ? width >= Number(min[1]) : false);
+      lists.set(query, list);
+    }
+    return list;
+  });
+  window.matchMedia = matchMedia as unknown as typeof window.matchMedia;
+  return { matchMedia, lists };
+}
+
+const WIDE_QUERY = "(min-width: 900px)";
 
 beforeEach(() => {
   // Drive the store directly (bypassing setSidebarMode's localStorage write,
@@ -72,15 +94,27 @@ test("pane mode is never collapsed, above or below the breakpoint", () => {
   expect(result.current).toEqual({ mode: "pane", collapsed: false });
 });
 
-test("auto mode collapses below the 1200px breakpoint", () => {
-  installMatchMediaStub(false); // narrow: below 1200px
+test("auto mode collapses below the 900px breakpoint", () => {
+  installMatchMediaStub(false); // narrow: below 900px
   prefsStore.setState({ sidebarMode: "auto" });
   const { result } = renderHook(() => useSidebarMode());
   expect(result.current).toEqual({ mode: "auto", collapsed: true });
 });
 
-test("auto mode expands at or above the 1200px breakpoint", () => {
-  installMatchMediaStub(true); // wide: >=1200px
+test("auto mode expands at or above the 900px breakpoint", () => {
+  installMatchMediaStub(true); // wide: >=900px
+  prefsStore.setState({ sidebarMode: "auto" });
+  const { result } = renderHook(() => useSidebarMode());
+  expect(result.current).toEqual({ mode: "auto", collapsed: false });
+});
+
+// The 3w2p fix: auto docks across the whole desktop range, so a mid-desktop
+// 1000px viewport (which used to collapse under the old 1200px threshold) now
+// stays expanded. Uses the width-parametrized stub so this passes only because
+// the queried threshold is at or below 1000px, not because a constant was
+// renamed.
+test("auto mode docks (not collapsed) at 1000px, the old collapse zone", () => {
+  installViewportWidth(1000);
   prefsStore.setState({ sidebarMode: "auto" });
   const { result } = renderHook(() => useSidebarMode());
   expect(result.current).toEqual({ mode: "auto", collapsed: false });
@@ -93,7 +127,7 @@ test("rail (Collapsed) mode is always collapsed, even on a wide viewport", () =>
   expect(result.current).toEqual({ mode: "rail", collapsed: true });
 });
 
-test("queries the exact 1200px desktop breakpoint (distinct from the 900px mobile one)", () => {
+test("queries the 900px desktop dock breakpoint (the first non-mobile pixel)", () => {
   const { matchMedia } = installMatchMediaStub(true);
   renderHook(() => useSidebarMode());
   expect(matchMedia).toHaveBeenCalledWith(WIDE_QUERY);
@@ -105,7 +139,7 @@ test("auto mode reacts when the viewport crosses the breakpoint", () => {
   const { result } = renderHook(() => useSidebarMode());
   expect(result.current.collapsed).toBe(false);
 
-  act(() => lists.get(WIDE_QUERY)!.emit(false)); // shrink below 1200px
+  act(() => lists.get(WIDE_QUERY)!.emit(false)); // shrink below 900px
 
   expect(result.current.collapsed).toBe(true);
 });

@@ -19,24 +19,110 @@
   border-right: none;
 }
 
+/* The sidebar owns its own chrome (c8gt): a header zone stacking the brand
+ * row, a full-width palette-opening search field, the primary "+ New session"
+ * button, and the "Sessions" section label - a column so none of it steals a
+ * full-width top bar's worth of the workspace's vertical space. */
 .header {
   flex: none;
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  flex-direction: column;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--edge);
 }
 
-.title {
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.brandName {
   flex: 1 1 auto;
-  margin: 0;
   color: var(--ink-hi);
   font-family: var(--font-sans);
-  font-size: var(--font-size-pane-title);
+  font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
-  line-height: var(--line-height-title);
   letter-spacing: var(--tracking-display);
+}
+
+/* Search field is a button (a palette opener), styled to read as an input:
+ * full-width, quiet surface, muted placeholder-like label, ⌘K chord pinned
+ * right in the mono face. */
+.search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-2);
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  cursor: text;
+}
+
+.search:hover {
+  border-color: var(--accent);
+}
+
+.search:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.searchLabel {
+  flex: 1 1 auto;
+  text-align: left;
+}
+
+.searchChord {
+  flex: none;
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+/* Stretches the primary Button to the rail's full width without touching the
+ * widget's own computed className (Button owns its class list). */
+.newSession {
+  display: grid;
+}
+
+.title {
+  margin: 0;
+  padding-top: var(--space-1);
+  color: var(--ink-low);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Pinned footer: identity + settings gear. The scrolling .body (flex:1 1 auto)
+ * pushes it to the bottom, so it never eats space from the tree. */
+.footer {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--edge);
+}
+
+.footerIdentity {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
 }
 
 .body {
@@ -86,8 +172,9 @@
 }
 
 /* --- collapsed-rail ☰ chip (RailHost.tsx) --------------------------------
- * When sidebarMode collapses the rail (rail mode, or auto below 1200px),
- * RailHost hides the rail entirely and leaves this chip pinned top-left; it
+ * When sidebarMode collapses the rail (rail mode; auto only collapses below
+ * 900px, a width already handed to StackHost), RailHost hides the rail
+ * entirely and leaves this chip pinned top-left; it
  * opens the rail as an overlay drawer. align-self keeps it hugging the top of
  * the workspace row rather than stretching a full-height column. */
 .chipBar {
