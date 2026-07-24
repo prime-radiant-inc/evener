@@ -1668,7 +1668,7 @@ describe("useThreadsStore.watchThread", () => {
     await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
 
     const call = fake.calls.find((c) => c.method === "thread/read");
-    expect((call?.params as { includeTurns: boolean }).includeTurns).toBe(true);
+    expect(call?.params).toMatchObject({ includeTurns: true });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
   });
 

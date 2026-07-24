@@ -206,7 +206,10 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
             {activity.map((it, idx) => {
               const latest = childRunning && idx === activity.length - 1;
               return (
-                <li key={it.id} className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}>
+                <li
+                  key={it.id}
+                  className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}
+                >
                   {it.description}
                 </li>
               );
