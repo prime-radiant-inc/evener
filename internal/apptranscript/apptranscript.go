@@ -50,6 +50,7 @@ func PreludeTurn(header transcript.Header) *appwire.Turn {
 			Description: "System prompt",
 			Text:        systemPrompt,
 			Status:      appwire.TurnStatusCompleted,
+			EventKind:   appwire.ThreadItemEventKindSystemPrompt,
 		})
 	}
 	if len(items) == 0 {

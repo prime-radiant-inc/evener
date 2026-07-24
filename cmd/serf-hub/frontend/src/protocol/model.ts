@@ -24,6 +24,13 @@ export interface ItemModel {
   // Tool-call purpose — the wire ThreadItem.description, surfaced for the
   // subagent Activity feed. Dropped historically by wireItemToModel; now carried.
   description?: string;
+  // The wire ThreadItem.eventKind: a stable typed discriminator naming what a
+  // systemMessage item is ("system_prompt", "compaction", "skill_activated",
+  // …; appwire.ThreadItemEventKind* on the Go side). The transcript renderer
+  // classifies scaffold/system items off this typed field instead of guessing
+  // from the item's char count (kata ckgw). Empty/undefined for non-system
+  // items and for a system item projected by a daemon predating a given kind.
+  eventKind?: string;
   output?: string;
   // Tool-result error text (wire ThreadItem.error): populated instead of
   // output when a tool call failed or was denied. The wire projects item

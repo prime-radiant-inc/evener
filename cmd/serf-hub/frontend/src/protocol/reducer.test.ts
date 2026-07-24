@@ -1248,6 +1248,34 @@ test("wireItemToModel carries the wire description (tool-call purpose) onto the 
   expect(itemAt(turnAt(model, 0), 0).description).toBe("audit the reducer");
 });
 
+// systemMessage items carry a stable typed discriminator, ThreadItem.eventKind
+// (appwire.ThreadItemEventKind*), naming what happened — "system_prompt",
+// "compaction", etc. wireItemToModel historically dropped it, forcing the
+// transcript renderer to guess scaffold items from their char count. The model
+// must carry it so classification is by wire type, not a heuristic (kata ckgw).
+test("wireItemToModel carries the wire eventKind (scaffold/system discriminator) onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_system",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_system_prompt",
+            type: "systemMessage",
+            text: "You are Serf.",
+            eventKind: "system_prompt",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).eventKind).toBe("system_prompt");
+});
+
 // On reload, apptranscript.TurnsFromFile mints one wire turn per transcript
 // entry, so a tool CALL (assistant entry) and its RESULT (tool-results entry)
 // arrive as two items sharing a callId, with different ids, in separate turns.
