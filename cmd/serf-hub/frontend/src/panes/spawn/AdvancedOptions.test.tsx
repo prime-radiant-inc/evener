@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { LaunchConfigResolved, LaunchOption } from "../../protocol/types.gen";
 import { AdvancedOptions } from "./AdvancedOptions";
@@ -16,7 +17,11 @@ const RESOLVED: LaunchConfigResolved = {
   provenance: {},
 };
 
-function renderPanel(options: LaunchOption[], over: Partial<Parameters<typeof AdvancedOptions>[0]> = {}) {
+function renderPanel(
+  options: LaunchOption[],
+  over: Partial<Parameters<typeof AdvancedOptions>[0]> = {},
+  children?: ReactNode,
+) {
   const onOverridesChange = over.onOverridesChange ?? vi.fn();
   const validatePath = over.validatePath ?? vi.fn().mockResolvedValue({ valid: true });
   const resolveConfig = over.resolveConfig ?? vi.fn().mockResolvedValue(RESOLVED);
@@ -26,7 +31,9 @@ function renderPanel(options: LaunchOption[], over: Partial<Parameters<typeof Ad
       onOverridesChange={onOverridesChange as (o: unknown) => void}
       validatePath={validatePath as (p: string, k: string) => Promise<{ valid: boolean; error?: string }>}
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
-    />,
+    >
+      {children}
+    </AdvancedOptions>,
   );
   return { onOverridesChange, validatePath, resolveConfig };
 }
@@ -103,4 +110,25 @@ test("a pathList control adds and collects entries", async () => {
   await user.keyboard("{Enter}");
 
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
+});
+
+test("renders children inside the expanded panel, before any schema control (9ct0)", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })],
+    {},
+    <div data-testid="child-slot">hi</div>,
+  );
+
+  expect(screen.queryByTestId("child-slot")).toBeNull(); // panel is collapsed by default
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const toggleButton = screen.getByRole("button", { name: "Advanced options" });
+  const panelId = toggleButton.getAttribute("aria-controls");
+  if (!panelId) throw new Error("expected aria-controls on the toggle");
+  const panel = document.getElementById(panelId);
+  if (!panel) throw new Error("expected the expanded panel to be in the document");
+
+  // The child slot is the panel's first child, ahead of the schema controls.
+  expect(panel.firstElementChild).toBe(screen.getByTestId("child-slot"));
 });

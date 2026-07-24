@@ -5,7 +5,7 @@
 // wire-free (the parent injects validatePath/resolveConfig closures over the
 // appwire client). The rich per-control fidelity (multiline text, model-picker
 // popups) is interim; the pure collect/precedence logic is fully in schema.ts.
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
@@ -28,9 +28,18 @@ export interface AdvancedOptionsProps {
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
   validatePath: (path: string, kind: string) => Promise<{ valid: boolean; error?: string }>;
   resolveConfig: (overrides: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
+  /** Rendered first inside the expanded panel, ahead of the schema controls
+   * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
+  children?: ReactNode;
 }
 
-export function AdvancedOptions({ options, onOverridesChange, validatePath, resolveConfig }: AdvancedOptionsProps) {
+export function AdvancedOptions({
+  options,
+  onOverridesChange,
+  validatePath,
+  resolveConfig,
+  children,
+}: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<AdvancedValues>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -84,6 +93,7 @@ export function AdvancedOptions({ options, onOverridesChange, validatePath, reso
       </button>
       {open && (
         <div id={panelId} className={CLASS.panel}>
+          {children}
           {options.map((opt) => (
             <Control
               key={opt.wireField}
