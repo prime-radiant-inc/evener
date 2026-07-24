@@ -538,6 +538,60 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40}
 }
 
+// TestPastEntryThreadAdvertisesResumableCapabilities asserts a past/exited
+// local thread advertises exactly the capabilities that actually succeed once
+// qp94's auto-resume is in place (kata xr4x). The resume-and-retry mutations
+// (compact, clear, change model, shutdown) plus the always-available ones
+// (send, fork, goal, rename) are true; the turn-in-flight controls (steer,
+// interrupt, queue) are false because a cold exited session has no active turn
+// for them to act on.
+func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-repo-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt: now,
+		UpdatedAt: now,
+		TurnCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := idx.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	thread := requirePastEntryThread(t, hubcore.WebConfig{Past: idx}, entry, false)
+	caps := thread.Serf.Capabilities
+
+	want := appwire.ThreadCapabilities{
+		Send:         true,
+		ForkFromTurn: true,
+		Compact:      true,
+		Clear:        true,
+		ChangeModel:  true,
+		Shutdown:     true,
+		Goal:         true,
+		Rename:       true,
+		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
+		// active turn on a cold exited session.
+	}
+	if caps != want {
+		t.Fatalf("past thread capabilities:\n got  %+v\n want %+v", caps, want)
+	}
+}
+
 func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	full, ok := requirePastThreadForRead(t, cfg, params)
