@@ -56,6 +56,8 @@ export { ModelCatalog, ModelCatalogPanel } from "./modelCatalog";
 export type { PaneScaffoldProps } from "./panescaffold";
 // --- data batch (W2T4) ---
 export { PaneScaffold } from "./panescaffold";
+export type { PathFieldKind, PathFieldPanelProps, PathFieldProps } from "./pathfield";
+export { PathField, PathFieldPanel } from "./pathfield";
 export type { PathPickerProps } from "./pathpicker";
 export { PathPicker } from "./pathpicker";
 export type { PopoverProps } from "./popover";
