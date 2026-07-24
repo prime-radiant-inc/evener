@@ -91,3 +91,24 @@ func (s *Session) drainSteeringForTurn() []steeringMessage {
 	}
 	return msgs
 }
+
+// peekSteeringForTurn snapshots the pending steering batch WITHOUT removing it
+// from the queue, folding every message's provenance into the active set
+// UPFRONT — before any message is consumed — exactly as drainSteeringForTurn
+// does for the whole batch. injectDrainedSteering pairs it with a
+// pop-one/persist/consume loop (popSteeringHead) so the queue shrinks as each
+// message is durably recorded, narrowing the crash window to a single in-flight
+// message instead of the whole batch. Unioning here, upfront, rather than
+// per-message at consume time, is what keeps emit()'s active-provenance stamp
+// identical for every message in the batch — the watch-loop-suppression timing
+// the causal-provenance machinery depends on (see the injectDrainedSteering
+// crash-window note).
+func (s *Session) peekSteeringForTurn() []steeringMessage {
+	s.mu.Lock()
+	msgs := append([]steeringMessage{}, s.steeringQueue...)
+	s.mu.Unlock()
+	for _, msg := range msgs {
+		s.unionActiveProvenance(msg.Provenance)
+	}
+	return msgs
+}
