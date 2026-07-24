@@ -374,13 +374,17 @@ export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = f
         )}
         {tree && !isEmptyTree(tree) && (
           <>
-            <RailSection
-              title="Needs you"
-              nodes={sessionNodes(tree.needs_you, isExpanded)}
-              onToggle={handleToggle}
-              onActivate={handleActivate}
-              actions={rowActions}
-            />
+            {/* The auto-grouped "Needs you" tier is deliberately NOT rendered
+                here (vbh8, §2.2): it duplicated a session already listed
+                under its own project/tier. Attention now surfaces inline -
+                the session's own Cadence dot (cadenceStateFor already maps
+                awaiting/warning to "needs-you") plus RailRow's derived
+                needs-you-descendant Badge - rather than as a second listing.
+                tree.needs_you itself is untouched (RailHost's ☰ chip badge
+                and attentionSummary.needsYou still read the underlying tiers)
+                - only this one RailSection is gone. Per Jesse's decision,
+                Live/Pinned/Projects/Archived/Test runs are all retained
+                as-is, including Live's own residual overlap with Projects. */}
             <RailSection
               title="Live"
               nodes={sessionNodes(tree.live, isExpanded)}

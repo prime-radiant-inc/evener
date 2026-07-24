@@ -21,7 +21,7 @@ import { Badge, Cadence, type CadenceState, IconButton, Menu, type MenuItem, typ
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import styles from "./Rail.module.css";
-import type { ProjectRailNode, RailNode, SessionRailNode } from "./railNodes";
+import { needsYouDescendantCount, type ProjectRailNode, type RailNode, type SessionRailNode } from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
@@ -236,6 +236,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           {"★"}
         </span>
       )}
+      {/* The session's OWN needs-you already shows via its amber Cadence dot
+          above (cadenceStateFor maps awaiting/warning to "needs-you") - this
+          Badge is specifically the count of things UNDER it, so a leaf
+          needs-you session shows just its dot, no redundant "0"/"1" (vbh8,
+          §2.2). */}
+      {needsYouDescendantCount(session) > 0 && <Badge count={needsYouDescendantCount(session)} tone="attention" />}
       {session.branch !== undefined && session.branch !== "" && <span className={CLASS.meta}>{session.branch}</span>}
       {session.tier !== undefined && session.tier !== "current" && session.tier !== "" && (
         <span className={CLASS.meta}>{session.tier}</span>

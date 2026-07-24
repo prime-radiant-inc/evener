@@ -67,6 +67,30 @@ export function sessionNodes(nodes: ApiTreeNode[], isExpanded: IsExpanded): Sess
   return nodes.map((n) => toSessionNode(n, isExpanded));
 }
 
+// Inlined rather than imported from RailRow's cadenceStateFor: importing it
+// here would cycle railNodes.ts <-> RailRow.tsx (RailRow already imports
+// railNodes for its node types). Same two wire states RailRow's own
+// cadenceStateFor maps to Cadence's "needs-you" family.
+function stateNeedsYou(state: string): boolean {
+  return state === "awaiting" || state === "warning";
+}
+
+/** Count of nodes in `node.children` (recursed through the whole subtree,
+ * not just direct children) whose own state is needs-you - i.e. how many
+ * things under this session need attention, excluding the node itself.
+ * Backs both the session row's derived attention Badge (vbh8, §2.2) and
+ * the needs-you-first sort below. */
+export function needsYouDescendantCount(node: ApiTreeNode): number {
+  return node.children.reduce((sum, c) => sum + (stateNeedsYou(c.state) ? 1 : 0) + needsYouDescendantCount(c), 0);
+}
+
+// A session "wants you" either directly (its own state) or transitively (a
+// needs-you descendant) - either way it should sort ahead of a quiet
+// sibling within the same project.
+function sessionWantsYou(n: ApiTreeNode): boolean {
+  return stateNeedsYou(n.state) || needsYouDescendantCount(n) > 0;
+}
+
 // Namespaced so a project branch's own id can never collide with a
 // session's row_id (row_ids are always "<scope>:...", but never start with
 // "projectnode:") within the same Tree instance.
@@ -96,7 +120,9 @@ export function projectNodeIdForSessionRef(projects: ApiTreeProject[], ref: stri
  * TreeProject[] on the wire, both ship their sessions inline (no lazy
  * load - only archived-project stubs omit sessions; see
  * cmd/serf-hub/web_api_tree.go's apiTreeProject doc comment), so both use
- * this same builder. */
+ * this same builder. Sessions sort needs-you-first (vbh8, §2.2) - a stable
+ * partition (Array.prototype.sort is stable in the target engines), so
+ * sessions that don't need you keep their incoming relative order. */
 export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded): ProjectRailNode[] {
   return projects.map((p) => {
     const id = projectNodeId(p.key);
@@ -105,7 +131,9 @@ export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded)
       kind: "project",
       project: p,
       expanded: isExpanded(id, p.default_expanded ?? false),
-      children: p.sessions.map((n) => toSessionNode(n, isExpanded)),
+      children: [...p.sessions]
+        .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
+        .map((n) => toSessionNode(n, isExpanded)),
     };
   });
 }
