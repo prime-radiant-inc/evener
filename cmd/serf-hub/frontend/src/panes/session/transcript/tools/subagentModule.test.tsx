@@ -1,7 +1,8 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
@@ -33,6 +34,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   resetSubagentModuleStoreForTests();
+  resetDisclosureStoreForTests();
   resetWorkspaceStoreForTests();
   registerDockviewApi(null); // never leak a fake dockview host to another test
 });
@@ -414,4 +416,117 @@ test("no open-transcript button when the row has no transcriptRef yet", () => {
   });
   render(<Body item={noRef} live={false} />);
   expect(screen.queryByRole("button", { name: /open transcript/i })).toBeNull();
+});
+
+// --- expanded card: disclosure + Mandate / Activity / Summary (qb8e, tv5k) -
+
+// A child thread/read that carries a real Activity feed (two tool-call items
+// with a `description` purpose) plus a final agentMessage summary - but ONLY
+// when the caller asked for turns. A lean (includeTurns:false) read returns
+// none, so a passing Activity/Summary assertion proves the expanded card's
+// watch upgraded to { includeTurns: true } (Task 9's Option B), not that the
+// lean row-dot watch happened to carry them.
+function childThreadRead(params: unknown, childStatus: string) {
+  const includeTurns = (params as { includeTurns: boolean }).includeTurns;
+  return {
+    thread: {
+      id: "thr_child",
+      sessionId: "sess_child",
+      preview: "",
+      ephemeral: false,
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      createdAt: 1000,
+      updatedAt: 1000,
+      status: { type: childStatus },
+      cwd: "/tmp",
+      cliVersion: "1.0.0",
+      source: "serf",
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+      turns: includeTurns
+        ? [
+            {
+              id: "turn_c1",
+              status: "completed",
+              itemsView: "full",
+              items: [
+                {
+                  id: "item_act_1",
+                  turnId: "turn_c1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "ca1",
+                  description: "step one",
+                  status: "completed",
+                },
+                {
+                  id: "item_act_2",
+                  turnId: "turn_c1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "ca2",
+                  description: "step two",
+                  status: "completed",
+                },
+                { id: "item_msg", turnId: "turn_c1", type: "agentMessage", text: "all done", status: "completed" },
+              ],
+            },
+          ]
+        : [],
+    },
+  };
+}
+
+test("an expanded delegate card shows the Mandate, a live Activity feed, and the Summary", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "active"));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_expand",
+    callId: "call_expand",
+    argumentsJSON: JSON.stringify({ task: "audit the reducer" }),
+    output: JSON.stringify({ job_id: "job_e", status: "running", transcript_ref: "ref_expand_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  // Collapsed: no expanded body yet.
+  expect(screen.queryByTestId("subagent-activity")).toBeNull();
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText("audit the reducer")); // click the summary to expand
+
+  // Mandate is the delegation task.
+  const mandate = await screen.findByTestId("subagent-mandate");
+  expect(within(mandate).getByText("audit the reducer")).toBeTruthy();
+
+  // Activity feed maps the child's tool-call description/purpose fields.
+  const activity = await screen.findByTestId("subagent-activity");
+  expect(within(activity).getByText("step one")).toBeTruthy();
+  expect(within(activity).getByText("step two")).toBeTruthy();
+
+  // Summary is the child's last agentMessage.
+  const summary = screen.getByTestId("subagent-summary");
+  expect(within(summary).getByText("all done")).toBeTruthy();
+});
+
+test("the collapsed pill reads the LIVE watched status, not the frozen tool-output value", async () => {
+  const fake = new FakeClient("ready");
+  // Frozen delegate output says running; the live child thread reports a
+  // systemError - the pill must follow the live status (yd16 write-back).
+  fake.on("thread/read", (params) => childThreadRead(params, "systemError"));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_live_pill",
+    callId: "call_live_pill",
+    argumentsJSON: JSON.stringify({ task: "will break" }),
+    output: JSON.stringify({ job_id: "job_lp", status: "running", transcript_ref: "ref_live_pill_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
+  expect(within(row).getByText("failed")).toBeTruthy();
 });
