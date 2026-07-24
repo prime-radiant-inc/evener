@@ -112,23 +112,21 @@ test("opening the picker fetches the catalog via listModels and shows a loading 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
 
-  expect(screen.getByText(/loading models/i)).toBeTruthy();
+  expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   box.resolve?.(modelListResponse());
   await waitFor(() => expect(screen.getByRole("combobox")).toBeTruthy());
 });
 
-test("renders every catalog entry as a combobox option once loaded", async () => {
+test("renders every catalog entry as an option immediately once loaded, with no keystroke", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combobox = await screen.findByRole("combobox");
-  await user.click(combobox);
-  await user.keyboard("{ArrowDown}"); // opens the popup (widgets/combobox's own contract) against the unfiltered (empty-query) option list
+  await screen.findByRole("combobox");
 
-  expect(screen.getAllByRole("option")).toHaveLength(3);
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
 });
 
 test("typing filters the option list by provider/model substring", async () => {
@@ -139,7 +137,9 @@ test("typing filters the option list by provider/model substring", async () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
   const combobox = await screen.findByRole("combobox");
-  await user.type(combobox, "opus");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("opus");
 
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
   expect(screen.getByRole("option", { name: /claude-opus-5/i })).toBeTruthy();
@@ -158,7 +158,9 @@ test("picking an option calls setModel with that option's provider/model and clo
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
   const combobox = await screen.findByRole("combobox");
-  await user.type(combobox, "gpt");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 
@@ -166,7 +168,10 @@ test("picking an option calls setModel with that option's provider/model and clo
   expect(screen.queryByRole("combobox")).toBeNull();
 });
 
-test("a failed catalog fetch surfaces an error toast and reverts to the passive chip", async () => {
+// A failed load surfaces the reason inline, in the open panel, over the search
+// field (which stays: the panel is still dismissable and the field still holds
+// the current model). No option list, since there is no catalog to list.
+test("a failed catalog fetch surfaces the error inline, keeping the field and the trigger", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("model/list", () => {
@@ -181,8 +186,9 @@ test("a failed catalog fetch surfaces an error toast and reverts to the passive 
   );
   await user.click(screen.getByRole("button", { name: /change model/i }));
 
-  await screen.findByText(/catalog boom/i);
-  expect(screen.queryByRole("combobox")).toBeNull();
+  expect((await screen.findByRole("alert")).textContent).toMatch(/catalog boom/i);
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(screen.getByRole("combobox")).toBeTruthy();
   expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
 });
 
@@ -201,6 +207,40 @@ test("pressing Escape closes an open picker", async () => {
   await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
   // Reverts to the passive chip + trigger, unchanged.
   expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+});
+
+// The picker's own list scrolls, and the transcript behind it can scroll too:
+// neither may dismiss it (it used to close on any scroll).
+test("a scroll does not close the open picker", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  window.dispatchEvent(new Event("scroll"));
+
+  expect(screen.getByRole("combobox")).toBeTruthy();
+});
+
+// Popover runs with autoFocus={false} so the panel's input can own focus and
+// its selection, which makes restoring focus to the trigger on close
+// ModelSwitch's own job. Without it, focus falls to <body>.
+test("closing returns focus to the trigger", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  const trigger = screen.getByRole("button", { name: /change model/i });
+  await user.click(trigger);
+  await screen.findByRole("combobox");
+  await user.keyboard("{Escape}");
+
+  await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
+  expect(document.activeElement).toBe(trigger);
 });
 
 test("a click outside the open picker closes it", async () => {
@@ -239,7 +279,9 @@ test("a failed setModel surfaces an error toast - the picker is already closed (
   );
   await user.click(screen.getByRole("button", { name: /change model/i }));
   const combobox = await screen.findByRole("combobox");
-  await user.type(combobox, "gpt");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 

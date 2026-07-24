@@ -117,7 +117,9 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
   const combobox = await screen.findByRole("combobox");
-  await user.type(combobox, "gpt");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
   await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
   await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
 

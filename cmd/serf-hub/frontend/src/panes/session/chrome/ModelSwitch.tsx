@@ -1,9 +1,10 @@
 // ModelSwitch: the mid-session model-switch trigger. The current model chip
 // IS the trigger (quiet hover affordance + a small chevron) - clicking it
 // opens the SAME rich catalog picker the spawn flow uses (ModelCatalogPanel:
-// search, capability badges, cost, context window, Recent, provider
-// diagnostics), as a floating popover so opening it never shifts the status
-// row's layout.
+// search over one always-expanded grouped list, capability/cost/context
+// metadata, Recent, provider diagnostics in place), in the SAME shared
+// floating Popover (widgets/popover, closeOnScroll={false}) - so opening it
+// never shifts the status row's layout and a scroll never dismisses it.
 //
 // The launchable SET still comes from threadsStore.listModels() (session-
 // lifetime cached in the store, da1b43f85's own doc comment - a repeat call
@@ -20,10 +21,17 @@
 // case, which updates the reasoning ladder alongside modelProvider/model),
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { Chip, type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, useToasts } from "../../../widgets";
+import {
+  Chip,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  ModelCatalogPanel,
+  Popover,
+  useToasts,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
@@ -37,11 +45,10 @@ export interface ModelSwitchProps {
 }
 
 const CLASS = {
-  anchor: requireClass(styles.anchor, "modelswitch.module.css", "anchor"),
   trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
   srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
-  popover: requireClass(styles.popover, "modelswitch.module.css", "popover"),
+  popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
 };
 
 function errorMessage(err: unknown): string {
@@ -54,7 +61,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   // A model switch mid-turn is refused by the daemon, so the trigger follows
   // the LIVE turn state, not only the static changeModel capability - the same
@@ -80,27 +87,13 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     }
   }
 
+  // Popover's FocusScope is opted out of focus management (autoFocus={false})
+  // so the panel's input can own focus and its selection - which makes
+  // restoring focus to the trigger on close this component's job.
   function closePicker() {
     setOpen(false);
+    triggerRef.current?.focus();
   }
-
-  // Escape and an outside click dismiss the open popover - same containment
-  // idiom widgets/menu uses for its own outside-click.
-  useEffect(() => {
-    if (!open) return;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    function onMouseDown(event: MouseEvent) {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    document.addEventListener("keydown", onKeyDown);
-    document.addEventListener("mousedown", onMouseDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.removeEventListener("mousedown", onMouseDown);
-    };
-  }, [open]);
 
   async function handlePick(entry: ModelCatalogEntry) {
     // Optimistic close (no rollback on failure) - matches the legacy
@@ -116,30 +109,40 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   }
 
   return (
-    <div className={CLASS.anchor} ref={pickerRef}>
-      <button
-        type="button"
-        className={CLASS.trigger}
-        onClick={() => (open ? closePicker() : void openPicker())}
-        disabled={disabled}
-      >
-        <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
-        <span className={CLASS.chevron} aria-hidden="true">
-          ▾
-        </span>
-        <span className={CLASS.srOnly}>— change model</span>
-      </button>
-      {open && (
-        <div className={CLASS.popover}>
-          <ModelCatalogPanel
-            loading={loading}
-            error={error}
-            catalog={catalog}
-            onPick={(entry) => void handlePick(entry)}
-            onCancel={closePicker}
-          />
-        </div>
-      )}
-    </div>
+    <Popover
+      open={open}
+      onClose={closePicker}
+      // The picker's own list scrolls, and the transcript behind it scrolls
+      // too: neither may dismiss a picker mid-interaction.
+      closeOnScroll={false}
+      // The panel's input owns focus and its own text selection - see
+      // closePicker for why FocusScope must not manage focus here.
+      autoFocus={false}
+      trigger={
+        <button
+          ref={triggerRef}
+          type="button"
+          className={CLASS.trigger}
+          onClick={() => (open ? closePicker() : void openPicker())}
+          disabled={disabled}
+        >
+          <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
+          <span className={CLASS.chevron} aria-hidden="true">
+            ▾
+          </span>
+          <span className={CLASS.srOnly}>— change model</span>
+        </button>
+      }
+    >
+      <div className={CLASS.popoverPanel}>
+        <ModelCatalogPanel
+          loading={loading}
+          error={error}
+          catalog={catalog}
+          value={modelLabel(model.modelProvider, model.model)}
+          onPick={(entry) => void handlePick(entry)}
+        />
+      </div>
+    </Popover>
   );
 }

@@ -1,8 +1,3 @@
-.anchor {
-  position: relative;
-  display: inline-flex;
-}
-
 /* Quiet trigger: no border/background until hover, so the chip itself reads
  * as the interactive element rather than a separate button beside it. */
 .trigger {
@@ -50,42 +45,12 @@
   border: 0;
 }
 
-/* Floating popover - zero layout shift when opened. Recipe matches
- * widgets/menu's own .popup (position/z-index/surface/motion), the
- * established pattern for this app's overlays - EXCEPT anchored from the
- * bottom, not the top: this trigger lives in the footer row, hard against
- * the pane's bottom edge, so a downward-opening popover has nowhere to go
- * and clips off the viewport entirely. Opening upward puts it over the
- * transcript area instead, which always has room. */
-.popover {
-  position: absolute;
-  bottom: calc(100% + var(--space-1));
-  left: 0;
-  z-index: 1020;
-  width: max(360px, 100%);
-  max-height: min(400px, 70vh);
-  overflow-y: auto;
+/* The floating panel's own content padding/sizing - widgets/popover supplies
+ * position/surface/border/radius/animation. Wider than the spawn form's copy
+ * because this picker's rows carry qualified provider/model ids, and capped
+ * against the viewport so the same panel works on a phone. */
+.popoverPanel {
   padding: var(--space-3);
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
-}
-
-@keyframes popoverFadeScale {
-  from {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .popover {
-    animation: none;
-  }
+  width: 400px;
+  max-width: calc(100vw - var(--space-4));
 }

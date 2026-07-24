@@ -58,6 +58,8 @@ export type { PaneScaffoldProps } from "./panescaffold";
 export { PaneScaffold } from "./panescaffold";
 export type { PathPickerProps } from "./pathpicker";
 export { PathPicker } from "./pathpicker";
+export type { PopoverProps } from "./popover";
+export { Popover } from "./popover";
 export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
 export type { SelectOption, SelectProps } from "./select";
