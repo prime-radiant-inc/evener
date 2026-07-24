@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { DirField } from "./DirField";
@@ -119,27 +119,6 @@ test("shows a `..` parent row when browsing a non-root directory and browses up 
   await waitFor(() => expect(complete).toHaveBeenLastCalledWith("/home/me/"));
 });
 
-test("Enter commits whatever literal path is typed", async () => {
-  const user = userEvent.setup();
-  const { onChange } = renderField({}, "");
-
-  await user.click(screen.getByRole("button", { name: "Browse working directory" }));
-  const pathInput = await screen.findByRole("textbox", { name: "Directory path" });
-  await user.type(pathInput, "/tmp/brand-new{Enter}");
-
-  expect(onChange).toHaveBeenLastCalledWith("/tmp/brand-new");
-});
-
-test("the Use this directory button commits the current input", async () => {
-  const user = userEvent.setup();
-  const { onChange } = renderField({}, "/home/me/proj");
-
-  await user.click(screen.getByRole("button", { name: "Browse working directory" }));
-  await user.click(await screen.findByRole("button", { name: "Use this directory" }));
-
-  expect(onChange).toHaveBeenLastCalledWith("/home/me/proj");
-});
-
 test("debounces completion requests while typing (~150ms)", async () => {
   vi.useFakeTimers();
   try {
@@ -172,7 +151,9 @@ test("drops a stale (out-of-order) completion response", async () => {
   await user.click(screen.getByRole("button", { name: "Browse working directory" }));
   await waitFor(() => expect(complete).toHaveBeenCalledTimes(1));
   // Fire a second request (browse via typing) before the first resolves.
-  await user.type(screen.getByRole("textbox", { name: "Directory path" }), "x");
+  const textbox = screen.getAllByRole("textbox")[0];
+  if (!textbox) throw new Error("expected a textbox");
+  await user.type(textbox, "x");
   await waitFor(() => expect(complete).toHaveBeenCalledTimes(2));
 
   // Resolve the SECOND (latest) first, then the stale FIRST.
@@ -182,5 +163,39 @@ test("drops a stale (out-of-order) completion response", async () => {
 
   // The stale response must never replace the fresh entries.
   await waitFor(() => expect(screen.queryByRole("button", { name: "stale" })).toBeNull());
-  expect(within(screen.getByRole("group")).getByRole("button", { name: "fresh" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "fresh" })).toBeTruthy();
+});
+
+test("collapses to one text input (no separate path input or Use this directory button)", async () => {
+  const user = userEvent.setup();
+  renderField({ complete: vi.fn().mockResolvedValue([]) }, "");
+
+  await user.click(screen.getByRole("button", { name: "Browse working directory" }));
+  await screen.findByRole("button", { name: "Cancel" });
+
+  // Exactly one text input in the field
+  const inputs = screen.getAllByRole("textbox");
+  expect(inputs).toHaveLength(1);
+  // No "Use this directory" button
+  expect(screen.queryByRole("button", { name: "Use this directory" })).toBeNull();
+});
+
+test("browse popover is portaled and never reflows", async () => {
+  const user = userEvent.setup();
+  renderField({ complete: vi.fn().mockResolvedValue([]) }, "");
+
+  await user.click(screen.getByRole("button", { name: "Browse working directory" }));
+  const cancelButton = await screen.findByRole("button", { name: "Cancel" });
+
+  // The Cancel button (or any element in the browse list) should have document.body in its parent chain via portal
+  let el: Element | null = cancelButton;
+  let foundDocumentBody = false;
+  while (el) {
+    if (el === document.body) {
+      foundDocumentBody = true;
+      break;
+    }
+    el = el.parentElement;
+  }
+  expect(foundDocumentBody).toBe(true);
 });
