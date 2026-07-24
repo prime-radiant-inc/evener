@@ -207,6 +207,24 @@ describe("buildPathRows", () => {
     ]);
   });
 
+  // The panel tracks its highlighted row BY KEY, so a Recent group arriving
+  // from a late listRecents must not renumber the listing rows underneath it -
+  // that would silently move the highlight onto a different row.
+  test("a listing row's key does not change when a Recent group appears above it", () => {
+    const base = {
+      kind: "dir" as const,
+      currentDir: "/home/jesse",
+      entries: ["/home/jesse/src", "/home/jesse/tmp"],
+      value: "",
+      recents: ["/home/jesse/serf"],
+      showRecents: false,
+    };
+    const keysOf = (rows: ReturnType<typeof buildPathRows>) =>
+      rows.filter((r) => r.kind === "dir" || r.kind === "parent").map((r) => r.key);
+
+    expect(keysOf(buildPathRows({ ...base, showRecents: true }))).toEqual(keysOf(buildPathRows(base)));
+  });
+
   test("keys stay unique when a path appears in both the recents group and the listing", () => {
     const rows = buildPathRows({
       kind: "dir",

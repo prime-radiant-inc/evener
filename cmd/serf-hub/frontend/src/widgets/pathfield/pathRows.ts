@@ -71,8 +71,11 @@ export function childrenPrefix(dir: string): string {
  * check - then `../`, then the directory's children with directories before
  * files.
  *
- * Keys are prefixed by section and suffixed by position, so a path that
- * appears BOTH under Recent and in the listing gets two distinct DOM ids.
+ * Keys are prefixed by section, so a path that appears BOTH under Recent and in
+ * the listing gets two distinct DOM ids, and they are numbered WITHIN their
+ * section rather than by absolute row position: the panel tracks its
+ * highlighted row by key, and a Recent group arriving late must not renumber
+ * the listing row the user already highlighted.
  */
 export function buildPathRows(input: {
   kind: "dir" | "file" | "outputFile";
@@ -88,30 +91,30 @@ export function buildPathRows(input: {
   const rows: PathRow[] = [];
 
   if (showRecents && recents.length > 0) {
-    rows.push({ kind: "group", key: `group:${rows.length}:recent`, label: RECENT_GROUP });
-    for (const path of recents) {
-      rows.push({ kind: "recent", key: `recent:${rows.length}:${path}`, path, name: basename(path) });
-    }
+    rows.push({ kind: "group", key: "group:recent", label: RECENT_GROUP });
+    recents.forEach((path, index) => {
+      rows.push({ kind: "recent", key: `recent:${index}:${path}`, path, name: basename(path) });
+    });
   }
 
   rows.push({
     kind: "group",
-    key: `group:${rows.length}:current`,
+    key: "group:current",
     label: currentDir === "" ? HOME_LABEL : currentDir,
   });
 
   // No parent to climb to from the filesystem root, and none from the
   // unresolved empty prefix (the client doesn't know what it resolves to).
   if (currentDir !== "" && currentDir !== "/") {
-    rows.push({ kind: "parent", key: `parent:${rows.length}`, path: parentOf(currentDir) });
+    rows.push({ kind: "parent", key: "parent", path: parentOf(currentDir) });
   }
 
   if (entries === null) {
-    rows.push({ kind: "status", key: `status:${rows.length}`, text: LOADING_TEXT });
+    rows.push({ kind: "status", key: "status", text: LOADING_TEXT });
     return rows;
   }
   if (entries.length === 0) {
-    rows.push({ kind: "status", key: `status:${rows.length}`, text: EMPTY_TEXT });
+    rows.push({ kind: "status", key: "status", text: EMPTY_TEXT });
     return rows;
   }
 
@@ -123,19 +126,21 @@ export function buildPathRows(input: {
   // A `dir` field's response is unsuffixed (includeFiles was false), so every
   // entry is a directory; a file field's directories carry the trailing slash.
   const isDir = (entry: string) => kind === "dir" || isDirEntry(entry);
-  for (const entry of entries.filter(isDir)) {
+  entries.filter(isDir).forEach((entry, index) => {
     const path = entry.replace(/\/+$/, "");
-    rows.push({ kind: "dir", key: `dir:${rows.length}:${path}`, path, name: basename(path), current: false });
-  }
-  for (const entry of entries.filter((e) => !isDir(e))) {
-    rows.push({
-      kind: "file",
-      key: `file:${rows.length}:${entry}`,
-      path: entry,
-      name: basename(entry),
-      current: wantedFile !== null && basename(entry) === wantedFile,
+    rows.push({ kind: "dir", key: `dir:${index}:${path}`, path, name: basename(path), current: false });
+  });
+  entries
+    .filter((e) => !isDir(e))
+    .forEach((entry, index) => {
+      rows.push({
+        kind: "file",
+        key: `file:${index}:${entry}`,
+        path: entry,
+        name: basename(entry),
+        current: wantedFile !== null && basename(entry) === wantedFile,
+      });
     });
-  }
 
   return rows;
 }

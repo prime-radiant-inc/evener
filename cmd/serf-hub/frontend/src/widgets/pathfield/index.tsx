@@ -177,7 +177,15 @@ export function PathFieldPanel({
   // Recents are dropped permanently by the first keystroke, for this panel's
   // lifetime - the same rule DirField had.
   const [showRecents, setShowRecents] = useState(listRecents !== undefined);
-  const [activeIndex, setActiveIndex] = useState(-1);
+  // The highlighted row, by KEY rather than by list position: rows arrive
+  // asynchronously (the listing, and the Recent group behind it), and an index
+  // would silently slide onto a different row the moment anything was inserted
+  // above it. undefined means nothing is highlighted, which is what lets Enter
+  // commit the typed literal.
+  const [activeKey, setActiveKey] = useState<string | undefined>(undefined);
+  // Whether the highlight is the user's own doing. The current-file seeding
+  // below is an opening courtesy, so it must never overwrite an arrow key.
+  const highlightIsUserSetRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Monotonic request id: a completion response older than the newest request
@@ -202,7 +210,25 @@ export function PathFieldPanel({
     [kind, currentDir, visibleEntries, value, recents, showRecents],
   );
   const picks = useMemo(() => pickableRows(rows), [rows]);
-  const activeKey = activeIndex >= 0 && activeIndex < picks.length ? picks[activeIndex]?.key : undefined;
+  // A key that no longer names a row (its listing was replaced) highlights
+  // nothing, rather than being clamped onto whatever now sits at that position.
+  const activeIndex = activeKey === undefined ? -1 : picks.findIndex((row) => row.key === activeKey);
+  const activeRow = activeIndex >= 0 ? picks[activeIndex] : undefined;
+
+  /** Move the highlight to a position in `picks`, and remember that the user is
+   * the one driving it - which is what makes the seeding effect below back off
+   * for the rest of this listing. */
+  function moveHighlight(index: number): void {
+    highlightIsUserSetRef.current = true;
+    setActiveKey(picks[index]?.key);
+  }
+
+  /** Clear the highlight and hand control back to the seeding effect: a new
+   * listing is on its way and its own current row should be highlighted. */
+  function resetHighlight(): void {
+    highlightIsUserSetRef.current = false;
+    setActiveKey(undefined);
+  }
 
   function runCompletion(prefix: string): void {
     requestedFilterRef.current = typedFilter(prefix);
@@ -239,12 +265,16 @@ export function PathFieldPanel({
     return () => clearTimeout(debounceRef.current);
   }, []);
 
-  // Until the user types, the highlight follows the current FILE (a directory
-  // row is never current - the group header is the you-are-here), so a file
-  // field opens showing where you already are.
+  // SEED the highlight onto the current FILE's row when a listing arrives (a
+  // directory row is never current - the group header is the you-are-here), so
+  // a file field opens showing where you already are. Seeding only: once the
+  // user has touched an arrow key this backs off entirely, because an async
+  // arrival re-running it would discard the row they just moved to - and then
+  // Enter would fall through to committing the typed literal and closing
+  // instead of descending (spec 3.6).
   useEffect(() => {
-    if (typed !== null) return;
-    setActiveIndex(picks.findIndex((row) => (row.kind === "file" || row.kind === "dir") && row.current));
+    if (typed !== null || highlightIsUserSetRef.current) return;
+    setActiveKey(picks.find((row) => (row.kind === "file" || row.kind === "dir") && row.current)?.key);
   }, [picks, typed]);
 
   // Keep the highlighted row visible inside the list's own scroll container.
@@ -260,7 +290,9 @@ export function PathFieldPanel({
     onChange(dir);
     setCurrentDir(dir);
     setTyped(null);
-    setActiveIndex(-1);
+    // A new listing is on its way: hand the highlight back to the seeding
+    // effect so the new directory's own current row gets it.
+    resetHighlight();
     clearTimeout(debounceRef.current);
     runCompletion(childrenPrefix(dir));
   }
@@ -281,7 +313,7 @@ export function PathFieldPanel({
     setShowRecents(false);
     // Nothing is active while typing, which is what lets Enter commit the
     // typed literal (an outputFile naming a file that doesn't exist yet).
-    setActiveIndex(-1);
+    resetHighlight();
     // A narrower last component usually filters the entries already in hand,
     // so only two things force a fresh listing: a different directory, or a
     // filter that crosses the leading-dot boundary. That second condition is
@@ -318,28 +350,27 @@ export function PathFieldPanel({
       case "ArrowDown":
         event.preventDefault();
         if (picks.length === 0) break;
-        setActiveIndex((current) => Math.min(current + 1, picks.length - 1));
+        moveHighlight(Math.min(activeIndex + 1, picks.length - 1));
         break;
       case "ArrowUp":
         event.preventDefault();
         if (picks.length === 0) break;
-        setActiveIndex((current) => Math.max(current - 1, 0));
+        moveHighlight(Math.max(activeIndex - 1, 0));
         break;
       case "Home":
         if (picks.length === 0) break;
         event.preventDefault();
-        setActiveIndex(0);
+        moveHighlight(0);
         break;
       case "End":
         if (picks.length === 0) break;
         event.preventDefault();
-        setActiveIndex(picks.length - 1);
+        moveHighlight(picks.length - 1);
         break;
       case "Enter": {
         event.preventDefault();
-        const row = activeIndex >= 0 ? picks[activeIndex] : undefined;
-        if (row) {
-          pickRow(row);
+        if (activeRow) {
+          pickRow(activeRow);
           break;
         }
         // Nothing highlighted: the typed literal IS the answer, which is what
@@ -364,7 +395,10 @@ export function PathFieldPanel({
         aria-expanded
         aria-autocomplete="list"
         aria-controls={listboxId}
-        aria-activedescendant={activeKey !== undefined ? rowDomId(listboxId, activeKey) : undefined}
+        // Named off the RESOLVED row, never off the stored key: a key whose row
+        // is no longer listed must not be pointed at, since an
+        // aria-activedescendant naming an absent element is an ARIA violation.
+        aria-activedescendant={activeRow !== undefined ? rowDomId(listboxId, activeRow.key) : undefined}
         aria-label="Path"
       />
       {/* <ul role="listbox">/<li role="option"> is the WAI-ARIA APG

@@ -425,6 +425,76 @@ test("Enter on an active directory row descends, exactly like clicking it", asyn
   expect(panelInput()).not.toBeNull();
 });
 
+/** An open dir field whose recents are still in flight, so resolving them is a
+ * late async arrival that re-renders the list under the user's feet. */
+async function openWithLateRecents(user: ReturnType<typeof userEvent.setup>) {
+  const recents = deferred<string[]>();
+  const props = renderField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"], "/home/jesse/src/": [] }),
+    listRecents: () => recents.promise,
+  });
+  const input = await open(user);
+  await waitFor(() => expect(screen.getByRole("option", { name: /src/ })).toBeTruthy());
+  return { ...props, input, resolveRecents: () => act(async () => recents.resolve(["/home/jesse/serf"])) };
+}
+
+// A listing that resolves after the user has already moved the highlight must
+// not move it: seeding the current file's row is an OPENING courtesy, not a
+// standing assertion.
+test("a late listRecents leaves a user-moved highlight exactly where it was", async () => {
+  const user = userEvent.setup();
+  const { input, resolveRecents } = await openWithLateRecents(user);
+
+  await user.keyboard("{End}");
+  const highlighted = input.getAttribute("aria-activedescendant");
+  expect(document.getElementById(highlighted ?? "")?.textContent).toMatch(/src/);
+
+  await resolveRecents();
+
+  expect(screen.getByText("Recent projects")).toBeTruthy();
+  expect(input.getAttribute("aria-activedescendant")).toBe(highlighted);
+});
+
+// The consequence of losing the highlight is worse than cosmetic: Enter falls
+// through to the commit-the-typed-literal branch and CLOSES the panel, which
+// violates spec 3.6 (Enter on an active row does what clicking it does).
+test("Enter after a late listRecents still descends into the highlighted directory", async () => {
+  const user = userEvent.setup();
+  const { input, onChange, complete, resolveRecents } = await openWithLateRecents(user);
+
+  await user.keyboard("{End}");
+  await resolveRecents();
+  await user.keyboard("{Enter}");
+
+  expect(onChange).toHaveBeenLastCalledWith("/home/jesse/src");
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/jesse/src/", false));
+  expect(panelInput()).not.toBeNull();
+  expect(input.isConnected).toBe(true);
+});
+
+// aria-activedescendant naming an element that isn't in the DOM is an ARIA
+// violation, and a listing being replaced can retire the highlighted row.
+test("aria-activedescendant is dropped when the highlighted row leaves the listing", async () => {
+  const user = userEvent.setup();
+  const complete = lister({
+    "/home/jesse/": ["/home/jesse/src", "/home/jesse/tmp"],
+    "/home/jesse/z": [],
+  });
+  renderField({ value: "/home/jesse", complete });
+  const input = await open(user);
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+
+  await user.keyboard("{End}");
+  expect(input.getAttribute("aria-activedescendant")).toBeTruthy();
+
+  // A filter that matches nothing: the highlighted row is gone.
+  await user.keyboard("/home/jesse/z");
+
+  await waitFor(() => expect(screen.getByText("Nothing here.")).toBeTruthy());
+  expect(input.getAttribute("aria-activedescendant")).toBeNull();
+});
+
 // --- dismissal --------------------------------------------------------------
 
 // closeOnScroll={false}: the panel's own list scrolls, and a page scroll
