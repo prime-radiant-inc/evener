@@ -1,17 +1,15 @@
-// The systemMessage item renderer: quiet lifecycle/skill notices (compaction,
-// model switch, skill activation, plugin loads, hook completions, round
-// timings, ...). protocol/model.ts's ItemModel does not carry the wire's
-// eventKind/description fields (types.gen.ts's ThreadItem has both;
-// reducer.ts's wireItemToModel - T1-owned, out of this stream's scope to
-// edit - never copies them across), so this renderer cannot distinguish
-// "skill activated" from "round timings" from "compaction" etc. the way
-// legacy's renderer.js does with its own separate coalescing tracks per
-// sub-kind. Given that, every systemMessage item gets the SAME honest,
-// quiet treatment uniformly - which already satisfies "system/skill
-// notices: collapsed-by-default quiet groups" literally (a skill activation
-// IS a systemMessage item, so it already gets the quiet/grouped treatment),
-// just without a separate visual identity per sub-kind. See the wave-4 T2
-// report for this as a flagged, deliberate scope simplification.
+// The systemMessage item renderer: quiet lifecycle/skill notices (model
+// switch, skill activation, plugin loads, hook completions, round timings,
+// ...) plus the scaffolding blocks (the session system prompt and compaction
+// summaries). Scaffolding is classified off the wire's typed
+// ThreadItem.eventKind discriminator (carried onto ItemModel by reducer.ts's
+// wireItemToModel) and rendered as a collapsed-by-default disclosure; every
+// other systemMessage kind gets the SAME honest, quiet one-line/grouped
+// treatment, without a separate visual identity per sub-kind. That already
+// satisfies "system/skill notices: collapsed-by-default quiet groups"
+// literally (a skill activation IS a systemMessage item, so it gets the
+// quiet/grouped treatment). See the wave-4 T2 report for the uniform
+// non-scaffold treatment as a deliberate scope simplification.
 //
 // Grouping (systemGrouping.ts's systemRunFor/shouldGroup) is recomputed
 // fresh from turn.items on every render: a run of 3+ consecutive
@@ -41,23 +39,25 @@ const CLASS = {
 };
 
 // The session's system prompt (apptranscript.go's PreludeTurn) arrives as a
-// systemMessage item with this exact, static id - protocol/model.ts's
-// ItemModel carries none of the wire's eventKind/description fields (see
-// this file's own top comment), so id is the only signal available here to
-// name it precisely, rather than guessing from content.
+// systemMessage item with this exact, static id. It is the narrow fallback
+// signal for a system prompt projected by an older daemon that predates the
+// typed system_prompt eventKind (below) - the id has been stable across every
+// version, so a heterogeneous-version relay still collapses it correctly.
 const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
 
-// Any OTHER systemMessage item this long (a compaction/context-checkpoint
-// summary is the realistic case - apptranscript.go's ProjectTurn, "Context
-// summary"/"Context checkpoint") reads as its own wall of unformatted
-// markdown once it clears a couple of sentences, so it earns the same
-// disclosure treatment even without a dedicated id. Below this, a notice
-// stays a plain quiet line - most lifecycle notices (model switch, goal
-// continuation) are well under this.
-const SCAFFOLD_CHAR_THRESHOLD = 500;
+// The systemMessage eventKinds (appwire.ThreadItemEventKind*) whose text is a
+// scaffolding block a reader collapses by default rather than a quiet
+// one-liner: the session system prompt, and a compaction summary/checkpoint
+// (apptranscript.go's ProjectTurn "Context summary"/"Context checkpoint",
+// each a wall of markdown). Every other kind (model switch, skill activation,
+// the short live context_compaction stats line, ...) stays a plain quiet
+// line. Classification is by this typed wire field, never the item's own char
+// count (kata ckgw).
+const SCAFFOLD_EVENT_KINDS = new Set(["system_prompt", "compaction"]);
 
 function isScaffoldItem(item: ItemModel): boolean {
-  return item.id === SYSTEM_PROMPT_ITEM_ID || item.text.length > SCAFFOLD_CHAR_THRESHOLD;
+  if (item.eventKind !== undefined && item.eventKind !== "") return SCAFFOLD_EVENT_KINDS.has(item.eventKind);
+  return item.id === SYSTEM_PROMPT_ITEM_ID;
 }
 
 // FALLBACK_LABEL covers a systemMessage item with no text at all (e.g. a
@@ -73,10 +73,12 @@ function noticeText(item: ItemModel): string {
 // scaffoldLabel names the disclosure's collapsed summary: the system
 // prompt gets its own exact, honest label (never a snippet of its own
 // content, which routinely opens with something less recognizable than
-// "System prompt"); any other scaffolding item falls back to the same
-// first-line preview SystemGroup already uses for its own summary.
+// "System prompt") - keyed off the typed system_prompt eventKind, or the
+// stable id for an older daemon that predates it; any other scaffolding item
+// falls back to the same first-line preview SystemGroup already uses for its
+// own summary.
 function scaffoldLabel(item: ItemModel): string {
-  if (item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
+  if (item.eventKind === "system_prompt" || item.id === SYSTEM_PROMPT_ITEM_ID) return "System prompt";
   return firstLine(noticeText(item), 60) || FALLBACK_LABEL;
 }
 

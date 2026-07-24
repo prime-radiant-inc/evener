@@ -552,6 +552,12 @@ type DiagnosticCause struct {
 // Stable semantic event kinds for systemMessage transcript items. These values
 // identify what happened; display titles and summaries may change independently.
 const (
+	// ThreadItemEventKindSystemPrompt marks the session's system prompt, the
+	// long scaffolding block PreludeTurn projects at the head of the
+	// transcript. It is the typed discriminator a client renders as a
+	// collapsed-by-default disclosure rather than a quiet one-liner, replacing
+	// what the web SPA formerly guessed from the item's own char count.
+	ThreadItemEventKindSystemPrompt      = "system_prompt"
 	ThreadItemEventKindPluginLoaded      = "plugin_loaded"
 	ThreadItemEventKindSkillActivated    = "skill_activated"
 	ThreadItemEventKindHookCompleted     = "hook_completed"

@@ -115,3 +115,41 @@ test("a systemMessage item with blank text falls back to a sentence-case categor
   render(<TurnBlock turn={turnWith([item("a", { text: "" })])} />);
   expect(screen.getByTestId("system-notice-line").textContent).toBe("System event");
 });
+
+// --- scaffold classification by typed eventKind (kata ckgw) ------------------
+// Scaffolding (the system prompt, a compaction summary) is classified by the
+// wire's typed ThreadItem.eventKind discriminator, NOT by a text-length
+// heuristic. A short-text scaffold item still gets the disclosure; a long
+// non-scaffold notice stays a quiet line.
+
+test("a system_prompt eventKind item renders as a collapsed scaffold disclosure, even when its text is short", () => {
+  render(<TurnBlock turn={turnWith([item("a", { text: "short", eventKind: "system_prompt" })])} />);
+  const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
+  expect(scaffold.tagName).toBe("DETAILS");
+  expect(scaffold.open).toBe(false);
+  expect(scaffold.querySelector("summary")?.textContent).toBe("System prompt · 5 chars");
+});
+
+test("a compaction eventKind item renders as a scaffold disclosure", () => {
+  render(<TurnBlock turn={turnWith([item("a", { text: "kept context", eventKind: "compaction" })])} />);
+  expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
+  expect(screen.queryByTestId("system-notice-line")).toBeNull();
+});
+
+test("a long systemMessage notice with no scaffold eventKind stays a plain quiet line (no char-count heuristic)", () => {
+  const wall = "x".repeat(2000);
+  render(<TurnBlock turn={turnWith([item("a", { text: wall })])} />);
+  expect(screen.getByTestId("system-notice-line")).toBeTruthy();
+  expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
+});
+
+// The stable item_system_prompt id remains a narrow fallback for a system
+// prompt projected by an older daemon that predates the typed eventKind, so a
+// heterogeneous-version relay still collapses it correctly.
+test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
+  render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Serf." })])} />);
+  expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
+  expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toBe(
+    "System prompt · 13 chars",
+  );
+});

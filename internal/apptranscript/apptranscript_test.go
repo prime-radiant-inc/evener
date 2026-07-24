@@ -24,6 +24,20 @@ func TestPreludeTurnUsesSemanticHeaderOnly(t *testing.T) {
 	}
 }
 
+// The system prompt is scaffolding a client renders as a collapsed
+// disclosure. It carries a typed EventKind discriminator so the web SPA
+// classifies it by wire type instead of guessing from the item's char count
+// (kata ckgw); ThreadItemEventKindSystemPrompt is that stable signal.
+func TestPreludeTurnTagsSystemPromptEventKind(t *testing.T) {
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."})
+	if turn == nil || len(turn.Items) != 1 {
+		t.Fatalf("prelude=%+v, want only system prompt", turn)
+	}
+	if got := turn.Items[0].EventKind; got != appwire.ThreadItemEventKindSystemPrompt {
+		t.Fatalf("system prompt eventKind=%q, want %q", got, appwire.ThreadItemEventKindSystemPrompt)
+	}
+}
+
 // TestTurnsFromFileStampsStartedAtFromEntryTimestamp verifies that a
 // reconstructed turn carries StartedAt from the transcript entry's recorded
 // timestamp, with DurationMS left nil — a message record has a point in time,
