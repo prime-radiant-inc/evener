@@ -53,8 +53,18 @@ func fakeReadDir(entries ...fakeDirEntry) func(string) ([]os.DirEntry, error) {
 	}
 }
 
+// basePath names an entry inside the fake listed directory, "/base".
+func basePath(name string) string {
+	return filepath.Join(string(filepath.Separator), "base", name)
+}
+
+// baseDirPrefix is the prefix that lists /base's children (trailing separator).
+func baseDirPrefix(filter string) string {
+	return basePath("") + string(filepath.Separator) + filter
+}
+
 func checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed(t *testing.T) {
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/"}, fakeReadDir(
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "file.txt"},
 	))
@@ -63,14 +73,14 @@ func checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed(t *testing.T) {
 	}
 	// Without IncludeFiles the response is byte-for-byte what it always was:
 	// directories only, and no trailing separator for any caller to strip.
-	want := []string{filepath.Join("/base", "sub")}
+	want := []string{basePath("sub")}
 	if !reflect.DeepEqual(resp.Data, want) {
 		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
 	}
 }
 
 func checkCompletePaths_IncludeFilesReturnsBoth(t *testing.T) {
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true}, fakeReadDir(
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "file.txt"},
 	))
@@ -83,8 +93,7 @@ func checkCompletePaths_IncludeFilesReturnsBoth(t *testing.T) {
 }
 
 func checkCompletePaths_IncludeFilesMarksDirsWithSeparator(t *testing.T) {
-	sep := string(filepath.Separator)
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true}, fakeReadDir(
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true}, fakeReadDir(
 		fakeDirEntry{name: "sub", dir: true},
 		fakeDirEntry{name: "afile.txt"},
 	))
@@ -92,7 +101,7 @@ func checkCompletePaths_IncludeFilesMarksDirsWithSeparator(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Equal-scoring entries sort by path, so the file sorts ahead of the dir.
-	want := []string{filepath.Join("/base", "afile.txt"), filepath.Join("/base", "sub") + sep}
+	want := []string{basePath("afile.txt"), basePath("sub") + string(filepath.Separator)}
 	if !reflect.DeepEqual(resp.Data, want) {
 		t.Fatalf("includeFiles data = %v, want %v", resp.Data, want)
 	}
@@ -103,8 +112,9 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 		fakeDirEntry{name: ".env"},
 		fakeDirEntry{name: "extra"},
 	)
-	dotEnv := filepath.Join("/base", ".env")
-	for _, prefix := range []string{"/base/", "/base/e"} {
+	dotEnv := basePath(".env")
+	for _, filter := range []string{"", "e"} {
+		prefix := baseDirPrefix(filter)
 		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: prefix, IncludeFiles: true}, readDir)
 		if err != nil {
 			t.Fatal(err)
@@ -113,7 +123,7 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 			t.Fatalf("prefix %q returned %v, want no dotfile until a leading dot is typed", prefix, resp.Data)
 		}
 	}
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/.e", IncludeFiles: true}, readDir)
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(".e"), IncludeFiles: true}, readDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +133,9 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 }
 
 func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
-	sep := string(filepath.Separator)
 	// The files sort ahead of the directories, so a cap that only counted
 	// directories would let all four through.
-	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true, Limit: 3}, fakeReadDir(
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix(""), IncludeFiles: true, Limit: 3}, fakeReadDir(
 		fakeDirEntry{name: "zed1", dir: true},
 		fakeDirEntry{name: "zed2", dir: true},
 		fakeDirEntry{name: "apex1"},
@@ -135,11 +144,7 @@ func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		filepath.Join("/base", "apex1"),
-		filepath.Join("/base", "apex2"),
-		filepath.Join("/base", "zed1") + sep,
-	}
+	want := []string{basePath("apex1"), basePath("apex2"), basePath("zed1") + string(filepath.Separator)}
 	if !reflect.DeepEqual(resp.Data, want) {
 		t.Fatalf("limited data = %v, want %v", resp.Data, want)
 	}
