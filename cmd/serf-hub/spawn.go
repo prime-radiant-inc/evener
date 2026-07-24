@@ -378,10 +378,13 @@ func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...Wait
 }
 
 // ResumeDaemon launches `serf serve --resume <sessionID>` and waits for
-// rendezvous. Returns the new daemon's rendezvous Entry.
+// rendezvous. Returns the resumed daemon's rendezvous Entry.
 //
-// Note: resume always creates a NEW session_id (the daemon mints a fresh
-// one). Caller resolves it via roster lookup after rendezvous appears.
+// Note: resume PRESERVES the existing session_id. The daemon restores via
+// RestoreSessionFromMetaWithConfig, which keeps the persisted meta.ID
+// (immutable across restart), so the returned Entry.SessionID is the same
+// id the session had before it exited. (A fresh session_id is minted only
+// by /clear, which is a distinct operation.)
 func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
