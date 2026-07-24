@@ -150,3 +150,54 @@ func TestHubRPCThreadNameSetResumesPastThread(t *testing.T) {
 		t.Fatalf("renamedTo=%q, want %q", renamedTo, "renamed")
 	}
 }
+
+// TestHubRPCGoalSetResumesPastThread proves setting a goal on an exited
+// session resumes the daemon and retries. This was the live user-reachable
+// bug: the capability was advertised true on a past thread but no resume was
+// wired, so the UI offered /goal and it failed (kata qp94/xr4x).
+func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
+	var sessionID string
+	goalObjective := ""
+	cfg, sid, resumeCalls := parityResumeFixture(t, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{
+				ID:        sessionID,
+				SessionID: sessionID,
+				Source:    "local",
+				Serf: appwire.SerfThread{
+					Ref:          params.Ref,
+					Capabilities: appwire.ThreadCapabilities{Goal: true},
+				},
+			}}, nil
+		})
+		appserver.HandleTyped(daemon.Router(), appwire.MethodGoalSet, func(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+			if params.Ref != "local:"+sessionID {
+				t.Fatalf("goal ref=%q", params.Ref)
+			}
+			goalObjective = params.Objective
+			return appwire.GoalSetResponse{Started: true}, nil
+		})
+	})
+	sessionID = sid
+
+	hub := newHubRPCTestServer(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:" + sessionID, Objective: "ship it"})
+	if err != nil {
+		t.Fatalf("GoalSet: %v", err)
+	}
+	if !resp.Started {
+		t.Fatal("GoalSet response Started=false, want true")
+	}
+	if *resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", *resumeCalls)
+	}
+	if goalObjective != "ship it" {
+		t.Fatalf("goalObjective=%q, want %q", goalObjective, "ship it")
+	}
+}
