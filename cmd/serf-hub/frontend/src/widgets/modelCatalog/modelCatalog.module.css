@@ -11,10 +11,16 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: var(--space-1);
-  border: none;
+  /* Control-shaped (32px + edge border, matching Input/Select) so the
+   * trigger scans as one of the form's controls between the Harness and
+   * Reasoning selects — not a borderless chip floating on an uneven
+   * baseline. The in-session ModelSwitch keeps its own quiet chrome-style
+   * trigger; this is the form-context variant of the same interaction. */
+  height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--edge);
   border-radius: var(--radius-control);
-  background: transparent;
+  background: var(--surface-1);
   cursor: pointer;
 }
 

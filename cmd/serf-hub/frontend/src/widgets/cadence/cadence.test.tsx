@@ -118,15 +118,21 @@ test("needs-you also tints the fresh ticks with the attention family (trailing e
   expect(document.querySelector("rect")!.classList.contains(styles.attention)).toBe(true);
 });
 
-test("renders an SVG trace with a <=64x10 viewBox", () => {
-  render(<Cadence state="working" frameTimes={[]} now={0} />);
+test("renders an SVG trace with a <=64x10 viewBox when frames are in-window", () => {
+  const now = 1_700_000_000_000;
+  render(<Cadence state="working" frameTimes={[now - 1_000]} now={now} />);
   const svg = document.querySelector("svg")!;
   expect(svg.getAttribute("viewBox")).toBe("0 0 64 10");
 });
 
-test("provides an accessible title naming the state", () => {
+test("renders NO trace box at all when no frame is in-window (no dead 64px gutter)", () => {
+  render(<Cadence state="working" frameTimes={[]} now={0} />);
+  expect(document.querySelector("svg")).toBeNull();
+});
+
+test("provides an accessible name for the state even with an empty trace", () => {
   render(<Cadence state="needs-you" frameTimes={[]} now={0} />);
-  expect(screen.getByTitle("Needs you")).toBeTruthy();
+  expect(screen.getByRole("img", { name: "Needs you" })).toBeTruthy();
 });
 
 test("never re-renders on its own - no internal timers (now is fully prop-driven)", () => {

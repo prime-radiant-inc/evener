@@ -92,17 +92,6 @@
   display: grid;
 }
 
-.title {
-  margin: 0;
-  padding-top: var(--space-1);
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
 /* Pinned footer: identity + settings gear. The scrolling .body (flex:1 1 auto)
  * pushes it to the bottom, so it never eats space from the tree. */
 .footer {

@@ -98,27 +98,40 @@ function ticksFor(frameTimes: number[], now: number): Tick[] {
  * Pure: no timers, no Date.now(). It only ever changes what it shows when
  * React re-renders it with new props, so a stalled agent shows honest
  * decay instead of faked liveness.
+ *
+ * A trace with no in-window frames renders nothing at all (not an empty
+ * 64px box): callers with no live frame feed — every rail row today —
+ * would otherwise reserve 64px of dead width per row, which is what
+ * squeezed rail titles into "Simp…"-style truncation. The state's
+ * accessible name lives on the wrapper (role="img" + aria-label), not the
+ * SVG <title>, so it survives the trace's absence.
  */
 export function Cadence({ state, frameTimes, now }: CadenceProps) {
   const familyClass = FAMILY_CLASS[STATE_FAMILY[state]];
   const ticks = ticksFor(frameTimes, now);
 
   return (
-    <span className={BASE_CLASS.cadence}>
+    <span className={BASE_CLASS.cadence} role="img" aria-label={STATE_LABELS[state]}>
       <span data-testid="cadence-dot" aria-hidden="true" className={`${BASE_CLASS.dot} ${familyClass}`} />
-      <svg className={BASE_CLASS.trace} viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`} role="img">
-        <title>{STATE_LABELS[state]}</title>
-        {ticks.map((tick) => (
-          <rect
-            key={tick.key}
-            className={`${BASE_CLASS.tick} ${familyClass} ${BUCKET_CLASS[tick.bucket]}`}
-            x={tick.x}
-            y={0}
-            width={TICK_WIDTH}
-            height={VIEWBOX_HEIGHT}
-          />
-        ))}
-      </svg>
+      {ticks.length > 0 && (
+        <svg
+          className={BASE_CLASS.trace}
+          viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
+          aria-hidden="true"
+          data-testid="cadence-trace"
+        >
+          {ticks.map((tick) => (
+            <rect
+              key={tick.key}
+              className={`${BASE_CLASS.tick} ${familyClass} ${BUCKET_CLASS[tick.bucket]}`}
+              x={tick.x}
+              y={0}
+              width={TICK_WIDTH}
+              height={VIEWBOX_HEIGHT}
+            />
+          ))}
+        </svg>
+      )}
     </span>
   );
 }

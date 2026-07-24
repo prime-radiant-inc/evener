@@ -96,9 +96,9 @@ describe("session row", () => {
     const session = apiNode({ title: "Fix flaky test", state: "active" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
     expect(screen.getByText("Fix flaky test")).toBeTruthy();
-    // Cadence's own <title> encodes the state label (see widgets/cadence) -
-    // "Working" is the family "active" maps to.
-    expect(screen.getByRole("img").textContent).toBe("Working");
+    // Cadence's wrapper carries the state as its accessible name (see
+    // widgets/cadence) - "Working" is the family "active" maps to.
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
   });
 
   test("clicking the label activates the row via info.activate", async () => {
@@ -284,7 +284,7 @@ describe("project row", () => {
     const project = apiProject({ name: "prime-radiant", rollup_state: "errored" });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
     expect(screen.getByText("prime-radiant")).toBeTruthy();
-    expect(screen.getByRole("img").textContent).toBe("Failed");
+    expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   });
 
   test("shows an attention Badge when rollup_attn is nonzero, hides it when zero", () => {

@@ -114,7 +114,7 @@ describe("desktop mode resolution", () => {
     installMatchMedia({ mobile: false, wide: true });
     prefsStore.setState({ sidebarMode: "pane" });
     render(<RailHost />);
-    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getByTestId("rail-search")).toBeTruthy();
     expect(screen.getByRole("button", { name: /hide sidebar/i })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
@@ -123,7 +123,7 @@ describe("desktop mode resolution", () => {
     installMatchMedia({ mobile: false, wide: true });
     prefsStore.setState({ sidebarMode: "auto" });
     render(<RailHost />);
-    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getByTestId("rail-search")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
 
@@ -132,7 +132,7 @@ describe("desktop mode resolution", () => {
     prefsStore.setState({ sidebarMode: "auto" });
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+    expect(screen.queryByTestId("rail-search")).toBeNull();
   });
 
   test("rail (Collapsed) mode collapses to the ☰ chip even on a wide viewport", () => {
@@ -140,7 +140,7 @@ describe("desktop mode resolution", () => {
     prefsStore.setState({ sidebarMode: "rail" });
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar/i })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+    expect(screen.queryByTestId("rail-search")).toBeNull();
   });
 });
 
@@ -249,7 +249,10 @@ describe("mobile", () => {
     installMatchMedia({ mobile: true, wide: false });
     prefsStore.setState({ sidebarMode: "rail" }); // would collapse on desktop
     render(<RailHost />);
-    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    // Mobile renders Rail hostedInSheet (StackHost's drawer owns the chrome),
+    // so no header chrome here — the plain rail is just its body (loading
+    // skeleton in this unseeded fixture), with NO desktop mode logic: no chip.
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
 });

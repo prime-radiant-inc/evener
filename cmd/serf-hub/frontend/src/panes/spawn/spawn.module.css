@@ -15,11 +15,16 @@
   gap: var(--space-3);
 }
 
+/* Matches widgets/formrow's .label exactly: the Model field renders its label
+ * as a bespoke <span> (ModelCatalog's trigger is a button, so a <label
+ * htmlFor> can't associate), but side by side with FormRow-labeled siblings
+ * it must read as the same label voice — same size, weight, and ink. */
 .fieldLabel {
   display: block;
   margin-bottom: var(--space-1);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
 }
 
 .notice {

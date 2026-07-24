@@ -69,7 +69,6 @@ const CLASS = {
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   footer: requireClass(styles.footer, "Rail.module.css", "footer"),
   footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
-  title: requireClass(styles.title, "Rail.module.css", "title"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
   sectionTitle: requireClass(styles.sectionTitle, "Rail.module.css", "sectionTitle"),
@@ -353,7 +352,6 @@ export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = f
               + New session
             </Button>
           </div>
-          <h2 className={CLASS.title}>Sessions</h2>
         </div>
       )}
       <div className={CLASS.body} ref={bodyRef}>

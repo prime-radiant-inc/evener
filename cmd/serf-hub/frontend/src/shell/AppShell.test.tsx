@@ -331,9 +331,9 @@ test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
   // The shell root carries the single-pane marker T6 keys its layout off.
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
-  // The rail chrome (its "Sessions" heading, and with it the search/settings
-  // entry points, floor §2.3) is stripped - RailHost isn't rendered at all.
-  expect(screen.queryByRole("heading", { name: "Sessions" })).toBeNull();
+  // The rail chrome (its search/new/settings entry points, floor §2.3) is
+  // stripped - RailHost isn't rendered at all.
+  expect(screen.queryByTestId("rail-search")).toBeNull();
 });
 
 test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", async () => {
@@ -344,7 +344,7 @@ test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", as
   expect(document.querySelector("[data-single-pane]")).toBeNull();
   // Desktop rail renders (default auto mode, jsdom's wide no-matchMedia
   // viewport) - the contrast that proves the /thread case actually suppressed it.
-  expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+  expect(screen.getByTestId("rail-search")).toBeTruthy();
 });
 
 // --- settings routing (this task) -------------------------------------

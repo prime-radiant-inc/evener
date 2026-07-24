@@ -57,13 +57,17 @@ streaming caret blink, dialog/menu 120ms fade-scale. Forbidden: idle pulses, ske
 loops on live data, anything that animates during silence (honest-liveness rule).
 
 **Signature — the cadence instrument (`<Cadence>` widget):** one component rendered everywhere
-a session appears (tree row, pane header, mobile card): a state dot plus a 24×10px activity
-trace of the last ~60s of frame arrivals as vertical ticks that fade with age. Working = fresh
+a session appears (tree row, pane header, mobile card): a state dot plus a 64×10px activity
+trace of the last ~60s of frame arrivals as vertical ticks that fade with age. (The plan's
+original sketch said 24×10; implementation landed on 64×10 for tick legibility and every
+consumer + test pins 64 — recorded here so the doc matches the shipped truth.) Working = fresh
 ticks (alive token); quiet = ticks visibly aging to `--ink-low`; needs-you = dot and trailing
 edge in attention amber; failed = danger. It never animates on its own — it only re-renders
 when frames actually arrive, so a busy agent shows a dense fresh trace and a stalled one shows
-honest decay. Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes:
-number[], now: number}`.
+honest decay. **A trace with no in-window frames renders no SVG at all** — the dot alone —
+so callers without a live frame feed (rail rows) don't reserve 64px of dead width per row.
+Props: `{state: "idle"|"working"|"needs-you"|"failed"|"ended", frameTimes: number[], now:
+number}`.
 
 ---
 
@@ -209,12 +213,22 @@ collapses to instant, no exceptions.
 
 ## 6. Copy rules
 
-Sentence case for all UI copy; no ALL-CAPS. Active-voice labels ("Save changes", not "Changes
-saved" or "Save Changes"). Mono is for machine text only — code, tool output, paths, commands,
-identifiers — never chrome labels, captions, or any text a human authored. (This tripped up
-even this wave's own gallery scaffold once: three caption labels shipped on `--font-mono` in
-the foundation task and were caught and fixed in wave-close review — see git history for
-`gallery-section.module.css` and `theme-flip.module.css`. If it happened once, watch for it.)
+Sentence case for all UI copy; no ALL-CAPS **in copy** (button labels, headings, messages,
+hints). Active-voice labels ("Save changes", not "Changes saved" or "Save Changes"). Mono is
+for machine text only — code, tool output, paths, commands, identifiers — never chrome labels,
+captions, or any text a human authored. (This tripped up even this wave's own gallery scaffold
+once: three caption labels shipped on `--font-mono` in the foundation task and were caught and
+fixed in wave-close review — see git history for `gallery-section.module.css` and
+`theme-flip.module.css`. If it happened once, watch for it.)
+
+**Clarification (polish pass, 2026-07-24): small-caps *section eyebrows* are a sanctioned
+pattern, distinct from ALL-CAPS copy.** A short structural group label set in
+`--font-size-caption` + `--font-weight-medium` + `--ink-low` + `text-transform: uppercase` +
+`letter-spacing: 0.04em` (the rail's "Projects", settings' nav group headers, the palette's
+result-group headers, card kickers like "Mandate") is typographic hierarchy, not shouting —
+authored copy stays sentence-case in the source and the transform is presentation-only. The
+pattern is legitimate ONLY for grouping eyebrows at caption size; never for buttons, titles,
+sentences, or anything longer than ~2 words.
 
 ---
 
