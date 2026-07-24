@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -357,5 +360,98 @@ func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
 				t.Fatalf("%s resurrected an exited session; turn controls must stay live-only", tc.name)
 			}
 		})
+	}
+}
+
+// TestHubRPCConcurrentMutationsResumeExitedSessionOnce proves the RPC
+// auto-resume path serializes concurrent resume attempts for one exited
+// session behind the per-session lock, exactly as the REST send path does
+// (kata sm1a). Two mutations racing on a cold session must resume the daemon
+// once, not twice.
+func TestHubRPCConcurrentMutationsResumeExitedSessionOnce(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local",
+			Serf: appwire.SerfThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Clear: true, Compact: true}},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadClear, func(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+		return appwire.ThreadClearResponse{Ref: params.Ref}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+	var resumeCalls atomic.Int32
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			n := resumeCalls.Add(1)
+			// Hold the resume in flight so a second concurrent caller is
+			// guaranteed to be waiting on the per-session lock while this one
+			// registers the daemon.
+			time.Sleep(150 * time.Millisecond)
+			entry := rendezvous.Entry{
+				PID: 106 + int(n), Protocol: appwire.ProtocolVersion,
+				Endpoint: "ws" + daemonHTTP.URL[len("http"):], SourceID: "local",
+				ThreadID: sessionID, SessionID: sessionID, WorkingDir: workingDir,
+			}
+			// Write directly (not the writeRendezvous helper) so a losing
+			// concurrent resume can't t.Fatalf from this goroutine. A unique PID
+			// per call keeps two racing resumes from colliding on one file, so
+			// the failure surfaces cleanly as a resume-count mismatch.
+			if _, err := rendezvous.Write(runDir, entry); err != nil {
+				return rendezvous.Entry{}, err
+			}
+			roster.Refresh()
+			return entry, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, c := range []*appwire.Client{clientA, clientB} {
+		if _, err := c.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	errs := make([]error, 2)
+	go func() {
+		defer wg.Done()
+		_, errs[0] = clientA.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: "local:" + sessionID})
+	}()
+	go func() {
+		defer wg.Done()
+		errs[1] = clientB.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:" + sessionID})
+	}()
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent mutation %d failed: %v", i, err)
+		}
+	}
+	if got := resumeCalls.Load(); got != 1 {
+		t.Fatalf("resume calls=%d, want 1 (concurrent resumes must serialize behind the per-session lock)", got)
 	}
 }

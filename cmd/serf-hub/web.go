@@ -27,9 +27,6 @@ type WebServer struct {
 	sources   *appsource.Registry
 	startedAt time.Time
 
-	resumeMu    sync.Mutex
-	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
-
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
 	// source's sessions from the sidebar (which renders a snapshot).
@@ -52,11 +49,16 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
 		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
+	// One resume-lock registry backs both the REST send path (lockForSession)
+	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
+	// triggered on either transport serializes a racing resume on the other.
+	if cfg.ResumeLocks == nil {
+		cfg.ResumeLocks = hubcore.NewResumeLocks()
+	}
 	web := &WebServer{
 		cfg:             cfg,
 		sources:         sources,
 		startedAt:       time.Now().UTC(),
-		resumeLocks:     map[string]*sync.Mutex{},
 		lastGoodThreads: map[string][]appwire.Thread{},
 		liveModels:      &modelsCache{},
 		treeCache:       &hubcore.TreeCache{},
@@ -67,16 +69,14 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 }
 
 // lockForSession returns (creating if necessary) the per-session mutex for
-// serializing concurrent resume requests on the same session_id.
+// serializing concurrent resume requests on the same session_id. It shares the
+// registry the RPC auto-resume path uses (cfg.ResumeLocks) so the two paths
+// serialize against each other.
 func (s *WebServer) lockForSession(sessionID string) *sync.Mutex {
-	s.resumeMu.Lock()
-	defer s.resumeMu.Unlock()
-	m, ok := s.resumeLocks[sessionID]
-	if !ok {
-		m = &sync.Mutex{}
-		s.resumeLocks[sessionID] = m
+	if s.cfg.ResumeLocks == nil {
+		s.cfg.ResumeLocks = hubcore.NewResumeLocks()
 	}
-	return m
+	return s.cfg.ResumeLocks.For(sessionID)
 }
 
 // Handler returns the http.Handler with all routes wired and the security

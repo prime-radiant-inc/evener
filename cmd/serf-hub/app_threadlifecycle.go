@@ -248,6 +248,26 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
+	// Serialize concurrent resumes of the same session behind a per-session
+	// lock shared with the REST send path (kata sm1a). While one resume holds
+	// the lock, another RPC mutation that also decided to resume waits here
+	// rather than spawning a second daemon for the same exited session.
+	if cfg.ResumeLocks != nil {
+		lock := cfg.ResumeLocks.For(sessionID)
+		lock.Lock()
+		defer lock.Unlock()
+		// Double-check under the lock: a resume that completed while we waited
+		// has already put the session in the roster, so reuse it instead of
+		// spawning again. The caller only reaches hubThreadResume after its
+		// mutation failed session-unavailable and the refresh below prunes dead
+		// daemons, so a present entry here is a live one a racing resume won.
+		if cfg.Roster != nil {
+			hubRosterRefresh(cfg.Roster)
+			if le, ok := cfg.Roster.Find(sessionID); ok {
+				return hubResumedThreadResponse(ctx, sources, le.SessionID, le.ThreadID)
+			}
+		}
+	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
@@ -255,9 +275,17 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if cfg.Roster != nil {
 		hubRosterRefresh(cfg.Roster)
 	}
-	threadID := entry.ThreadID
+	return hubResumedThreadResponse(ctx, sources, entry.SessionID, entry.ThreadID)
+}
+
+// hubResumedThreadResponse reads the freshly-resumed local thread back and
+// wraps it in a ThreadResumeResponse. It is the shared tail of hubThreadResume:
+// both a fresh spawn and the double-check reuse of an already-resumed daemon
+// resolve the thread the same way. threadID falls back to sessionID when the
+// rendezvous entry omitted it.
+func hubResumedThreadResponse(ctx context.Context, sources *appsource.Registry, sessionID, threadID string) (appwire.ThreadResumeResponse, error) {
 	if threadID == "" {
-		threadID = entry.SessionID
+		threadID = sessionID
 	}
 	ref := appwire.Ref{SourceID: "local", ThreadID: threadID}.String()
 	source, err := sourceForThread(sources, ref, "")

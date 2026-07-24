@@ -40,6 +40,7 @@ type WebConfig struct {
 	Roster              *Roster
 	Past                *PastIndex
 	Spawner             Spawner             // optional; nil disables spawn
+	ResumeLocks         *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
 	Models              []ModelDescriptor   // available models for the spawn chip
 	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
 	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
