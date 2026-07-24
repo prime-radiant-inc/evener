@@ -1,0 +1,39 @@
+/* The trigger wrapper stays in normal flow (inline-flex, so it hugs the
+ * trigger element it wraps) and provides the rect the panel is positioned
+ * off. No position: relative here - the panel is a portal (see index.tsx),
+ * position: fixed off this wrapper's measured rect, not a child anchored to
+ * it. */
+.trigger {
+  display: inline-flex;
+}
+
+/* position: fixed (not absolute): the panel portals to document.body (see
+ * index.tsx) and gets its top/left as an inline style, computed off the
+ * trigger's own getBoundingClientRect() - so opening never reflows page
+ * content and no clipping ancestor can cut it off. */
+.panel {
+  position: fixed;
+  z-index: 1020;
+  background: var(--surface-1);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-pane);
+  animation: popoverFadeScale var(--motion-duration-overlay) var(--motion-easing-standard);
+}
+
+@keyframes popoverFadeScale {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+}
