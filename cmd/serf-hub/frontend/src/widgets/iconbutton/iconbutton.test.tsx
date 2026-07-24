@@ -134,3 +134,12 @@ test("reuses button.module.css's base class, so it inherits Button's :focus-visi
   const buttonCss = readFileSync(join(here, "../button/button.module.css"), "utf8");
   expect(buttonCss).toContain(":focus-visible");
 });
+
+// h8w2: small icon buttons must be square-ish and clickable
+test("sm size declares equal width and height in CSS", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
+  // Verify that .sm class in iconbutton.module.css declares an explicit height
+  // equal to its width (28px) to make it square-ish, not squat/rectangular
+  expect(ownCss).toMatch(/\.sm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
+});
