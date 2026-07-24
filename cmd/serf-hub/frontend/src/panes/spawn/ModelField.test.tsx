@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
@@ -61,22 +61,23 @@ test("surfaces an inline error when the model catalog fails to load", async () =
   expect(await screen.findByText(/providers unavailable/i)).toBeTruthy();
 });
 
-test("Cancel returns to the closed display without changing the value", async () => {
+test("Escape returns to the closed display without changing the value", async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();
   render(<ModelField value="openai/gpt-5" onChange={onChange} loadModels={vi.fn().mockResolvedValue(MODELS)} />);
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
   await screen.findByRole("combobox", { name: "Model" });
-  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  await user.keyboard("{Escape}");
 
+  await waitFor(() => expect(screen.queryByRole("combobox", { name: "Model" })).toBeNull());
   expect(screen.getByText("openai/gpt-5")).toBeTruthy();
   expect(onChange).not.toHaveBeenCalled();
 });
 
 // --- wave 8: the rich catalog enrichment ---
 
-test("enriches a scoped model with /api/models metadata (display name + capability badge)", async () => {
+test("enriches a scoped model with /api/models metadata (display name + capability/cost meta)", async () => {
   const user = userEvent.setup();
   vi.mocked(fetchModelCatalog).mockResolvedValue({
     models: [
@@ -101,11 +102,11 @@ test("enriches a scoped model with /api/models metadata (display name + capabili
   );
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combo = await screen.findByRole("combobox", { name: "Model" });
-  await user.type(combo, "{arrowdown}");
+  await screen.findByRole("combobox", { name: "Model" });
 
   expect(await screen.findByText("GPT-5")).toBeTruthy(); // prettified display name from the catalog
-  expect(screen.getByText("tools")).toBeTruthy(); // capability badge from the catalog
+  // Capabilities and cost arrive as the row's one small-text meta line.
+  expect(screen.getByText("tools · $1.25 in · $10 out /Mtok")).toBeTruthy();
 });
 
 test("scopes the /api/models enrichment to the spawn harness and cwd", async () => {
@@ -121,8 +122,7 @@ test("scopes the /api/models enrichment to the spawn harness and cwd", async () 
   );
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combo = await screen.findByRole("combobox", { name: "Model" });
-  await user.type(combo, "{arrowdown}");
+  await screen.findByRole("combobox", { name: "Model" });
   await screen.findByText("openai/gpt-5"); // loadCatalog (incl. the enrichment fetch) has resolved
 
   // The enrichment must be scoped to the SAME harness+cwd as the authoritative
@@ -147,8 +147,7 @@ test("keeps the scoped model SET even when /api/models offers a different one", 
   );
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combo = await screen.findByRole("combobox", { name: "Model" });
-  await user.type(combo, "{arrowdown}");
+  await screen.findByRole("combobox", { name: "Model" });
 
   expect(await screen.findByText("openai/gpt-5")).toBeTruthy(); // the scoped model, label-only
   expect(screen.queryByText("Claude")).toBeNull(); // an enrichment-only model is never launchable here
@@ -166,8 +165,7 @@ test("still lists the scoped models when /api/models is unavailable", async () =
   );
 
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combo = await screen.findByRole("combobox", { name: "Model" });
-  await user.type(combo, "{arrowdown}");
+  await screen.findByRole("combobox", { name: "Model" });
 
   expect(await screen.findByText("openai/gpt-5")).toBeTruthy();
 });

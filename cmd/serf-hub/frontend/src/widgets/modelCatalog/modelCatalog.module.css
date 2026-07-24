@@ -55,21 +55,41 @@
 
 /* The floating panel's own content padding/sizing - widgets/popover's shared
  * chassis supplies position/background/border/radius/animation; this widget
- * only adds the padding and a sane minimum width so the combobox/Recent
- * chips/diagnostics list don't read as cramped. */
+ * only adds the padding and a sane width so the search field and the grouped
+ * list don't read as cramped. Width is capped against the viewport so the
+ * same panel works on a phone without a separate mobile rendering. */
 .popoverPanel {
   padding: var(--space-3);
-  min-width: 280px;
-  max-width: min(360px, calc(100vw - var(--space-4)));
+  width: 380px;
+  max-width: calc(100vw - var(--space-4));
 }
 
-/* The open picker stacks its Recent quick-picks, the searchable list, the
- * diagnostics affordance, and Cancel vertically. */
+/* The open picker: the search field over one internally-scrolling list. */
 .panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  align-items: flex-start;
+}
+
+/* Matches Input/Combobox's own field recipe (32px control height, hairline
+ * edge, control radius) so the picker's field is the same object the rest of
+ * the app's forms use. */
+.input {
+  display: block;
+  width: 100%;
+  height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  color: var(--ink-hi);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+}
+
+.input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .error {
@@ -78,64 +98,76 @@
   font-size: var(--font-size-ui);
 }
 
-.recent {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.recentLabel {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-}
-
-/* One catalog row: the provider group head (when this row opens a new
- * provider run), the model name with its capability badges, then the
- * cost/context metadata line. */
-.optionRow {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.groupHead {
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-}
-
-.optionMain {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.optionName {
-  font-weight: var(--font-weight-medium);
-}
-
-.optionMeta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.metaItem {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-}
-
-.diagnostics {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.diagnosticsList {
+/* The list scrolls INTERNALLY (the popover never grows past the viewport,
+ * and scrolling here never dismisses the picker - see closeOnScroll at the
+ * ModelCatalog call site). */
+.list {
   margin: 0;
-  padding-left: var(--space-4);
+  padding: 0;
+  max-height: min(320px, 60vh);
+  overflow-y: auto;
+  list-style: none;
+}
+
+/* Provider (and Recent) section eyebrow: small, quiet, not an option. */
+.groupRow {
+  padding: var(--space-2) var(--space-2) var(--space-1);
   color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--ink-hi);
+  font-size: var(--font-size-ui);
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--surface-2);
+}
+
+/* The active option is a virtual (aria-activedescendant), not real DOM focus -
+ * real focus stays on the input the whole time - so this is a plain
+ * background wash, not a :focus-visible rule. */
+.rowActive {
+  background: var(--accent-bg);
+}
+
+.rowName {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The current model's marker. Paired with aria-selected on the row, never
+ * carrying the meaning alone. */
+.check {
+  color: var(--accent);
+  font-size: var(--font-size-caption);
+}
+
+/* Per-row metadata (provider for the mixed Recent group, capabilities, cost,
+ * context window): passive small text, pushed to the row's trailing edge. */
+.meta {
+  margin-left: auto;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+/* A provider the hub couldn't reach, in place where its section would be:
+ * dim, small, and not an option. --ink-low, never a status hue - an
+ * unreachable provider is information, not an alarm. */
+.unavailable {
+  padding: var(--space-1) var(--space-2);
+  color: var(--ink-low);
   font-size: var(--font-size-caption);
 }
