@@ -9,10 +9,12 @@
 
 .sm {
   width: 28px;
+  height: 28px;
   padding: 0;
 }
 
 .md {
   width: 32px;
+  height: 32px;
   padding: 0;
 }
