@@ -8,7 +8,7 @@
 //
 // PathListEditor is a widgets/collectioneditor CollectionEditor instance:
 // CollectionEditor's own renderAddField slot swaps in a FormRow-wrapped
-// PathPicker for the add row, keeping the Browse-button-assisted input the
+// PathField for the add row, keeping the browse-assisted input the
 // dir-picker contract (test-settings-dir-picker.js / assets/settings-
 // pickers.js) requires on every directory add-row, while CollectionEditor
 // itself owns the list rendering and the add field's draft/busy/inline-
@@ -26,7 +26,8 @@ import {
   ConfirmDialog,
   EmptyState,
   FormRow,
-  PathPicker,
+  PathField,
+  type PathFieldKind,
   Skeleton,
   useToasts,
 } from "../../../widgets";
@@ -55,6 +56,10 @@ export interface PathListEditorProps {
    * directory" / "New config file") - distinct from `label` (the list's own
    * name) so the two don't render as a visually duplicated heading. */
   addLabel: string;
+  /** What the rows of this list name, forwarded to the add row's picker: the
+   * two directory lists browse directories, mcp.tsx's config-file list
+   * browses files. */
+  kind: PathFieldKind;
   items: readonly string[];
   onAdd: (path: string) => Promise<CollectionAddResult>;
   /** Fires only once the caller confirms the ConfirmDialog this widget
@@ -68,7 +73,9 @@ export interface PathListEditorProps {
    * the attempt finishes either way, exactly matching those callers'
    * existing toast-on-failure convention. */
   onRemove: (path: string) => Promise<void>;
-  listChildren: (path: string) => Promise<string[]>;
+  /** The add row's path completion (serf/paths/complete), injected so this
+   * editor stays wire-free like the picker it renders. */
+  complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   emptyMessage: string;
   removeConfirmTitle: string;
   removeConfirmBody: (path: string) => string;
@@ -76,20 +83,21 @@ export interface PathListEditorProps {
 }
 
 /**
- * The generic "list of paths" editor: PathPicker-assisted add row (Browse
- * button + inline typeahead, matching plugins.html/skills.html's contract),
- * a ConfirmDialog-gated remove button per row, and an inline validation
- * error below the add row (CollectionEditor's own, already on token-
+ * The generic "list of paths" editor: a PathField add row (the whole field
+ * browses, matching plugins.html/skills.html's own picker contract), a
+ * ConfirmDialog-gated remove button per row, and an inline validation error
+ * below the add row (CollectionEditor's own, already on token-
  * contract.test.ts's --danger allowlist as a widget). Reused by
  * DirListSetting below and by mcp.tsx's "MCP config files" list.
  */
 export function PathListEditor({
   label,
   addLabel,
+  kind,
   items,
   onAdd,
   onRemove,
-  listChildren,
+  complete,
   emptyMessage,
   removeConfirmTitle,
   removeConfirmBody,
@@ -125,11 +133,12 @@ export function PathListEditor({
           <FormRow label={addLabel} htmlFor={addFieldId}>
             <div className={CLASS.addRow}>
               <span className={CLASS.addField}>
-                <PathPicker
+                <PathField
                   id={addFieldId}
                   value={value}
                   onChange={onChange}
-                  listChildren={listChildren}
+                  kind={kind}
+                  complete={complete}
                   placeholder={addPlaceholder}
                   disabled={disabled}
                 />
@@ -233,10 +242,11 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
         <PathListEditor
           label={label}
           addLabel="New directory"
+          kind="dir"
           items={items}
           onAdd={handleAdd}
           onRemove={handleRemove}
-          listChildren={(path) => extensionsStore.getState().listDirChildren(path)}
+          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
           emptyMessage={`No ${lowerLabel}. Add one below.`}
           removeConfirmTitle="Remove directory"
           removeConfirmBody={(path) => `Remove "${path}" from ${lowerLabel}?`}

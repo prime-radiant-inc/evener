@@ -47,10 +47,14 @@ test("saving a new entry writes it to the pluginDirs field, not skillsDirs", asy
     });
     return { effective: {}, layers: {}, provenance: {} };
   });
+  fake.on("serf/paths/complete", () => ({ data: [] }));
   const user = userEvent.setup();
   render(<PluginsDirsSection />);
   await screen.findByText("No plugin directories. Add one below.");
-  await user.type(screen.getByPlaceholderText("/absolute/path"), "/opt/new");
+  await user.click(screen.getByRole("button", { name: "New directory" }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard("/opt/new");
+  await user.keyboard("{Enter}");
   await user.click(screen.getByRole("button", { name: "Add" }));
   expect(await screen.findByText("/opt/new")).toBeTruthy();
 });

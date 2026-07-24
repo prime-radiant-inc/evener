@@ -24,15 +24,34 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** The add row's picker trigger. Its accessible name is the FormRow's own
+ * visible label ("New directory"), which labels the trigger the way it labelled
+ * the text box before it. */
+function picker(): HTMLElement {
+  return screen.getByRole("button", { name: "New directory" });
+}
+
+/** Opens the add row's path picker and types a literal path, committing it
+ * with Enter - which lands it in the add field and closes the panel, exactly
+ * as clicking a row would. user.keyboard (not user.type) because the panel's
+ * input already holds focus with its pre-filled value selected. */
+async function typePath(user: ReturnType<typeof userEvent.setup>, path: string) {
+  await user.click(picker());
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard(path);
+  await user.keyboard("{Enter}");
+}
+
 describe("PathListEditor", () => {
   function baseProps(overrides: Partial<Parameters<typeof PathListEditor>[0]> = {}) {
     return {
       label: "Plugin directories",
       addLabel: "New directory",
+      kind: "dir" as const,
       items: ["/opt/plugins", "/home/user/.serf/plugins"],
       onAdd: vi.fn(async () => ({ ok: true }) as const),
       onRemove: vi.fn(),
-      listChildren: vi.fn(async () => []),
+      complete: vi.fn(async () => []),
       emptyMessage: "No plugin directories. Add one below.",
       removeConfirmTitle: "Remove directory",
       removeConfirmBody: (path: string) => `Remove "${path}" from plugin directories?`,
@@ -108,26 +127,45 @@ describe("PathListEditor", () => {
     expect((screen.getByRole("button", { name: "Add" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test("typing a path and clicking Add calls onAdd with the trimmed value; ok:true clears the draft", async () => {
+  test("picking a path and clicking Add calls onAdd with the trimmed value; ok:true clears the draft", async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn(async () => ({ ok: true }) as const);
     render(<PathListEditor {...baseProps({ onAdd })} />);
-    const input = screen.getByPlaceholderText("/absolute/path");
-    await user.type(input, "/opt/new  ");
+    await typePath(user, "/opt/new  ");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(onAdd).toHaveBeenCalledWith("/opt/new");
-    await waitFor(() => expect((input as HTMLInputElement).value).toBe(""));
+    await waitFor(() => expect(picker().textContent).toMatch(/absolute\/path/));
   });
 
   test("ok:false shows the inline error and keeps the draft", async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn(async () => ({ ok: false, error: "path does not exist" }) as const);
     render(<PathListEditor {...baseProps({ onAdd })} />);
-    const input = screen.getByPlaceholderText("/absolute/path");
-    await user.type(input, "/nope");
+    await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByText("path does not exist")).toBeTruthy();
-    expect((input as HTMLInputElement).value).toBe("/nope");
+    expect(picker().textContent).toMatch(/\/nope/);
+  });
+
+  test("kind:dir browses directories only", async () => {
+    const user = userEvent.setup();
+    const complete = vi.fn(async () => ["/opt/plugins/serf-lint"]);
+    render(<PathListEditor {...baseProps({ kind: "dir", complete })} />);
+    await user.click(picker());
+    expect(await screen.findByRole("option", { name: /serf-lint/ })).toBeTruthy();
+    expect(complete).toHaveBeenCalledWith("", false);
+  });
+
+  // The MCP config-files list names files, not directories: its picker has to
+  // list them or the final filename is still hand-typed.
+  test("kind:file browses files too, and a file row lands in the add field", async () => {
+    const user = userEvent.setup();
+    const complete = vi.fn(async () => ["/etc/mcp/", "/etc/mcp.json"]);
+    render(<PathListEditor {...baseProps({ kind: "file", complete })} />);
+    await user.click(picker());
+    await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
+    expect(complete).toHaveBeenCalledWith("", true);
+    await waitFor(() => expect(picker().textContent).toMatch(/\/etc\/mcp\.json/));
   });
 });
 
@@ -224,11 +262,26 @@ describe("DirListSetting", () => {
       expect(params).toEqual({ cwd: "/", layer: "global", config: { pluginDirs: ["/opt/plugins", "/opt/new"] } });
       return { effective: {}, layers: {}, provenance: {} };
     });
+    fake.on("serf/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("/opt/plugins");
-    await user.type(screen.getByPlaceholderText("/absolute/path"), "/opt/new");
+    await typePath(user, "/opt/new");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByText("/opt/new")).toBeTruthy();
+  });
+
+  test("the add row's picker browses via serf/paths/complete, directories only", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("serf/launch/getLayer", () => ({ pluginDirs: [] }));
+    fake.on("serf/paths/complete", (params) => {
+      expect(params).toEqual({ prefix: "", includeFiles: false });
+      return { data: ["/opt/plugins"] };
+    });
+    render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
+    await screen.findByText("No plugin directories. Add one below.");
+    await user.click(picker());
+    expect(await screen.findByRole("option", { name: /plugins/ })).toBeTruthy();
   });
 
   test("adding an invalid path shows the server's error inline and never calls setLayer", async () => {
@@ -238,9 +291,10 @@ describe("DirListSetting", () => {
     fake.on("serf/path/validate", () => ({ path: "/nope", valid: false, error: "path does not exist" }));
     const setLayer = vi.fn();
     fake.on("serf/launch/setLayer", setLayer);
+    fake.on("serf/paths/complete", () => ({ data: [] }));
     render(<DirListSetting wireField="pluginDirs" label="Plugin directories" copy="c" />);
     await screen.findByText("No plugin directories. Add one below.");
-    await user.type(screen.getByPlaceholderText("/absolute/path"), "/nope");
+    await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(await screen.findByText("path does not exist")).toBeTruthy();
     expect(setLayer).not.toHaveBeenCalled();
