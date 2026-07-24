@@ -397,9 +397,10 @@ test("navigating from one settings section to another, post-mount, updates the S
 test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane already open, still prefills the new dir", async () => {
   window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   render(<AppShell client={new FakeClient("ready")} />);
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
-  );
+  // The working directory is a PathField: its closed trigger holds the path as
+  // text (plus a chevron and a screen-reader hint), so the value is matched
+  // inside that text rather than read off an input's .value.
+  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/me/app"));
 
   // A second /new?dir= navigation (e.g. RailRow's own spawnInProject, for a
   // DIFFERENT project) while the spawn pane is already open and focused -
@@ -415,7 +416,5 @@ test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane alre
   // shows the SECOND navigation's dir, not the first one silently retained.
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
-  await waitFor(() =>
-    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/other"),
-  );
+  await waitFor(() => expect(screen.getByLabelText("Working directory").textContent).toContain("/home/other"));
 });

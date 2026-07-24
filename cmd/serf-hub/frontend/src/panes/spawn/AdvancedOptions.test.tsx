@@ -28,6 +28,17 @@ const RESOLVED: LaunchConfigResolved = {
   provenance: {},
 };
 
+// Every path-valued field renders the shared PathField browse widget, so the
+// panel needs a completion loader; entries are keyed by the listing prefix the
+// widget sends, with directory entries carrying a trailing slash the way
+// serf/paths/complete's includeFiles mode does. An empty-valued field opens on
+// the empty prefix, which the hub resolves to $HOME - here, /opt's contents.
+const HOME_ENTRIES = ["/opt/skills/", "/opt/prompt.md"];
+const TREE: Record<string, string[]> = {
+  "": HOME_ENTRIES,
+  "/opt/": HOME_ENTRIES,
+};
+
 function renderPanel(
   options: LaunchOption[],
   over: Partial<Parameters<typeof AdvancedOptions>[0]> = {},
@@ -37,6 +48,15 @@ function renderPanel(
   const validatePath = over.validatePath ?? vi.fn().mockResolvedValue({ valid: true });
   const resolveConfig = over.resolveConfig ?? vi.fn().mockResolvedValue(RESOLVED);
   const loadCatalog = over.loadCatalog ?? vi.fn().mockResolvedValue(CATALOG);
+  // Mirrors the hub's two modes: a dirs-only response is unsuffixed, and a
+  // files-included one keeps the directory slashes.
+  const complete =
+    over.complete ??
+    vi.fn((prefix: string, includeFiles: boolean) => {
+      const entries = TREE[prefix] ?? [];
+      if (includeFiles) return Promise.resolve(entries);
+      return Promise.resolve(entries.filter((e) => e.endsWith("/")).map((e) => e.replace(/\/+$/, "")));
+    });
   render(
     <AdvancedOptions
       options={options}
@@ -44,11 +64,30 @@ function renderPanel(
       validatePath={validatePath as (p: string, k: string) => Promise<{ valid: boolean; error?: string }>}
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
       loadCatalog={loadCatalog}
+      complete={complete}
     >
       {children}
     </AdvancedOptions>,
   );
-  return { onOverridesChange, validatePath, resolveConfig, loadCatalog };
+  return { onOverridesChange, validatePath, resolveConfig, loadCatalog, complete };
+}
+
+/** A PathField's closed trigger. A scalar field's trigger is labeled by its
+ * FormRow; an add-row picker inside a CollectionEditor has no label, so its
+ * name falls back to its own contents (the value plus a "browse" hint). */
+function pathTrigger(name: string | RegExp = /browse/i): HTMLElement {
+  return screen.getByRole("button", { name });
+}
+
+/** Opens a PathField's browse panel and types a literal path into it, which
+ * Enter commits (nothing is highlighted, so the typed text IS the answer). The
+ * browse panel is portaled to document.body, so it is queried from `screen`. */
+async function typePath(user: ReturnType<typeof userEvent.setup>, trigger: HTMLElement, path: string): Promise<void> {
+  await user.click(trigger);
+  await screen.findByRole("combobox", { name: "Path" });
+  // keyboard, not type: the panel input is already focused with its pre-filled
+  // value selected, and clicking it would collapse that selection.
+  await user.keyboard(`${path}{Enter}`);
 }
 
 test("is collapsed by default and reveals the panel on toggle", async () => {
@@ -86,12 +125,12 @@ test("a failing path validation flags the field invalid so it is dropped from th
   const user = userEvent.setup();
   const validatePath = vi.fn().mockResolvedValue({ valid: false, error: "path is a directory" });
   const { onOverridesChange } = renderPanel(
-    [option({ wireField: "systemPromptFile", kind: "text", label: "System prompt file", pathKind: "file" })],
+    [option({ wireField: "systemPromptFile", kind: "path", label: "System prompt file", pathKind: "file" })],
     { validatePath },
   );
 
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  await user.type(screen.getByLabelText("System prompt file"), "/etc");
+  await typePath(user, pathTrigger("System prompt file"), "/etc");
 
   expect(await screen.findByText("path is a directory")).toBeTruthy();
   await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/etc", "file"));
@@ -109,20 +148,6 @@ test("show resolved config previews the effective launch config", async () => {
   const pre = await screen.findByLabelText("Resolved config");
   expect(pre.textContent).toContain('"sandbox": "off"');
   expect(pre.textContent).toContain('"maxRounds": 5');
-});
-
-test("a pathList control adds and collects entries", async () => {
-  const user = userEvent.setup();
-  const { onOverridesChange } = renderPanel([
-    option({ wireField: "skillsDirs", kind: "pathList", label: "Skills dirs" }),
-  ]);
-
-  await user.click(screen.getByRole("button", { name: "Advanced options" }));
-  const field = screen.getByRole("textbox", { name: "Skills dirs" });
-  await user.type(field, "/opt/skills");
-  await user.keyboard("{Enter}");
-
-  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
 });
 
 test("renders children inside the expanded panel, before any schema control (9ct0)", async () => {
@@ -196,6 +221,107 @@ test("a modelList field rejects a model already in the list", async () => {
   await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
   vi.mocked(onOverridesChange as (o: unknown) => void).mockClear();
   await addSonnet();
+
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalled();
+});
+
+// --- path-valued fields all browse, rather than being typed blind -----------
+
+test("a path field renders the browse widget and collects the picked path", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "systemPromptFile", kind: "path", label: "System prompt file", pathKind: "file" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  // The field is the browse trigger, not a text box to type a path into blind.
+  expect(screen.queryByRole("textbox")).toBeNull();
+  await user.click(pathTrigger("System prompt file"));
+  await user.click(await screen.findByText("prompt.md"));
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ systemPromptFile: "/opt/prompt.md" }));
+});
+
+// The schema's pathKind is what decides whether the listing includes files, so
+// it has to reach the widget: an outputFile field names a file (includeFiles
+// true, so existing files are pickable references) while a dir field never
+// lists one.
+test.each([
+  ["file", true],
+  ["outputFile", true],
+  ["dir", false],
+])("a %s-kind path field asks for includeFiles=%s", async (pathKind, includeFiles) => {
+  const user = userEvent.setup();
+  const { complete } = renderPanel([option({ wireField: "somePath", kind: "path", label: "Some path", pathKind })]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.click(pathTrigger("Some path"));
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith(expect.any(String), includeFiles));
+});
+
+test("a command-kind path option stays a plain text input, since a command is not browsable", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "agent", kind: "path", label: "Agent", pathKind: "command" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByLabelText("Agent").tagName).toBe("INPUT");
+  await user.type(screen.getByLabelText("Agent"), "serf");
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ agent: "serf" }));
+});
+
+/** Browses to a directory row and submits it, which is the add path the picker
+ * exists for: a directory click writes the picked path into CollectionEditor's
+ * own draft, which the Add button then submits. */
+async function browseAndAdd(user: ReturnType<typeof userEvent.setup>, rowName: string): Promise<void> {
+  await user.click(pathTrigger());
+  await user.click(await screen.findByText(rowName));
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+}
+
+test("a pathList field adds from the browse widget instead of a hand-typed path", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await browseAndAdd(user, "skills");
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
+});
+
+test("a pathList field also accepts a path typed into the browse panel", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await typePath(user, pathTrigger(), "/elsewhere/skills");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/elsewhere/skills"] }));
+});
+
+test("a pathList field rejects a path already in the list", async () => {
+  const user = userEvent.setup();
+  const { onOverridesChange } = renderPanel([
+    option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await browseAndAdd(user, "skills");
+  await waitFor(() => expect(onOverridesChange).toHaveBeenCalled());
+  vi.mocked(onOverridesChange as (o: unknown) => void).mockClear();
+  await browseAndAdd(user, "skills");
 
   expect(await screen.findByRole("alert")).toBeTruthy();
   expect(onOverridesChange).not.toHaveBeenCalled();
