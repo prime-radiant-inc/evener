@@ -106,6 +106,34 @@ describe("PathListField", () => {
     expect(browse.textContent).toMatch(/\/path\/to\/directory/);
   });
 
+  // LaunchConfigForm puts skillsDirs/pluginDirs/mcpConfigs in one "Resources"
+  // group, so their three add triggers render on the same page. Named only by
+  // their (identical, empty) value text they'd be indistinguishable.
+  test("two sibling pathList add triggers have distinct accessible names", () => {
+    connectPathLister({});
+    render(
+      <>
+        <PathListField
+          option={pathListOption()}
+          items={[]}
+          onChange={() => {}}
+          validatePath={async () => ({ path: "", valid: true })}
+        />
+        <PathListField
+          option={pathListOption({ field: "plugin_dirs", wireField: "pluginDirs", label: "Plugin directories" })}
+          items={[]}
+          onChange={() => {}}
+          validatePath={async () => ({ path: "", valid: true })}
+        />
+      </>,
+    );
+    // Two exact-name lookups, each of which throws if it matches zero or more
+    // than one button - so this fails both when the names collide and when
+    // either one loses its field name.
+    expect(screen.getByRole("button", { name: "Skill directories: /path/to/directory — browse" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Plugin directories: /path/to/directory — browse" })).toBeTruthy();
+  });
+
   test("a dir pathKind browses directories only", async () => {
     const user = userEvent.setup();
     const lister = connectPathLister({ "": ["/opt/plugins", "/opt/skills"] });

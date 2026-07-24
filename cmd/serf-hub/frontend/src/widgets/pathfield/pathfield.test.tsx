@@ -66,6 +66,38 @@ test("the closed field shows the value as plain text, and the default marker whe
   expect(screen.getByText("(default)")).toBeTruthy();
 });
 
+// Several path fields can sit on one page (LaunchConfigForm renders three
+// pathList add rows in the "Resources" group), and the value text alone doesn't
+// say WHICH field a trigger belongs to.
+//
+// The name is asserted through getByRole's exact-string `name` option rather
+// than dom-accessibility-api's computeAccessibleName directly: getByRole
+// computes the name with that same library, and the package's own "exports"
+// map (0.5.16) carries no "types" condition, so a direct import doesn't
+// typecheck.
+test("with no ariaLabel the trigger is named by its own value text", () => {
+  render(<PathField value="/home/jesse" onChange={vi.fn()} complete={lister({})} />);
+  expect(screen.getByRole("button", { name: "/home/jesse— browse" })).toBeTruthy();
+});
+
+test("ariaLabel names the trigger by field AND value, since aria-label replaces the text content", () => {
+  render(<PathField value="/opt/skills" onChange={vi.fn()} complete={lister({})} ariaLabel="Skill directories" />);
+  expect(screen.getByRole("button", { name: "Skill directories: /opt/skills — browse" })).toBeTruthy();
+});
+
+test("an empty ariaLabelled field is named by its placeholder, the same text the trigger shows", () => {
+  render(
+    <PathField
+      value=""
+      onChange={vi.fn()}
+      complete={lister({})}
+      ariaLabel="MCP config files"
+      placeholder="/path/to/file"
+    />,
+  );
+  expect(screen.getByRole("button", { name: "MCP config files: /path/to/file — browse" })).toBeTruthy();
+});
+
 test("disabled disables the trigger, so the panel can't be opened", () => {
   renderField({ value: "/home/jesse", disabled: true });
   expect((trigger() as HTMLButtonElement).disabled).toBe(true);

@@ -161,6 +161,7 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
             onChange={setDraft}
             kind={pathFieldKind(option.pathKind)}
             placeholder={PATH_ADD_PLACEHOLDER}
+            ariaLabel={option.label}
             disabled={disabled}
           />
         </div>
@@ -180,19 +181,28 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
  * The browsed path lands in CollectionEditor's `draft`; the Add button submits
  * it, which is where serf/path/validate still gates it (the picker's own panel
  * is portaled outside this <form>, so Enter inside the picker picks a path
- * rather than submitting the row).
+ * rather than submitting the row - asserted by collectionFields.test.tsx's
+ * "Enter in the picker panel does not submit the add row").
+ *
+ * `ariaLabel` carries the option's own label into the trigger's accessible
+ * name: CollectionEditor skips its own visually-hidden label wrapper in
+ * renderAddField mode (naming is the caller's job), and all three pathList
+ * fields sit in the same "Resources" group, so without it their triggers would
+ * all be named by the same placeholder text.
  */
 function PathAddField({
   value,
   onChange,
   kind,
   placeholder,
+  ariaLabel,
   disabled,
 }: {
   value: string;
   onChange: (value: string) => void;
   kind: PathFieldKind;
   placeholder: string;
+  ariaLabel: string;
   disabled: boolean;
 }) {
   return (
@@ -204,6 +214,7 @@ function PathAddField({
           kind={kind}
           complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
           placeholder={placeholder}
+          ariaLabel={ariaLabel}
           disabled={disabled}
         />
       </span>

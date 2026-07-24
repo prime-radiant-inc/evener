@@ -68,6 +68,14 @@ export interface PathFieldProps {
   onPanelClose?: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  /** Names the closed trigger for assistive tech. Without it the trigger's
+   * whole accessible name is the path it holds, which doesn't say WHICH field
+   * it is when several sit on one page (LaunchConfigForm renders three pathList
+   * add rows in one group). An `aria-label` REPLACES the button's text content
+   * as its name, so this label is composed with the displayed path rather than
+   * used alone: "<ariaLabel>: <path or placeholder> — browse". Callers pass the
+   * field's own name ("Skill directories"), not a full sentence. */
+  ariaLabel?: string;
 }
 
 /** Files are listed for the two file kinds and never for a directory field,
@@ -503,9 +511,11 @@ export function PathField({
   onPanelClose,
   placeholder,
   disabled = false,
+  ariaLabel,
 }: PathFieldProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const shownValue = value === "" ? (placeholder ?? "(default)") : value;
 
   /** The single close path, so every way out of the panel - Escape, an outside
    * click, a file or recent commit, a trigger click - behaves identically.
@@ -555,14 +565,16 @@ export function PathField({
           type="button"
           className={CLASS.trigger}
           disabled={disabled}
+          // The label has to carry the value too: aria-label replaces the
+          // button's own text, so naming it "Skill directories" alone would
+          // hide the path it currently holds.
+          aria-label={ariaLabel === undefined ? undefined : `${ariaLabel}: ${shownValue} — browse`}
           onClick={() => (open ? closePanel(value) : setOpen(true))}
         >
           {/* Plain text, not a Chip: the trigger already draws the control's
               own border, and a bordered chip inside it reads as a double
               border. */}
-          <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>
-            {value === "" ? (placeholder ?? "(default)") : value}
-          </span>
+          <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>{shownValue}</span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾
           </span>
