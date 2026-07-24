@@ -106,7 +106,13 @@ export interface ThreadsStoreState {
   scrollPositions: Map<string, number>;
   ensureThread(ref: string): Promise<void>;
   releaseThread(ref: string): void;
-  watchThread(ref: string): Promise<void>;
+  // Additive, leaner subscription to a child thread for a subagent-module
+  // row's live view (see this file's own doc comment). opts.includeTurns
+  // upgrades the read to carry the child's turn history for the expanded
+  // card's Activity feed (yd16 §4.2); it is MONOTONIC per ref — once any
+  // watcher asks for turns they stay until the last watcher releases. The
+  // default (no opts) is the lean includeTurns:false read.
+  watchThread(ref: string, opts?: { includeTurns?: boolean }): Promise<void>;
   releaseWatchedThread(ref: string): void;
   loadOlderTurns(ref: string): Promise<void>;
   send(ref: string, text: string, attachments?: InputAttachment[]): Promise<void>;
@@ -222,6 +228,12 @@ let inflightModelsList: Promise<ModelListResponse> | null = null;
 // same ref never share (or fight over) one counter.
 const watchRefCounts = new Map<string, number>();
 const inflightWatchHydrates = new Map<string, Promise<ThreadModel>>();
+// Per-ref "does any watcher want turns" flag (yd16 §4.2). Monotonic across a
+// ref's watch lifetime: set true the first time any watchThread call asks for
+// turns, never flipped back to false while watched, cleared only when the last
+// watcher releases. Drives both the includeTurns read param and the
+// lean-then-rich upgrade re-read in watchThread.
+const watchIncludeTurns = new Map<string, boolean>();
 
 // Every tracked ref gets exactly these params on both the first subscribe
 // (ensureThread) and every re-subscribe (onReady after reconnect):
@@ -243,15 +255,16 @@ async function hydrateAndSubscribe(client: AppwireClientLike, ref: string, now: 
   return hydrateThread(resp, ref, now);
 }
 
-// watchReadParams mirrors readParams but with includeTurns:false - a
-// watched child only needs live status/liveness (Cadence reads
+// watchReadParams mirrors readParams but defaults includeTurns:false - a
+// watched child's row dot only needs live status/liveness (Cadence reads
 // watchedFrameTimes, not turn content), not its full turn/item history,
 // which would be wasted fetch+storage for a subagent row most sessions
-// never expand.
-function watchReadParams(ref: string) {
+// never expand. The expanded card (yd16 §4.2) passes includeTurns:true to
+// carry the child's turns for its Activity feed.
+function watchReadParams(ref: string, includeTurns = false) {
   return {
     ref,
-    includeTurns: false,
+    includeTurns,
     itemsView: "full",
     subscribe: true,
     replaceSubscription: false,
@@ -259,8 +272,13 @@ function watchReadParams(ref: string) {
   } as const;
 }
 
-async function hydrateAndSubscribeWatch(client: AppwireClientLike, ref: string, now: number): Promise<ThreadModel> {
-  const resp: ThreadReadResponse = await client.request("thread/read", watchReadParams(ref));
+async function hydrateAndSubscribeWatch(
+  client: AppwireClientLike,
+  ref: string,
+  now: number,
+  includeTurns = false,
+): Promise<ThreadModel> {
+  const resp: ThreadReadResponse = await client.request("thread/read", watchReadParams(ref, includeTurns));
   return hydrateThread(resp, ref, now);
 }
 
@@ -432,7 +450,7 @@ async function handleReady(client: AppwireClientLike): Promise<void> {
     }),
     ...watchRefs.map(async (ref) => {
       try {
-        const model = await hydrateAndSubscribeWatch(client, ref, Date.now());
+        const model = await hydrateAndSubscribeWatch(client, ref, Date.now(), watchIncludeTurns.get(ref) ?? false);
         // A concurrent releaseWatchedThread() may have dropped this ref
         // while the re-subscribe was in flight; don't resurrect it.
         if (!threadsStore.getState().watchedThreads.has(ref)) return;
@@ -592,24 +610,42 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   // threads/frameTimes - see this file's own ThreadsStoreState doc
   // comment for why the two must stay fully independent. Otherwise a
   // structural mirror of ensureThread above.
-  async watchThread(ref) {
+  async watchThread(ref, opts) {
     const client = requireClient();
+    const wantTurns = opts?.includeTurns ?? false;
     watchRefCounts.set(ref, (watchRefCounts.get(ref) ?? 0) + 1);
-    if (threadsStore.getState().watchedThreads.has(ref)) return; // already hydrated: no re-read
+    // Monotonic per-ref turns flag: once any watcher wants turns, keep them
+    // for every watcher until the last release (yd16 §4.2).
+    const hadTurns = watchIncludeTurns.get(ref) ?? false;
+    const needTurns = hadTurns || wantTurns;
+    watchIncludeTurns.set(ref, needTurns);
+    const tracked = threadsStore.getState().watchedThreads.has(ref);
+    // Upgrading: this ref is already tracked lean but this caller wants turns.
+    // A fresh rich re-read is required because the .has(ref)/inflight-dedup
+    // short-circuits below (which exist only to share ONE read across
+    // concurrent first-mounts) would otherwise return the already-hydrated
+    // lean model, which has no turns.
+    const upgrading = tracked && wantTurns && !hadTurns;
+    if (tracked && !upgrading) return; // already hydrated at the level we need
 
-    let inflight = inflightWatchHydrates.get(ref);
-    if (!inflight) {
-      inflight = hydrateAndSubscribeWatch(client, ref, Date.now());
-      inflightWatchHydrates.set(ref, inflight);
-      void inflight
-        .finally(() => {
-          if (inflightWatchHydrates.get(ref) === inflight) inflightWatchHydrates.delete(ref);
-        })
-        .catch(() => {});
-    }
     let model: ThreadModel;
     try {
-      model = await inflight;
+      if (upgrading) {
+        // Bypass the inflight-dedup: it may share a lean read in flight.
+        model = await hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
+      } else {
+        let inflight = inflightWatchHydrates.get(ref);
+        if (!inflight) {
+          inflight = hydrateAndSubscribeWatch(client, ref, Date.now(), needTurns);
+          inflightWatchHydrates.set(ref, inflight);
+          void inflight
+            .finally(() => {
+              if (inflightWatchHydrates.get(ref) === inflight) inflightWatchHydrates.delete(ref);
+            })
+            .catch(() => {});
+        }
+        model = await inflight;
+      }
     } catch (err) {
       // This call's own claim never landed: undo it via releaseWatchedThread,
       // same rationale as ensureThread's own catch above.
@@ -634,6 +670,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       return;
     }
     watchRefCounts.delete(ref);
+    // Drop the monotonic turns flag with the last watcher so a future watch of
+    // the same ref starts lean again (yd16 §4.2).
+    watchIncludeTurns.delete(ref);
     threadsStore.setState((s) => {
       if (!s.watchedThreads.has(ref) && !s.watchedFrameTimes.has(ref)) return s;
       const nextWatchedThreads = new Map(s.watchedThreads);
@@ -919,6 +958,7 @@ export function resetThreadsStoreForTests(): void {
   inflightHydrates.clear();
   watchRefCounts.clear();
   inflightWatchHydrates.clear();
+  watchIncludeTurns.clear();
   modelsCache = null;
   inflightModelsList = null;
   unwireNotification?.();

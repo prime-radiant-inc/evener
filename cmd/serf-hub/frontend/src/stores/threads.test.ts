@@ -1647,6 +1647,68 @@ describe("useThreadsStore.watchThread", () => {
 
     expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
   });
+
+  // yd16 §4.2: the expanded subagent card watches with { includeTurns: true }
+  // so the Activity feed has the child's turn history. A read scripted to
+  // return a turn only when includeTurns is true lets these tests prove turns
+  // actually crossed the wire, not just that a flag was threaded through.
+  function turnsAwareRead(fake: FakeClient): void {
+    fake.on("thread/read", (params) => {
+      const includeTurns = (params as { includeTurns: boolean }).includeTurns;
+      return readResponse("ref_a", {
+        turns: includeTurns ? [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }] : [],
+      });
+    });
+  }
+
+  test("watchThread(ref, { includeTurns: true }) hydrates with turns populated", async () => {
+    const fake = connectFakeClient();
+    turnsAwareRead(fake);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const call = fake.calls.find((c) => c.method === "thread/read");
+    expect((call?.params as { includeTurns: boolean }).includeTurns).toBe(true);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+  });
+
+  test("a lean watch followed by a { includeTurns: true } call upgrades: turns become populated despite the .has(ref) short-circuit", async () => {
+    const fake = connectFakeClient();
+    turnsAwareRead(fake);
+
+    await threadsStore.getState().watchThread("ref_a"); // lean first: no turns
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(0);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true }); // upgrade re-read
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+    // The upgrade bypasses the .has(ref)/inflight-dedup short-circuits (those
+    // are for concurrent first-mounts), so a genuine second read fired.
+    expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(2);
+  });
+
+  test("monotonic: once turns are loaded, a later lean watch does not downgrade them away", async () => {
+    const fake = connectFakeClient();
+    turnsAwareRead(fake);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1);
+
+    await threadsStore.getState().watchThread("ref_a"); // a lean watcher joins
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(1); // still there
+    expect(fake.calls.filter((c) => c.method === "thread/read")).toHaveLength(1); // no re-read: already rich
+  });
+
+  test("releasing the last watcher clears the per-ref includeTurns flag so a fresh watch starts lean again", async () => {
+    const fake = connectFakeClient();
+    turnsAwareRead(fake);
+
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+    threadsStore.getState().releaseWatchedThread("ref_a");
+    expect(threadsStore.getState().watchedThreads.has("ref_a")).toBe(false);
+
+    await threadsStore.getState().watchThread("ref_a"); // fresh lean watch
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toHaveLength(0);
+  });
 });
 
 // scrollPositions (wave 4 T4): per-ref scroll offset persisted across a

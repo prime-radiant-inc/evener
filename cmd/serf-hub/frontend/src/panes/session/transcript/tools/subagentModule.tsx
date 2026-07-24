@@ -33,6 +33,7 @@ import type { ItemModel } from "../../../../protocol/model";
 import { openBeside } from "../../../../shell/paneActions";
 import { Button, Chip, type ChipTone } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { cadenceStateForStatus } from "../../liveness";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
@@ -71,6 +72,23 @@ export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
   if (["completed", "done", "cancelled", "stopped", "succeeded"].includes(status)) return "done";
   if (status === "unknown") return "unknown";
+  return "running";
+}
+
+// rowKindFromChildStatus maps the child's LIVE thread status onto a row kind
+// for the status pill (yd16). model.status.type is the WIRE thread-status
+// vocabulary (active/closed/systemError/awaiting/warning/idle/notLoaded), NOT
+// the job-status words classifyJobStatus reads - feeding thread-status to
+// classifyJobStatus misclassifies ("closed"->"running", "systemError"->
+// "running"). So this reuses cadenceStateForStatus (the one canonical wire-
+// status interpreter) and adapts its CadenceState to a SubagentRowKind: a
+// failed child is "failed", an ended (closed) child is "done", and everything
+// still live from the parent's view (working / needs-you / idle) stays
+// "running".
+export function rowKindFromChildStatus(type: string): SubagentRowKind {
+  const state = cadenceStateForStatus(type);
+  if (state === "failed") return "failed";
+  if (state === "ended") return "done";
   return "running";
 }
 
@@ -141,18 +159,25 @@ function openTranscript(ref: string): void {
   openBeside({ type: "transcript", params: { ref } });
 }
 
-function SubagentRowView({ row }: { row: SubagentRow }) {
+function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) {
   const duration = durationLabel(row);
   // Captured once so the onClick closure below references this narrowed
   // local, not row.transcriptRef re-read through a closure TS can't narrow.
   const transcriptRef = row.transcriptRef;
+  // The pill prefers the live-child-status overlay written back by the watch
+  // (yd16) over the frozen tool-output kind; falls back to the frozen kind
+  // before any live status has arrived.
+  const displayKind = row.liveKind ?? row.kind;
   return (
-    <div className={CLASS.row} data-testid="subagent-row" data-kind={row.kind}>
-      <Chip tone={KIND_TONE[row.kind]}>{KIND_LABEL[row.kind]}</Chip>
+    <div className={CLASS.row} data-testid="subagent-row" data-kind={displayKind}>
+      <Chip tone={KIND_TONE[displayKind]}>{KIND_LABEL[displayKind]}</Chip>
       {/* Live watched-child indicator: only while the row is genuinely
           still running AND we know where to watch (transcriptRef) - a
-          done/failed/unknown row has nothing live left to show. */}
-      {row.kind === "running" && transcriptRef && <WatchedChildIndicator ref={transcriptRef} />}
+          done/failed/unknown row has nothing live left to show. It also
+          writes the live child status back onto the row as liveKind. */}
+      {row.kind === "running" && transcriptRef && (
+        <WatchedChildIndicator ref={transcriptRef} turnId={turnId} rowKey={row.rowKey} />
+      )}
       <span className={CLASS.task}>{row.task}</span>
       {(duration ?? row.resultPreview) && (
         <span className={CLASS.meta}>
@@ -202,7 +227,7 @@ function SubagentModule({ turnId }: { turnId: string }) {
       <div className={CLASS.header}>{tally(rows)}</div>
       <div className={CLASS.rows}>
         {visibleRows.map((row) => (
-          <SubagentRowView key={row.rowKey} row={row} />
+          <SubagentRowView key={row.rowKey} row={row} turnId={turnId} />
         ))}
       </div>
       {foldedCount > 0 && (
