@@ -191,6 +191,30 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     };
   }, []);
 
+  // kata 11ee: the spawn pane is a dockview singleton (index.tsx) - a second
+  // /new?dir=/?prompt= navigation while this pane is already open refocuses
+  // this SAME mounted instance instead of remounting it, so the mount-only
+  // effect above (deps []) never reruns and the new prefill is silently
+  // dropped. A popstate listener re-applies whatever of readUrlPrefill IS
+  // present on every subsequent in-app navigation - routing.ts's navigate()
+  // dispatches popstate on every push, the same signal AppShell's own
+  // routing glue and settings/sections/project.tsx's useQueryCwd both key
+  // off - without touching the sticky-defaults layering above, which is
+  // mount-only initialization, not a navigation param. A URL with neither
+  // param present (e.g. an unrelated navigation elsewhere and back) yields
+  // no entries from readUrlPrefill and so leaves both fields untouched,
+  // matching that function's own "absent param -> no entry" contract.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: install once - setCwd is a stable setter and updatePrompt closes only over the stable textRef, so the mount-time closure stays correct for every later popstate
+  useEffect(() => {
+    function onPopState(): void {
+      const urlPrefill = readUrlPrefill(window.location.search);
+      if (urlPrefill.dir) setCwd(urlPrefill.dir);
+      if (urlPrefill.prompt) updatePrompt(urlPrefill.prompt);
+    }
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
   // Branch HEAD auto-resolution (floor §1.7): fills the display when the working
   // dir changes, unless the user has explicitly set a branch. Checked again on
   // resolve so a late response can't clobber a value picked in the meantime.
