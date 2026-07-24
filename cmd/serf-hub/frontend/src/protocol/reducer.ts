@@ -114,6 +114,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     toolName: item.toolName,
     callId: item.callId,
     argumentsJSON: item.argumentsJson,
+    description: item.description,
     output: item.output,
     error: item.error,
     exitCode: item.exitCode,
@@ -233,6 +234,51 @@ function activeTurnIdFromThread(thread: Thread): string | undefined {
   return thread.turns?.find((t) => t.status === "inProgress")?.id;
 }
 
+const isToolResultId = (id: string) => id.startsWith("item_tool_result_");
+const isToolCallId = (id: string) => id.startsWith("item_tool_") && !isToolResultId(id);
+
+// Reload projects a tool CALL and its RESULT as two items sharing a callId, in
+// separate wire turns (apptranscript.TurnsFromFile mints one turn per transcript
+// entry). Collapse them the way the live path already produces a single item:
+// the call supplies id + argumentsJSON + startedAt, the result supplies output +
+// error + exitCode + completedAt + settled status. A turn emptied by the merge is
+// dropped so its TurnSeparator does not survive. (zrzr)
+function mergeToolCallsByCallId(turns: TurnModel[]): TurnModel[] {
+  const resultByCallId = new Map<string, ItemModel>();
+  for (const turn of turns) {
+    for (const item of turn.items) {
+      if (item.callId && isToolResultId(item.id)) resultByCallId.set(item.callId, item);
+    }
+  }
+  if (resultByCallId.size === 0) return turns;
+
+  const merged: TurnModel[] = [];
+  for (const turn of turns) {
+    const items: ItemModel[] = [];
+    for (const item of turn.items) {
+      if (item.callId && isToolResultId(item.id)) continue; // folded into its call
+      if (item.callId && isToolCallId(item.id)) {
+        const result = resultByCallId.get(item.callId);
+        if (result) {
+          items.push({
+            ...item,
+            output: result.output,
+            error: result.error,
+            exitCode: result.exitCode,
+            completedAt: result.completedAt,
+            status: result.status,
+            outputImages: result.outputImages ?? item.outputImages,
+          });
+          continue;
+        }
+      }
+      items.push(item);
+    }
+    if (items.length > 0) merged.push({ ...turn, items });
+  }
+  return merged;
+}
+
 export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number): ThreadModel {
   const thread = resp.thread;
   return {
@@ -250,7 +296,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     askPending: thread.serf.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.serf.pendingEscalations ?? [],
-    turns: (thread.turns ?? []).map(wireToTurnModel),
+    turns: mergeToolCallsByCallId((thread.turns ?? []).map(wireToTurnModel)),
     activeTurnId: activeTurnIdFromThread(thread),
     queue: thread.serf.queue,
     tasks: null,
@@ -274,7 +320,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
 }
 
 export function prependOlderTurns(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
-  const older = (resp.data ?? []).map(wireToTurnModel);
+  const older = mergeToolCallsByCallId((resp.data ?? []).map(wireToTurnModel));
   return {
     ...model,
     turns: [...older, ...model.turns],

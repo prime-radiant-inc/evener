@@ -1219,6 +1219,98 @@ test("hydrateThread maps a settled item's exitCode onto the model (snapshot path
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
 });
 
+// A tool-call's purpose crosses the wire as ThreadItem.description (set
+// server-side, e.g. delegate's mandate); wireItemToModel historically dropped
+// it. The model must carry it so the subagent Activity feed can render each
+// child tool-call's purpose (§4.2). Both hydrate and live paths fold through
+// wireItemToModel, so the snapshot path proves the carry.
+test("wireItemToModel carries the wire description (tool-call purpose) onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "delegate",
+            callId: "c1",
+            description: "audit the reducer",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).description).toBe("audit the reducer");
+});
+
+// On reload, apptranscript.TurnsFromFile mints one wire turn per transcript
+// entry, so a tool CALL (assistant entry) and its RESULT (tool-results entry)
+// arrive as two items sharing a callId, with different ids, in separate turns.
+// The Go contract says "the client merges the two by call id"; the reducer must
+// collapse them into the single item the live path already produces, and drop
+// the now-empty result turn so its TurnSeparator disappears. (zrzr)
+test("reload merges a tool CALL and its RESULT (separate turns, same callId) into one item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call_A",
+            argumentsJson: JSON.stringify({ command: "make test" }),
+            startedAt: 1,
+            status: "inProgress",
+          },
+        ],
+      },
+      {
+        id: "turn_2",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_result_2_0",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call_A",
+            output: "ok",
+            exitCode: 0,
+            completedAt: 2,
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 0);
+
+  // Exactly one tool item survives, carrying both halves.
+  const items = model.turns.flatMap((t) => t.items).filter((i) => i.callId === "call_A");
+  expect(items).toHaveLength(1);
+  const merged = items[0];
+  if (!merged) throw new Error("expected merged item");
+  expect(merged.id).toBe("item_tool_1_0"); // keeps the CALL id
+  expect(merged.argumentsJSON).toBe(JSON.stringify({ command: "make test" })); // from the CALL
+  expect(merged.output).toBe("ok"); // from the RESULT
+  expect(merged.exitCode).toBe(0); // from the RESULT
+  expect(merged.status).toBe("completed"); // settled from the RESULT
+  expect(merged.startedAt).toBeTruthy(); // carried from the CALL half
+  expect(merged.completedAt).toBeTruthy(); // carried from the RESULT half
+
+  // The now-empty result turn is gone, so only one turn (and one separator) remains.
+  expect(model.turns).toHaveLength(1);
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();
