@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -51,10 +52,40 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   };
 }
 
+// The set-goal Dialog is controlled by props (dialogOpen/onDialogOpenChange)
+// owned by SessionChrome now, not GoalControl's own state - the "Set goal…"
+// entry point lives in the session ⋯ menu (SessionActionsMenu), not this
+// component. This harness stands in for that parent: it owns the open state
+// and exposes a plain button as the external trigger, exactly the seam
+// SessionChrome wires SessionActionsMenu's "Set goal…" item to. `initialOpen`
+// lets a test render straight into the open-dialog state where the trigger
+// itself isn't what's under test.
+function GoalControlHarness({ model, initialOpen = false }: { model: ThreadModel; initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
+  return (
+    <>
+      <button type="button" data-testid="open-goal-dialog" onClick={() => setOpen(true)}>
+        open the set-goal dialog
+      </button>
+      <GoalControl sessionRef="ref_a" model={model} dialogOpen={open} onDialogOpenChange={setOpen} />
+      <Toast />
+    </>
+  );
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
   return fake;
+}
+
+// Opens the goal chip's popover (status + iterations + Clear goal). The chip
+// button's accessible name is "Goal: {status}" - the trailing colon keeps
+// this from matching the popover's own "Clear goal" button or the harness's
+// external trigger.
+async function openGoalPopover(user: ReturnType<typeof userEvent.setup>): Promise<HTMLElement> {
+  await user.click(screen.getByRole("button", { name: /goal:/i }));
+  return screen.getByTestId("goal-popover");
 }
 
 beforeEach(() => {
@@ -69,31 +100,43 @@ afterEach(() => {
 
 // --- display -----------------------------------------------------------------
 
-test("shows 'no goal set' and only a Set-goal action when the thread has no goal", () => {
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  expect(screen.getByText(/no goal set/i)).toBeTruthy();
-  expect(screen.getByRole("button", { name: /set goal/i })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: /clear goal/i })).toBeNull();
+test("renders nothing when the thread has no goal (the Set-goal entry point lives in the session ⋯ menu now)", () => {
+  const { container } = render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
+  expect(container.firstChild).toBeNull();
+  expect(screen.queryByRole("button", { name: /goal/i })).toBeNull();
 });
 
-test("shows the goal's status and iteration count when one is set, singular for exactly one iteration", () => {
+test("shows a chip once a goal is set; its popover carries the status and iteration count, singular for exactly one iteration", async () => {
+  const user = userEvent.setup();
   render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 1 } })} />);
-  expect(screen.getByText(/active/i)).toBeTruthy();
-  expect(screen.getByText(/1 iteration\b/i)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
+
+  const popover = await openGoalPopover(user);
+  expect(within(popover).getByText(/active/i)).toBeTruthy();
+  expect(within(popover).getByText(/\b1 iteration\b/i)).toBeTruthy();
 });
 
-test("pluralizes iterations for anything other than exactly one", () => {
+test("pluralizes iterations in the popover for anything other than exactly one", async () => {
+  const user = userEvent.setup();
   render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 3 } })} />);
-  expect(screen.getByText(/3 iterations/i)).toBeTruthy();
+
+  const popover = await openGoalPopover(user);
+  expect(within(popover).getByText(/3 iterations/i)).toBeTruthy();
 });
 
-test("offers Clear goal only when a goal is currently set", () => {
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 0 } })} />);
-  expect(screen.getByRole("button", { name: /clear goal/i })).toBeTruthy();
-  expect(screen.getByRole("button", { name: /change goal/i })).toBeTruthy();
+test("offers Clear goal in the popover only when a goal is currently set", async () => {
+  const user = userEvent.setup();
+  const { rerender } = render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
+  // No goal: nothing rendered at all, so no chip to open and no Clear goal.
+  expect(screen.queryByRole("button", { name: /clear goal/i })).toBeNull();
+
+  rerender(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 0 } })} />);
+  const popover = await openGoalPopover(user);
+  expect(within(popover).getByRole("button", { name: /clear goal/i })).toBeTruthy();
 });
 
-test("disables both actions when the thread's goal capability is unavailable", () => {
+test("disables Clear goal when the thread's goal capability is unavailable", async () => {
+  const user = userEvent.setup();
   render(
     <GoalControl
       sessionRef="ref_a"
@@ -103,16 +146,16 @@ test("disables both actions when the thread's goal capability is unavailable", (
       })}
     />,
   );
-  expect((screen.getByRole("button", { name: /change goal/i }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: /clear goal/i }) as HTMLButtonElement).disabled).toBe(true);
+  const popover = await openGoalPopover(user);
+  expect((within(popover).getByRole("button", { name: /clear goal/i }) as HTMLButtonElement).disabled).toBe(true);
 });
 
 // --- setting a goal ------------------------------------------------------------
 
-test("opens a dialog with an empty objective field", async () => {
+test("the controlled dialog opens onto an empty objective field", async () => {
   const user = userEvent.setup();
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
 
   const dialog = await screen.findByRole("dialog");
   expect((within(dialog).getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
@@ -120,8 +163,8 @@ test("opens a dialog with an empty objective field", async () => {
 
 test("Save is disabled while the objective is blank", async () => {
   const user = userEvent.setup();
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
   const dialog = await screen.findByRole("dialog");
 
   expect((within(dialog).getByRole("button", { name: /save/i }) as HTMLButtonElement).disabled).toBe(true);
@@ -138,16 +181,19 @@ test("saving calls setGoal with the objective and optimistically shows an active
     return { started: true };
   });
 
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
   const dialog = await screen.findByRole("dialog");
   await user.type(within(dialog).getByRole("textbox"), "ship the feature");
   await user.click(within(dialog).getByRole("button", { name: /save/i }));
 
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", objective: "ship the feature" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  expect(screen.getByText(/active/i)).toBeTruthy();
-  expect(screen.getByText(/0 iterations/i)).toBeTruthy();
+  // The optimistic goal surfaces as the chip; its popover carries the
+  // active/zero-iteration detail.
+  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
+  const popover = await openGoalPopover(user);
+  expect(within(popover).getByText(/0 iterations/i)).toBeTruthy();
 });
 
 test("a failed setGoal surfaces an error toast, leaves the dialog open, and does not change the displayed goal", async () => {
@@ -157,20 +203,16 @@ test("a failed setGoal surfaces an error toast, leaves the dialog open, and does
     throw new Error("goal boom");
   });
 
-  render(
-    <>
-      <GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />
-      <Toast />
-    </>,
-  );
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
   const dialog = await screen.findByRole("dialog");
   await user.type(within(dialog).getByRole("textbox"), "ship the feature");
   await user.click(within(dialog).getByRole("button", { name: /save/i }));
 
   await screen.findByText(/goal boom/i);
   expect(screen.getByRole("dialog")).toBeTruthy();
-  expect(screen.getByText(/no goal set/i)).toBeTruthy();
+  // Still no goal (no optimistic override was recorded), so still no chip.
+  expect(screen.queryByRole("button", { name: /goal:/i })).toBeNull();
 });
 
 // --- clearing a goal -----------------------------------------------------------
@@ -185,11 +227,13 @@ test("Clear goal calls setGoal with an empty objective directly, no confirmation
   });
 
   render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 4 } })} />);
-  await user.click(screen.getByRole("button", { name: /clear goal/i }));
+  const popover = await openGoalPopover(user);
+  await user.click(within(popover).getByRole("button", { name: /clear goal/i }));
 
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", objective: "" }));
   expect(screen.queryByRole("dialog")).toBeNull();
-  await waitFor(() => expect(screen.getByText(/no goal set/i)).toBeTruthy());
+  // Cleared: the optimistic override is null, so the chip is gone.
+  await waitFor(() => expect(screen.queryByRole("button", { name: /goal:/i })).toBeNull());
 });
 
 test("a failed Clear goal surfaces an error toast and leaves the goal displayed as it was", async () => {
@@ -205,10 +249,12 @@ test("a failed Clear goal surfaces an error toast and leaves the goal displayed 
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: /clear goal/i }));
+  const popover = await openGoalPopover(user);
+  await user.click(within(popover).getByRole("button", { name: /clear goal/i }));
 
   await screen.findByText(/clear goal boom/i);
-  expect(screen.getByText(/4 iterations/i)).toBeTruthy();
+  // The popover stays open showing the unchanged goal.
+  expect(within(screen.getByTestId("goal-popover")).getByText(/4 iterations/i)).toBeTruthy();
 });
 
 // --- remount-safety + stale-override invalidation -----------------------------
@@ -225,20 +271,20 @@ test("the optimistic override survives an unmount/remount of the SAME ref (a doc
   const fake = connectFakeClient();
   fake.on("goal/set", () => ({ started: true }));
 
-  const first = render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  const first = render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
   const dialog = await screen.findByRole("dialog");
   await user.type(within(dialog).getByRole("textbox"), "ship the feature");
   await user.click(within(dialog).getByRole("button", { name: /save/i }));
-  await waitFor(() => expect(screen.getByText(/active/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy());
 
   first.unmount(); // real dockview behavior: the pane's whole tree unmounts on a tab switch
 
   // Remount: the store's own model.goal is STILL null (no live push exists to
-  // have updated it) - if this read plain model.goal, it would wrongly
-  // revert to "no goal set".
+  // have updated it) - if this read plain model.goal, it would wrongly render
+  // nothing at all instead of the optimistic goal chip.
   render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  expect(screen.getByText(/active/i)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
 });
 
 test("a genuinely fresh model.goal (e.g. a reconnect re-hydrate) supersedes a stale override instead of being masked by it forever", async () => {
@@ -246,17 +292,18 @@ test("a genuinely fresh model.goal (e.g. a reconnect re-hydrate) supersedes a st
   const fake = connectFakeClient();
   fake.on("goal/set", () => ({ started: true }));
 
-  const { rerender } = render(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
-  await user.click(screen.getByRole("button", { name: /set goal/i }));
+  const { rerender } = render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
   const dialog = await screen.findByRole("dialog");
   await user.type(within(dialog).getByRole("textbox"), "ship the feature");
   await user.click(within(dialog).getByRole("button", { name: /save/i }));
-  await waitFor(() => expect(screen.getByText(/0 iterations/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy());
 
   // A fresh hydrate brings real, more-advanced server truth - the daemon's
   // goal loop has actually been running. The stale optimistic {active, 0}
   // must not keep shadowing it.
-  rerender(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "complete", iterations: 5 } })} />);
-  expect(screen.getByText(/complete/i)).toBeTruthy();
-  expect(screen.getByText(/5 iterations/i)).toBeTruthy();
+  rerender(<GoalControlHarness model={testModel({ goal: { status: "complete", iterations: 5 } })} />);
+  expect(screen.getByRole("button", { name: /goal: complete/i })).toBeTruthy();
+  const popover = await openGoalPopover(user);
+  expect(within(popover).getByText(/5 iterations/i)).toBeTruthy();
 });
