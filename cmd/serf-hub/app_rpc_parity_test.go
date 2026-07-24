@@ -201,3 +201,39 @@ func TestHubRPCGoalSetResumesPastThread(t *testing.T) {
 		t.Fatalf("goalObjective=%q, want %q", goalObjective, "ship it")
 	}
 }
+
+// TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess proves that shutting down
+// an already-exited session succeeds as a no-op WITHOUT resuming it — we must
+// never resurrect a daemon just to kill it (kata qp94 carve-out).
+func TestHubRPCThreadShutdownExitedSessionIsNoOpSuccess(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("ThreadShutdown on exited session: %v, want no-op success", err)
+	}
+	if resumeCalled {
+		t.Fatal("shutdown resurrected an exited session; must be a no-op")
+	}
+}

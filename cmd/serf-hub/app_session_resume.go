@@ -68,6 +68,28 @@ func setThreadNameWithResume(ctx context.Context, cfg hubcore.WebConfig, sources
 	})
 }
 
+// shutdownThreadTolerateExited runs thread/shutdown and treats an
+// already-exited session as a no-op success. Shutdown's goal is a stopped
+// daemon; if the session the hub knows is already gone, that goal is met, so
+// we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
+// ref or any non-session-unavailable failure is still returned unchanged.
+func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
+	err := func() error {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return err
+		}
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shutdown"); err != nil {
+			return err
+		}
+		return source.ShutdownThread(ctx, params)
+	}()
+	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
+		return nil
+	}
+	return err
+}
+
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
 	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.GoalSetResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")

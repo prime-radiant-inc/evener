@@ -410,14 +410,7 @@ func registerThreadHandlers(
 		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadShutdown, func(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shutdown"); err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		return appwire.EmptyResponse{}, source.ShutdownThread(ctx, params)
+		return appwire.EmptyResponse{}, shutdownThreadTolerateExited(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadModelSet, func(ctx context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
 		return appwire.EmptyResponse{}, setThreadModelWithResume(ctx, cfg, sources, params)
