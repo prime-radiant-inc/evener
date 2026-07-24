@@ -32,7 +32,7 @@ const (
 	MethodSerfThreadNameSet         = "serf/thread/name/set"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfSubagentPreview       = "serf/subagentPreview"
-	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfPathsComplete         = "serf/paths/complete"
 	MethodSerfProjectsRecent        = "serf/projects/recent"
 	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
@@ -962,12 +962,12 @@ type TaskListResponse struct {
 	Data any `json:"data"`
 }
 
-type DirsCompleteParams struct {
+type PathsCompleteParams struct {
 	Prefix string `json:"prefix"`
 	Limit  int    `json:"limit,omitempty"`
 }
 
-type DirsCompleteResponse struct {
+type PathsCompleteResponse struct {
 	Data []string `json:"data"`
 }
 

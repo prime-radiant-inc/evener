@@ -11,11 +11,11 @@ import (
 	"primeradiant.com/serf/envvars"
 )
 
-func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
-	return completeDirs(params, os.ReadDir)
+func CompletePaths(params appwire.PathsCompleteParams) (appwire.PathsCompleteResponse, error) {
+	return completePaths(params, os.ReadDir)
 }
 
-func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.DirEntry, error)) (appwire.DirsCompleteResponse, error) {
+func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error)) (appwire.PathsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
 		prefix = envvars.Home.Getenv()
@@ -25,7 +25,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	}
 	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
+		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
 	}
 	prefix = cleaned
 
@@ -42,7 +42,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 
 	entries, err := readDir(listDir)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
+		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}
 	type match struct {
 		path  string
@@ -76,7 +76,7 @@ func completeDirs(params appwire.DirsCompleteParams, readDir func(string) ([]os.
 	for i := range matches {
 		results[i] = matches[i].path
 	}
-	return appwire.DirsCompleteResponse{Data: results}, nil
+	return appwire.PathsCompleteResponse{Data: results}, nil
 }
 
 func directoryMatchScore(query, name string) (int, bool) {

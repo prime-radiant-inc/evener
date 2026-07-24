@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 )
 
-func checkCompleteDirs(t *testing.T) {
+func checkCompletePaths(t *testing.T) {
 	// Use a fake home so that empty prefix and ~ expansion are deterministic.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -24,7 +24,7 @@ func checkCompleteDirs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Add a regular file to verify the IsDir() filter in CompleteDirs excludes files.
+	// Add a regular file to verify the IsDir() filter in CompletePaths excludes files.
 	if err := os.WriteFile(filepath.Join(home, "afile.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func checkCompleteDirs(t *testing.T) {
 		// lists home's PARENT filtered by home's basename — which matches home
 		// itself and nothing else. Pinning the exact result catches a regression
 		// where the empty prefix no longer maps to HOME (e.g. defaulting to "/").
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -45,7 +45,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("prefix with ~/ expands to home", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: "~/"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: "~/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -60,7 +60,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("prefix ending with slash lists that dir", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: home + "/"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: home + "/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -91,7 +91,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("prefix without trailing slash lists parent and filters", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: filepath.Join(home, "Al")})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: filepath.Join(home, "Al")})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -103,7 +103,7 @@ func checkCompleteDirs(t *testing.T) {
 	t.Run("unreadable dir returns empty response", func(t *testing.T) {
 		// In external-test mode we may not be root; a non-existent dir
 		// behaves the same as an unreadable one (ReadDir returns an error).
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: "/nonexistent-dir-12345/xyz"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: "/nonexistent-dir-12345/xyz"})
 		if err != nil {
 			t.Fatalf("expected nil error, got %v", err)
 		}
@@ -120,7 +120,7 @@ func checkCompleteDirs(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: bigHome + "/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -128,7 +128,7 @@ func checkCompleteDirs(t *testing.T) {
 			t.Fatalf("expected all 40 entries, got %d", len(resp.Data))
 		}
 
-		limited, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: bigHome + "/", Limit: 7})
+		limited, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: bigHome + "/", Limit: 7})
 		if err != nil {
 			t.Fatalf("unexpected limited error: %v", err)
 		}
@@ -138,7 +138,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("final component fuzzy matches", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: filepath.Join(home, "lph")})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: filepath.Join(home, "lph")})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -148,7 +148,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("hidden dirs filtered when no filter", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: home + "/"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: home + "/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -163,7 +163,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("hidden dirs included when filter matches", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: filepath.Join(home, ".hid")})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: filepath.Join(home, ".hid")})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -173,7 +173,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("case-insensitive filter matching", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: filepath.Join(home, "aL")})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: filepath.Join(home, "aL")})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -183,7 +183,7 @@ func checkCompleteDirs(t *testing.T) {
 	})
 
 	t.Run("results are sorted", func(t *testing.T) {
-		resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: home + "/"})
+		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: home + "/"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -196,8 +196,8 @@ func checkCompleteDirs(t *testing.T) {
 	})
 }
 
-func checkCompleteDirs_TraversalReturnsNoSuggestions(t *testing.T) {
-	resp, err := fspaths.CompleteDirs(appwire.DirsCompleteParams{Prefix: "../"})
+func checkCompletePaths_TraversalReturnsNoSuggestions(t *testing.T) {
+	resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: "../"})
 	if err != nil {
 		t.Fatal(err)
 	}

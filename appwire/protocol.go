@@ -109,7 +109,7 @@ var Methods = []MethodSpec{
 	{MethodSerfTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodSerfThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
 	{MethodSerfSubagentPreview, SerfSubagentPreviewParams{}, SerfSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
-	{MethodSerfDirsComplete, DirsCompleteParams{}, DirsCompleteResponse{}, ScopeHub, "Directory-path autocompletion for a prefix."},
+	{MethodSerfPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
 	{MethodSerfProjectsRecent, ProjectsRecentParams{}, ProjectsRecentResponse{}, ScopeHub, "Lists the most recently used project working directories (session creation path-dropdown options; default cap 15)."},
 	{MethodSerfPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodSerfHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},

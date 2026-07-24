@@ -7,7 +7,7 @@ import "testing"
 // ordering and repetition without relying on network, wall clock, or host state.
 func FuzzFSPathsBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
-		checkCompleteDirs_EmptyHomeUsesRoot,
+		checkCompletePaths_EmptyHomeUsesRoot,
 		checkCanonicalizeDir_StatErrorAfterResolution,
 		checkCanonicalizeDir_RejectsRelative,
 		checkCanonicalizeDir_RejectsEmpty,

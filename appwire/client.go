@@ -400,9 +400,9 @@ func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskList
 	return out, err
 }
 
-func (c *Client) DirsComplete(ctx context.Context, params DirsCompleteParams) (DirsCompleteResponse, error) {
-	var out DirsCompleteResponse
-	err := c.request(ctx, MethodSerfDirsComplete, params, &out)
+func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) (PathsCompleteResponse, error) {
+	var out PathsCompleteResponse
+	err := c.request(ctx, MethodSerfPathsComplete, params, &out)
 	return out, err
 }
 

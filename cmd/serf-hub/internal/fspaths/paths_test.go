@@ -10,10 +10,10 @@ import (
 	"primeradiant.com/serf/appwire"
 )
 
-func checkCompleteDirs_EmptyHomeUsesRoot(t *testing.T) {
+func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {
 	t.Setenv("HOME", "")
 	var gotDir string
-	resp, err := completeDirs(appwire.DirsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
+	resp, err := completePaths(appwire.PathsCompleteParams{}, func(dir string) ([]os.DirEntry, error) {
 		gotDir = dir
 		return nil, nil
 	})
