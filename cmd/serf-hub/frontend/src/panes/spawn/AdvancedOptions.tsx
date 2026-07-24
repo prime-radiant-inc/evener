@@ -340,7 +340,11 @@ function PathListControl({
                     kind={pathKind}
                     complete={complete}
                     disabled={disabled}
-                    placeholder="Browse for a path"
+                    // The empty-state face, standing in for the trigger's
+                    // default "(default)": an add row has no default, and this
+                    // is also the picker's accessible name (CollectionEditor
+                    // renders no label of its own in renderAddField mode).
+                    placeholder="Add a path"
                   />
                 </span>
                 <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
