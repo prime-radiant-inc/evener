@@ -282,3 +282,80 @@ func TestHubRPCThreadForkExitedSessionSucceeds(t *testing.T) {
 		t.Fatal("local fork resurrected the parent daemon; it should read the state dir directly")
 	}
 }
+
+// TestHubRPCTurnControlsDoNotResumeExitedSession locks in the qp94 exception
+// classification: the turn-in-flight controls (steer, interrupt, queue,
+// drainAsSteer, promoteQueuedAsSteer, cancelQueued) gate on an active turn,
+// which a cold exited session cannot have. They must fail at the gate rather
+// than resurrect the daemon — resuming to a fresh idle session would give the
+// control nothing to act on.
+func TestHubRPCTurnControlsDoNotResumeExitedSession(t *testing.T) {
+	newExitedHub := func(t *testing.T) (*appwire.Client, *bool) {
+		t.Helper()
+		root := t.TempDir()
+		workingDir := t.TempDir()
+		stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+		buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		if _, err := past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		runDir := t.TempDir()
+		resumeCalled := false
+		spawner := &fakeRPCSpawner{
+			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+				resumeCalled = true
+				return rendezvous.Entry{}, nil
+			},
+		}
+		roster := hubcore.NewRoster(runDir, nil)
+		hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+		t.Cleanup(hub.Close)
+		client := dialHubRPC(t, hub)
+		t.Cleanup(func() { _ = client.Close() })
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+			t.Fatalf("Initialize: %v", err)
+		}
+		return client, &resumeCalled
+	}
+
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := "local:" + sessionID
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		call func(*appwire.Client) error
+	}{
+		{"steer", func(c *appwire.Client) error {
+			return c.TurnSteer(ctx, appwire.TurnSteerParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+		}},
+		{"interrupt", func(c *appwire.Client) error {
+			return c.TurnInterrupt(ctx, appwire.TurnInterruptParams{Ref: ref})
+		}},
+		{"queue", func(c *appwire.Client) error {
+			return c.TurnQueue(ctx, appwire.TurnQueueParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+		}},
+		{"drainAsSteer", func(c *appwire.Client) error {
+			return c.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: ref, Input: []appwire.InputItem{{Type: "text", Text: "x"}}})
+		}},
+		{"promoteQueuedAsSteer", func(c *appwire.Client) error {
+			return c.TurnPromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{Ref: ref, Index: 0})
+		}},
+		{"cancelQueued", func(c *appwire.Client) error {
+			_, err := c.TurnCancelQueued(ctx, appwire.TurnCancelQueuedParams{Ref: ref, Index: 0})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, resumeCalled := newExitedHub(t)
+			if err := tc.call(client); err == nil {
+				t.Fatalf("%s on exited session succeeded; want gate error", tc.name)
+			}
+			if *resumeCalled {
+				t.Fatalf("%s resurrected an exited session; turn controls must stay live-only", tc.name)
+			}
+		})
+	}
+}
