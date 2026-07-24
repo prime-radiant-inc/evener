@@ -82,7 +82,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
     ],
   }));
   fake.on("serf/projects/recent", () => ({ data: [] }));
-  fake.on("serf/dirs/complete", () => ({ data: [] }));
+  fake.on("serf/paths/complete", () => ({ data: [] }));
   fake.on("serf/path/validate", () => ({ path: "", valid: true }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
