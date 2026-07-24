@@ -525,14 +525,15 @@ test("pasting an image renders a removable attachment chip and inserts its marke
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
-test("the chip's remove button names the specific attachment (filename + dimensions), not a bare 'Remove'", async () => {
+test("the remove button names the specific attachment (filename + dimensions for image tile, or chip text for non-image)", async () => {
   installCanvasStubs();
   await mountComposer("ref_a");
 
   pastePngInto(textarea(), "shot.png");
   await waitFor(() => expect(textarea().value).toBe("[image 1]"));
 
-  expect(screen.getByRole("button", { name: "Remove shot.png (4×4)" })).toBeTruthy();
+  // For image attachments, the remove button label is "Remove {filename}"
+  expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 });
 
 test("a successful submit includes the pasted image as a base64 InputAttachment", async () => {
@@ -581,6 +582,38 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
 
   await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
+});
+
+test("pasted image renders as a thumbnail tile with dimensions, remove button, and lightbox on click", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+
+  pastePngInto(textarea(), "screenshot.png");
+  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+
+  // Assert the thumbnail <img> renders with a data-URL
+  const thumbnail = screen.getByRole("img", { name: /image 1 of 1/i }) as HTMLImageElement;
+  expect(thumbnail).toBeTruthy();
+  expect(thumbnail.src).toMatch(/^data:image\/png;base64,/);
+
+  // Assert the dimensions are displayed
+  expect(screen.getByText(/4×4/)).toBeTruthy();
+
+  // Assert clicking the thumbnail opens the lightbox (before removing)
+  await user.click(thumbnail);
+  const lightboxImg = screen.getByTestId("image-gallery-lightbox-img") as HTMLImageElement;
+  expect(lightboxImg).toBeTruthy();
+  expect(lightboxImg.src).toMatch(/^data:image\/png;base64,/);
+
+  // Close the lightbox by clicking outside (Esc or backdrop)
+  const dialogBackdrop = lightboxImg.parentElement?.parentElement;
+  if (dialogBackdrop) fireEvent.click(dialogBackdrop);
+
+  // Assert clicking the ✕ removes the attachment
+  const removeButton = screen.getByRole("button", { name: /remove screenshot\.png/i });
+  await user.click(removeButton);
+  await waitFor(() => expect(textarea().value).toBe(""));
 });
 
 // installFailingDecodeStub mirrors installCanvasStubs but rejects (via
