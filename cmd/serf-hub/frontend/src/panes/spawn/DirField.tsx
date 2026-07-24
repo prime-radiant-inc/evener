@@ -1,6 +1,6 @@
 // The working-directory chip (floor §1.6): a text field plus an assisted-browse
 // popup that lists recent projects (serf/projects/recent, first listing only)
-// and live directory completions (serf/dirs/complete, debounced 150ms). Wire-
+// and live directory completions (serf/paths/complete, debounced 150ms). Wire-
 // free like PathPicker - the parent injects listRecents/complete closures over
 // the appwire client. Distinct from the generic PathPicker widget because the
 // spawn dir-picker adds recents (accept-on-click), a `..` parent row, a
@@ -36,7 +36,7 @@ export interface DirFieldProps {
   /** serf/projects/recent -> recent project full paths. A rejection (older hub
    * without the RPC) degrades silently to "no recent section" (floor §1.6). */
   listRecents: () => Promise<string[]>;
-  /** serf/dirs/complete -> full-path directory children/completions for a
+  /** serf/paths/complete -> full-path directory children/completions for a
    * prefix. A trailing "/" lists children; otherwise it filters by basename. */
   complete: (prefix: string) => Promise<string[]>;
   placeholder?: string;
@@ -56,7 +56,7 @@ function parentOf(dir: string): string {
 }
 
 // The prefix that lists a directory's own children (trailing slash), matching
-// completeDirs' listDir branch. An empty dir lists the home directory.
+// completePaths' listDir branch. An empty dir lists the home directory.
 function childrenPrefix(dir: string): string {
   if (dir === "") return "";
   return dir.endsWith("/") ? dir : `${dir}/`;
