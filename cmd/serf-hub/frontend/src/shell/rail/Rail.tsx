@@ -23,6 +23,7 @@
 // normalize - a plain reload with this code already shows exactly one
 // "Sessions" panel.
 import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { useConnectionStore } from "../../stores/connection";
 import {
   type TreeNode as ApiTreeNode,
   type TreeProject as ApiTreeProject,
@@ -42,6 +43,7 @@ import {
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
@@ -59,6 +61,14 @@ const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
   hosted: requireClass(styles.hosted, "Rail.module.css", "hosted"),
   header: requireClass(styles.header, "Rail.module.css", "header"),
+  brand: requireClass(styles.brand, "Rail.module.css", "brand"),
+  brandName: requireClass(styles.brandName, "Rail.module.css", "brandName"),
+  search: requireClass(styles.search, "Rail.module.css", "search"),
+  searchLabel: requireClass(styles.searchLabel, "Rail.module.css", "searchLabel"),
+  searchChord: requireClass(styles.searchChord, "Rail.module.css", "searchChord"),
+  newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
+  footer: requireClass(styles.footer, "Rail.module.css", "footer"),
+  footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
   title: requireClass(styles.title, "Rail.module.css", "title"),
   body: requireClass(styles.body, "Rail.module.css", "body"),
   section: requireClass(styles.section, "Rail.module.css", "section"),
@@ -145,6 +155,10 @@ export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = f
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
   const projectDetails = useTreeStore((s) => s.projectDetails);
+  // Footer identity: the connected daemon's own name (never a fabricated user
+  // handle). Falls back to the "serf" brand string before a handshake has
+  // populated serverInfo.
+  const serverInfo = useConnectionStore((s) => s.serverInfo);
   const toasts = useToasts();
 
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
@@ -304,16 +318,42 @@ export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = f
     <div className={hostedInSheet ? `${CLASS.rail} ${CLASS.hosted}` : CLASS.rail}>
       {!hostedInSheet && (
         <div className={CLASS.header}>
-          <h2 className={CLASS.title}>Sessions</h2>
-          {onHide && (
+          <div className={CLASS.brand}>
+            <span className={CLASS.brandName}>serf</span>
             <IconButton
-              label="Hide sidebar"
-              icon={<span aria-hidden="true">{"«"}</span>}
+              label="Home"
+              icon={<span aria-hidden="true">{"⌂"}</span>}
               variant="quiet"
               size="sm"
-              onClick={onHide}
+              onClick={() => navigate("/")}
             />
-          )}
+            {onHide && (
+              <IconButton
+                label="Hide sidebar"
+                icon={<span aria-hidden="true">{"«"}</span>}
+                variant="quiet"
+                size="sm"
+                onClick={onHide}
+              />
+            )}
+          </div>
+          {/* A palette opener styled as a search field, not a text input: it
+              carries data-search-trigger so AppShell's global click handler
+              opens the command palette (the app's one search surface), and
+              shows the ⌘K chord that does the same from the keyboard. */}
+          <button type="button" data-testid="rail-search" data-search-trigger="true" className={CLASS.search}>
+            <span aria-hidden="true">{"⌕"}</span>
+            <span className={CLASS.searchLabel}>Search</span>
+            <span className={CLASS.searchChord}>{"⌘K"}</span>
+          </button>
+          {/* Grid wrapper stretches the primary Button to the rail's full
+              width without reaching into the widget's own computed className. */}
+          <div className={CLASS.newSession}>
+            <Button variant="primary" onClick={() => navigate("/new")}>
+              + New session
+            </Button>
+          </div>
+          <h2 className={CLASS.title}>Sessions</h2>
         </div>
       )}
       <div className={CLASS.body} ref={bodyRef}>
@@ -382,6 +422,20 @@ export function Rail({ onHide, revealTarget, onRevealConsumed, hostedInSheet = f
           </>
         )}
       </div>
+
+      {!hostedInSheet && (
+        <div className={CLASS.footer}>
+          <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "serf"}</span>
+          <IconButton
+            data-testid="rail-settings"
+            label="Settings"
+            icon={<span aria-hidden="true">{"⚙"}</span>}
+            variant="quiet"
+            size="sm"
+            onClick={() => navigate("/settings")}
+          />
+        </div>
+      )}
 
       {renameTarget && (
         <Dialog

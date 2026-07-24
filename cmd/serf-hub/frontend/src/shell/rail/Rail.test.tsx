@@ -288,6 +288,37 @@ describe("sections", () => {
   });
 });
 
+describe("in-sidebar chrome (c8gt)", () => {
+  // Seed an empty tree so /new session/i is unambiguous: SAMPLE_WIRE_TREE's
+  // project rows render their own "New session in {project}" IconButtons,
+  // which also match that name. The header/footer chrome renders regardless
+  // of tree contents (it lives outside the tree-body conditional), so an
+  // empty tree still exercises it fully while leaving exactly one New-session
+  // control in the DOM - the chrome's own.
+  test("renders in-sidebar chrome: search opens palette, + New session, settings", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    renderRail();
+    await screen.findByText(/no sessions yet/i);
+    const search = screen.getByTestId("rail-search");
+    expect(search.getAttribute("data-search-trigger")).not.toBeNull(); // wired to the palette handler
+    expect(screen.getByText("⌘K")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /new session/i })).toBeTruthy();
+    expect(screen.getByTestId("rail-settings")).toBeTruthy();
+  });
+
+  test("hostedInSheet suppresses the sidebar header chrome", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    render(
+      <>
+        <Rail hostedInSheet />
+        <Toast />
+      </>,
+    );
+    await screen.findByText(/no sessions yet/i);
+    expect(screen.queryByTestId("rail-search")).toBeNull();
+  });
+});
+
 describe("row activation", () => {
   test("activating a session row opens its pane via workspaceStore.openPane", async () => {
     renderRail();
