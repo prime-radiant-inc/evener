@@ -62,6 +62,10 @@ export interface PathFieldProps {
    * this; a skills-directory field has no meaningful "recents". A rejection
    * (an older hub without the RPC) degrades silently to no Recent group. */
   listRecents?: () => Promise<string[]>;
+  /** Fired once when the panel closes, with the field's final value. The spawn
+   * working-directory field uses this to stamp its last-used-directory global
+   * (spec 3.7) rather than writing it on every browse step. */
+  onPanelClose?: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
 }
@@ -496,6 +500,7 @@ export function PathField({
   kind = "dir",
   complete,
   listRecents,
+  onPanelClose,
   placeholder,
   disabled = false,
 }: PathFieldProps): JSX.Element {
@@ -511,15 +516,21 @@ export function PathField({
    * restores focus unless this does and it falls to <body> - and from <body> a
    * keyboard user's Tab position restarts at the top of the document rather than
    * continuing on through the form. The trigger is where focus was before
-   * opening, so tabbing onward from it is the correct next stop. */
-  function closePanel(): void {
+   * opening, so tabbing onward from it is the correct next stop.
+   *
+   * onPanelClose fires once here with the field's final value: browsing writes
+   * the value continuously now, so a caller that needs to record where the user
+   * ended up (the spawn field's last-working-directory global, spec 3.7) has to
+   * be told on close rather than on every step. */
+  function closePanel(finalValue: string): void {
     setOpen(false);
     triggerRef.current?.focus();
+    onPanelClose?.(finalValue);
   }
 
   function commit(path: string): void {
     onChange(path);
-    closePanel();
+    closePanel(path);
   }
 
   return (
@@ -527,7 +538,7 @@ export function PathField({
       open={open}
       // Escape and an outside click both dismiss with whatever browsing left
       // in the field - there is no Cancel to undo it (spec 3.4).
-      onClose={closePanel}
+      onClose={() => closePanel(value)}
       // The panel's own list scrolls, and a page scroll behind it must not
       // dismiss it mid-interaction.
       closeOnScroll={false}
@@ -544,7 +555,7 @@ export function PathField({
           type="button"
           className={CLASS.trigger}
           disabled={disabled}
-          onClick={() => (open ? closePanel() : setOpen(true))}
+          onClick={() => (open ? closePanel(value) : setOpen(true))}
         >
           {/* Plain text, not a Chip: the trigger already draws the control's
               own border, and a bordered chip inside it reads as a double

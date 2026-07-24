@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import { PathField, type PathFieldProps } from "./index";
 
@@ -26,6 +27,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 function renderField(props: Partial<PathFieldProps> = {}) {
   const onChange = props.onChange ?? vi.fn();
   const complete = props.complete ?? lister({});
+  const onPanelClose = props.onPanelClose ?? vi.fn();
   render(
     <PathField
       value={props.value ?? ""}
@@ -34,9 +36,10 @@ function renderField(props: Partial<PathFieldProps> = {}) {
       complete={complete}
       listRecents={props.listRecents}
       disabled={props.disabled}
+      onPanelClose={onPanelClose}
     />,
   );
-  return { onChange, complete };
+  return { onChange, complete, onPanelClose };
 }
 
 function trigger(): HTMLElement {
@@ -563,6 +566,121 @@ test("closing returns focus to the trigger", async () => {
 
   await waitFor(() => expect(panelInput()).toBeNull());
   expect(document.activeElement).toBe(button);
+});
+
+// --- onPanelClose -----------------------------------------------------------
+
+// Spec 3.7: the spawn field's last-working-directory global is stamped ONCE on
+// close, not on every browse step (browsing now writes the value continuously).
+// That needs a close callback, so every close path must fire it exactly once
+// with the value the field ends up holding.
+
+/** A stateful host, so `value` genuinely tracks onChange the way a real form's
+ * does - which is what makes "the value the field ends up with" assertable. */
+function renderStatefulField(props: Partial<PathFieldProps> & { value: string }) {
+  const onPanelClose = vi.fn();
+  function Host() {
+    const [value, setValue] = useState(props.value);
+    return (
+      <PathField
+        value={value}
+        onChange={setValue}
+        kind={props.kind}
+        complete={props.complete ?? lister({})}
+        listRecents={props.listRecents}
+        onPanelClose={onPanelClose}
+      />
+    );
+  }
+  render(<Host />);
+  return { onPanelClose };
+}
+
+test("Escape fires onPanelClose once, with the value browsing left behind", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"], "/home/jesse/src/": [] }),
+  });
+
+  await open(user);
+  expect(onPanelClose).not.toHaveBeenCalled();
+  await user.click(await screen.findByRole("option", { name: /src/ }));
+  await user.keyboard("{Escape}");
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(onPanelClose.mock.calls).toEqual([["/home/jesse/src"]]);
+});
+
+test("an outside click fires onPanelClose once", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"] }),
+  });
+
+  await open(user);
+  await user.click(document.body);
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(onPanelClose.mock.calls).toEqual([["/home/jesse"]]);
+});
+
+test("committing a file fires onPanelClose once with the committed path", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    kind: "file",
+    value: "/etc/hosts",
+    complete: lister({ "/etc/": ["/etc/passwd"] }),
+  });
+
+  await open(user);
+  await user.click(await screen.findByRole("option", { name: /passwd/ }));
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(onPanelClose.mock.calls).toEqual([["/etc/passwd"]]);
+});
+
+test("committing a recent fires onPanelClose once with the committed path", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": [] }),
+    listRecents: () => Promise.resolve(["/home/jesse/serf"]),
+  });
+
+  await open(user);
+  await user.click(await screen.findByRole("option", { name: /serf/ }));
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(onPanelClose.mock.calls).toEqual([["/home/jesse/serf"]]);
+});
+
+test("a trigger click that closes fires onPanelClose once", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"] }),
+  });
+
+  await open(user);
+  await user.click(trigger());
+
+  await waitFor(() => expect(panelInput()).toBeNull());
+  expect(onPanelClose.mock.calls).toEqual([["/home/jesse"]]);
+});
+
+test("opening does not fire onPanelClose", async () => {
+  const user = userEvent.setup();
+  const { onPanelClose } = renderStatefulField({
+    value: "/home/jesse",
+    complete: lister({ "/home/jesse/": ["/home/jesse/src"] }),
+  });
+
+  await open(user);
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(2));
+
+  expect(onPanelClose).not.toHaveBeenCalled();
 });
 
 // Landing on <body> restarts a keyboard user's Tab position at the top of the
