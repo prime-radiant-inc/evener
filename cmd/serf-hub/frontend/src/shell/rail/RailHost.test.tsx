@@ -28,7 +28,7 @@ class MemoryStorage {
 }
 
 // jsdom has no matchMedia; RailHost queries two features - useIsMobile's
-// "(max-width: 899px)" and useSidebarMode's "(min-width: 1200px)". This stub
+// "(max-width: 899px)" and useSidebarMode's "(min-width: 900px)". This stub
 // answers each from the {mobile, wide} state a test installs.
 class FakeMediaQueryList {
   matches: boolean;
@@ -51,7 +51,7 @@ function installMatchMedia(state: { mobile: boolean; wide: boolean }) {
   const matchMedia = (query: string) => {
     let list = lists.get(query);
     if (!list) {
-      const initial = query.includes("min-width: 1200px")
+      const initial = query.includes("min-width: 900px")
         ? state.wide
         : query.includes("max-width: 899px")
           ? state.mobile
@@ -119,7 +119,7 @@ describe("desktop mode resolution", () => {
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
 
-  test("auto mode above 1200px renders inline (not collapsed)", () => {
+  test("auto mode at/above 900px renders inline (not collapsed)", () => {
     installMatchMedia({ mobile: false, wide: true });
     prefsStore.setState({ sidebarMode: "auto" });
     render(<RailHost />);
@@ -127,7 +127,7 @@ describe("desktop mode resolution", () => {
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
 
-  test("auto mode below 1200px collapses to the ☰ chip (rail hidden)", () => {
+  test("auto mode below 900px collapses to the ☰ chip (rail hidden)", () => {
     installMatchMedia({ mobile: false, wide: false });
     prefsStore.setState({ sidebarMode: "auto" });
     render(<RailHost />);

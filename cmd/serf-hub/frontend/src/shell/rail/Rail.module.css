@@ -86,8 +86,9 @@
 }
 
 /* --- collapsed-rail ☰ chip (RailHost.tsx) --------------------------------
- * When sidebarMode collapses the rail (rail mode, or auto below 1200px),
- * RailHost hides the rail entirely and leaves this chip pinned top-left; it
+ * When sidebarMode collapses the rail (rail mode; auto only collapses below
+ * 900px, a width already handed to StackHost), RailHost hides the rail
+ * entirely and leaves this chip pinned top-left; it
  * opens the rail as an overlay drawer. align-self keeps it hugging the top of
  * the workspace row rather than stretching a full-height column. */
 .chipBar {

@@ -2,7 +2,8 @@
 // both sites (the desktop flex sibling and StackHost's railSlot). It keeps the
 // same mount contract as <Rail/> and owns the sidebar's VISIBILITY:
 //   pane  -> inline, always expanded
-//   auto  -> inline at/above 1200px; below it, collapsed to the ☰ chip
+//   auto  -> inline/docked across the whole desktop range (>=900px); it only
+//            collapses below that, a width mobile has already handed to StackHost
 //   rail  -> always collapsed to the ☰ chip
 // (Semantics fixed by the shipped Wave-7 help copy, theme.tsx:103-104.)
 // "Collapsed" hides the rail entirely, leaving a top-left ☰ chip that opens it
@@ -125,9 +126,9 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     );
   }
 
-  // Inline and expanded (pane, or auto at/above 1200px). onHide collapses the
-  // sidebar by moving to rail mode (which this same component then renders as
-  // the ☰ chip).
+  // Inline and expanded (pane, or auto docked at/above 900px). onHide collapses
+  // the sidebar by moving to rail mode (which this same component then renders
+  // as the ☰ chip).
   return (
     <Rail
       onHide={() => prefsStore.getState().setSidebarMode("rail")}

@@ -46,8 +46,8 @@
 // sidebarMode gets NO document mirror - it has no data-* attribute for CSS
 // to key off, unlike phoneDensity/fontSize above. Its consumer is
 // shell/rail/RailHost.tsx, which reads this value directly to drive the
-// rail's 3-state visibility (auto: responsive at the 1200px desktop
-// threshold; pane: always expanded; rail: collapsed behind a top-left ☰
+// rail's 3-state visibility (auto: docked across the whole desktop range,
+// >=900px; pane: always expanded; rail: collapsed behind a top-left ☰
 // overlay drawer) and owns the global ⌘B listener that cycles
 // rail -> pane -> auto. Persisting the preference is as far as this
 // store's own job goes.
