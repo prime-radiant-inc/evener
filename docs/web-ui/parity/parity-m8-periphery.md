@@ -778,9 +778,10 @@ matched a correspondingly-named test).
 
 ### 5.1 Credential transports
 
-- [ ] The client may present the token exactly two ways: the `serf_hub_auth` cookie, or an
-      `Authorization: Bearer {token}` header — no other transport is recognized —
-      `hubedge/auth_token.go:86-94`
+- [ ] The client may present the token exactly two ways: the per-hub `serf_hub_auth_*` cookie
+      (name suffixed by a hash of the hub's token so co-located hubs don't collide, `cookieName`),
+      or an `Authorization: Bearer {token}` header — no other transport is recognized —
+      `hubedge/auth_token.go`
 - [ ] The token itself lives at `$hub_state_root/auth-token` (mode 0600), created on first hub run if
       absent (256-bit random, base64 raw-URL-encoded); the SPA never generates or reads this file
       directly — a human operator obtains it from the printed startup URL or the file itself —

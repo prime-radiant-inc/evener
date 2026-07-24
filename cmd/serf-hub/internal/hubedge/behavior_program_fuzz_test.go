@@ -33,6 +33,8 @@ func FuzzHubEdgeBehaviorProgram(f *testing.F) {
 		checkAuthGuard_RefreshesCookieOnAuthenticatedRequest,
 		checkAuthGuard_NoCookieRefreshForBearer,
 		checkAuthGuard_ReturnsPlainForAPI,
+		checkAuthGuard_ReloadSurvivesAnotherSameHostHub,
+		checkCookieName_DistinctPerToken,
 	}
 	for i := range checks {
 		f.Add(uint8(i))
