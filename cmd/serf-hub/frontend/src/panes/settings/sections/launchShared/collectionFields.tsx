@@ -187,7 +187,7 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
  * it, which is where serf/path/validate still gates it (the picker's own panel
  * is portaled outside this <form>, so Enter inside the picker picks a path
  * rather than submitting the row - asserted by collectionFields.test.tsx's
- * "Enter in the picker panel does not submit the add row").
+ * "Enter on a directory row descends without submitting the add row").
  *
  * `ariaLabel` carries the option's own label into the trigger's accessible
  * name: CollectionEditor skips its own visually-hidden label wrapper in

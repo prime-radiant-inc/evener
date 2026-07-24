@@ -190,6 +190,51 @@ describe("PathListField", () => {
     expect(validatePath).toHaveBeenCalledWith("/opt/plugins", "dir");
   });
 
+  // Enter in the picker must not ALSO submit the add row. Two independent
+  // things stop it: Popover portals the panel to document.body, so the input
+  // is not in CollectionEditor's add <form> at all, and the panel's own keydown
+  // handler preventDefaults Enter. Descending into a directory row is the case
+  // that can observe a regression in either, since the panel stays OPEN - after
+  // a commit the panel unmounts and there's no input left to submit from.
+  test("Enter on a directory row descends without submitting the add row", async () => {
+    const user = userEvent.setup();
+    connectPathLister({ "": ["/opt/plugins"] });
+    const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins", valid: true });
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await user.click(screen.getByRole("button", { name: /browse/i }));
+    await screen.findByRole("combobox", { name: "Path" });
+    await user.click(await screen.findByRole("option", { name: /plugins/ }));
+    // Still browsing: nothing has been added, and no path has been validated.
+    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(validatePath).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(validatePath).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  // The add fires exactly once, and only from the Add click - a picker Enter
+  // that also submitted would double it.
+  test("committing a typed path in the panel adds the row exactly once, on the Add click", async () => {
+    const user = userEvent.setup();
+    connectPathLister({});
+    const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins", valid: true });
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await typePath(user, "/opt/plugins");
+    expect(validatePath).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange).toHaveBeenCalledWith(["/opt/plugins"]);
+    expect(validatePath).toHaveBeenCalledTimes(1);
+  });
+
   test("outputFile pathKind is translated to 'output-file' for the RPC call", async () => {
     const user = userEvent.setup();
     connectPathLister({});

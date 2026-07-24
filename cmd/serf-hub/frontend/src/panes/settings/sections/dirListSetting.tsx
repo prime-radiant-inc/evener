@@ -85,7 +85,11 @@ export interface PathListEditorProps {
 
 /**
  * The generic "list of paths" editor: a PathField add row (the whole field
- * browses, matching plugins.html/skills.html's own picker contract), a
+ * browses, matching plugins.html/skills.html's own picker contract, and its
+ * portaled panel sits outside CollectionEditor's add <form> so Enter inside the
+ * picker picks a path rather than submitting the row - asserted by
+ * dirListSetting.test.tsx's "Enter on a directory row descends without
+ * submitting the add row"), a
  * ConfirmDialog-gated remove button per row, and an inline validation error
  * below the add row (CollectionEditor's own, already on token-
  * contract.test.ts's --danger allowlist as a widget). Reused by

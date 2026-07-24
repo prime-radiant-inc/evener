@@ -137,6 +137,40 @@ describe("PathListEditor", () => {
     await waitFor(() => expect(picker().textContent).toMatch(/absolute\/path/));
   });
 
+  // Enter in the picker must not ALSO submit the add row. Two independent
+  // things stop it: Popover portals the panel to document.body, so the input
+  // is not in CollectionEditor's add <form> at all, and the panel's own keydown
+  // handler preventDefaults Enter. Descending into a directory row is the case
+  // that can observe a regression in either, since the panel stays OPEN - after
+  // a commit the panel unmounts and there's no input left to submit from.
+  test("Enter on a directory row descends without submitting the add row", async () => {
+    const user = userEvent.setup();
+    const onAdd = vi.fn(async () => ({ ok: true }) as const);
+    const complete = vi.fn(async () => ["/opt/plugins/serf-lint"]);
+    render(<PathListEditor {...baseProps({ onAdd, complete })} />);
+    await user.click(picker());
+    await screen.findByRole("combobox", { name: "Path" });
+    await screen.findByRole("option", { name: /serf-lint/ });
+
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("combobox", { name: "Path" })).toBeTruthy();
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  // The add fires exactly once, and only from the Add click - a picker Enter
+  // that also submitted would double it.
+  test("committing a typed path in the panel adds the row exactly once, on the Add click", async () => {
+    const user = userEvent.setup();
+    const onAdd = vi.fn(async () => ({ ok: true }) as const);
+    render(<PathListEditor {...baseProps({ onAdd })} />);
+    await typePath(user, "/opt/new");
+    expect(onAdd).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onAdd).toHaveBeenCalledTimes(1));
+  });
+
   test("ok:false shows the inline error and keeps the draft", async () => {
     const user = userEvent.setup();
     const onAdd = vi.fn(async () => ({ ok: false, error: "path does not exist" }) as const);
