@@ -5,9 +5,10 @@
 // the appwire client. Distinct from the generic PathPicker widget because the
 // spawn dir-picker adds recents (accept-on-click), a `..` parent row, a
 // use-current button, and the recents-drop-after-first-browse rule.
-import { type ChangeEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Button, IconButton, Input } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { Popover } from "../../widgets/popover";
 import styles from "./dirField.module.css";
 import { getGlobalLastWorkingDir, setGlobalLastWorkingDir } from "./spawnDefaults";
 
@@ -16,8 +17,7 @@ const COMPLETE_DEBOUNCE_MS = 150;
 const CLASS = {
   root: requireClass(styles.root, "dirField.module.css", "root"),
   field: requireClass(styles.field, "dirField.module.css", "field"),
-  popup: requireClass(styles.popup, "dirField.module.css", "popup"),
-  pathRow: requireClass(styles.pathRow, "dirField.module.css", "pathRow"),
+  panel: requireClass(styles.panel, "dirField.module.css", "panel"),
   section: requireClass(styles.section, "dirField.module.css", "section"),
   sectionLabel: requireClass(styles.sectionLabel, "dirField.module.css", "sectionLabel"),
   entries: requireClass(styles.entries, "dirField.module.css", "entries"),
@@ -69,8 +69,6 @@ export function DirField({ id, value, onChange, listRecents, complete, placehold
   const [entries, setEntries] = useState<string[] | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const [showRecents, setShowRecents] = useState(false);
-  const rootRef = useRef<HTMLFieldSetElement>(null);
-  const pathInputId = useId();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Monotonic request id: a completion response older than the latest request
   // is dropped, so an out-of-order resolution never overwrites fresher entries
@@ -78,15 +76,6 @@ export function DirField({ id, value, onChange, listRecents, complete, placehold
   const reqIdRef = useRef(0);
 
   useEffect(() => () => clearTimeout(debounceRef.current), []);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    function onDocMouseDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    document.addEventListener("mousedown", onDocMouseDown);
-    return () => document.removeEventListener("mousedown", onDocMouseDown);
-  }, [open]);
 
   function runCompletion(prefix: string): void {
     reqIdRef.current += 1;
@@ -163,34 +152,26 @@ export function DirField({ id, value, onChange, listRecents, complete, placehold
   const showParent = currentDir !== "" && currentDir !== "/";
 
   return (
-    // <fieldset> groups the field + its browse popup as one control, the same
+    // <fieldset> groups the field + its browse popover as one control, the same
     // native-role rationale PathPicker documents; chrome reset in the module.
-    <fieldset ref={rootRef} className={CLASS.root} onKeyDown={handleRootKeyDown}>
-      <div className={CLASS.field}>
-        <Input id={id} value={value} onChange={handleType} placeholder={placeholder} />
-        <IconButton
-          label="Browse working directory"
-          icon={<FolderIcon />}
-          variant="quiet"
-          size="sm"
-          onClick={openViaButton}
-        />
-      </div>
-      {open && (
-        <div className={CLASS.popup}>
-          <div className={CLASS.pathRow}>
-            <label className={CLASS.visuallyHidden} htmlFor={pathInputId}>
-              Directory path
-            </label>
-            <Input id={pathInputId} value={browseValue} onChange={handleType} placeholder="Type a path" />
-            <Button
+    <fieldset className={CLASS.root} onKeyDown={handleRootKeyDown}>
+      <Popover
+        open={open}
+        onClose={() => setOpen(false)}
+        trigger={
+          <div className={CLASS.field}>
+            <Input id={id} value={value} onChange={handleType} placeholder={placeholder} />
+            <IconButton
+              label="Browse working directory"
+              icon={<FolderIcon />}
               variant="quiet"
               size="sm"
-              onClick={() => accept(browseValue.trim() !== "" ? browseValue : currentDir)}
-            >
-              Use this directory
-            </Button>
+              onClick={openViaButton}
+            />
           </div>
+        }
+      >
+        <div className={CLASS.panel}>
           {showRecents && recents.length > 0 && (
             <div className={CLASS.section}>
               <p className={CLASS.sectionLabel}>Recent projects</p>
@@ -234,7 +215,7 @@ export function DirField({ id, value, onChange, listRecents, complete, placehold
             </Button>
           </div>
         </div>
-      )}
+      </Popover>
     </fieldset>
   );
 }

@@ -20,11 +20,7 @@
   min-width: 0;
 }
 
-.popup {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + var(--space-1));
-  left: 0;
+.panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -35,17 +31,6 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-2);
-}
-
-.pathRow {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.pathRow > :first-child {
-  flex: 1;
-  min-width: 0;
 }
 
 .section {
