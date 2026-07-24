@@ -126,7 +126,12 @@ test("opens to show every session action", async () => {
   render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
   await openMenu(user);
 
-  expect(screen.getByRole("menuitem", { name: "Fork" })).toBeTruthy();
+  // Fork is no longer here: it moved to a per-user-message affordance
+  // (ForkFromHereButton, transcript/messages/UserMessageItem.tsx), where the
+  // specific message being forked from IS the context - a session-chrome menu
+  // item never had one. "Set goal…" is the entry point that replaced it.
+  expect(screen.queryByRole("menuitem", { name: "Fork" })).toBeNull();
+  expect(screen.getByRole("menuitem", { name: "Set goal…" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Aside" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Compact" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: "Clear" })).toBeTruthy();
@@ -143,11 +148,14 @@ test("disables each action the thread's own capabilities say are unavailable", a
     shutdown: false,
     rename: false,
     forkFromTurn: false,
+    goal: false,
   };
   render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ capabilities: noCapabilities })} />);
   await openMenu(user);
 
-  expect(screen.getByRole("menuitem", { name: "Fork" }).getAttribute("aria-disabled")).toBe("true");
+  // Set goal… gates on the goal capability; Aside on forkFromTurn (it forks at
+  // the tip). Fork itself is gone from this menu - see the test above.
+  expect(screen.getByRole("menuitem", { name: "Set goal…" }).getAttribute("aria-disabled")).toBe("true");
   expect(screen.getByRole("menuitem", { name: "Aside" }).getAttribute("aria-disabled")).toBe("true");
   expect(screen.getByRole("menuitem", { name: "Compact" }).getAttribute("aria-disabled")).toBe("true");
   expect(screen.getByRole("menuitem", { name: "Clear" }).getAttribute("aria-disabled")).toBe("true");
@@ -155,11 +163,14 @@ test("disables each action the thread's own capabilities say are unavailable", a
   expect(screen.getByRole("menuitem", { name: "Rename" }).getAttribute("aria-disabled")).toBe("true");
 });
 
-test("Fork is disabled when there is no user message anywhere to fork from, even if the capability is available", async () => {
+test("Set goal… fires the onSetGoal seam SessionChrome wires to the controlled goal dialog", async () => {
   const user = userEvent.setup();
-  render(<SessionActionsMenu sessionRef="ref_a" model={testModel({ turns: [] })} />);
+  let opened = 0;
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} onSetGoal={() => opened++} />);
   await openMenu(user);
-  expect(screen.getByRole("menuitem", { name: "Fork" }).getAttribute("aria-disabled")).toBe("true");
+  await user.click(screen.getByRole("menuitem", { name: "Set goal…" }));
+
+  expect(opened).toBe(1);
 });
 
 // --- Compact (direct call, no confirmation) ---------------------------------
@@ -401,72 +412,8 @@ test("a failed rename surfaces an error toast and leaves the dialog open", async
   expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
-// --- Fork --------------------------------------------------------------------
-
-test("Fork opens a dialog pre-filled with the last user message, editable before submitting", async () => {
-  const user = userEvent.setup();
-  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
-  await openMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
-
-  const dialog = await screen.findByRole("dialog");
-  expect((within(dialog).getByRole("textbox") as HTMLTextAreaElement).value).toBe("please fix the bug");
-});
-
-test("submitting Fork calls forkFromTurn with the source turn and edited text, then opens the child pane", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  let called: unknown;
-  fake.on("thread/fork", (params) => {
-    called = params;
-    return {
-      thread: wireThread({
-        id: "child_2",
-        sessionId: "child_2",
-        source: "local",
-        serf: { ref: "local/child_2", capabilities: FULL_CAPABILITIES, queue: {} },
-      }),
-    };
-  });
-
-  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
-  await openMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
-  const dialog = await screen.findByRole("dialog");
-  const textarea = within(dialog).getByRole("textbox");
-  await user.clear(textarea);
-  await user.type(textarea, "fix a different bug");
-  await user.click(within(dialog).getByRole("button", { name: /^fork$/i }));
-
-  await waitFor(() =>
-    expect(called).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", editedInput: "fix a different bug" }),
-  );
-  await waitFor(() =>
-    expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({ ref: "local/child_2" }),
-  );
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-});
-
-test("a failed Fork surfaces an error toast, opens no pane, and leaves the dialog open with the edit intact", async () => {
-  const user = userEvent.setup();
-  const fake = connectFakeClient();
-  fake.on("thread/fork", () => {
-    throw new Error("fork boom");
-  });
-
-  render(
-    <>
-      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
-      <Toast />
-    </>,
-  );
-  await openMenu(user);
-  await user.click(screen.getByRole("menuitem", { name: "Fork" }));
-  const dialog = await screen.findByRole("dialog");
-  await user.click(within(dialog).getByRole("button", { name: /^fork$/i }));
-
-  await screen.findByText(/fork boom/i);
-  expect((within(screen.getByRole("dialog")).getByRole("textbox") as HTMLTextAreaElement).value).toBe(
-    "please fix the bug",
-  );
-});
+// Fork is intentionally NOT in this menu (see "opens to show every session
+// action" above): it moved to the per-user-message ForkFromHereButton
+// affordance, whose behavior is covered by UserMessageItem.test.tsx's own
+// "per-message fork affordance" block - a materially different flow
+// (deferInput + composer draft-seed, no in-menu dialog).

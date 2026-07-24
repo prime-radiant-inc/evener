@@ -1,0 +1,19 @@
+.frame {
+  /* Room for the panel to render below the trigger without the theme pane's
+   * own bottom edge clipping it. */
+  min-height: 160px;
+}
+
+.hint {
+  margin: 0 0 var(--space-2);
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}
+
+.panelBody {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+}

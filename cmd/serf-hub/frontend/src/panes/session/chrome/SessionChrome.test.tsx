@@ -75,7 +75,14 @@ test("renders nothing for a ref with no tracked model yet (defensive - Session.t
 
 test("composes the status row, session actions, goal control, and tasks panel once the ref's thread is tracked", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a"));
+  // Seed a goal so GoalControl has something to render: with no goal it
+  // renders nothing at all now (the "Set goal…" entry point moved into the ⋯
+  // menu), so a goal is what proves GoalControl is actually composed here.
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      serf: { ref: "ref_a", capabilities: CAPABILITIES, queue: {}, goal: { status: "active", iterations: 2 } },
+    }),
+  );
   await threadsStore.getState().ensureThread("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
@@ -84,8 +91,8 @@ test("composes the status row, session actions, goal control, and tasks panel on
   expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
   // Session actions menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
-  // Goal control.
-  expect(screen.getByText(/no goal set/i)).toBeTruthy();
+  // Goal control: the goal chip, once a goal is set.
+  expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
   // Tasks panel trigger.
   expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
 });

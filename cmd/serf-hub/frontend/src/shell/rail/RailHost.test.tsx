@@ -245,11 +245,19 @@ describe("hide affordance wiring", () => {
 });
 
 describe("mobile", () => {
+  // Mobile mounts <Rail hostedInSheet/> (its enclosing StackHost TreeDrawer
+  // Sheet owns the "Sessions" title + close chrome), so the rail renders its
+  // body but none of its own header - the point of this test is that mobile
+  // applies NO mode logic: a sidebarMode of "rail" (which collapses to the ☰
+  // chip on desktop) is ignored, so the rail body is present and no
+  // show-sidebar chip exists. Anchored on the rail body (its loading Skeleton
+  // in this fixture) rather than a header heading, which the hosted rail never
+  // renders.
   test("renders the plain rail (no mode logic, no chip) regardless of sidebarMode", () => {
     installMatchMedia({ mobile: true, wide: false });
     prefsStore.setState({ sidebarMode: "rail" }); // would collapse on desktop
     render(<RailHost />);
-    expect(screen.getByRole("heading", { name: "Sessions" })).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /show sidebar/i })).toBeNull();
   });
 });

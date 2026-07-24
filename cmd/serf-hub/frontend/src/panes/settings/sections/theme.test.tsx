@@ -97,10 +97,13 @@ describe("Phone density", () => {
 
   // The help copy must name the gate that's actually shipped in tokens.css
   // (@media (max-width: 900px), matching useIsMobile's own breakpoint) -
-  // not a stale number that names a different, unimplemented gate.
+  // not a stale number that names a different, unimplemented gate. Scoped to
+  // the density copy's own "≤900px" (the sidebar-mode copy now also names
+  // 900px - "≥900px" - since the dock threshold moved 1200->900, so a bare
+  // /900px/ matches two paragraphs).
   test("the help copy states the shipped 900px density gate", () => {
     renderWithToasts();
-    expect(screen.getByText(/900px/)).toBeTruthy();
+    expect(screen.getByText(/phones \(≤900px\)/)).toBeTruthy();
   });
 });
 

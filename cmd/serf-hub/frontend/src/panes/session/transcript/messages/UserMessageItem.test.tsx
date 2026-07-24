@@ -1,10 +1,46 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { lazy } from "react";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { FakeClient } from "../../../../protocol/testing/fakeClient";
+import type { Thread, ThreadCapabilities } from "../../../../protocol/types.gen";
+import { registerPane } from "../../../../shell/paneRegistry";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { connectionStore } from "../../../../stores/connection";
+import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import { Toast } from "../../../../widgets";
+import { readDraft } from "../../composer/draft";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { UserMessageItem, UserMessageView } from "./UserMessageItem";
 
 afterEach(cleanup);
+
+// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
+// real window.localStorage with its own (non-functional under vitest) global,
+// so the fork-affordance tests below - which read the seeded composer draft
+// through draft.ts - need this same small in-memory stand-in. Scoped to this
+// file.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
 
 const turn: TurnModel = { id: "turn_1", status: "completed", items: [] };
 
@@ -69,4 +105,128 @@ test("UserMessageView is exported standalone for reuse by user-sourced steering"
   render(<UserMessageView item={item({ text: "reused" })} />);
   expect(screen.getByText("reused")).toBeTruthy();
   expect(screen.getByText("You")).toBeTruthy();
+});
+
+// --- per-message fork affordance (ForkFromHereButton) ------------------------
+//
+// Fork used to be a session-chrome ⋯-menu item; it moved here, to a
+// per-user-message affordance, because the specific message being forked from
+// IS its context (a chrome menu had none - it guessed at "the last user
+// message"). This is the fork flow's only home now, so its behavior is pinned
+// here: it calls the SAME thread/fork RPC, but with deferInput:true (fork the
+// child at this turn WITHOUT replaying it) and seeds the new session's
+// composer draft with the wire's originalInput rather than opening an edit
+// dialog first. openChildPane's success path is mirrored: open the new ref as
+// its own pane, no toast.
+
+const FORK_CAPABILITIES: ThreadCapabilities = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  queue: true,
+  goal: true,
+  rename: true,
+};
+
+// A minimal, test-only "session" pane registration - real registerPane/
+// openPane machinery without pulling in the actual panes/session module
+// (mirrors SessionActionsMenu.test.tsx's identical setup for the same reason:
+// these tests only assert openPane was called correctly, never that a real
+// SessionPane renders).
+registerPane({
+  id: "session",
+  title: () => "test session",
+  component: lazy(() => Promise.resolve({ default: () => null })),
+});
+
+function forkWireThread(overrides: Partial<Thread> = {}): Thread {
+  return {
+    id: "child_1",
+    sessionId: "child_1",
+    preview: "test",
+    ephemeral: false,
+    modelProvider: "anthropic",
+    createdAt: 1000,
+    updatedAt: 1000,
+    status: { type: "idle" },
+    cwd: "/tmp/project",
+    cliVersion: "1.0.0",
+    source: "local",
+    serf: { ref: "local/child_1", capabilities: FORK_CAPABILITIES, queue: {} },
+    ...overrides,
+  };
+}
+
+function connectForkClient(): FakeClient {
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  return fake;
+}
+
+describe("per-message fork affordance", () => {
+  beforeEach(() => {
+    connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+    resetThreadsStoreForTests();
+    resetWorkspaceStoreForTests();
+    localStorage.clear();
+  });
+
+  test("a user message with a sessionRef renders a Fork-from-here button; a read-only one (no ref) does not", () => {
+    const { rerender } = render(
+      <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />,
+    );
+    expect(screen.getByRole("button", { name: /fork from here/i })).toBeTruthy();
+
+    // No sessionRef (the read-only "open beside" transcript pane): forking
+    // needs a ref to call thread/fork with, so the action is withheld.
+    rerender(<UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} />);
+    expect(screen.queryByRole("button", { name: /fork from here/i })).toBeNull();
+  });
+
+  test("forking calls thread/fork with this turn + deferInput, seeds the child's composer draft, and opens it as a pane", async () => {
+    const user = userEvent.setup();
+    const fake = connectForkClient();
+    let called: unknown;
+    fake.on("thread/fork", (params) => {
+      called = params;
+      return { thread: forkWireThread(), originalInput: "fix the bug" };
+    });
+
+    render(<UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />);
+    await user.click(screen.getByRole("button", { name: /fork from here/i }));
+
+    await waitFor(() => expect(called).toEqual({ ref: "ref_a", sourceTurnId: "turn_1", deferInput: true }));
+    // The child opens as its own pane...
+    await waitFor(() =>
+      expect(workspaceStore.getState().panes.find((p) => p.type === "session")?.params).toEqual({
+        ref: "local/child_1",
+      }),
+    );
+    // ...with the original text seeded into its composer draft (never auto-sent).
+    expect(readDraft("local/child_1")).toBe("fix the bug");
+  });
+
+  test("a failed fork surfaces an error toast and opens no pane", async () => {
+    const user = userEvent.setup();
+    const fake = connectForkClient();
+    fake.on("thread/fork", () => {
+      throw new Error("fork boom");
+    });
+
+    render(
+      <>
+        <UserMessageItem item={item({ text: "fix the bug" })} turn={turn} live={false} sessionRef="ref_a" />
+        <Toast />
+      </>,
+    );
+    await user.click(screen.getByRole("button", { name: /fork from here/i }));
+
+    await screen.findByText(/fork boom/i);
+    expect(workspaceStore.getState().panes).toHaveLength(0);
+  });
 });
