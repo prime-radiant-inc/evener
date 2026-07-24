@@ -1,0 +1,11 @@
+.hint {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* A field slot: PathField's trigger fills its container the way Input does,
+ * so the demo has to supply the width a real form row would. */
+.frame {
+  width: 320px;
+  max-width: 100%;
+}
