@@ -49,7 +49,7 @@ One column, in serf tokens, inside the existing `Popover` panel:
 │  Claude Opus 4.8            $5/$25 · 200k    │
 │ OAI-WORK                                     │
 │  GPT-5.5                    $2/$12 · 400k    │
-│  ollama — connection refused. Is it running? │  ← dim, small, in place
+│  ollama — connection refused — is it running?│  ← dim, small, in place
 │  openrouter — no API key configured          │
 └──────────────────────────────────────────────┘
 ```
@@ -66,8 +66,10 @@ One column, in serf tokens, inside the existing `Popover` panel:
   carries a ✓ and is scrolled into view on open.
 - **Unavailable providers** (from `diagnostics`) render as dim
   (`--ink-low`), caption-size, non-interactive lines in list order after the
-  available groups: `provider — message. hint`. The "N providers unavailable"
-  toggle button and its hidden list are deleted.
+  available groups: `provider — message — hint` (the hint omitted when the
+  diagnostic carries none; the label falls back to the diagnostic's own
+  title, then source, when no provider is named). The "N providers
+  unavailable" toggle button and its hidden list are deleted.
 - **No Cancel button.** The panel's only dismissals are pick, Escape, and
   outside-click.
 
