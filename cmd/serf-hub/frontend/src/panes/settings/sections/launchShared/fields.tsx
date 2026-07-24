@@ -10,21 +10,14 @@
 // shipped a plain free-text input as the interim; wave 8 swaps in the real
 // widget, value/onChange unchanged so the schema/collect path is untouched.
 //
-// One deliberate, documented scope simplification remains from the legacy
-// engine (see this task's own report for the write-up):
-//   - path/pathList kinds never render PathPicker: the widget's own
-//     listChildren contract only ever lists DIRECTORIES (serf/paths/complete
-//     filters to entry.IsDir() unless includeFiles is set), so it cannot
-//     serve file/outputFile kind scalars, and no scalar dir-kind field exists
-//     in the real schema (cmd/serf-hub/internal/launchconfig/schema.go) - only
-//     pathList fields (skillsDirs/pluginDirs) are dir-kind, and
-//     serf/paths/complete is not part of this task's assigned wire ground
-//     truth. Every path-kind field
-//     renders as a validated free-text input instead (validation still
-//     happens - see collectionFields.tsx and LaunchConfigForm's own
-//     validate step).
+// A browsable path kind (pathKind dir/file/outputFile) renders the PathField
+// picker, which lists a directory's real contents over serf/paths/complete.
+// A "command" pathKind is not a browsable path (it names an executable
+// resolved off PATH, not a filesystem location the user points at), so it
+// stays a plain input.
 //
-// A second, smaller one, also not ported: the legacy engine's Constraint
+// One documented scope simplification from the legacy engine is not ported:
+// the legacy engine's Constraint
 // Validation API integration (validatePathInput/validateMCPCommandInput's
 // setCustomValidity() + reportValidity() calls), which additionally pops
 // the browser's own native validation-bubble UI alongside the custom
@@ -34,11 +27,14 @@
 // no native browser validation bubble.
 
 import type { LaunchOption } from "../../../../protocol/types.gen";
+import { extensionsStore } from "../../../../stores/extensions";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
   FormRow,
   Input,
   ModelCatalog,
+  PathField,
+  type PathFieldKind,
   RadioGroup,
   type RadioGroupOption,
   Select,
@@ -69,6 +65,70 @@ function nonEmptyChoices(option: LaunchOption): RadioGroupOption[] {
 function DefaultHint({ text }: { text?: string }) {
   if (!text) return null;
   return <span className={CLASS.defaultHint}>{text}</span>;
+}
+
+// The schema's pathKind vocabulary (cmd/serf-hub/internal/launchconfig/
+// schema.go's LaunchPathKind) is wider than PathField's: "command" names an
+// executable off PATH and "" names nothing browsable, so only the three
+// filesystem kinds get a picker. undefined here means "render a plain input".
+const BROWSABLE_PATH_KINDS: Record<string, PathFieldKind> = {
+  dir: "dir",
+  file: "file",
+  outputFile: "outputFile",
+};
+
+function browsablePathKind(pathKind: string | undefined): PathFieldKind | undefined {
+  return pathKind === undefined ? undefined : BROWSABLE_PATH_KINDS[pathKind];
+}
+
+/** The completion loader every path picker on this page shares. Imported off
+ * the store the way the sibling modelPicker branch imports fetchModelCatalog
+ * directly, rather than threading a prop down from LaunchConfigForm: launch
+ * defaults are not scoped to a live session, so there is nothing per-caller to
+ * inject. */
+function completePaths(prefix: string, includeFiles: boolean): Promise<string[]> {
+  return extensionsStore.getState().completePaths(prefix, includeFiles);
+}
+
+/** A path field: PathField in a FormRow, so the row's label, help, error, and
+ * default hint all behave exactly as the plain-Input rows around it do. The
+ * trigger is a `<button id>`, which a `<label htmlFor>` labels like any other
+ * form control - unlike ModelCatalog, whose own inner combobox carries its
+ * name and which therefore needs the label-as-span treatment. */
+function PathPickerRow({
+  fieldId,
+  label,
+  kind,
+  value,
+  onChange,
+  help,
+  error,
+  placeholder,
+  globalDefaultHint,
+}: {
+  fieldId: string;
+  label: string;
+  kind: PathFieldKind;
+  value: string;
+  onChange: (value: string) => void;
+  help?: string;
+  error?: string;
+  placeholder: string;
+  globalDefaultHint?: string;
+}) {
+  return (
+    <FormRow label={label} htmlFor={fieldId} help={help} error={error}>
+      <PathField
+        id={fieldId}
+        value={value}
+        onChange={onChange}
+        kind={kind}
+        complete={completePaths}
+        placeholder={placeholder}
+      />
+      <DefaultHint text={globalDefaultHint} />
+    </FormRow>
+  );
 }
 
 export interface ScalarFieldProps {
@@ -142,8 +202,27 @@ export function ScalarField({ option, layer, value, onChange, globalDefaultHint,
     );
   }
 
-  // text, integer, path - all a plain (possibly numeric) input. See this
-  // file's own top comment for why path doesn't get its legacy-specific widget.
+  if (option.kind === "path") {
+    const pathKind = browsablePathKind(option.pathKind);
+    if (pathKind) {
+      return (
+        <PathPickerRow
+          fieldId={fieldId}
+          label={option.label}
+          kind={pathKind}
+          value={value}
+          onChange={onChange}
+          help={option.description}
+          error={error}
+          placeholder={emptyChoiceLabel(layer)}
+          globalDefaultHint={globalDefaultHint}
+        />
+      );
+    }
+  }
+
+  // text, integer, and a non-browsable path (a command, or an unkinded one) -
+  // all a plain (possibly numeric) input.
   return (
     <FormRow label={option.label} htmlFor={fieldId} help={option.description} error={error}>
       <Input
@@ -212,15 +291,20 @@ export function PromptCompositeField({
       <RadioGroup label={option.label} value={modeValue} onChange={onModeChange} options={modeOptions} />
       {option.description && <p className={CLASS.radioHelp}>{option.description}</p>}
       <div className={CLASS.compositeControls}>
-        <FormRow label={spec.fileLabel} htmlFor={fileFieldId} error={fileError}>
-          <Input
-            id={fileFieldId}
-            value={fileValue}
-            onChange={(e) => onFileChange(e.target.value)}
-            placeholder={emptyChoiceLabel(layer)}
-          />
-          <DefaultHint text={fileGlobalDefaultHint} />
-        </FormRow>
+        {/* The same picker the scalar path kind renders: this sub-field's wire
+            field IS systemPromptFile/systemPromptAppendFile, a file-kind path
+            in the schema, so it must not be a text box in one place and a
+            picker in another. */}
+        <PathPickerRow
+          fieldId={fileFieldId}
+          label={spec.fileLabel}
+          kind="file"
+          value={fileValue}
+          onChange={onFileChange}
+          error={fileError}
+          placeholder={emptyChoiceLabel(layer)}
+          globalDefaultHint={fileGlobalDefaultHint}
+        />
         <FormRow label={spec.textLabel} htmlFor={textFieldId}>
           <Textarea id={textFieldId} value={textValue} onChange={(e) => onTextChange(e.target.value)} autoGrow />
           <DefaultHint text={textGlobalDefaultHint} />
