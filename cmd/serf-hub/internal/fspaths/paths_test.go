@@ -2,8 +2,11 @@ package fspaths
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,6 +28,120 @@ func checkCompletePaths_EmptyHomeUsesRoot(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Fatalf("fake empty root returned %v", resp.Data)
+	}
+}
+
+// fakeDirEntry stands in for a real directory entry: completePaths only reads
+// Name and IsDir, so nothing else needs a real inode behind it.
+type fakeDirEntry struct {
+	name string
+	dir  bool
+}
+
+func (e fakeDirEntry) Name() string               { return e.name }
+func (e fakeDirEntry) IsDir() bool                { return e.dir }
+func (e fakeDirEntry) Type() fs.FileMode          { return 0 }
+func (e fakeDirEntry) Info() (fs.FileInfo, error) { return nil, errors.New("unused") }
+
+func fakeReadDir(entries ...fakeDirEntry) func(string) ([]os.DirEntry, error) {
+	return func(string) ([]os.DirEntry, error) {
+		out := make([]os.DirEntry, len(entries))
+		for i := range entries {
+			out[i] = entries[i]
+		}
+		return out, nil
+	}
+}
+
+func checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed(t *testing.T) {
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/"}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "file.txt"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Without IncludeFiles the response is byte-for-byte what it always was:
+	// directories only, and no trailing separator for any caller to strip.
+	want := []string{filepath.Join("/base", "sub")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesReturnsBoth(t *testing.T) {
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "file.txt"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("includeFiles data = %v, want one directory and one file", resp.Data)
+	}
+}
+
+func checkCompletePaths_IncludeFilesMarksDirsWithSeparator(t *testing.T) {
+	sep := string(filepath.Separator)
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true}, fakeReadDir(
+		fakeDirEntry{name: "sub", dir: true},
+		fakeDirEntry{name: "afile.txt"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Equal-scoring entries sort by path, so the file sorts ahead of the dir.
+	want := []string{filepath.Join("/base", "afile.txt"), filepath.Join("/base", "sub") + sep}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("includeFiles data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
+	readDir := fakeReadDir(
+		fakeDirEntry{name: ".env"},
+		fakeDirEntry{name: "extra"},
+	)
+	dotEnv := filepath.Join("/base", ".env")
+	for _, prefix := range []string{"/base/", "/base/e"} {
+		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: prefix, IncludeFiles: true}, readDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(resp.Data, dotEnv) {
+			t.Fatalf("prefix %q returned %v, want no dotfile until a leading dot is typed", prefix, resp.Data)
+		}
+	}
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/.e", IncludeFiles: true}, readDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(resp.Data, dotEnv) {
+		t.Fatalf("dot-filtered data = %v, want %s", resp.Data, dotEnv)
+	}
+}
+
+func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
+	sep := string(filepath.Separator)
+	// The files sort ahead of the directories, so a cap that only counted
+	// directories would let all four through.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: "/base/", IncludeFiles: true, Limit: 3}, fakeReadDir(
+		fakeDirEntry{name: "zed1", dir: true},
+		fakeDirEntry{name: "zed2", dir: true},
+		fakeDirEntry{name: "apex1"},
+		fakeDirEntry{name: "apex2"},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		filepath.Join("/base", "apex1"),
+		filepath.Join("/base", "apex2"),
+		filepath.Join("/base", "zed1") + sep,
+	}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("limited data = %v, want %v", resp.Data, want)
 	}
 }
 

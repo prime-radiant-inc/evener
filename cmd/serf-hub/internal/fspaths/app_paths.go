@@ -50,7 +50,7 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 	}
 	matches := make([]match, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() && !params.IncludeFiles {
 			continue
 		}
 		name := entry.Name()
@@ -61,7 +61,15 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 		if !matched {
 			continue
 		}
-		matches = append(matches, match{path: filepath.Join(listDir, name), score: score})
+		path := filepath.Join(listDir, name)
+		// With files in the mix the client needs to know which entries it can
+		// descend into; a trailing separator carries that bit and is already
+		// the prefix protocol's own "list this directory's children" form.
+		// Dirs-only responses stay unsuffixed for every existing caller.
+		if params.IncludeFiles && entry.IsDir() {
+			path += string(filepath.Separator)
+		}
+		matches = append(matches, match{path: path, score: score})
 	}
 	sort.Slice(matches, func(i, j int) bool {
 		if matches[i].score != matches[j].score {

@@ -8,6 +8,11 @@ import "testing"
 func FuzzFSPathsBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
 		checkCompletePaths_EmptyHomeUsesRoot,
+		checkCompletePaths_DirsOnlyExcludesFilesUnsuffixed,
+		checkCompletePaths_IncludeFilesReturnsBoth,
+		checkCompletePaths_IncludeFilesMarksDirsWithSeparator,
+		checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped,
+		checkCompletePaths_IncludeFilesLimitCapsCombinedResult,
 		checkCanonicalizeDir_StatErrorAfterResolution,
 		checkCanonicalizeDir_RejectsRelative,
 		checkCanonicalizeDir_RejectsEmpty,

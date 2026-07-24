@@ -962,9 +962,13 @@ type TaskListResponse struct {
 	Data any `json:"data"`
 }
 
+// PathsCompleteParams asks for path completions of Prefix. IncludeFiles adds
+// regular files to the directory-only default; in that mode directory entries
+// come back with a trailing separator so the client can tell the two apart.
 type PathsCompleteParams struct {
-	Prefix string `json:"prefix"`
-	Limit  int    `json:"limit,omitempty"`
+	Prefix       string `json:"prefix"`
+	Limit        int    `json:"limit,omitempty"`
+	IncludeFiles bool   `json:"includeFiles,omitempty"`
 }
 
 type PathsCompleteResponse struct {
