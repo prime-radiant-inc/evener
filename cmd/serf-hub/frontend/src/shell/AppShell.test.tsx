@@ -391,3 +391,31 @@ test("navigating from one settings section to another, post-mount, updates the S
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Storage"]);
 });
+
+// --- kata 11ee: spawn singleton refocus must still apply a fresh ?dir= ----
+
+test("kata 11ee: navigating to /new?dir= a second time, with the spawn pane already open, still prefills the new dir", async () => {
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
+  render(<AppShell client={new FakeClient("ready")} />);
+  await waitFor(() =>
+    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
+  );
+
+  // A second /new?dir= navigation (e.g. RailRow's own spawnInProject, for a
+  // DIFFERENT project) while the spawn pane is already open and focused -
+  // openPane's singleton dedup refocuses the same pane rather than opening
+  // (or remounting) a second one, exactly the shape this kata's own
+  // openRouteAsPane -> workspaceStore.openPane("spawn", {}) path produces.
+  act(() => {
+    window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  // Still exactly one spawn tab (singleton, not a duplicate) - and it now
+  // shows the SECOND navigation's dir, not the first one silently retained.
+  const tabs = document.querySelectorAll(".dv-tab");
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["New session"]);
+  await waitFor(() =>
+    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/other"),
+  );
+});

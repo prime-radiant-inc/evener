@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -204,6 +204,79 @@ test("prefills the prompt and working dir from ?dir=/?prompt=", async () => {
     expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("fix it"),
   );
   expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app");
+});
+
+// kata 11ee: the spawn pane is a dockview singleton (index.tsx), so a second
+// /new?dir=<encoded> navigation while it's already open (and mounted) never
+// remounts it - the singleton refocus just updates workspace.ts's
+// focusedPaneId, it doesn't tear down and recreate Spawn's own React tree.
+// The mount-only prefill effect (readUrlPrefill in a []-deps useEffect) then
+// never reruns, so the second dir prefill is silently dropped. Reproduced
+// here at the level Spawn.tsx itself can observe it: window.location.search
+// changes and the SAME instance receives the routing.ts navigate() signal
+// (pushState + a synthetic "popstate", exactly as AppShell's own listener
+// and project.tsx's useQueryCwd precedent both key off) with no unmount in
+// between.
+test("kata 11ee: a second ?dir= navigation while already mounted still prefills the working dir", async () => {
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
+  renderSpawn(readyClient());
+  await waitFor(() =>
+    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
+  );
+
+  act(() => {
+    window.history.pushState({}, "", "/new?dir=%2Fhome%2Fother");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() =>
+    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/other"),
+  );
+});
+
+// Same defect class as the ?dir= case above - readUrlPrefill's ?prompt= entry
+// goes through the identical mount-only effect, so a repeat "Spawn with
+// prompt" palette command (shell/palette/commands.ts's own /new?prompt= nav)
+// while the pane is already open must refill the prompt too.
+test("kata 11ee: a second ?prompt= navigation while already mounted still prefills the prompt", async () => {
+  window.history.pushState({}, "", "/new?prompt=first");
+  renderSpawn(readyClient());
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("first"),
+  );
+
+  act(() => {
+    window.history.pushState({}, "", "/new?prompt=second");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  await waitFor(() =>
+    expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("second"),
+  );
+});
+
+// Guards against a naive fix that unconditionally re-applies BOTH fields on
+// every popstate: a navigation that carries neither param (e.g. some other
+// in-app nav, then back to a plain /new) must never clobber values already
+// typed into the form - readUrlPrefill's own "absent param -> no entry"
+// contract (urlPrefill.test.ts) has to keep holding on every later
+// navigation, not just the first mount.
+test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed values untouched", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
+  renderSpawn(readyClient());
+  await waitFor(() =>
+    expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app"),
+  );
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "typed by hand");
+
+  act(() => {
+    window.history.pushState({}, "", "/new");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  });
+
+  expect((screen.getByLabelText("Working directory") as HTMLInputElement).value).toBe("/home/me/app");
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe("typed by hand");
 });
 
 test("offers to create a missing directory, then creates it and spawns", async () => {
