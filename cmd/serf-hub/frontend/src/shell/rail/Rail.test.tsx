@@ -349,16 +349,20 @@ describe("in-sidebar chrome (c8gt)", () => {
     expect(screen.getByTestId("rail-settings")).toBeTruthy();
   });
 
-  test("hostedInSheet suppresses the sidebar header chrome", async () => {
+  test("renders the SAME full chrome with no host props (drawer-hosted parity)", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
     render(
       <>
-        <Rail hostedInSheet />
+        <Rail />
         <Toast />
       </>,
     );
     await screen.findByText(/no sessions yet/i);
-    expect(screen.queryByTestId("rail-search")).toBeNull();
+    // Collapsed mode + hostedInSheet are gone (2026-07-24): every Rail,
+    // including the one inside the mobile TreeDrawer, carries the full
+    // search/new/settings chrome.
+    expect(screen.getByTestId("rail-search")).toBeTruthy();
+    expect(screen.getByTestId("rail-settings")).toBeTruthy();
   });
 });
 
@@ -438,27 +442,10 @@ describe("project expansion", () => {
   });
 });
 
-describe("hide affordance (onHide)", () => {
-  // Rail no longer owns a boolean collapse of its own: the sidebarMode system
-  // (RailHost) subsumes it. Rail only renders a "Hide sidebar" button when
-  // RailHost passes onHide (the inline desktop case), and delegates the action.
-  test("renders a Hide sidebar button that calls onHide when the prop is provided", async () => {
-    const onHide = vi.fn();
-    render(
-      <>
-        <Rail onHide={onHide} />
-        <Toast />
-      </>,
-    );
-    await screen.findByText("Live session");
-
-    await userEvent.setup().click(screen.getByRole("button", { name: /hide sidebar/i }));
-    expect(onHide).toHaveBeenCalledTimes(1);
-    // Rail itself never hides - RailHost owns visibility; the tree stays put.
-    expect(screen.getByText("Live session")).toBeTruthy();
-  });
-
-  test("renders no Hide sidebar button when onHide is absent (mobile / overlay-drawer instance)", async () => {
+describe("no hide affordance", () => {
+  // Collapsed mode was removed 2026-07-24: the sidebar cannot be hidden, so
+  // no Rail instance ever renders a "Hide sidebar" button.
+  test("renders no Hide sidebar button", async () => {
     renderRail();
     await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();

@@ -9,14 +9,17 @@
   border-right: 1px solid var(--edge);
 }
 
-/* Rendered inside a Sheet-based overlay drawer (Rail.tsx's hostedInSheet
- * prop): the Sheet already frames and borders the panel, so Rail fills that
- * frame instead of imposing the inline-desktop fixed width beside it - a
- * narrower, independently-bordered box floating inside a wider one is what
- * used to read as a panel nested inside a panel. */
-.hosted {
-  width: 100%;
-  border-right: none;
+/* On mobile the same Rail renders inside StackHost's TreeDrawer Sheet, which
+ * already frames and borders the panel — fill its width instead of imposing
+ * the desktop fixed width (a narrower, independently-bordered box floating
+ * inside a wider one reads as a panel nested inside a panel). Same 899px
+ * boundary as useIsMobile.ts: at-or-below it, the only Rail that exists is
+ * the drawer-hosted one. */
+@media (max-width: 899px) {
+  .rail {
+    width: 100%;
+    border-right: none;
+  }
 }
 
 /* The sidebar owns its own chrome (c8gt): a header zone stacking the brand
@@ -160,40 +163,6 @@
   outline-offset: -2px;
 }
 
-/* --- collapsed-rail ☰ chip (RailHost.tsx) --------------------------------
- * When sidebarMode collapses the rail (rail mode; auto only collapses below
- * 900px, a width already handed to StackHost), RailHost hides the rail
- * entirely and leaves this chip pinned top-left; it
- * opens the rail as an overlay drawer. align-self keeps it hugging the top of
- * the workspace row rather than stretching a full-height column. */
-.chipBar {
-  flex: none;
-  align-self: flex-start;
-}
-
-.chip {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1);
-  min-width: var(--space-7);
-  height: var(--space-7);
-  padding: 0 var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-  color: var(--ink-mid);
-  cursor: default;
-}
-
-.chip:hover {
-  background: var(--surface-2);
-}
-
-.chip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 
 .dialogField {
   display: flex;

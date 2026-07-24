@@ -81,6 +81,24 @@ test("renders provided children instead of the placeholder", async () => {
   expect(screen.queryByTestId("rail-slot")).toBeNull();
 });
 
+// The drawer-hosted rail is the SAME full-chrome Rail as desktop (collapsed
+// mode + the hostedInSheet suppression were removed 2026-07-24): search,
+// + New session, and the settings footer all render inside the sheet.
+test("the drawer-hosted RailHost carries the full sidebar chrome", async () => {
+  const { RailHost } = await import("../rail");
+  const user = userEvent.setup();
+  render(
+    <TreeDrawer>
+      <RailHost />
+    </TreeDrawer>,
+  );
+  await user.click(screen.getByRole("button", { name: "Sessions" }));
+
+  expect(screen.getByTestId("rail-search")).toBeTruthy();
+  expect(screen.getByRole("button", { name: /new session/i })).toBeTruthy();
+  expect(screen.getByTestId("rail-settings")).toBeTruthy();
+});
+
 // --- auto-close on navigation -------------------------------------------
 
 test("closes automatically when the focused pane changes elsewhere while open", async () => {

@@ -97,25 +97,10 @@ describe("Phone density", () => {
 
   // The help copy must name the gate that's actually shipped in tokens.css
   // (@media (max-width: 900px), matching useIsMobile's own breakpoint) -
-  // not a stale number that names a different, unimplemented gate. Scoped to
-  // the density copy's own "≤900px" (the sidebar-mode copy now also names
-  // 900px - "≥900px" - since the dock threshold moved 1200->900, so a bare
-  // /900px/ matches two paragraphs).
+  // not a stale number that names a different, unimplemented gate.
   test("the help copy states the shipped 900px density gate", () => {
     renderWithToasts();
     expect(screen.getByText(/phones \(≤900px\)/)).toBeTruthy();
-  });
-});
-
-describe("Sidebar mode", () => {
-  test("defaults to Auto; the Collapsed option is Rail's own value under a friendlier label", async () => {
-    const user = userEvent.setup();
-    renderWithToasts();
-    expect(screen.getByRole("radio", { name: "Auto" }).getAttribute("aria-checked")).toBe("true");
-
-    await user.click(screen.getByRole("radio", { name: "Collapsed" }));
-
-    expect(prefsStore.getState().sidebarMode).toBe("rail");
   });
 });
 

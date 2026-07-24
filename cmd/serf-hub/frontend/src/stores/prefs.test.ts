@@ -57,9 +57,6 @@ describe("defaults (empty localStorage)", () => {
   test("phoneDensity defaults to compact", () => {
     expect(prefsStore.getState().phoneDensity).toBe("compact");
   });
-  test("sidebarMode defaults to auto", () => {
-    expect(prefsStore.getState().sidebarMode).toBe("auto");
-  });
   test("fontSize defaults to m", () => {
     expect(prefsStore.getState().fontSize).toBe("m");
   });
@@ -105,12 +102,6 @@ describe("hydration from existing localStorage", () => {
     localStorage.setItem(KEY("phoneDensity"), "comfortable");
     resetPrefsStoreForTests();
     expect(prefsStore.getState().phoneDensity).toBe("comfortable");
-  });
-
-  test("reads a previously stored sidebarMode", () => {
-    localStorage.setItem(KEY("sidebarMode"), "rail");
-    resetPrefsStoreForTests();
-    expect(prefsStore.getState().sidebarMode).toBe("rail");
   });
 
   test("reads a previously stored fontSize", () => {
@@ -336,11 +327,13 @@ describe("setPhoneDensity", () => {
   });
 });
 
-describe("setSidebarMode", () => {
-  test("persists and updates state", () => {
-    prefsStore.getState().setSidebarMode("rail");
-    expect(localStorage.getItem(KEY("sidebarMode"))).toBe("rail");
-    expect(prefsStore.getState().sidebarMode).toBe("rail");
+// A stale serf.prefs.sidebarMode key from before collapsed mode's removal
+// (2026-07-24) must be inert: never read, never crashing the loader.
+describe("stale sidebarMode key", () => {
+  test("is ignored by a fresh load", () => {
+    localStorage.setItem(KEY("sidebarMode"), "rail");
+    resetPrefsStoreForTests();
+    expect("sidebarMode" in prefsStore.getState()).toBe(false);
   });
 });
 

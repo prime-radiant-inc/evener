@@ -43,14 +43,9 @@
 // keys off both: the type ramp scales off <body data-font-size> and the
 // phone line-height off <body data-phone-density> (its "font-size + phone-
 // density preference application" block), so the mirror changes what renders.
-// sidebarMode gets NO document mirror - it has no data-* attribute for CSS
-// to key off, unlike phoneDensity/fontSize above. Its consumer is
-// shell/rail/RailHost.tsx, which reads this value directly to drive the
-// rail's 3-state visibility (auto: docked across the whole desktop range,
-// >=900px; pane: always expanded; rail: collapsed behind a top-left ☰
-// overlay drawer) and owns the global ⌘B listener that cycles
-// rail -> pane -> auto. Persisting the preference is as far as this
-// store's own job goes.
+// (The former sidebarMode pref was removed 2026-07-24 with collapsed mode
+// itself — the sidebar is always docked on desktop. A stale
+// serf.prefs.sidebarMode key left in localStorage is simply never read.)
 //
 // No cross-tab `storage` event sync: deliberately omitted, matching the
 // legacy exactly - none of assets/{theme,settings-appearance,settings-
@@ -64,7 +59,6 @@ import { createStore } from "zustand/vanilla";
 
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
-export type SidebarModePref = "auto" | "pane" | "rail";
 export type FontSizePref = "s" | "m" | "l" | "xl";
 export type TranscriptStatusKey = "roundTimings" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
@@ -73,7 +67,6 @@ export type NotificationsLoudScopePref = "asks" | "all";
 export interface PrefsStoreState {
   theme: ThemePref;
   phoneDensity: PhoneDensityPref;
-  sidebarMode: SidebarModePref;
   fontSize: FontSizePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
@@ -85,7 +78,6 @@ export interface PrefsStoreState {
 
   setTheme(value: ThemePref): void;
   setPhoneDensity(value: PhoneDensityPref): void;
-  setSidebarMode(value: SidebarModePref): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
@@ -154,7 +146,6 @@ function readEnum<T extends string>(name: string, allowed: readonly T[], fallbac
 
 const THEME_VALUES: readonly ThemePref[] = ["system", "light", "dark"];
 const PHONE_DENSITY_VALUES: readonly PhoneDensityPref[] = ["compact", "comfortable"];
-const SIDEBAR_MODE_VALUES: readonly SidebarModePref[] = ["auto", "pane", "rail"];
 const FONT_SIZE_VALUES: readonly FontSizePref[] = ["s", "m", "l", "xl"];
 const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"];
 
@@ -215,7 +206,7 @@ function systemPrefersDark(): boolean {
 // --- document application: the DOM side effects the legacy mirrored
 // alongside localStorage (assets/theme.js; assets/settings-appearance.js's
 // two script-parse-time IIFEs) - see this file's own top comment for which
-// three get one and why sidebarMode doesn't.
+// prefs get one.
 function applyTheme(value: ThemePref): void {
   if (value === "system") {
     // Resolves to one of the same two document states an explicit pick
@@ -270,7 +261,6 @@ function loadInitialState(): Omit<
   PrefsStoreState,
   | "setTheme"
   | "setPhoneDensity"
-  | "setSidebarMode"
   | "setFontSize"
   | "setTranscriptStatus"
   | "setEnterToSend"
@@ -287,7 +277,6 @@ function loadInitialState(): Omit<
   return {
     theme,
     phoneDensity,
-    sidebarMode: readEnum("sidebarMode", SIDEBAR_MODE_VALUES, "auto"),
     fontSize,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
@@ -316,11 +305,6 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
     writeRaw("phoneDensity", value);
     applyPhoneDensity(value);
     set({ phoneDensity: value });
-  },
-
-  setSidebarMode(value) {
-    writeRaw("sidebarMode", value);
-    set({ sidebarMode: value });
   },
 
   setFontSize(value) {
