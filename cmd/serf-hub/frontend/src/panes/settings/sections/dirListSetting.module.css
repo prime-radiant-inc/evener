@@ -33,8 +33,7 @@
  * <form>, and the picker's trigger is width:100% of its container - so every
  * link in the chain down to it has to grow first, or the trigger inherits a
  * content-sized width and collapses to the placeholder's own text width
- * (measured: 106px inside a 600px row). flex-basis 0 rather than a bare
- * `flex: 1`, which resolves its basis from content and collapses the same way. */
+ * (measured: 106px inside a 600px row). */
 .addBlock {
   display: flex;
   flex: 1 1 0;

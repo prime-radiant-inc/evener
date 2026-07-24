@@ -62,10 +62,9 @@
   gap: var(--space-2);
 }
 
-/* flex-basis 0 + grow makes the picker take the row's free width the way the
- * sibling lists' plain Input add fields do; a bare `flex: 1` with min-width 0
- * collapsed it to its content, since the trigger's own width is 100% of a
- * container that was itself sized by content. */
+/* The wrapper has to grow for the picker to have any width to fill: the
+ * trigger's own width is 100% of this span, so with no growing wrapper it
+ * collapses to its content. */
 .modelAddField {
   display: flex;
   flex: 1 1 0;
