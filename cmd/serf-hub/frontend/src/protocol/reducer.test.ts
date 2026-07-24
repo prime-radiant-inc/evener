@@ -1219,6 +1219,35 @@ test("hydrateThread maps a settled item's exitCode onto the model (snapshot path
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(0);
 });
 
+// A tool-call's purpose crosses the wire as ThreadItem.description (set
+// server-side, e.g. delegate's mandate); wireItemToModel historically dropped
+// it. The model must carry it so the subagent Activity feed can render each
+// child tool-call's purpose (§4.2). Both hydrate and live paths fold through
+// wireItemToModel, so the snapshot path proves the carry.
+test("wireItemToModel carries the wire description (tool-call purpose) onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_tool_1_0",
+            type: "commandExecution",
+            toolName: "delegate",
+            callId: "c1",
+            description: "audit the reducer",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).description).toBe("audit the reducer");
+});
+
 test("thread/reasoning-effort/changed updates reasoningEffort", () => {
   let model = testHydrate();
   expect(model.reasoningEffort).toBeUndefined();

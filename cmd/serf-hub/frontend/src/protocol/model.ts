@@ -21,6 +21,9 @@ export interface ItemModel {
   toolName?: string;
   callId?: string;
   argumentsJSON?: string;
+  // Tool-call purpose — the wire ThreadItem.description, surfaced for the
+  // subagent Activity feed. Dropped historically by wireItemToModel; now carried.
+  description?: string;
   output?: string;
   // Tool-result error text (wire ThreadItem.error): populated instead of
   // output when a tool call failed or was denied. The wire projects item

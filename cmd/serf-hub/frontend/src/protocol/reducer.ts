@@ -114,6 +114,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     toolName: item.toolName,
     callId: item.callId,
     argumentsJSON: item.argumentsJson,
+    description: item.description,
     output: item.output,
     error: item.error,
     exitCode: item.exitCode,
