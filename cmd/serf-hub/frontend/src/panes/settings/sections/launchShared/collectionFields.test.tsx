@@ -1,7 +1,10 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type { LaunchOption } from "../../../../protocol/types.gen";
+import { connectionStore } from "../../../../stores/connection";
+import { resetExtensionsStoreForTests } from "../../../../stores/extensions";
 import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 
@@ -10,6 +13,8 @@ import { EnvMapField, McpServerListField, ModelListField, PathListField } from "
 vi.mock("../../../../widgets/modelCatalog/catalogClient", () => ({ fetchModelCatalog: vi.fn() }));
 
 beforeEach(() => {
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetExtensionsStoreForTests();
   vi.mocked(fetchModelCatalog).mockReset();
   vi.mocked(fetchModelCatalog).mockResolvedValue({
     models: [
@@ -23,11 +28,38 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/** Scripts serf/paths/complete off a prefix -> entries table, the way the
+ * pathList add row's picker asks for it (the store passes the prefix through
+ * verbatim, and directory entries carry a trailing slash once includeFiles is
+ * on). Returns the recorded (prefix, includeFiles) pairs. */
+function connectPathLister(table: Record<string, string[]>): { calls: Array<[string, boolean]> } {
+  const fake = new FakeClient("ready");
+  const calls: Array<[string, boolean]> = [];
+  fake.on("serf/paths/complete", (params) => {
+    calls.push([params.prefix, params.includeFiles === true]);
+    return { data: table[params.prefix] ?? [] };
+  });
+  connectionStore.getState().connect(fake);
+  return { calls };
+}
+
 /** Opens the modelList add row's picker and clicks one model by display name,
  * which lands its qualified id in the add field. */
 async function pickModel(user: ReturnType<typeof userEvent.setup>, displayName: string) {
   await user.click(screen.getByRole("button", { name: /change model/i }));
   await user.click(await screen.findByText(displayName));
+}
+
+/** Opens the pathList add row's path picker and types a literal path, then
+ * commits it with Enter - which lands it in CollectionEditor's own draft and
+ * closes the panel, exactly like clicking a file row would. Typing (not
+ * user.type) because the panel's input is already focused with its pre-filled
+ * value selected. */
+async function typePath(user: ReturnType<typeof userEvent.setup>, path: string) {
+  await user.click(screen.getByRole("button", { name: /browse/i }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard(path);
+  await user.keyboard("{Enter}");
 }
 
 function pathListOption(overrides: Partial<LaunchOption> = {}): LaunchOption {
@@ -59,12 +91,68 @@ describe("PathListField", () => {
     expect(screen.getByText("/opt/skills")).toBeTruthy();
   });
 
+  test("the add row is the shared path picker, not a hand-typed text box", () => {
+    connectPathLister({});
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={[]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+      />,
+    );
+    expect(screen.queryByPlaceholderText("/path/to/directory")).toBeNull();
+    const browse = screen.getByRole("button", { name: /browse/i });
+    expect(browse.textContent).toMatch(/\/path\/to\/directory/);
+  });
+
+  test("a dir pathKind browses directories only", async () => {
+    const user = userEvent.setup();
+    const lister = connectPathLister({ "": ["/opt/plugins", "/opt/skills"] });
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={[]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /browse/i }));
+    expect(await screen.findByRole("option", { name: /plugins/ })).toBeTruthy();
+    expect(lister.calls).toEqual([["", false]]);
+  });
+
+  test("a file pathKind (mcpConfigs) browses files too, and a file row lands in the draft", async () => {
+    const user = userEvent.setup();
+    const lister = connectPathLister({ "": ["/etc/mcp/", "/etc/mcp.json"] });
+    render(
+      <PathListField
+        option={pathListOption({
+          field: "mcp_configs",
+          wireField: "mcpConfigs",
+          label: "MCP config files",
+          pathKind: "file",
+        })}
+        items={[]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /browse/i }));
+    await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
+    expect(lister.calls[0]).toEqual(["", true]);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /browse/i }).textContent).toMatch(/\/etc\/mcp\.json/),
+    );
+  });
+
   test("adding a value validates it via the injected validatePath(path, schemaPathKind) before accepting", async () => {
     const user = userEvent.setup();
+    connectPathLister({});
     const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins", valid: true });
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
-    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/opt/plugins");
+    await typePath(user, "/opt/plugins");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/plugins"]));
     expect(validatePath).toHaveBeenCalledWith("/opt/plugins", "dir");
@@ -72,6 +160,7 @@ describe("PathListField", () => {
 
   test("outputFile pathKind is translated to 'output-file' for the RPC call", async () => {
     const user = userEvent.setup();
+    connectPathLister({});
     const validatePath = vi.fn().mockResolvedValue({ path: "/tmp/trace.json", valid: true });
     render(
       <PathListField
@@ -86,17 +175,18 @@ describe("PathListField", () => {
         validatePath={validatePath}
       />,
     );
-    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/tmp/mcp.json");
+    await typePath(user, "/tmp/mcp.json");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/tmp/mcp.json", "file"));
   });
 
   test("an invalid path shows an inline error and does not add the row", async () => {
     const user = userEvent.setup();
+    connectPathLister({});
     const validatePath = vi.fn().mockResolvedValue({ path: "", valid: false, error: "path does not exist" });
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
-    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/nope");
+    await typePath(user, "/nope");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(screen.getByText("path does not exist")).toBeTruthy());
     expect(onChange).not.toHaveBeenCalled();
@@ -104,10 +194,11 @@ describe("PathListField", () => {
 
   test("accepts the server-canonicalized path when the server rewrites it", async () => {
     const user = userEvent.setup();
+    connectPathLister({});
     const validatePath = vi.fn().mockResolvedValue({ path: "/opt/plugins/canonical", valid: true });
     const onChange = vi.fn();
     render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
-    await user.type(screen.getByPlaceholderText("/path/to/directory"), "/opt/plugins/../plugins");
+    await typePath(user, "/opt/plugins/../plugins");
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/plugins/canonical"]));
   });

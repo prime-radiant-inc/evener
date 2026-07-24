@@ -4,18 +4,13 @@
 // above two editable lists on the global launch layer - "MCP config files"
 // (mcpConfigs: string[], reusing dirListSetting.tsx's PathListEditor) and
 // "Inline MCP servers" (mcps: MCPServerSpec[], hand-rolled: a 3-field name/
-// command/args row the PathPicker-based PathListEditor genuinely can't
-// represent, matching the legacy's own "no picker assistance" for this
-// list).
+// command/args row the path-list PathListEditor genuinely can't represent,
+// matching the legacy's own "no picker assistance" for this list).
 //
-// Config files deliberately DOES get a Browse button here (via
-// PathListEditor), a small beyond-parity evening-up: the legacy gave dirs
-// (plugins/skills) a Browse button but left config-files inline-typeahead-
-// only, an asymmetry with no principled reason (PathListEditor calls
-// serf/paths/complete without includeFiles, so Browse lists directories
-// only regardless and still just helps navigate toward the right directory
-// - the final filename is still typed by hand either way, same as the
-// legacy's own inline-only path). See the wave-7 task-3 report.
+// Config files browse as kind="file", so the picker lists the JSON files
+// themselves and clicking one fills the field - beyond parity, where the
+// legacy gave the directory lists (plugins/skills) a picker and left config
+// files typeahead-only, an asymmetry with no principled reason.
 import { type FormEvent, useEffect, useId, useState } from "react";
 import type { MCPServerSpec, SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
@@ -234,10 +229,11 @@ export function McpSection({ useOverviewStore }: McpSectionProps) {
             <PathListEditor
               label="MCP config files"
               addLabel="New config file"
+              kind="file"
               items={layer?.mcpConfigs ?? []}
               onAdd={handleAddConfig}
               onRemove={handleRemoveConfig}
-              listChildren={(path) => extensionsStore.getState().listDirChildren(path)}
+              complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
               emptyMessage="No MCP config files. Add one below."
               removeConfirmTitle="Remove config file"
               removeConfirmBody={(path) => `Remove "${path}" from MCP config files?`}

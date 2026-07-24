@@ -28,8 +28,9 @@
 
 import { type ReactNode, useId } from "react";
 import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "../../../../protocol/types.gen";
-import type { CollectionAddResult } from "../../../../widgets";
-import { Button, CollectionEditor, Input, ModelCatalog, Switch } from "../../../../widgets";
+import { extensionsStore } from "../../../../stores/extensions";
+import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
+import { Button, CollectionEditor, Input, ModelCatalog, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./collectionFields.module.css";
@@ -44,6 +45,8 @@ const CLASS = {
   envField: requireClass(styles.envField, "collectionFields.module.css", "envField"),
   modelAddRow: requireClass(styles.modelAddRow, "collectionFields.module.css", "modelAddRow"),
   modelAddField: requireClass(styles.modelAddField, "collectionFields.module.css", "modelAddField"),
+  pathAddRow: requireClass(styles.pathAddRow, "collectionFields.module.css", "pathAddRow"),
+  pathAddField: requireClass(styles.pathAddField, "collectionFields.module.css", "pathAddField"),
   visuallyHidden: requireClass(styles.visuallyHidden, "collectionFields.module.css", "visuallyHidden"),
 };
 
@@ -118,7 +121,22 @@ export interface PathListFieldProps {
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
 }
 
-/** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Every add is validated
+/** The pathList add field's empty-state text - the picker's closed trigger
+ * shows it in place of a value, so it reads the same as the plain-text add
+ * field's placeholder did. */
+const PATH_ADD_PLACEHOLDER = "/path/to/directory";
+
+/** The browse kind for a pathList option. Every pathList field in the schema
+ * names a real filesystem path - skillsDirs/pluginDirs are directories,
+ * mcpConfigs is a file - so anything else falls back to browsing directories,
+ * which is the only kind that lists nothing a list of paths can't hold. */
+function pathFieldKind(pathKind: string | undefined): PathFieldKind {
+  if (pathKind === "file" || pathKind === "outputFile") return pathKind;
+  return "dir";
+}
+
+/** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared
+ * path picker (PathAddField below), and every add is still validated
  * server-side via serf/path/validate before being accepted, using the
  * server-canonicalized path when one comes back - matching the legacy's own
  * "blocks the add on failure, shows a field-level error" / "uses
@@ -129,14 +147,70 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
       option={option}
       items={items}
       onChange={onChange}
-      addPlaceholder="/path/to/directory"
+      addPlaceholder={PATH_ADD_PLACEHOLDER}
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
       validateAdd={async (trimmed) => {
         const result = await validatePath(trimmed, schemaPathKind(option.pathKind));
         if (!result.valid) return { ok: false, error: result.error || "invalid path" };
         return { ok: true, value: result.path || trimmed };
       }}
+      renderAddField={({ value, onChange: setDraft, disabled }) => (
+        <div className={CLASS.pathAddRow}>
+          <PathAddField
+            value={value}
+            onChange={setDraft}
+            kind={pathFieldKind(option.pathKind)}
+            placeholder={PATH_ADD_PLACEHOLDER}
+            disabled={disabled}
+          />
+        </div>
+      )}
     />
+  );
+}
+
+/**
+ * The pathList add row: the shared path picker plus CollectionEditor's own
+ * submit button. `complete` is the extensions store's serf/paths/complete
+ * call, imported directly the way ModelAddField imports its own catalog
+ * loader rather than threading a prop through StringListField - and no
+ * `listRecents`, since a skills- or config-file list has no meaningful
+ * "recent" of its own (that belongs to the spawn working directory alone).
+ *
+ * The browsed path lands in CollectionEditor's `draft`; the Add button submits
+ * it, which is where serf/path/validate still gates it (the picker's own panel
+ * is portaled outside this <form>, so Enter inside the picker picks a path
+ * rather than submitting the row).
+ */
+function PathAddField({
+  value,
+  onChange,
+  kind,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  kind: PathFieldKind;
+  placeholder: string;
+  disabled: boolean;
+}) {
+  return (
+    <>
+      <span className={CLASS.pathAddField}>
+        <PathField
+          value={value}
+          onChange={onChange}
+          kind={kind}
+          complete={(prefix, includeFiles) => extensionsStore.getState().completePaths(prefix, includeFiles)}
+          placeholder={placeholder}
+          disabled={disabled}
+        />
+      </span>
+      <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
+        Add
+      </Button>
+    </>
   );
 }
 

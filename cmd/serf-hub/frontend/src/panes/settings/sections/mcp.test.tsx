@@ -99,12 +99,35 @@ test("adding a config file validates as kind:file and saves mcpConfigs", async (
     expect(params).toEqual({ cwd: "/", layer: "global", config: { mcpConfigs: ["/etc/mcp.json"], mcps: [] } });
     return { effective: {}, layers: {}, provenance: {} };
   });
+  fake.on("serf/paths/complete", () => ({ data: [] }));
   render(<McpSection useOverviewStore={overviewHook()} />);
   await screen.findByText("No MCP config files. Add one below.");
-  await user.type(screen.getByPlaceholderText("/absolute/path/to/mcp.json"), "/etc/mcp.json");
+  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.keyboard("/etc/mcp.json");
+  await user.keyboard("{Enter}");
   const addButtons = screen.getAllByRole("button", { name: "Add" });
   await user.click(addButtons[0]!);
   expect(await screen.findByText("/etc/mcp.json")).toBeTruthy();
+});
+
+// Config files name FILES, so their picker lists them - clicking one fills the
+// add field outright rather than only navigating toward its directory.
+test("the config-file add row browses files, and picking one fills the add field", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/launch/getLayer", () => ({ mcpConfigs: [], mcps: [] }));
+  fake.on("serf/paths/complete", (params) => {
+    expect(params).toEqual({ prefix: "", includeFiles: true });
+    return { data: ["/etc/mcp/", "/etc/mcp.json"] };
+  });
+  render(<McpSection useOverviewStore={overviewHook()} />);
+  await screen.findByText("No MCP config files. Add one below.");
+  await user.click(screen.getByRole("button", { name: "New config file" }));
+  await user.click(await screen.findByRole("option", { name: /mcp\.json/ }));
+  await waitFor(() =>
+    expect(screen.getByRole("button", { name: "New config file" }).textContent).toMatch(/\/etc\/mcp\.json/),
+  );
 });
 
 test("removing a config file confirms first, then saves with it filtered out", async () => {
