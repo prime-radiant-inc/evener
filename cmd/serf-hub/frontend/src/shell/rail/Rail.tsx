@@ -7,7 +7,7 @@
 // and the rename/delete-project confirmation dialogs. Every mutation goes
 // through actions.ts, refetching the tree on success and toasting on failure
 // (no optimistic UI - out of this task's scope).
-import { type ChangeEvent, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type CSSProperties, useEffect, useRef, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
 import {
   type TreeNode as ApiTreeNode,
@@ -32,6 +32,7 @@ import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
+import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import {
   archivedProjectNodes,
@@ -119,6 +120,12 @@ export interface RailProps {
   // case; RailHost wires it to the persisted sidebarHidden boolean). The
   // mobile drawer instance passes none — the drawer is its own show/hide.
   onHide?: () => void;
+  // Renders the right-edge drag-to-resize handle at this width when provided
+  // (the desktop case; RailHost passes the persisted serf.prefs.sidebarWidth).
+  // The mobile drawer instance passes none: the Rail fills the sheet there
+  // (Rail.module.css's <=899px block) and has no resizable edge.
+  width?: number;
+  onWidthChange?: (width: number) => void;
   // The session ref the palette's /project command wants revealed. Rail expands
   // its project section and scrolls its row into view, then calls
   // onRevealConsumed so the caller can clear it. See railController (PIN-A).
@@ -126,7 +133,7 @@ export interface RailProps {
   onRevealConsumed?: () => void;
 }
 
-export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {}) {
+export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
   const tree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
@@ -143,6 +150,7 @@ export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {})
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void treeStore.getState().refresh();
@@ -291,7 +299,17 @@ export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {})
   const isExpanded = overrideLookup(expandedOverrides);
 
   return (
-    <div className={CLASS.rail}>
+    // --rail-width is what Rail.module.css's own `.rail` width resolves; the
+    // resizable (desktop) instance sets it from the persisted pref, the mobile
+    // drawer instance sets nothing and takes the stylesheet's 100% instead.
+    <div
+      className={CLASS.rail}
+      ref={railRef}
+      style={width === undefined ? undefined : ({ [RAIL_WIDTH_PROPERTY]: `${width}px` } as CSSProperties)}
+    >
+      {width !== undefined && onWidthChange && (
+        <RailResizeHandle width={width} onCommit={onWidthChange} railRef={railRef} />
+      )}
       <div className={CLASS.header}>
         <div className={CLASS.brand}>
           <span className={CLASS.brandName}>serf</span>

@@ -1,6 +1,15 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { initPrefs, prefsStore, resetPrefsStoreForTests, usePrefsStore } from "./prefs";
+import {
+  clampSidebarWidth,
+  initPrefs,
+  prefsStore,
+  resetPrefsStoreForTests,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
+  usePrefsStore,
+} from "./prefs";
 
 // See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
 // real window.localStorage with its own (non-functional under vitest)
@@ -334,6 +343,59 @@ describe("stale sidebarMode key", () => {
     localStorage.setItem(KEY("sidebarMode"), "rail");
     resetPrefsStoreForTests();
     expect("sidebarMode" in prefsStore.getState()).toBe(false);
+  });
+});
+
+// The docked rail's dragged width. Unlike every other pref here it carries
+// real bounds, and a value outside them would render an unusable (or
+// unrecoverable) sidebar - so the clamp is asserted on BOTH the read and the
+// write path, not just once.
+describe("sidebarWidth", () => {
+  test("defaults to SIDEBAR_WIDTH_DEFAULT with nothing persisted", () => {
+    expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_DEFAULT);
+  });
+
+  test("setSidebarWidth persists as a plain number string and updates state", () => {
+    prefsStore.getState().setSidebarWidth(320);
+    expect(localStorage.getItem(KEY("sidebarWidth"))).toBe("320");
+    expect(prefsStore.getState().sidebarWidth).toBe(320);
+  });
+
+  test("round-trips a persisted width across a fresh load", () => {
+    prefsStore.getState().setSidebarWidth(400);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarWidth).toBe(400);
+  });
+
+  test("setSidebarWidth clamps below the minimum and above the maximum", () => {
+    prefsStore.getState().setSidebarWidth(10);
+    expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MIN);
+    prefsStore.getState().setSidebarWidth(5000);
+    expect(prefsStore.getState().sidebarWidth).toBe(SIDEBAR_WIDTH_MAX);
+  });
+
+  test("setSidebarWidth rounds a fractional drag position to a whole pixel", () => {
+    prefsStore.getState().setSidebarWidth(301.6);
+    expect(prefsStore.getState().sidebarWidth).toBe(302);
+    expect(localStorage.getItem(KEY("sidebarWidth"))).toBe("302");
+  });
+
+  test.each([
+    ["a huge value", "99999", SIDEBAR_WIDTH_MAX],
+    ["a negative value", "-400", SIDEBAR_WIDTH_MIN],
+    ["zero", "0", SIDEBAR_WIDTH_MIN],
+    ["non-numeric garbage", "wide-please", SIDEBAR_WIDTH_DEFAULT],
+    ["an empty string", "", SIDEBAR_WIDTH_DEFAULT],
+    ["NaN", "NaN", SIDEBAR_WIDTH_DEFAULT],
+    ["Infinity", "Infinity", SIDEBAR_WIDTH_DEFAULT],
+  ])("clamps %s on read (%s -> %i)", (_label, stored, expected) => {
+    localStorage.setItem(KEY("sidebarWidth"), stored);
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().sidebarWidth).toBe(expected);
+  });
+
+  test("clampSidebarWidth keeps an in-bounds value untouched", () => {
+    expect(clampSidebarWidth(333)).toBe(333);
   });
 });
 

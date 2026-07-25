@@ -44,6 +44,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const isMobile = useIsMobile();
   const hidden = usePrefsStore((s) => s.sidebarHidden);
+  const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
   const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
   const clearReveal = useCallback(() => setRevealTarget(null), []);
@@ -93,9 +94,15 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
     );
   }
 
+  // Width/handle are the desktop docked rail's alone: mobile's Rail fills
+  // TreeDrawer's sheet. Because the width lives in the pref rather than in this
+  // component, hiding and re-showing the rail (or a reload) restores exactly
+  // the dragged width.
   return (
     <Rail
       onHide={isMobile ? undefined : () => prefsStore.getState().setSidebarHidden(true)}
+      width={isMobile ? undefined : sidebarWidth}
+      onWidthChange={isMobile ? undefined : (width) => prefsStore.getState().setSidebarWidth(width)}
       revealTarget={revealTarget}
       onRevealConsumed={clearReveal}
     />

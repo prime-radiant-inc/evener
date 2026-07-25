@@ -3,10 +3,64 @@
 .rail {
   display: flex;
   flex-direction: column;
-  width: 280px;
+  /* Dragged width (RailResizeHandle), pushed in as an inline --rail-width by
+   * Rail.tsx from the persisted serf.prefs.sidebarWidth; the fallback is that
+   * pref's own default, so the rail renders correctly with no property set at
+   * all (the mobile drawer instance, which passes no width).
+   * `flex: none` + `min-width: 0` make this width AUTHORITATIVE as a fixed
+   * width was: the rail neither grows nor shrinks beside the workspace, and
+   * its own content cannot push it wider (a flex item's default
+   * `min-width: auto` would floor it at its content's min size). */
+  flex: none;
+  width: var(--rail-width, 280px);
+  min-width: 0;
   height: 100%;
+  /* Anchors the absolutely-positioned resize handle to the right edge. */
+  position: relative;
   background: var(--surface-1);
   border-right: 1px solid var(--edge);
+}
+
+/* Drag-to-resize strip on the rail's right border. Wider than the 1px border
+ * it grabs (a 1px hit target is not pointable) but kept entirely INSIDE the
+ * rail's own box - an overhang would add its own width to the rail's
+ * scrollWidth and sit over the workspace host's edge, where dockview's
+ * sash handling also lives. It covers only the header/footer padding strip, no
+ * rail text. Invisible until hovered or focused: the ::after hairline is the
+ * only thing that ever paints, so the resting sidebar edge stays exactly the
+ * quiet 1px border it was. touch-action: none keeps a pointer drag from being
+ * reinterpreted as a scroll/pan gesture mid-resize. */
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: var(--space-2);
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 1;
+}
+
+.resizeHandle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 2px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 120ms var(--motion-easing-standard);
+}
+
+.resizeHandle:hover::after,
+.resizeHandle:active::after {
+  opacity: 1;
+}
+
+.resizeHandle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* On mobile the same Rail renders inside StackHost's TreeDrawer Sheet, which

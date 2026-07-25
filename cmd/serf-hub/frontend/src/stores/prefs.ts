@@ -48,6 +48,11 @@
 // tri-state sidebarMode (auto/pane/rail overlay-drawer system, removed
 // 2026-07-24) — a stale serf.prefs.sidebarMode key is simply never read.
 // No document mirror: RailHost reads it directly.
+// sidebarWidth is the docked rail's dragged width in CSS pixels (desktop
+// only; the mobile drawer sizes itself). Always CLAMPED on read as well as
+// on write — a hand-edited, corrupted or stale-bounds localStorage value
+// must never be able to render a 4px-wide or workspace-eating rail, which
+// no drag could then recover from.
 //
 // No cross-tab `storage` event sync: deliberately omitted, matching the
 // legacy exactly - none of assets/{theme,settings-appearance,settings-
@@ -70,6 +75,7 @@ export interface PrefsStoreState {
   theme: ThemePref;
   phoneDensity: PhoneDensityPref;
   sidebarHidden: boolean;
+  sidebarWidth: number;
   fontSize: FontSizePref;
   transcript: Record<TranscriptStatusKey, boolean>;
   // Composer prefs (Display section, parity-m7-settings.md §5). Field names
@@ -82,6 +88,7 @@ export interface PrefsStoreState {
   setTheme(value: ThemePref): void;
   setPhoneDensity(value: PhoneDensityPref): void;
   setSidebarHidden(value: boolean): void;
+  setSidebarWidth(value: number): void;
   setFontSize(value: FontSizePref): void;
   setTranscriptStatus(key: TranscriptStatusKey, value: boolean): void;
   setEnterToSend(value: boolean): void;
@@ -141,6 +148,44 @@ function readBool(name: string, fallback: boolean): boolean {
 
 function writeBool(name: string, value: boolean): void {
   writeRaw(name, value ? "1" : "0");
+}
+
+// Docked-rail width bounds, in CSS pixels. Exported because they are one
+// contract with three consumers: this store's clamp, the resize handle's
+// aria-valuemin/aria-valuemax, and the drag arithmetic itself.
+//
+// SIDEBAR_WIDTH_MIN is measured against the rail's own header content rather
+// than picked for looks: at 200px the brand row, the full-width search field
+// (its "Search" label plus the ⌘K chord) and the "+ New session" button all
+// still render on one line each inside the header's 2×var(--space-4) padding,
+// verified in a real browser at every font-size pref. Narrower starts
+// clipping the search field's chord.
+// SIDEBAR_WIDTH_MAX keeps the rail a sidebar: past ~560px it starts eating
+// the workspace dockview needs rather than buying any more title text (rows
+// truncate with an ellipsis, so extra width has diminishing returns).
+export const SIDEBAR_WIDTH_MIN = 200;
+export const SIDEBAR_WIDTH_MAX = 560;
+export const SIDEBAR_WIDTH_DEFAULT = 280;
+
+export function clampSidebarWidth(value: number): number {
+  if (!Number.isFinite(value)) return SIDEBAR_WIDTH_DEFAULT;
+  return Math.round(Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, value)));
+}
+
+// Numeric prefs persist as a plain base-10 string. Anything unparseable
+// (absent key, "", "abc", "NaN") falls back rather than coercing to 0 the way
+// Number("") would - the same "absent or corrupted, never silently coerce"
+// rule readBool follows. The caller supplies the clamp, so an in-range
+// fallback plus an out-of-range stored value both land somewhere usable.
+function readNumber(name: string, fallback: number, clamp: (value: number) => number): number {
+  const raw = readRaw(name);
+  if (raw === null || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? clamp(parsed) : fallback;
+}
+
+function writeNumber(name: string, value: number): void {
+  writeRaw(name, String(value));
 }
 
 function readEnum<T extends string>(name: string, allowed: readonly T[], fallback: T): T {
@@ -266,6 +311,7 @@ function loadInitialState(): Omit<
   | "setTheme"
   | "setPhoneDensity"
   | "setSidebarHidden"
+  | "setSidebarWidth"
   | "setFontSize"
   | "setTranscriptStatus"
   | "setEnterToSend"
@@ -283,6 +329,7 @@ function loadInitialState(): Omit<
     theme,
     phoneDensity,
     sidebarHidden: readBool("sidebarHidden", false),
+    sidebarWidth: readNumber("sidebarWidth", SIDEBAR_WIDTH_DEFAULT, clampSidebarWidth),
     fontSize,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
@@ -316,6 +363,14 @@ export const prefsStore = createStore<PrefsStoreState>((set) => ({
   setSidebarHidden(value) {
     writeBool("sidebarHidden", value);
     set({ sidebarHidden: value });
+  },
+
+  // Clamps on the way in too, so the persisted value can never be out of
+  // bounds even if a caller does its own (looser) arithmetic first.
+  setSidebarWidth(value) {
+    const width = clampSidebarWidth(value);
+    writeNumber("sidebarWidth", width);
+    set({ sidebarWidth: width });
   },
 
   setFontSize(value) {
