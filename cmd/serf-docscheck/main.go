@@ -37,6 +37,7 @@ import (
 var libraryPackages = []string{
 	"llm",
 	"agent",
+	"agent/diagnostic",
 	"agent/events",
 	"agent/execenv",
 	"agent/mcpconfig",

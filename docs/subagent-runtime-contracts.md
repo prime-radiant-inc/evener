@@ -66,7 +66,7 @@ tools/list run concurrently in its own goroutine; a failure there, or later duri
 registration, is isolated to that server rather than aborting the batch, reported as a
 `ServerOutcome` (`agent/internal/mcp` `NewManager`/`RegisterTools`). Each outcome
 becomes a `pendingMCPWarnings` entry classified `SourceMCP`
-(`agent/internal/diagnostic`), flushed after `SESSION_START` (`agent/session_init.go`
+(`agent/diagnostic`), flushed after `SESSION_START` (`agent/session_init.go`
 `initMCP` → `emitSessionStartEnvelope`) — the session constructs with whichever servers
 came up healthy, and zero healthy servers is still a healthy session. A connection
 dropped mid-session gets exactly one call-driven lazy reconnect attempt, gated on

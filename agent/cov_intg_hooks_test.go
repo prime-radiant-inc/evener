@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )
 
