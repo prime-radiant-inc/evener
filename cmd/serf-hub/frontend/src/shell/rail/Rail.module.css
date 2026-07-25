@@ -4,6 +4,14 @@
   display: flex;
   flex-direction: column;
   width: 280px;
+  /* The rail is a flex item beside the workspace host in AppShell's .content
+   * row, and that host's `flex: 1 1 auto` sizes its basis from its own
+   * content. When the two bases together exceed the row, the browser
+   * distributes the shortfall across every shrinkable item - taking the rail
+   * with it, below the 280px declared above (a `width` is a basis, not a
+   * floor). Refusing to shrink makes 280px the rail's width in both
+   * directions, so folding a project can't resize the sidebar. */
+  flex-shrink: 0;
   height: 100%;
   background: var(--surface-1);
   border-right: 1px solid var(--edge);
@@ -122,6 +130,14 @@
   /* min-height: 0 is required for a flex child to actually be able to
    * scroll instead of stretching its column parent to fit its content. */
   min-height: 0;
+  /* This is also the box that absorbs the tree's width: the rail's fixed
+   * width plus `flex-shrink: 0` above means a row wider than the rail (a deep
+   * subagent branch, a long title beside a long branch name) has to go
+   * somewhere, and this scroll container is where. `overflow-y: auto` alone
+   * is enough for that - per CSS Overflow 3, an unset overflow-x computes to
+   * `auto` rather than `visible` once the other axis is a scrolling value, so
+   * the horizontal axis already scrolls here (verified in Chrome: computed
+   * overflow-x reads `auto` from this one declaration). */
   overflow-y: auto;
   padding: var(--space-2) 0;
 }
