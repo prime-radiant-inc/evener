@@ -117,11 +117,10 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// non-managed worktree carries no serf lock at all (spec §4 by-path step
 	// 3), so it re-enters unconditionally.
 	if meta.WorktreeManaged {
-		locked, reason, lsErr := lockStateOf(run, target)
-		if lsErr != nil {
-			notice(fmt.Sprintf("previous worktree %s lock state could not be verified (%v)", target, lsErr))
-			return nil
-		}
+		// The registry check above already read the listing, and the runner
+		// memoizes it, so this derives the lock state from the entries in hand
+		// rather than issuing a second identical read.
+		locked, reason := lockStateFromPorcelain(worktree.ParsePorcelain(out), target)
 		st := worktree.Unlocked
 		if locked {
 			st = worktree.ClassifyReason(reason, s.id, "")

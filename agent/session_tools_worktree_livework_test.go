@@ -16,8 +16,14 @@ import (
 // background shell jobs, a real live subagent env, and a synthetic-but-real
 // jm.running delegate record — never the worktreeLiveWorkStub test seam
 // (session_tools_worktree_remove_test.go's stub tests cover the guard CALL
-// site only). They reuse wtRepo/newWorktreeRepo from
-// session_tools_worktree_create_test.go.
+// site only).
+//
+// The subject throughout is serf's own guard: what liveWorkUnder enumerates from
+// serf's job records and subagent envs, and how remove and prune respond to it.
+// The blockers stay real (real background shell jobs, real child sessions); only
+// the lane the guard is asked about is built on the scripted git boundary
+// (scriptedLaneRepo, driven through wtRepo's shared operation helpers). See
+// docs/testing.md for the rule.
 
 func TestPathEqualOrUnder(t *testing.T) {
 	tests := []struct {
@@ -54,7 +60,7 @@ func TestPathEqualOrUnder(t *testing.T) {
 // switched elsewhere").
 func TestWorktreeRemove_LiveWorkGuardRefusesRealBackgroundShellJob(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -113,7 +119,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesRealBackgroundShellJob(t *testing.T)
 // env, not a launch-time snapshot.
 func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -161,7 +167,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveSubagentEnv(t *testing.T) {
 // subagent-env source.
 func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -215,7 +221,7 @@ func TestWorktreeRemove_LiveWorkGuardRefusesLiveDelegateJobRecord(t *testing.T) 
 // neither block removing the target lane.
 func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	target, err := r.create(t, map[string]any{"name": "target-lane"})
 	if err != nil {
 		t.Fatalf("create target: %v", err)
@@ -293,7 +299,7 @@ func TestWorktreeRemove_LiveWorkGuardIgnoresUnrelatedWork(t *testing.T) {
 // liveWorkUnder itself.
 func TestWorktreeLiveWorkUnder_SkipsSubagentEmptyWorkingDirectory(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -372,7 +378,7 @@ func seedRetainedDelegate(t *testing.T, s *Session, delegateID, childID string) 
 // caller with an opaque "live work" refusal it (correctly) will not bypass.
 func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -413,7 +419,7 @@ func TestWorktreeRemove_RetainedIdleDelegate_SuggestsDispose(t *testing.T) {
 // place, since disposing the idle delegate would not clear the running work.
 func TestWorktreeRemove_RunningBlocker_NoDisposeHint(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -464,7 +470,7 @@ func TestWorktreeRemove_RunningBlocker_NoDisposeHint(t *testing.T) {
 // plumbing too, not just the stub seam.
 func TestWorktreePrune_Sweep1_SkipsLiveRealBackgroundShellJob(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "live-lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)

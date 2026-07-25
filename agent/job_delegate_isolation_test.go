@@ -14,11 +14,30 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// These are REAL-git integration tests for delegate worktree isolation (native
-// worktree tools spec §9, Task 21): delegate(isolation:"worktree") gets its
-// own managed worktree lane, the child env is rooted there, manage_worktree is
-// denied to the child (spawn AND restore, including all-tools agent types),
-// and a revived kept lane re-takes its serf:dlg: lock.
+// These are integration tests for delegate worktree isolation (native worktree
+// tools spec §9, Task 21): delegate(isolation:"worktree") gets its own managed
+// worktree lane, the child env is rooted there, manage_worktree is denied to the
+// child (spawn AND restore, including all-tools agent types), and a revived kept
+// lane re-takes its serf:dlg: lock.
+//
+// This file is MIXED across the two git boundaries; see docs/testing.md for the
+// rule. A test whose subject is serf's own decision-making — the tool-deny
+// policy, rollback bookkeeping, argument validation, which lane a second job
+// runs in, what the notification block carries — runs on the scripted boundary
+// (newScriptedWtDlgRepo). These stay on real git because their subject IS git's
+// observable behavior:
+//
+//   - TestDelegateIsolation_SpawnCreatesLockedManagedWorktree — the lane's .git
+//     pointer file and a lock that really lands in git's registry
+//   - TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty — real ahead-count
+//     and real dirty detection. The scripted model answers `rev-list --count` with
+//     0 and reports every tree clean, so the ahead=1/dirty=true assertions would
+//     invert silently while still passing.
+//   - TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools — the lane
+//     must SURVIVE the parent's close, which needs a real ancestry verdict: the
+//     close pass keeps only a lane git judges unmerged, while the scripted model's
+//     `merge-base --is-ancestor` always succeeds, so the lane would be disposed
+//     and the revival re-lock assertion could never run
 
 // wtDlgRepo is a real git repo plus a parent session rooted at it, wired for
 // delegate-isolation tests: a real StateDir (so isolation lanes land under
@@ -91,6 +110,48 @@ func (r *wtDlgRepo) porcelainEntryFor(t *testing.T, path string) worktree.Porcel
 	return worktree.PorcelainEntry{}
 }
 
+// scriptedWtDlgRepo is the scripted-boundary counterpart of wtDlgRepo: the same
+// parent session, state dir and real on-disk sidecars and .git pointer files,
+// with scriptedWorktreeGit standing in for the git binary. It exposes the
+// wtDlgRepo methods unchanged through repo, plus the lane-lock reads a lock
+// assertion needs.
+type scriptedWtDlgRepo struct {
+	*wtDlgRepo
+	git *scriptedWorktreeGit
+}
+
+// newScriptedWtDlgRepo builds a parent session whose worktree git boundary is
+// scripted. The tool registry stays full (not minimalWorktreeToolRegistry) so a
+// spawned child really has the tools the isolation deny policy operates on.
+func newScriptedWtDlgRepo(t *testing.T, c *llm.Client) *scriptedWtDlgRepo {
+	t.Helper()
+	root := scriptedCanonicalDir(t, packageFixtureTempDir(t, "delegate-scripted-repo-*"))
+	stateDir := scriptedCanonicalDir(t, packageFixtureTempDir(t, "delegate-scripted-state-*"))
+	if err := os.MkdirAll(filepath.Join(root, ".git", "worktrees"), 0o755); err != nil {
+		t.Fatalf("create scripted main git dir: %v", err)
+	}
+
+	git := newScriptedWorktreeGit(root)
+	s := newSession(t, withClient(c), withDir(root), withConfig(SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			environmentInfo:     scriptedEnvironmentInfo,
+			worktreeGitRunner: func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+				return git.run
+			},
+		},
+	}))
+	s.mu.Lock()
+	s.worktreeGitVersionOK = true
+	s.mu.Unlock()
+	return &scriptedWtDlgRepo{wtDlgRepo: &wtDlgRepo{s: s, mainRoot: root, stateDir: stateDir}, git: git}
+}
+
 func delegateTestClient(step func(req llm.Request) llm.Response) *llm.Client {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step}})
@@ -99,6 +160,10 @@ func delegateTestClient(step func(req llm.Request) llm.Response) *llm.Client {
 
 // --- Spawn: managed worktree, sidecar, lock, child env rooting, restore descriptor ---
 
+// REAL git: the lane's ".git" must really be a pointer file, and the atomic
+// `worktree add --lock` must really have landed a lock in git's registry.
+// REAL git: the lane's ".git" must really be a pointer file, and the atomic
+// `worktree add --lock` must really have landed a lock in git's registry.
 func TestDelegateIsolation_SpawnCreatesLockedManagedWorktree(t *testing.T) {
 	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
@@ -229,7 +294,7 @@ func TestDelegateIsolation_SpawnFailureAfterWorktreeCreateRollsBackLane(t *testi
 	t.Parallel()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	r := newWtDlgRepo(t, c)
+	r := newScriptedWtDlgRepo(t, c)
 
 	// prepareSubagentRun fails fast on an unknown agent_type, AFTER
 	// createDelegate has already created the isolation lane (spec §9 step 1
@@ -270,7 +335,7 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 	}
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	r := newWtDlgRepo(t, c)
+	r := newScriptedWtDlgRepo(t, c)
 
 	jm, err := sessionJobManager(r.s)
 	if err != nil {
@@ -311,6 +376,9 @@ func TestDelegateIsolation_AttachFailureAfterWorktreeCreateRollsBackLane(t *test
 
 // --- manage_worktree deny: spawn, all-tools agent type, and after restore ---
 
+// REAL git: the lane must SURVIVE the parent's close for the revival re-lock
+// assertion to run at all, which needs a real ancestry verdict — the close pass
+// keeps only a lane git judges unmerged, and commitWorkInLane makes it so.
 func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T) {
 	t.Parallel()
 	var request llm.Request
@@ -412,10 +480,16 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 
 // --- Second job in the same lane; per-job worktree report ---
 
+// The subject here is that the SECOND job stays in the first job's lane and gets
+// its own report, which is serf's own bookkeeping. The fresh-lane ahead=0 and
+// dirty=false values below are the scripted model's constants, so they are proven
+// against real git state by
+// TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty instead; asserting
+// them here just pins that the report is populated at all.
 func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree(t *testing.T) {
 	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newWtDlgRepo(t, c)
+	r := newScriptedWtDlgRepo(t, c)
 
 	res := r.s.createDelegate(context.Background(), delegateArgs{
 		Task:           "first job",
@@ -476,6 +550,11 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 // parent through the completion NOTIFICATION, not an inline tool response.
 // Spec §9 step 3 requires that notification to carry path/branch/ahead/dirty
 // so the parent can merge the lane between jobs.
+//
+// The subject is the notification BLOCK's shape — that the four fields are
+// rendered into the model request at all. Their fresh-lane values are proven
+// against real git state by
+// TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty.
 func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport(t *testing.T) {
 	t.Parallel()
 	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
@@ -483,7 +562,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 	}}
 	c := llm.NewClient()
 	c.Register(adapter)
-	r := newWtDlgRepo(t, c)
+	r := newScriptedWtDlgRepo(t, c)
 
 	res := r.s.createDelegate(context.Background(), delegateArgs{
 		Task:       "do isolated work",
@@ -520,6 +599,10 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 // scripted no-op turn) so ahead-count and dirty detection are proven against
 // real git state, without needing a scripted tool call inside the fake LLM
 // turn.
+//
+// REAL git: this is the file's authority for ahead-count and dirty detection. The
+// scripted model answers `rev-list --count` with 0 and reports every tree clean,
+// so the ahead=1 and dirty=true assertions would silently invert against it.
 func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()

@@ -12,9 +12,34 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// These are REAL-git integration tests for the manage_worktree switch and exit
-// arms (spec §4). They reuse wtRepo/wtGit from
+// These are integration tests for the manage_worktree switch and exit arms
+// (spec §4). They reuse wtRepo/wtGit from
 // session_tools_worktree_create_test.go.
+//
+// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// rule. A test whose subject is serf's own decision-making — which refusal rung
+// fires, its error text, the env-swap and restore-state bookkeeping, argument
+// validation — runs on the scripted git boundary (scriptedLaneRepo, driven
+// through wtRepo's shared operation helpers). These stay on real git because
+// their subject IS git's observable behavior:
+//
+//   - the git-unavailable tests (TestWorktreeSwitch_*ErrorsWhenGitUnavailable,
+//     TestLeaveCurrentWorktree_LockStateErrorPropagates,
+//     TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable) — the absence of a
+//     git binary, which a scripted runner cannot express
+//   - TestWorktreeSwitch_BetweenTwoManagedWorktrees,
+//     TestWorktreeSwitch_ToCurrentIsNoOpLockKept,
+//     TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked,
+//     TestWorktreeCreateExitSwitch_RoundTripRelocks,
+//     TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks,
+//     TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock — real
+//     lock/unlock effects read back through real `--porcelain`
+//   - TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry — a real
+//     prunable registry entry
+//   - TestWorktreeSwitch_ByPathSymlinkedSpellingCanonicalizedAccept — git's own
+//     canonical registry path vs a symlinked spelling
+//   - TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied — git's own
+//     failure writing its "locked" marker file
 
 // managedPath returns the path a managed worktree named name would live at
 // for canonicalMain, matching worktreeRootFor's derivation (stateDir set).
@@ -92,6 +117,8 @@ func (r *wtRepo) exitOp(t *testing.T) (map[string]any, error) {
 
 // --- switch by name ---
 
+// REAL git: every lock assertion here is read back out of git's own registry,
+// and envInfo.GitBranch comes from a real git snapshot of the entered worktree.
 func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepoWithConfig(t, SessionConfig{
@@ -155,6 +182,8 @@ func TestWorktreeSwitch_BetweenTwoManagedWorktrees(t *testing.T) {
 	}
 }
 
+// REAL git: "the lock did not change" is a claim about git's registry entry
+// before and after, read through real `--porcelain`.
 func TestWorktreeSwitch_ToCurrentIsNoOpLockKept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -188,7 +217,8 @@ func TestWorktreeSwitch_ToCurrentIsNoOpLockKept(t *testing.T) {
 
 func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)
@@ -200,9 +230,8 @@ func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
 	// session interfering between create and this switch). Decide's
 	// EvEnterCurrent row treats this as unreachable in well-behaved code and
 	// fails safe — refuse rather than silently no-op.
-	wtGit(t, r.mainRoot, "worktree", "unlock", pathA)
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000002")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, pathA)
+	sr.setLaneLock(t, pathA, foreignReason)
 
 	_, err = r.switchOp(t, map[string]any{"name": "A"})
 	if err == nil {
@@ -216,15 +245,15 @@ func TestWorktreeSwitch_ToCurrentOutOfBandForeignMarkerRefuses(t *testing.T) {
 	if got := r.s.currentEnv().WorkingDirectory(); got != pathA {
 		t.Errorf("currentEnv WorkingDirectory = %q after refused switch, want unchanged %q", got, pathA)
 	}
-	e := r.porcelainEntry(t, pathA)
-	if !e.Locked || e.LockReason != foreignReason {
-		t.Errorf("lock mutated by refused switch: got (%v,%q), want (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	if got := sr.laneLockReason(t, pathA); got != foreignReason {
+		t.Errorf("lock mutated by refused switch: got %q, want unchanged %q", got, foreignReason)
 	}
 }
 
 func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "A"})
 	if err != nil {
 		t.Fatalf("create A: %v", err)
@@ -236,7 +265,7 @@ func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000000")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, pathA)
+	sr.setLaneLock(t, pathA, foreignReason)
 
 	_, err = r.switchOp(t, map[string]any{"name": "A"})
 	if err == nil {
@@ -250,15 +279,14 @@ func TestWorktreeSwitch_ForeignLockedTargetRefusesNamingReason(t *testing.T) {
 		t.Errorf("currentEnv WorkingDirectory = %q after refused switch, want unchanged %q", got, r.mainRoot)
 	}
 	// The foreign lock must survive untouched.
-	e := r.porcelainEntry(t, pathA)
-	if !e.Locked || e.LockReason != foreignReason {
-		t.Errorf("foreign lock mutated: got (%v,%q), want (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	if got := sr.laneLockReason(t, pathA); got != foreignReason {
+		t.Errorf("foreign lock mutated: got %q, want unchanged %q", got, foreignReason)
 	}
 }
 
 func TestWorktreeSwitch_RejectsInvalidName(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.switchOp(t, map[string]any{"name": "has space"})
 	if err == nil {
 		t.Fatal("expected switch to reject an invalid name")
@@ -267,7 +295,7 @@ func TestWorktreeSwitch_RejectsInvalidName(t *testing.T) {
 
 func TestWorktreeSwitch_NonexistentNameErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.switchOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
 		t.Fatal("expected switch to a non-existent managed worktree to fail")
@@ -276,7 +304,7 @@ func TestWorktreeSwitch_NonexistentNameErrors(t *testing.T) {
 
 func TestWorktreeSwitch_RequiresExactlyOneOfNameOrPath(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	if _, err := r.switchOp(t, map[string]any{}); err == nil {
 		t.Error("expected an error when neither name nor path is given")
 	}
@@ -290,6 +318,9 @@ func TestWorktreeSwitch_RequiresExactlyOneOfNameOrPath(t *testing.T) {
 // same-target no-op path below): switching to a DIFFERENT managed worktree
 // needs to inspect the TARGET's lock via a real git subprocess, which fails
 // cleanly (not a panic, not a silent success) when git is hidden entirely.
+//
+// REAL git: the subject is the ABSENCE of a git binary. A scripted runner would
+// answer every command, leaving nothing missing to prove anything about.
 func TestWorktreeSwitch_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
@@ -314,6 +345,8 @@ func TestWorktreeSwitch_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.
 // switchToCurrentNoOp's own lockStateOf error branch: switching to the
 // worktree the session ALREADY occupies still needs to re-verify the lock
 // (spec §4 switch step 1), which fails the same clean way with git hidden.
+//
+// REAL git: same reason as above — the missing binary IS the fixture.
 func TestWorktreeSwitch_CurrentLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
@@ -337,6 +370,9 @@ func TestWorktreeSwitch_CurrentLockInspectionErrorsWhenGitUnavailable(t *testing
 // (in the tool surface) only as a sub-step of create-away/switch-away/exit —
 // this exercises it in isolation with git hidden after a real occupied
 // worktree is already in place.
+//
+// REAL git: the missing binary IS the fixture, and the runner under test is the
+// production gitRunner rather than the session's injectable seam.
 func TestLeaveCurrentWorktree_LockStateErrorPropagates(t *testing.T) {
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "A"}); err != nil {
@@ -363,7 +399,7 @@ func TestLeaveCurrentWorktree_LockStateErrorPropagates(t *testing.T) {
 // this thin wrapper specifically).
 func TestWorktreeControlRun_NonLocalEnvErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
@@ -393,7 +429,7 @@ func TestWorktreeSwitchByPath_NotInGitRepo(t *testing.T) {
 // EvalSymlinks failure when the argument path does not exist at all.
 func TestWorktreeSwitch_ByPathNonexistentPathErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	ghost := filepath.Join(t.TempDir(), "does-not-exist")
 	_, err := r.switchOp(t, map[string]any{"path": ghost})
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
@@ -403,6 +439,8 @@ func TestWorktreeSwitch_ByPathNonexistentPathErrors(t *testing.T) {
 
 // TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable covers step
 // 1's `git worktree list --porcelain` error branch.
+//
+// REAL git: the missing binary IS the fixture.
 func TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable(t *testing.T) {
 	r := newWorktreeRepo(t)
 	t.Setenv("PATH", t.TempDir())
@@ -421,6 +459,9 @@ func TestWorktreeSwitch_ByPathListWorktreesErrorsWhenGitUnavailable(t *testing.T
 // EvalSymlinks fails) — the scan must skip it rather than error out, so a
 // LATER, resolvable entry (the target we actually asked for) is still
 // found.
+//
+// REAL git: the fixture is a genuinely stale registry entry — git still lists a
+// worktree whose directory was deleted behind its back.
 func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -446,6 +487,9 @@ func TestWorktreeSwitch_ByPathSkipsMomentarilyAbsentPorcelainEntry(t *testing.T)
 	}
 }
 
+// REAL git: the fixture is a hand-made sibling worktree registered by real
+// `worktree add` outside the managed dir, and the claim is that its real
+// registry entry is never locked.
 func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -470,6 +514,7 @@ func TestWorktreeSwitch_ByPathSiblingManualWorktreeNoLockMutation(t *testing.T) 
 	}
 }
 
+// REAL git: same hand-made sibling fixture, same real "never locked" claim.
 func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -506,6 +551,8 @@ func TestWorktreeSwitch_ByPathToCurrentNonManagedUnlockedNoOps(t *testing.T) {
 	}
 }
 
+// REAL git: the accepted match is between a symlinked spelling and the CANONICAL
+// path git itself recorded when it registered the worktree.
 func TestWorktreeSwitch_ByPathSymlinkedSpellingCanonicalizedAccept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -539,7 +586,7 @@ func TestWorktreeSwitch_ByPathSymlinkedSpellingCanonicalizedAccept(t *testing.T)
 
 func TestWorktreeSwitch_UnregisteredPathRejected(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	stray := t.TempDir()
 
 	_, err := r.switchOp(t, map[string]any{"path": stray})
@@ -551,6 +598,8 @@ func TestWorktreeSwitch_UnregisteredPathRejected(t *testing.T) {
 	}
 }
 
+// REAL git: the whole claim is that the by-path reroute really TAKES the lock in
+// git's registry, read back through real `--porcelain`.
 func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -586,6 +635,8 @@ func TestWorktreeSwitch_ByPathInsideManagedDirGetsFullChoreographyLocked(t *test
 // TestLeaveCurrentWorktree_LockStateErrorPropagates' direct white-box test
 // of the callee itself): hiding git entirely fails the VERY FIRST git call
 // exit makes, so the error surfaces from this call site specifically.
+//
+// REAL git: the missing binary IS the fixture.
 func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -608,6 +659,9 @@ func TestWorktreeExit_LeaveCurrentErrorsWhenGitUnavailable(t *testing.T) {
 // .git/worktrees/<id> directory has been made read-only (a real permission
 // error, not a scripted one — git's own lock/unlock write a "locked" marker
 // file there).
+//
+// REAL git: the failure under test is git's own, writing its lock marker into a
+// directory it cannot write.
 func TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -625,6 +679,9 @@ func TestWorktreeExit_RelockLockCommandFailsOnPermissionDenied(t *testing.T) {
 	}
 }
 
+// REAL git: exit's non-destructiveness is proven against real state — the branch
+// really still exists in the ref store, and the lane's real registry entry is
+// really unlocked.
 func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -672,7 +729,7 @@ func TestWorktreeExit_RestoresEnvClearsSavedEnvUnlocks(t *testing.T) {
 
 func TestWorktreeExit_OutsideWorktreeErrorsNoSideEffects(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.exitOp(t)
 	if err == nil {
 		t.Fatal("expected exit outside a worktree to error")
@@ -690,13 +747,14 @@ func TestWorktreeExit_OutsideWorktreeErrorsNoSideEffects(t *testing.T) {
 
 func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
+	sr := newScriptedLaneRepo(t)
+	launch, launchPath, pathWork := sr.launchSession(t)
+	s2, r2 := launch.s, launch.wt()
 
 	// Simulate another session/tool claiming the launch worktree while s2 was
 	// away in "work".
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000001")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, launchPath)
+	sr.setLaneLock(t, launchPath, foreignReason)
 
 	out, err := r2.exitOp(t)
 	if err != nil {
@@ -720,13 +778,12 @@ func TestWorktreeExit_RestoringIntoManagedLaunchRootIdempotentRelockForeignWarns
 	}
 	// The foreign lock on the launch worktree is left untouched (co-occupy, not
 	// a forced takeover).
-	e := r2.porcelainEntry(t, launchPath)
-	if !e.Locked || e.LockReason != foreignReason {
-		t.Errorf("launch worktree lock = (%v,%q), want untouched (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	if got := sr.laneLockReason(t, launchPath); got != foreignReason {
+		t.Errorf("launch worktree lock = %q, want untouched %q", got, foreignReason)
 	}
 	// The worktree left ("work") was unlocked on the way out.
-	if r2.porcelainEntry(t, pathWork).Locked {
-		t.Error("work worktree still locked after exit")
+	if got := sr.laneLockReason(t, pathWork); got != "" {
+		t.Errorf("work worktree still locked after exit: %q", got)
 	}
 }
 
@@ -757,6 +814,8 @@ func wtLaunchSession(t *testing.T, r *wtRepo) (s2 *Session, r2 *wtRepo, launchPa
 	return s2, r2, launchPath, resWork["path"].(string)
 }
 
+// REAL git: the assertion is that the restore really TAKES a lock in git's
+// registry on a lane git itself reports as unlocked.
 func TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -786,14 +845,15 @@ func TestWorktreeExit_RestoringIntoUnlockedManagedLaunchRootTakesLock(t *testing
 
 func TestWorktreeExit_RestoringIntoOwnMarkerManagedLaunchRootAdopts(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	s2, r2, launchPath, _ := wtLaunchSession(t, r)
+	sr := newScriptedLaneRepo(t)
+	launch, launchPath, _ := sr.launchSession(t)
+	s2, r2 := launch.s, launch.wt()
 
 	// Crash-residue simulation: the launch worktree already carries this
 	// session's own marker (as if a prior lock survived a crash) before the
 	// restore lands there again.
 	ownReason := worktree.FormatSessionMarker(s2.id)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", ownReason, launchPath)
+	sr.setLaneLock(t, launchPath, ownReason)
 
 	out, err := r2.exitOp(t)
 	if err != nil {
@@ -806,12 +866,13 @@ func TestWorktreeExit_RestoringIntoOwnMarkerManagedLaunchRootAdopts(t *testing.T
 		t.Errorf("unexpected warning adopting an own-marker restore target: %q", warning)
 	}
 
-	e := r2.porcelainEntry(t, launchPath)
-	if !e.Locked || e.LockReason != ownReason {
-		t.Errorf("launch worktree lock after exit = (%v,%q), want unchanged (%v,%q)", e.Locked, e.LockReason, true, ownReason)
+	if got := sr.laneLockReason(t, launchPath); got != ownReason {
+		t.Errorf("launch worktree lock after exit = %q, want unchanged %q", got, ownReason)
 	}
 }
 
+// REAL git: the round trip's three lock states (locked, unlocked, relocked) are
+// each read out of git's own registry.
 func TestWorktreeCreateExitSwitch_RoundTripRelocks(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)

@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,10 +17,27 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// These are REAL-git integration tests for P3 automatic residue collection
-// (auto-delegate-lane-disposal spec §P3): the no-model-in-the-loop sweep that
-// reclaims other sessions' cleanly-closed, unlocked, D0-auto-collectible
-// delegate lanes. They build on the wtRepo harness.
+// These cover P3 automatic residue collection (auto-delegate-lane-disposal spec
+// §P3): the no-model-in-the-loop sweep that reclaims other sessions'
+// cleanly-closed, unlocked, D0-auto-collectible delegate lanes.
+//
+// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// rule. Most tests' subject is serf's own sweep DECISION — which skip rung fires
+// (locked, in-grace, not-a-delegate), which arm collects, what it wrote to its
+// own jobstore, how the budget and the open timer gate the pass — so they run on
+// the scripted git boundary (scriptedLaneRepo), where a lane is collectible via
+// the Unchanged arm (tip == recorded base) and the per-lane git failures the
+// sweep reacts to are injected at the boundary. These four stay on real git
+// (wtRepo) because their subject IS git's own behavior:
+//
+//   - TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace — a real ff-merge
+//     ancestry verdict over real commits
+//   - TestP3Sweep_CherryOnlyMergedNeverCollected — real patch-equivalence
+//     divergence, which only real `git cherry` and a real ancestry answer express
+//   - TestP3Sweep_TwoConcurrentPassesCollectOnce — two passes racing the real
+//     registry, serialized by git's own index locking
+//   - TestP3CloseResidue_JoinsInFlightOpenPass — concurrent open+close git ops on
+//     one real repository
 
 // unlockLane releases a lane's serf:dlg lock directly with git, simulating the
 // foreign session's close-time unlock that leaves the lane as P3 residue.
@@ -66,11 +83,12 @@ func (r *wtRepo) lanePresent(path string) bool {
 	return err == nil
 }
 
-// rawStoreMentions reports whether the delegate id appears anywhere in the
-// durable jobs.jsonl — used to prove a foreign lane earned NO Disposed mark.
-func (r *wtRepo) rawStoreMentions(t *testing.T, delegateID string) bool {
+// rawStoreMentions reports whether the delegate id appears anywhere in sess's
+// durable jobs.jsonl — used to prove a foreign lane earned NO Disposed mark. The
+// jobstore is serf's own state and stays a real file under either harness.
+func rawStoreMentions(t *testing.T, sess *Session, delegateID string) bool {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join(r.s.jobManager.dir, "jobs.jsonl"))
+	b, err := os.ReadFile(filepath.Join(sess.jobManager.dir, "jobs.jsonl"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false
@@ -83,6 +101,9 @@ func (r *wtRepo) rawStoreMentions(t *testing.T, delegateID string) bool {
 // TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace (spec test 21/22 core):
 // an unlocked, ancestry-merged foreign delegate lane past grace is collected by
 // the residue sweep (worktree + branch + sidecar gone).
+//
+// REAL git: the collectibility verdict is a real ancestry answer over a real
+// ff-merge.
 func TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -107,9 +128,9 @@ func TestP3Sweep_CollectsUnlockedMergedForeignLanePastGrace(t *testing.T) {
 // (tip==base) foreign lane past grace is collectible via the Unchanged arm.
 func TestP3Sweep_UnchangedForeignLaneCollected(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -122,10 +143,10 @@ func TestP3Sweep_UnchangedForeignLaneCollected(t *testing.T) {
 // (within laneGrace) is left untouched, however collectible otherwise.
 func TestP3Sweep_WithinGraceSkipped(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	// No ageBeyondGrace: the sidecar mtime is fresh (< laneGrace).
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	// Unlocked and unchanged, so collectible on every rung BUT grace. No
+	// ageBeyondGrace: the sidecar mtime is fresh (< laneGrace).
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -141,12 +162,11 @@ func TestP3Sweep_WithinGraceSkipped(t *testing.T) {
 // crashed session's lock) is never collected by P3.
 func TestP3Sweep_LockedLaneSkipped(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 	// Re-lock it (foreign occupancy) — P3 collects UNLOCKED lanes only.
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:sess:other", path)
+	r.setLaneLock(t, path, "serf:sess:other")
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -157,6 +177,9 @@ func TestP3Sweep_LockedLaneSkipped(t *testing.T) {
 
 // TestP3Sweep_CherryOnlyMergedNeverCollected (spec test 22): a lane
 // patch-equivalent to main but NOT an ancestor of it is never collected by P3.
+//
+// REAL git: the whole point is the gap between real patch-equivalence and real
+// ancestry over a real cherry-pick, which no model of git can express.
 func TestP3Sweep_CherryOnlyMergedNeverCollected(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -190,9 +213,9 @@ func TestP3Sweep_CherryOnlyMergedNeverCollected(t *testing.T) {
 // MANAGED (non-delegate) worktree carries no DelegateID and is never P3 residue.
 func TestP3Sweep_ManagedNonDelegateUntouched(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "managed-lane") // unchanged, unlocked, no DelegateID
-	ageSidecar(t, r.metaDir(t, r.canonicalMain(t)), "managed-lane", laneGrace+time.Minute)
+	r := newScriptedLaneRepo(t)
+	path := r.addManagedLane(t, "managed-lane") // unchanged, unlocked, no DelegateID
+	r.ageBeyondGrace(t, "managed-lane", path)
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -206,14 +229,14 @@ func TestP3Sweep_ManagedNonDelegateUntouched(t *testing.T) {
 // foreign lane (no record) earns none.
 func TestP3Sweep_OwnRecordMarkedForeignNotMarked(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t)
 
-	ownID, ownPath, _ := r.seedIsolationLane(t) // records an owned delegate job
+	ownID, ownPath := r.seedIsolationLane(t) // records an owned delegate job
 	r.unlockLane(t, ownPath)
-	r.ageBeyondGrace(t, ownID)
+	r.ageBeyondGrace(t, ownID, ownPath)
 
-	foreignID, foreignPath, _ := r.seedForeignUnlockedLane(t)
-	r.ageBeyondGrace(t, foreignID)
+	foreignID, foreignPath := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, foreignID, foreignPath)
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -226,7 +249,7 @@ func TestP3Sweep_OwnRecordMarkedForeignNotMarked(t *testing.T) {
 	if r.lanePresent(foreignPath) {
 		t.Error("foreign lane not collected")
 	}
-	if r.rawStoreMentions(t, foreignID) {
+	if rawStoreMentions(t, r.s, foreignID) {
 		t.Error("foreign lane earned a Disposed mark; P3 marks own-store records only")
 	}
 }
@@ -236,19 +259,20 @@ func TestP3Sweep_OwnRecordMarkedForeignNotMarked(t *testing.T) {
 // is reclaimed by the sweep-2 arm.
 func TestP3Sweep_OrphanBranchAndSidecarReclaimed(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
 	// Remove the worktree WITHOUT deleting the branch or sidecar — the orphan
 	// shape a crash strands.
-	wtGit(t, r.mainRoot, "worktree", "remove", "--", path)
-	r.ageBeyondGrace(t, id)
+	metaDir := metaDirForLane(path)
+	r.ageBeyondGrace(t, id, path)
+	r.removeLane(t, path)
 
 	r.s.runLaneResidueSweep(context.Background())
 
 	if r.branchExists(t, id) {
 		t.Error("orphan branch not reclaimed by the sweep-2 arm")
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); err == nil {
+	if _, err := worktree.ReadSidecar(metaDir, id); err == nil {
 		t.Error("orphan sidecar not reclaimed by the sweep-2 arm")
 	}
 }
@@ -257,10 +281,9 @@ func TestP3Sweep_OrphanBranchAndSidecarReclaimed(t *testing.T) {
 // budget leaves the collectible lane untouched and reports the budget hit.
 func TestP3Sweep_OverBudgetSkipsAndReports(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // budget already spent
@@ -279,10 +302,9 @@ func TestP3Sweep_OverBudgetSkipsAndReports(t *testing.T) {
 // one warning when the shared budget is already spent.
 func TestP3CloseResidue_OverBudgetWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -325,6 +347,9 @@ func drainBufferedWarnings(s *Session) []string {
 // TestP3Sweep_TwoConcurrentPassesCollectOnce (spec test 29): two passes racing on
 // one repo collect each lane exactly once; the loser treats the git refusal /
 // ENOENT as a skip and never escalates. Run under -race.
+//
+// REAL git: the race the test exists to exercise is two passes contending for
+// one real registry, serialized by git's own index and ref locking.
 func TestP3Sweep_TwoConcurrentPassesCollectOnce(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -356,28 +381,27 @@ func TestP3Sweep_TwoConcurrentPassesCollectOnce(t *testing.T) {
 // branch+sidecar cleanup instead of stranding residue.
 func TestP3CollectLane_ConcurrentWinnerCompletesRemoval(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	script := "#!/bin/sh\n" +
-		"if [ \"$*\" = 'worktree remove -- " + path + "' ]; then\n" +
-		"  '" + realGit + "' \"$@\" || exit $?\n" +
-		"  echo 'shim: concurrent collector already removed worktree' >&2\n" +
-		"  exit 1\n" +
-		"fi\n" +
-		"exec '" + realGit + "' \"$@\"\n"
-	writeRepoGitShim(t, r.mainRoot, script)
+	// The remove lands and THEN reports failure, the shape a collector sees when
+	// a concurrent winner removed the same worktree first.
+	want := filepath.Clean(path)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) >= 3 && args[0] == "worktree" && args[1] == "remove" && filepath.Clean(args[len(args)-1]) == want {
+			if _, err := next(args...); err != nil {
+				return "", err
+			}
+			return "", errors.New("scripted git: concurrent collector already removed worktree")
+		}
+		return next(args...)
+	})
 
 	run, err := r.s.worktreeControlRun(context.Background(), r.mainRoot)
 	if err != nil {
 		t.Fatalf("worktreeControlRun: %v", err)
 	}
-	metaDir := r.metaDir(t, r.canonicalMain(t))
+	metaDir := metaDirForLane(path)
 	if err := r.s.collectLane(run, metaDir, id, path, true, r.s.residueSweepPolicy()); err != nil {
 		t.Fatalf("collectLane after concurrent removal: %v", err)
 	}
@@ -399,24 +423,21 @@ func TestP3CollectLane_ConcurrentWinnerCompletesRemoval(t *testing.T) {
 // branch+sidecar and finish collection in the same pass.
 func TestP3Sweep_Sweep2CollectsSweep1BranchFailure(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	metaDir := metaDirForLane(path)
+	r.ageBeyondGrace(t, id, path)
 
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	marker := filepath.Join(t.TempDir(), "failed-once")
-	script := "#!/bin/sh\n" +
-		"if [ \"$*\" = 'branch -D " + id + "' ] && [ ! -e '" + marker + "' ]; then\n" +
-		"  : > '" + marker + "'\n" +
-		"  echo 'shim: forced one-shot branch failure' >&2\n" +
-		"  exit 1\n" +
-		"fi\n" +
-		"exec '" + realGit + "' \"$@\"\n"
-	writeRepoGitShim(t, r.mainRoot, script)
+	// Sweep 1's branch delete loses its race exactly once, stranding the orphan
+	// branch + sidecar sweep 2 must then reclaim.
+	failedOnce := false
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if !failedOnce && len(args) == 3 && args[0] == "branch" && args[1] == "-D" && args[2] == id {
+			failedOnce = true
+			return "", errors.New("scripted git: forced one-shot branch failure")
+		}
+		return next(args...)
+	})
 
 	r.s.runLaneResidueSweep(context.Background())
 
@@ -426,7 +447,7 @@ func TestP3Sweep_Sweep2CollectsSweep1BranchFailure(t *testing.T) {
 	if r.branchExists(t, id) {
 		t.Error("sweep 2 did not collect sweep 1's orphaned branch")
 	}
-	if _, err := worktree.ReadSidecar(r.metaDir(t, r.canonicalMain(t)), id); err == nil {
+	if _, err := worktree.ReadSidecar(metaDir, id); err == nil {
 		t.Error("sweep 2 did not collect sweep 1's orphaned sidecar")
 	}
 }
@@ -436,19 +457,21 @@ func TestP3Sweep_Sweep2CollectsSweep1BranchFailure(t *testing.T) {
 func TestP3Timer_FiresAtDelayCollectsResidue(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	r := newWorktreeRepoWithClock(t, clk)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepoWithClock(t, clk)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
+	// The timer's pass drives the boundary from its own goroutine while this test
+	// polls the registry; both go through one mutex.
+	obs := r.serializeGitAccess()
 
 	clk.Advance(laneSweepDelay - time.Second)
-	if !r.lanePresent(path) {
+	if !obs.lanePresent(path) {
 		t.Fatal("lane collected before the open-pass delay elapsed")
 	}
 
 	clk.Advance(2 * time.Second) // cross laneSweepDelay
 	waitForCondition(t, 3*time.Second, "open-pass timer collects the residue lane", func() bool {
-		return !r.lanePresent(path)
+		return !obs.lanePresent(path)
 	})
 }
 
@@ -457,17 +480,20 @@ func TestP3Timer_FiresAtDelayCollectsResidue(t *testing.T) {
 func TestP3Timer_CancelledByStopDoesNotFire(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	r := newWorktreeRepoWithClock(t, clk)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepoWithClock(t, clk)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
+
+	// A pass that (incorrectly) fires would drive the boundary from its own
+	// goroutine while this test reads the registry; both go through one mutex.
+	obs := r.serializeGitAccess()
 
 	r.s.stopLaneResidueSweepTimer()
 	clk.Advance(2 * laneSweepDelay)
 
 	// Give any (incorrectly) fired goroutine a chance to run before asserting.
 	time.Sleep(50 * time.Millisecond)
-	if !r.lanePresent(path) {
+	if !obs.lanePresent(path) {
 		t.Error("stopped open-pass timer still collected the lane")
 	}
 }
@@ -478,7 +504,7 @@ func TestP3Timer_SubagentSessionNotArmed(t *testing.T) {
 	t.Parallel()
 	cfg := worktreeTestSessionConfig()
 	cfg.spawn.parentSessionID = "parent-session"
-	r := newWorktreeRepoWithConfig(t, cfg)
+	r := newScriptedLaneRepoWithConfig(t, cfg)
 
 	r.s.mu.Lock()
 	armed := r.s.laneSweepTimer != nil
@@ -494,10 +520,9 @@ func TestP3CloseResidue_SubagentSessionNoOp(t *testing.T) {
 	t.Parallel()
 	cfg := worktreeTestSessionConfig()
 	cfg.spawn.parentSessionID = "parent-session"
-	r := newWorktreeRepoWithConfig(t, cfg)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepoWithConfig(t, cfg)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 
 	r.s.disposeLaneResidueAtClose(context.Background())
 
@@ -509,10 +534,9 @@ func TestP3CloseResidue_SubagentSessionNoOp(t *testing.T) {
 // TestP3CloseResidue_NonLocalEnvNoOp: a non-local exec env runs no P3 pass.
 func TestP3CloseResidue_NonLocalEnvNoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedForeignUnlockedLane(t)
-	r.commitAndFastForwardMerge(t, id, path)
-	r.ageBeyondGrace(t, id)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedForeignUnlockedLane(t)
+	r.ageBeyondGrace(t, id, path)
 	// Swap in a non-local env: P3 must not run.
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 
@@ -528,6 +552,9 @@ func TestP3CloseResidue_NonLocalEnvNoOp(t *testing.T) {
 // TestP3CloseResidue_JoinsInFlightOpenPass (spec test 24): a concurrent open pass
 // and close residue pass on one session never race on the same lane's git ops and
 // never panic. Run under -race.
+//
+// REAL git: the two passes' git operations must contend for one real repository,
+// which is the contention the test exists to prove safe.
 func TestP3CloseResidue_JoinsInFlightOpenPass(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -544,11 +571,4 @@ func TestP3CloseResidue_JoinsInFlightOpenPass(t *testing.T) {
 	if r.lanePresent(path) {
 		t.Error("lane survived concurrent open+close residue passes")
 	}
-}
-
-func newWorktreeRepoWithClock(t *testing.T, clk *agenttest.FakeClock) *wtRepo {
-	t.Helper()
-	cfg := worktreeTestSessionConfig()
-	cfg.clock = clk
-	return newWorktreeRepoWithConfig(t, cfg)
 }

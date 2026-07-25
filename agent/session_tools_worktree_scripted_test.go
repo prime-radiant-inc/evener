@@ -306,7 +306,12 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 	case scriptedArgs(args, "version"):
 		return "git version 2.45.0\n", nil
 	case len(args) == 3 && args[0] == "check-ref-format" && args[1] == "--branch":
-		if args[2] == "HEAD" || worktree.ValidateName(args[2]) != nil {
+		// Only serf's own ValidateName is modeled here. Git's additional
+		// reserved-name rules (HEAD, "@", ".lock" suffixes, …) are NOT modeled:
+		// a test that exists to prove real git rejects such a name must use the
+		// real-git harness, or it would be asserting against this fake's
+		// hardcoding rather than against git.
+		if worktree.ValidateName(args[2]) != nil {
 			return "", fmt.Errorf("scripted git: invalid branch %q", args[2])
 		}
 		return "", nil
@@ -322,6 +327,10 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 		return g.runAtPath(args)
 	case len(args) == 3 && args[0] == "rev-parse" && args[1] == "--verify":
 		return g.resolveRef(args[2])
+	case len(args) == 2 && args[0] == "rev-parse":
+		// Bare `rev-parse <ref>`: the form used to read a branch tip whose
+		// worktree is already gone. Resolution is the same as --verify.
+		return g.resolveRef(args[1])
 	case len(args) == 3 && args[0] == "for-each-ref":
 		return "", nil
 	case len(args) == 4 && args[0] == "merge-base" && args[1] == "--is-ancestor":

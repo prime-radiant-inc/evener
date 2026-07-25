@@ -151,8 +151,12 @@ MEMCAP := scripts/run-capped.sh
 # persisted Go configuration or GOFLAGS, and always use this checkout's workspace.
 override FUZZ_GOWORK := $(abspath $(CURDIR)/go.work)
 
+# test covers the Go modules AND the frontend. The frontend gate runs as a third
+# concurrent stream inside run-module-tests.sh (MAKE is passed through so it can
+# re-enter this Makefile's test-web target); it is node work, so it overlaps the
+# Go waves instead of adding its runtime on the end. WEB=0 skips it.
 test:
-	@MODULES="$(GO_MODULES)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
+	@MODULES="$(GO_MODULES)" MAKE="$(MAKE)" $(MEMCAP) scripts/run-module-tests.sh -short -count=1
 
 test-short:
 	@$(MAKE) test
@@ -160,9 +164,10 @@ test-short:
 # The permanent -race gate (CI), across every non-fuzz module. AGENT_PARALLEL=
 # leaves the agent wave at GOMAXPROCS: under -race (~10x slower) extra
 # parallelism just oversubscribes few-core CI and starves real per-test work past
-# its timeouts.
+# its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
+# unaffected by it, so `make test` owns the web stream instead of paying it twice.
 test-race:
-	@MODULES="$(GO_MODULES)" AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" WEB=0 AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real serf/serf-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests

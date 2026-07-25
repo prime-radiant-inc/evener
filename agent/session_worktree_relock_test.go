@@ -2,9 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,19 +12,15 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// These are REAL-git integration tests for the resume re-lock post-init step
-// (auto-delegate-lane-disposal spec §P3 "Session resume re-locks its own
-// undisposed lanes"). A clean close unlocks a session's KEPT delegate lanes;
-// resume must re-take those locks so they are not exposed to another session's
-// P3 residue sweep (which collects unlocked delegate lanes). They build on the
-// wtRepo harness.
-
-// closeUnlock simulates the clean-close unlock that leaves a KEPT own lane
-// unlocked before resume (the state resume re-lock must repair).
-func (r *wtRepo) closeUnlock(t *testing.T, path string) {
-	t.Helper()
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-}
+// These cover the resume re-lock post-init step (auto-delegate-lane-disposal
+// spec §P3 "Session resume re-locks its own undisposed lanes"). A clean close
+// unlocks a session's KEPT delegate lanes; resume must re-take those locks so
+// they are not exposed to another session's P3 residue sweep (which collects
+// unlocked delegate lanes).
+//
+// The subject throughout is serf's lock DECISION — re-lock, adopt, skip, leave
+// foreign alone, warn, retry — not git's behavior, so these run on the scripted
+// git boundary (scriptedLaneRepo). See docs/testing.md for the rule.
 
 func (r *wtRepo) appendDisposed(t *testing.T, delegateID string) {
 	t.Helper()
@@ -39,31 +33,11 @@ func (r *wtRepo) appendDisposed(t *testing.T, delegateID string) {
 	}
 }
 
-// failLockRunner installs a git runner that passes everything through to real
-// git except `worktree lock`, which fails while the returned flag is set — the
-// injected re-lock failure the retry path must recover from.
-func (r *wtRepo) failLockRunner() *atomic.Bool {
-	var fail atomic.Bool
-	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
-		realRun := gitRunner(ctx, env)
-		return func(args ...string) (string, error) {
-			if fail.Load() && len(args) >= 2 && args[0] == "worktree" && args[1] == "lock" {
-				return "", errors.New("injected worktree lock failure")
-			}
-			return realRun(args...)
-		}
-	}
-	return &fail
-}
-
-// TestResumeReLock_UnlockedOwnLaneReLocked (spec test 30 core): a resumed
-// session re-locks its own undisposed, unlocked KEPT lane with its own dlg
-// marker; a subsequent P3 sweep then skips it (locked).
 func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 
 	r.s.resumeReLockOwnLanes()
 
@@ -76,7 +50,7 @@ func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 	}
 
 	// A P3 residue sweep now skips the re-locked lane (locked → skipped).
-	r.ageBeyondGrace(t, id)
+	r.ageBeyondGrace(t, id, path)
 	r.s.runLaneResidueSweep(context.Background())
 	if !r.lanePresent(path) {
 		t.Error("P3 sweep collected a resume-re-locked (locked) own lane")
@@ -88,9 +62,9 @@ func TestResumeReLock_UnlockedOwnLaneReLocked(t *testing.T) {
 // no-op), never a foreign refusal. Verifies the existing lock core, unchanged.
 func TestResumeReLock_RevivalAdoptsReLockedLane(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 	r.s.resumeReLockOwnLanes()
 
 	if err := r.s.reacquireDelegateWorktreeLock(path, id); err != nil {
@@ -107,9 +81,9 @@ func TestResumeReLock_RevivalAdoptsReLockedLane(t *testing.T) {
 // removed.
 func TestResumeReLock_DisposedLaneNotReLocked(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 	r.appendDisposed(t, id)
 
 	r.s.resumeReLockOwnLanes()
@@ -124,10 +98,10 @@ func TestResumeReLock_DisposedLaneNotReLocked(t *testing.T) {
 // is a clean skip (no re-lock, no warning).
 func TestResumeReLock_DirGoneSkipped(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
-	wtGit(t, r.mainRoot, "worktree", "remove", "--force", path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
+	r.removeLane(t, path)
 	if r.lanePresent(path) {
 		t.Fatalf("lane dir still present after remove")
 	}
@@ -147,10 +121,10 @@ func TestResumeReLock_DirGoneSkipped(t *testing.T) {
 // with no warning.
 func TestResumeReLock_ForeignLockedUntouched(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:another-session", path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
+	r.setLaneLock(t, path, "serf:another-session")
 
 	r.s.resumeReLockOwnLanes()
 
@@ -172,11 +146,11 @@ func TestResumeReLock_ForeignLockedUntouched(t *testing.T) {
 func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	t.Parallel()
 	clk := agenttest.NewFakeClock()
-	r := newWorktreeRepoWithClock(t, clk)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepoWithClock(t, clk)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, obs := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 	r.s.armLaneResidueSweepTimer() // top-level: retry piggybacks on the P3 open timer
@@ -193,10 +167,10 @@ func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
 	waitForCondition(t, 3*time.Second, "open-timer retry re-locks the lane", func() bool {
-		_, locked, _ := r.laneLocked(t, path)
+		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
-	if _, _, reason := r.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
+	if _, _, reason := obs.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
 		t.Errorf("retry re-lock reason = %q, want own dlg marker", reason)
 	}
 }
@@ -210,11 +184,11 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 	cfg := worktreeTestSessionConfig()
 	cfg.clock = clk
 	cfg.spawn.parentSessionID = "parent-session"
-	r := newWorktreeRepoWithConfig(t, cfg)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepoWithConfig(t, cfg)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, obs := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 
@@ -232,10 +206,10 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
 	waitForCondition(t, 3*time.Second, "dedicated retry timer re-locks the lane", func() bool {
-		_, locked, _ := r.laneLocked(t, path)
+		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
-	if _, _, reason := r.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
+	if _, _, reason := obs.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
 		t.Errorf("retry re-lock reason = %q, want own dlg marker", reason)
 	}
 }
@@ -244,11 +218,11 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 // emits a warning naming the still-exposed lane.
 func TestResumeReLock_StillFailedRetryWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, _ := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 	_ = drainBufferedWarnings(r.s) // discard the first-attempt warning
@@ -278,9 +252,9 @@ func countContains(msgs []string, sub string) int {
 // TestResumeReLock_NonLocalEnvNoOp: a non-local exec env runs no resume re-lock.
 func TestResumeReLock_NonLocalEnvNoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, path, _ := r.seedIsolationLane(t)
-	r.closeUnlock(t, path)
+	r := newScriptedLaneRepo(t)
+	id, path := r.seedIsolationLane(t)
+	r.unlockLane(t, path)
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 
 	r.s.resumeReLockOwnLanes()

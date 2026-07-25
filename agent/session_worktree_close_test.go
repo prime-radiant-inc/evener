@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -205,27 +204,6 @@ func gitFailOnArgsRepoShim(t *testing.T, repoRoot string, failArgs ...string) {
 	match := strings.Join(failArgs, " ")
 	script := "#!/bin/sh\n" +
 		"if [ \"$*\" = '" + match + "' ]; then echo 'shim: forced failure' >&2; exit 1; fi\n" +
-		"exec '" + realGit + "' \"$@\"\n"
-	writeRepoGitShim(t, repoRoot, script)
-}
-
-func gitFailOnNthMatchingCallRepoShim(t *testing.T, repoRoot, matchArgs string, n int) {
-	t.Helper()
-	realGit, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not available")
-	}
-	counter := filepath.Join(t.TempDir(), "count")
-	script := "#!/bin/sh\n" +
-		"if [ \"$*\" = '" + matchArgs + "' ]; then\n" +
-		"  c=$(cat '" + counter + "' 2>/dev/null || echo 0)\n" +
-		"  c=$((c+1))\n" +
-		"  echo \"$c\" > '" + counter + "'\n" +
-		"  if [ \"$c\" -ge " + strconv.Itoa(n) + " ]; then\n" +
-		"    echo 'shim: forced failure' >&2\n" +
-		"    exit 1\n" +
-		"  fi\n" +
-		"fi\n" +
 		"exec '" + realGit + "' \"$@\"\n"
 	writeRepoGitShim(t, repoRoot, script)
 }
