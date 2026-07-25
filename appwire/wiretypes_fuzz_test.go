@@ -238,16 +238,45 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 			}
 		}
 	}
-	// Keep the exact typed/nil split intentional: adding a notification should
-	// update both the protocol registry and this acceptance check.
+	// Every notification declares its payload type, with a named exemption
+	// list rather than a count. A count said only that the split had moved,
+	// never which notification was undeclared, and it had to be edited by hand
+	// on every change - so an undeclared payload arrived looking exactly like a
+	// stale expectation. An undeclared payload means the fuzz corpus never
+	// exercises the params, which is how two real wire bugs reached main
+	// (kata qrj4: turn/started carried a turnId that is not a field, and a
+	// DiagnosticCause object was declared as a string).
 	//
-	// 13 (wire-honesty spec Part B added serf/sandbox/escalation/resolved,
-	// typed payload SandboxEscalationResolved).
-	if typed != 13 {
-		t.Errorf("typed notifications = %d, want 13", typed)
+	// serf/attention/changed is exempt because its params type lives in a
+	// package that imports appwire, so declaring it here is an import cycle -
+	// probed, not assumed.
+	payloadExempt := map[string]string{
+		"serf/attention/changed": "params type would form an import cycle with appwire",
 	}
-	if nilPayload != 15 {
-		t.Errorf("nil-payload notifications = %d, want 15", nilPayload)
+	for _, n := range Notifications {
+		if n.Payload == nil {
+			if _, ok := payloadExempt[n.Name]; !ok {
+				t.Errorf("notification %s has no Payload type; declare one so the fuzz corpus covers its params, or add it to payloadExempt with the reason", n.Name)
+			}
+			continue
+		}
+		if reason, ok := payloadExempt[n.Name]; ok {
+			t.Errorf("notification %s is in payloadExempt (%q) but now declares a payload; drop the exemption", n.Name, reason)
+		}
+	}
+	if typed+nilPayload != len(Notifications) {
+		t.Errorf("counted %d+%d notifications, want %d", typed, nilPayload, len(Notifications))
+	}
+	// An exemption for a notification that no longer exists is invisible to
+	// both arms above, so it would sit here reading like a live constraint.
+	declared := make(map[string]bool, len(Notifications))
+	for _, n := range Notifications {
+		declared[n.Name] = true
+	}
+	for name := range payloadExempt {
+		if !declared[name] {
+			t.Errorf("payloadExempt names %s, which is not a notification; drop the stale exemption", name)
+		}
 	}
 	if got, want := len(reg.Names()), 2*len(Methods)+typed; got != want {
 		t.Errorf("registry has %d names, want %d (2×%d methods + %d typed payloads)",
