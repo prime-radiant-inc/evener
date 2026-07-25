@@ -1,6 +1,8 @@
 package hubtest
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,7 +11,10 @@ import (
 
 // The point of these helpers is that their output survives the validation
 // PastIndex.Rebuild applies, so each case asserts against the real validator
-// rather than against a hand-copied description of the encoding.
+// rather than against a hand-copied description of the encoding. Nothing here
+// pins the id's SHAPE - that belongs to package identifier, and a fixture
+// asserting it would be the second implementation identifier_audit_test.go
+// exists to forbid.
 
 func TestSessionIDIsValidAndUnique(t *testing.T) {
 	first := SessionID(t)
@@ -21,40 +26,53 @@ func TestSessionIDIsValidAndUnique(t *testing.T) {
 	}
 }
 
-func TestProjectIDIsValid(t *testing.T) {
-	cases := []struct {
-		name     string
-		readable string
-		want     string
-	}{
-		{"plain", "alpha", "alpha-0123456789"},
-		{"spaces fold to hyphens", "my project", "my-project-0123456789"},
-		{"path separators fold", "/Users/jesse/work", "Users-jesse-work-0123456789"},
-		{"runs collapse", "a///b", "a-b-0123456789"},
-		{"empty falls back", "", "project-0123456789"},
-		{"punctuation only falls back", "///", "project-0123456789"},
+func TestProjectDirIsNamedByAValidProjectID(t *testing.T) {
+	projects := t.TempDir()
+	dir := ProjectDir(t, projects, "alpha")
+
+	if got := filepath.Dir(dir); got != projects {
+		t.Fatalf("ProjectDir() = %q, want a child of %q", dir, projects)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := ProjectID(t, tc.readable)
-			if got != tc.want {
-				t.Fatalf("ProjectID(%q) = %q, want %q", tc.readable, got, tc.want)
-			}
-			if err := identifier.ValidateProjectID(got); err != nil {
-				t.Fatalf("ProjectID(%q) = %q, ValidateProjectID: %v", tc.readable, got, err)
-			}
-		})
+	if err := identifier.ValidateProjectID(filepath.Base(dir)); err != nil {
+		t.Fatalf("ProjectDir() = %q, ValidateProjectID(%q): %v", dir, filepath.Base(dir), err)
+	}
+	// Rebuild walks the projects root, so the directory has to be on disk -
+	// returning a path it never created would seed an invisible fixture, which
+	// is the failure this package exists to prevent.
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("ProjectDir() = %q, not created: %v", dir, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("ProjectDir() = %q, want a directory", dir)
 	}
 }
 
-// A readable portion longer than the id's 80-byte ceiling must still yield a
-// valid id rather than tripping ProjectID's own validation check.
-func TestProjectIDTruncatesOverlongReadable(t *testing.T) {
-	got := ProjectID(t, strings.Repeat("x", 200))
-	if err := identifier.ValidateProjectID(got); err != nil {
-		t.Fatalf("ProjectID(200 bytes) = %q, ValidateProjectID: %v", got, err)
+func TestProjectDirKeepsTheReadableNameFindable(t *testing.T) {
+	// Not an assertion about the encoding - only that a human reading a failure
+	// can tell which fixture a directory belongs to.
+	dir := ProjectDir(t, t.TempDir(), "checkout-alpha")
+	if !strings.Contains(filepath.Base(dir), "checkout-alpha") {
+		t.Fatalf("ProjectDir(..., %q) = %q, want the readable name to appear in it", "checkout-alpha", filepath.Base(dir))
 	}
-	if len(got) > 80 {
-		t.Fatalf("ProjectID(200 bytes) = %q (%d bytes), want <= 80", got, len(got))
+}
+
+func TestProjectDirGivesDistinctNamesDistinctIDs(t *testing.T) {
+	projects := t.TempDir()
+	first := ProjectDir(t, projects, "one")
+	second := ProjectDir(t, projects, "two")
+	if first == second {
+		t.Fatalf("ProjectDir returned %q for two different names; fixtures would collide", first)
+	}
+}
+
+// A readable name longer than the id's 80-byte ceiling must still yield a valid
+// id. The truncation is package identifier's to own; this only pins that the
+// helper does not hand back something Rebuild would silently skip.
+func TestProjectDirSurvivesAnOverlongReadableName(t *testing.T) {
+	dir := ProjectDir(t, t.TempDir(), strings.Repeat("x", 200))
+	id := filepath.Base(dir)
+	if err := identifier.ValidateProjectID(id); err != nil {
+		t.Fatalf("ProjectDir(200 bytes) = %q, ValidateProjectID: %v", id, err)
 	}
 }

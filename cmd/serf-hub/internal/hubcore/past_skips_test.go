@@ -61,7 +61,7 @@ func fuzzScenarioPastIndex_RebuildNamesSkippedEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	good := filepath.Join(projects, hubtest.ProjectID(t, "good"))
+	good := hubtest.ProjectDir(t, projects, "good")
 	validID := hubtest.SessionID(t)
 	writeMeta(t, good, schema.SessionMeta{ID: validID, UpdatedAt: time.Now()})
 	// The exact shape that cost three agents a day: a readable placeholder that
@@ -101,7 +101,7 @@ func fuzzScenarioPastIndex_RebuildNamesSkippedEntries(t *testing.T) {
 func fuzzScenarioPastIndex_RebuildNamesSkippedObserverGrantDir(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
-	proj := filepath.Join(projects, hubtest.ProjectID(t, "grants"))
+	proj := hubtest.ProjectDir(t, projects, "grants")
 	writeMeta(t, proj, schema.SessionMeta{ID: hubtest.SessionID(t), UpdatedAt: time.Now()})
 
 	strayJobstore := filepath.Join(proj, "sessions", "not-a-session-id")
@@ -183,7 +183,7 @@ func fuzzScenarioPastIndex_RebuildCapsSkipReport(t *testing.T) {
 func fuzzScenarioPastIndex_RebuildSilentWhenNothingSkipped(t *testing.T) {
 	root := t.TempDir()
 	projects := filepath.Join(root, "projects")
-	proj := filepath.Join(projects, hubtest.ProjectID(t, "clean"))
+	proj := hubtest.ProjectDir(t, projects, "clean")
 	writeMeta(t, proj, schema.SessionMeta{ID: hubtest.SessionID(t), UpdatedAt: time.Now()})
 
 	idx := NewPastIndex(filepath.Join(projects, "*"))

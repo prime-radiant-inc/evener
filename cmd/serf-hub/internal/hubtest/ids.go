@@ -8,20 +8,22 @@
 // placeholder is invisible to every reader rather than rejected out loud. A
 // session id is a 22-character base62 UUIDv7 payload; a project directory is
 // <readable>-<10 base62>. Mint them here instead of writing them by hand.
+//
+// Both helpers DELEGATE to package identifier rather than reproducing its
+// encodings. That is a rule, not a preference: identifier_audit_test.go fails
+// the build on a second implementation of project-id construction anywhere in
+// the tracked tree, and a fixture that spelled the format out itself would be
+// free to drift from the format the hub actually enforces - which is the exact
+// class of bug this package exists to stop.
 package hubtest
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/serf/identifier"
 )
-
-// projectIDSuffix is the fixed 10-character base62 tail every minted fixture
-// project id carries. Real project ids derive the suffix from the canonical
-// path so distinct checkouts stay distinct; a fixture's uniqueness comes from
-// its readable portion instead, which the caller chooses.
-const projectIDSuffix = "0123456789"
 
 // SessionID returns a fresh session id that passes
 // identifier.ValidateSessionID, for naming a seeded session meta.
@@ -34,50 +36,32 @@ func SessionID(t *testing.T) string {
 	return id
 }
 
-// ProjectID returns a project id built from readable that passes
-// identifier.ValidateProjectID, for naming a synthetic project directory under
-// a fixture's projects root. Characters readable cannot carry are folded to
-// hyphens; an empty result falls back to "project".
+// ProjectDir creates a project state directory under projectsRoot and returns
+// its path. The directory's name is a real project id, obtained by resolving a
+// stand-in checkout named readable - the same call the hub itself makes - so a
+// fixture never has to know the id's shape.
 //
-// Use this only for a project directory that stands alone. When the fixture has
-// a real checkout on disk, use identifier.ResolveProject instead — the hub
-// cross-checks a project's id against its working directory, and only the
-// resolved id matches.
-func ProjectID(t *testing.T, readable string) string {
+// A checkout is involved because a project id is DERIVED from a canonical path
+// rather than chosen: identifier.ResolveProject requires the directory to
+// exist and takes the readable portion from its name. The stand-in lives in
+// the test's own temp dir, so distinct readable names yield distinct ids and
+// two fixtures cannot collide.
+func ProjectDir(t *testing.T, projectsRoot, readable string) string {
 	t.Helper()
-	id := readableProjectPortion(readable) + "-" + projectIDSuffix
-	if err := identifier.ValidateProjectID(id); err != nil {
-		t.Fatalf("hubtest.ProjectID(%q) built invalid id %q: %v", readable, id, err)
+	checkout := filepath.Join(t.TempDir(), readable)
+	if err := os.MkdirAll(checkout, 0o700); err != nil {
+		t.Fatalf("hubtest.ProjectDir: create stand-in checkout %s: %v", checkout, err)
 	}
-	return id
-}
-
-// readableProjectPortion reduces readable to the ASCII alphanumeric-and-hyphen
-// alphabet a project id's readable portion allows, collapsing runs of rejected
-// bytes into a single hyphen and keeping the tail that fits inside the id's
-// 80-byte ceiling.
-func readableProjectPortion(readable string) string {
-	// 80 total, less the hyphen and the fixed base62 suffix.
-	const maxReadable = 80 - 1 - len(projectIDSuffix)
-	var b strings.Builder
-	lastHyphen := false
-	for i := 0; i < len(readable); i++ {
-		c := readable[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-			b.WriteByte(c)
-			lastHyphen = false
-		case !lastHyphen:
-			b.WriteByte('-')
-			lastHyphen = true
-		}
+	project, err := identifier.ResolveProject(checkout)
+	if err != nil {
+		t.Fatalf("hubtest.ProjectDir: resolve %s: %v", checkout, err)
 	}
-	trimmed := strings.Trim(b.String(), "-")
-	if len(trimmed) > maxReadable {
-		trimmed = strings.Trim(trimmed[len(trimmed)-maxReadable:], "-")
+	if err := identifier.ValidateProjectID(project.ID); err != nil {
+		t.Fatalf("hubtest.ProjectDir(%q) resolved invalid id %q: %v", readable, project.ID, err)
 	}
-	if trimmed == "" {
-		return "project"
+	dir := filepath.Join(projectsRoot, project.ID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("hubtest.ProjectDir: create %s: %v", dir, err)
 	}
-	return trimmed
+	return dir
 }
