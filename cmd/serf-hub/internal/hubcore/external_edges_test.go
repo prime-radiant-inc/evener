@@ -302,5 +302,5 @@ func fuzzScenarioRemainingPureBranches(t *testing.T) {
 	if err := os.MkdirAll(projectRoot+"/sessions/id/jobs.jsonl", 0o700); err != nil {
 		t.Fatal(err)
 	}
-	foldProjectObserverGrants(make(map[string][]string), fs, projectRoot)
+	foldProjectObserverGrants(make(map[string][]string), fs, projectRoot, make(map[string]string))
 }

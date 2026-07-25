@@ -55,6 +55,11 @@ type PastIndex struct {
 	// rebuilt once per cycle, so it is at most one rebuild interval stale.
 	observers map[string][]string
 
+	// skipped maps every path the last Rebuild refused to index to the reason
+	// it was refused, so the next Rebuild can report only what is newly
+	// unindexable (see reportSkips).
+	skipped map[string]string
+
 	// onChange, when set via SetOnChange, is fired by Rebuild only when the
 	// indexed content's fingerprint actually changes.
 	onChange func()
@@ -145,24 +150,32 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	var all []PastEntry
 	byID := make(map[string]PastEntry)
 	observers := make(map[string][]string)
+	skipped := make(map[string]string)
 	for _, project := range matches {
-		if identifier.ValidateProjectID(filepath.Base(project)) != nil {
+		if err := identifier.ValidateProjectID(filepath.Base(project)); err != nil {
+			skipped[project] = badProjectID(err)
 			continue
 		}
 		metas, err := schema.ListSessionMetas(project)
 		if err != nil {
+			skipped[project] = "list session metas: " + err.Error()
 			continue
 		}
+		indexed := make(map[string]bool, len(metas))
 		for _, m := range metas {
-			if identifier.ValidateSessionID(m.ID) != nil {
+			if err := identifier.ValidateSessionID(m.ID); err != nil {
+				skipped[sessionMetaPath(project, m.ID)] = badSessionID(err)
 				continue
 			}
+			indexed[m.ID] = true
 			pe := PastEntry{ID: m.ID, Meta: m, StateDir: project}
 			all = append(all, pe)
 			byID[m.ID] = pe
 		}
-		foldProjectObserverGrants(observers, i.fs, project)
+		reportUnlistedMetas(i.fs, project, indexed, skipped)
+		foldProjectObserverGrants(observers, i.fs, project, skipped)
 	}
+	i.reportSkips(skipped)
 	sort.SliceStable(all, func(a, b int) bool {
 		return sessionMetaLess(all[a].Meta, all[b].Meta)
 	})
@@ -189,6 +202,107 @@ func (i *PastIndex) Rebuild() (bool, error) {
 		i.onChange()
 	}
 	return changed && i.onChange != nil, nil
+}
+
+// maxReportedSkips bounds how many individual unindexable paths one Rebuild
+// names, so a projects root full of pre-identifier directories reports a sample
+// and a count rather than hundreds of lines.
+const maxReportedSkips = 5
+
+// metaFileSuffix is the on-disk filename suffix schema writes a session meta
+// under, mirrored here so a skip report can name the files the lister dropped.
+const metaFileSuffix = ".meta.json"
+
+// The identifier validators report the rule an id broke ("invalid UUID
+// payload") but not the shape to write instead, which is the fact whoever
+// seeded the entry actually needs. A skip report carries both.
+const (
+	sessionIDShape = "want a 22-character base62 UUIDv7 payload"
+	projectIDShape = "want <readable>-<10 base62>"
+)
+
+// badSessionID renders the reason a session id was rejected.
+func badSessionID(err error) string {
+	return "invalid session id (" + sessionIDShape + "): " + err.Error()
+}
+
+// badProjectID renders the reason a project directory name was rejected.
+func badProjectID(err error) string {
+	return "invalid project id (" + projectIDShape + "): " + err.Error()
+}
+
+// sessionMetaPath renders the on-disk location a session's meta was read from,
+// for naming it in a skip report.
+func sessionMetaPath(project, id string) string {
+	return filepath.Join(project, "sessions", id+".meta.json")
+}
+
+// reportUnlistedMetas records every <id>.meta.json under a project that
+// ListSessionMetas did not return — an id that fails validation, an id that
+// disagrees with its filename, or a file it could not decode.
+//
+// Those drops happen a layer below this index, inside schema.ListSessionMetas,
+// and they are the actual reason a hand-seeded session with a plausible-looking
+// id never appears: the index's own session-id guard can only reject a meta the
+// lister already refused to hand it. Re-deriving the difference here is what
+// puts the seeded path and its rejection in front of whoever seeded it.
+func reportUnlistedMetas(fs afero.Fs, project string, indexed map[string]bool, skipped map[string]string) {
+	sessionsDir := filepath.Join(project, "sessions")
+	entries, err := afero.ReadDir(fs, sessionsDir)
+	if err != nil {
+		return // no sessions dir (or unreadable): nothing to compare against
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), metaFileSuffix) {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), metaFileSuffix)
+		if indexed[id] {
+			continue
+		}
+		reason := "unreadable session meta, or its id disagrees with its filename"
+		if err := identifier.ValidateSessionID(id); err != nil {
+			reason = badSessionID(err)
+		}
+		skipped[filepath.Join(sessionsDir, e.Name())] = reason
+	}
+}
+
+// reportSkips names the entries this Rebuild refused to index that the previous
+// Rebuild did not, and records the full set as the baseline for the next one.
+//
+// Skipping is the right behavior — a stray directory must not fail the scan —
+// but a silent skip puts the symptom nowhere near the cause: the session simply
+// does not exist as far as every reader is concerned, and the only way back to
+// the id encoding is to read this file. Reporting just the newly-unindexable
+// keeps a steady-state rebuild tick quiet while still pinning a freshly seeded
+// session or project to the exact path and validation that rejected it.
+func (i *PastIndex) reportSkips(skipped map[string]string) {
+	i.mu.Lock()
+	previous := i.skipped
+	i.skipped = skipped
+	i.mu.Unlock()
+
+	fresh := make([]string, 0, len(skipped))
+	for path := range skipped {
+		if _, seen := previous[path]; !seen {
+			fresh = append(fresh, path)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	sort.Strings(fresh)
+	named := fresh
+	if len(named) > maxReportedSkips {
+		named = named[:maxReportedSkips]
+	}
+	for _, path := range named {
+		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %s: %s\n", path, skipped[path])
+	}
+	if len(fresh) > len(named) {
+		fmt.Fprintf(os.Stderr, "[hub] past index: skipped %d more unindexable entries\n", len(fresh)-len(named))
+	}
 }
 
 // UpdateMeta targets one existing entry: it replaces the meta, re-inserts the
@@ -611,10 +725,12 @@ func (i *PastIndex) ObserversOf(workerSessionID string) []string {
 // than keying off the meta list: the WATCHING session that minted a grant need
 // not itself appear in the past index, but its log is the durable source of the
 // link. Best-effort — a session with no log or an unreadable log contributes
-// nothing rather than failing the rebuild. Lists may carry duplicates across
-// sessions until dedupObserverLists.
-func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project string) {
-	entries, err := afero.ReadDir(fs, filepath.Join(project, "sessions"))
+// nothing rather than failing the rebuild — each such entry is recorded in
+// skipped for the caller to report. Lists may carry duplicates across sessions
+// until dedupObserverLists.
+func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project string, skipped map[string]string) {
+	sessionsDir := filepath.Join(project, "sessions")
+	entries, err := afero.ReadDir(fs, sessionsDir)
 	if err != nil {
 		return // no sessions dir (or unreadable): nothing to fold
 	}
@@ -624,11 +740,13 @@ func foldProjectObserverGrants(into map[string][]string, fs afero.Fs, project st
 		if !e.IsDir() {
 			continue
 		}
-		if identifier.ValidateSessionID(e.Name()) != nil {
+		if err := identifier.ValidateSessionID(e.Name()); err != nil {
+			skipped[filepath.Join(sessionsDir, e.Name())] = badSessionID(err)
 			continue
 		}
 		perWorker, err := agent.LoadSessionObserverGrants(project, e.Name())
 		if err != nil {
+			skipped[filepath.Join(sessionsDir, e.Name())] = "load observer grants: " + err.Error()
 			continue
 		}
 		for worker, obs := range perWorker {
