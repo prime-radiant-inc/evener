@@ -128,23 +128,42 @@ func withinRoot(root, target string) bool {
 // endpoint. The prefix may not exist (the user is typing) so we don't
 // EvalSymlinks; we only normalize separators and reject traversal.
 //
-// Trailing-slash semantics are preserved: filepath.Clean drops trailing
-// slashes, but the autocomplete uses the trailing slash to distinguish
-// "list contents of dir" from "filter siblings by basename".
+// Two pieces of the autocomplete's prefix protocol live in the string itself
+// and filepath.Clean erases both, so each is restored afterwards:
+//
+//   - A trailing separator distinguishes "list this directory's contents" from
+//     "filter siblings by basename"; Clean drops trailing slashes.
+//   - A final component of a single "." is the user asking to see the DOTTED
+//     names (the autocomplete hides them until the filter starts with a dot);
+//     Clean treats that dot as a no-op path element and removes it, which would
+//     turn "/dir/." into a basename filter over /dir's parent and answer a
+//     directory full of dotfiles with nothing.
+//
+// A bare "." needs no restoration: Clean leaves it alone. Every longer dot run
+// ("..." and up) is an ordinary filename Clean already preserves, and ".." is a
+// real path element that stays a traversal.
 func SanitizeDirPrefix(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", nil
 	}
-	hadTrailingSlash := strings.HasSuffix(p, string(filepath.Separator))
+	sep := string(filepath.Separator)
+	hadTrailingSlash := strings.HasSuffix(p, sep)
+	hadDotFilter := strings.HasSuffix(p, sep+".")
 	cleaned := filepath.Clean(p)
-	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
+	for _, seg := range strings.Split(cleaned, sep) {
 		if seg == ".." {
 			return "", errors.New("path contains traversal")
 		}
 	}
-	if hadTrailingSlash && !strings.HasSuffix(cleaned, string(filepath.Separator)) {
-		cleaned += string(filepath.Separator)
+	switch {
+	case hadDotFilter:
+		if !strings.HasSuffix(cleaned, sep) {
+			cleaned += sep
+		}
+		cleaned += "."
+	case hadTrailingSlash && !strings.HasSuffix(cleaned, sep):
+		cleaned += sep
 	}
 	return cleaned, nil
 }

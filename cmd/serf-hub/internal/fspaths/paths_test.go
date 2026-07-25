@@ -154,6 +154,55 @@ func checkCompletePaths_IncludeFilesHidesDotfilesUntilDotTyped(t *testing.T) {
 	}
 }
 
+// checkCompletePaths_LoneTrailingDotRevealsDottedEntries pins the meaning of a
+// prefix whose last component is a single dot: the user asking to see the
+// dotted names. filepath.Clean treats that dot as a no-op path element, which
+// would turn "/base/." into the filter "base" over /base's PARENT and answer
+// "nothing here" for a directory full of dotfiles.
+func checkCompletePaths_LoneTrailingDotRevealsDottedEntries(t *testing.T) {
+	entries := fakeReadDir(
+		fakeDirEntry{name: ".hidden", dir: true},
+		fakeDirEntry{name: "...odd", dir: true},
+		fakeDirEntry{name: "visible", dir: true},
+	)
+	for _, includeFiles := range []bool{false, true} {
+		resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("."), IncludeFiles: includeFiles}, entries, statDirs())
+		if err != nil {
+			t.Fatal(err)
+		}
+		sep := ""
+		if includeFiles {
+			sep = string(filepath.Separator)
+		}
+		// Equal-scoring entries sort by path, and '.' sorts below 'h'.
+		want := []string{basePath("...odd") + sep, basePath(".hidden") + sep}
+		if !reflect.DeepEqual(resp.Data, want) {
+			t.Fatalf("includeFiles=%v dot-filtered data = %v, want %v", includeFiles, resp.Data, want)
+		}
+	}
+}
+
+// checkCompletePaths_ParentTraversalKeepsDotfilesHidden guards the neighbour of
+// the lone-dot case: ".." is still a real path element, so it climbs a level
+// and leaves the filter dotless - which keeps the dotted names hidden.
+func checkCompletePaths_ParentTraversalKeepsDotfilesHidden(t *testing.T) {
+	var gotDir string
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("sub") + string(filepath.Separator) + ".."}, func(dir string) ([]os.DirEntry, error) {
+		gotDir = dir
+		return []os.DirEntry{fakeDirEntry{name: ".base", dir: true}, fakeDirEntry{name: "base", dir: true}}, nil
+	}, statDirs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDir != string(filepath.Separator) {
+		t.Fatalf("ReadDir called with %q, want the grandparent of /base/sub", gotDir)
+	}
+	want := []string{basePath("")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("parent-traversal data = %v, want %v", resp.Data, want)
+	}
+}
+
 func checkCompletePaths_IncludeFilesLimitCapsCombinedResult(t *testing.T) {
 	// The files sort ahead of the directories, so a cap that only counted
 	// directories would let all four through.
@@ -352,6 +401,40 @@ func checkSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "/") {
 		t.Fatalf("expected trailing slash, got %q", got)
+	}
+}
+
+// checkSanitizeDirPrefix_PreservesLoneTrailingDot pins the second piece of
+// non-Clean output the autocomplete depends on: a last component of a single
+// "." is the filter that reveals the dotted names, and filepath.Clean drops it
+// as a no-op path element.
+func checkSanitizeDirPrefix_PreservesLoneTrailingDot(t *testing.T) {
+	cases := map[string]string{
+		"/Users/jesse/.":     "/Users/jesse/.",
+		"/Users/jesse/sub/.": "/Users/jesse/sub/.",
+		"  /Users/jesse/.  ": "/Users/jesse/.",
+		"/.":                 "/.",
+		"relative/.":         "relative/.",
+		// A trailing slash after the dot means "list that directory's
+		// children", so there is no dot filter to preserve.
+		"/Users/jesse/./": "/Users/jesse/",
+		// Clean already keeps every other dot run: they are ordinary filenames
+		// ("..." ) or real path elements ("..").
+		"/Users/jesse/...":  "/Users/jesse/...",
+		"/Users/jesse/....": "/Users/jesse/....",
+		"/Users/jesse/..":   "/Users",
+		// A bare "." needs no re-attachment: Clean leaves it alone and
+		// filepath.Base already reports "." as the filter.
+		".": ".",
+	}
+	for in, want := range cases {
+		got, err := SanitizeDirPrefix(in)
+		if err != nil {
+			t.Fatalf("SanitizeDirPrefix(%q): %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("SanitizeDirPrefix(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
