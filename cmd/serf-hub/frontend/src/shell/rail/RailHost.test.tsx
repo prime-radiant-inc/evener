@@ -1,7 +1,7 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
+import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost } from "./RailHost";
@@ -149,6 +149,66 @@ describe("⌘B toggles hidden", () => {
 
     expect(prefsStore.getState().sidebarHidden).toBe(false);
     expect(event.defaultPrevented).toBe(false);
+  });
+});
+
+// The docked rail's width is a pref, not component state, specifically so that
+// hiding/re-showing (and a reload) restores the dragged width.
+describe("resizable width", () => {
+  function separator(): HTMLElement {
+    return screen.getByTestId("rail-resize-handle");
+  }
+
+  test("the handle reports the persisted width", () => {
+    prefsStore.getState().setSidebarWidth(360);
+    render(<RailHost />);
+    expect(separator().getAttribute("aria-valuenow")).toBe("360");
+  });
+
+  test("a keyboard resize persists to serf.prefs.sidebarWidth and survives a remount", () => {
+    const { unmount } = render(<RailHost />);
+    act(() => {
+      fireEvent.keyDown(separator(), { key: "End" });
+    });
+    expect(localStorage.getItem("serf.prefs.sidebarWidth")).toBe(String(SIDEBAR_WIDTH_MAX));
+
+    unmount();
+    resetPrefsStoreForTests(); // exactly what a reload's fresh hydration does
+    render(<RailHost />);
+    expect(separator().getAttribute("aria-valuenow")).toBe(String(SIDEBAR_WIDTH_MAX));
+  });
+
+  test("hiding and re-docking the sidebar restores the resized width", async () => {
+    const user = userEvent.setup();
+    render(<RailHost />);
+    act(() => {
+      fireEvent.keyDown(separator(), { key: "ArrowRight" });
+    });
+    const resized = separator().getAttribute("aria-valuenow");
+
+    await user.click(screen.getByRole("button", { name: /hide sidebar/i }));
+    expect(screen.queryByTestId("rail-resize-handle")).toBeNull(); // nothing to resize while hidden
+    await user.click(screen.getByRole("button", { name: /show sidebar/i }));
+
+    expect(separator().getAttribute("aria-valuenow")).toBe(resized);
+  });
+
+  // Below 899px the Rail fills TreeDrawer's Sheet (Rail.module.css's own
+  // max-width:899px block sets width:100%) - there is no rail edge to grab, so
+  // the handle must not render at all rather than render inert.
+  test("no handle in the mobile drawer", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((media: string) => ({
+        media,
+        matches: media === "(max-width: 899px)",
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      })),
+    );
+    render(<RailHost />);
+    expect(screen.getByTestId("rail-search")).toBeTruthy(); // the rail itself is there
+    expect(screen.queryByTestId("rail-resize-handle")).toBeNull();
   });
 });
 
