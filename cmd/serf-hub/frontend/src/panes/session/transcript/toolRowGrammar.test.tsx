@@ -207,6 +207,23 @@ test("an expandable row reads as clickable - a pointer cursor and a hover state"
   expect(css).toMatch(/summary\.row:focus-visible\s*\{[^}]*outline:/);
 });
 
+// Measured in the running app: the light theme resolves --surface-1 AND
+// --surface-2 to the same #FFFFFF as the pane, so a surface-token hover was
+// literally invisible there. The hover must be an ink wash instead.
+test("the row hover is an ink wash, not a surface token that can match the pane", () => {
+  const hover = /summary\.row:hover\s*\{([^}]*)\}/.exec(rowCss());
+  expect(hover).not.toBeNull();
+  expect(hover![1]).toMatch(/var\(--ink-/);
+  expect(hover![1]).not.toMatch(/var\(--surface-/);
+});
+
+// A1: with a purpose present the summary demotes onto its own line, but the
+// affordances and chevron must stay on the purpose's line - otherwise the row
+// wraps to three lines (measured: 73px instead of 47px).
+test("the demoted summary is ordered last so affordances do not wrap onto a third line", () => {
+  expect(rowCss()).toMatch(/\.demoted\s*\{[^}]*order:\s*1/);
+});
+
 // --- A6: the tool disclosure animates, subtly, honoring reduced motion ----
 
 test("the chevron rotation and the body fade are declared with real motion", () => {

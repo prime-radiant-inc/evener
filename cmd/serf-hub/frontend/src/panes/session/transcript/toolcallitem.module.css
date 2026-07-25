@@ -29,8 +29,14 @@ summary.row {
   cursor: pointer;
 }
 
+/* An ink wash, NOT var(--surface-2): measured in the running app, the light
+ * theme resolves --surface-1 and --surface-2 to the same #FFFFFF as the pane
+ * itself, so a surface-token hover was completely invisible there. A tint of
+ * the ink reads against whatever surface the row happens to sit on, in both
+ * themes. Same idiom as widgets/chip's own remove-button hover. */
 summary.row:hover {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+  border-radius: var(--radius-control);
 }
 
 summary.row:focus-visible {
@@ -63,8 +69,14 @@ summary.row:focus-visible {
 /* With a purpose above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer and clipped to one line rather than
  * wrapping and out-shouting the purpose. flex-basis 100% is what forces the
- * line break inside the wrapping row. */
+ * line break inside the wrapping row.
+ *
+ * order: 1 pushes it AFTER every other item in the wrap sequence, so the
+ * affordances and the chevron - which follow it in the DOM - still ride the
+ * purpose's own line instead of each wrapping onto a third. Measured in the
+ * real app: without this the two-line row was 73px; with it, 39px. */
 .demoted {
+  order: 1;
   flex: 0 0 100%;
   color: var(--ink-low);
   overflow: hidden;
