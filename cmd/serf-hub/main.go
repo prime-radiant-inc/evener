@@ -411,7 +411,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	authHost := advertisedHubHost(cfg.Addr, hubHostname)
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
-	if err := deps.serve(ctx, srv, codexLauncher); err != nil {
+	if err := deps.serve(ctx, srv, codexShutdowner(codexLauncher)); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 		return err
 	}
@@ -448,6 +448,19 @@ func advertisedHubHost(addr string, hostname func() (string, error)) string {
 		host = "localhost"
 	}
 	return host + port
+}
+
+// codexShutdowner converts a possibly-absent launcher into a companion
+// serveHub can honestly nil-check. Assigning a nil *CodexLauncher straight to
+// the interface yields a value with a type but no data, which is NOT equal to
+// nil - so serveHub's `if companion != nil` would pass and Shutdown would take
+// l.Mu.Lock() on a nil receiver. A hub with no codex launches configured is
+// the default, so that is every graceful shutdown.
+func codexShutdowner(l *codexlaunch.CodexLauncher) hubShutdowner {
+	if l == nil {
+		return nil
+	}
+	return l
 }
 
 func serveHub(ctx context.Context, srv hubHTTPServer, companion hubShutdowner) error {
