@@ -280,6 +280,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
+			// A fresh session starts from an empty transcript, so the running
+			// failure count starts at a MEASURED zero rather than at "unknown"
+			// (FailedToolCallsSnapshot).
+			tw.TrackFailures(nil, 0)
 		}
 	}
 	s.attachTranscript(tw)
@@ -665,6 +669,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
+			// Seed the running failure count from the transcript this resume
+			// just read, bounded to the session's OWN span (a fork child's
+			// inherited prefix carries the parent's failures). Without the seed
+			// the live figure would restart at zero every daemon restart and
+			// report a session-scale "clean" for a run that was not.
+			tw.TrackFailures(transcriptEntries, meta.DivergenceTurn)
 		}
 	}
 	s.attachTranscript(tw)

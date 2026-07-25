@@ -590,6 +590,14 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
         // totalWorkMillis unconditionally). Drop it on any non-active
         // transition so the model never carries a live anchor while at rest.
         activeTurnStartedAt: status.type === "active" ? model.activeTurnStartedAt : undefined,
+        // The failure count is otherwise snapshot-only, so a client that
+        // attached while the session was clean would keep saying nothing
+        // however many failures followed - the watcher the count exists for.
+        // A status change is a turn boundary, the only moment it can have
+        // moved. Absent here means "no update" (an old daemon omits it), never
+        // "nobody counted": clearing it would blank a figure the hydrate
+        // legitimately gave us. Absence at HYDRATE is where unknown lives.
+        failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
         lastFrameAt: now,
       };
     }

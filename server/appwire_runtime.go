@@ -60,10 +60,50 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	s.mu.Unlock()
 
 	for _, item := range projected {
-		record := s.appNotifier.Record(item.ThreadID, item.Method, item.Params)
+		params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
+		record := s.appNotifier.Record(item.ThreadID, item.Method, params)
 		snapshot.Apply([]appserver.SequencedNotification{record})
-		s.appServer.Broadcast(item.ThreadID, item.Method, item.Params)
+		s.appServer.Broadcast(item.ThreadID, item.Method, params)
 	}
+}
+
+// stampFailureCountOnStatusChange rides the session's running failure count
+// along on every thread/status/changed (kata 12rq).
+//
+// The count is otherwise snapshot-only, refreshed by thread/read — so a client
+// that attached while the session was clean would keep showing nothing however
+// many failures followed, which is exactly the watcher the figure exists for.
+// A status transition is a turn boundary, the only moment the count can have
+// moved, so this refreshes it precisely when there is something to say and
+// never polls.
+//
+// It happens HERE, at the server's single notification egress, rather than in
+// the projector: the projector maps events to notifications and holds no
+// session handle, while the pull callback is the server's.
+//
+// An unmeasured count is left off entirely. Absence on a notification means
+// "no update" — a zero here would let a client that never measured anything
+// start claiming a clean run.
+func (s *Server) stampFailureCountOnStatusChange(method string, params any) any {
+	if method != appwire.NotifyThreadStatusChanged {
+		return params
+	}
+	status, ok := params.(appwire.ThreadStatusChangedParams)
+	if !ok {
+		return params
+	}
+	s.mu.RLock()
+	fn := s.failedToolCallsFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return params
+	}
+	count, measured := fn()
+	if !measured {
+		return params
+	}
+	status.FailedToolCalls = &count
+	return status
 }
 
 func (s *Server) acceptsSessionEvent(sessionID string) bool {
@@ -754,6 +794,7 @@ func (s *Server) appThread() appwire.Thread {
 	qtfn := s.queueTextsFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
+	ftcfn := s.failedToolCallsFn
 	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
 	pesfn := s.pendingEscalationsSnapshotFn
@@ -820,6 +861,17 @@ func (s *Server) appThread() appwire.Thread {
 	if wmfn != nil {
 		workMillis, usage, activeTurnStartedAt = wmfn()
 	}
+	// The live session's own running failure count. Absent unless the daemon
+	// actually measured it — the strip must not vouch for a session nobody
+	// counted, and an unmeasured zero would read as "nothing went wrong".
+	failedToolCalls := status.FailedToolCalls
+	if ftcfn != nil {
+		if count, measured := ftcfn(); measured {
+			failedToolCalls = &count
+		} else {
+			failedToolCalls = nil
+		}
+	}
 	askPending := status.PendingAsk
 	if pafn != nil {
 		askPending = pafn()
@@ -875,6 +927,7 @@ func (s *Server) appThread() appwire.Thread {
 			Cost:                  appwire.EstimateCost(status.Model, usage),
 			WorkMillis:            workMillis,
 			ActiveTurnStartedAt:   activeTurnStartedAt,
+			FailedToolCalls:       failedToolCalls,
 			AskPending:            askPending,
 			PendingEscalations:    pendingEscalations,
 			ReasoningEffort:       reasoningEffort,

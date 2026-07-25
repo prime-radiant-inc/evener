@@ -107,6 +107,14 @@ type StatusInfo struct {
 	Usage               *appwire.SerfUsage `json:"usage,omitempty"`
 	WorkMillis          int64              `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64              `json:"active_turn_started_at,omitempty"`
+	// FailedToolCalls is how many of the session's tool calls have failed, over
+	// the WHOLE session — counted by the transcript writer as it records them
+	// and seeded on resume from the file, so a running session's figure is
+	// complete rather than a floor (kata 12rq). A pointer because 0 and unknown
+	// are different claims: 0 means the session was measured and nothing failed,
+	// nil means nobody counted (no transcript, an old daemon, a Codex thread).
+	// Consumers render nil as nothing, never as a fabricated zero.
+	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
 	// PendingAsk mirrors the session's HasPendingAsk() — true while an
 	// ask_user question is unanswered (Track A §2 ask-tiering). Additive,
 	// daemon-truth: Codex-sourced threads and old daemons never set it, so
@@ -190,6 +198,12 @@ type Server struct {
 	// there is none to report), and the in-flight turn's start time (0 when
 	// idle). Read by both /status and the appwire appThread() projection.
 	workMetricsFn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)
+	// failedToolCallsFn returns how many of the session's tool calls have
+	// failed, and whether anyone counted. Separate from workMetricsFn because
+	// the answer can be genuinely absent (no transcript to count), and a
+	// daemon that never wired this reports absent rather than a clean zero.
+	// Read by both /status and the appwire appThread() projection.
+	failedToolCallsFn func() (count int, measured bool)
 	// reasoningInfoFn returns the live reasoning-effort settings for the
 	// session's current profile: the configured effort, the profile's valid
 	// effort levels, and whether the profile supports reasoning control at
@@ -520,6 +534,19 @@ func (s *Server) SetPendingEscalationsSnapshotFunc(fn func() []appwire.SandboxEs
 func (s *Server) SetWorkMetricsFunc(fn func() (workMillis int64, usage *appwire.SerfUsage, activeTurnStartedAt int64)) {
 	s.mu.Lock()
 	s.workMetricsFn = fn
+	s.mu.Unlock()
+}
+
+// SetFailedToolCallsFunc sets a callback to retrieve the session's live
+// failure count and whether it was measured at all (kata 12rq). Read by both
+// /status (handleStatus) and the appwire thread projection (appThread).
+//
+// Unset leaves the figure ABSENT everywhere downstream, which is the honest
+// report for a daemon that cannot count: absence renders nothing, whereas a
+// zero would state in the session's own chrome that the run was clean.
+func (s *Server) SetFailedToolCallsFunc(fn func() (count int, measured bool)) {
+	s.mu.Lock()
+	s.failedToolCallsFn = fn
 	s.mu.Unlock()
 }
 

@@ -760,8 +760,8 @@ test("a single failure reads in the singular", () => {
 });
 
 // Presence of the wire figure is the whole gate, not which variant of the strip
-// is rendering. Today only a session read from disk carries a count, but a live
-// producer that grows one must not need a second render path.
+// is rendering — which is what let the daemon's live count (kata 12rq) reach the
+// running strip with no second render path.
 test("a running session shows the count too when the wire carries one", () => {
   render(<StatusRow sessionRef="ref_a" model={runningModel({ failedToolCalls: 3 })} now={1_060_000} />);
   expect(screen.getByTestId("status-row-failures").textContent).toContain("3 failed");

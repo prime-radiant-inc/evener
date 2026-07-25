@@ -1037,6 +1037,7 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` | yes |  |
 | `status` | `appwire.ThreadStatus` |  |  |
+| `failedToolCalls` | `*int` | yes |  |
 
 
 ### `ThreadTranscriptListParams`

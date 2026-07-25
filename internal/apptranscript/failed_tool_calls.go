@@ -5,25 +5,16 @@ import (
 	"fmt"
 	"os"
 
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
 // ShellToolNames are the tool names whose result carries a process exit code
-// that the transcript reads as failure. It mirrors the transcript renderer's
-// own shell descriptor (cmd/serf-hub/frontend/src/panes/session/transcript/
-// tools/shellTool.tsx's registerToolRenderer match), and the two lists have to
-// agree: a name in one and not the other means a row wearing a failure glyph
-// that the session's failure count does not include, or the reverse.
-var ShellToolNames = []string{"shell", "exec_command", "run_shell_command"}
-
-func isShellTool(name string) bool {
-	for _, candidate := range ShellToolNames {
-		if name == candidate {
-			return true
-		}
-	}
-	return false
-}
+// that the transcript reads as failure. It is the transcript package's list,
+// re-exported here for this package's own consumers — one list, so the reader
+// that counts a finished transcript and the daemon that counts a running one
+// can never disagree about what a shell call is.
+var ShellToolNames = transcript.ShellToolNames
 
 // FailedToolCallsFromFile counts how many of a session's tool calls failed,
 // over the WHOLE transcript.
@@ -141,25 +132,17 @@ func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (i
 	return count, nil
 }
 
-// failedToolResult is the whole failure rule, in one place so the count and the
-// glyph cannot drift apart. See FailedToolCallsFromFile for why each clause is
-// here.
+// failedToolResult applies the shared failure rule to this package's narrow
+// decode of a tool result, resolving a nameless result from the call that
+// announced it first. The rule itself lives in the transcript package — see
+// transcript.FailedToolResult — because the daemon counts the same failures
+// live as it writes them, and two copies of the rule are two rules.
 func failedToolResult(result *failedToolCallResult, toolNames map[string]string) bool {
 	name := result.Name
 	if name == "" {
 		name = toolNames[result.ToolCallID]
 	}
-	if name == "communicate" {
-		return false
-	}
-	if result.IsError {
-		return true
-	}
-	if !isShellTool(name) {
-		return false
-	}
-	exitCode := ExitCodeFromToolState(result.ToolState)
-	return exitCode != nil && *exitCode != 0
+	return transcript.FailedToolResult(name, result.IsError, result.ToolState)
 }
 
 // failedToolCallEntry decodes the few fields the count needs.

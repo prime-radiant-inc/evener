@@ -126,17 +126,13 @@ func ToolIntentFromArguments(raw json.RawMessage) string {
 // ExitCode field (wire-honesty spec Part A). Returns nil when the snapshot is
 // empty, unparseable, or simply omits the field (any non-shell tool) — the
 // absence is honest, never fabricated as zero.
+//
+// The read itself belongs to the transcript package, which owns the failure
+// rule this exit code feeds: an exit code read one way here and another way
+// where the failure count is computed is a row whose glyph and whose tally
+// disagree.
 func ExitCodeFromToolState(raw json.RawMessage) *int64 {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v struct {
-		ExitCode *int64 `json:"exit_code"`
-	}
-	if json.Unmarshal(raw, &v) != nil {
-		return nil
-	}
-	return v.ExitCode
+	return transcript.ExitCodeFromToolState(raw)
 }
 
 // SettledToolStatus is the wire-honest terminal status for a settled

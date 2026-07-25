@@ -141,11 +141,17 @@ export interface ThreadModel {
   // model.turns covers only the loaded suffix, and a "0 failed" from a partial
   // window is the very misreading the figure exists to prevent.
   //
-  // undefined means nobody counted — an unreadable transcript, or a producer
-  // that does not derive it (today the hub derives it only for a session it
-  // reads from disk; a live session's transcript is still being written). A
-  // real 0 means the whole transcript was read and nothing failed. Consumers
-  // must render BOTH as nothing: absent is unknown, and zero is not news.
+  // Both a live and a cold session carry it, from different producers: the
+  // daemon counts a running session's failures as it writes them to the
+  // transcript, and the hub counts a finished one by reading that transcript
+  // back. Same rule (agent/transcript's FailedToolResult), same whole-session
+  // scope, so the figure does not jump when a session goes cold.
+  //
+  // undefined means nobody counted — an unreadable transcript, a session with
+  // no transcript at all, or a producer that does not derive it (an old daemon,
+  // a Codex-sourced thread). A real 0 means the whole session was counted and
+  // nothing failed. Consumers must render BOTH as nothing: absent is unknown,
+  // and zero is not news.
   // Snapshot-only like usage/cost/workMillis; no live push.
   failedToolCalls?: number;
   workMillis: number;
