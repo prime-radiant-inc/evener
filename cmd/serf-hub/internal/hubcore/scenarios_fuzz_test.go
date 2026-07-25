@@ -29,6 +29,8 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioBuildTreeManualSessionArchiveAndUnarchive,
 		fuzzScenarioBuildTreeSessionTiersAndProjectOrder,
 		fuzzScenarioBuildTree_AttentionSortsLive,
+		fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState,
+		fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk,
 		fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts,
 		fuzzScenarioBuildTree_ClampsSubagentsOfDeadParent,
 		fuzzScenarioBuildTree_ClustersRepeatedIdleTitles,
