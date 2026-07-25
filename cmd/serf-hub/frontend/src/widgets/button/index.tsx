@@ -6,7 +6,10 @@ import styles from "./button.module.css";
  * (the composer's Stop beside Send): danger on the glyph/label, no filled
  * background. */
 export type ButtonVariant = "primary" | "quiet" | "danger" | "dangerQuiet";
-export type ButtonSize = "sm" | "md";
+/** xs is the density step for a control row INSIDE another control - the
+ * prompt card's verb cluster, where the buttons annotate a text field rather
+ * than standing alone as a form's action. */
+export type ButtonSize = "xs" | "sm" | "md";
 
 export interface ButtonProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type" | "onClick" | "disabled" | "children" | "className"> {
@@ -32,6 +35,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {
+  xs: requireClass(styles.xs, "button.module.css", "xs"),
   sm: requireClass(styles.sm, "button.module.css", "sm"),
   md: requireClass(styles.md, "button.module.css", "md"),
 };

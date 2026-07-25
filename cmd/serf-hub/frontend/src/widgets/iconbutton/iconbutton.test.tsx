@@ -46,13 +46,16 @@ test("each variant renders a distinct class", () => {
 });
 
 test("each size renders a distinct class", () => {
-  const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} size="sm" />);
+  const { rerender } = render(<IconButton label="Go" icon={<DotIcon />} size="xs" />);
+  const xsClass = screen.getByRole("button").className;
+
+  rerender(<IconButton label="Go" icon={<DotIcon />} size="sm" />);
   const smClass = screen.getByRole("button").className;
 
   rerender(<IconButton label="Go" icon={<DotIcon />} size="md" />);
   const mdClass = screen.getByRole("button").className;
 
-  expect(smClass).not.toEqual(mdClass);
+  expect(new Set([xsClass, smClass, mdClass]).size).toBe(3);
 });
 
 test("disabled blocks onClick", async () => {
@@ -145,4 +148,16 @@ test("sm size declares equal width and height in CSS", () => {
   // Verify that .sm class in iconbutton.module.css declares an explicit height
   // equal to its width (28px) to make it square-ish, not squat/rectangular
   expect(ownCss).toMatch(/\.sm\s*{[^}]*width:\s*28px[^}]*height:\s*28px[^}]*}/);
+});
+
+// Same square rule one density step down, and matching Button's own xs height
+// (button.module.css) so a text button and an icon button in the same prompt
+// card row line up rather than one sitting a pixel taller than the other.
+test("xs size is square at 24px, matching Button's own xs height", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const ownCss = readFileSync(join(here, "iconbutton.module.css"), "utf8");
+  expect(ownCss).toMatch(/\.xs\s*{[^}]*width:\s*24px[^}]*height:\s*24px[^}]*}/);
+
+  const buttonCss = readFileSync(join(here, "../button/button.module.css"), "utf8");
+  expect(/\.xs\s*\{([^}]*)\}/.exec(buttonCss)?.[1] ?? "").toMatch(/height:\s*24px/);
 });

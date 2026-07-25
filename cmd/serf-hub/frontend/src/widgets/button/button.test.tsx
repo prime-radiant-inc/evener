@@ -66,13 +66,26 @@ test("dangerQuiet colors the label rather than filling a background", () => {
 });
 
 test("each size renders a distinct class", () => {
-  const { rerender } = render(<Button size="sm">Go</Button>);
+  const { rerender } = render(<Button size="xs">Go</Button>);
+  const xsClass = screen.getByRole("button").className;
+
+  rerender(<Button size="sm">Go</Button>);
   const smClass = screen.getByRole("button").className;
 
   rerender(<Button size="md">Go</Button>);
   const mdClass = screen.getByRole("button").className;
 
-  expect(smClass).not.toEqual(mdClass);
+  expect(new Set([xsClass, smClass, mdClass]).size).toBe(3);
+});
+
+// The density ladder is 24 / 28 / 32, and xs is the step a prompt card's verb
+// cluster uses. Pinned in CSS rather than by rendered height: jsdom applies no
+// stylesheet at all, so the declaration is the only checkable truth here.
+test("the size ladder declares 24/28/32px heights, xs being the densest", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
+  expect(/\.xs\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/height:\s*24px/);
+  expect(/\.sm\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/height:\s*28px/);
+  expect(/\.md\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/height:\s*32px/);
 });
 
 test("renders the icon before the label when provided", () => {

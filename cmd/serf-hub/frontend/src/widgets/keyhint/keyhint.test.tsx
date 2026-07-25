@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import { KeyHint } from "./index";
+import { chordLabel, KeyHint } from "./index";
 
 function setPlatform(platform: string) {
   Object.defineProperty(window.navigator, "platform", { value: platform, configurable: true });
@@ -128,4 +128,24 @@ test("compact inherits the host control's own text color rather than thinning it
 test("compact hides the glyph run from assistive tech", () => {
   render(<KeyHint keys={["Shift", "Enter"]} compact />);
   expect(screen.getByText("⇧↵").getAttribute("aria-hidden")).toBe("true");
+});
+
+// --- chordLabel: the same chord as a plain string ------------------------
+//
+// A Tooltip label is a string, not an element, so a control whose visible face
+// is just its verb (the composer's Send/Steer) needs the chord in that form.
+// It has to be the SAME text the rendered forms produce, which is exactly why
+// it shares displayOf rather than re-spelling the platform split.
+test("chordLabel joins the chord with +, matching what the compact form speaks", () => {
+  expect(chordLabel(["Shift", "Enter"])).toBe("Shift+Enter");
+  // The compact form's visually-hidden text is that same string - which is what
+  // makes "Steer ⇧↵" speakable - so a tooltip built from chordLabel and a
+  // KeyHint inside a control agree on the wording.
+  const { container } = render(<KeyHint keys={["Shift", "Enter"]} compact />);
+  expect(container.textContent).toContain(chordLabel(["Shift", "Enter"]));
+});
+
+test("chordLabel applies the same Mod platform split the rendered forms do", () => {
+  const expected = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
+  expect(chordLabel(["Mod", "Enter"])).toBe(`${expected}+Enter`);
 });

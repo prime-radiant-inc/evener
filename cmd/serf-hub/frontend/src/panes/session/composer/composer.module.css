@@ -81,38 +81,18 @@
   border-color: var(--accent);
 }
 
-/* One tight field: the seamless textarea inside carries no inset of its own,
- * so this padding is the whole thing, and the gap to the control row below is
- * the smallest step that still separates them. */
-.inputCard {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-1);
+/* A finished session's follow-up affordance: one line at rest, opening to a
+ * real writing surface the moment it has focus. The card's box, padding and
+ * focus ring all come from widgets/promptcard - this only moves the field's own
+ * line floor, which the widget reads as an inherited custom property (see
+ * widgets/textarea's --textarea-min-lines), so setting it on this ancestor
+ * reaches the field without either component knowing about the other. */
+.endedForm {
+  --textarea-min-lines: 1;
 }
 
-/* The card is the composer's one visible box, so it carries the focus
- * affordance for the seamless textarea inside it (which draws no ring of its
- * own) - the same 2px accent outline every interactive control here uses. */
-.inputCard:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
-.controlsRight {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-left: auto;
+.endedForm:focus-within {
+  --textarea-min-lines: 3;
 }
 
 .visuallyHidden {

@@ -1,4 +1,12 @@
-import { type ChangeEvent, type ClipboardEvent, forwardRef, type KeyboardEvent, useLayoutEffect, useRef } from "react";
+import {
+  type ChangeEvent,
+  type ClipboardEvent,
+  type CSSProperties,
+  forwardRef,
+  type KeyboardEvent,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./textarea.module.css";
 
@@ -20,6 +28,15 @@ export interface TextareaProps {
    * 2-row default) is fixed and no measurement occurs. */
   autoGrow?: boolean;
   rows?: number;
+  /** Raise the field's smallest-comfortable-target floor from MIN_ROWS to this
+   * many text lines - for a field whose job asks for room before anything is
+   * typed (the spawn form's prompt, which is the page's primary input). Applied
+   * as the `--textarea-min-lines` custom property inline, which wins over the
+   * stylesheet's own default declaration; the min-height calc that reads it is
+   * the same one in both variants, so a seamless field's host card grows with
+   * it. autoGrow still drives the real height from measured content above this
+   * floor. */
+  minLines?: number;
   id?: string;
   name?: string;
   /** Native keydown passthrough - e.g. a composer's Enter-to-send/steer
@@ -98,6 +115,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     disabled = false,
     autoGrow,
     rows,
+    minLines,
     id,
     name,
     onKeyDown,
@@ -160,6 +178,10 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       placeholder={placeholder}
       aria-label={ariaLabel}
       disabled={disabled}
+      // An inline custom property, not an inline height: the stylesheet's
+      // min-height calc stays the single definition of the floor, and
+      // autoGrow's measured height still wins above it.
+      style={minLines === undefined ? undefined : ({ "--textarea-min-lines": minLines } as CSSProperties)}
       rows={autoGrow ? MIN_ROWS : (rows ?? MIN_ROWS)}
     />
   );

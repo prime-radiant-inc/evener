@@ -7,6 +7,14 @@
  * sized for a text label).
  */
 
+/* Square counterpart of Button's own xs (button.module.css) - same 24px, for
+ * an icon-only control in a prompt card's row. */
+.xs {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
 .sm {
   width: 28px;
   height: 28px;

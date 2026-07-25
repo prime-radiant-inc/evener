@@ -428,7 +428,10 @@ test("a queue submit ALSO registers an optimistic pending entry - uniform across
   const { result } = renderHook(() => usePendingTurnEntries("ref_a", "queue"));
 
   await user.type(textarea() as HTMLTextAreaElement, "queued message");
-  await user.click(screen.getByRole("button", { name: /^queue\b/i }));
+  // "Send" in every state - a mid-turn submit still queues (that is the ROUTE,
+  // which this test proves) but the verb never changes under the user; see
+  // Composer.tsx's own submitLabel comment.
+  await user.click(screen.getByTestId("composer-submit"));
 
   await waitFor(() => expect(result.current).toHaveLength(1));
   // QueueStrip.test.tsx's own "a pending queue-method entry from another
@@ -634,8 +637,7 @@ test("queuing a message end to end: queue -> strip renders -> edit restores text
   fake.on("turn/queue", () => ({}));
 
   await user.type(textarea() as HTMLTextAreaElement, "first queued message");
-  expect(screen.getByRole("button", { name: /^queue\b/i }).textContent).toMatch(/queue/i);
-  await user.click(screen.getByRole("button", { name: /^queue\b/i }));
+  await user.click(screen.getByTestId("composer-submit"));
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
   expect((textarea() as HTMLTextAreaElement).value).toBe(""); // clears optimistically like any other successful submit
 

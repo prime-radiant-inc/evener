@@ -1,0 +1,16 @@
+/* Each case gets its own labeled column: a prompt card is a full-width block,
+ * not a widget that lines up beside a label the way the simple sections'
+ * shared gallery-section.module.css row does. */
+.case {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 480px;
+}
+
+.caseLabel {
+  margin: 0;
+  color: var(--ink-mid);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+}

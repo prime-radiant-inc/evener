@@ -19,6 +19,7 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
       <p className={styles.rowLabel}>{variant}</p>
       <IconButton variant={variant} size="md" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="sm" label="Close" icon={<DotIcon />} />
+      <IconButton variant={variant} size="xs" label="Close" icon={<DotIcon />} />
       <IconButton variant={variant} size="md" label="Close" icon={<DotIcon />} disabled />
     </div>
   );
