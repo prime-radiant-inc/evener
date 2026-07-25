@@ -36,7 +36,7 @@ describe("openPane", () => {
   test("opens a new pane, adding it to panes with a fresh id", () => {
     const id = workspaceStore.getState().openPane("doc", { ref: "a", path: "x" });
     const panes = workspaceStore.getState().panes;
-    expect(panes).toEqual([{ id, type: "doc", params: { ref: "a", path: "x" }, beside: undefined }]);
+    expect(panes).toEqual([{ id, type: "doc", params: { ref: "a", path: "x" }, slot: "main" }]);
   });
 
   test("defaults params to {} when omitted", () => {
@@ -78,10 +78,36 @@ describe("openPane", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(other);
   });
 
-  test("records the beside positioning hint", () => {
+  // The one placement rule (openPane's own, not any caller's): the main slot
+  // holds exactly one pane; every later open stacks in the secondary group.
+  test("the first pane takes the main slot", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
-    const second = workspaceStore.getState().openPane("doc", { ref: "b" }, { beside: first });
-    expect(workspaceStore.getState().panes.find((p) => p.id === second)?.beside).toBe(first);
+    expect(workspaceStore.getState().mainPane()?.id).toBe(first);
+  });
+
+  test("every pane after the first goes to the secondary slot", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" });
+    const third = workspaceStore.getState().openPane("doc", { ref: "c" });
+
+    expect(workspaceStore.getState().panes.map((p) => p.slot)).toEqual(["main", "secondary", "secondary"]);
+    expect(workspaceStore.getState().mainPane()?.id).toBe(first);
+    expect([second, third]).not.toContain(workspaceStore.getState().mainPane()?.id);
+  });
+
+  test("closing the main pane empties the main slot, and the next open refills it", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    workspaceStore.getState().openPane("doc", { ref: "b" }); // secondary
+
+    workspaceStore.getState().closePane(first);
+
+    expect(workspaceStore.getState().mainPane()).toBeNull(); // no promotion from the right
+    const relaunched = workspaceStore.getState().openPane("welcome");
+    expect(workspaceStore.getState().mainPane()?.id).toBe(relaunched);
+  });
+
+  test("mainPane is null for an empty workspace", () => {
+    expect(workspaceStore.getState().mainPane()).toBeNull();
   });
 
   test("two non-singleton panes with different params are both opened", () => {

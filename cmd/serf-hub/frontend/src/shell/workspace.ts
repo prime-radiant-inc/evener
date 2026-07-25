@@ -14,16 +14,24 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { type PaneTypeId, paneFor } from "./paneRegistry";
 
+// Which of the workspace's two slots a pane lives in. The main slot holds
+// exactly ONE pane - the big one in the top left, beside the rail - and
+// everything else stacks as tabs in the secondary group to its right. A main
+// pane therefore never shares a tab bar with anything, which is the whole
+// point (Jesse: "there should only ever be one pane in the 'main group'").
+export type PaneSlot = "main" | "secondary";
+
 export interface OpenPaneRecord {
   id: string;
   type: PaneTypeId;
   params: unknown;
-  // Positioning hint, consumed once by DockHost when it creates the
-  // dockview panel for a freshly-opened pane (addPanel's `position`
-  // option). Stays on the record afterward but goes unread from then on -
-  // dockview owns geometry (splits, drag-reorder) from that point forward,
-  // and DockHost's reconciliation only ever adds a panel for an id once.
-  beside?: string;
+  // Which slot this pane belongs to. Assigned once, at open time, by the
+  // policy in openPane below; DockHost turns it into the dockview addPanel
+  // `position` that actually places the panel (see its own comment on the
+  // slot -> position mapping). It is not re-derived afterward - dockview owns
+  // geometry (splits, drag-reorder) from that point forward, and DockHost's
+  // reconciliation only ever adds a panel for an id once.
+  slot: PaneSlot;
 }
 
 export interface WorkspaceStoreState {
@@ -42,8 +50,18 @@ export interface WorkspaceStoreState {
   // restored layout, so focusing it would overwrite the active tab the saved
   // layout just restored - while a deep link to a pane the layout does NOT
   // contain is genuinely new and must still take focus.
-  openPane(type: PaneTypeId, params?: unknown, opts?: { beside?: string; keepExistingFocus?: boolean }): string;
+  //
+  // Placement is this function's own decision, not a caller's: the FIRST pane
+  // takes the main slot, every later one goes secondary. Putting the policy
+  // here rather than at the ~21 call sites is what makes it one rule instead
+  // of twenty-one (see PaneSlot above for the rule itself).
+  openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean }): string;
   closePane(paneId: string): void;
+  // The pane occupying the main slot, or null when it is empty (the state
+  // DockHost relaunches welcome into). Exposed because "is the main slot
+  // empty" is one predicate with two consumers - DockHost's boot fallback and
+  // its per-close relaunch.
+  mainPane(): OpenPaneRecord | null;
   focusPane(paneId: string): void;
   layoutJSON(): unknown;
   restoreLayout(json: unknown): boolean;
@@ -163,6 +181,10 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
   panes: [],
   focusedPaneId: null,
 
+  mainPane() {
+    return get().panes.find((p) => p.slot === "main") ?? null;
+  },
+
   openPane(type, params = {}, opts) {
     const descriptor = paneFor(type);
     const state = get();
@@ -190,8 +212,12 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
       }
     }
 
+    // The one placement rule, in the one place every open goes through: the
+    // main slot takes a pane only when it is empty, so it holds exactly one at
+    // a time and everything else stacks in the secondary group to its right.
     const id = nextPaneId(type);
-    set({ panes: [...state.panes, { id, type, params, beside: opts?.beside }], focusedPaneId: id });
+    const slot: PaneSlot = state.panes.some((p) => p.slot === "main") ? "secondary" : "main";
+    set({ panes: [...state.panes, { id, type, params, slot }], focusedPaneId: id });
     return id;
   },
 
@@ -219,9 +245,18 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     if (!dockviewApi) return false;
     try {
       dockviewApi.fromJSON(json as SerializedDockview);
-      const panes = dockviewApi.panels.map((panel) => {
+      // Slots come back from dockview's OWN restored geometry, not from the
+      // saved JSON: api.groups is in grid order, so its first group is the
+      // main one and the sole pane in it is the main pane. A layout that
+      // somehow restores several panes into that first group leaves only the
+      // first as "main" - which cannot happen for a layout this build saved
+      // (the one-pane rule holds on the way in), and degrades to a stacked
+      // main group rather than a crash for anything else.
+      const mainGroupId = dockviewApi.groups[0]?.id;
+      const panes = dockviewApi.panels.map((panel, index) => {
         const { paneType, paneParams } = readPanelParams(panel);
-        return { id: panel.id, type: paneType, params: paneParams };
+        const slot: PaneSlot = index === 0 && panel.group?.id === mainGroupId ? "main" : "secondary";
+        return { id: panel.id, type: paneType, params: paneParams, slot };
       });
       bumpPastRestoredIds(panes);
       set({ panes, focusedPaneId: dockviewApi.activePanel?.id ?? panes[0]?.id ?? null });
