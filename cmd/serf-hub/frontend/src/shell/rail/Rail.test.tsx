@@ -366,7 +366,14 @@ describe("in-sidebar chrome (c8gt)", () => {
     expect(brandRow.contains(screen.getByTestId("rail-search"))).toBe(true);
   });
 
-  test("hovering search reveals a Search tooltip, so the bare ⌕ glyph is never the only cue", async () => {
+  // The tooltip, not the accessible name, is where the ⌕ glyph's meaning
+  // actually gets explained: the aria-label has to stay short enough to be a
+  // usable control name, so "what does this search?" has nowhere else to go.
+  // It said only "Search" for a while because a centre-anchored bubble with no
+  // collision handling clipped a longer label against the rail's right edge -
+  // widgets/tooltip shifts and portals now, and both the 280px docked rail and
+  // the 430px mobile drawer were re-measured showing the full string.
+  test("hovering search reveals a tooltip that says what the palette searches", async () => {
     vi.useFakeTimers();
     try {
       fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
@@ -377,7 +384,7 @@ describe("in-sidebar chrome (c8gt)", () => {
       act(() => {
         vi.advanceTimersByTime(400);
       });
-      expect(screen.getByRole("tooltip").textContent).toBe("Search");
+      expect(screen.getByRole("tooltip").textContent).toBe("Search sessions and commands");
     } finally {
       vi.useRealTimers();
     }

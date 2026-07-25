@@ -315,14 +315,15 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           {/* Search is a palette opener, never a text input, so it rides in
               the brand row as an icon button instead of claiming a row of the
               sidebar's vertical space for itself. data-search-trigger is what
-              AppShell's global click handler listens for; the palette's own
-              help rows teach what it searches and the ⌘K / Ctrl-K chord that
-              opens it from the keyboard. The tooltip stays one short word:
-              its bubble is center-anchored with no collision handling
-              (widgets/tooltip/tooltip.module.css) and this button sits at the
-              right edge of a 280px rail, so a longer label clips against the
-              rail's own boundary. */}
-          <Tooltip label="Search">
+              AppShell's global click handler listens for; the ⌘K / Ctrl-K
+              chord that also opens it is taught by the palette's own help
+              rows. The tooltip says what the palette actually searches, since
+              the icon and the accessible name can only afford one word each:
+              widgets/tooltip shifts its bubble away from the viewport edge and
+              portals it clear of the rail, so a label this long no longer
+              clips at the right edge of a 280px rail or inside the mobile
+              drawer (measured both). */}
+          <Tooltip label="Search sessions and commands">
             <IconButton
               data-testid="rail-search"
               data-search-trigger="true"

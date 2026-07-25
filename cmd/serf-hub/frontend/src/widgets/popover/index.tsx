@@ -98,7 +98,25 @@ export function Popover({
 
     function measure() {
       if (!triggerEl || !panelEl) return;
-      setPosition(computePopoverPosition(triggerEl.getBoundingClientRect(), panelEl.getBoundingClientRect()));
+      // offsetWidth/offsetHeight, NOT getBoundingClientRect(), for the panel's
+      // own size: a rect is the box AFTER transforms, and this measurement
+      // happens in the same commit that mounts the panel - the frame where
+      // popoverFadeScale is still at its `from` keyframe, scale(0.96). A 376px
+      // panel therefore rects as 361px, computePopoverPosition clamps to the
+      // 361px width, and the panel then grows to 376px in place and overruns
+      // EDGE_MARGIN. Measured live at a 390px viewport: left 21.03 / right
+      // 397.03, seven pixels past the viewport's right edge; with the
+      // animation disabled the same panel landed at left 8 / right 384.
+      // The offset* pair reports the untransformed layout box, so it reads the
+      // settled size on the first frame with no wait and no reposition flash.
+      // (The trigger keeps its rect: that one is wanted in viewport
+      // coordinates, and the trigger is never mid-animation here.)
+      setPosition(
+        computePopoverPosition(triggerEl.getBoundingClientRect(), {
+          width: panelEl.offsetWidth,
+          height: panelEl.offsetHeight,
+        }),
+      );
     }
     measure();
 
