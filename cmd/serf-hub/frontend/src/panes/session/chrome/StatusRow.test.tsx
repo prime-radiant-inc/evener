@@ -677,3 +677,92 @@ test("an ended session with no cost shows the facts it has and nothing it doesn'
   expect(screen.queryByTestId("status-row-cost")).toBeNull();
   expect(screen.getByTestId("status-row-work-time").textContent).toBe("1m worked");
 });
+
+// THE KATA (hw2n). A reader could not tell whether a session held a failure
+// without scrolling all of it - two panel participants independently reported
+// stopping early and concluding a run was clean. The strip is the one surface
+// always on screen, and it now says so.
+test("an ended session with failures says how many, on the strip that is always on screen", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97", failedToolCalls: 6 })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByTestId("status-row-failures").textContent).toContain("6 failed");
+  // The whole point is that it is findable without looking for it: --danger
+  // lives only in the allowlisted glyph widget, so its presence IS the colour.
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+});
+
+// A clean session is not news. Zero renders NOTHING - no "0 failed", no empty
+// slot - so the strip only ever speaks when there is something to say.
+test("a session the server measured as clean renders no failure item at all", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97", failedToolCalls: 0 })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-failures")).toBeNull();
+  expect(screen.queryByTestId("failure-glyph")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
+});
+
+// An unknown count is not a clean session. A transcript nobody can read must
+// leave the strip silent rather than vouch for it.
+test("an unknown failure count renders nothing rather than claiming the session was clean", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, workMillis: 720_000, cost: "~$0.97" })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-failures")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("failed");
+});
+
+// The strip is 12px and terse, so the visible text is the test-runner idiom
+// ("6 failed"); the name a screen reader gets is the full sentence, and it is
+// spoken ONCE - the glyph's own "Failed" label is suppressed here so the item
+// does not announce as "Failed 6 failed".
+test("the failure count's accessible name is one full sentence, not the glyph label plus a fragment", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, failedToolCalls: 6 })}
+      now={1_000_000}
+    />,
+  );
+  const item = screen.getByTestId("status-row-failures");
+  expect(item.textContent).toContain("6 failed tool calls");
+  expect(item.getAttribute("title")).toBe("6 failed tool calls");
+  // The glyph is out of the accessibility tree here, so the sentence is the
+  // only thing announced - not "Failed" followed by "6 failed".
+  expect(screen.queryByRole("img", { name: "Failed" })).toBeNull();
+});
+
+test("a single failure reads in the singular", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, failedToolCalls: 1 })}
+      now={1_000_000}
+    />,
+  );
+  const item = screen.getByTestId("status-row-failures");
+  expect(item.textContent).toContain("1 failed");
+  expect(item.textContent).toContain("1 failed tool call");
+  expect(item.textContent).not.toContain("tool calls");
+});
+
+// Presence of the wire figure is the whole gate, not which variant of the strip
+// is rendering. Today only a session read from disk carries a count, but a live
+// producer that grows one must not need a second render path.
+test("a running session shows the count too when the wire carries one", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ failedToolCalls: 3 })} now={1_060_000} />);
+  expect(screen.getByTestId("status-row-failures").textContent).toContain("3 failed");
+});

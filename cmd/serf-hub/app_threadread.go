@@ -31,9 +31,9 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	if err != nil {
 		return thread, true, err
 	}
-	// One thread, one transcript: this path can afford the full-transcript sum
-	// the per-entry list sweeps cannot (see stampDerivedSessionUsage).
-	return stampDerivedSessionUsage(entry, thread), true, nil
+	// One thread, one transcript: this path can afford the full-transcript
+	// scans the per-entry list sweeps cannot (see stampDerivedSessionUsage).
+	return stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, thread)), true, nil
 }
 
 func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -60,7 +60,7 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = stampDerivedSessionUsage(entry, reconcileAndEnrichPastThread(entry, thread))
+	thread = stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, reconcileAndEnrichPastThread(entry, thread)))
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
@@ -338,16 +338,54 @@ func stampDerivedSessionUsage(entry hubcore.PastEntry, thread appwire.Thread) ap
 // surface that assembles its own WorkspaceData rather than an appwire.Thread.
 // Returns nil for an absent total, on the same terms.
 func derivedSessionUsage(entry hubcore.PastEntry) *appwire.SerfUsage {
-	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	total, err := pastTranscriptCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	total, err := pastTranscriptCache.UsageTotalFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}
 	return total
 }
 
+// stampDerivedFailureCount reports how many of the session's tool calls failed,
+// by scanning its own span of the FULL transcript.
+//
+// It is derived server-side because the client cannot derive it honestly. A
+// windowed thread/read hands the client a suffix of the session — measured at
+// about 47% of a long real session's document at load (kata hw2n) — and a count
+// over that suffix is a partial figure wearing a full-session label. For
+// failures that is worse than saying nothing: the harm the count exists to fix
+// is a reader concluding a run was clean because they had not yet scrolled to
+// the failure, and a "0 failed" computed from the loaded window states exactly
+// that conclusion in the session's own chrome.
+//
+// A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
+// whose failures the PARENT made. DivergenceTurn marks where the child's own
+// history begins, and only that span is counted — the same attribution rule
+// stampDerivedSessionUsage applies to tokens.
+//
+// Applied only on the single-thread read paths, for the reason
+// stampDerivedSessionUsage states: pastEntryThread also runs once per entry on
+// the thread-list and transcript-target sweeps, where a scan per session costs a
+// read of every transcript in the state dir.
+//
+// A read error (a legacy format_version 1 transcript, a missing file) leaves the
+// count ABSENT. Unknown is the honest report, the client renders an absent count
+// as nothing, and a session nobody can read must not be reported as clean.
+func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	if err != nil {
+		return thread
+	}
+	thread.Serf.FailedToolCalls = &count
+	return thread
+}
+
+// pastTranscriptPath is where a saved session's transcript lives.
+func pastTranscriptPath(entry hubcore.PastEntry) string {
+	return filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+}
+
 func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
-	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		var entryRec hubcore.ReplayEntry

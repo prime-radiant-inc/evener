@@ -85,6 +85,10 @@ function nonzeroExit(item: ItemModel): boolean {
 }
 
 registerToolRenderer({
+  // These three names are mirrored server-side by
+  // internal/apptranscript's ShellToolNames, which the session-scale failure
+  // count reads exit codes for. The two lists have to agree: a name here and
+  // not there is a row wearing a failure glyph the count omits.
   match: (name) => name === "shell" || name === "exec_command" || name === "run_shell_command",
   // The exit code is NOT in the summary: a nonzero exit is announced by the
   // row's failure glyph instead (A2 - "exit 1" as the headline made every

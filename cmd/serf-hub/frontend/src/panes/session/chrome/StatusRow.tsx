@@ -35,7 +35,7 @@
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { Meter, useToasts } from "../../../widgets";
+import { FailureGlyph, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
@@ -163,6 +163,61 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
+// FailureCount is the session's answer to "did anything in here go wrong",
+// stated where it can be read without scrolling.
+//
+// It exists because the transcript could not answer it. A long session measures
+// about fourteen screens; only ~47% of that document hydrates at load, and eight
+// of those screens carry no failure marker at all - so a reader who stopped
+// partway concluded the run was clean because they had not yet reached a
+// failure, twice reported as a real harm (kata hw2n). Row-level marking is not
+// the gap and is untouched: this is the SESSION-scale statement that was
+// missing entirely (the cadence dot goes --danger only when the session itself
+// crashed, and neither the strip nor the details sheet carried a failure fact).
+//
+// It sits on this strip rather than in Session details because a fact behind a
+// click cannot tell anyone there is something left to find, and the misreading
+// forms right here - the measured session's last screen reads "Verified: 25
+// tests pass" directly above "12m worked · ~$0.97", with six failures above it
+// and nothing contradicting them.
+//
+// ZERO AND UNKNOWN BOTH RENDER NOTHING, for different reasons. Zero is a real
+// server-side measurement over the whole transcript and is simply not news; the
+// strip should only speak when there is something to act on, the same rule that
+// keeps "0 queued" off it. Undefined means nobody counted (an unreadable
+// transcript, or a producer that does not derive the figure), and a strip that
+// said "0 failed" there would vouch for a session it never read. The count is
+// NEVER derived from the loaded turns: thread/read windows them, so a client
+// sum would print exactly the false all-clear this exists to prevent.
+//
+// The glyph is aria-hidden and the sentence is visually hidden, so the item
+// announces once, in full ("6 failed tool calls"), rather than as the glyph's
+// own "Failed" followed by the terse readout beside it.
+//
+// `separator` is the ended strip's own "·" punctuation, which the live strip
+// does not use - passed in rather than inferred, so this component never has to
+// know which row it is on.
+function FailureCount({ count, separator }: { count: number | undefined; separator?: boolean }) {
+  if (count === undefined || count <= 0) return null;
+  const spoken = `${count} failed tool ${count === 1 ? "call" : "calls"}`;
+  return (
+    <span className={CLASS.item} data-testid="status-row-failures" title={spoken}>
+      {separator && (
+        <span className={CLASS.separator} aria-hidden="true">
+          ·
+        </span>
+      )}
+      <span aria-hidden="true">
+        <FailureGlyph />
+      </span>
+      <span className={CLASS.mono} aria-hidden="true">
+        {`${count} failed`}
+      </span>
+      <span className={CLASS.srOnly}>{spoken}</span>
+    </span>
+  );
+}
+
 // EndedSummary is a finished session's whole strip: what it was, what it spent,
 // and the model its NEXT turn will run on. Work and cost are settled figures in
 // --ink-mid; each is omitted when the wire never measured it - the same honesty
@@ -188,6 +243,10 @@ function EndedSummary({ sessionRef, model, workMs }: { sessionRef: string; model
   return (
     <div className={`${CLASS.row} ${CLASS.summary}`} data-testid="status-row">
       <ModelSwitch sessionRef={sessionRef} model={model} />
+      {/* Ahead of the settled figures: work time and cost are an epitaph, and
+          what went wrong is the one thing on this strip that could still change
+          what the reader does next. */}
+      <FailureCount count={model.failedToolCalls} separator />
       {settled.map((fact) => (
         <span key={fact.key} className={CLASS.item}>
           <span className={CLASS.separator} aria-hidden="true">
@@ -219,6 +278,12 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   return (
     <div className={CLASS.row} data-testid="status-row">
       <ModelSwitch sessionRef={sessionRef} model={model} />
+      {/* Driven purely by the wire figure, not by which strip is rendering.
+          Today only a session the hub reads from disk carries one - a live
+          session's transcript is still being written, so a disk-derived count
+          would be a stale floor - but a producer that grows an honest live
+          count needs no second render path here. */}
+      <FailureCount count={model.failedToolCalls} />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       {/* The gauge is the whole readout: a used/window number pair beside it
           repeated what the fill already shows, in a row that has to stay one

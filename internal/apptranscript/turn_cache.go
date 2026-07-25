@@ -42,6 +42,9 @@ type turnCacheEntry struct {
 	// so both are evicted together, and separate from it because the sum is a
 	// different projection of the same immutable bytes.
 	usageTotal *usageTotalMemo
+	// failedToolCalls memoizes FailedToolCallsFromFile's full-transcript
+	// failure count, on the same terms as usageTotal above.
+	failedToolCalls *failedToolCallsMemo
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
