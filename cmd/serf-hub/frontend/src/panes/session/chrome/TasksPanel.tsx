@@ -34,7 +34,26 @@
 // common case. Any other rejection - including the SAME sessionUnavailable
 // code for a daemon that's merely unreachable this instant - is a genuine
 // failure: toast (the wave's failure-feedback convention) AND an inline
-// error state, since there is nothing left to show in its place.
+// report.
+//
+// That inline report takes one of two forms, because a re-fetch has
+// something a first fetch does not: the previous page, still in hand. A
+// first fetch that fails has nothing to show, and gets the error state
+// alone. A re-fetch that fails KEEPS the list the reader is looking at and
+// puts the failure above it, the way LoadOlderRow reports a failed page
+// without discarding the transcript above it - a list one push out of date
+// beats a blank panel. The list is never left to pass as current: the
+// notice above it says what it is, so a failed refresh can be mistaken
+// neither for a fresh list nor for the "No tasks yet" state.
+//
+// Both forms carry Try again, because there is no schedule to fall back on.
+// The re-fetch trigger is model.tasks changing, i.e. a serf/task/updated
+// push, which the projector emits only when the agent actually edits its
+// task list (internal/appprojector/appwire_projection.go's EventTaskUpdated
+// case) - never on a timer. A session whose agent is still working heals
+// itself on the next edit; one that has gone quiet emits nothing more, and
+// without Try again its panel stays broken until the reader guesses that
+// closing and re-opening refetches.
 import { useEffect, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
@@ -54,6 +73,9 @@ const CLASS = {
   list: requireClass(styles.list, "taskspanel.module.css", "list"),
   row: requireClass(styles.row, "taskspanel.module.css", "row"),
   description: requireClass(styles.description, "taskspanel.module.css", "description"),
+  stale: requireClass(styles.stale, "taskspanel.module.css", "stale"),
+  staleMessage: requireClass(styles.staleMessage, "taskspanel.module.css", "staleMessage"),
+  staleHint: requireClass(styles.staleHint, "taskspanel.module.css", "staleHint"),
 };
 
 // Mirrors the legacy sidebar/inline task-row grammar (cmd/serf-hub/assets/
@@ -102,20 +124,26 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 // neither; the panel can never say two different things about one failure.
 const LOAD_FAILURE = "Couldn't load tasks";
 
-// The inline report, split the way EmptyState renders it: the headline names
-// the step that died, the detail is the rejection's own text. A rejection
-// carrying no text of its own leaves the detail out entirely, the same way
-// sessionActionError drops the separator, so the two reports of this one
-// failure stay word-for-word the same.
+// One failure, in the two shapes this panel needs to render it: `headline`
+// and `detail` for the EmptyState, which lays a title and a hint out in
+// separate slots, and `sentence` for the single-string cases - the toast and
+// the stale notice. A rejection carrying no text of its own leaves the
+// detail out entirely, the same way sessionActionError drops the separator.
+//
+// All three come off the same rejection through protocol/errors.ts, and the
+// toast renders `sentence` itself rather than recomputing it, so the panel's
+// reports of one failure cannot drift apart.
 interface LoadFailure {
   headline: string;
   detail?: string;
+  sentence: string;
 }
 
 function loadFailure(err: unknown): LoadFailure {
   const headline = sessionActionHeadline(LOAD_FAILURE, err);
+  const sentence = sessionActionError(LOAD_FAILURE, err);
   const detail = errorText(err).trim();
-  return detail ? { headline, detail } : { headline };
+  return detail ? { headline, detail, sentence } : { headline, sentence };
 }
 
 function isActionUnavailable(err: unknown): boolean {
@@ -156,14 +184,18 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [error, setError] = useState<LoadFailure | null>(null);
+  // Bumped by Try again. The only fetch trigger a reader controls: the other
+  // two are opening the panel and a push arriving, and neither is available
+  // to someone looking at a failed fetch in an open panel on a quiet session.
+  const [reloads, setReloads] = useState(0);
 
-  // Re-fetches on every open, and again whenever model.tasks changes while
-  // still open (a live serf/task/updated push while the user is looking) -
-  // see this file's own header comment. `toasts` is deliberately not a
-  // dependency: useToasts() returns a fresh wrapper object every render
-  // (see widgets/toast/index.tsx), so depending on it would refire this
-  // effect on every unrelated re-render; toasts.push itself is a stable,
-  // module-level function underneath.
+  // Re-fetches on every open, on every Try again, and again whenever
+  // model.tasks changes while still open (a live serf/task/updated push while
+  // the user is looking) - see this file's own header comment. `toasts` is
+  // deliberately not a dependency: useToasts() returns a fresh wrapper object
+  // every render (see widgets/toast/index.tsx), so depending on it would
+  // refire this effect on every unrelated re-render; toasts.push itself is a
+  // stable, module-level function underneath.
   // biome-ignore lint/correctness/useExhaustiveDependencies: toasts is a fresh wrapper object every render (see above) - toasts.push itself is stable
   useEffect(() => {
     if (!open) return;
@@ -194,14 +226,22 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
           setRows([]);
           return;
         }
-        setRows(null);
-        setError(loadFailure(err));
-        toasts.push("error", sessionActionError(LOAD_FAILURE, err));
+        // `rows` is deliberately left alone: whatever the last fetch that
+        // did resolve put there stays on screen under the stale notice.
+        // Only a panel that has never had a list renders the error state on
+        // its own, and that is exactly the `rows === null` case below.
+        const failure = loadFailure(err);
+        setError(failure);
+        toasts.push("error", failure.sentence);
       });
     return () => {
       cancelled = true;
     };
-  }, [open, model.tasks, sessionRef]);
+  }, [open, model.tasks, sessionRef, reloads]);
+
+  function reload() {
+    setReloads((n) => n + 1);
+  }
 
   function openPanel() {
     setOpen(true);
@@ -211,27 +251,47 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
     setOpen(false);
   }
 
+  const retry = (
+    <Button variant="quiet" size="sm" onClick={reload}>
+      Try again
+    </Button>
+  );
+
   function renderBody() {
     if (unsupported) {
+      // No Try again here: the source cannot answer this call at all, so
+      // asking again would only fail again.
       return (
         <EmptyState title="Task list isn't available" hint="This session's source doesn't support the task list." />
       );
     }
-    if (error) {
-      return <EmptyState title={error.headline} hint={error.detail} />;
-    }
     if (rows === null) {
+      if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} />;
       return <p className={CLASS.state}>Loading tasks…</p>;
     }
-    if (rows.length === 0) {
-      return <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />;
-    }
     return (
-      <ul className={CLASS.list}>
-        {rows.map((row) => (
-          <TaskRowView key={row.id} task={row} />
-        ))}
-      </ul>
+      <>
+        {error && (
+          <div className={CLASS.stale} data-testid="tasks-stale">
+            {/* role=alert: the refresh failed on its own, with the reader
+                mid-list and nothing on screen leading up to it. */}
+            <p role="alert" className={CLASS.staleMessage}>
+              {error.sentence}
+            </p>
+            <p className={CLASS.staleHint}>Showing the last list that loaded.</p>
+            {retry}
+          </div>
+        )}
+        {rows.length === 0 ? (
+          <EmptyState title="No tasks yet" hint="The agent's task list is empty for this session." />
+        ) : (
+          <ul className={CLASS.list}>
+            {rows.map((row) => (
+              <TaskRowView key={row.id} task={row} />
+            ))}
+          </ul>
+        )}
+      </>
     );
   }
 

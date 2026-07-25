@@ -309,3 +309,145 @@ test("a rejection with no text of its own shows the headline alone, with no empt
   const headline = await screen.findByText("Couldn't load tasks");
   expect(headline.parentElement?.querySelectorAll("p")).toHaveLength(1);
 });
+
+// --- a failed LIVE re-fetch keeps the list it already has -------------------
+//
+// The panel re-fetches on every serf/task/updated push while it stays open.
+// A momentary rejection on one of those fetches ("local daemon unavailable:
+// broken pipe") used to replace the list the reader was mid-way through with
+// an error state, though the previous page was still in hand. Nothing the
+// reader did caused it, and nothing they could do brought it back.
+
+// Scripts serf/tasks/list to answer `first` once and to reject every later
+// call: the exact shape of a live re-fetch blipping under a reader.
+function failAfterFirstFetch(fake: FakeClient, first: unknown, err: unknown): void {
+  let calls = 0;
+  fake.on("serf/tasks/list", () => {
+    calls += 1;
+    if (calls === 1) return { data: first };
+    throw err;
+  });
+}
+
+// Opens the panel, waits for the first fetch to land, then bumps the live
+// aggregate the way a serf/task/updated push does - which is the only thing
+// that re-fetches while the panel stays open.
+async function openThenPush(fake: FakeClient): Promise<ReturnType<typeof userEvent.setup>> {
+  const user = userEvent.setup();
+  const panel = (done: number) => (
+    <>
+      <TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done } })} />
+      <Toast />
+    </>
+  );
+  const { rerender } = render(panel(0));
+  await user.click(screen.getByRole("button", { name: "Tasks 0/3" }));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(1));
+
+  rerender(panel(1));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(2));
+  return user;
+}
+
+test("a re-fetch that fails keeps the rows already on screen", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(fake, TASKS_DATA, new Error("local daemon unavailable: broken pipe"));
+
+  await openThenPush(fake);
+
+  await screen.findByTestId("tasks-stale");
+  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.getByText("Wire up the status row")).toBeTruthy();
+});
+
+// A retained list is one push behind by construction - the push is what
+// triggered the fetch that failed - and falls further behind for as long as
+// the daemon stays unreachable. Keeping it silently would be worse than the
+// blank it replaces: the reader would take a frozen list for a live one.
+test("the retained list says it is out of date, so a failed refresh doesn't read as current", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(fake, TASKS_DATA, new Error("local daemon unavailable: broken pipe"));
+
+  await openThenPush(fake);
+
+  const stale = await screen.findByTestId("tasks-stale");
+  expect(stale.textContent).toContain("Showing the last list that loaded");
+});
+
+// The other direction of the same confusion. "No tasks yet" is the panel's
+// one definitive statement about the session - it claims the agent's list is
+// empty - so a retained empty list has to be marked stale just as a retained
+// populated one does, or a failed refresh passes for a confirmed answer.
+test("a retained EMPTY list under a failed refresh is marked stale, not left as a confirmed answer", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(fake, [], new Error("local daemon unavailable: broken pipe"));
+
+  await openThenPush(fake);
+
+  await screen.findByTestId("tasks-stale");
+  expect(screen.getByText("No tasks yet")).toBeTruthy();
+});
+
+// bv13's invariant, carried onto the retained-list path: the toast and the
+// inline report are the SAME sentence, so a failed session resume takes over
+// both or neither.
+test("the stale notice and the toast report a re-fetch failure in the same words", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(
+    fake,
+    TASKS_DATA,
+    new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" }),
+  );
+
+  await openThenPush(fake);
+
+  const sentence = "Couldn't start this session: serf launch-check timed out";
+  await waitFor(() => expect(screen.getAllByText(sentence)).toHaveLength(2));
+  // The action's own name is gone from both, not merely absent from one.
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});
+
+// serf/task/updated is event-driven, never scheduled (internal/appprojector/
+// appwire_projection.go's EventTaskUpdated case): a session whose agent has
+// stopped touching its task list emits no further pushes, so a failed fetch
+// is stuck until the reader asks again. Try again is that ask.
+test("Try again re-fetches the list and clears the stale notice once it succeeds", async () => {
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/tasks/list", () => {
+    calls += 1;
+    if (calls === 2) throw new Error("local daemon unavailable: broken pipe");
+    return { data: TASKS_DATA };
+  });
+
+  const user = await openThenPush(fake);
+  await screen.findByTestId("tasks-stale");
+
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+
+  await waitFor(() => expect(screen.queryByTestId("tasks-stale")).toBeNull());
+  expect(fake.calls.filter((c) => c.method === "serf/tasks/list")).toHaveLength(3);
+  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+});
+
+// The first fetch has no previous page to keep, so it still blanks - but it
+// is stuck in exactly the same way, and needs the same way out.
+test("a first fetch that fails offers Try again, which fetches again", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/tasks/list", () => {
+    calls += 1;
+    if (calls === 1) throw new Error("tasks boom");
+    return { data: TASKS_DATA };
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+  await screen.findByText(/couldn.t load tasks: tasks boom/i);
+
+  await user.click(screen.getByRole("button", { name: "Try again" }));
+
+  expect(await screen.findAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});

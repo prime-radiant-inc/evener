@@ -24,3 +24,39 @@
   font-size: var(--font-size-ui);
   color: var(--ink-hi);
 }
+
+/* A refresh that failed with the previous list still on screen. Not an error
+ * state and not coloured like one: the list below is intact and merely out of
+ * date, so tinting this strip would say a failure is sitting where the tasks
+ * are. The attention family is off limits here anyway - token-contract.test.ts
+ * gates it to src/widgets/<name>/ - which is the same reasoning
+ * loadolderrow.module.css already applies to the transcript's failed page. The
+ * words carry the failure; full-contrast ink, medium weight and the rule below
+ * are what lift them off the rows. */
+.stale {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--edge);
+}
+
+.staleMessage {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-hi);
+}
+
+/* --ink-mid, never --ink-low: --ink-low sits under the AA text floor against
+ * --surface-1 in both themes, and this line is the one that tells the reader
+ * the list under it is stale. */
+.staleHint {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
