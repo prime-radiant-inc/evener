@@ -26,3 +26,4 @@ import "./jobTools";
 import "./subagentModule";
 import "./askUser";
 import "./taskCard";
+import "./readTranscript";
