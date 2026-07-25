@@ -1,4 +1,4 @@
-// ModelSwitch: the mid-session model-switch trigger. The current model chip
+// ModelSwitch: the mid-session model-switch trigger. The current model label
 // IS the trigger (quiet hover affordance + a small chevron) - clicking it
 // opens the SAME rich catalog picker the spawn flow uses (ModelCatalogPanel:
 // search over one always-expanded grouped list, capability/cost/context
@@ -24,14 +24,7 @@
 import { useRef, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import {
-  Chip,
-  type ModelCatalog,
-  type ModelCatalogEntry,
-  ModelCatalogPanel,
-  Popover,
-  useToasts,
-} from "../../../widgets";
+import { type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, Popover, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
@@ -46,6 +39,7 @@ export interface ModelSwitchProps {
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelswitch.module.css", "trigger"),
+  value: requireClass(styles.value, "modelswitch.module.css", "value"),
   chevron: requireClass(styles.chevron, "modelswitch.module.css", "chevron"),
   srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
@@ -123,10 +117,17 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
           ref={triggerRef}
           type="button"
           className={CLASS.trigger}
+          data-testid="model-switch-trigger"
           onClick={() => (open ? closePicker() : void openPicker())}
           disabled={disabled}
         >
-          <Chip>{modelLabel(model.modelProvider, model.model)}</Chip>
+          {/* Plain text, not a Chip: the trigger already draws the control's
+              own hover box, and a bordered chip inside it reads as a double
+              border - the same rule widgets/pathfield's and
+              widgets/modelCatalog's triggers follow. */}
+          <span className={CLASS.value} data-testid="model-switch-value">
+            {modelLabel(model.modelProvider, model.model)}
+          </span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾
           </span>

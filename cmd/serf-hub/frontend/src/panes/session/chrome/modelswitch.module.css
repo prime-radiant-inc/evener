@@ -1,5 +1,5 @@
-/* Quiet trigger: no border/background until hover, so the chip itself reads
- * as the interactive element rather than a separate button beside it. */
+/* Quiet trigger: no border/background until hover, so the model label itself
+ * reads as the interactive element rather than a separate button beside it. */
 .trigger {
   display: inline-flex;
   align-items: center;
@@ -9,6 +9,14 @@
   border-radius: var(--radius-control);
   background: transparent;
   cursor: pointer;
+}
+
+/* The model id, in this row's caption size. Mono because a model id is an
+ * identifier, matching LocationCluster's own path/value face beside it. */
+.value {
+  color: var(--ink-mid);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
 }
 
 .trigger:hover:not(:disabled) {
