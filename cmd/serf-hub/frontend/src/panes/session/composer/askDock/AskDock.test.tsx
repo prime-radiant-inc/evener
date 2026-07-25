@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../../../protocol/client";
 import { WireError } from "../../../../protocol/errors";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
 import { AskDock } from "./AskDock";
@@ -65,7 +65,7 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
     params: { ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-  } as AnyNotification);
+  });
 }
 
 function ackAskUserCall(
@@ -91,11 +91,11 @@ function ackAskUserCall(
   fake.emitNotification({
     method: "item/started",
     params: { ...base, item: { ...base.item, status: "inProgress" } },
-  } as AnyNotification);
+  });
   fake.emitNotification({
     method: "item/completed",
     params: { ...base, item: { ...base.item, status: "completed" } },
-  } as AnyNotification);
+  });
 }
 
 async function hydrateWithOneAsk(fake: FakeClient, ref = "ref_a"): Promise<void> {

@@ -4,7 +4,6 @@ import type { ConnectionState } from "../protocol/client";
 import { ConnectionClosedError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type {
-  AnyNotification,
   ModelListResponse,
   Thread,
   ThreadCapabilities,
@@ -169,7 +168,7 @@ describe("useThreadsStore.ensureThread", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
   });
@@ -333,7 +332,7 @@ describe("notification routing", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_untracked", ref: "ref_untracked", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().threads).toBe(before);
   });
@@ -384,7 +383,7 @@ describe("notification routing", () => {
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification);
+    });
     fake.emitNotification({
       method: "item/completed",
       params: {
@@ -393,12 +392,12 @@ describe("notification routing", () => {
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
       },
-    } as AnyNotification);
+    });
 
     fake.emitNotification({
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification);
+    });
 
     // The rightful owner (A, whose activeTurnId matched) settles...
     const modelA = threadsStore.getState().threads.get("ref_a");
@@ -525,7 +524,7 @@ describe("client swap (manual retry) rewiring", () => {
     b.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
 
     // ...while A's handlers were detached at the swap: the same
@@ -535,7 +534,7 @@ describe("client swap (manual retry) rewiring", () => {
     a.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "idle" } },
-    } as AnyNotification);
+    });
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" }); // unchanged - A's emit was a no-op
   });
 
@@ -1292,7 +1291,7 @@ describe("useThreadsStore.resolveEscalation", () => {
     fake.emitNotification({
       method: "serf/sandbox/escalation/resolved",
       params: { threadId: "thr_ref_a", ref: "ref_a", escalationId: "esc_1" },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().threads.get("ref_a")?.pendingEscalations).toEqual([]);
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.pendingEscalations).toEqual([]);
@@ -1376,7 +1375,7 @@ describe("frameTimes tracking (threads store)", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([5_000_000]);
   });
@@ -1392,7 +1391,7 @@ describe("frameTimes tracking (threads store)", () => {
       fake.emitNotification({
         method: "thread/status/changed",
         params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-      } as AnyNotification);
+      });
     }
 
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000, 2000, 3000]);
@@ -1406,7 +1405,7 @@ describe("frameTimes tracking (threads store)", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_untracked", ref: "ref_untracked", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().frameTimes.has("ref_untracked")).toBe(false);
   });
@@ -1433,7 +1432,7 @@ describe("frameTimes tracking (threads store)", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
 
     threadsStore.getState().releaseThread("ref_a");
@@ -1449,7 +1448,7 @@ describe("frameTimes tracking (threads store)", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
 
     fake.emitStateChange("reconnecting");
@@ -1492,7 +1491,7 @@ describe("useThreadsStore.watchThread", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });
   });
@@ -1547,7 +1546,7 @@ describe("useThreadsStore.watchThread", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().watchedFrameTimes.get("ref_a")).toEqual([4_000_000]);
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
@@ -1563,7 +1562,7 @@ describe("useThreadsStore.watchThread", () => {
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },
-    } as AnyNotification);
+    });
 
     expect(threadsStore.getState().threads.get("ref_a")?.status).toEqual({ type: "active" });
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.status).toEqual({ type: "active" });

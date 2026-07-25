@@ -12,8 +12,30 @@ import type { TurnError } from "../../../protocol/types.gen";
 // off (renderer.js:4463-4471) - a daemon/session that went away, where the
 // honest recovery is to re-issue the turn and let the hub's auto-resume layer
 // relaunch a fresh daemon.
-const RECONNECT_RE =
-  /rendezvous|daemon spawn|process exited before rendezvous|resume timed out|local daemon unavailable|source not found|session unavailable/i;
+//
+// This is the same vocabulary Go classifies by, in
+// agent/diagnostic/diagnostic.go's HubFailureKeywords, which stamps
+// source:"hub" and the "Hub error" title/hint onto these same messages. The two
+// copies had drifted in both directions - this side was missing appwire,
+// websocket and "stream failed"; Go was missing "local daemon unavailable" and
+// "session unavailable", so the hub's own dial failures came back titled "Serf
+// error" and hinted at the Serf session log while this file, correctly, put a
+// "Reconnect & retry" button under them. They are held equal now by
+// TestHubFailureKeywordsMatchWebClient (cmd/serf-hub), which parses the array
+// below; keep it a plain list of lowercase literals so that test can read it.
+const RECONNECT_KEYWORDS = [
+  "rendezvous",
+  "daemon spawn",
+  "resume timed out",
+  "process exited before rendezvous",
+  "appwire",
+  "websocket",
+  "stream failed",
+  "source not found",
+  "local daemon unavailable",
+  "session unavailable",
+];
+const RECONNECT_RE = new RegExp(RECONNECT_KEYWORDS.join("|"), "i");
 
 export interface TurnFailureInfo {
   message: string;

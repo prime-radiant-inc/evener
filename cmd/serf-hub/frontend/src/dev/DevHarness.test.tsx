@@ -2,7 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { DevHarness } from "./DevHarness";
@@ -153,7 +153,7 @@ describe("DevHarness", () => {
       fake.emitNotification({
         method: "item/agentMessage/delta",
         params: { threadId: "thr_ref_a", ref: "ref_a", turnId: "turn_1", itemId: "item_1", delta: "hello websockets" },
-      } as AnyNotification);
+      });
     });
 
     expect(screen.getByText(/"pendingText"/)).toBeTruthy();

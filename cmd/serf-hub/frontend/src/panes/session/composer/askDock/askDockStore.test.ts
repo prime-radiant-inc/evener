@@ -66,7 +66,7 @@ function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
     params: { ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
-  } as AnyNotification);
+  });
 }
 
 function askItemNotification(
@@ -92,14 +92,14 @@ function askItemNotification(
         argumentsJson: askArgs(ONE_QUESTION),
       },
     },
-  } as AnyNotification;
+  };
 }
 
 function userMessageNotification(ref: string, turnId: string, itemId: string, text: string): AnyNotification {
   return {
     method: "item/completed",
     params: { ref, turnId, item: { type: "userMessage", id: itemId, turnId, text, status: "completed" } },
-  } as AnyNotification;
+  };
 }
 
 // ackAskUserCall assumes `turnId` has already been started (startTurn).
