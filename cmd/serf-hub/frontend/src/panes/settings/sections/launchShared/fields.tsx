@@ -95,7 +95,7 @@ function completePaths(prefix: string, includeFiles: boolean): Promise<string[]>
  * trigger is a `<button id>`, which a `<label htmlFor>` labels like any other
  * form control - unlike ModelCatalog, whose own inner combobox carries its
  * name and which therefore needs the label-as-span treatment. */
-function PathPickerRow({
+function PathFieldRow({
   fieldId,
   label,
   kind,
@@ -206,7 +206,7 @@ export function ScalarField({ option, layer, value, onChange, globalDefaultHint,
     const pathKind = browsablePathKind(option.pathKind);
     if (pathKind) {
       return (
-        <PathPickerRow
+        <PathFieldRow
           fieldId={fieldId}
           label={option.label}
           kind={pathKind}
@@ -295,7 +295,7 @@ export function PromptCompositeField({
             field IS systemPromptFile/systemPromptAppendFile, a file-kind path
             in the schema, so it must not be a text box in one place and a
             picker in another. */}
-        <PathPickerRow
+        <PathFieldRow
           fieldId={fileFieldId}
           label={spec.fileLabel}
           kind="file"

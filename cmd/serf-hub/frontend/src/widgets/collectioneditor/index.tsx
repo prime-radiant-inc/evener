@@ -34,7 +34,7 @@ export interface CollectionEditorProps<T> {
   addPlaceholder?: string;
   addButtonLabel?: string;
   /** Replaces the built-in plain-text add field (and its submit button)
-   * with the caller's own rendering - e.g. a PathPicker (dirListSetting.tsx)
+   * with the caller's own rendering - e.g. a PathField (dirListSetting.tsx)
    * or a structured key/value pair (envMap - collectionFields.tsx).
    * CollectionEditor still owns `draft`/`busy`/the submit `<form>`, so
    * `value`/`onChange` are that same draft state and Enter-to-submit keeps

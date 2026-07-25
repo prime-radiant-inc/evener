@@ -13,8 +13,8 @@ export interface FormRowProps {
    * matching `id`) in `children`, mirroring Input/Select's own documented
    * "labeling is the consumer's job via a standard <label htmlFor>"
    * convention. Scope note: this is for controls that DON'T already carry
-   * their own visible accessible name (Input, Select, Combobox, PathPicker,
-   * a CollectionEditor) - Switch/RadioGroup already require their own
+   * their own visible accessible name (Input, Select, PathField, a
+   * CollectionEditor) - Switch/RadioGroup already require their own
    * visible `label` prop and are used bare, without FormRow, so their
    * label is never rendered twice. */
   htmlFor: string;

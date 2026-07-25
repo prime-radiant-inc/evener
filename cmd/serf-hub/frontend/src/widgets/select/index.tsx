@@ -21,7 +21,8 @@ const BASE_CLASS = {
 };
 
 /** A native <select>, restyled to match the widget set - no custom
- * listbox/positioning JS (Combobox covers richer cases). Controlled only,
+ * listbox/positioning JS - the pickers that need richer rows (ModelCatalog,
+ * PathField) each own theirs. Controlled only,
  * mirroring Input. */
 export function Select({ value, onChange, options, disabled = false, id, name }: SelectProps) {
   return (

@@ -186,7 +186,7 @@ test("the input and add button are disabled while onAdd is pending, and re-enabl
 
 describe("renderAddField", () => {
   // A minimal stand-in for a caller-supplied custom add field (e.g.
-  // dirListSetting.tsx's PathPicker, or collectionFields.tsx's two-box
+  // dirListSetting.tsx's PathField, or collectionFields.tsx's two-box
   // envMap field) - a single labeled text input plus its own submit
   // button, wired to CollectionEditor's own {value, onChange, disabled}
   // rather than rendering the built-in plain Input.

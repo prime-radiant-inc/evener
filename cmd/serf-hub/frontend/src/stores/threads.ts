@@ -170,7 +170,7 @@ export interface ThreadsStoreState {
   // own pane via ensureThread on the returned ref.
   forkFromTurn(ref: string, opts: ForkFromTurnOptions): Promise<ThreadForkResponse>;
   // Lists available models (model/list) with launch diagnostics, feeding
-  // the chrome stream's model-switch Combobox. Session-lifetime cached
+  // the chrome stream's model-switch picker. Session-lifetime cached
   // (models don't change mid-session, and no live push exists for them
   // either - same "no capabilities-changed entry" reasoning as
   // ThreadModel.capabilities); pass refresh:true to bypass the cache and

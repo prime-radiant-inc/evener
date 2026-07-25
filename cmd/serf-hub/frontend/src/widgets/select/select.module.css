@@ -2,7 +2,7 @@
  * Native <select>, restyled - no appearance:none/custom chevron, so there's
  * no need for a background-image icon (which would risk smuggling a literal
  * color into a data-URI SVG past the token-contract's literal-color scan).
- * "no custom dropdown - Combobox covers rich cases in another batch."
+ * No custom dropdown: the pickers that need rich rows own their own.
  */
 .select {
   height: 32px;
