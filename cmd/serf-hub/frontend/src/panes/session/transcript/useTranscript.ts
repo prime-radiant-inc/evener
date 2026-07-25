@@ -4,7 +4,7 @@
 // (see its own comment), so this hook stays a plain, side-effect-free
 // selector a caller can use without implicitly acquiring the ref.
 import { useCallback, useRef, useState } from "react";
-import { errorText } from "../../../protocol/errors";
+import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
@@ -17,9 +17,10 @@ export interface UseTranscriptResult {
   // surfaces (the live session pane and the read-only transcript pane) need
   // exactly this, so it lives here rather than being written twice.
   loadOlderReportingError(): void;
-  // The last failed older-page fetch's message, or null when the last attempt
-  // succeeded or none has been made. Cleared at the start of every attempt, so
-  // a retry begins from a clean state.
+  // The last failed older-page fetch's finished sentence, or null when the
+  // last attempt succeeded or none has been made. Cleared at the start of
+  // every attempt, so a retry begins from a clean state. The row that renders
+  // it adds no label of its own - see loadOlderReportingError.
   olderError: string | null;
 }
 
@@ -50,9 +51,15 @@ export function useTranscript(ref: string): UseTranscriptResult {
     }
   }, [ref]);
 
+  // Labelled here rather than in the row: paging goes through the hub's
+  // transparent resume like every other session call, and this is the only
+  // side of the seam still holding the rejection - so it is the only side
+  // that can tell a failed page fetch from a session that would not start
+  // (protocol/errors.ts's sessionActionError). The page never arrived either
+  // way, so the resume is free to take the whole sentence.
   const loadOlderReportingError = useCallback(() => {
     setOlderError(null);
-    void loadOlder().catch((err) => setOlderError(errorText(err)));
+    void loadOlder().catch((err) => setOlderError(sessionActionError("Couldn't load older turns", err)));
   }, [loadOlder]);
 
   return { model, loadOlder, loadingOlder, loadOlderReportingError, olderError };

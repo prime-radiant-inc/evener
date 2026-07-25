@@ -17,7 +17,7 @@
 // never by waiting to observe its echo back in the transcript).
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { errorText } from "../../../../protocol/errors";
+import { sessionActionError } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
 import { ConflictError, threadsStore } from "../../../../stores/threads";
 import { type AskResolution, composeAskAnswers } from "./askCompose";
@@ -54,6 +54,9 @@ export interface AskDockRefState {
 // onFallbackToComposer; error is toast-worthy per the wave's failure-
 // feedback convention; stale is a silent no-op - the dock re-checked and
 // found nothing left to send), not an exceptional condition.
+//
+// `message` is the finished sentence to show, not raw rejection text: the
+// caller adds no label of its own. See sendBatch's own error branch.
 export type SendBatchOutcome =
   | { outcome: "sent" }
   | { outcome: "conflict"; text: string }
@@ -181,7 +184,13 @@ export const askDockStore = createStore<AskDockState>(() => ({
         return { outcome: "conflict", text: composedText };
       }
       setBatchSending(ref, batchId, false);
-      return { outcome: "error", message: errorText(err) };
+      // Composed here, not by the caller: this is the only side of the seam
+      // that still holds the rejection, so it is the only side that can tell
+      // a failed send from the failed session resume behind it
+      // (protocol/errors.ts's sessionActionError). Nothing was sent either
+      // way - the batch is intact and retryable above - so the resume is free
+      // to take the whole sentence.
+      return { outcome: "error", message: sessionActionError("Couldn't send answers", err) };
     }
   },
 }));

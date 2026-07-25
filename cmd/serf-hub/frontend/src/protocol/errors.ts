@@ -40,18 +40,28 @@ export function isHubLaunchError(err: unknown): boolean {
   return err instanceof WireError && err.serfErrorInfo === "hubLaunch";
 }
 
-// sessionActionError writes the failure sentence for a session mutation,
-// naming the step that actually died.
+// sessionActionHeadline names the step that actually died.
 //
-// Every mutation against a cold session resumes it first (cmd/serf-hub/
+// Every session call against a cold session resumes it first (cmd/serf-hub/
 // app_session_resume.go's withSessionResume, and app_model.go's
 // setThreadModelWithResume and siblings). When the resume is what failed, the
 // hub returns the spawner's own raw text and nothing in it says which of the
-// two steps died - so naming the mutation sends someone debugging /goal when
-// the daemon simply would not start. `failure` names the mutation and is used
-// only when the mutation itself is what failed.
+// two steps died - so naming the action sends someone debugging /goal when
+// the daemon simply would not start. `failure` names the action and is used
+// only when the action itself is what failed.
+//
+// Use this where the headline and the detail land in separate slots (an
+// EmptyState's title and hint); use sessionActionError for the one-string
+// case. Both branch on the same discriminator, so a surface that reports one
+// failure twice cannot say two different things.
+export function sessionActionHeadline(failure: string, err: unknown): string {
+  return isHubLaunchError(err) ? "Couldn't start this session" : failure;
+}
+
+// sessionActionError writes the whole failure sentence for a session action:
+// the headline sessionActionHeadline picks, then the rejection's own text.
 export function sessionActionError(failure: string, err: unknown): string {
-  const headline = isHubLaunchError(err) ? "Couldn't start this session" : failure;
+  const headline = sessionActionHeadline(failure, err);
   const detail = errorText(err).trim();
   return detail ? `${headline}: ${detail}` : headline;
 }

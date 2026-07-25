@@ -27,8 +27,11 @@ export interface LoadOlderRowProps {
   // the retry button after a failure.
   onLoad: () => void;
   loading: boolean;
-  // The message from the last failed fetch, or null when the last attempt
-  // succeeded (or none has been made).
+  // The last failed fetch's finished sentence, or null when the last attempt
+  // succeeded (or none has been made). Rendered verbatim: useTranscript
+  // already labelled it, and only useTranscript can tell a failed page fetch
+  // from the failed session resume behind it, so a label added here would
+  // talk over that.
   error: string | null;
 }
 
@@ -83,7 +86,7 @@ export function LoadOlderRow({ onLoad, loading, error }: LoadOlderRowProps) {
           {/* role=alert: a failure the reader did not ask for and cannot see
               coming needs announcing, unlike the two quiet states. */}
           <span role="alert" className={CLASS.error}>
-            {`Couldn't load older turns: ${error}`}
+            {error}
           </span>
           <button type="button" data-testid="load-older-retry" className={CLASS.retry} onClick={onLoad}>
             Retry

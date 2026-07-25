@@ -36,7 +36,7 @@
 // failure: toast (the wave's failure-feedback convention) AND an inline
 // error state, since there is nothing left to show in its place.
 import { useEffect, useState } from "react";
-import { errorText, sessionActionError, WireError } from "../../../protocol/errors";
+import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
@@ -96,6 +96,23 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
   return tasks ? `Tasks ${tasks.done}/${tasks.total}` : "Tasks";
 }
 
+// The one name this panel's failure goes by. Both reports of it - the toast
+// and the inline state - are built from this and from the same discriminator
+// (protocol/errors.ts), so a failed session resume takes over both or
+// neither; the panel can never say two different things about one failure.
+const LOAD_FAILURE = "Couldn't load tasks";
+
+// The inline report, split the way EmptyState renders it: the headline names
+// the step that died, the detail is the rejection's own text.
+interface LoadFailure {
+  headline: string;
+  detail: string;
+}
+
+function loadFailure(err: unknown): LoadFailure {
+  return { headline: sessionActionHeadline(LOAD_FAILURE, err), detail: errorText(err).trim() };
+}
+
 function isActionUnavailable(err: unknown): boolean {
   return err instanceof WireError && err.serfErrorInfo === "actionUnavailable";
 }
@@ -133,7 +150,7 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<LoadFailure | null>(null);
 
   // Re-fetches on every open, and again whenever model.tasks changes while
   // still open (a live serf/task/updated push while the user is looking) -
@@ -173,9 +190,8 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
           return;
         }
         setRows(null);
-        const message = errorText(err);
-        setError(message);
-        toasts.push("error", sessionActionError("Couldn't load tasks", err));
+        setError(loadFailure(err));
+        toasts.push("error", sessionActionError(LOAD_FAILURE, err));
       });
     return () => {
       cancelled = true;
@@ -197,7 +213,9 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
       );
     }
     if (error) {
-      return <EmptyState title="Couldn't load tasks" hint={error} />;
+      // Same drop-the-empty-detail rule sessionActionError applies to the
+      // toast, so the two reports stay word-for-word the same failure.
+      return <EmptyState title={error.headline} hint={error.detail || undefined} />;
     }
     if (rows === null) {
       return <p className={CLASS.state}>Loading tasks…</p>;
