@@ -1,5 +1,5 @@
 /* A hairline frame on --surface-1 - no heavy fill, no shadow. Measured in the
- * light theme --surface-1 is the same #FFFFFF as the pane behind it, so the
+ * light theme --surface-1 is the same white as the pane behind it, so the
  * edge is what separates the block from the prose; that is deliberate (the
  * block should read as framed text, not as a slab). */
 .root {
