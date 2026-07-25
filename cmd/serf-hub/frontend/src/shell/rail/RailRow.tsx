@@ -45,6 +45,7 @@ const CLASS = {
   label: requireClass(styles.label, "Rail.module.css", "label"),
   activity: requireClass(styles.activity, "Rail.module.css", "activity"),
   time: requireClass(styles.time, "Rail.module.css", "time"),
+  notStarted: requireClass(styles.notStarted, "Rail.module.css", "notStarted"),
   star: requireClass(styles.star, "Rail.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "Rail.module.css", "loadingRow"),
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
@@ -326,15 +327,34 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 // reachable on hover without costing the list a line. The title always leads, so
 // a truncated title is still recoverable from it (the case this tooltip
 // originally existed for).
-function rowTooltip(session: ApiTreeNode, showsGloss: boolean): string {
+function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: boolean): string {
   const parts = [session.title];
   // A signal row already prints its state; a quiet one doesn't, so only the
-  // quiet case needs the word here.
-  if (!showsGloss) parts.push(humanizeState(session.state));
+  // quiet case needs the word here. A row that has never run reports THAT
+  // instead: "idle" is true of it but tells the reader nothing they don't
+  // already believe, and it is the very confusion this line exists to end.
+  if (saysNotStarted) parts.push("not started");
+  else if (!showsGloss) parts.push(humanizeState(session.state));
   // "current" is the unremarkable default state of a session - the same
   // exclusion the visible line used to make.
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
+  // A dormant row spends its right slot on "Not started" instead of the age,
+  // so the age lands here - the same contract every other fact this row gives
+  // up is held to.
+  if (saysNotStarted && session.age !== undefined && session.age !== "") parts.push(session.age);
   return parts.join(" · ");
+}
+
+// saysNotStarted decides whether a row leads with "this has never run".
+//
+// Dormancy is a fact about a session's HISTORY; the state is a fact about what
+// it is doing now. When those two compete for one slot the state wins: a
+// dormant session handed a prompt a second ago is genuinely working, and a row
+// still calling it "Not started" would be flatly wrong. So this is only ever
+// true on a row that is otherwise quiet - which is exactly the row that had
+// nothing to say before.
+function saysNotStarted(session: ApiTreeNode, showsGloss: boolean): boolean {
+  return session.dormant === true && !showsGloss;
 }
 
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
@@ -348,6 +368,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(session.state));
+  const notStarted = saysNotStarted(session, showsGloss);
   const gloss = activityGloss(session);
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -371,7 +392,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             native tooltip - nothing a narrow rail cuts off becomes
             unreachable. The title's tooltip also carries what the visible row
             drops (rowTooltip). */}
-        <span className={CLASS.label} title={rowTooltip(session, showsGloss)}>
+        <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
           {session.title}
         </span>
         {showsGloss && (
@@ -395,6 +416,17 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           redundant "0"/"1" badge. */}
       {needsYouCount > 0 ? (
         <Badge count={needsYouCount} tone="attention" />
+      ) : notStarted ? (
+        // Words, not a number: a session that has never run has no elapsed
+        // work to report, and the age this slot would otherwise show is
+        // counting from the moment it was created - which reads as activity
+        // and is the single most misleading thing on the row. Saying so also
+        // gives the row an accessible name that answers the question a
+        // returning user actually has ("did I already ask it something?"),
+        // which an empty signal gutter never could.
+        <span data-testid="rail-row-not-started" className={CLASS.notStarted}>
+          Not started
+        </span>
       ) : (
         session.age !== undefined &&
         session.age !== "" && (

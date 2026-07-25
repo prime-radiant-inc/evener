@@ -433,6 +433,59 @@ func TestAPITree_NeedsYouCarriesAskPending(t *testing.T) {
 	}
 }
 
+// The rail cannot tell a never-run session from one that ran and went quiet
+// unless the fact reaches the client: /api/tree's node carries only a state,
+// and "idle" is what BOTH of them report. This pins the fact onto the wire in
+// the tier the sidebar actually renders, for a dormant session and for one
+// with a history, so a node that quietly dropped the field fails here rather
+// than in a screenshot.
+func TestAPITree_CarriesDormancy(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-dormancy-0000000000")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, meta := range []schema.SessionMeta{
+		{ID: "033vq9Kif27AzZgnbjr55t", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: proj}},
+		{ID: "033vq9TK4UNkogAAWepGNO", UpdatedAt: now, TurnCount: 4, AcceptedInputTurns: 2,
+			EnvInfo: schema.EnvironmentInfo{WorkingDir: proj}},
+	} {
+		if err := schema.SaveSessionMeta(proj, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{Past: idx, Roster: hubcore.NewRosterWithEntries()})
+	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	var resp hubapi.TreeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	seen := map[string]bool{}
+	for _, p := range resp.Projects {
+		for _, n := range p.Sessions {
+			seen[n.SessionID] = true
+			got[n.SessionID] = n.Dormant
+		}
+	}
+	if !seen["033vq9Kif27AzZgnbjr55t"] || !seen["033vq9TK4UNkogAAWepGNO"] {
+		t.Fatalf("both sessions must be listed under their project, got %+v", resp.Projects)
+	}
+	if !got["033vq9Kif27AzZgnbjr55t"] {
+		t.Errorf("01NEVERRAN Dormant = false, want true — a never-run session must say so on the wire")
+	}
+	if got["033vq9TK4UNkogAAWepGNO"] {
+		t.Errorf("01HASRUN Dormant = true, want false — a session with turns has run")
+	}
+}
+
 func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-renamed-0000000000")

@@ -131,12 +131,23 @@ func classifySession(decision *bool, lastActivity, now time.Time) string {
 //   - "cluster"  – a fold of N same-titled idle sessions (mockup #10/#C); the
 //     individual runs are the cluster's Children and ClusterCount is N.
 type TreeNode struct {
-	ID           string
-	Title        string
-	Project      string
-	Branch       string // git branch at session start; empty when unknown
-	State        string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
-	AskPending   bool   // true while the daemon reports an unanswered ask_user question
+	ID         string
+	Title      string
+	Project    string
+	Branch     string // git branch at session start; empty when unknown
+	State      string // "errored" | "awaiting" | "active" | "warning" | "idle" | "ended"
+	AskPending bool   // true while the daemon reports an unanswered ask_user question
+	// Dormant is true for a session that has never run: no model response and
+	// no accepted user input. An empty-prompt spawn creates one, and it reports
+	// State "idle" — the same word a session that ran and finished reports — so
+	// without this fact the two are indistinguishable to every consumer.
+	//
+	// It sits BESIDE State rather than inside that vocabulary because the two
+	// answer independent questions: a session prompted a moment ago is
+	// legitimately "active" with nothing in its history yet. Keeping them apart
+	// is also what leaves rollup state, AttentionRank and NeedsYouBand
+	// untouched — none of them gains a case to learn.
+	Dormant      bool
 	Kind         string // "session" | "subagent" | "fork" | "cluster"
 	ClusterCount int    // for Kind=="cluster": number of folded same-titled runs
 	CreatedAt    time.Time
@@ -451,6 +462,25 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		return liveMap[id].PendingAsk
 	}
 
+	// dormantFor resolves "this session has never run" for a session ID, from
+	// the same metaMap every builder below already consults — one closure, for
+	// the same reason stateFor and askPendingFor are: a session listed in both
+	// the Live tier and under its project must report the identical fact in
+	// both places (tree_live_agreement_test.go).
+	//
+	// Deliberately conservative — dormant only when the meta records NEITHER a
+	// model response NOR an accepted user input. A session that ran before
+	// AcceptedInputTurns was persisted still carries a TurnCount, so it is
+	// never mislabelled; and a session whose first turn is in flight, or which
+	// failed before any response, carries an accepted input, so the row never
+	// denies that the user asked it something. A session with no meta at all
+	// (a live entry the past index has not caught up with) reports false: the
+	// claim is only ever made from evidence.
+	dormantFor := func(id string) bool {
+		m, ok := metaMap[id]
+		return ok && m.TurnCount == 0 && m.AcceptedInputTurns == 0
+	}
+
 	// runningChildIDs is deliberately built from the live entries supplied to
 	// this tree build. A child can be running in-process without having its own
 	// rendezvous/live entry, so the child row must not rely on liveMap alone.
@@ -597,6 +627,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Branch:     m.EnvInfo.GitBranch,
 			State:      state,
 			AskPending: askPending,
+			Dormant:    dormantFor(m.ID),
 			Kind:       kind,
 			CreatedAt:  OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
 			UpdatedAt:  OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
@@ -794,6 +825,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			ID:         le.SessionID,
 			State:      state,
 			AskPending: askPendingFor(le.SessionID),
+			Dormant:    dormantFor(le.SessionID),
 			Kind:       "session",
 		}
 		if meta != nil {
@@ -868,6 +900,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			State:      st,
 			Kind:       "session",
 			AskPending: le.PendingAsk,
+			Dormant:    dormantFor(le.SessionID),
 		}
 		if meta != nil {
 			node.Title = nodeTitle(*meta, nodeKind(*meta))

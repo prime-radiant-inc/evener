@@ -85,25 +85,31 @@ type TreeProject struct {
 }
 
 type TreeNode struct {
-	RowID        string     `json:"row_id"`
-	Ref          string     `json:"ref"`
-	HostID       string     `json:"host_id"`
-	SessionID    string     `json:"session_id"`
-	Title        string     `json:"title"`
-	Project      string     `json:"project"`
-	State        string     `json:"state"`
-	Kind         string     `json:"kind"`
-	Tier         string     `json:"tier,omitempty"`
-	Branch       string     `json:"branch,omitempty"`
-	ClusterCount int        `json:"cluster_count,omitempty"`
-	Favorite     bool       `json:"favorite,omitempty"`
-	Rename       bool       `json:"rename,omitempty"`
-	Live         bool       `json:"live"`
-	AskPending   bool       `json:"ask_pending,omitempty"`
-	UpdatedAt    time.Time  `json:"updated_at,omitempty"`
-	Age          string     `json:"age,omitempty"`
-	Model        string     `json:"model,omitempty"`
-	Children     []TreeNode `json:"children,omitempty"`
+	RowID        string `json:"row_id"`
+	Ref          string `json:"ref"`
+	HostID       string `json:"host_id"`
+	SessionID    string `json:"session_id"`
+	Title        string `json:"title"`
+	Project      string `json:"project"`
+	State        string `json:"state"`
+	Kind         string `json:"kind"`
+	Tier         string `json:"tier,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	ClusterCount int    `json:"cluster_count,omitempty"`
+	Favorite     bool   `json:"favorite,omitempty"`
+	Rename       bool   `json:"rename,omitempty"`
+	Live         bool   `json:"live"`
+	AskPending   bool   `json:"ask_pending,omitempty"`
+	// Dormant is true for a session that has never run — no model response and
+	// no accepted user input. It rides beside State rather than inside it: a
+	// dormant session reports State "idle", exactly like a session that ran and
+	// went quiet, and the two are only distinguishable by this field. See
+	// hubcore.TreeNode.Dormant for why it is not a state value.
+	Dormant   bool       `json:"dormant,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at,omitempty"`
+	Age       string     `json:"age,omitempty"`
+	Model     string     `json:"model,omitempty"`
+	Children  []TreeNode `json:"children,omitempty"`
 }
 
 // SessionDetail is returned by GET /api/sessions/{ref}.

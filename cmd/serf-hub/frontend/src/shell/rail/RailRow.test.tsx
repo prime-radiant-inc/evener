@@ -338,6 +338,85 @@ describe("session row", () => {
     expect(screen.queryByText(/opus/)).toBeNull();
   });
 
+  // --- a session that has never run says so ------------------------------
+  //
+  // An empty-prompt spawn starts a session dormant (kata ytpa), and the server
+  // reports it "idle" - the same word a session that ran and went quiet gets.
+  // Every quiet row is title + age, so the two were the same row. Worse, the
+  // age READ as activity: it falls back to the creation time, so a session that
+  // has never done anything showed a confident "now" or "4m".
+  //
+  // The row spends no new space on this. The one slot that was actively lying -
+  // the age - is the slot that carries the correction, so a dormant row stays
+  // one line and the mobile drawer still shows the same six rows.
+
+  test("a dormant row says it has not started, in place of an age that would read as activity", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-not-started").textContent).toBe("Not started");
+    expect(screen.queryByTestId("rail-row-time")).toBeNull();
+  });
+
+  test("a session that has run keeps its age", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: false }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("4m");
+    expect(screen.queryByTestId("rail-row-not-started")).toBeNull();
+  });
+
+  // "Not started" is a fact about a row's history, not a call for help. The
+  // signal gutter is reserved for the states worth crossing the room for
+  // (working / needs you / failed) - a dot here would put a dormant session in
+  // that company, and a rail full of dots is a rail whose dots mean nothing.
+  test("a dormant row earns no dot and no gloss line", () => {
+    render(
+      <RailRow node={sessionRailNode(apiNode({ state: "idle", dormant: true }))} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+  });
+
+  // The moment a dormant session is given something to do it is working, and
+  // the row must say THAT. Dormancy is only ever the most useful thing to
+  // report on a row that is otherwise quiet.
+  test.each(["active", "awaiting", "warning", "errored"] as const)(
+    "a signal state (%s) outranks dormancy in the right slot",
+    (state) => {
+      render(
+        <RailRow
+          node={sessionRailNode(apiNode({ state, age: "now", dormant: true }))}
+          info={info()}
+          actions={actions()}
+        />,
+      );
+      expect(screen.queryByTestId("rail-row-not-started")).toBeNull();
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("now");
+    },
+  );
+
+  // The visible row gave up its age, so the tooltip has to keep it - the same
+  // contract every other fact this row drops is held to.
+  test("a dormant row's tooltip keeps the age its visible line gave up", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", age: "4m", dormant: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · not started · 4m");
+  });
+
   // --- what the visible row drops stays reachable on hover --------------
   //
   // Tier is real information a title cannot carry, and a quiet row no longer

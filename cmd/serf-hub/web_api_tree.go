@@ -697,6 +697,7 @@ func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, li
 		UpdatedAt:  n.UpdatedAt,
 		Age:        n.Age,
 		AskPending: n.AskPending,
+		Dormant:    n.Dormant,
 	}
 	if le, ok := s.liveEntry(n.ID); ok {
 		out.Model = le.Model
