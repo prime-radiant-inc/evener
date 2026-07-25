@@ -171,6 +171,15 @@ function visibleTabTexts(): string[] {
     .flatMap((el) => Array.from(el.querySelectorAll(".dv-tab")).map((t) => t.textContent ?? ""));
 }
 
+// Native tab close controls the user can actually reach - i.e. those inside a
+// header container that is not display:none. Same filter as visibleTabTexts,
+// for the same reason: the elements themselves survive inside a hidden header.
+function visibleCloseControlCount(): number {
+  return Array.from(document.querySelectorAll<HTMLElement>(".dv-tabs-and-actions-container"))
+    .filter((el) => el.style.display !== "none")
+    .reduce((n, el) => n + el.querySelectorAll(".dv-default-tab-action").length, 0);
+}
+
 // `.dv-active-tab` is applied PER GROUP (dockview-core's own tab.js/
 // tabsContainer.js toggle it off each panel's own api.isActive), so once the
 // workspace has two groups there are TWO active tabs - one per group - and
@@ -244,12 +253,15 @@ test("the main pane offers no way to close it - it is replaceable, not closeable
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
 
-  // No tab bar, therefore no native (x), and no other close control anywhere.
+  // No tab bar, therefore no REACHABLE native (x), and no other close control.
+  // Counted through the same visible-header filter visibleTabTexts uses, not a
+  // `:not([style*='none'])` attribute match: dockview's own (x) element stays in
+  // the DOM inside the hidden container (measured live - the main group has one
+  // there and zero visible), so a query that ignores the container's display
+  // would report a button no user can click and pass for the wrong reason.
   expect(headerHiddenFlags()).toEqual([true]);
   expect(visibleTabTexts()).toEqual([]);
-  expect(
-    document.querySelectorAll(".dv-tabs-and-actions-container:not([style*='none']) .dv-default-tab-action"),
-  ).toHaveLength(0);
+  expect(visibleCloseControlCount()).toBe(0);
   expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
 
   // And the main slot is never empty: closing it programmatically (the only
