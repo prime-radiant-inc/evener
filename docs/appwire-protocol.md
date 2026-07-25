@@ -159,34 +159,34 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 
 | Notification | Payload | Summary |
 |--------------|---------|---------|
-| `thread/started` | `(inline)` | Session started; inline {threadId, ref, thread} carrying the initial Thread snapshot. |
-| `thread/closed` | `(inline)` | Session ended; inline {threadId, ref, reason}. |
+| `thread/started` | `ThreadStartedParams` | Session started; carries the initial Thread snapshot. |
+| `thread/closed` | `ThreadClosedParams` | Session ended. |
 | `thread/status/changed` | `ThreadStatusChangedParams` | Thread status (type + active flags) changed. |
 | `thread/queueChanged` | `ThreadQueueChangedParams` | The per-session input queue depth/preview changed. |
 | `serf/thread/name/changed` | `ThreadNameChangedParams` | The session title changed (generated or user-renamed). |
 | `thread/model/changed` | `ThreadModelChangedParams` | The session's model/provider changed mid-session (thread/model/set or an equivalent switch). |
 | `thread/reasoning-effort/changed` | `ThreadReasoningEffortChangedParams` | The session's reasoning effort changed mid-session (thread/reasoning-effort/set). |
-| `turn/started` | `(inline)` | A new turn began (inProgress); inline {threadId, ref, turn}. |
+| `turn/started` | `TurnStartedParams` | A new turn began (inProgress). |
 | `turn/completed` | `TurnCompletedParams` | A turn reached a terminal state (completed/failed/interrupted). |
-| `item/started` | `(inline)` | A thread item began streaming; inline {threadId, ref, turnId, item}. |
-| `item/completed` | `(inline)` | A thread item finished; inline {threadId, ref, turnId, item}. |
+| `item/started` | `ItemLifecycleParams` | A thread item began streaming. |
+| `item/completed` | `ItemLifecycleParams` | A thread item finished. |
 | `item/agentMessage/delta` | `AgentMessageDeltaParams` | Incremental assistant-message text chunk for an item. |
 | `item/agentMessage/reset` | `AgentMessageResetParams` | Discard the in-progress assistant item (a retry replaces it). |
 | `item/reasoning/summaryTextDelta` | `ReasoningSummaryDeltaParams` | Incremental reasoning-summary text chunk for a reasoning item. |
 | `item/toolOutput/delta` | `ToolOutputDeltaParams` | Incremental tool-output chunk for a tool-call item. |
-| `warning` | `(inline)` | Non-fatal diagnostic; inline {threadId, ref, message, source, title, hint, warning, cause?}. Also used for cancelled turns and relay-attach failures. |
-| `serf/steering/injected` | `(inline)` | A steering message was injected into the active turn; inline {threadId, ref, text, images}. |
-| `serf/job/started` | `(inline)` | A background job started; inline {threadId, ref, job}. |
-| `serf/job/finished` | `(inline)` | A background job finished; inline {threadId, ref, job} with status/reason/exitCode/output. |
-| `serf/auth/updated` | `(inline)` | Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state. |
-| `serf/launch/updated` | `(inline)` | Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config. |
-| `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
-| `serf/marketplace/updated` | `(inline)` | Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list. |
-| `serf/plugin/updated` | `(inline)` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list. |
+| `warning` | `WarningParams` | Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures. |
+| `serf/steering/injected` | `SerfSteeringInjectedParams` | A steering message was injected into the active turn. |
+| `serf/job/started` | `SerfJobParams` | A background job started. |
+| `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
+| `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
+| `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
+| `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary (hubcore.AttentionChangedPayload, which this package cannot import). Hub-originated; never sent by daemons. |
+| `serf/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
+| `serf/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
 | `serf/sandbox/escalation/requested` | `SandboxEscalationRequested` | A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve. |
 | `serf/sandbox/escalation/resolved` | `SandboxEscalationResolved` | A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card. |
-| `serf/tree/changed` | `(inline)` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); inline {}. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
+| `serf/tree/changed` | `EmptyParams` | Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons. |
 
 ## Type reference
 
@@ -441,6 +441,16 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+
+
+### `ItemLifecycleParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `turnId` | `string` |  |  |
+| `item` | `appwire.ThreadItem` |  |  |
 
 
 ### `LaunchConfigGetLayerParams`
@@ -716,6 +726,42 @@ _(no fields)_
 | `escalationId` | `string` |  |  |
 
 
+### `SerfAuthUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `provider` | `string` | yes |  |
+| `activeSource` | `string` | yes |  |
+
+
+### `SerfJobParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `job` | `appwire.SerfJobInfo` |  |  |
+
+
+### `SerfLaunchUpdatedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `layer` | `string` |  |  |
+
+
+### `SerfSteeringInjectedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `text` | `string` | yes |  |
+| `images` | `[]appwire.InputItem` | yes |  |
+| `source` | `string` | yes |  |
+
+
 ### `SerfSubagentPreviewParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -781,6 +827,15 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `thread` | `appwire.Thread` |  |  |
 | `ref` | `string` |  |  |
+
+
+### `ThreadClosedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `reason` | `string` | yes |  |
 
 
 ### `ThreadCompactStartParams`
@@ -966,6 +1021,15 @@ _(no fields)_
 | `turn` | `appwire.Turn` |  |  |
 
 
+### `ThreadStartedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `thread` | `appwire.Thread` |  |  |
+
+
 ### `ThreadStatusChangedParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1114,6 +1178,15 @@ _(no fields)_
 | `turn` | `appwire.Turn` |  |  |
 
 
+### `TurnStartedParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `turn` | `appwire.Turn` |  |  |
+
+
 ### `TurnSteerParams`
 
 | Field | Go type | Omitempty | Embedded |
@@ -1144,5 +1217,19 @@ _(no fields)_
 | `shareBinDir` | `string` |  |  |
 | `installed` | `[]string` |  |  |
 | `restartMessage` | `string` |  |  |
+
+
+### `WarningParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `threadId` | `string` |  |  |
+| `ref` | `string` | yes |  |
+| `message` | `string` | yes |  |
+| `source` | `string` | yes |  |
+| `title` | `string` | yes |  |
+| `hint` | `string` | yes |  |
+| `warning` | `interface {}` | yes |  |
+| `cause` | `*appwire.DiagnosticCause` | yes |  |
 
 

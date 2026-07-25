@@ -1195,6 +1195,107 @@ type ToolOutputDeltaParams struct {
 	Delta    string `json:"delta"`
 }
 
+// ThreadStartedParams is the params shape for the thread/started
+// notification: the new session's initial Thread snapshot, so a client can
+// render the session without a follow-up thread/read.
+type ThreadStartedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref,omitempty"`
+	Thread   Thread `json:"thread"`
+}
+
+// ThreadClosedParams is the params shape for the thread/closed notification.
+// Reason is the session's shutdown reason, empty when the source reported
+// none.
+type ThreadClosedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+}
+
+// TurnStartedParams is the params shape for the turn/started notification:
+// the newly opened (inProgress) turn. Its counterpart turn/completed
+// (TurnCompletedParams) deliberately carries no thread identifier.
+type TurnStartedParams struct {
+	ThreadID string `json:"threadId"`
+	Ref      string `json:"ref,omitempty"`
+	Turn     Turn   `json:"turn"`
+}
+
+// ItemLifecycleParams is the params shape shared by the item/started and
+// item/completed notifications — one thread item entering or leaving its
+// streaming state. Both carry the identical envelope, so they share one type
+// rather than two copies that could drift; consumers distinguish them by the
+// notification method, not by shape.
+type ItemLifecycleParams struct {
+	ThreadID string     `json:"threadId"`
+	Ref      string     `json:"ref,omitempty"`
+	TurnID   string     `json:"turnId"`
+	Item     ThreadItem `json:"item"`
+}
+
+// WarningParams is the params shape for the warning notification: a
+// non-fatal diagnostic, also used for cancelled turns and relay-attach
+// failures. Message/Source/Title/Hint are the human-facing diagnostic;
+// Warning carries the raw producer-side event payload and Cause the
+// structured error cause (present only on the cancelled-turn path), neither
+// of which has a UI consumer today.
+//
+// A genuine turn failure sends no warning at all — only a failed
+// turn/completed carrying the same diagnostic on its TurnError — so clients
+// that render both channels do not show one error twice.
+type WarningParams struct {
+	ThreadID string           `json:"threadId"`
+	Ref      string           `json:"ref,omitempty"`
+	Message  string           `json:"message,omitempty"`
+	Source   string           `json:"source,omitempty"`
+	Title    string           `json:"title,omitempty"`
+	Hint     string           `json:"hint,omitempty"`
+	Warning  any              `json:"warning,omitempty"`
+	Cause    *DiagnosticCause `json:"cause,omitempty"`
+}
+
+// SerfSteeringInjectedParams is the params shape for the
+// serf/steering/injected notification. Text is pre-substituted server-side
+// with an image placeholder when a steer carries only images. Source is
+// "user" for human-sent steering (rendered as a user message) and omitted
+// entirely for daemon-originated steering (issue #24).
+type SerfSteeringInjectedParams struct {
+	ThreadID string      `json:"threadId"`
+	Ref      string      `json:"ref,omitempty"`
+	Text     string      `json:"text,omitempty"`
+	Images   []InputItem `json:"images,omitempty"`
+	Source   string      `json:"source,omitempty"`
+}
+
+// SerfJobParams is the params shape shared by the serf/job/started and
+// serf/job/finished notifications. Both carry the same envelope around a
+// SerfJobInfo; which of its fields are populated is what differs (a finished
+// job adds status/reason/exitCode/output), so one type describes both.
+type SerfJobParams struct {
+	ThreadID string      `json:"threadId"`
+	Ref      string      `json:"ref,omitempty"`
+	Job      SerfJobInfo `json:"job"`
+}
+
+// SerfAuthUpdatedParams is the params shape for the serf/auth/updated
+// notification. Both fields are absent when the broadcast follows a
+// provider-instance mutation, which no single provider/activeSource pair
+// honestly summarizes; clients treat this notification as payload-agnostic
+// ("credentials or instances changed, refetch") either way.
+type SerfAuthUpdatedParams struct {
+	Provider     string `json:"provider,omitempty"`
+	ActiveSource string `json:"activeSource,omitempty"`
+}
+
+// SerfLaunchUpdatedParams is the params shape for the serf/launch/updated
+// notification: which working directory's launch config changed, and at
+// which layer.
+type SerfLaunchUpdatedParams struct {
+	CWD   string `json:"cwd"`
+	Layer string `json:"layer"`
+}
+
 // NotificationRef carries just the routing fields shared by most
 // notifications (ref + threadId). Use it when you only need to know which
 // session a notification belongs to.

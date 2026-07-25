@@ -17,64 +17,6 @@ import type {
   Turn,
 } from "./types.gen";
 
-// The following notification param types are "(inline)" in the AppWire
-// catalog (appwire/protocol.go / docs/appwire-protocol.md): the codegen
-// leaves them as an empty placeholder interface (e.g. `ItemStartedPayload {}`)
-// because their shape only exists in prose, not a named Go struct. These
-// local interfaces capture that documented prose shape so the fields can be
-// read with the type-checker's help; each is verified against the actual
-// notification construction site in internal/appprojector/appwire_projection.go.
-interface TurnStartedInline {
-  threadId?: string;
-  ref?: string;
-  turn: Turn;
-}
-
-interface ItemLifecycleInline {
-  threadId?: string;
-  ref?: string;
-  turnId?: string;
-  item: ThreadItem;
-}
-
-// serf/steering/injected's payload is declared `nil` in the AppWire catalog
-// (appwire/protocol.go, NotifySerfSteeringInjected) — codegen therefore emits
-// an empty SerfSteeringInjectedPayload{} with no fields. The live projector
-// (internal/appprojector/appwire_projection.go:573-593, EventSteeringInjected)
-// actually sends {threadId, ref, text, images, source?}: text is pre-
-// substituted server-side with an image placeholder when blank-with-images,
-// and source is present ("user") only for human-sent steers — omitted
-// entirely for daemon-originated ones.
-interface SteeringInjectedInline {
-  threadId?: string;
-  ref?: string;
-  text?: string;
-  images?: InputItem[];
-  source?: string;
-}
-
-// warning's payload is declared `nil` in the AppWire catalog
-// (appwire/protocol.go: {NotifyWarning, nil, "Non-fatal diagnostic; inline
-// {threadId, ref, message, source, title, hint, warning, cause?}. Also used
-// for cancelled turns and relay-attach failures."}) — codegen therefore
-// emits an empty WarningPayload{} with no fields. The live projector sends
-// exactly that inline shape for EventWarning
-// (internal/appprojector/appwire_projection.go:494-506), and the same shape
-// plus `cause` for EventError's user-cancel branch (:520-535) — a genuine
-// turn failure (the branch after that, :538-572) deliberately emits NO
-// warning, only a failed turn/completed (see that case's own comment on why
-// — double-render avoidance). `warning`/`cause` carry the raw event payload
-// and error-cause chain; neither has a model consumer, so they are left out
-// here rather than invented.
-interface WarningInline {
-  threadId?: string;
-  ref?: string;
-  message?: string;
-  source?: string;
-  title?: string;
-  hint?: string;
-}
-
 function epochMsToISO(ms: number | undefined): string | undefined {
   // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
   // anchor means "absent", never the 1970 epoch - downstream duration math
@@ -444,7 +386,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
-      const { turn } = n.params as TurnStartedInline;
+      const { turn } = n.params;
       return {
         ...model,
         turns: [...model.turns, wireToTurnModel(turn)],
@@ -516,7 +458,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "item/started": {
       if (!notificationTargetsThread(n, model)) return model;
-      const { turnId, item } = n.params as ItemLifecycleInline;
+      const { turnId, item } = n.params;
       const targetTurnId = resolveInsertTurnId(model, turnId, item.turnId);
       if (!targetTurnId) return { ...model, lastFrameAt: now };
       return {
@@ -531,7 +473,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
 
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
-      const { turnId, item } = n.params as ItemLifecycleInline;
+      const { turnId, item } = n.params;
       const existingTurnId = findItemTurnId(model, turnId, item.id);
       if (existingTurnId) {
         return {
@@ -732,7 +674,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       // conversion), so the next snapshot would not carry it either. Drop
       // it client-side; only the liveness signal survives.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
-      const params = n.params as WarningInline;
+      const params = n.params;
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
@@ -762,7 +704,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       // there is nowhere wire-true to put it — a race recovered by the next
       // snapshot, not a turn to fabricate client-side.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
-      const params = n.params as SteeringInjectedInline;
+      const params = n.params;
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {

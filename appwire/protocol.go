@@ -152,38 +152,41 @@ var Methods = []MethodSpec{
 }
 
 // Notifications is the AppWire server→client notification catalog. A nil
-// Payload marks a notification emitted as an inline object at the projector
-// (no dedicated Go type); its shape is given in the summary. The constant
+// Payload marks a notification whose shape is not described by a Go type;
+// today only serf/attention/changed is in that state, because its payload
+// type lives in cmd/serf-hub/internal/hubcore, which this package cannot
+// import. Notifications that carry no fields at all declare EmptyParams, so
+// "no payload" and "payload undescribed" read differently. The constant
 // NotifySerfContextPressure is intentionally absent — it is defined but
 // emitted by nothing (context pressure rides on the Thread snapshot
 // instead).
 var Notifications = []NotificationSpec{
-	{NotifyThreadStarted, nil, "Session started; inline {threadId, ref, thread} carrying the initial Thread snapshot."},
-	{NotifyThreadClosed, nil, "Session ended; inline {threadId, ref, reason}."},
+	{NotifyThreadStarted, ThreadStartedParams{}, "Session started; carries the initial Thread snapshot."},
+	{NotifyThreadClosed, ThreadClosedParams{}, "Session ended."},
 	{NotifyThreadStatusChanged, ThreadStatusChangedParams{}, "Thread status (type + active flags) changed."},
 	{NotifyThreadQueueChanged, ThreadQueueChangedParams{}, "The per-session input queue depth/preview changed."},
 	{NotifyThreadNameChanged, ThreadNameChangedParams{}, "The session title changed (generated or user-renamed)."},
 	{NotifyThreadModelChanged, ThreadModelChangedParams{}, "The session's model/provider changed mid-session (thread/model/set or an equivalent switch)."},
 	{NotifyThreadReasoningEffortChanged, ThreadReasoningEffortChangedParams{}, "The session's reasoning effort changed mid-session (thread/reasoning-effort/set)."},
-	{NotifyTurnStarted, nil, "A new turn began (inProgress); inline {threadId, ref, turn}."},
+	{NotifyTurnStarted, TurnStartedParams{}, "A new turn began (inProgress)."},
 	{NotifyTurnCompleted, TurnCompletedParams{}, "A turn reached a terminal state (completed/failed/interrupted)."},
-	{NotifyItemStarted, nil, "A thread item began streaming; inline {threadId, ref, turnId, item}."},
-	{NotifyItemCompleted, nil, "A thread item finished; inline {threadId, ref, turnId, item}."},
+	{NotifyItemStarted, ItemLifecycleParams{}, "A thread item began streaming."},
+	{NotifyItemCompleted, ItemLifecycleParams{}, "A thread item finished."},
 	{NotifyAgentMessageDelta, AgentMessageDeltaParams{}, "Incremental assistant-message text chunk for an item."},
 	{NotifyAgentMessageReset, AgentMessageResetParams{}, "Discard the in-progress assistant item (a retry replaces it)."},
 	{NotifyReasoningSummaryDelta, ReasoningSummaryDeltaParams{}, "Incremental reasoning-summary text chunk for a reasoning item."},
 	{NotifyToolOutputDelta, ToolOutputDeltaParams{}, "Incremental tool-output chunk for a tool-call item."},
-	{NotifyWarning, nil, "Non-fatal diagnostic; inline {threadId, ref, message, source, title, hint, warning, cause?}. Also used for cancelled turns and relay-attach failures."},
-	{NotifySerfSteeringInjected, nil, "A steering message was injected into the active turn; inline {threadId, ref, text, images}."},
-	{NotifySerfJobStarted, nil, "A background job started; inline {threadId, ref, job}."},
-	{NotifySerfJobFinished, nil, "A background job finished; inline {threadId, ref, job} with status/reason/exitCode/output."},
-	{NotifySerfAuthUpdated, nil, "Broadcast after a successful auth mutation; inline {provider, activeSource}. Clients refresh auth state."},
-	{NotifySerfLaunchUpdated, nil, "Broadcast after a launch layer/trust mutation; inline {cwd, layer}. Clients refresh launch config."},
-	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
-	{NotifySerfMarketplaceUpdated, nil, "Broadcast after a marketplace mutation (add/remove/refresh); inline {}. Clients refresh the marketplace list."},
-	{NotifySerfPluginUpdated, nil, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); inline {}. Clients refresh the plugin list."},
+	{NotifyWarning, WarningParams{}, "Non-fatal diagnostic. Also used for cancelled turns and relay-attach failures."},
+	{NotifySerfSteeringInjected, SerfSteeringInjectedParams{}, "A steering message was injected into the active turn."},
+	{NotifySerfJobStarted, SerfJobParams{}, "A background job started."},
+	{NotifySerfJobFinished, SerfJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
+	{NotifySerfAuthUpdated, SerfAuthUpdatedParams{}, "Broadcast after a successful auth mutation. Clients refresh auth state."},
+	{NotifySerfLaunchUpdated, SerfLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
+	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary (hubcore.AttentionChangedPayload, which this package cannot import). Hub-originated; never sent by daemons."},
+	{NotifySerfMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list."},
+	{NotifySerfPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
 	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 	{NotifySerfSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via serf/sandbox/escalation/resolve."},
 	{NotifySerfSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
-	{NotifySerfTreeChanged, nil, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); inline {}. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
+	{NotifySerfTreeChanged, EmptyParams{}, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
 }

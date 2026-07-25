@@ -65,7 +65,7 @@ const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ la
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
-    params: { ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
   });
 }
 
@@ -80,6 +80,7 @@ function askItemNotification(
   return {
     method,
     params: {
+      threadId: `thr_${ref}`,
       ref,
       turnId,
       item: {
@@ -98,7 +99,12 @@ function askItemNotification(
 function userMessageNotification(ref: string, turnId: string, itemId: string, text: string): AnyNotification {
   return {
     method: "item/completed",
-    params: { ref, turnId, item: { type: "userMessage", id: itemId, turnId, text, status: "completed" } },
+    params: {
+      threadId: `thr_${ref}`,
+      ref,
+      turnId,
+      item: { type: "userMessage", id: itemId, turnId, text, status: "completed" },
+    },
   };
 }
 

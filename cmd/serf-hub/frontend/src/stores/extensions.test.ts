@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import { threadStartedNotification } from "../protocol/testing/notifications";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { extensionsStore, resetExtensionsStoreForTests } from "./extensions";
@@ -515,7 +516,7 @@ describe("notification-triggered refetch", () => {
     await extensionsStore.getState().fetchLaunchLayer();
     fake.on("serf/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
 
-    fake.emitNotification({ method: "serf/launch/updated", params: {} });
+    fake.emitNotification({ method: "serf/launch/updated", params: { cwd: "/tmp/project", layer: "project" } });
     await vi.advanceTimersByTimeAsync(249);
     expect(extensionsStore.getState().launchLayer).toEqual({ pluginDirs: [] });
     await vi.advanceTimersByTimeAsync(1);
@@ -547,7 +548,7 @@ describe("notification-triggered refetch", () => {
     fake.on("serf/plugin/list", pluginSpy);
     fake.on("serf/launch/getLayer", launchSpy);
 
-    fake.emitNotification({ method: "thread/started", params: {} });
+    fake.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(1000);
     expect(marketplaceSpy).not.toHaveBeenCalled();
     expect(pluginSpy).not.toHaveBeenCalled();
