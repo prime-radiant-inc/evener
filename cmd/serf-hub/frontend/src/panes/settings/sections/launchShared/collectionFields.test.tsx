@@ -280,6 +280,39 @@ describe("PathListField", () => {
     await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/plugins/canonical"]));
   });
 
+  // Shared with the spawn pane's own pathList control (validatePathListAdd): a
+  // duplicate never reaches the RPC, and a broken RPC never wedges the add row.
+  test("a path already in the list is rejected without spending an RPC", async () => {
+    const user = userEvent.setup();
+    connectPathLister({});
+    const validatePath = vi.fn().mockResolvedValue({ path: "/opt/skills", valid: true });
+    const onChange = vi.fn();
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={["/opt/skills"]}
+        onChange={onChange}
+        validatePath={validatePath}
+      />,
+    );
+    await typePath(user, "/opt/skills");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    expect(await screen.findByText("Already added.")).toBeTruthy();
+    expect(validatePath).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("a validate RPC that fails outright does not block the add", async () => {
+    const user = userEvent.setup();
+    connectPathLister({});
+    const validatePath = vi.fn().mockRejectedValue(new Error("socket closed"));
+    const onChange = vi.fn();
+    render(<PathListField option={pathListOption()} items={[]} onChange={onChange} validatePath={validatePath} />);
+    await typePath(user, "/opt/skills");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/opt/skills"]));
+  });
+
   test("remove drops the item from the list", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

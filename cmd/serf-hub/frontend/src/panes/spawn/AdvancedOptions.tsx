@@ -18,6 +18,7 @@ import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSp
 import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
 import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
 import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
 import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
@@ -41,7 +42,10 @@ export interface AdvancedOptionsProps {
   /** Already filtered to perLaunch serf options (schema.perLaunchSerfOptions). */
   options: LaunchOption[];
   onOverridesChange: (overrides: LaunchConfigLayer) => void;
-  validatePath: (path: string, kind: string) => Promise<{ valid: boolean; error?: string }>;
+  /** serf/path/validate. Both the scalar path fields' live validation and the
+   * pathList add rows go through it; `path` (the server-canonicalized spelling)
+   * is used by an add when the caller's closure forwards it. */
+  validatePath: (path: string, kind: string) => Promise<PathValidation>;
   resolveConfig: (overrides: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
   /** Loads the model catalog for this panel's model-valued fields, scoped the
    * same way the top-level Model field is (harness + cwd). */
@@ -125,6 +129,7 @@ export function AdvancedOptions({
               error={errors[opt.wireField]}
               loadCatalog={loadCatalog}
               complete={complete}
+              validatePath={validatePath}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
             />
@@ -157,6 +162,8 @@ interface ControlProps {
   error?: string;
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
+  /** Gates a pathList add (the scalar path kinds validate through onScalar). */
+  validatePath: (path: string, kind: string) => Promise<PathValidation>;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
 }
@@ -175,7 +182,7 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind | null {
   }
 }
 
-function Control({ option, value, error, loadCatalog, complete, onScalar, onValue }: ControlProps) {
+function Control({ option, value, error, loadCatalog, complete, validatePath, onScalar, onValue }: ControlProps) {
   const controlId = useId();
   const current = typeof value?.value === "string" ? value.value : "";
 
@@ -276,6 +283,7 @@ function Control({ option, value, error, loadCatalog, complete, onScalar, onValu
           option={option}
           items={Array.isArray(value?.value) ? (value.value as string[]) : []}
           complete={complete}
+          validatePath={validatePath}
           onValue={onValue}
         />
       );
@@ -299,17 +307,23 @@ function isMcpList(v: unknown): v is MCPServerSpec[] {
 /**
  * skillsDirs/pluginDirs/mcpConfigs: adds come from the same browse widget every
  * other path field uses rather than a hand-typed path. The picked path lands in
- * CollectionEditor's own draft, which the Add button submits.
+ * CollectionEditor's own draft, which the Add button submits - and the submit
+ * goes through the SAME shared validatePathListAdd decision the settings-side
+ * pathList field uses (dedupe, then serf/path/validate). These are the same
+ * wire fields reaching the same daemon from either surface, so a path added
+ * here is gated exactly the way one added in Settings is.
  */
 function PathListControl({
   option,
   items,
   complete,
+  validatePath,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
+  validatePath: (path: string, kind: string) => Promise<PathValidation>;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   const pathKind = pathFieldKind(option.pathKind);
@@ -323,9 +337,10 @@ function PathListControl({
       onRemove={(item) => onValue({ value: items.filter((i) => i !== item) })}
       emptyMessage="None."
       addPlaceholder={option.description ?? "Add an entry"}
-      onAdd={(entry) => {
-        if (items.includes(entry)) return { ok: false, error: "Already added." };
-        onValue({ value: [...items, entry] });
+      onAdd={async (entry) => {
+        const outcome = await validatePathListAdd(option, items, entry, validatePath);
+        if (!outcome.ok) return { ok: false, error: outcome.error };
+        onValue({ value: [...items, outcome.value] });
         return { ok: true };
       }}
       // A non-browsable pathKind keeps the built-in plain-text add field.

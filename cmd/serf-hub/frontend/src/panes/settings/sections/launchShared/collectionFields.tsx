@@ -34,7 +34,7 @@ import { Button, CollectionEditor, Input, ModelCatalog, PathField, Switch } from
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../../widgets/modelCatalog/catalogClient";
 import styles from "./collectionFields.module.css";
-import { schemaPathKind } from "./schema";
+import { validatePathListAdd } from "./pathListAdd";
 
 const CLASS = {
   section: requireClass(styles.section, "collectionFields.module.css", "section"),
@@ -139,11 +139,13 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
 }
 
 /** pathList kind: skillsDirs/pluginDirs/mcpConfigs. Adds come from the shared
- * path picker (PathAddField below), and every add is still validated
- * server-side via serf/path/validate before being accepted, using the
- * server-canonicalized path when one comes back - matching the legacy's own
- * "blocks the add on failure, shows a field-level error" / "uses
- * valid.path if present else the raw trimmed input" behaviors. */
+ * path picker (PathAddField below), and every add goes through the shared
+ * validatePathListAdd decision - dedupe, then server-side serf/path/validate
+ * before being accepted, using the server-canonicalized path when one comes
+ * back - matching the legacy's own "blocks the add on failure, shows a
+ * field-level error" / "uses valid.path if present else the raw trimmed input"
+ * behaviors. The spawn pane's own Advanced-options pathList control shares that
+ * same decision. */
 export function PathListField({ option, items, onChange, validatePath }: PathListFieldProps) {
   const kind = pathFieldKind(option.pathKind);
   const placeholder = pathAddPlaceholder(kind);
@@ -154,11 +156,7 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
       onChange={onChange}
       addPlaceholder={placeholder}
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
-      validateAdd={async (trimmed) => {
-        const result = await validatePath(trimmed, schemaPathKind(option.pathKind));
-        if (!result.valid) return { ok: false, error: result.error || "invalid path" };
-        return { ok: true, value: result.path || trimmed };
-      }}
+      validateAdd={(trimmed) => validatePathListAdd(option, items, trimmed, validatePath)}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <div className={CLASS.pathAddRow}>
           <PathAddField
