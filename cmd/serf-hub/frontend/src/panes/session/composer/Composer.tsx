@@ -314,7 +314,16 @@ export function Composer({ ref }: ComposerProps) {
   // hub says are resumable. When the wire really advertises no send, no card is
   // rendered at all: an unusable field is worse than no field.
   const canCompose = availability.canSend || availability.canQueue;
-  const showFollowUpCard = ended && model.capabilities.send;
+  // Read here rather than inside the handlers below, which close over `model`
+  // outside the narrowing this component does at its top (see that block's own
+  // comment on why every handler reads a pre-narrowed local).
+  const canSendWhenEnded = model.capabilities.send;
+  const showFollowUpCard = ended && canSendWhenEnded;
+  // A finished session's card earns its control row once the user engages with
+  // it - focused, or holding text or an attachment. Content matters as well as
+  // focus: a restored draft, or a blur with text still in the field, must not
+  // strand a typed message with no visible way to send it.
+  const followUpEngaged = followUpFocused || hasContent;
 
   function handleTextChange(event: { target: { value: string } }): void {
     updateText(event.target.value);
@@ -496,7 +505,16 @@ export function Composer({ ref }: ComposerProps) {
       toasts.push("error", "Image attachment is still processing");
       return;
     }
-    const route = decideSubmitRoute({ hasContent, availability });
+    // A finished session routes as a plain send: the availability table reports
+    // both-false for ended/closed because no turn is in flight to send to or
+    // queue behind, but the hub advertises Send for a resumable thread and
+    // resumes it on the first message. Without this, a follow-up to an ended
+    // session falls through to "none" and toasts "Send is not available" at a
+    // session the hub would have happily woken.
+    const route = decideSubmitRoute({
+      hasContent,
+      availability: ended && canSendWhenEnded ? { canSend: true, canQueue: false } : availability,
+    });
     if (route === "none") {
       toasts.push("error", "Send is not available for this session");
       return;
@@ -689,20 +707,21 @@ export function Composer({ ref }: ComposerProps) {
                   // rule because the floor has to reach the field's own `rows`
                   // to take effect at all (see widgets/textarea's rows
                   // comment), and only the prop can do that.
-                  minLines={ended ? (followUpFocused ? 3 : 1) : undefined}
+                  minLines={ended ? (followUpEngaged ? 3 : 1) : undefined}
                   onFocus={ended ? () => setFollowUpFocused(true) : undefined}
                   onBlur={ended ? () => setFollowUpFocused(false) : undefined}
                   placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                   aria-label="Message"
                 />
               }
-              // An ended session's collapsed card carries no control row at
-              // all - attach and a permanent Send button would both be
-              // chrome around an invitation. Submitting is the ⌘/Ctrl+Enter
-              // chord handleKeyDown already routes, and focusing the field
-              // is what expands it.
+              // An ended session's card is a bare invitation UNTIL it is
+              // engaged: at rest it is one line with no control row, because
+              // chrome around an empty invitation is noise. Once it has focus
+              // or content it grows a real control row, because a field you
+              // can type into and cannot visibly send is a dead end - the
+              // ⌘/Ctrl+Enter chord alone is not an affordance anyone can see.
               leading={
-                ended ? undefined : (
+                ended && !followUpEngaged ? undefined : (
                   /* data-testid on every control in this row: two different
                      buttons here start with "Steer" (this one and
                      QueueStrip's "Steer queue now"), so tests address
@@ -723,7 +742,7 @@ export function Composer({ ref }: ComposerProps) {
                 )
               }
               actions={
-                ended ? undefined : (
+                ended && !followUpEngaged ? undefined : (
                   <>
                     {/* Stop leads the cluster, always in the same place: it is
                         the one control here whose misfire cannot be undone, so
@@ -756,7 +775,14 @@ export function Composer({ ref }: ComposerProps) {
                         variant={showSteer ? "quiet" : "primary"}
                         size="xs"
                         data-testid="composer-submit"
-                        disabled={busyAction !== null || !hasContent || !canCompose}
+                        // canCompose comes from the availability table, which
+                        // reports both-false for ended/closed: it answers "can
+                        // this turn be sent to right now", and a follow-up to a
+                        // finished session resumes it first. The capability is
+                        // the authority there, the same way it is for whether
+                        // this card renders at all - otherwise a session the hub
+                        // will happily resume shows a permanently dead Send.
+                        disabled={busyAction !== null || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
                       >
                         Send
                       </Button>

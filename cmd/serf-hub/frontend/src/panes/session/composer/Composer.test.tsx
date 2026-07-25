@@ -709,23 +709,75 @@ test("the stop button is absent once the session has ended", async () => {
 // A cold exited serf session arrives as "notLoaded" and STILL advertises Send
 // (cmd/serf-hub/app_threadread.go's pastEntryThread: the hub auto-resumes it on
 // the first message), so it keeps a card - collapsed to a one-line invitation
-// with no control row, since attach and a permanent Send button would both be
-// chrome around an invitation. ⌘/Ctrl+Enter is the submit route, and focusing
-// the field is what opens it up.
+// AT REST, since chrome around an empty invitation is noise. Engaging it
+// (focus, or any content) grows the real control row: a field you can type into
+// with no visible way to send is a dead end, and a keyboard chord is not an
+// affordance anyone can see.
 
 const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
 
+test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with no control row", async (type) => {
+  await mountComposer("ref_a", { status: { type } });
+  const card = screen.getByTestId("composer-input-card");
+  expect(textarea().getAttribute("placeholder")).toBe("Send a follow-up…");
+  expect(card.querySelectorAll("button")).toHaveLength(0);
+  expect(screen.queryByTestId("composer-attach")).toBeNull();
+  expect(screen.queryByTestId("composer-submit")).toBeNull();
+});
+
+test.each(ENDED_STATUSES)("a %s session's card grows a usable Send once focused", async (type) => {
+  await mountComposer("ref_a", { status: { type } });
+  await userEvent.setup().click(textarea());
+
+  const submit = screen.getByTestId("composer-submit");
+  expect(submit.textContent).toContain("Send");
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  // Steer and Stop stay absent: there is no turn in flight to act on.
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
+
+// The button has to be ENABLED, not merely present. deriveSendQueueAvailability
+// reports canSend===canQueue===false for ended/closed (no turn to send to or
+// queue behind), so gating the control on it renders a permanently dead Send at
+// exactly the sessions the hub resumes on demand.
+test.each(ENDED_STATUSES)("a %s session's Send enables as soon as there is something to send", async (type) => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { status: { type } });
+  await user.click(textarea());
+  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(true); // nothing typed yet
+
+  await user.type(textarea(), "follow up on this");
+  expect((screen.getByTestId("composer-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
 test.each(ENDED_STATUSES)(
-  "a %s session collapses the card to a follow-up invitation with no control row",
+  "clicking Send on a %s session really sends, rather than toasting a refusal",
   async (type) => {
-    await mountComposer("ref_a", { status: { type } });
-    const card = screen.getByTestId("composer-input-card");
-    expect(textarea().getAttribute("placeholder")).toBe("Send a follow-up…");
-    expect(card.querySelectorAll("button")).toHaveLength(0);
-    expect(screen.queryByTestId("composer-attach")).toBeNull();
-    expect(screen.queryByTestId("composer-submit")).toBeNull();
+    const user = userEvent.setup();
+    const fake = await mountComposer("ref_a", { status: { type } });
+    fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+
+    await user.click(textarea());
+    await user.type(textarea(), "wake up and finish the job");
+    await user.click(screen.getByTestId("composer-submit"));
+
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+    expect(screen.queryByText(/Send is not available/)).toBeNull();
   },
 );
+
+// Blur must not strand a typed message: the control row is gated on engagement
+// (focus OR content), so text left in the field keeps its Send.
+test("an ended session that still holds text keeps its control row after blur", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { status: { type: "ended" } });
+  await user.click(textarea());
+  await user.type(textarea(), "draft I walked away from");
+  await user.tab();
+
+  expect(screen.getByTestId("composer-submit")).toBeTruthy();
+});
 
 // One line at rest, opening to a real writing surface once focused. Driven from
 // React state rather than a :focus-within CSS rule because the floor has to
