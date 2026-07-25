@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -730,19 +727,31 @@ test.each(ENDED_STATUSES)(
   },
 );
 
-// The one-line-at-rest / opens-on-focus behavior is a CSS state change (a prop
-// cannot express "different on focus"), and vitest leaves CSS Modules
-// unprocessed - so the declarations are pinned against the stylesheet text the
-// same way RailRow's own ellipsis rule is. Comments stripped first so a class
-// named only in prose can never satisfy the assertion.
-test("the ended card's line floor is one line at rest and opens on focus", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8").replace(
-    /\/\*[\s\S]*?\*\//g,
-    " ",
-  );
-  expect(/\.endedForm\s*\{([^}]*)\}/.exec(css)?.[1] ?? "").toMatch(/--textarea-min-lines:\s*1/);
-  const focused = /\.endedForm:focus-within\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(focused).toMatch(/--textarea-min-lines:\s*3/);
+// One line at rest, opening to a real writing surface once focused. Driven from
+// React state rather than a :focus-within CSS rule because the floor has to
+// reach the field's own `rows` attribute to take effect at all (widgets/textarea
+// documents why), and only the prop can do that. Verified in Chrome too: before
+// the rows half of that fix, the collapsed field measured 39px - two lines - no
+// matter what the floor said.
+test("an ended session's field rests at one line and opens to three on focus", async () => {
+  await mountComposer("ref_a", { status: { type: "notLoaded" } });
+  expect(textarea().getAttribute("rows")).toBe("1");
+  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("1");
+
+  act(() => textarea().focus());
+  expect(textarea().getAttribute("rows")).toBe("3");
+  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("3");
+
+  act(() => textarea().blur());
+  expect(textarea().getAttribute("rows")).toBe("1");
+});
+
+// A live session's field must NOT pick up the collapsed floor - it keeps the
+// widget's own MIN_ROWS default, so a running composer is a comfortable target.
+test("a live session's field keeps the widget's own default line floor", async () => {
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(textarea().getAttribute("rows")).toBe("2");
+  expect(textarea().getAttribute("style") ?? "").not.toContain("--textarea-min-lines");
 });
 
 test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {

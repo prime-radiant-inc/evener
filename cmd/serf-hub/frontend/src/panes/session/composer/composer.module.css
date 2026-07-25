@@ -81,20 +81,6 @@
   border-color: var(--accent);
 }
 
-/* A finished session's follow-up affordance: one line at rest, opening to a
- * real writing surface the moment it has focus. The card's box, padding and
- * focus ring all come from widgets/promptcard - this only moves the field's own
- * line floor, which the widget reads as an inherited custom property (see
- * widgets/textarea's --textarea-min-lines), so setting it on this ancestor
- * reaches the field without either component knowing about the other. */
-.endedForm {
-  --textarea-min-lines: 1;
-}
-
-.endedForm:focus-within {
-  --textarea-min-lines: 3;
-}
-
 .visuallyHidden {
   position: absolute;
   width: 1px;

@@ -62,7 +62,6 @@ export interface ComposerProps {
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
   chips: requireClass(styles.chips, "composer.module.css", "chips"),
-  endedForm: requireClass(styles.endedForm, "composer.module.css", "endedForm"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
@@ -141,6 +140,10 @@ export function Composer({ ref }: ComposerProps) {
   // isOtherSessionsDraft guarded against.
   const [text, setText] = useState(() => readDraft(ref));
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  // Whether a FINISHED session's collapsed follow-up field currently has focus,
+  // which is what expands it from its one-line resting state. Only read on that
+  // path (see the ended card's minLines below); harmless everywhere else.
+  const [followUpFocused, setFollowUpFocused] = useState(false);
 
   // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
   // unlike `text` itself (a plain per-render const) or the textarea DOM
@@ -661,7 +664,7 @@ export function Composer({ ref }: ComposerProps) {
         </div>
       )}
       {(!ended || showFollowUpCard) && (
-        <form ref={formRef} onSubmit={handleFormSubmit} className={ended ? CLASS.endedForm : undefined}>
+        <form ref={formRef} onSubmit={handleFormSubmit}>
           <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
             <PromptCard
               data-testid="composer-input-card"
@@ -677,9 +680,15 @@ export function Composer({ ref }: ComposerProps) {
                   // The PromptCard around it draws the one border this field
                   // needs, and owns the focus ring via :focus-within.
                   seamless
-                  // The line floor for a finished session's collapsed card is
-                  // set by .endedForm in CSS, not passed here: it has to
-                  // CHANGE on focus, which a prop cannot express.
+                  // A finished session's card is one line of invitation at
+                  // rest, opening to a real writing surface once it has focus.
+                  // Driven from React state rather than a :focus-within CSS
+                  // rule because the floor has to reach the field's own `rows`
+                  // to take effect at all (see widgets/textarea's rows
+                  // comment), and only the prop can do that.
+                  minLines={ended ? (followUpFocused ? 3 : 1) : undefined}
+                  onFocus={ended ? () => setFollowUpFocused(true) : undefined}
+                  onBlur={ended ? () => setFollowUpFocused(false) : undefined}
                   placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
                   aria-label="Message"
                 />

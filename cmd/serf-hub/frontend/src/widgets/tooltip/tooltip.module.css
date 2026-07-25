@@ -10,6 +10,14 @@
   transform: translateX(-50%);
   z-index: 1030;
   padding: var(--space-1) var(--space-2);
+  /* An absolutely-positioned box with no width shrink-to-fits into the space
+   * its own offsets leave inside the containing block - and `left: 50%` leaves
+   * only half the TRIGGER's width. On a small trigger (a 24px icon button, a
+   * 48px "Send") that collapsed the bubble to a column one word per line, so
+   * `max-width` alone was never reached. `width: max-content` asks for the
+   * label's natural single-line width first and lets max-width do the
+   * capping, which is what makes the cap meaningful. */
+  width: max-content;
   max-width: 240px;
   background: var(--surface-2);
   border: 1px solid var(--edge);

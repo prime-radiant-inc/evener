@@ -205,3 +205,18 @@ test("is hidden from touch (no hover capability) via CSS, using only tokens", ()
   const css = readFileSync(join(here, "tooltip.module.css"), "utf8");
   expect(css).toMatch(/@media \(hover: none\)/);
 });
+
+// A bubble with no intrinsic width request shrink-to-fits into the space its
+// own offsets leave inside the containing block, and `left: 50%` leaves only
+// half the TRIGGER's width - so on a small trigger (a 24px icon button, a 48px
+// "Send") the label collapsed to a column one word per line and max-width was
+// never reached at all. Reproduced live in Chrome against a real hub: the
+// composer's "Queue until the agent stops · ⌘+Enter" rendered as six stacked
+// lines and spilled over the queue strip above it. Checked against the
+// stylesheet because jsdom performs no layout.
+test("the bubble asks for its label's natural single-line width, so max-width is what actually caps it", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "tooltip.module.css"), "utf8");
+  const rule = /\.bubble\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toMatch(/width:\s*max-content/);
+  expect(rule).toMatch(/max-width:\s*240px/);
+});

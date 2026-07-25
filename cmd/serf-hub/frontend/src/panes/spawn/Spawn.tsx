@@ -439,6 +439,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                 placeholder="What should the agent work on? Leave blank to start it dormant."
                 aria-label="Prompt"
                 autoGrow
+                // The PromptCard around it draws the one border this field
+                // needs and owns the focus ring - without this the field drew
+                // its own box inside the card's, and its resize grabber floated
+                // loose in the corner between them.
+                seamless
                 // The page's primary input, so it opens at a size worth writing
                 // in rather than growing into one. This is also what absorbs
                 // the slack that used to sit dead below the button.

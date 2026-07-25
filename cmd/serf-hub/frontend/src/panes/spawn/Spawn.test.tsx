@@ -6,6 +6,7 @@ import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../prot
 import { ClientProvider } from "../../shell/clientContext";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
+import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import Spawn from "./Spawn";
 
 class MemoryStorage {
@@ -241,6 +242,16 @@ test("the prompt card IS the shared PromptCard widget, not a lookalike", async (
   renderSpawn(readyClient());
   await settled();
   expect(screen.getByTestId("spawn-prompt-card").className.split(" ")).toContain(promptCardStyles.card);
+});
+
+// The card draws the one border and owns the focus ring, so the field inside
+// must draw neither - otherwise it is a box inside a box. Caught in Chrome: the
+// field rendered its own border inside the card's and its resize grabber floated
+// loose in the corner between the two.
+test("the prompt field is seamless, so the card's border is the only one", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(screen.getByRole("textbox", { name: "Prompt" }).className.split(" ")).toContain(textareaStyles.seamless);
 });
 
 // The prompt takes the page's vertical slack via its own min-height, which is
