@@ -22,8 +22,28 @@ export interface SystemRun {
 // lifecycle events do not coalesce").
 const MIN_GROUP_SIZE = 3;
 
+// A persisted turn failure arrives as a systemMessage item carrying the wire's
+// typed "error" eventKind (appwire.ThreadItemEventKindError). It is the one
+// system item that is not lifecycle churn, and the one readers actively hunt
+// for, so it is classified off that typed field rather than by reading English
+// out of the message - the same rule the scaffold and hook-exit kinds follow.
+const TURN_FAILURE_EVENT_KIND = "error";
+
+export function isTurnFailureItem(item: ItemModel): boolean {
+  return item.type === "systemMessage" && item.eventKind === TURN_FAILURE_EVENT_KIND;
+}
+
 function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
+}
+
+// A failure never joins a run. Grouping exists to keep a burst of lifecycle
+// churn from reading as a wall of dividers; folding a failure into one buys a
+// row of quiet at the cost of hiding the row a reader came for - behind a
+// summary that names the run's FIRST member, which need not be the failure at
+// all. So a failure both stays out of its neighbours' run and breaks it.
+function joinsRun(item: ItemModel): boolean {
+  return isSystemMessage(item) && !isTurnFailureItem(item);
 }
 
 // systemRunFor finds the contiguous run of systemMessage items in
@@ -35,17 +55,21 @@ export function systemRunFor(turnItems: ItemModel[], itemId: string): SystemRun 
   const index = turnItems.findIndex((it) => it.id === itemId);
   const item = turnItems[index];
   if (!item || !isSystemMessage(item)) return undefined;
+  // A run of one, always first, so the failure always renders itself. Returning
+  // undefined here would be the opposite of the point: SystemNoticeItem reads
+  // that as "not mine" and renders nothing at all.
+  if (isTurnFailureItem(item)) return { items: [item], isFirst: true };
 
   let start = index;
   while (start > 0) {
     const prev = turnItems[start - 1];
-    if (!prev || !isSystemMessage(prev)) break;
+    if (!prev || !joinsRun(prev)) break;
     start--;
   }
   let end = index;
   while (end < turnItems.length - 1) {
     const next = turnItems[end + 1];
-    if (!next || !isSystemMessage(next)) break;
+    if (!next || !joinsRun(next)) break;
     end++;
   }
 

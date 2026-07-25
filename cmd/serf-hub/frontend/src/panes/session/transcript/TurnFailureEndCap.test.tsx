@@ -1,9 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { TurnBlock } from "./TurnBlock";
-import { TurnFailureEndCap } from "./TurnFailureEndCap";
+import { originatingInput, TurnFailureEndCap } from "./TurnFailureEndCap";
 
 beforeEach(() => resetThreadsStoreForTests());
 afterEach(cleanup);
@@ -81,6 +81,81 @@ test("without a session ref the diagnostic still renders but the recovery action
 test("a failed turn with no user-input item to retry withholds the action even with a ref", () => {
   render(<TurnFailureEndCap error={{ message: "boom" }} turn={failedTurn({ items: [] })} sessionRef="ref_a" />);
   expect(screen.queryByRole("button")).toBe(null);
+});
+
+// --- a reloaded failure offers the same recovery a live one does (kata 0wb6)
+// One persisted transcript entry is one turn, so a RELOADED failure is a turn
+// of its own carrying only the failure item - the input that opened the
+// exchange sits in an earlier turn. Retry was therefore offered live and
+// withheld after reload, for the same failure.
+
+function seedThread(ref: string, turns: TurnModel[]): void {
+  threadsStore.setState({ threads: new Map([[ref, { ref, turns } as unknown as ThreadModel]]) });
+}
+
+const RELOADED_FAILURE: TurnModel = {
+  id: "turn_2",
+  status: "failed",
+  items: [{ id: "item_turn_failure_2", turnId: "turn_2", type: "systemMessage", text: "boom", eventKind: "error" }],
+  error: { message: "boom" },
+};
+
+function reloadedThread(): TurnModel[] {
+  return [
+    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "explain parser.go" })] },
+    RELOADED_FAILURE,
+  ];
+}
+
+test("a reloaded failure offers Retry, sourced from the input that opened the exchange", () => {
+  seedThread("ref_a", reloadedThread());
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
+test("retrying a reloaded failure re-issues that earlier input", async () => {
+  const sendSpy = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue(undefined);
+  seedThread("ref_a", reloadedThread());
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(sendSpy).toHaveBeenCalledWith("ref_a", "explain parser.go"));
+});
+
+test("the lookback stops at the failed turn, never re-issuing an input sent after it", () => {
+  seedThread("ref_a", [
+    ...reloadedThread(),
+    { id: "turn_3", status: "completed", items: [item({ turnId: "turn_3", text: "a later, unrelated prompt" })] },
+  ]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(screen.queryByText("a later, unrelated prompt")).toBe(null);
+  expect(originatingInput(threadsStore.getState().threads.get("ref_a")?.turns ?? [], "turn_2")).toBe(
+    "explain parser.go",
+  );
+});
+
+test("a thread whose turns hold no user input at all still withholds the action", () => {
+  seedThread("ref_a", [RELOADED_FAILURE]);
+  render(<TurnFailureEndCap error={{ message: "boom" }} turn={RELOADED_FAILURE} sessionRef="ref_a" />);
+  expect(screen.queryByRole("button")).toBe(null);
+});
+
+test("originatingInput skips a whitespace-only input rather than re-issuing nothing", () => {
+  const turns: TurnModel[] = [
+    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "real work" })] },
+    { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_blank", text: "   " })] },
+    RELOADED_FAILURE,
+  ];
+  expect(originatingInput(turns, "turn_2")).toBe("real work");
+});
+
+test("originatingInput takes the LAST input at or before the failed turn", () => {
+  const turns: TurnModel[] = [
+    { id: "turn_1", status: "completed", items: [item({ turnId: "turn_1", text: "first" })] },
+    { id: "turn_2", status: "completed", items: [item({ turnId: "turn_2", id: "item_u2", text: "second" })] },
+    RELOADED_FAILURE,
+  ];
+  expect(originatingInput(turns, "turn_2")).toBe("second");
 });
 
 // --- TurnBlock integration: the end-cap is driven by turn.error presence ----
