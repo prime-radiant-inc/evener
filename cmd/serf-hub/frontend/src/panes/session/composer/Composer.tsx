@@ -63,8 +63,8 @@ function RemoveIcon() {
 // not stroked - a hollow square at this size reads as an empty checkbox.
 function StopIcon() {
   return (
-    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
-      <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
     </svg>
   );
 }
