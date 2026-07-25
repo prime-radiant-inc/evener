@@ -36,7 +36,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
-import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
 export interface DetailsPanelProps {
   model: ThreadModel;
@@ -56,14 +56,6 @@ const CLASS = {
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
   path: requireClass(styles.path, "detailspanel.module.css", "path"),
 };
-
-// contextTone escalates with pressure exactly as the status row's gauge does,
-// so the same session never reads as two different severities on two surfaces.
-function contextTone(pressure: number): "neutral" | "attention" | "danger" {
-  if (pressure >= 0.95) return "danger";
-  if (pressure >= 0.8) return "attention";
-  return "neutral";
-}
 
 // A finished session has no live context occupancy to report: the hub builds
 // an exited session's thread from its persisted SessionMeta, which carries

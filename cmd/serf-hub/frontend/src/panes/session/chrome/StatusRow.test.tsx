@@ -8,6 +8,8 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { StatusRow } from "./StatusRow";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -499,6 +501,32 @@ test("renders the context gauge with the used/window counts in its accessible la
   expect(meter.getAttribute("aria-valuenow")).toBe("12000");
   expect(meter.getAttribute("aria-valuemax")).toBe("128000");
   expect(meter.getAttribute("aria-label")).toContain("12k of 128k");
+});
+
+// The gauge's severity comes from the shared contextTone ladder (see
+// statusFormat.ts), which the details panel reads too - the same session must
+// never look calm on one surface and alarming on the other. DetailsPanel.test
+// pins the SAME three tiers against the same class table, so a drifted
+// threshold breaks one surface's expectations without the other's.
+const meterToneClass = {
+  neutral: requireClass(rawMeterStyles.neutral, "meter.module.css", "neutral"),
+  attention: requireClass(rawMeterStyles.attention, "meter.module.css", "attention"),
+  danger: requireClass(rawMeterStyles.danger, "meter.module.css", "danger"),
+};
+
+test.each([
+  { pressure: 0.42, tone: "neutral" as const },
+  { pressure: 0.8, tone: "attention" as const },
+  { pressure: 0.95, tone: "danger" as const },
+])("the context gauge renders the $tone tone at pressure $pressure", ({ pressure, tone }) => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ contextUsed: pressure * 128_000, contextWindow: 128_000, contextPressure: pressure })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass[tone])).toBe(true);
 });
 
 // The gauge alone shows the pressure; a "12k / 128k" readout beside it said

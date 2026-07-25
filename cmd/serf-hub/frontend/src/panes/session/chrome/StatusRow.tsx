@@ -37,7 +37,7 @@ import { Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
-import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -69,17 +69,6 @@ const CLASS = {
 // render vs. whether a card is usable) and a shared constant would invite one
 // to drift into gating the other.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-// contextTone escalates the gauge's tone as pressure climbs, mirroring the
-// legacy compact strip's own single warn threshold (parity-m5-composer.md
-// §I: "⚠ warning glyph + context-warn class ... once ContextPercent >= 80")
-// with an added danger tier near the ceiling - beyond-parity license, not a
-// parity requirement.
-function contextTone(pressure: number): "neutral" | "attention" | "danger" {
-  if (pressure >= 0.95) return "danger";
-  if (pressure >= 0.8) return "attention";
-  return "neutral";
-}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

@@ -1,7 +1,24 @@
-// Pure formatting helpers for the status row. Kept dependency-free (no
-// React, no ThreadModel) so each is trivially unit-testable - same
-// convention as transcript/messages/format.ts, deliberately not shared with
-// it (see formatWorkDuration's own comment for why).
+// Pure formatting helpers for the session chrome's status displays. Kept
+// dependency-free (no React, no ThreadModel) so each is trivially
+// unit-testable - same convention as transcript/messages/format.ts,
+// deliberately not shared with it (see formatWorkDuration's own comment for
+// why).
+import type { MeterTone } from "../../../widgets";
+
+// contextTone escalates the context gauge's tone as pressure climbs,
+// mirroring the legacy compact strip's own single warn threshold
+// (parity-m5-composer.md §I: "⚠ warning glyph + context-warn class ... once
+// ContextPercent >= 80") with an added danger tier near the ceiling -
+// beyond-parity license, not a parity requirement.
+//
+// ONE copy, called by every surface that draws the gauge (the status row and
+// the details panel): the same session must never read as two different
+// severities depending on where you look at it.
+export function contextTone(pressure: number): MeterTone {
+  if (pressure >= 0.95) return "danger";
+  if (pressure >= 0.8) return "attention";
+  return "neutral";
+}
 
 // formatWorkDuration mirrors the daemon's own compactDuration/formatWorkMillis
 // convention verbatim (cmd/serf-hub/web_format.go:79-102): under a minute
