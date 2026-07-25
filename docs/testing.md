@@ -33,6 +33,77 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Real `git` in Worktree Tests
+
+`git` is an external dependency like the LLM provider, and the same boundary rule
+applies: keep it real when git's own behavior is the thing under test, and script
+it when git is only a way to reach a Serf decision.
+
+This matters more here than the rule alone suggests. A real-git worktree test
+averages **~1.2s and ~14 `git` subprocesses**; the same test on the scripted
+boundary runs in **~0.04s**. The `agent` package's real-git tests once accounted
+for **48% of its total test-work** (303s of 630s) while being 9% of its tests —
+almost all of it process spawn, not assertions.
+
+### Which harness
+
+Use the **real-git** harness (`newWorktreeRepo` and friends, in
+`agent/session_tools_worktree_create_test.go`) when the assertion depends on
+something only git can produce:
+
+- real registry effects — `worktree add/remove/lock/unlock/prune` actually
+  landing, `.git` pointer file contents, deregistration
+- real ancestry or patch-equivalence — `merge-base --is-ancestor`, `git cherry`,
+  merged/unmerged/adopted outcomes over real commits
+- real dirty detection, and git's own refusal to remove a dirty worktree without
+  `--force`
+- the real `--porcelain` output shape, including flags like `prunable` and a
+  reasonless `worktree lock`
+- git's ref rules — e.g. that it rejects the branch name `HEAD`
+- symlink canonicalization against git's canonical registry path
+- `ResolveMainRepoRoot`'s structural walk and its git-binary fallback
+- concurrency that relies on git's own index/ref locking to serialize
+
+Use the **scripted** boundary (`scriptedLaneRepo` in
+`agent/worktree_scripted_lane_test.go`, or `scriptedWorktreeSession` in
+`agent/session_tools_worktree_scripted_test.go`) when the subject is Serf's own
+behavior:
+
+- which validation or refusal rung fires, and its error text
+- what event or warning was emitted, and how many times
+- what Serf wrote to its own state — sidecars, jobstore records, disposed marks,
+  gate flags, `SessionMeta`
+- control flow — budget expiry, ordering, retries, "declined to touch"
+- argument validation that returns before any git call
+
+Both harnesses keep sidecars and `.git` pointer files as real files on disk. Only
+the `git` subprocess boundary is replaced, via
+`SessionConfig.testOnly.worktreeGitRunner`.
+
+### The failure mode to avoid
+
+`scriptedWorktreeGit` is a *semantic model* of git, not git. If you script a
+behavior the model does not really implement, the test passes while proving
+nothing.
+
+A concrete example that was live in this repo: the model's
+`check-ref-format --branch` arm hardcoded a rejection of `HEAD`, so a test whose
+entire purpose was "real git rejects the reserved name HEAD" would have passed
+against the fake regardless of git's actual rules. That hardcoding was removed
+and the test stays on real git.
+
+So: the model's unknown-argv arms return an `unsupported argv` error **on
+purpose**. If a converted test reaches a command the model does not implement, it
+fails loudly rather than silently passing. When that happens, either model the
+command honestly or leave the test on real git — never stub the specific answer
+the assertion is looking for.
+
+### Adding a worktree test
+
+Default to the scripted boundary. Reach for real git only when you can name the
+git behavior the assertion depends on, and say so in the test's comment so the
+next reader does not "optimize" it onto the fake.
+
 ## MCP Server E2E
 
 The MCP manager has opt-in live tests against `npx -y

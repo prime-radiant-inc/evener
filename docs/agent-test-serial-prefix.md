@@ -118,6 +118,30 @@ in a 25-line diff. The broad sweep's extra 315 conversions contributed
 essentially nothing to wall time while introducing every flake — the cost was
 never spread across the long tail, it was concentrated in a handful of files.
 
+## The bigger lever: real git, not the prefix
+
+The prefix turned out to be the smaller problem. Profiling the whole package:
+
+```
+total test-work   630s        wall ~38s on 10 cores (already ~17x concurrent)
+user time          36s
+sys  time          89s        <- 2.5x more kernel than compute
+```
+
+The suite is not parallelism-starved, it is syscall-bound: **3,639 `git`
+subprocesses per run**, of which 1,066 were `worktree list --porcelain`. The 253
+real-git tests are 9% of the tests and **48% of the test-work** (303s), at ~1.2s
+and ~14 subprocesses each.
+
+Two fixes follow from that, and both are worth more than the prefix work:
+
+1. **Memoize the porcelain listing per operation** — landed; 1,066 listings
+   became 750.
+2. **Move tests that do not need real git onto the scripted boundary** — a
+   scripted test runs in ~0.04s instead of ~1.2s, a 33x difference. The policy for
+   deciding which is which now lives in `docs/testing.md`; do not convert a test
+   whose subject is git's own behavior.
+
 ## What is left, and what it would take
 
 The residual ~10.2s prefix is spread thin: ~350 sub-0.15s tests whose cost is
