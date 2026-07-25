@@ -33,8 +33,16 @@ export interface WorkspaceStoreState {
   // existing one when opening a singleton type that's already open (its
   // params are updated in place if they differ) or a non-singleton pane
   // with identical params to one already open (deep-equal via sameParams).
-  // Either way the (possibly pre-existing) pane becomes focused.
-  openPane(type: PaneTypeId, params?: unknown, opts?: { beside?: string }): string;
+  // Either way the (possibly pre-existing) pane becomes focused, unless
+  // keepExistingFocus asks otherwise.
+  //
+  // keepExistingFocus: focus a pane this call had to CREATE, but leave focus
+  // alone when it resolved to one already open. DockHost's boot merge is the
+  // one caller: on a reload the URL-routed pane is normally already in the
+  // restored layout, so focusing it would overwrite the active tab the saved
+  // layout just restored - while a deep link to a pane the layout does NOT
+  // contain is genuinely new and must still take focus.
+  openPane(type: PaneTypeId, params?: unknown, opts?: { beside?: string; keepExistingFocus?: boolean }): string;
   closePane(paneId: string): void;
   focusPane(paneId: string): void;
   layoutJSON(): unknown;
@@ -159,15 +167,17 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     const descriptor = paneFor(type);
     const state = get();
 
+    const keepFocus = opts?.keepExistingFocus === true;
+
     if (descriptor.singleton) {
       const existing = state.panes.find((p) => p.type === type);
       if (existing) {
         const paramsChanged = !sameParams(existing.params, params);
-        const focusChanged = state.focusedPaneId !== existing.id;
+        const focusChanged = !keepFocus && state.focusedPaneId !== existing.id;
         if (paramsChanged || focusChanged) {
           set({
             panes: paramsChanged ? state.panes.map((p) => (p.id === existing.id ? { ...p, params } : p)) : state.panes,
-            focusedPaneId: existing.id,
+            ...(keepFocus ? {} : { focusedPaneId: existing.id }),
           });
         }
         return existing.id;
@@ -175,7 +185,7 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     } else {
       const existing = state.panes.find((p) => p.type === type && sameParams(p.params, params));
       if (existing) {
-        if (state.focusedPaneId !== existing.id) set({ focusedPaneId: existing.id });
+        if (!keepFocus && state.focusedPaneId !== existing.id) set({ focusedPaneId: existing.id });
         return existing.id;
       }
     }

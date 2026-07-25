@@ -49,6 +49,35 @@ describe("openPane", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
   });
 
+  test("keepExistingFocus leaves focus alone when the pane is already open", () => {
+    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(second);
+
+    const again = workspaceStore.getState().openPane("doc", { ref: "a" }, { keepExistingFocus: true });
+
+    expect(again).toBe(first); // still resolves to (and returns) the existing pane
+    expect(workspaceStore.getState().focusedPaneId).toBe(second); // focus untouched
+  });
+
+  test("keepExistingFocus still focuses a pane it had to create", () => {
+    workspaceStore.getState().openPane("doc", { ref: "a" });
+    const fresh = workspaceStore.getState().openPane("doc", { ref: "b" }, { keepExistingFocus: true });
+    expect(workspaceStore.getState().focusedPaneId).toBe(fresh);
+  });
+
+  test("keepExistingFocus still updates an already-open singleton's params without focusing it", () => {
+    workspaceStore.getState().openPane("settings", { section: "appearance" });
+    const other = workspaceStore.getState().openPane("doc", { ref: "a" });
+
+    const settings = workspaceStore
+      .getState()
+      .openPane("settings", { section: "credentials" }, { keepExistingFocus: true });
+
+    expect(workspaceStore.getState().panes.find((p) => p.id === settings)?.params).toEqual({ section: "credentials" });
+    expect(workspaceStore.getState().focusedPaneId).toBe(other);
+  });
+
   test("records the beside positioning hint", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
     const second = workspaceStore.getState().openPane("doc", { ref: "b" }, { beside: first });

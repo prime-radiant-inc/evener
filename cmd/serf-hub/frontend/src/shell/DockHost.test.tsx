@@ -575,6 +575,77 @@ test("a routed pane opened before mount merges into a stale saved layout as its 
   expect(await screen.findByText(/doc pane: ref_stale_b \(focused=true\)/)).toBeTruthy();
 });
 
+// Reload keeps the focused tab (round-3 C1). Live diagnosis: dockview DOES
+// persist the active tab (each grid leaf's own `activeView`, verified in a real
+// browser), and restoreLayout DOES honour it - but handleReady then re-opens
+// every URL-routed pane through openPane(), which focuses whatever it resolves
+// to. On a reload the routed pane is almost always ALREADY in the restored
+// layout, so that re-open is a pure focus steal: the address bar still names
+// the pane the user first deep-linked to, and reload snaps focus back to it no
+// matter which tab was active when the page unloaded. The fix is
+// keepExistingFocus on the merge re-open - an already-open pane keeps the
+// restored focus, a genuinely new one (a deep link that ISN'T in the saved
+// layout) still focuses, which is the whole point of a deep link.
+test("a reload keeps the focused tab even when the URL routes to a different, already-restored pane", async () => {
+  // Phase 1: three panes, saved with the SECOND one active - i.e. neither the
+  // routed pane (the first) nor the most-recently-opened one, so neither a
+  // "routed wins" nor a "last opened wins" bug could pass this by accident.
+  const routedParams = { ref: "ref_routed" };
+  workspaceStore.getState().openPane("doc", routedParams);
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  workspaceStore.getState().openPane("doc", { ref: "ref_c" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_c/);
+
+  workspaceStore.getState().focusPane(second);
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+
+  vi.useFakeTimers();
+  act(() => {
+    vi.advanceTimersByTime(500); // flush the debounced save of the focus change
+  });
+  const saved = localStorage.getItem(LAYOUT_KEY);
+  expect(saved).not.toBeNull();
+  vi.useRealTimers();
+  unmount();
+  resetWorkspaceStoreForTests();
+
+  // Phase 2: the reload. AppShell's routing glue re-opens the pane the address
+  // bar still names (ref_routed) before DockHost mounts, exactly as it does on
+  // a real page load.
+  workspaceStore.getState().openPane("doc", routedParams);
+  render(<DockHost />);
+
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_b");
+  // No duplicate: the routed pane merged into the restored one by params.
+  expect(document.querySelectorAll(".dv-tab")).toHaveLength(3);
+});
+
+test("a deep link to a pane the saved layout does NOT contain still wins focus", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_b/);
+  workspaceStore.getState().focusPane(second);
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+
+  vi.useFakeTimers();
+  act(() => {
+    vi.advanceTimersByTime(500);
+  });
+  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
+  vi.useRealTimers();
+  unmount();
+  resetWorkspaceStoreForTests();
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_fresh" }); // not in the saved layout
+  render(<DockHost />);
+
+  expect(await screen.findByText(/doc pane: ref_fresh \(focused=true\)/)).toBeTruthy();
+  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_fresh");
+});
+
 test("a corrupt saved layout never suppresses a routed pane - the deep link wins alone (failure-mode floor)", async () => {
   localStorage.setItem(LAYOUT_KEY, JSON.stringify({ nonsense: true }));
   workspaceStore.getState().openPane("doc", { ref: "ref_routed" });

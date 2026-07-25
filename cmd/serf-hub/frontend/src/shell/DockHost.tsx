@@ -283,8 +283,19 @@ export function DockHost() {
     if (stored !== undefined) {
       workspaceStore.getState().restoreLayout(stored);
     }
+    // keepExistingFocus: the restored layout's own active tab wins over the
+    // address bar for a pane the layout ALREADY contains. On an ordinary
+    // reload the URL still names whichever pane the user first deep-linked
+    // to, which is usually not the tab they were last on - re-opening it
+    // focused made every reload snap focus back to that first pane, silently
+    // discarding the active tab dockview had faithfully persisted (verified
+    // live: the saved leaf's `activeView` was correct both before and after
+    // the reload; only the in-page focus was wrong). A deep link to a pane
+    // the saved layout does NOT contain still creates a pane, and openPane
+    // still focuses that - a genuinely new deep link is exactly the case
+    // that should win.
     for (const pane of routed) {
-      workspaceStore.getState().openPane(pane.type, pane.params);
+      workspaceStore.getState().openPane(pane.type, pane.params, { keepExistingFocus: true });
     }
 
     // Backstop, unchanged from before: a blank dockview with no chrome of
