@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { expect, test } from "vitest";
 
 // tsconfig.json sets `incremental: true` with a `.tsbuildinfo` cache, which is
@@ -15,12 +14,13 @@ import { expect, test } from "vitest";
 //
 // These assert the scripts the gate actually invokes, because the difference is
 // invisible in the output - both print nothing on success.
-// process.cwd(), not import.meta.url: vitest runs with the frontend directory
-// as its root, and under jsdom import.meta.url is not a file: URL, so a URL
-// relative to it throws at import time - which vitest reports as "no tests"
-// rather than a failure.
-const packageJSONPath = resolve(process.cwd(), "package.json");
-const scripts = (JSON.parse(readFileSync(packageJSONPath, "utf8")) as { scripts: Record<string, string> }).scripts;
+// A bare relative path, resolved against vitest's root - which is this
+// directory. The two obvious alternatives are both unavailable here: `new
+// URL(..., import.meta.url)` throws under jsdom because import.meta.url is not
+// a file: URL (and vitest reports an import-time throw as "no tests" rather
+// than a failure, so it fails silently), and node:path/process are untyped in
+// this tsconfig, which has no @types/node.
+const scripts = (JSON.parse(readFileSync("package.json", "utf8")) as { scripts: Record<string, string> }).scripts;
 
 test.each(["typecheck", "build"])("the %s script type-checks without the incremental cache", (name) => {
   const script = scripts[name];
