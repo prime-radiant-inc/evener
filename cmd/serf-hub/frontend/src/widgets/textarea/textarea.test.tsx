@@ -375,6 +375,59 @@ test("with autoGrow, a clamped field re-clamps to the new ceiling when the windo
   }
 });
 
+// --- minLines: a raised floor for a field whose job asks for room ---------
+
+test("minLines drives BOTH the stylesheet's floor property and the native rows attribute", () => {
+  render(<Textarea value="" onChange={() => {}} autoGrow minLines={6} />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.style.getPropertyValue("--textarea-min-lines")).toBe("6");
+  // rows matters as much as the floor: it is what an autoGrow field's first
+  // real measurement measures, so a floor raised without it is immediately
+  // overwritten by a MIN_ROWS-tall measurement. Verified in Chrome - a 1-line
+  // field stayed at 2 lines until rows followed.
+  expect(textarea.getAttribute("rows")).toBe("6");
+});
+
+test("minLines can also LOWER the resting size below MIN_ROWS", () => {
+  render(<Textarea value="" onChange={() => {}} autoGrow minLines={1} />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.getAttribute("rows")).toBe("1");
+  expect(textarea.style.getPropertyValue("--textarea-min-lines")).toBe("1");
+});
+
+// A FLOOR, not a size: the measured height still governs above it, so raising
+// the floor must not stop autoGrow from writing a taller measurement.
+test("minLines does not stop autoGrow from applying its own measured height", () => {
+  const longLine = "x".repeat(200);
+  render(<Textarea value={longLine} onChange={() => {}} autoGrow minLines={6} />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight(longLine)}px`);
+});
+
+// Absent by default: the vast majority of fields want the shared MIN_ROWS floor
+// from the stylesheet, and an inline property would shadow it forever.
+test("without minLines no inline custom property is written, and rows stays at MIN_ROWS", () => {
+  render(<Textarea value="" onChange={() => {}} autoGrow />);
+  expect(screen.getByRole("textbox").getAttribute("style") ?? "").not.toContain("--textarea-min-lines");
+  expect(screen.getByRole("textbox").getAttribute("rows")).toBe(String(MIN_ROWS));
+});
+
+test("onFocus and onBlur reach the native element", async () => {
+  const user = userEvent.setup();
+  const onFocus = vi.fn();
+  const onBlur = vi.fn();
+  render(
+    <>
+      <Textarea value="" onChange={() => {}} onFocus={onFocus} onBlur={onBlur} />
+      <button type="button">elsewhere</button>
+    </>,
+  );
+  await user.click(screen.getByRole("textbox"));
+  expect(onFocus).toHaveBeenCalledTimes(1);
+  await user.click(screen.getByRole("button"));
+  expect(onBlur).toHaveBeenCalledTimes(1);
+});
+
 test("the CSS floor keeps the field at least MIN_ROWS lines tall in both variants, so it can never render unclickable", () => {
   const css = moduleCss();
   const base = /\.textarea\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";

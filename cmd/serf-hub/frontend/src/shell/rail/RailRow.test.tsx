@@ -82,10 +82,10 @@ describe("cadenceStateFor", () => {
 });
 
 // The signal gutter (§ the dot earns its space): a row only shows a Cadence
-// dot for a state that TELLS you something - working, waiting on you,
-// failed. idle/ended rows show an empty gutter instead, because the row's
-// second line already prints that state in words (humanizeState) and a
-// mid-grey dot repeating it is pure noise. The gutter itself is
+// dot for a state that TELLS you something - working, waiting on you, failed. A
+// quiet row leaves the gutter empty, which beside a grey age already reads as
+// "nothing happening here" - a sidebar full of identical grey dots just trains
+// the eye to ignore the one dot that matters. The gutter itself is
 // unconditional so a title's x-position never moves as a session changes
 // state (and so row width never depends on state).
 describe("signal gutter", () => {
@@ -130,17 +130,29 @@ describe("signal gutter", () => {
 });
 
 describe("activityGloss", () => {
-  test("states the humanized state alone when the session carries no other metadata", () => {
+  test("states the humanized state alone when the session carries no branch", () => {
     expect(activityGloss(apiNode({ state: "active" }))).toBe("working");
   });
 
-  test("joins state, branch, tier and model in that order", () => {
-    const session = apiNode({ state: "awaiting", branch: "main", tier: "archived", model: "opus" });
-    expect(activityGloss(session)).toBe("waiting on you · main · archived · opus");
+  test("joins state and branch, in that order", () => {
+    expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("waiting on you · main");
   });
 
-  test("omits an empty branch and the unremarkable 'current' tier", () => {
-    expect(activityGloss(apiNode({ state: "idle", branch: "", tier: "current", model: "opus" }))).toBe("idle · opus");
+  test("omits an empty branch", () => {
+    expect(activityGloss(apiNode({ state: "idle", branch: "" }))).toBe("idle");
+  });
+
+  // The model is a property of the session, not a reason to look at it - and
+  // the session pane's own status strip reports it the moment you open the row.
+  // On a triage surface it was noise on every row.
+  test("never carries the model, whatever the state", () => {
+    expect(activityGloss(apiNode({ state: "active", branch: "main", model: "opus" }))).toBe("working · main");
+  });
+
+  // Tier isn't dropped, it's relocated: it survives in the row's title tooltip,
+  // where a fact a title cannot carry stays reachable without spending a line.
+  test("never carries the tier on the visible line", () => {
+    expect(activityGloss(apiNode({ state: "errored", tier: "archived" }))).toBe("failed");
   });
 });
 
@@ -221,8 +233,8 @@ describe("session row", () => {
   });
 
   // vbh8 new capability, §2.3: row anatomy for the (already-existing)
-  // subagent tree - a humanized second activity line, and a right-aligned
-  // relative timestamp OR the Task-7 Badge, whichever slot applies.
+  // subagent tree - a right-aligned relative timestamp OR the Task-7 Badge,
+  // whichever slot applies, plus (on a signal row) the gloss line.
   test("shows a humanized activity line and a relative timestamp", () => {
     const session = apiNode({ state: "active", age: "2m" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
@@ -230,23 +242,120 @@ describe("session row", () => {
     expect(screen.getByTestId("rail-row-time").textContent).toBe("2m");
   });
 
+  // --- the gloss line is a SIGNAL, not row furniture ---------------------
+  //
+  // The rail is a triage surface: who needs me, and nothing else. A quiet row's
+  // empty signal gutter and grey age already say "nothing happening here", so a
+  // second line restating "idle" in words put the same fact at two altitudes on
+  // the one surface that exists to be skimmed. Only a signal state earns the
+  // line - and it's the SAME predicate that earns the dot, so the two never
+  // disagree about whether a row matters.
+
   test.each([
     ["active", /working/i],
     ["awaiting", /waiting on you/i],
     ["warning", /waiting on you/i],
     ["errored", /failed/i],
-    ["ended", /ended/i],
-    ["idle", /idle/i],
-    ["notLoaded", /idle/i],
-  ] as const)("humanizes wire state %s as %s in the activity line", (state, expected) => {
+  ] as const)("a signal row (%s) keeps a gloss line leading with the state", (state, expected) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
   });
 
-  test("appends the model name to the activity line when present", () => {
-    const session = apiNode({ state: "active", model: "opus" });
-    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/working.*opus/i);
+  test.each(["idle", "ended", "notLoaded", ""] as const)(
+    "a quiet row (%s) is title + age on one line, with no gloss at all",
+    (state) => {
+      render(<RailRow node={sessionRailNode(apiNode({ state, age: "3h" }))} info={info()} actions={actions()} />);
+      expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+      expect(screen.getByText("Fix flaky test")).toBeTruthy();
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("3h");
+    },
+  );
+
+  // The dot and the gloss answer the same question, so they appear together -
+  // one predicate (SIGNAL_STATES) drives both, which is what stops a row from
+  // ever showing a dot with no explanation or an explanation with no dot.
+  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
+    "the dot and the gloss line agree for state %s",
+    (state) => {
+      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+      const hasDot = screen.queryByTestId("cadence-dot") !== null;
+      const hasGloss = screen.queryByTestId("rail-row-activity") !== null;
+      expect(hasGloss).toBe(hasDot);
+    },
+  );
+
+  // Branch survives on a signal row because it distinguishes SIBLINGS in the
+  // case that matters: two working sessions in one project on different
+  // branches.
+  test("a signal row's gloss carries the branch when the session has one", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("working · fix/thing");
+  });
+
+  // Three facts of noise on every row: the model is a property of the session,
+  // not a reason to look at it, and the session pane's own status strip reports
+  // it the moment the row is opened.
+  test("no row - signal or quiet - carries the model anywhere on its visible face", () => {
+    const { rerender } = render(
+      <RailRow node={sessionRailNode(apiNode({ state: "active", model: "opus" }))} info={info()} actions={actions()} />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).not.toMatch(/opus/);
+
+    rerender(
+      <RailRow node={sessionRailNode(apiNode({ state: "idle", model: "opus" }))} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByText(/opus/)).toBeNull();
+  });
+
+  // --- what the visible row drops stays reachable on hover --------------
+  //
+  // Tier is real information a title cannot carry, and a quiet row no longer
+  // prints its state - so both land in the row's own title tooltip, which
+  // already existed for truncated titles.
+
+  test("a quiet row's title tooltip carries the state word its visible line no longer prints", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ state: "ended" }))} info={info()} actions={actions()} />);
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · ended");
+  });
+
+  test("the tier rides the title tooltip on both quiet and signal rows", () => {
+    const { rerender } = render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", tier: "archived" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · idle · archived");
+
+    // A signal row already prints its state, so the tooltip doesn't repeat it.
+    rerender(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", tier: "archived" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test · archived");
+  });
+
+  // "current" is the unremarkable default state of a session - the same
+  // exclusion the old visible line made, kept in its new home.
+  test("the unremarkable 'current' tier is omitted from the tooltip too", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", tier: "current" }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByText("Fix flaky test").getAttribute("title")).toBe("Fix flaky test");
   });
 
   test("a needs-you count takes the right slot instead of the timestamp", () => {
@@ -317,24 +426,16 @@ describe("session row", () => {
     expect(screen.getByRole("menuitem", { name: "Unarchive" })).toBeTruthy();
   });
 
-  test("shows the tier as a secondary label when it isn't 'current'", () => {
-    render(<RailRow node={sessionRailNode(apiNode({ tier: "recent" }))} info={info()} actions={actions()} />);
-    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/recent/);
-  });
-
-  // Title-first row (rail truncation round): branch/tier are secondary
-  // metadata that used to sit in the row's main line as flex:none siblings,
-  // so at the rail's 280px they took their width off the top of the ONE
-  // thing that identifies a row. They now ride the second line, which
-  // ellipsizes on its own; the title keeps the whole main line minus the
-  // (short, fixed) age.
-  test("keeps branch and tier out of the title's line, on the activity line instead", () => {
-    const session = apiNode({ state: "active", branch: "main", tier: "archived", age: "47m" });
+  // Title-first row (rail truncation round): the branch is secondary metadata
+  // that used to sit in the row's main line as a flex:none sibling, so at the
+  // rail's 280px it took its width off the top of the ONE thing that identifies
+  // a row. It rides the gloss line, which ellipsizes on its own; the title keeps
+  // the whole main line minus the (short, fixed) age.
+  test("keeps the branch out of the title's line, on the gloss line instead", () => {
+    const session = apiNode({ state: "active", branch: "main", age: "47m" });
     render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
 
-    const activity = screen.getByTestId("rail-row-activity");
-    expect(activity.textContent).toMatch(/main/);
-    expect(activity.textContent).toMatch(/archived/);
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/main/);
     // The row's main line holds the title and the age, and nothing else
     // that reserves width: every other text node lives on line two.
     const title = screen.getByText("Fix flaky test");
@@ -345,7 +446,6 @@ describe("session row", () => {
       .map((child) => child.textContent)
       .join(" ");
     expect(mainLineText).not.toMatch(/main/);
-    expect(mainLineText).not.toMatch(/archived/);
     expect(screen.getByTestId("rail-row-time").textContent).toBe("47m");
   });
 
@@ -362,9 +462,14 @@ describe("session row", () => {
     expect(activityRule).toMatch(/overflow:\s*hidden/);
   });
 
+  // The tooltip's original job, unchanged: a truncated title stays recoverable.
+  // The title always LEADS the tooltip, so the recovery still works even now
+  // that the tooltip carries the row's dropped facts after it.
   test("a truncated title stays readable via a hover tooltip", () => {
     const long = "It looks like a lot of the sidebar rows are truncating their titles";
-    render(<RailRow node={sessionRailNode(apiNode({ title: long }))} info={info()} actions={actions()} />);
+    render(
+      <RailRow node={sessionRailNode(apiNode({ title: long, state: "active" }))} info={info()} actions={actions()} />,
+    );
     expect(screen.getByText(long).getAttribute("title")).toBe(long);
   });
 

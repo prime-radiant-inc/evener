@@ -38,7 +38,7 @@ export { IconButton } from "./iconbutton";
 export type { InputProps } from "./input";
 export { Input } from "./input";
 export type { KeyHintProps } from "./keyhint";
-export { KeyHint } from "./keyhint";
+export { chordLabel, KeyHint } from "./keyhint";
 export type { MarkdownProps } from "./markdown";
 export { Markdown } from "./markdown";
 export type { MenuItem, MenuProps } from "./menu";
@@ -57,6 +57,8 @@ export type { PathFieldKind, PathFieldPanelProps, PathFieldProps } from "./pathf
 export { PathField, PathFieldPanel } from "./pathfield";
 export type { PopoverProps } from "./popover";
 export { Popover } from "./popover";
+export type { PromptCardProps } from "./promptcard";
+export { PromptCard } from "./promptcard";
 export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
 export type { SelectOption, SelectProps } from "./select";

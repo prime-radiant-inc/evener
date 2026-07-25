@@ -1,18 +1,75 @@
 /* The spawn form layout. Tokens only; neutral surfaces that never use color for
- * attention. The launch "bar" wraps to stacked rows on narrow viewports (the
- * design-system equivalent of the legacy desktop-chips / mobile-rows split -
- * one responsive control set, not two synced DOM trees). */
+ * attention.
+ *
+ * Prompt card first, then ONE configuration row beneath it: writing the prompt
+ * is what starting an agent IS, and the config is settings that mostly stay
+ * where they were last left. The card's own min-height (Textarea's minLines)
+ * takes the page's vertical slack, so there is no dead gap under the actions. */
 .form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
   max-width: 720px;
 }
 
-.bar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+/* One compact row of configuration, wrapping to stacked rows on a narrow
+ * viewport. The working directory is the only field that changes often, so it
+ * takes the row's free width and the other two size to their content. */
+.cfg {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: var(--space-3);
+}
+
+/* The directory field plus its branch suffix. `flex: 1 1 240px` with
+ * `min-width: 0` gives it the row's slack while still letting it shrink below
+ * its content on a phone (a PathField trigger holds a full path, so its natural
+ * width is large enough to push the row wide without this). */
+.cfgDir {
+  display: flex;
+  flex: 1 1 240px;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+/* The model picker is a composite widget, so it gets a label span + widget
+ * column of its own rather than a FormRow (see .fieldLabel). Fixed-basis: a
+ * qualified provider/model id is long, and letting it grow would take the width
+ * off the directory field, which is the one people actually retype. */
+.cfgModel {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 200px;
+  min-width: 0;
+  /* Matches widgets/formrow's own root inset (2px transparent error border +
+   * space-3 padding) so this composite field's label and control line up with
+   * the FormRow-wrapped fields beside it. */
+  padding-left: var(--space-3);
+  border-left: 2px solid transparent;
+}
+
+/* The branch is a read-only HEAD readout riding the directory row, not a peer
+ * field: mono because it is an identifier, --ink-low because it is the row's
+ * least actionable fact, and flex:none so a long branch name never steals the
+ * directory field's width. */
+.branch {
+  flex: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  max-width: 40%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+}
+
+.branchSeparator {
+  color: var(--ink-low);
 }
 
 /* Matches widgets/formrow's .label exactly: the Model field renders its label
@@ -40,29 +97,8 @@
   font-size: var(--font-size-ui);
 }
 
-.promptCard {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pane);
-  background: var(--surface-2);
-}
-
-.controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-
 .chips {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-}
-
-.actions {
-  display: flex;
-  justify-content: flex-end;
 }

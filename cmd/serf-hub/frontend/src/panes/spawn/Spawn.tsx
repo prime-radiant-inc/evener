@@ -1,12 +1,20 @@
-// The spawn pane: starts a new session. Fills T1's minimal skeleton into the
-// full form on the startThread/preflight seams - the five-field launch bar
-// (harness / model / reasoning effort / working dir / branch), sticky-default
-// layering + stale-model cleanup, the schema-driven advanced options (which
-// also host the access-mode field, 9ct0 §3.3), image attachments,
-// working-dir preflight, and ?dir=/?prompt= URL prefill (floor §1,
-// parity-m6-surfaces.md). The rich model/reasoning catalog is the interim
-// model/list picker (Jesse-decided Wave 8 for the rich version); the
-// recent-prompts row is a decided parity drop (Jesse 2026-07-22).
+// The spawn pane: starts a new agent.
+//
+// This page IS the composer, not a form that happens to contain one - it renders
+// the same widgets/promptcard the session composer does, with its own primary
+// verb ("Start") in the card's corner. The prompt leads and takes the page's
+// vertical slack; beneath it sits ONE compact configuration row (working
+// directory widest, since it is the only field that changes often, then model
+// and effort), with the branch riding the directory row as a read-only HEAD
+// readout rather than a peer field. Harness lives in Advanced options: most
+// installs have exactly one, and a field whose answer is always "serf" should
+// not lead the page.
+//
+// Behind that: sticky-default layering + stale-model cleanup, the schema-driven
+// advanced options (which also host the access-mode field, 9ct0 §3.3), image
+// attachments, working-dir preflight, and ?dir=/?prompt= URL prefill (floor §1,
+// parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
+// (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
@@ -16,14 +24,16 @@ import {
   Button,
   Chip,
   ConfirmDialog,
+  chordLabel,
   Dropzone,
   FormRow,
   IconButton,
-  Input,
   PaneScaffold,
   PathField,
+  PromptCard,
   Select,
   Textarea,
+  Tooltip,
   useToasts,
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
@@ -66,12 +76,13 @@ const REASONING_OPTIONS = [
 
 const CLASS = {
   form: requireClass(styles.form, "spawn.module.css", "form"),
-  bar: requireClass(styles.bar, "spawn.module.css", "bar"),
+  cfg: requireClass(styles.cfg, "spawn.module.css", "cfg"),
+  cfgDir: requireClass(styles.cfgDir, "spawn.module.css", "cfgDir"),
+  cfgModel: requireClass(styles.cfgModel, "spawn.module.css", "cfgModel"),
+  branch: requireClass(styles.branch, "spawn.module.css", "branch"),
+  branchSeparator: requireClass(styles.branchSeparator, "spawn.module.css", "branchSeparator"),
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
-  promptCard: requireClass(styles.promptCard, "spawn.module.css", "promptCard"),
-  controls: requireClass(styles.controls, "spawn.module.css", "controls"),
   chips: requireClass(styles.chips, "spawn.module.css", "chips"),
-  actions: requireClass(styles.actions, "spawn.module.css", "actions"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
 };
 
@@ -105,7 +116,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
-  const branchEditedRef = useRef(false);
 
   function updatePrompt(next: string): void {
     textRef.current = next;
@@ -188,10 +198,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
     if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
-    if (defaults.branch) {
-      setBranch(defaults.branch);
-      branchEditedRef.current = true;
-    }
+    // The persisted branch is a fast first paint only - the HEAD resolution
+    // below always overrides it once it lands. Now that the readout is
+    // read-only, HEAD is the sole authority for what it says; a remembered
+    // value outliving the branch it named would be a lie in a field that
+    // presents itself as fact.
+    if (defaults.branch) setBranch(defaults.branch);
+    // Writing the prompt is what starting an agent IS, so the caret starts
+    // there rather than on whichever field happens to be first in the DOM.
+    textareaRef.current?.focus();
 
     let active = true;
     client.request("serf/harnesses/list", {}).then(
@@ -249,14 +264,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
-  // Branch HEAD auto-resolution (floor §1.7): fills the display when the working
-  // dir changes, unless the user has explicitly set a branch. Checked again on
-  // resolve so a late response can't clobber a value picked in the meantime.
+  // Branch HEAD resolution (floor §1.7): the readout is read-only, so HEAD is
+  // its ONLY source - re-resolved on every working-dir change with no
+  // user-edited escape hatch to respect. `active` still guards a late response
+  // from a directory the user has already navigated away from.
   useEffect(() => {
-    if (cwd.trim() === "" || branchEditedRef.current) return undefined;
+    if (cwd.trim() === "") return undefined;
     let active = true;
     resolveHeadBranch(cwd).then((head) => {
-      if (active && !branchEditedRef.current) setBranch(head);
+      if (active) setBranch(head);
     });
     return () => {
       active = false;
@@ -275,11 +291,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   function handleModelChange(next: string): void {
     setModel(next);
     if (next !== "") setStaleNotice(null); // any new model clears the discard notice (floor §1.10)
-  }
-
-  function handleBranchChange(next: string): void {
-    branchEditedRef.current = true;
-    setBranch(next);
   }
 
   function handlePromptKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
@@ -392,74 +403,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     harnesses.length > 0 ? harnesses.map((h) => ({ value: h.id, label: h.label })) : [{ value: "serf", label: "serf" }];
 
   return (
-    <PaneScaffold title="New session">
+    <PaneScaffold title="Start an agent">
       <div className={CLASS.form}>
-        <p>Leave the prompt blank to start a dormant session.</p>
-
-        <div className={CLASS.bar}>
-          <FormRow label="Harness" htmlFor="spawn-harness">
-            <Select
-              id="spawn-harness"
-              value={harness || "serf"}
-              onChange={(e) => handleHarnessChange(e.target.value)}
-              options={harnessOptions}
-            />
-          </FormRow>
-
-          <div>
-            <span className={CLASS.fieldLabel} id="spawn-model-label">
-              Model
-            </span>
-            <ModelField
-              value={model}
-              onChange={handleModelChange}
-              loadModels={loadModels}
-              harness={harness || undefined}
-              cwd={cwd || undefined}
-            />
-          </div>
-
-          <FormRow label="Reasoning effort" htmlFor="spawn-reasoning">
-            <Select
-              id="spawn-reasoning"
-              value={reasoningEffort}
-              onChange={(e) => setReasoningEffort(e.target.value)}
-              options={REASONING_OPTIONS}
-              disabled={!usesSerfModels}
-            />
-          </FormRow>
-
-          <FormRow label="Working directory" htmlFor="spawn-cwd">
-            <PathField
-              id="spawn-cwd"
-              value={cwd}
-              onChange={setCwd}
-              kind="dir"
-              listRecents={listRecents}
-              complete={complete}
-              // With no ?dir= prefill and no per-project blob the field starts
-              // empty; the panel then opens on the last directory a session was
-              // launched in rather than on $HOME (spec 3.4). Read here rather
-              // than captured at mount so it reflects the latest stamp.
-              fallbackDir={getGlobalLastWorkingDir()}
-              placeholder="Working directory"
-              // Browsing writes the field on every step, so the last-used
-              // directory is recorded once the panel closes rather than
-              // continuously (spec 3.7).
-              onPanelClose={setGlobalLastWorkingDir}
-            />
-          </FormRow>
-
-          <FormRow label="Branch" htmlFor="spawn-branch" help="Shows the working directory's current HEAD.">
-            <Input
-              id="spawn-branch"
-              value={branch}
-              onChange={(e) => handleBranchChange(e.target.value)}
-              placeholder="(default)"
-            />
-          </FormRow>
-        </div>
-
         {staleNotice !== null && (
           <div className={CLASS.notice} role="status">
             <span>Discarded last-used model {staleNotice} — no longer offered by this hub.</span>
@@ -473,28 +418,65 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
+        {/* The prompt comes FIRST and takes the page's slack: writing the
+            prompt is what starting an agent IS, and everything below it is
+            configuration that mostly stays where it was last left. The card is
+            the same widgets/promptcard the session composer renders. */}
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={CLASS.promptCard}>
-            <Textarea
-              ref={textareaRef}
-              value={prompt}
-              onChange={(e) => updatePrompt(e.target.value)}
-              onKeyDown={handlePromptKeyDown}
-              onPaste={handlePaste}
-              placeholder="What should the agent work on?"
-              aria-label="Prompt"
-              autoGrow
-            />
-            <div className={CLASS.controls}>
+          <PromptCard
+            data-testid="spawn-prompt-card"
+            field={
+              <Textarea
+                ref={textareaRef}
+                value={prompt}
+                onChange={(e) => updatePrompt(e.target.value)}
+                onKeyDown={handlePromptKeyDown}
+                onPaste={handlePaste}
+                // The dormant-start rule rides in the placeholder rather than a
+                // separate instruction line above the form: it is a fact about
+                // THIS field, and a sentence of chrome explaining a field is
+                // worse than the field explaining itself.
+                placeholder="What should the agent work on? Leave blank to start it dormant."
+                aria-label="Prompt"
+                autoGrow
+                // The PromptCard around it draws the one border this field
+                // needs and owns the focus ring - without this the field drew
+                // its own box inside the card's, and its resize grabber floated
+                // loose in the corner between them.
+                seamless
+                // The page's primary input, so it opens at a size worth writing
+                // in rather than growing into one. This is also what absorbs
+                // the slack that used to sit dead below the button.
+                minLines={6}
+              />
+            }
+            leading={
               <IconButton
                 label="Attach image"
                 icon={<AttachIcon />}
                 variant="quiet"
+                size="xs"
                 type="button"
+                data-testid="spawn-attach"
                 onClick={() => fileInputRef.current?.click()}
               />
-            </div>
-          </div>
+            }
+            actions={
+              <Tooltip label={`Start the agent · ${chordLabel(["Mod", "Enter"])}`}>
+                {/* "Start", not "Spawn": spawn is implementation vocabulary, and
+                    the rail's own button already says "New session". */}
+                <Button
+                  variant="primary"
+                  size="xs"
+                  data-testid="spawn-submit"
+                  onClick={() => void handleSpawn()}
+                  disabled={busy}
+                >
+                  {busy ? "Starting…" : "Start"}
+                </Button>
+              </Tooltip>
+            }
+          />
         </Dropzone>
         <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePicker} />
 
@@ -508,6 +490,70 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </div>
         )}
 
+        {/* ONE compact row of configuration beneath the card, widest field
+            first: the working directory is the only one that changes often.
+            Harness moved into Advanced options - most installs have exactly one,
+            and a field whose answer is always "serf" should not lead the page. */}
+        <div className={CLASS.cfg}>
+          <div className={CLASS.cfgDir}>
+            <FormRow label="Working directory" htmlFor="spawn-cwd">
+              <PathField
+                id="spawn-cwd"
+                value={cwd}
+                onChange={setCwd}
+                kind="dir"
+                listRecents={listRecents}
+                complete={complete}
+                // With no ?dir= prefill and no per-project blob the field starts
+                // empty; the panel then opens on the last directory a session was
+                // launched in rather than on $HOME (spec 3.4). Read here rather
+                // than captured at mount so it reflects the latest stamp.
+                fallbackDir={getGlobalLastWorkingDir()}
+                placeholder="Working directory"
+                // Browsing writes the field on every step, so the last-used
+                // directory is recorded once the panel closes rather than
+                // continuously (spec 3.7).
+                onPanelClose={setGlobalLastWorkingDir}
+              />
+            </FormRow>
+            {/* Branch is a read-only HEAD readout, not a peer field: it rides
+                the directory row as a mono suffix ("~/code/serf · main") because
+                it is a PROPERTY of that directory, and the wire has nowhere to
+                send it anyway (startThread.ts's own branch comment). */}
+            {branch !== "" && (
+              <span className={CLASS.branch} data-testid="spawn-branch" title={`HEAD ${branch}`}>
+                <span className={CLASS.branchSeparator} aria-hidden="true">
+                  ·
+                </span>
+                {branch}
+              </span>
+            )}
+          </div>
+
+          <div className={CLASS.cfgModel}>
+            <span className={CLASS.fieldLabel} id="spawn-model-label">
+              Model
+            </span>
+            <ModelField
+              value={model}
+              onChange={handleModelChange}
+              loadModels={loadModels}
+              harness={harness || undefined}
+              cwd={cwd || undefined}
+            />
+          </div>
+
+          <FormRow label="Effort" htmlFor="spawn-reasoning">
+            <Select
+              id="spawn-reasoning"
+              value={reasoningEffort}
+              onChange={(e) => setReasoningEffort(e.target.value)}
+              options={REASONING_OPTIONS}
+              disabled={!usesSerfModels}
+            />
+          </FormRow>
+        </div>
+
         <AdvancedOptions
           options={schemaOptions}
           onOverridesChange={setAdvancedOverrides}
@@ -516,6 +562,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           loadCatalog={loadCatalog}
           complete={complete}
         >
+          <FormRow label="Harness" htmlFor="spawn-harness">
+            <Select
+              id="spawn-harness"
+              value={harness || "serf"}
+              onChange={(e) => handleHarnessChange(e.target.value)}
+              options={harnessOptions}
+            />
+          </FormRow>
           <FormRow label="Access mode" htmlFor="spawn-access">
             <Select
               id="spawn-access"
@@ -525,12 +579,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             />
           </FormRow>
         </AdvancedOptions>
-
-        <div className={CLASS.actions}>
-          <Button variant="primary" onClick={() => void handleSpawn()} disabled={busy}>
-            {busy ? "Spawning…" : "Spawn"}
-          </Button>
-        </div>
       </div>
 
       <ConfirmDialog

@@ -40,6 +40,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {
+  xs: requireClass(styles.xs, "iconbutton.module.css", "xs"),
   sm: requireClass(styles.sm, "iconbutton.module.css", "sm"),
   md: requireClass(styles.md, "iconbutton.module.css", "md"),
 };

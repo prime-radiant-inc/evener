@@ -1,3 +1,5 @@
+/* ONE quiet 12px line. No borders, no boxes: every trigger on it is the value
+ * itself, so the row reads as a run of facts rather than a toolbar. */
 .row {
   display: flex;
   align-items: center;
@@ -17,22 +19,94 @@
   gap: var(--space-1);
 }
 
+/* Figures, identifiers and timings - the faces mono is for. Chrome labels never
+ * take it. */
+.mono {
+  font-family: var(--font-mono);
+}
+
 .meter {
   width: 64px;
 }
 
-.select {
-  font-family: var(--font-sans);
+/* Queue depth is the one thing on this row that belongs at the far edge: it
+ * reports the consequence of a Send rather than a property of the session, so
+ * it sits apart from the run of facts instead of joining it. */
+.queue {
+  margin-left: auto;
+  color: var(--ink-low);
+}
+
+/* A finished session's strip: one dimmer line of what it was and what it spent.
+ * Nothing on it can change again, so it steps back from the live row's voice. */
+.summary {
+  color: var(--ink-mid);
+}
+
+.separator {
+  color: var(--ink-low);
+}
+
+/* Quiet effort trigger, matching ModelSwitch's own (modelswitch.module.css):
+ * the current value IS the control. `position: relative` is the containing
+ * block for the real <select> laid over it below. */
+.effortTrigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-radius: var(--radius-control);
+}
+
+.effortTrigger:hover {
+  background: var(--surface-2);
+}
+
+/* The focus ring belongs to the trigger's visible face even though focus lands
+ * on the transparent <select> inside it - :focus-within is what carries it
+ * across. */
+.effortTrigger:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.effortValue {
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
+.effortChevron {
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* A REAL native <select>, laid over its own readout at zero opacity: the row
+ * gets a borderless value-as-control, and the control keeps every native
+ * behavior a hand-built listbox would have thrown away - tab order, arrow keys,
+ * type-ahead, and the platform's own dropdown. `opacity: 0` rather than
+ * `visibility: hidden` or a clip rect: it must stay hittable and focusable,
+ * which both of those would end. The readout beneath is aria-hidden, so this
+ * element is also the row's single spoken source for the value. */
+.effortSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
 /* Standard visually-hidden recipe: keeps a real, focus-order-preserving
- * <label> in the accessibility tree without taking up any visual footprint
- * in this compact row - used where a widget's typed props have no
- * aria-label passthrough of their own (see widgets/select's index.tsx: it
- * intentionally forwards only value/onChange/options/disabled/id/name, no
- * rest-spread), so the standard <label htmlFor> association is the only
- * way left to give such a control an accessible name. */
+ * <label> in the accessibility tree without taking up any visual footprint in
+ * this compact row. The effort readout beside it is aria-hidden (the select
+ * already speaks its own value), so this association is the control's only
+ * accessible name. */
 .srOnly {
   position: absolute;
   width: 1px;

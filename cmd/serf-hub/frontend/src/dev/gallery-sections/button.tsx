@@ -22,6 +22,9 @@ function VariantRow({ variant }: { variant: ButtonVariant }) {
       <Button variant={variant} size="sm">
         Save changes
       </Button>
+      <Button variant={variant} size="xs">
+        Save changes
+      </Button>
       <Button variant={variant} size="md" icon={<DotIcon />}>
         Save changes
       </Button>

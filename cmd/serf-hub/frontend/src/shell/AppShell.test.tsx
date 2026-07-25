@@ -134,7 +134,10 @@ test('clicking "New session" navigates to /new and opens the spawn pane', async 
   expect(window.location.pathname).toBe("/new");
   // /new now opens the real spawn pane (the old "not available yet" welcome
   // fallback is gone) - its Spawn button proves the pane mounted.
-  expect(await screen.findByRole("button", { name: "Spawn" })).toBeTruthy();
+  // The spawn pane's own submit verb is "Start" - it lives in the prompt
+  // card's corner the way Send does in the composer, both surfaces being the
+  // same shared card.
+  expect(await screen.findByRole("button", { name: "Start" })).toBeTruthy();
 });
 
 // --- command palette wiring (this task) -------------------------------

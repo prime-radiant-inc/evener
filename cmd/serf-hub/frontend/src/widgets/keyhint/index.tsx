@@ -49,6 +49,15 @@ function glyphOf(key: string): string {
   return GLYPH[key] ?? displayOf(key);
 }
 
+/** The chord as speakable WORDS ("⌘+Enter", "Shift+Enter") - the same text the
+ * bordered form renders and the compact form carries visually-hidden, for a
+ * caller that needs the chord inside a plain string rather than as an element
+ * (a Tooltip label on a control whose visible label is just its verb). Exported
+ * so the "Mod" platform split stays defined in exactly one place. */
+export function chordLabel(keys: string[]): string {
+  return keys.map(displayOf).join("+");
+}
+
 /** A keyboard-shortcut hint: one <kbd> per key, "+" separated. Informational
  * - no interaction, no focus ring. */
 export function KeyHint({ keys, compact = false }: KeyHintProps) {

@@ -1,4 +1,12 @@
-import { type ChangeEvent, type ClipboardEvent, forwardRef, type KeyboardEvent, useLayoutEffect, useRef } from "react";
+import {
+  type ChangeEvent,
+  type ClipboardEvent,
+  type CSSProperties,
+  forwardRef,
+  type KeyboardEvent,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { requireClass } from "../internal/requireClass";
 import styles from "./textarea.module.css";
 
@@ -20,12 +28,28 @@ export interface TextareaProps {
    * 2-row default) is fixed and no measurement occurs. */
   autoGrow?: boolean;
   rows?: number;
+  /** Set the field's resting size, in text lines, instead of MIN_ROWS - for a
+   * field whose job asks for more room than the default before anything is
+   * typed (the spawn form's prompt, the page's primary input) or for less (a
+   * finished session's collapsed one-line follow-up invitation).
+   *
+   * Drives BOTH the `--textarea-min-lines` custom property the stylesheet's
+   * min-height floor reads AND the native `rows` attribute. Both are needed:
+   * `rows` is what an autoGrow field's first real measurement measures, so a
+   * floor raised without it gets immediately overwritten by a MIN_ROWS-tall
+   * measurement (verified in Chrome - a 1-line field stayed at 2 lines until
+   * `rows` followed). autoGrow still grows past this for real content. */
+  minLines?: number;
   id?: string;
   name?: string;
   /** Native keydown passthrough - e.g. a composer's Enter-to-send/steer
    * routing (checking key/modifiers and optionally calling
    * preventDefault()). Fires before onChange for the same keystroke. */
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /** Native focus/blur passthrough - e.g. a collapsed follow-up field that
+   * opens to a taller writing surface only while it has focus. */
+  onFocus?: () => void;
+  onBlur?: () => void;
   /** Native paste passthrough - e.g. a composer intercepting a pasted image
    * off the clipboard while leaving a text-only paste to the browser's own
    * default insertion (never calling preventDefault() itself). */
@@ -98,10 +122,13 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     disabled = false,
     autoGrow,
     rows,
+    minLines,
     id,
     name,
     onKeyDown,
     onPaste,
+    onFocus,
+    onBlur,
     "aria-label": ariaLabel,
     seamless = false,
   },
@@ -157,10 +184,21 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       onChange={onChange}
       onKeyDown={onKeyDown}
       onPaste={onPaste}
+      onFocus={onFocus}
+      onBlur={onBlur}
       placeholder={placeholder}
       aria-label={ariaLabel}
       disabled={disabled}
-      rows={autoGrow ? MIN_ROWS : (rows ?? MIN_ROWS)}
+      // An inline custom property, not an inline height: the stylesheet's
+      // min-height calc stays the single definition of the floor, and
+      // autoGrow's measured height still wins above it.
+      style={minLines === undefined ? undefined : ({ "--textarea-min-lines": minLines } as CSSProperties)}
+      // An autoGrow field's `rows` is what its FIRST measurement measures (the
+      // CSS floor only backstops an unmeasurable mount), so a raised minLines
+      // has to reach `rows` too - otherwise autoGrow writes a 2-line height
+      // over the taller floor and the floor never shows. Verified in Chrome: a
+      // minLines={1} field stayed 39px until this followed.
+      rows={autoGrow ? (minLines ?? MIN_ROWS) : (rows ?? MIN_ROWS)}
     />
   );
 });

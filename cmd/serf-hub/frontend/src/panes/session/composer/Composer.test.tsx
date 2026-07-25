@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -14,6 +11,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { Toast } from "../../../widgets";
 import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
+import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Composer } from "./Composer";
 
@@ -154,79 +152,171 @@ test("typing persists the draft under this ref's storage key", async () => {
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hi");
 });
 
-// The textarea is seamless (no box, no ring of its own) so the card around it
-// is the composer's single visible control - and therefore has to carry the
-// focus affordance, or focusing the message field would show nothing at all.
-// Only the post-focus state is queried: jsdom's selector engine caches a
-// :focus-within result per element, so an earlier "not yet focused" call on
-// the same node would keep answering false afterwards.
-test("focusing the message field puts the input card in :focus-within, which its CSS gives the standard accent ring", () => {
-  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
-  expect(css).toMatch(/\.inputCard:focus-within\s*\{[^}]*outline: 2px solid var\(--accent\)/);
-});
-
-test("focusing the message field lights the input card's own focus affordance", async () => {
+// The card is widgets/promptcard now, so the focus-ring RULE is that widget's
+// own contract (promptcard.test.tsx pins the declaration). What stays this
+// component's business is that it renders the shared card at all and that the
+// seamless field inside really drives the card's focus state. Only the
+// post-focus state is queried: jsdom's selector engine caches a :focus-within
+// result per element, so an earlier "not yet focused" call on the same node
+// would keep answering false afterwards.
+test("focusing the message field lights the shared prompt card's own focus affordance", async () => {
   await mountComposer("ref_a");
   textarea().focus();
   expect(screen.getByTestId("composer-input-card").matches(":focus-within")).toBe(true);
 });
 
-// The key hints inside these buttons render as bare glyphs (⇧↵, ⌘↵), which
-// are unspeakable - so the buttons' spoken names must stay words. These two
-// tests are the ONE place that asserts an accessible name deliberately;
-// everywhere else addresses controls by testid.
-test("the Steer button's spoken name is words, not the ⇧↵ glyphs it shows", async () => {
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
-  });
-  expect(screen.getByRole("button", { name: "Steer Shift+Enter" })).toBe(steerButton());
-});
-
-test("the submit button's spoken name is words, not the ⌘↵ glyphs it shows", async () => {
+// The composer and the spawn form are the SAME object: both render
+// widgets/promptcard, not two components that merely resemble each other. The
+// class on the rendered card is the proof that reaches across both files.
+test("the composer's card IS the shared PromptCard widget, not a lookalike", async () => {
   await mountComposer("ref_a");
-  // KeyHint renders "Mod" as ⌘ on Apple platforms and Ctrl elsewhere, in the
-  // spoken words as well as the glyphs, so the expected primary modifier
-  // follows whichever platform this run reports.
-  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
-  expect(screen.getByRole("button", { name: `Send ${modWord}+Enter` })).toBe(submitButton());
-  expect(submitButton().textContent).toContain("↵"); // the visible form really is the glyph run
+  expect(screen.getByTestId("composer-input-card").className.split(" ")).toContain(promptCardStyles.card);
 });
 
-// Density: the control row is the 28px (sm) size, not 32px (md) - three
-// nested gaps plus the card's padding plus a 32px row stacked up to a block
-// far taller than the input it framed.
-test("every control in the composer's button row is the sm size", async () => {
+// The chords moved out of the buttons into their tooltips, so each control's
+// spoken name is now just its verb. These are the ONE place that asserts
+// accessible names deliberately; everywhere else addresses controls by testid.
+test("each control's spoken name is its bare verb - no chord glyphs in the name or the label", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
     serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
   });
-
-  // IconButton overrides Button's own sm/md with its square sizing (see
-  // iconbutton.module.css), so the two icon controls carry that module's sm.
-  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
-    expect(control.className.split(" ")).toContain(iconButtonStyles.sm);
-  }
-  for (const control of [steerButton(), submitButton()]) {
-    expect(control.className.split(" ")).toContain(buttonStyles.sm);
-  }
-});
-
-// The two icon controls draw real SVG glyphs, not bare "+"/"■" characters,
-// which render inconsistently across fonts and read as typos at 28px. Their
-// spoken names come from IconButton's label and stay words either way.
-test("the attach and stop controls draw SVG glyphs, not literal text characters", async () => {
-  await mountComposer("ref_a", {
-    status: { type: "active" },
-    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
-  });
-
-  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
-    expect(control.querySelector("svg")).toBeTruthy();
-    expect(control.textContent).toBe("");
-  }
-  expect(screen.getByRole("button", { name: "Attach image" })).toBe(screen.getByTestId("composer-attach"));
   expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
+  expect(screen.getByRole("button", { name: "Send" })).toBe(submitButton());
+  expect(screen.getByRole("button", { name: "Steer" })).toBe(steerButton());
+  expect(screen.getByRole("button", { name: "Attach image" })).toBe(screen.getByTestId("composer-attach"));
+});
+
+// The boxed <kbd> runs are gone from inside the buttons - three nested boxes
+// dominated the button they annotated. The chord still has to be DISCOVERABLE,
+// which is what each button's Tooltip is for.
+test("no button renders a chord hint inside itself; the chord lives in the button's tooltip", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
+
+  for (const control of [stopButton(), submitButton(), steerButton()]) {
+    expect(control.querySelector("kbd")).toBeNull();
+    expect(control.textContent).not.toMatch(/↵/);
+  }
+
+  // Tooltip shows after its own 300ms delay; user-event's fake-free setup
+  // advances real time, so this waits for the bubble rather than assuming it.
+  await user.hover(submitButton());
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toContain(`${modWord}+Enter`);
+});
+
+test("the Steer tooltip names the chord that fires it", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  await user.hover(steerButton());
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toContain("Shift+Enter");
+});
+
+// Density: the control row is the 24px (xs) size. Three nested gaps plus the
+// card's padding plus a taller row stacked up to a block far taller than the
+// input it framed.
+test("every control in the composer's button row is the xs (24px) size", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+
+  // IconButton overrides Button's own xs/sm/md with its square sizing (see
+  // iconbutton.module.css), so the one icon control carries that module's xs.
+  expect(screen.getByTestId("composer-attach").className.split(" ")).toContain(iconButtonStyles.xs);
+  for (const control of [stopButton(), steerButton(), submitButton()]) {
+    expect(control.className.split(" ")).toContain(buttonStyles.xs);
+  }
+});
+
+// Stop is the WORD, in danger ink, not a filled square glyph: it is chrome, and
+// chrome speaks. dangerQuiet keeps the hue on the label rather than as a fill
+// competing with the primary control beside it.
+test("Stop renders as the word in the dangerQuiet variant, not as an icon", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(stopButton().textContent).toBe("Stop");
+  expect(stopButton().querySelector("svg")).toBeNull();
+  expect(stopButton().className.split(" ")).toContain(buttonStyles.dangerQuiet);
+});
+
+// The attach control stays an icon (a paperclip needs no word), and stays a
+// real SVG rather than a "📎"/"+" character whose weight and baseline shift
+// from font to font.
+test("the attach control draws an SVG glyph, not a literal text character", async () => {
+  await mountComposer("ref_a");
+  const attach = screen.getByTestId("composer-attach");
+  expect(attach.querySelector("svg")).toBeTruthy();
+  expect(attach.textContent).toBe("");
+});
+
+// --- the verb cluster's order and emphasis ---------------------------------
+//
+// Stop is pinned LEFTMOST so it never trades places with the verbs that come
+// and go: it is the one control here whose misfire cannot be undone. Send holds
+// the middle, Steer the right.
+test("the cluster order is Stop, Send, Steer left to right", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  const card = screen.getByTestId("composer-input-card");
+  const order = [...card.querySelectorAll("button")]
+    .map((b) => b.getAttribute("data-testid"))
+    .filter((id) => id !== null && id !== "composer-attach");
+  expect(order).toEqual(["composer-stop", "composer-submit", "composer-steer"]);
+});
+
+// Jesse's own correction, honored exactly: both verbs stay, with distinct jobs.
+// While a turn runs Steer is the primary (interrupt and redirect NOW) and Send
+// sits beside it quiet, queueing until the agent stops. Idle, Send is the
+// primary and sends immediately. A label never changes meaning under the user.
+test("while a turn runs, Steer is primary and Send is quiet", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(steerButton().className.split(" ")).toContain(buttonStyles.primary);
+  expect(submitButton().className.split(" ")).toContain(buttonStyles.quiet);
+});
+
+test("with nothing running, Send is the primary and there is no Steer to outrank it", async () => {
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(submitButton().className.split(" ")).toContain(buttonStyles.primary);
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+});
+
+// The label is stable across states even though the ROUTE isn't: a mid-turn
+// Send queues (turn/queue, proven by the routing tests below) but still reads
+// "Send", because the change is one of timing, not of verb. The tooltip is
+// where the timing is spelled out.
+test("Send keeps its label while a turn runs, and its tooltip explains the queueing", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  expect(submitButton().textContent).toBe("Send");
+  await user.hover(submitButton());
+  expect((await screen.findByRole("tooltip")).textContent).toMatch(/queue until the agent stops/i);
+});
+
+test("Send's tooltip says it sends now when nothing is running", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await user.hover(submitButton());
+  expect((await screen.findByRole("tooltip")).textContent).toMatch(/send now/i);
 });
 
 // --- send / queue routing ---------------------------------------------------
@@ -306,7 +396,7 @@ test("a failed send leaves the textarea text untouched and surfaces a toast", as
   expect(textarea().value).toBe("hello");
 });
 
-test("active session with queue capability: submit button reads Queue and posts turn/queue", async () => {
+test("active session with queue capability: Send routes to turn/queue", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -315,15 +405,9 @@ test("active session with queue capability: submit button reads Queue and posts 
   fake.on("turn/queue", () => ({}));
 
   await user.type(textarea(), "queued message");
-  expect(submitButton().textContent).toMatch(/queue/i);
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/queue")).toBe(true));
-});
-
-test("an ended session disables the submit button entirely (send unavailable)", async () => {
-  await mountComposer("ref_a", { status: { type: "ended" } });
-  expect(submitButton().disabled).toBe(true);
 });
 
 test("submitting an empty composer fires no request", async () => {
@@ -402,15 +486,41 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
   expect(textarea().value).toBe("abc\n");
 });
 
-test("the submit kbd hint switches from Mod+Enter to a bare Enter when enterToSend is on", async () => {
+// The chord a hint advertises has to track the preference that actually fires
+// it: enterToSend on means bare Enter submits, so the tooltip must say Enter,
+// not Mod+Enter. Now asserted on the tooltip, since that's where the chord
+// moved.
+test("the submit tooltip's chord switches from Mod+Enter to a bare Enter when enterToSend is on", async () => {
+  const user = userEvent.setup();
+  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
+
   await mountComposer("ref_a");
-  expect(submitButton().textContent).toMatch(/enter/i);
+  await user.hover(submitButton());
+  expect((await screen.findByRole("tooltip")).textContent).toContain(`${modWord}+Enter`);
 
   cleanup();
   prefsStore.getState().setEnterToSend(true);
   await mountComposer("ref_a");
-  const hint = submitButton().textContent ?? "";
-  expect(hint.toLowerCase()).not.toContain("shift");
+  await user.hover(submitButton());
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toMatch(/·\s*Enter$/);
+  expect(tip.textContent).not.toContain(modWord);
+});
+
+// enterToSend on makes Shift+Enter a literal newline rather than a steer (see
+// handleKeyDown), so Steer's tooltip must stop advertising a chord that no
+// longer reaches it.
+test("Steer's tooltip drops the chord when enterToSend has taken Shift+Enter away from it", async () => {
+  prefsStore.getState().setEnterToSend(true);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  await user.hover(steerButton());
+  const tip = await screen.findByRole("tooltip");
+  expect(tip.textContent).toMatch(/interrupt and redirect now/i);
+  expect(tip.textContent).not.toMatch(/Shift/);
 });
 
 // --- steer / drain-as-steer routing -----------------------------------------
@@ -592,6 +702,79 @@ test("a busy session on a harness that can't steer renders stop but not steer", 
 test("the stop button is absent once the session has ended", async () => {
   await mountComposer("ref_a", { status: { type: "ended" } });
   expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
+
+// --- the ended state: an epitaph, not a cockpit ---------------------------
+//
+// A cold exited serf session arrives as "notLoaded" and STILL advertises Send
+// (cmd/serf-hub/app_threadread.go's pastEntryThread: the hub auto-resumes it on
+// the first message), so it keeps a card - collapsed to a one-line invitation
+// with no control row, since attach and a permanent Send button would both be
+// chrome around an invitation. ⌘/Ctrl+Enter is the submit route, and focusing
+// the field is what opens it up.
+
+const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
+
+test.each(ENDED_STATUSES)(
+  "a %s session collapses the card to a follow-up invitation with no control row",
+  async (type) => {
+    await mountComposer("ref_a", { status: { type } });
+    const card = screen.getByTestId("composer-input-card");
+    expect(textarea().getAttribute("placeholder")).toBe("Send a follow-up…");
+    expect(card.querySelectorAll("button")).toHaveLength(0);
+    expect(screen.queryByTestId("composer-attach")).toBeNull();
+    expect(screen.queryByTestId("composer-submit")).toBeNull();
+  },
+);
+
+// One line at rest, opening to a real writing surface once focused. Driven from
+// React state rather than a :focus-within CSS rule because the floor has to
+// reach the field's own `rows` attribute to take effect at all (widgets/textarea
+// documents why), and only the prop can do that. Verified in Chrome too: before
+// the rows half of that fix, the collapsed field measured 39px - two lines - no
+// matter what the floor said.
+test("an ended session's field rests at one line and opens to three on focus", async () => {
+  await mountComposer("ref_a", { status: { type: "notLoaded" } });
+  expect(textarea().getAttribute("rows")).toBe("1");
+  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("1");
+
+  act(() => textarea().focus());
+  expect(textarea().getAttribute("rows")).toBe("3");
+  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("3");
+
+  act(() => textarea().blur());
+  expect(textarea().getAttribute("rows")).toBe("1");
+});
+
+// A live session's field must NOT pick up the collapsed floor - it keeps the
+// widget's own MIN_ROWS default, so a running composer is a comfortable target.
+test("a live session's field keeps the widget's own default line floor", async () => {
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(textarea().getAttribute("rows")).toBe("2");
+  expect(textarea().getAttribute("style") ?? "").not.toContain("--textarea-min-lines");
+});
+
+test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "notLoaded" } });
+  fake.on("turn/start", () => ({ turn: { id: "turn_1", status: "inProgress", itemsView: "" } }));
+
+  await user.type(textarea(), "one more thing");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+});
+
+// The other half of the rule: when the source really cannot take input, there
+// is nothing a card could accomplish, so none is rendered. An unusable field is
+// worse than no field - which is exactly what a disabled one was.
+test("a session whose harness advertises no send at all renders NO card, not a dead one", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "closed" },
+    serf: { ref: "ref_a", capabilities: { ...FULL_CAPABILITIES, send: false }, queue: {} },
+  });
+  expect(screen.queryByTestId("composer-input-card")).toBeNull();
+  expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
 });
 
 // --- interrupt ---------------------------------------------------------------

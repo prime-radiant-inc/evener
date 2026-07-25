@@ -2,6 +2,18 @@
 // the transcript (T1 carves this slot; Session.tsx is FROZEN for the wave
 // once T1 lands — every stream below edits only inside this subtree).
 //
+// The card itself is widgets/promptcard, shared verbatim with the spawn form:
+// "message this agent" and "start an agent" are the same object, so they are
+// one component with two sets of callers' buttons in it, not two lookalikes.
+//
+// The control row is state-responsive, never disabled-in-place: with a turn in
+// flight it reads Stop · Send · Steer (Steer primary - interrupt and redirect
+// now; Send quiet - queue until the agent stops), idle it is Send alone, and a
+// finished session collapses the whole card to a one-line follow-up
+// invitation. Stop is pinned leftmost so it never trades places with the verbs
+// that come and go. Keyboard chords live in each control's Tooltip rather than
+// as boxed <kbd> runs inside the buttons.
+//
 // T2 (this file): the Textarea, send-vs-steer-vs-queue-vs-drain routing via
 // protocol/sendQueueAvailability's deriveSendQueueAvailability +
 // submitRouting.ts's own steer/drain fork, Enter-to-send preference,
@@ -21,7 +33,17 @@ import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailabi
 import { openPalette } from "../../../shell/palette/paletteController";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from "../../../widgets";
+import {
+  Button,
+  Chip,
+  chordLabel,
+  Dropzone,
+  IconButton,
+  PromptCard,
+  Textarea,
+  Tooltip,
+  useToasts,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ImageGallery } from "../transcript/flow/ImageGallery";
 import { AskDock, useAskDockPending } from "./askDock";
@@ -40,9 +62,6 @@ export interface ComposerProps {
 const CLASS = {
   composer: requireClass(styles.composer, "composer.module.css", "composer"),
   chips: requireClass(styles.chips, "composer.module.css", "chips"),
-  inputCard: requireClass(styles.inputCard, "composer.module.css", "inputCard"),
-  controls: requireClass(styles.controls, "composer.module.css", "controls"),
-  controlsRight: requireClass(styles.controlsRight, "composer.module.css", "controlsRight"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
@@ -58,17 +77,6 @@ function RemoveIcon() {
   );
 }
 
-// The interrupt control's glyph: the universal stop square, drawn rather than
-// typed as "■" (whose weight and baseline shift from font to font). Filled,
-// not stroked - a hollow square at this size reads as an empty checkbox.
-function StopIcon() {
-  return (
-    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-      <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
-    </svg>
-  );
-}
-
 // "drain" is set/cleared only by QueueStrip's own onDrainBusyChange (its
 // "Steer queue now" button) - never by this component's own submitAction, which
 // uses "steer" for its classic drain-as-steer route too (see submitAction's
@@ -77,6 +85,16 @@ function StopIcon() {
 // closing the race where both could otherwise fire drainAsSteer at once
 // (w5-integration-wiring-report.md's "two Steer buttons" concern).
 type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
+
+// The wire statuses that mean this session's story is over. "notLoaded" is the
+// shape a cold exited serf session actually arrives in (cmd/serf-hub/
+// app_threadread.go's pastEntryThread stamps it) and "closed" is a live session
+// that shut down in front of us; both are appwire's own vocabulary
+// (appwire/types.go's ThreadStatus* constants). "ended" is not one of them -
+// it never crosses the wire - but deriveSendQueueAvailability already treats it
+// as terminal, so it is matched here too rather than leaving the two modules
+// disagreeing about the same word.
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -122,6 +140,10 @@ export function Composer({ ref }: ComposerProps) {
   // isOtherSessionsDraft guarded against.
   const [text, setText] = useState(() => readDraft(ref));
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  // Whether a FINISHED session's collapsed follow-up field currently has focus,
+  // which is what expands it from its one-line resting state. Only read on that
+  // path (see the ended card's minLines below); harmless everywhere else.
+  const [followUpFocused, setFollowUpFocused] = useState(false);
 
   // textRef mirrors `text`, updated SYNCHRONOUSLY by updateText() below -
   // unlike `text` itself (a plain per-render const) or the textarea DOM
@@ -271,7 +293,28 @@ export function Composer({ ref }: ComposerProps) {
   // a non-empty queue does not make Steer meaningful on an idle session.
   const showStop = busy && model.capabilities.interrupt;
   const showSteer = busy && model.capabilities.steer;
-  const submitLabel = availability.canQueue ? "Queue" : "Send";
+  // Send keeps ONE label in every state. While a turn runs it queues rather
+  // than sending now, but that is a change of TIMING, not of verb - a label
+  // that flips to "Queue" made the same button mean two different things
+  // depending on when you looked, and Steer beside it is what now carries
+  // "act on this turn immediately". The tooltip says which timing applies,
+  // and the strip's queue depth is what shows the effect.
+  const submitChord: string[] = enterToSend ? ["Enter"] : ["Mod", "Enter"];
+  const submitTooltip = availability.canQueue
+    ? `Queue until the agent stops · ${chordLabel(submitChord)}`
+    : `Send now · ${chordLabel(submitChord)}`;
+  const ended = ENDED_STATUSES.has(model.status.type);
+  // A finished session can still be sent to when the source says so: the hub
+  // advertises Send for an exited serf thread and auto-resumes it on the first
+  // message. The CAPABILITY is the authority here, not
+  // deriveSendQueueAvailability - that table answers "can this turn be sent to
+  // or queued behind right now", and it deliberately reports both-false for
+  // ended/closed, which is the wrong question for a follow-up that resumes the
+  // session first. Gating on it renders no card for exactly the sessions the
+  // hub says are resumable. When the wire really advertises no send, no card is
+  // rendered at all: an unusable field is worse than no field.
+  const canCompose = availability.canSend || availability.canQueue;
+  const showFollowUpCard = ended && model.capabilities.send;
 
   function handleTextChange(event: { target: { value: string } }): void {
     updateText(event.target.value);
@@ -623,85 +666,131 @@ export function Composer({ ref }: ComposerProps) {
           })}
         </div>
       )}
-      <form ref={formRef} onSubmit={handleFormSubmit}>
-        <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={CLASS.inputCard} data-testid="composer-input-card" hidden={askPending} inert={askPending}>
-            <Textarea
-              ref={textareaRef}
-              value={text}
-              onChange={handleTextChange}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              autoGrow
-              // The inputCard around it draws the one border this field
-              // needs, and owns the focus ring via :focus-within.
-              seamless
-              placeholder="Message the agent…"
-              aria-label="Message"
+      {(!ended || showFollowUpCard) && (
+        <form ref={formRef} onSubmit={handleFormSubmit}>
+          <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
+            <PromptCard
+              data-testid="composer-input-card"
+              hidden={askPending}
+              field={
+                <Textarea
+                  ref={textareaRef}
+                  value={text}
+                  onChange={handleTextChange}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  autoGrow
+                  // The PromptCard around it draws the one border this field
+                  // needs, and owns the focus ring via :focus-within.
+                  seamless
+                  // A finished session's card is one line of invitation at
+                  // rest, opening to a real writing surface once it has focus.
+                  // Driven from React state rather than a :focus-within CSS
+                  // rule because the floor has to reach the field's own `rows`
+                  // to take effect at all (see widgets/textarea's rows
+                  // comment), and only the prop can do that.
+                  minLines={ended ? (followUpFocused ? 3 : 1) : undefined}
+                  onFocus={ended ? () => setFollowUpFocused(true) : undefined}
+                  onBlur={ended ? () => setFollowUpFocused(false) : undefined}
+                  placeholder={ended ? "Send a follow-up…" : "Message the agent…"}
+                  aria-label="Message"
+                />
+              }
+              // An ended session's collapsed card carries no control row at
+              // all - attach and a permanent Send button would both be
+              // chrome around an invitation. Submitting is the ⌘/Ctrl+Enter
+              // chord handleKeyDown already routes, and focusing the field
+              // is what expands it.
+              leading={
+                ended ? undefined : (
+                  /* data-testid on every control in this row: two different
+                     buttons here start with "Steer" (this one and
+                     QueueStrip's "Steer queue now"), so tests address
+                     controls by a stable hook instead of navigating by
+                     accessible name - the naming style follows StatusRow's
+                     own status-row-* testids. */
+                  <Tooltip label="Attach an image">
+                    <IconButton
+                      label="Attach image"
+                      icon={<AttachIcon />}
+                      variant="quiet"
+                      size="xs"
+                      type="button"
+                      data-testid="composer-attach"
+                      onClick={() => fileInputRef.current?.click()}
+                    />
+                  </Tooltip>
+                )
+              }
+              actions={
+                ended ? undefined : (
+                  <>
+                    {/* Stop leads the cluster, always in the same place: it is
+                        the one control here whose misfire cannot be undone, so
+                        it must never trade positions with Send or Steer as
+                        those come and go. The word, not a glyph - "Stop" is
+                        chrome, and chrome speaks. */}
+                    {showStop && (
+                      <Tooltip label="Stop the current turn">
+                        <Button
+                          variant="dangerQuiet"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-stop"
+                          onClick={() => void handleInterruptClick()}
+                          // busy + the interrupt capability are already what
+                          // makes this render at all, so only an in-flight
+                          // request of our own is left to gate on.
+                          disabled={busyAction !== null}
+                        >
+                          Stop
+                        </Button>
+                      </Tooltip>
+                    )}
+                    {/* Send is quiet while a turn runs and primary when
+                        nothing does: with a turn in flight the immediate
+                        action is Steer, and Send's job is the patient one. */}
+                    <Tooltip label={submitTooltip}>
+                      <Button
+                        type="submit"
+                        variant={showSteer ? "quiet" : "primary"}
+                        size="xs"
+                        data-testid="composer-submit"
+                        disabled={busyAction !== null || !hasContent || !canCompose}
+                      >
+                        Send
+                      </Button>
+                    </Tooltip>
+                    {showSteer && (
+                      <Tooltip
+                        label={
+                          enterToSend
+                            ? "Interrupt and redirect now"
+                            : `Interrupt and redirect now · ${chordLabel(["Shift", "Enter"])}`
+                        }
+                      >
+                        <Button
+                          variant="primary"
+                          size="xs"
+                          type="button"
+                          data-testid="composer-steer"
+                          onClick={handleSteerClick}
+                          // Same as Stop above: busy + the steer capability
+                          // already gate this control's existence.
+                          disabled={busyAction !== null}
+                        >
+                          Steer
+                        </Button>
+                      </Tooltip>
+                    )}
+                  </>
+                )
+              }
             />
-            <div className={CLASS.controls}>
-              {/* data-testid on every control in this row: two different
-                  buttons here start with "Steer" (this one and QueueStrip's
-                  "Steer queue now"), so tests address controls by a stable
-                  hook instead of navigating by accessible name - the naming
-                  style follows StatusRow's own status-row-* testids. */}
-              <IconButton
-                label="Attach image"
-                icon={<AttachIcon />}
-                variant="quiet"
-                size="sm"
-                type="button"
-                data-testid="composer-attach"
-                onClick={() => fileInputRef.current?.click()}
-              />
-              <div className={CLASS.controlsRight}>
-                {/* Stop is a secondary action beside Send, so it carries
-                    danger on the glyph rather than as a filled square
-                    competing with the primary control. */}
-                {showStop && (
-                  <IconButton
-                    label="Stop"
-                    icon={<StopIcon />}
-                    variant="dangerQuiet"
-                    size="sm"
-                    type="button"
-                    data-testid="composer-stop"
-                    onClick={() => void handleInterruptClick()}
-                    // busy + the interrupt capability are already what makes
-                    // this render at all, so only an in-flight request of our
-                    // own is left to gate on.
-                    disabled={busyAction !== null}
-                  />
-                )}
-                {showSteer && (
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    type="button"
-                    data-testid="composer-steer"
-                    onClick={handleSteerClick}
-                    // Same as Stop above: busy + the steer capability already
-                    // gate this control's existence.
-                    disabled={busyAction !== null}
-                  >
-                    Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} compact />}
-                  </Button>
-                )}
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  data-testid="composer-submit"
-                  disabled={busyAction !== null || !hasContent || (!availability.canSend && !availability.canQueue)}
-                >
-                  {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} compact />
-                </Button>
-              </div>
-            </div>
-          </div>
-        </Dropzone>
-        <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
-      </form>
+          </Dropzone>
+          <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
+        </form>
+      )}
     </div>
   );
 }

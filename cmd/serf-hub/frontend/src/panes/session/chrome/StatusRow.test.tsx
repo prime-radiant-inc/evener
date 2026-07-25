@@ -52,6 +52,17 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   };
 }
 
+/** A running session: the clock only reports an IN-FLIGHT turn, so it needs a
+ * live turn anchor, not just an "active" status. */
+function runningModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  return testModel({
+    status: { type: "active" },
+    activeTurnId: "turn_1",
+    activeTurnStartedAt: new Date(1_000_000).toISOString(),
+    ...overrides,
+  });
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -67,17 +78,52 @@ afterEach(() => {
   cleanup();
 });
 
-// --- state dot ------------------------------------------------------------
+// --- what the strip does NOT carry any more --------------------------------
+//
+// The strip's job is "what makes me act in the next minute", not "every fact
+// about this session". Each removal below has a specific home instead, and each
+// of these tests exists to keep the fact from creeping back onto this altitude.
 
-test("the state dot reflects the thread's status via the shared cadenceStateForStatus mapping", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ status: { type: "active" } })} now={1000} />);
-  // StatusDot's own accessible name for the "working" family (see
-  // widgets/statusdot's STATE_LABEL) - reused rather than a brittle class
-  // check, matching Session.tsx's own Cadence assertions elsewhere.
-  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+// The pane header already renders Cadence for this session (Session.tsx passes
+// it to PaneScaffold), so a second dot two rows down restated it.
+test("no state dot: the pane header already carries this session's cadence", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel()} now={1_000_000} />);
+  expect(screen.queryByRole("img", { name: "Working" })).toBeNull();
 });
 
-// --- model chip -------------------------------------------------------------
+// cwd / branch / project can't change mid-session, so they are reference
+// material rather than status - DetailsPanel is where they live now (and
+// DetailsPanel.test.tsx owns their behavior).
+test("no location cluster: cwd, branch and project belong to the details sheet", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ gitBranch: "feature/x", projectPath: "/proj", cwd: "/proj/wt" })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-location")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("/proj/wt");
+  expect(screen.getByTestId("status-row").textContent).not.toContain("feature/x");
+});
+
+// Cost is the glanceable form of the same fact, and the details sheet carries
+// the exact figures - two representations of token spend on one 12px line was
+// the same fact at two altitudes.
+test("no raw token counts: cost subsumes them for glancing", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ usage: { inputTokens: 1500, outputTokens: 320 }, cost: "~$1.23" })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-usage")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("↑");
+  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$1.23");
+});
+
+// --- model switcher ---------------------------------------------------------
 
 test("shows a single model label when provider and model are still the same string (cold-hydrate shape)", () => {
   render(
@@ -116,7 +162,10 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
 
   render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
   await user.click(screen.getByRole("button", { name: /change model/i }));
-  const combobox = await screen.findByRole("combobox");
+  // Named "Model" (widgets/modelCatalog's own aria-label); the effort control's
+  // own combobox is named "Reasoning effort", so this is unambiguous even
+  // though both roles now live on the same row.
+  const combobox = await screen.findByRole("combobox", { name: "Model" });
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(1));
   await user.clear(combobox);
   await user.keyboard("gpt");
@@ -127,6 +176,10 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
 });
 
 // --- reasoning effort switcher ----------------------------------------------
+//
+// The effort control lost its bordered <select> box and became the same kind of
+// quiet value-as-trigger the model switcher is - but it is STILL a real native
+// <select> underneath, so every one of these behavior tests holds unchanged.
 
 test("renders no reasoning-effort control when the model doesn't support reasoning and has no current value", () => {
   render(
@@ -137,6 +190,7 @@ test("renders no reasoning-effort control when the model doesn't support reasoni
     />,
   );
   expect(screen.queryByRole("combobox", { name: /reasoning effort/i })).toBeNull();
+  expect(screen.queryByTestId("status-row-effort")).toBeNull();
 });
 
 test("renders an interactive select from reasoningEffortLevels, valued at the current reasoningEffort", () => {
@@ -145,7 +199,6 @@ test("renders an interactive select from reasoningEffortLevels, valued at the cu
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
-        cwd: "/tmp/project",
         reasoningEffortLevels: ["low", "medium", "high"],
         reasoningEffort: "medium",
       })}
@@ -157,6 +210,50 @@ test("renders an interactive select from reasoningEffortLevels, valued at the cu
   // A leading "(default)" option (value "") heads the ladder so an unset
   // effort has an honest home to sit at - see the none-vs-default tests below.
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high"]);
+});
+
+// The visible readout is a separate, aria-hidden element laid UNDER the
+// transparent select, so it has to track the same value or the row would show
+// one thing and speak another.
+test("the visible readout shows the same value the select carries", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "high" })}
+      now={1000}
+    />,
+  );
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("high");
+});
+
+// Losing the box must not cost the control its keyboard operability or its
+// accessible name - the whole point of laying a real <select> over the readout
+// rather than drawing a fake trigger.
+test("the effort control is still keyboard-focusable and accessibly named without its box", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "low" })}
+      now={1000}
+    />,
+  );
+  const select = screen.getByRole("combobox", { name: /reasoning effort/i }) as HTMLSelectElement;
+  select.focus();
+  expect(document.activeElement).toBe(select);
+  expect(select.disabled).toBe(false);
+});
+
+// The readout is aria-hidden precisely so the value isn't announced twice (the
+// select already speaks it).
+test("the visible readout is hidden from assistive tech, so the value is spoken once", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "low" })}
+      now={1000}
+    />,
+  );
+  expect(screen.getByTestId("status-row-effort-value").getAttribute("aria-hidden")).toBe("true");
 });
 
 // The wire CAN emit supportsReasoning:true with an empty ladder: the daemon's
@@ -194,6 +291,10 @@ test("an unset reasoning effort shows as (default), never the first ladder level
   expect(select.value).toBe("");
   expect(select.options[select.selectedIndex]?.textContent).toBe("(default)");
   expect(Array.from(select.options).map((o) => o.textContent)).not.toContain("none");
+  // The VISIBLE readout must say the same thing - a quiet trigger whose face
+  // showed "low" while its select sat at "" would be the exact lie this rule
+  // exists to prevent.
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
 });
 
 // serf's "none" clears the effort to the provider default (llm/types.go:670,
@@ -207,7 +308,6 @@ test("collapses a ladder-listed 'none' into (default) rather than a duplicate op
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
-        cwd: "/tmp/project",
         reasoningEffortLevels: ["none", "low", "medium", "high"],
         reasoningEffort: "none",
       })}
@@ -218,6 +318,7 @@ test("collapses a ladder-listed 'none' into (default) rather than a duplicate op
   expect(select.value).toBe("");
   expect(select.options[select.selectedIndex]?.textContent).toBe("(default)");
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "low", "medium", "high"]);
+  expect(screen.getByTestId("status-row-effort-value").textContent).toBe("(default)");
 });
 
 test("changing the reasoning-effort select calls setReasoningEffort with the new level", async () => {
@@ -234,7 +335,6 @@ test("changing the reasoning-effort select calls setReasoningEffort with the new
       sessionRef="ref_a"
       model={testModel({
         supportsReasoning: true,
-        cwd: "/tmp/project",
         reasoningEffortLevels: ["low", "medium", "high"],
         reasoningEffort: "medium",
       })}
@@ -283,23 +383,46 @@ test("a reasoning model with a current effort but no named ladder gets the defau
 });
 
 // --- work-time clock --------------------------------------------------------
-
-test("shows accumulated work time alone when no turn is currently active", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ workMillis: 90_000 })} now={1_000_000} />);
-  expect(screen.getByText("1m")).toBeTruthy();
-});
+//
+// The clock reports an IN-FLIGHT turn's elapsed time, so it renders only while
+// one is running: a strip that keeps showing a frozen number implies otherwise.
+// The banked total is still one click away in Session details.
 
 test("adds the live elapsed time of the in-flight turn to workMillis while one is active", () => {
   const startedAt = new Date(1_000_000).toISOString();
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={testModel({ workMillis: 60_000, activeTurnStartedAt: startedAt })}
+      model={runningModel({ workMillis: 60_000, activeTurnStartedAt: startedAt })}
       now={1_000_000 + 30_000}
     />,
   );
   // 60s accumulated + 30s of the still-running turn = 90s = "1m".
-  expect(screen.getByText("1m")).toBeTruthy();
+  expect(screen.getByTestId("status-row-work-time").textContent).toBe("1m");
+});
+
+test("shows no clock at all when no turn is running, even with banked work time", () => {
+  render(<StatusRow sessionRef="ref_a" model={testModel({ workMillis: 90_000 })} now={1_000_000} />);
+  expect(screen.queryByTestId("status-row-work-time")).toBeNull();
+});
+
+// THE FABRICATED "1s" BUG. formatWorkDuration clamps up to a 1s minimum so a
+// real sub-second duration never reads "0s" - correct for a measurement, a lie
+// for the absence of one. An unmeasured session (workMillis 0, which is Go's
+// unset zero value on the wire, not a measurement of zero) must show NOTHING.
+// Same gate DetailsPanel's own work-time row uses; formatWorkDuration itself is
+// deliberately left alone.
+test("an unmeasured work time renders no clock, never a fabricated '1s'", () => {
+  const startedAt = new Date(1_000_000).toISOString();
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={runningModel({ workMillis: 0, activeTurnStartedAt: startedAt })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-work-time")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("1s");
 });
 
 // Wire-true reproduction of the W6-close punch item: a present-but-zero
@@ -307,7 +430,7 @@ test("adds the live elapsed time of the in-flight turn to workMillis while one i
 // REAL reducer, whose epochMsToISO turns it into "1970-01-01T00:00:00.000Z"
 // (proven here first), and the status row must NOT render the resulting
 // now-minus-epoch span as an absurd "500000h" clock.
-test("renders the banked work time, not a now-minus-epoch clock, for a zero-valued activeTurnStartedAt off the wire", () => {
+test("renders no now-minus-epoch clock for a zero-valued activeTurnStartedAt off the wire", () => {
   const now = 1_800_000_000_000;
   const model = hydrateThread(
     {
@@ -330,60 +453,37 @@ test("renders the banked work time, not a now-minus-epoch clock, for a zero-valu
     now,
   );
   // The reducer's source guard maps the wire's zero sentinel to absent, so
-  // the render takes the no-active-turn path.
+  // the render takes the no-active-turn path - and therefore shows no clock.
   expect(model.activeTurnStartedAt).toBeUndefined();
 
   render(<StatusRow sessionRef="ref_a" model={model} now={now} />);
-  const workTime = screen.getByTestId("status-row-work-time");
-  // Honest banked total (45s), never the ~500000h now-minus-epoch clock.
-  expect(workTime.textContent).toBe("45s");
+  expect(screen.queryByTestId("status-row-work-time")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toMatch(/\d+h/);
 });
 
-test("renders the banked work time even if an epoch anchor reaches the model by another path", () => {
+test("renders the banked work time, not an absurd span, if an epoch anchor reaches the model by another path", () => {
   // Defense-in-depth: statusFormat rejects at-or-before-epoch anchors on its
   // own, independent of the reducer's source guard.
   const now = 1_800_000_000_000;
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={testModel({ workMillis: 45_000, activeTurnStartedAt: new Date(0).toISOString() })}
+      model={testModel({
+        status: { type: "active" },
+        activeTurnId: "turn_1",
+        workMillis: 45_000,
+        activeTurnStartedAt: new Date(0).toISOString(),
+      })}
       now={now}
     />,
   );
   expect(screen.getByTestId("status-row-work-time").textContent).toBe("45s");
 });
 
-// --- location cluster -------------------------------------------------------
-// Composition proof only - LocationCluster.test.tsx owns the omit/order/title
-// behavior; this confirms StatusRow actually mounts it with the live model.
-test("surfaces the session's location facts (branch/project/cwd) in the row", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ gitBranch: "feature/x", projectPath: "/proj", cwd: "/proj/wt" })}
-      now={1000}
-    />,
-  );
-  const location = screen.getByTestId("status-row-location");
-  expect(location.textContent).toContain("feature/x");
-  expect(location.textContent).toContain("/proj");
-});
-
-test("shows no location cluster when the thread carries no location facts", () => {
-  render(
-    <StatusRow
-      sessionRef="ref_a"
-      model={testModel({ gitBranch: undefined, projectPath: undefined, cwd: "" })}
-      now={1000}
-    />,
-  );
-  expect(screen.queryByTestId("status-row-location")).toBeNull();
-});
-
 // --- context gauge -----------------------------------------------------------
 
 test("renders no context gauge when the thread has no context window data", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ contextWindow: 0 })} now={1000} />);
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ contextWindow: 0 })} now={1_000_000} />);
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
@@ -391,8 +491,8 @@ test("renders the context gauge with the used/window counts in its accessible la
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={testModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
-      now={1000}
+      model={runningModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
+      now={1_000_000}
     />,
   );
   const meter = screen.getByRole("meter");
@@ -404,53 +504,134 @@ test("renders the context gauge with the used/window counts in its accessible la
 // The gauge alone shows the pressure; a "12k / 128k" readout beside it said
 // the same thing twice in a row that has to stay one line. The exact numbers
 // are still reachable - spoken from the meter's label, and on hover from the
-// title, following the row's "key value" tooltip convention (LocationCluster,
-// status-row-cost).
+// title, following the row's "key value" tooltip convention.
 test("shows no duplicate numeric readout beside the gauge, and puts the numbers in a hover tooltip", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
-      model={testModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
-      now={1000}
+      model={runningModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
+      now={1_000_000}
     />,
   );
   expect(screen.queryByText("12k / 128k")).toBeNull();
   expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe("context 12k / 128k");
 });
 
-// --- usage -------------------------------------------------------------------
-
-test("shows nothing for usage when the model has no token data at all", () => {
-  render(<StatusRow sessionRef="ref_a" model={testModel({ usage: null })} now={1000} />);
-  expect(screen.queryByTestId("status-row-usage")).toBeNull();
-});
-
-test("shows input/output token counts when usage data is present", () => {
-  render(
-    <StatusRow sessionRef="ref_a" model={testModel({ usage: { inputTokens: 1500, outputTokens: 320 } })} now={1000} />,
-  );
-  expect(screen.getByTestId("status-row-usage").textContent).toBe("↑2k ↓320");
-});
-
 // --- cost --------------------------------------------------------------------
 
-test("shows the session cost chip verbatim from the wire string when present", () => {
+test("shows the session cost verbatim from the wire string when present", () => {
   render(<StatusRow sessionRef="ref_a" model={testModel({ cost: "~$1.23" })} now={1000} />);
-  const chip = screen.getByTestId("status-row-cost");
+  const cost = screen.getByTestId("status-row-cost");
   // The wire string is already formatted server-side (EstimateCost) — the row
   // displays it verbatim, never re-formatting a number client-side.
-  expect(chip.textContent).toBe("~$1.23");
-  // The row's "key value" tooltip convention (LocationCluster) — the tooltip
-  // names the value as the session cost, not a per-turn one.
-  expect(chip.getAttribute("title")).toContain("~$1.23");
+  expect(cost.textContent).toBe("~$1.23");
+  expect(cost.getAttribute("title")).toContain("~$1.23");
 });
 
-test("shows no cost chip when the wire omits cost as null (honest unknown)", () => {
+test("shows no cost when the wire omits cost as null (honest unknown)", () => {
   render(<StatusRow sessionRef="ref_a" model={testModel({ cost: null })} now={1000} />);
   expect(screen.queryByTestId("status-row-cost")).toBeNull();
 });
 
-test("shows no cost chip when cost is absent (undefined) from the model", () => {
+test("shows no cost when cost is absent (undefined) from the model", () => {
   render(<StatusRow sessionRef="ref_a" model={testModel({})} now={1000} />);
   expect(screen.queryByTestId("status-row-cost")).toBeNull();
+});
+
+// --- queue depth -------------------------------------------------------------
+//
+// Send's effect on a running session has to be visible somewhere, and the far
+// right of the strip is cheaper than a second row of chrome.
+
+test("shows the queue depth at the far right when messages are waiting", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { depth: 2 } })} now={1_000_000} />);
+  expect(screen.getByTestId("status-row-queue").textContent).toBe("2 queued");
+});
+
+test("shows no queue readout when the queue is empty - the normal case is not news", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: { depth: 0 } })} now={1_000_000} />);
+  expect(screen.queryByTestId("status-row-queue")).toBeNull();
+});
+
+test("shows no queue readout when the wire carries no queue at all", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ queue: null })} now={1_000_000} />);
+  expect(screen.queryByTestId("status-row-queue")).toBeNull();
+});
+
+// --- the ended state: an epitaph, not a cockpit ------------------------------
+//
+// Nothing on a finished session's strip can change again, so the live row of
+// instruments is replaced by one summary line. "notLoaded" is the shape a cold
+// exited serf session actually arrives in (cmd/serf-hub/app_threadread.go's
+// pastEntryThread), which is why it counts as ended here.
+
+const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
+
+test.each(ENDED_STATUSES)("a %s session's strip is one summary line of model, work and cost", (type) => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type },
+        modelProvider: "anthropic",
+        model: "claude-opus-5",
+        workMillis: 840_000,
+        cost: "~$1.83",
+      })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByTestId("status-row-summary-model").textContent).toBe("anthropic/claude-opus-5");
+  expect(screen.getByTestId("status-row-work-time").textContent).toBe("14m worked");
+  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$1.83");
+});
+
+// No switcher, no gauge, no meter: a finished session's model can't be changed
+// and its context occupancy was never measured (the hub builds an exited
+// session's thread from persisted SessionMeta, which carries no context
+// figures).
+test("an ended session's strip carries no live instruments - no switcher, no gauge, no effort control", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({
+        status: { type: "notLoaded" },
+        supportsReasoning: true,
+        reasoningEffortLevels: ["low", "high"],
+        contextUsed: 12_000,
+        contextWindow: 128_000,
+      })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
+  expect(screen.queryByRole("meter")).toBeNull();
+  expect(screen.queryByRole("combobox", { name: /reasoning effort/i })).toBeNull();
+});
+
+// Same honesty rule as the live row's clock: an unmeasured work time is Go's
+// unset zero, not a measurement, so it gets no row rather than a "1s".
+test("an ended session with no measured work time shows model and cost only, no fabricated '1s'", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, workMillis: 0, cost: "~$0.40" })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-work-time")).toBeNull();
+  expect(screen.getByTestId("status-row").textContent).not.toContain("1s");
+  expect(screen.getByTestId("status-row-cost").textContent).toBe("~$0.40");
+});
+
+test("an ended session with no cost shows the facts it has and nothing it doesn't", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "closed" }, workMillis: 90_000, cost: null })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.queryByTestId("status-row-cost")).toBeNull();
+  expect(screen.getByTestId("status-row-work-time").textContent).toBe("1m worked");
 });
