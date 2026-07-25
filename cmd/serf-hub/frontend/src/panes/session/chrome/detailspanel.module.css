@@ -32,10 +32,13 @@
   color: var(--ink-hi);
 }
 
-/* Full-width in the sheet - the meter is the row's primary readout here,
- * unlike the status row's 64px thumbnail gauge. */
+/* The meter takes a line of its own above the figures it summarizes, at the
+ * row's full width - it is a primary readout here, not the status row's 64px
+ * thumbnail gauge. flex-basis (not width) is what makes it claim the whole
+ * line: as a flex item in the wrapping value row, `width: 100%` alone would
+ * still be shrunk back to its content by flex sizing. */
 .meter {
-  width: 100%;
+  flex: 0 0 100%;
 }
 
 /* The secondary halves of the context readout (used / window, and what is
