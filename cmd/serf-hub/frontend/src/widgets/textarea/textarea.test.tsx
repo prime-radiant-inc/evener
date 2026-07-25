@@ -5,7 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { MAX_HEIGHT_VIEWPORT_FRACTION, Textarea } from "./index";
+import { MAX_HEIGHT_VIEWPORT_FRACTION, MIN_ROWS, Textarea } from "./index";
 import rawStyles from "./textarea.module.css";
 
 afterEach(cleanup);
@@ -233,6 +233,157 @@ test("with autoGrow, height recomputes (shrinks back down) as the controlled val
   await user.clear(textarea);
   expect(textarea.value).toBe(""); // the shrink really happened
   expect(textarea.style.height).toBe(`${simulatedScrollHeight("")}px`);
+});
+
+// --- unmeasurable mounts: a field that has no layout box when the effect runs
+//
+// A textarea that is detached from the document, or under a display:none
+// ancestor, reports scrollHeight 0 in every browser (verified live in Chrome:
+// detached, display:none, and display:none-ancestor all report 0). dockview
+// builds a panel's content element detached and mounts the React tree into it
+// before attaching, so whichever pane is not the boot-active one runs its
+// layout effect with no layout box - which used to pin height:0px forever,
+// leaving an invisible, unclickable field.
+//
+// WHAT THESE TESTS CAN PROVE: that a 0 measurement is never written as a
+// height, and that a ResizeObserver notification re-measures. jsdom performs
+// no layout at all (scrollHeight is 0 unconditionally without the stub above,
+// and there is no ResizeObserver), so the stub below models the browser rule
+// - 0 while any ancestor is display:none or the node is detached - and the
+// observer is a hand-driven fake.
+// WHAT THEY CANNOT PROVE: that a real browser delivers a resize notification
+// on reveal, or the real pixel heights. Both are verified in Chrome against a
+// real hub instead.
+function hasLayoutBox(el: HTMLElement): boolean {
+  if (!el.isConnected) return false;
+  for (let node: HTMLElement | null = el; node !== null; node = node.parentElement) {
+    if (node.style.display === "none") return false;
+  }
+  return true;
+}
+
+function stubLayoutAwareScrollHeight(): () => void {
+  const previous = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+    configurable: true,
+    get(this: HTMLTextAreaElement) {
+      return hasLayoutBox(this) ? simulatedScrollHeight(this.value ?? "") : 0;
+    },
+  });
+  return () => {
+    if (previous) Object.defineProperty(HTMLElement.prototype, "scrollHeight", previous);
+  };
+}
+
+/** A hand-driven stand-in for the browser's ResizeObserver (absent from
+ * jsdom): records what the widget observes and lets a test deliver the
+ * notification a real browser would deliver when a revealed element gains a
+ * box. */
+function stubResizeObserver(): { notify: () => void; observed: () => Element[]; restore: () => void } {
+  const callbacks = new Map<Element, () => void>();
+  const original = (globalThis as { ResizeObserver?: unknown }).ResizeObserver;
+  class FakeResizeObserver {
+    constructor(private readonly callback: () => void) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    unobserve(target: Element): void {
+      callbacks.delete(target);
+    }
+    disconnect(): void {
+      for (const target of [...callbacks.keys()]) {
+        if (callbacks.get(target) === this.callback) callbacks.delete(target);
+      }
+    }
+  }
+  (globalThis as { ResizeObserver?: unknown }).ResizeObserver = FakeResizeObserver;
+  return {
+    notify: () => {
+      for (const callback of callbacks.values()) callback();
+    },
+    observed: () => [...callbacks.keys()],
+    restore: () => {
+      (globalThis as { ResizeObserver?: unknown }).ResizeObserver = original;
+    },
+  };
+}
+
+test("with autoGrow, a field measured with no layout box is never pinned to a bogus 0 height", () => {
+  const restoreScrollHeight = stubLayoutAwareScrollHeight();
+  try {
+    const host = document.createElement("div");
+    host.style.display = "none";
+    document.body.appendChild(host);
+    render(<Textarea value="hi" onChange={() => {}} autoGrow />, { container: host });
+
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.scrollHeight).toBe(0); // the fixture really is unmeasurable
+    expect(textarea.style.height).not.toBe("0px");
+    expect(textarea.style.height).not.toBe("auto");
+
+    host.remove();
+  } finally {
+    restoreScrollHeight();
+  }
+});
+
+test("with autoGrow, a field revealed after mount re-measures on the resize notification", () => {
+  const restoreScrollHeight = stubLayoutAwareScrollHeight();
+  const observer = stubResizeObserver();
+  try {
+    const host = document.createElement("div");
+    host.style.display = "none";
+    document.body.appendChild(host);
+    render(<Textarea value="hi" onChange={() => {}} autoGrow />, { container: host });
+
+    const textarea = host.querySelector("textarea") as HTMLTextAreaElement;
+    expect(observer.observed()).toContain(textarea);
+
+    host.style.display = "block";
+    observer.notify();
+    expect(textarea.style.height).toBe(`${simulatedScrollHeight("hi")}px`);
+
+    host.remove();
+  } finally {
+    observer.restore();
+    restoreScrollHeight();
+  }
+});
+
+// The clamp ceiling is a fraction of window.innerHeight, not of the field's
+// own box, so growing the window has to re-measure a clamped field even though
+// nothing about that field's box changed - a ResizeObserver alone never fires
+// for it. Verified live in Chrome too (a 20000-char composer stuck at the old
+// 300px ceiling after the viewport went 600 -> 900 tall).
+test("with autoGrow, a clamped field re-clamps to the new ceiling when the window grows", () => {
+  const longLine = "x".repeat(4000);
+  render(<Textarea value={longLine} onChange={() => {}} autoGrow />);
+  const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  expect(textarea.style.height).toBe(`${window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION}px`);
+
+  const original = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const taller = window.innerHeight * 2;
+  try {
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: taller });
+    window.dispatchEvent(new Event("resize"));
+    // Still clamped, just to the new ceiling - the fixture's content stays
+    // taller than either.
+    expect(simulatedScrollHeight(longLine)).toBeGreaterThan(taller * MAX_HEIGHT_VIEWPORT_FRACTION);
+    expect(textarea.style.height).toBe(`${taller * MAX_HEIGHT_VIEWPORT_FRACTION}px`);
+  } finally {
+    if (original) Object.defineProperty(window, "innerHeight", original);
+  }
+});
+
+test("the CSS floor keeps the field at least MIN_ROWS lines tall in both variants, so it can never render unclickable", () => {
+  const css = moduleCss();
+  const base = /\.textarea\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  const seamless = /\.seamless\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(base).toContain("min-height:");
+  expect(seamless).toContain("min-height:");
+  // Both floors are expressed in the same shared line count, which must agree
+  // with the widget's own MIN_ROWS (CSS cannot read the TS constant).
+  expect(css).toContain(`--textarea-min-lines: ${MIN_ROWS}`);
 });
 
 test("with autoGrow, height clamps at MAX_HEIGHT_VIEWPORT_FRACTION of the viewport height for very tall content", () => {
