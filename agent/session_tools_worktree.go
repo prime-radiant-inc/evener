@@ -541,11 +541,16 @@ func gitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.G
 // newWorktreeGitRunner returns the lifecycle Git boundary for this session.
 // Production uses gitRunner; package-agent tests can inject a scripted runner
 // through testConfig to exercise the real orchestration without a subprocess.
+// The returned runner memoizes `git worktree list --porcelain` for its own
+// lifetime (see cachingWorktreeRunner): a pass that evaluates several lanes
+// reads the listing once instead of once per lane, and any command that could
+// change the listing drops the memo. Each call here mints a fresh runner, so a
+// cached listing never crosses operations.
 func (s *Session) newWorktreeGitRunner(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
 	if scripted := s.cfg.testOnly.worktreeGitRunner; scripted != nil {
-		return scripted(ctx, env)
+		return cachingWorktreeRunner(scripted(ctx, env))
 	}
-	return gitRunner(ctx, env)
+	return cachingWorktreeRunner(gitRunner(ctx, env))
 }
 
 // worktreeControlEnv returns a local env rooted at mainRepoRoot for lifecycle
@@ -2439,7 +2444,10 @@ func (s *Session) worktreePruneSweep2(ctx context.Context, run worktree.GitRunne
 func worktreePruneSweep3(run worktree.GitRunner, projectDir string) (ran bool, skipReason string, err error) {
 	out, err := run("worktree", "list", "--porcelain")
 	if err != nil {
-		return false, "", fmt.Errorf("manage_worktree prune: listing worktrees: %w", err)
+		// Named for this sweep: prune reads the listing twice (sweep 1 and
+		// here), and an identical message left the two failure paths
+		// indistinguishable in both errors and tests.
+		return false, "", fmt.Errorf("manage_worktree prune: sweep 3 listing worktrees: %w", err)
 	}
 	for _, e := range worktree.ParsePorcelain(out) {
 		if !e.Prunable {

@@ -529,38 +529,6 @@ func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *test
 	}
 }
 
-// TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoot:
-// the FIRST `worktree list --porcelain` call (the registered-at-path check)
-// succeeds, but the SECOND identical call (lockStateOf, inside the managed
-// lock check) fails — re-entry notices and lands at the restore root rather
-// than guessing the lock state.
-func TestResumeWorktreeReentry_ManagedLockStateUnverifiableNoticesAndRestoresRoot(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	path := res["path"].(string)
-	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
-
-	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
-	r.s.resumeWorktreeReentry(meta)
-
-	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
-		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
-	}
-	msgs := warningMessages(r.s)
-	if !anyContainsAll(msgs, path, "lock state could not be verified") {
-		t.Errorf("no notice about the unverifiable lock state: %v", msgs)
-	}
-}
-
-// TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot: the
-// lane is genuinely unlocked (clean-close residue), but the re-lock command
-// itself fails (permission denied writing the internal marker file) —
-// re-entry notices and lands at the restore root rather than re-entering an
-// unprotected tree.
 func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)

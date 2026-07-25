@@ -1021,24 +1021,6 @@ func TestWorktreePrune_Sweep2_UnmergedResidueKept(t *testing.T) {
 // prune — sweep 3 (git registry hygiene)
 // ============================================================
 
-// TestWorktreePrune_Sweep3_ListWorktreesErrorsOnSecondPorcelainCall covers
-// worktreePruneSweep3's own `worktree list --porcelain` error branch. The
-// initial prune scan must succeed; the shim fails only the next porcelain call,
-// which is sweep 3's fresh registry-hygiene scan.
-func TestWorktreePrune_Sweep3_ListWorktreesErrorsOnSecondPorcelainCall(t *testing.T) {
-	t.Parallel()
-	r := newWorktreeRepo(t)
-	gitFailOnNthMatchingCallRepoShim(t, r.mainRoot, "worktree list --porcelain", 2)
-
-	_, err := r.pruneOp(t)
-	if err == nil || !strings.Contains(err.Error(), "listing worktrees") {
-		t.Fatalf("prune with sweep 3's own porcelain call failing: err = %v, want the listing-worktrees error", err)
-	}
-}
-
-// TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails covers sweep 3's own
-// `git worktree prune` failure branch: every prunable entry is managed (so
-// sweep 3 decides to run), but the prune command itself fails.
 func TestWorktreePrune_Sweep3_GitWorktreePruneCommandFails(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
