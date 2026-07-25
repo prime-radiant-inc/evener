@@ -73,7 +73,7 @@ test("renders nothing for a ref with no tracked model yet (defensive - Session.t
   expect(container.firstChild).toBeNull();
 });
 
-test("composes the status row, session actions, goal control, and tasks panel once the ref's thread is tracked", async () => {
+test("composes the status row, session actions, goal control, details panel, and tasks panel once the ref's thread is tracked", async () => {
   const fake = connectFakeClient();
   // Seed a goal so GoalControl has something to render: with no goal it
   // renders nothing at all now (the "Set goal…" entry point moved into the ⋯
@@ -95,6 +95,26 @@ test("composes the status row, session actions, goal control, and tasks panel on
   expect(screen.getByRole("button", { name: /goal: active/i })).toBeTruthy();
   // Tasks panel trigger.
   expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
+  // Details panel trigger - also the [data-details-trigger] hook the palette's
+  // "Toggle session details" command reaches for, so this is what makes that
+  // command live in the assembled chrome.
+  expect(document.querySelector("[data-details-trigger]")).toBe(screen.getByRole("button", { name: "Details" }));
+});
+
+test("the details panel reads the work time of the SAME ref passed to SessionChrome", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_d", {
+      serf: { ref: "ref_d", capabilities: CAPABILITIES, queue: {}, workMillis: 125_000 },
+    }),
+  );
+  await threadsStore.getState().ensureThread("ref_d");
+
+  render(<SessionChrome ref="ref_d" />);
+  await user.click(screen.getByRole("button", { name: "Details" }));
+
+  expect(screen.getByTestId("session-details-work-time").textContent).toContain("2m");
 });
 
 test("every composed piece acts on the SAME ref passed to SessionChrome", async () => {

@@ -1,0 +1,45 @@
+/* One label/value row per fact, label above value so the exact figures get a
+ * full line of the narrow sheet to themselves. A <div> grouping dt+dd is
+ * valid inside a <dl> per the HTML5 content model (same shape settings'
+ * SettingsField uses). */
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.label {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-mid);
+}
+
+.value {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+/* Full-width in the sheet - the meter is the row's primary readout here,
+ * unlike the status row's 64px thumbnail gauge. */
+.meter {
+  width: 100%;
+}
+
+/* The secondary halves of the context readout (used / window, and what is
+ * left) recede behind the percentage a reader scans for first. */
+.dim {
+  color: var(--ink-mid);
+}

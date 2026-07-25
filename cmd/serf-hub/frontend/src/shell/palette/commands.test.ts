@@ -424,14 +424,24 @@ test("/tasks and /status click their chrome triggers when present (no-op-safe wh
   tasksBtn.setAttribute("data-tasks-trigger", "");
   const tasksClick = vi.fn();
   tasksBtn.addEventListener("click", tasksClick);
-  document.body.appendChild(tasksBtn);
+  const detailsBtn = document.createElement("button");
+  detailsBtn.setAttribute("data-details-trigger", "");
+  const detailsClick = vi.fn();
+  detailsBtn.addEventListener("click", detailsClick);
+  document.body.append(tasksBtn, detailsBtn);
 
   focusSession("ref_a");
   seedModel("ref_a");
   cmd("tasks").run?.(runContext());
   expect(tasksClick).toHaveBeenCalledTimes(1);
+  cmd("status").run?.(runContext());
+  expect(detailsClick).toHaveBeenCalledTimes(1);
+  tasksBtn.remove();
+  detailsBtn.remove();
 
-  // /status finds no [data-details-trigger] in this shell yet - must not throw.
+  // Neither command may throw with no trigger in the DOM - a pane type that
+  // renders no session chrome (a doc pane, the transcript view) is a real
+  // state, and the palette's own scope gating is by ref, not by chrome.
+  expect(() => cmd("tasks").run?.(runContext())).not.toThrow();
   expect(() => cmd("status").run?.(runContext())).not.toThrow();
-  document.body.removeChild(tasksBtn);
 });
