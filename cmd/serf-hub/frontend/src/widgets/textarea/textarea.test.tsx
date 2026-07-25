@@ -200,26 +200,38 @@ test("with autoGrow, height is set from the native scrollHeight after mount", ()
   expect(textarea.style.height).toBe(`${simulatedScrollHeight("hi")}px`);
 });
 
+// Pasted rather than typed key-by-key: what's under test is that the height
+// tracks the VALUE's measured scrollHeight, so one 400-character change proves
+// it exactly as well as 400 of them - and a per-keystroke version spends 400
+// renders plus 400 layout-effect remeasures inside the default 5s budget,
+// which is enough to time out on a loaded machine and leave the next test
+// holding a dirty textarea (an unbounded cost for no extra coverage).
 test("with autoGrow, height grows to track a long single unbroken line with no literal newlines at all - the wrapped-line case the old row-count heuristic could not handle", async () => {
   const user = userEvent.setup();
   render(<ControlledTextarea autoGrow />);
   const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
   const longLine = "x".repeat(400);
 
-  await user.type(textarea, longLine);
+  await user.click(textarea);
+  await user.paste(longLine);
 
+  expect(textarea.value).toBe(longLine); // the whole line really landed
   expect(textarea.style.height).toBe(`${simulatedScrollHeight(longLine)}px`);
 });
 
+// Also pasted, for the same reason as the grow case above.
 test("with autoGrow, height recomputes (shrinks back down) as the controlled value shrinks", async () => {
   const user = userEvent.setup();
   render(<ControlledTextarea autoGrow />);
   const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+  const longLine = "x".repeat(200);
 
-  await user.type(textarea, "x".repeat(200));
-  expect(textarea.style.height).toBe(`${simulatedScrollHeight("x".repeat(200))}px`);
+  await user.click(textarea);
+  await user.paste(longLine);
+  expect(textarea.style.height).toBe(`${simulatedScrollHeight(longLine)}px`);
 
   await user.clear(textarea);
+  expect(textarea.value).toBe(""); // the shrink really happened
   expect(textarea.style.height).toBe(`${simulatedScrollHeight("")}px`);
 });
 
