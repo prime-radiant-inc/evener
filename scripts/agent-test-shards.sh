@@ -44,13 +44,25 @@ set -uo pipefail
 cd "$(dirname "$0")/../agent" || { echo "agent-test-shards: no agent dir" >&2; exit 2; }
 
 flags="$*"
-# The two shards want OPPOSITE parallelism, which is the whole reason splitting
-# them helps. The git shard is syscall-bound: a high -parallel just piles up
-# concurrent fork/exec and it peaks around 8. The rest is CPU-bound and scales to
-# ~32 on a 10-core box (its tests are short and mostly waiting on nothing).
-# One shared budget cannot serve both, and the unsharded suite had to pick one.
-gitPar=${AGENT_SHARD_GIT_PARALLEL:-8}
-restPar=${AGENT_SHARD_REST_PARALLEL:-32}
+# Both shards run modestly parallel, deliberately LOWER than the machine could
+# nominally take. Measured on an idle 10-core box, rest shard, medians of 3:
+#
+#   -parallel  wall    sys    reported test-work   longest test
+#   6         23.7s   12.3s          99s               3.00s
+#   8         25.6s   14.0s         121s               2.97s
+#   32        24.2s   24.5s         451s               4.94s
+#
+# Wall time is FLAT from 6 to 32 — the suite's real work is ~13s of user CPU, so
+# extra concurrency buys nothing and costs double the kernel time in scheduler
+# churn. Worse, it corrupts measurement: at 32 a test's reported elapsed is mostly
+# runqueue wait, so the same suite "weighs" 451s instead of 99s and the ranking
+# used to decide what to optimize becomes noise. One test measured 0.05s alone and
+# 2.08s in-suite — a 42x stretch that is pure starvation.
+#
+# Keep these low. Raising them will not make the gate faster, and it will make
+# every duration it reports a lie.
+gitPar=${AGENT_SHARD_GIT_PARALLEL:-6}
+restPar=${AGENT_SHARD_REST_PARALLEL:-6}
 skip=${AGENT_SHARD_SKIP:-}
 logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
 

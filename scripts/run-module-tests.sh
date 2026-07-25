@@ -67,12 +67,18 @@ fi
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
 # sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
+#
+# AGENT_PARALLEL is deliberately modest. The agent suite's real work is ~13s of
+# user CPU, so wall time is flat from -parallel 6 up to 32 while kernel time
+# doubles in scheduler churn — and at 32 a test's reported elapsed becomes mostly
+# runqueue wait (the same suite "weighs" 451s instead of 99s), which makes any
+# cost ranking derived from it useless. See scripts/agent-test-shards.sh.
 # AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
 # the sharded split. The -race gate uses it: under -race everything is ~10x
 # slower and CPU-bound, so two shards just oversubscribe each other.
 AGENT_SHARDS=${AGENT_SHARDS:-1}
 ROOT_P=${ROOT_P-6}
-AGENT_PARALLEL=${AGENT_PARALLEL-32}
+AGENT_PARALLEL=${AGENT_PARALLEL-6}
 AGENT_P=${AGENT_P-4}
 
 # Fuzz-designated Test* functions are not part of the regular gate. Native Fuzz*
