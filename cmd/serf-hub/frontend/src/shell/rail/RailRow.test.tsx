@@ -191,6 +191,17 @@ describe("session row", () => {
     expect(screen.queryByTestId("rail-chevron")).toBeNull();
   });
 
+  // The chevron gutter is reserved on EVERY row, filled only on a branch: a
+  // leaf that rendered nothing here gained no chevron width, so its title
+  // started further left than its branch siblings' and rows with children read
+  // as a weird extra indent.
+  test("a leaf session still reserves the chevron's gutter, empty", () => {
+    render(<RailRow node={sessionRailNode(apiNode())} info={info({ hasChildren: false })} actions={actions()} />);
+    const gutter = screen.getByTestId("rail-row-chevron-gutter");
+    expect(gutter).toBeTruthy();
+    expect(gutter.querySelector("*")).toBeNull();
+  });
+
   test("shows a chevron for a branch session (subagent cluster) that calls info.toggle", async () => {
     const rowInfo = info({ hasChildren: true, expanded: false });
     render(<RailRow node={sessionRailNode(apiNode())} info={rowInfo} actions={actions()} />);
@@ -200,6 +211,20 @@ describe("session row", () => {
     await userEvent.setup().click(screen.getByTestId("rail-chevron"));
     expect(rowInfo.toggle).toHaveBeenCalledTimes(1);
   });
+
+  // Same leading structure, same order, whether or not a row has children -
+  // which is what makes one title x-position hold across a mixed tree.
+  test.each([true, false])(
+    "the leading slots are chevron-gutter then signal-gutter (hasChildren %s)",
+    (hasChildren) => {
+      render(<RailRow node={sessionRailNode(apiNode())} info={info({ hasChildren })} actions={actions()} />);
+      const chevronGutter = screen.getByTestId("rail-row-chevron-gutter");
+      const signal = screen.getByTestId("rail-row-signal");
+      const row = chevronGutter.parentElement;
+      expect(row).toBeTruthy();
+      expect([...(row?.children ?? [])].slice(0, 2)).toEqual([chevronGutter, signal]);
+    },
+  );
 
   test("shows a favorite star when the session is favorited, hides it otherwise", () => {
     const { rerender } = render(
@@ -545,6 +570,16 @@ describe("project row", () => {
     expect(acts.onDeleteProjectRequest).toHaveBeenCalledWith(project);
   });
 
+  test("a childless project reserves the chevron gutter too, so its name lines up with a parent project's", () => {
+    const { rerender } = render(
+      <RailRow node={projectRailNode(apiProject())} info={info({ hasChildren: false })} actions={actions()} />,
+    );
+    expect(screen.getByTestId("rail-row-chevron-gutter").querySelector("*")).toBeNull();
+
+    rerender(<RailRow node={projectRailNode(apiProject())} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(within(screen.getByTestId("rail-row-chevron-gutter")).getByTestId("rail-chevron")).toBeTruthy();
+  });
+
   test("menu never offers Rename for a project row - only sessions can be renamed", async () => {
     render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
@@ -745,6 +780,17 @@ describe("row actions overlay (Rail.module.css)", () => {
     // The buttons must sit past the ramp (padding) rather than on top of
     // the partly-faded text the ramp exists to soften.
     expect(actionsRule).toMatch(/padding-left:\s*var\(--space-\d\)/);
+  });
+
+  // Both leading gutters reserve a FIXED width and refuse to flex, which is
+  // what makes a title's x-position a constant across a mixed tree. jsdom
+  // applies no stylesheet, so this is only checkable against the (comment-
+  // stripped) stylesheet text.
+  test.each([".chevron", ".signal"])("the %s gutter reserves a fixed width and never flexes", (selector) => {
+    const rule = ruleFor(selector);
+    expect(rule).not.toBeNull();
+    expect(rule).toMatch(/width:\s*(var\(--space-\d+\)|\d+px)/);
+    expect(rule).toMatch(/flex:\s*none|flex-shrink:\s*0/);
   });
 
   test("touch keeps the actions in flow beside the timestamp instead of permanently masking it", () => {
