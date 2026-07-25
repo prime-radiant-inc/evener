@@ -23,23 +23,25 @@ import (
 // path without failing here - whichever way the keep-or-drop question is
 // eventually settled.
 
-func liveAndProjectRowsFor(tree Tree, sessionID string) (live *TreeNode, project *TreeNode) {
-	for i := range tree.Live {
-		if tree.Live[i].ID == sessionID {
-			live = &tree.Live[i]
+// Returns each listing by value with its own found flag, rather than pointers:
+// a caller that forgets one of the flags gets a zero TreeNode, which fails an
+// equality assertion loudly, instead of dereferencing nil.
+func liveAndProjectRowsFor(tree Tree, sessionID string) (live TreeNode, liveFound bool, project TreeNode, projectFound bool) {
+	for _, node := range tree.Live {
+		if node.ID == sessionID {
+			live, liveFound = node, true
 			break
 		}
 	}
 	for i := range tree.Projects {
 		for _, node := range allSessions(tree.Projects[i]) {
 			if node.ID == sessionID {
-				found := node
-				project = &found
+				project, projectFound = node, true
 				break
 			}
 		}
 	}
-	return live, project
+	return live, liveFound, project, projectFound
 }
 
 func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
@@ -72,11 +74,11 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
 			}}
 
 			tree := buildTree(metas, live)
-			liveRow, projectRow := liveAndProjectRowsFor(tree, "01DOUBLELISTED")
-			if liveRow == nil {
+			liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01DOUBLELISTED")
+			if !inLive {
 				t.Fatalf("status %q: session missing from the Live tier", status)
 			}
-			if projectRow == nil {
+			if !inProject {
 				t.Fatalf("status %q: session missing from its project", status)
 			}
 			if liveRow.State != projectRow.State {
@@ -107,9 +109,9 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 	}}
 
 	tree := buildTree(metas, live)
-	liveRow, projectRow := liveAndProjectRowsFor(tree, "01ASKING")
-	if liveRow == nil || projectRow == nil {
-		t.Fatalf("session missing: live=%v project=%v", liveRow != nil, projectRow != nil)
+	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(tree, "01ASKING")
+	if !inLive || !inProject {
+		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
 	}
 	// The specific harm: one row claiming the session wants you while the other
 	// says it does not. Assert the flag is actually SET, so this cannot pass by
