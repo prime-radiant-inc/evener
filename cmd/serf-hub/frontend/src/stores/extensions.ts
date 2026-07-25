@@ -81,18 +81,12 @@ export interface ExtensionsStoreState {
   setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
 
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
-  // Backs PathPicker's listChildren prop. serf/paths/complete does double
-  // duty as both "fuzzy-complete a typed prefix" and "list every child of a
-  // directory" depending on whether the given prefix ends in "/"
-  // (TestHubRPCPathsCompleteReturnsMatchingDirectories) - PathPicker always
-  // wants the latter (it does its own client-side prefix filtering), so
-  // this always normalizes to a trailing slash before asking.
-  listDirChildren(path: string): Promise<string[]>;
-  // Backs PathField. Unlike listDirChildren this passes the prefix through
-  // verbatim, because the widget picks which of the RPC's two duties it wants
-  // per keystroke: a trailing slash lists children, a bare prefix
-  // fuzzy-completes it. includeFiles adds files to the dirs-only default, and
-  // then directory entries come back with a trailing slash.
+  // Backs PathField. The prefix passes through verbatim, because the widget
+  // picks which of the RPC's two duties it wants per keystroke: a trailing
+  // slash lists a directory's children, a bare prefix fuzzy-completes it
+  // (TestHubRPCPathsCompleteReturnsMatchingDirectories). includeFiles adds
+  // files to the dirs-only default, and then directory entries come back with
+  // a trailing slash.
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
@@ -261,13 +255,6 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
   async validatePath(path, kind) {
     const client = requireClient();
     return client.request("serf/path/validate", { path, kind });
-  },
-
-  async listDirChildren(path) {
-    const client = requireClient();
-    const prefix = path.endsWith("/") ? path : `${path}/`;
-    const resp = await client.request("serf/paths/complete", { prefix });
-    return resp.data;
   },
 
   async completePaths(prefix, includeFiles) {
