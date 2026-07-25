@@ -1,7 +1,7 @@
 // SessionChrome: the session pane's chrome surface - ONE quiet status-bar
 // row (status dot, model switch, work time, location, tokens/cost, the
-// goal chip when a goal is set) with Tasks and the session "⋯" menu pinned
-// to the trailing edge - mounted by Session.tsx at PaneScaffold's footer
+// goal chip when a goal is set) with Details, Tasks and the session "⋯" menu
+// pinned to the trailing edge - mounted by Session.tsx at PaneScaffold's footer
 // slot. The locked contract stays exactly `{ ref: string }` - every real
 // value (the ThreadModel, capabilities, ...) is read from the threads store
 // internally via useThreadsStore, same as every other pane-level component
@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { NOW_TICK_MS, useNowTick } from "../liveness";
+import { DetailsPanel } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
@@ -54,6 +55,7 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         onDialogOpenChange={setGoalDialogOpen}
       />
       <div className={CLASS.right}>
+        <DetailsPanel model={model} now={now} />
         <TasksPanel sessionRef={sessionRef} model={model} />
         <SessionActionsMenu sessionRef={sessionRef} model={model} onSetGoal={() => setGoalDialogOpen(true)} />
       </div>
