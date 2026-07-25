@@ -1366,6 +1366,105 @@ func fuzzScenarioNodeTitle_EmptyBaseWithForkLabel(t *testing.T) {
 	}
 }
 
+// ShortID exists so an unnamed session does not spell its whole 22-character
+// base62 payload across a one-line rail row, and nodeTitle's own doc comment
+// says so. It never reached a session that has a meta.
+//
+// SessionDisplayName's last resort is the bare ID, which is non-empty, so
+// nodeTitle's `base == ""` guard could only fire for a session with no ID at
+// all. The visible consequence was a title that CHANGED for no reason a reader
+// could see: the live tier renders ShortID while the past index is still
+// catching up (tree.go's `node.Title = ShortID(le.SessionID)`), so a freshly
+// spawned session read "session ..." for a few seconds and then swapped itself
+// for the raw payload the moment its meta landed. Dormant spawn (kata ytpa)
+// made unnamed sessions ordinary rather than legacy-only, so that swap is now
+// something a user watches happen.
+//
+// The fix belongs here and not in SessionDisplayName: eight other callers
+// (agent tools, transcript render, appwire preview) rely on its bare-ID last
+// resort, and the rail is the only surface with a one-line budget.
+func fuzzScenarioNodeTitle_UnnamedSessionKeepsTheShortForm(t *testing.T) {
+	const id = "033vq9Kif27AzZgnbjr55t" // a real 22-char UUIDv7 base62 payload
+
+	unnamed := schema.SessionMeta{ID: id}
+	if got, want := nodeTitle(unnamed, "session"), ShortID(id); got != want {
+		t.Errorf("nodeTitle(unnamed) = %q, want %q", got, want)
+	}
+	if got := nodeTitle(unnamed, "session"); got == id {
+		t.Errorf("nodeTitle(unnamed) = %q — the raw payload, which is what ShortID exists to avoid", got)
+	}
+
+	// The short form is a base like any other, so a fork label still composes.
+	forked := schema.SessionMeta{ID: id, ForkLabel: "before"}
+	if got, want := nodeTitle(forked, "fork"), ShortID(id)+" · before"; got != want {
+		t.Errorf("nodeTitle(unnamed fork) = %q, want %q", got, want)
+	}
+
+	// A session that HAS something to say still says it: the ID fallback must
+	// stay strictly last, behind both the generated name and the prompt.
+	named := schema.SessionMeta{ID: id, Name: "Deploy the hub"}
+	if got := nodeTitle(named, "session"); got != "Deploy the hub" {
+		t.Errorf("nodeTitle(named) = %q, want the name", got)
+	}
+	prompted := schema.SessionMeta{ID: id, OriginalPrompt: "fix the flaky test"}
+	if got := nodeTitle(prompted, "session"); got != "fix the flaky test" {
+		t.Errorf("nodeTitle(prompted) = %q, want the prompt", got)
+	}
+
+	// A short ID is already legible, so ShortID returns it whole - and
+	// nodeTitle must not mistake that for "no fallback applied" and hand back
+	// the raw value by a different route. Same result either way here; the
+	// assertion pins that the two agree.
+	shortIDMeta := schema.SessionMeta{ID: "01ABC"}
+	if got := nodeTitle(shortIDMeta, "session"); got != "01ABC" {
+		t.Errorf("nodeTitle(short id) = %q, want 01ABC", got)
+	}
+}
+
+// The end-to-end half: one unnamed session, listed in both tiers, must carry
+// the same title in both. This is the assertion that would have caught the
+// reported symptom, which nodeTitle's unit test alone cannot see - the live
+// tier reaches ShortID by a completely separate line of code.
+func fuzzScenarioBuildTree_UnnamedSessionTitleSurvivesItsMetaLanding(t *testing.T) {
+	const id = "033vq9Kif27AzZgnbjr55t"
+	now := time.Date(2026, 7, 25, 20, 0, 0, 0, time.UTC)
+	live := []LiveEntry{{
+		Entry:     rendezvous.Entry{PID: 1},
+		SessionID: id,
+		Status:    appwire.ThreadStatusIdle,
+	}}
+
+	// Before the past index catches up there is no meta at all, and the live
+	// tier renders the short form on its own.
+	beforeTree := buildTree(nil, live)
+	if len(beforeTree.Live) != 1 {
+		t.Fatalf("Live tier has %d rows, want 1", len(beforeTree.Live))
+	}
+	if got := beforeTree.Live[0].Title; got != ShortID(id) {
+		t.Fatalf("no-meta Live title = %q, want %q", got, ShortID(id))
+	}
+
+	// Once the meta lands, both listings must still read the same thing. A
+	// title that changes here is a row rewriting itself under the reader.
+	afterTree := buildTree([]schema.SessionMeta{{
+		ID:        id,
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
+	}}, live)
+	liveRow, inLive, projectRow, inProject := liveAndProjectRowsFor(afterTree, id)
+	if !inLive || !inProject {
+		t.Fatalf("session missing: live=%v project=%v", inLive, inProject)
+	}
+	if liveRow.Title != beforeTree.Live[0].Title {
+		t.Errorf("Live title changed when the meta landed: %q -> %q", beforeTree.Live[0].Title, liveRow.Title)
+	}
+	if projectRow.Title != liveRow.Title {
+		t.Errorf("project row title %q, Live row title %q — the two listings of one session disagree",
+			projectRow.Title, liveRow.Title)
+	}
+}
+
 func fuzzScenarioCompareOrderText(t *testing.T) {
 	if got := compareOrderText("alpha", "beta"); got != -1 {
 		t.Errorf("compareOrderText(alpha, beta) = %d, want -1", got)

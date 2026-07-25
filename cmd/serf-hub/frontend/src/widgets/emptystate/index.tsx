@@ -26,10 +26,17 @@ const BASE_CLASS = {
 
 /** Centered title/hint/action for a pane or list with nothing in it.
  * Passive - no interaction, no focus ring of its own (an `action` button
- * carries its own). */
+ * carries its own).
+ *
+ * The `empty-state` testid exists for the tests that only need to know a
+ * pane's body has rendered (shell/DockHost.test.tsx waits on it before
+ * reading a tab title, and again after a rename to prove the body never
+ * remounted). Those assertions previously matched the session pane's own
+ * empty-state copy, which coupled a shared shell test to wording that panes
+ * are free to change; the testid says what they actually mean. */
 export function EmptyState({ title, hint, action }: EmptyStateProps) {
   return (
-    <div className={BASE_CLASS.emptyState}>
+    <div className={BASE_CLASS.emptyState} data-testid="empty-state">
       <p className={BASE_CLASS.title}>{title}</p>
       {hint !== undefined && <p className={BASE_CLASS.hint}>{hint}</p>}
       {action !== undefined && <div className={BASE_CLASS.action}>{action}</div>}

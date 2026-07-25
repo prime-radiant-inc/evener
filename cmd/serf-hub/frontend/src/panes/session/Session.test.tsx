@@ -164,9 +164,17 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-test('shows "no turns yet" for a freshly-started thread with an empty transcript', async () => {
+// An empty transcript is two different situations wearing one face, and the
+// wire's `status.type` is what tells them apart. A session that has never run
+// (dormant spawn, kata ytpa) is waiting on the USER, so its empty state names
+// the act the composer directly below performs. A session whose first turn is
+// already in flight is waiting on the AGENT, and inviting that user to send
+// would ask them to redo what they just did. The next two tests pin one
+// situation each, and each one asserts the OTHER's copy is absent - a single
+// string that happened to satisfy both would be exactly the bug.
+test("a session that has never run invites the first message", async () => {
   const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_a")); // testThread's default has no turns
+  fake.on("thread/read", () => readResponse("ref_a")); // testThread's default: idle, no turns
 
   render(
     <ClientProvider client={fake}>
@@ -174,7 +182,27 @@ test('shows "no turns yet" for a freshly-started thread with an empty transcript
     </ClientProvider>,
   );
 
-  await waitFor(() => expect(screen.getByText(/no turns yet/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/send the first message/i)).toBeTruthy());
+  expect(screen.getByText(/hasn't started yet/i)).toBeTruthy();
+  expect(screen.queryByText(/waiting for the first reply/i)).toBeNull();
+});
+
+test("a session whose first turn is still running says it is waiting, and never asks for a message it already has", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "active" } }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByText(/waiting for the first reply/i)).toBeTruthy());
+  expect(screen.getByText(/the agent has your message/i)).toBeTruthy();
+  // The whole point of the branch: no imperative to send, and no claim the
+  // session has not started, while its first turn is running.
+  expect(screen.queryByText(/send the first message/i)).toBeNull();
+  expect(screen.queryByText(/hasn't started yet/i)).toBeNull();
 });
 
 test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
@@ -735,6 +763,6 @@ test("mounts Composer even when the transcript is empty (no turns yet) - the com
     </ClientProvider>,
   );
 
-  await screen.findByText(/no turns yet/i);
+  await screen.findByTestId("empty-state");
   expect(screen.getByTestId("composer-slot")).toBeTruthy();
 });
