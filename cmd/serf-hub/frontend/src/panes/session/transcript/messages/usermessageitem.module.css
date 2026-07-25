@@ -27,14 +27,15 @@
  * against 4 accepted inputs). Marking each would slice one continuous piece of
  * agent work into arbitrary slabs. This fires a handful of times per session,
  * at the boundaries a reader is actually looking for. */
+/* NO :first-child exemption, deliberately. An exchange opener gets its own
+ * TurnBlock and is the only child of it, so `:first-child` matches every
+ * opener rather than just the transcript's first - and at one specificity
+ * point higher it cancelled this rule outright, measured as computed
+ * margin-top: 0px on all three openers in a real session. The gap it was
+ * guarding against is 32px of inset above the session's first line, which is
+ * not worth a rule that can silently eat the feature. */
 .message[data-opens-exchange] {
   margin-top: var(--space-6);
-}
-
-/* Except the first one, which opens the transcript and has nothing to break
- * away from - the gap would just be dead space above the session's first line. */
-.message[data-opens-exchange]:first-child {
-  margin-top: 0;
 }
 
 .header {
@@ -63,17 +64,26 @@
   opacity: 1;
 }
 
-/* --ink-mid, not --ink-low. The user's TEXT stays demoted on purpose (see the
- * file header); this tag is different, because it is the only structural
- * landmark the transcript has. Measured against --surface-1, --ink-low is
- * 2.97:1 in the dark theme and 3.64:1 in the light one - the faintest text on
- * screen, and under the 4.5:1 AA floor in both. --ink-mid measures 6.86:1 and
- * 6.56:1. Size and weight still separate the tag from the prose below it. */
+/* --ink-hi, the strongest step, even though the words below it are --ink-mid.
+ *
+ * That inversion is the point. The tag is not a quieter version of the message
+ * - it is the transcript's only structural landmark, the thing a reader scans
+ * for. The message is content they already wrote and already know, which is
+ * why it stays demoted (see the file header). Signpost strong, known content
+ * quiet.
+ *
+ * Measured against --surface-1: --ink-low, where this started, is 2.97:1 in
+ * the dark theme and 3.64:1 in the light one - the faintest text on screen and
+ * under the 4.5:1 AA floor in both. --ink-mid clears AA at 6.86/6.56 but is
+ * the EXACT colour of the user text it labels, so colour separated nothing and
+ * the landmark still receded against every piece of prose around it. --ink-hi
+ * is 14.33:1 and 17.3:1, and restores a real contrast step between the label
+ * and its own message. At 12px medium it marks without shouting. */
 .tag {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  color: var(--ink-mid);
+  color: var(--ink-hi);
 }
 
 .text {
