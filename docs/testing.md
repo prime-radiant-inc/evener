@@ -99,9 +99,14 @@ something only git can produce:
 - real registry effects — `worktree add/remove/lock/unlock/prune` actually
   landing, `.git` pointer file contents, deregistration
 - real ancestry or patch-equivalence — `merge-base --is-ancestor`, `git cherry`,
-  merged/unmerged/adopted outcomes over real commits
-- real dirty detection, and git's own refusal to remove a dirty worktree without
-  `--force`
+  merged/unmerged/adopted outcomes over real commits. The scripted model refuses
+  these outright, so a converted test fails loudly rather than reading as merged.
+- dirtiness from a *modified or staged tracked file*, real ahead-counts, and
+  git's own refusal to remove a dirty worktree without `--force`. The scripted
+  model derives dirtiness from untracked files it can see on disk, so an
+  untracked-file assertion may stay scripted; it always answers `rev-list
+  --count` with 0, and every production caller degrades a `rev-list` error to 0
+  too, so no ahead-count assertion can be protected on the scripted boundary.
 - the real `--porcelain` output shape, including flags like `prunable` and a
   reasonless `worktree lock`
 - git's ref rules — e.g. that it rejects the branch name `HEAD`
@@ -142,6 +147,10 @@ purpose**. If a converted test reaches a command the model does not implement, i
 fails loudly rather than silently passing. When that happens, either model the
 command honestly or leave the test on real git — never stub the specific answer
 the assertion is looking for.
+
+`merge-base --is-ancestor` and `cherry` refuse for the same reason even though
+the model recognizes them: their answer is a verdict over a commit graph the
+model does not have, so any answer would be that stub.
 
 ### Adding a worktree test
 

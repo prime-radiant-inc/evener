@@ -70,6 +70,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioDeriveAttention_StaleUnarchivedNeverDecays,
 		fuzzScenarioDeriveAttention_SummaryCountsTierEligibleOnly,
 		fuzzScenarioFavoriteStoreSetAndDelete,
+		fuzzScenarioFoldObserverGrantsNamesUnreadableLog,
 		fuzzScenarioInputsVersionBump,
 		fuzzScenarioLiveEntryOrderKeyFallbackID,
 		fuzzScenarioLiveEntryWithPastLessNilIndex,
