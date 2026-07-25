@@ -115,8 +115,12 @@ run_module() {
 		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
 		# opposite -parallel settings. agent-test-shards.sh runs those halves as
 		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
-		# ~26s). Its subpackages are small and already concurrent, so they run
-		# normally alongside.
+		# ~26s). Its subpackages are small and already concurrent internally, but
+		# they run AFTER the shards finish, not alongside them (~22s shards then
+		# ~8s subpackages, sequential). Overlapping the two phases was measured
+		# and made things worse: the agent module shares WAVE2 with five other
+		# modules, so the added contention stretched the shard phase by more
+		# than the overlap saved (see kata fgqh).
 		local shardStatus=0
 		(cd .. && ./scripts/agent-test-shards.sh $flags) || shardStatus=$?
 		local subpkgs=()
