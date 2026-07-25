@@ -4,6 +4,7 @@
 // action confirms" constraint; the legacy had none for plugin removal
 // either - `confirm(...)` there, ConfirmDialog here).
 import { type Dispatch, type SetStateAction, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { PluginEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, type CadenceState, Chip, ConfirmDialog, StatusDot, useToasts } from "../../../../widgets";
@@ -23,10 +24,6 @@ const CLASS = {
   rowActions: requireClass(styles.rowActions, "marketplacesPlugins.module.css", "rowActions"),
   empty: requireClass(styles.empty, "marketplacesPlugins.module.css", "empty"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function pluginKey(plugin: string, marketplace: string): string {
   return `${plugin}@${marketplace}`;
@@ -76,7 +73,7 @@ export function InstalledSection() {
         if (currentlyEnabled) await extensionsStore.getState().disablePlugin(plugin, marketplace);
         else await extensionsStore.getState().enablePlugin(plugin, marketplace);
       } catch (err) {
-        toasts.push("error", `Toggle enable failed: ${errorMessage(err)}`);
+        toasts.push("error", `Toggle enable failed: ${errorText(err)}`);
       }
     });
   }
@@ -86,7 +83,7 @@ export function InstalledSection() {
       try {
         await extensionsStore.getState().setPluginAutoUpgrade(plugin, marketplace, !currentlyAutoUpgrade);
       } catch (err) {
-        toasts.push("error", `Toggle auto-upgrade failed: ${errorMessage(err)}`);
+        toasts.push("error", `Toggle auto-upgrade failed: ${errorText(err)}`);
       }
     });
   }
@@ -97,7 +94,7 @@ export function InstalledSection() {
         await extensionsStore.getState().upgradePlugin(plugin, marketplace);
         toasts.push("success", `Checked ${plugin} for upgrades`);
       } catch (err) {
-        toasts.push("error", `Upgrade failed: ${errorMessage(err)}`);
+        toasts.push("error", `Upgrade failed: ${errorText(err)}`);
       }
     });
   }
@@ -111,7 +108,7 @@ export function InstalledSection() {
       toasts.push("success", `Removed ${target.plugin}`);
       setPendingRemove(null);
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+      toasts.push("error", `Remove failed: ${errorText(err)}`);
     } finally {
       setRemoveBusy(false);
     }

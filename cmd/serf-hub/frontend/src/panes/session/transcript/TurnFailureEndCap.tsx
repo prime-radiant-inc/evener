@@ -15,6 +15,8 @@
 // Session.tsx (a controller-owned chokepoint) passes it down. Until that
 // one-line wiring lands, the diagnostic still renders in full - only the action
 // button is withheld (see .superpowers/sdd/w8-t3-report.md).
+
+import { sessionActionError } from "../../../protocol/errors";
 import type { TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
@@ -30,10 +32,6 @@ const CLASS = {
   hint: requireClass(styles.hint, "turnfailure.module.css", "hint"),
   actions: requireClass(styles.actions, "turnfailure.module.css", "actions"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // The turn that failed opened with the user's own input as its first item
 // (EventUserInput opens a turn, then inserts the userMessage, before the
@@ -69,7 +67,7 @@ export function TurnFailureEndCap({
     try {
       await threadsStore.getState().send(sessionRef, text);
     } catch (e) {
-      toasts.push("error", `${info.recoveryLabel} failed: ${errorMessage(e)}`);
+      toasts.push("error", sessionActionError(`${info.recoveryLabel} failed`, e));
     }
   }
 

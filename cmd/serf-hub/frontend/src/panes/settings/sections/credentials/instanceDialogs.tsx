@@ -5,6 +5,7 @@
 // `onSuccess`/`onCancel` - it never has to distinguish success from failure
 // itself.
 import { type FormEvent, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, RadioGroup, Select, type SelectOption, useToasts } from "../../../../widgets";
@@ -21,10 +22,6 @@ const API_STYLE_OPTIONS = [
   { value: "responses", label: "responses" },
   { value: "chat-completions", label: "chat-completions" },
 ];
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export interface AddInstanceDialogProps {
   availableTypes: string[];
@@ -73,7 +70,7 @@ export function AddInstanceDialog({ availableTypes, onCancel, onSuccess }: AddIn
       toast.push("success", `Created instance ${trimmedName}`);
       onSuccess();
     } catch (err) {
-      const message = errorMessage(err);
+      const message = errorText(err);
       setError(message);
       toast.push("error", `Create failed: ${message}`);
     } finally {
@@ -160,7 +157,7 @@ export function EditInstanceDialog({ instance, onCancel, onSuccess }: EditInstan
       toast.push("success", `Saved ${instance.name}`);
       onSuccess();
     } catch (err) {
-      const message = errorMessage(err);
+      const message = errorText(err);
       setError(message);
       toast.push("error", `Edit failed: ${message}`);
     } finally {
@@ -230,7 +227,7 @@ export function ApiKeyDialog({ instance, onCancel, onSuccess }: ApiKeyDialogProp
       toast.push("success", `API key saved for ${instance.name}`);
       onSuccess();
     } catch (err) {
-      const message = errorMessage(err);
+      const message = errorText(err);
       setError(message);
       toast.push("error", `Save failed: ${message}`);
     } finally {

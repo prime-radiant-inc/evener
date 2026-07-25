@@ -2,11 +2,13 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Toast } from "../../../widgets";
 import { GoalControl, resetGoalOverridesForTests } from "./GoalControl";
 
@@ -91,6 +93,10 @@ async function openGoalPopover(user: ReturnType<typeof userEvent.setup>): Promis
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // Toasts are module state and outlive cleanup(); without this a toast from an
+  // earlier test in this file is still on screen, and an assertion that a
+  // message is ABSENT matches the stale one instead.
+  resetToastStoreForTests();
   resetGoalOverridesForTests();
 });
 
@@ -306,4 +312,23 @@ test("a genuinely fresh model.goal (e.g. a reconnect re-hydrate) supersedes a st
   expect(screen.getByRole("button", { name: /goal: complete/i })).toBeTruthy();
   const popover = await openGoalPopover(user);
   expect(within(popover).getByText(/5 iterations/i)).toBeTruthy();
+});
+
+// goal/set resumes a cold session first (cmd/serf-hub/app_session_resume.go's
+// setGoalWithResume). A failed resume is not a failed goal.
+test("a setGoal that fails because the session would not start names the start, not the goal", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("goal/set", () => {
+    throw new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  render(<GoalControlHarness model={testModel({ goal: null })} />);
+  await user.click(screen.getByTestId("open-goal-dialog"));
+  const dialog = await screen.findByRole("dialog");
+  await user.type(within(dialog).getByRole("textbox"), "ship the feature");
+  await user.click(within(dialog).getByRole("button", { name: /save/i }));
+
+  await screen.findByText("Couldn't start this session: fork/exec serf: no such file");
+  expect(screen.queryByText(/couldn't set goal/i)).toBeNull();
 });

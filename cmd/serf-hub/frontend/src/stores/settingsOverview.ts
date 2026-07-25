@@ -25,6 +25,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { SettingsOverviewResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -39,10 +40,6 @@ export interface SettingsOverviewStoreState {
   error: string | null;
   fetch(): Promise<void>;
   refresh(): Promise<void>;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 // requireClient reads the client connection.ts wired via
@@ -73,7 +70,7 @@ async function runFetch(): Promise<void> {
     // `data` is deliberately left out of this patch - zustand's setState
     // shallow-merges, so whatever was there (null, or a previous successful
     // load) survives a failed request untouched.
-    settingsOverviewStore.setState({ loading: false, error: errorMessage(err) });
+    settingsOverviewStore.setState({ loading: false, error: errorText(err) });
   }
 }
 

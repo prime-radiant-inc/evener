@@ -28,7 +28,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { WireError } from "../../../protocol/errors";
+import { errorText, sessionActionError, WireError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import { openPalette } from "../../../shell/palette/paletteController";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -95,10 +95,6 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // as terminal, so it is matched here too rather than leaving the two modules
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // isQueuedDrainPartial mirrors appwire.QueuedDrainPartial's own
 // serfErrorInfo discriminator (code -32013, SAME code turn-CAS Conflict
@@ -466,11 +462,15 @@ export function Composer({ ref }: ComposerProps) {
           attachments: payload,
           onFailure: (err) => {
             if (kind === "drain" && isQueuedDrainPartial(err)) {
-              toasts.push("error", `Drain failed after queueing: ${errorMessage(err)}`);
+              // No sessionActionError here: this branch is QueuedDrainPartial
+              // by construction, never a launch failure, and the label
+              // records a step that already succeeded - the resume must not
+              // take it over and drop "after queueing".
+              toasts.push("error", `Drain failed after queueing: ${errorText(err)}`);
             } else {
               const label =
                 kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-              toasts.push("error", `${label} failed: ${errorMessage(err)}`);
+              toasts.push("error", sessionActionError(`${label} failed`, err));
             }
           },
         },
@@ -546,7 +546,7 @@ export function Composer({ ref }: ComposerProps) {
     try {
       await threadsStore.getState().interrupt(ref);
     } catch (err) {
-      toasts.push("error", `Interrupt failed: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Interrupt failed", err));
     } finally {
       setBusyAction(null);
     }

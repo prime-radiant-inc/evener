@@ -16,6 +16,7 @@
 // parity-m6-surfaces.md). The recent-prompts row is a decided parity drop
 // (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { errorText } from "../../protocol/errors";
 import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -85,10 +86,6 @@ const CLASS = {
   chips: requireClass(styles.chips, "spawn.module.css", "chips"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const client = useClient();
@@ -384,7 +381,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       }
       await doSpawn();
     } catch (err) {
-      toasts.push("error", `Spawn failed: ${errorMessage(err)}`);
+      toasts.push("error", `Spawn failed: ${errorText(err)}`);
       setBusy(false);
     }
   }
@@ -397,7 +394,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       await createDir(path);
       await doSpawn();
     } catch (err) {
-      toasts.push("error", `Spawn failed: ${errorMessage(err)}`);
+      toasts.push("error", `Spawn failed: ${errorText(err)}`);
       setBusy(false);
     } finally {
       setCreateDialogPath(null);

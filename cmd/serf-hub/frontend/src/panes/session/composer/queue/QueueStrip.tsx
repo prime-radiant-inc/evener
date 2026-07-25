@@ -8,7 +8,7 @@
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
 import { type ReactNode, useState } from "react";
-import { WireError } from "../../../../protocol/errors";
+import { errorText, sessionActionError, WireError } from "../../../../protocol/errors";
 import type { TurnCancelQueuedResponse } from "../../../../protocol/types.gen";
 import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
@@ -34,10 +34,6 @@ const CLASS = {
 // verbatim, per that file's own established per-file-duplication style
 // (sandboxEscalation.tsx carries an identical copy rather than a shared
 // util).
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function isQueuedDrainPartial(err: unknown): boolean {
   return err instanceof WireError && err.serfErrorInfo === "queuedDrainPartial";
 }
@@ -172,7 +168,7 @@ export function QueueStrip({
       // (row removed) + serf/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
     } catch (err) {
-      toasts.push("error", `Couldn't send this message now: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't send this message now", err));
     } finally {
       setRowBusy(entryId, false);
     }
@@ -184,7 +180,7 @@ export function QueueStrip({
       const result = await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
       reportRemovedImages(result);
     } catch (err) {
-      toasts.push("error", `Couldn't remove this message from the queue: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't remove this message from the queue", err));
     } finally {
       setRowBusy(entryId, false);
     }
@@ -199,7 +195,7 @@ export function QueueStrip({
       const result = await threadsStore.getState().cancelQueued(sessionRef, index, entryId);
       reportRemovedImages(result);
     } catch (err) {
-      toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorMessage(err)}`);
+      toasts.push("error", `Moved to the composer, but couldn't remove it from the queue: ${errorText(err)}`);
     } finally {
       setRowBusy(entryId, false);
     }
@@ -223,11 +219,16 @@ export function QueueStrip({
           // asynchronously - the 10s timeout reaper (there is no other way
           // to observe that second case from this handler's own try/catch
           // below, which only wraps the initial await).
+          // The partial branch keeps its own wording rather than deferring to
+          // sessionActionError: it is QueuedDrainPartial by construction,
+          // never a launch failure, and its label records a step that already
+          // succeeded - the resume must not take it over and drop "Queued".
           onFailure: (err) => {
-            const message = errorMessage(err);
             toasts.push(
               "error",
-              isQueuedDrainPartial(err) ? `Queued, but drain failed: ${message}` : `Drain failed: ${message}`,
+              isQueuedDrainPartial(err)
+                ? `Queued, but drain failed: ${errorText(err)}`
+                : sessionActionError("Drain failed", err),
             );
           },
         },

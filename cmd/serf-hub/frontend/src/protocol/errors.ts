@@ -25,6 +25,37 @@ export class WireError extends Error {
   }
 }
 
+// errorText flattens a rejected value to the text worth showing. It is the
+// one definition of a conversion the whole app needs: every caller that
+// reports a failure to the user starts here.
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+// isHubLaunchError reports whether a rejection is the hub failing to start a
+// session's daemon: appwire.HubLaunchError, which stamps data.serfErrorInfo
+// "hubLaunch" (appwire/errors.go). The discriminator is that string, never
+// the code - siblings share the code.
+export function isHubLaunchError(err: unknown): boolean {
+  return err instanceof WireError && err.serfErrorInfo === "hubLaunch";
+}
+
+// sessionActionError writes the failure sentence for a session mutation,
+// naming the step that actually died.
+//
+// Every mutation against a cold session resumes it first (cmd/serf-hub/
+// app_session_resume.go's withSessionResume, and app_model.go's
+// setThreadModelWithResume and siblings). When the resume is what failed, the
+// hub returns the spawner's own raw text and nothing in it says which of the
+// two steps died - so naming the mutation sends someone debugging /goal when
+// the daemon simply would not start. `failure` names the mutation and is used
+// only when the mutation itself is what failed.
+export function sessionActionError(failure: string, err: unknown): string {
+  const headline = isHubLaunchError(err) ? "Couldn't start this session" : failure;
+  const detail = errorText(err).trim();
+  return detail ? `${headline}: ${detail}` : headline;
+}
+
 // RequestTimeoutError is thrown when a request's response doesn't arrive
 // within its timeout window.
 export class RequestTimeoutError extends Error {

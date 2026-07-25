@@ -11,6 +11,7 @@
 // "is openEditor still this exact flow" staleness check exists for, via
 // React's own idiomatic mechanism instead of a hand-rolled flag.
 import { type FormEvent, useEffect, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { AuthDevicePollResponse } from "../../../../protocol/types.gen";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";
@@ -26,10 +27,6 @@ const CLASS = {
   code: requireClass(styles.code, "oauthDialogs.module.css", "code"),
   status: requireClass(styles.status, "oauthDialogs.module.css", "status"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export interface OAuthRedirectDialogProps {
   name: string;
@@ -61,7 +58,7 @@ export function OAuthRedirectDialog({ name, flowId, authUrl, onCancel, onSuccess
       toast.push("success", `Signed in to ${name}`);
       onSuccess();
     } catch (err) {
-      const message = errorMessage(err);
+      const message = errorText(err);
       setError(message);
       toast.push("error", `Sign-in failed: ${message}`);
     } finally {
@@ -144,7 +141,7 @@ export function DeviceCodeDialog({
         // Mirrors the verified legacy behavior exactly (templates/partials/
         // credentials.html:83-89): a poll-request error attaches its message
         // and does NOT reschedule - polling stops here, same as "expired".
-        if (!cancelled) setError(errorMessage(err));
+        if (!cancelled) setError(errorText(err));
         return;
       }
       if (cancelled) return;

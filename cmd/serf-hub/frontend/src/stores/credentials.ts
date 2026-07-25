@@ -18,6 +18,7 @@
 // itself (write-only fields on the wire).
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
@@ -33,10 +34,6 @@ import type {
   InstanceListResponse,
 } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
@@ -86,7 +83,7 @@ export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
       const resp = await client.request("serf/instance/list", {});
       set({ instances: resp.instances, availableTypes: resp.availableTypes, loading: false });
     } catch (err) {
-      set({ loading: false, error: errorMessage(err) });
+      set({ loading: false, error: errorText(err) });
     }
   },
 

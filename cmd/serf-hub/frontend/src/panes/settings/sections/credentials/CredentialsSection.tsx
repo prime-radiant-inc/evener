@@ -7,6 +7,7 @@
 // whatever was open, matching the legacy's own single module-level
 // `openEditor` variable - no per-row state, no dirty-check on replace.
 import { useCallback, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { InstanceEntry } from "../../../../protocol/types.gen";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, ConfirmDialog, EmptyState, Skeleton, useToasts } from "../../../../widgets";
@@ -38,10 +39,6 @@ type OpenEditor =
   | null;
 
 type PendingConfirm = { kind: "clear" | "remove"; name: string } | null;
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export interface CredentialsSectionProps {
   /** Unused - kept so this component's signature matches every other
@@ -84,7 +81,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
         });
       }
     } catch (err) {
-      toast.push("error", `Sign-in failed: ${errorMessage(err)}`);
+      toast.push("error", `Sign-in failed: ${errorText(err)}`);
     }
   }
 
@@ -94,7 +91,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
     try {
       await credentialsStore.getState().setDefault(name);
     } catch (err) {
-      toast.push("error", `Set default failed: ${errorMessage(err)}`);
+      toast.push("error", `Set default failed: ${errorText(err)}`);
     }
   }
 
@@ -114,7 +111,7 @@ export function CredentialsSection(_props: CredentialsSectionProps) {
       setPendingConfirm(null);
     } catch (err) {
       const verb = kind === "clear" ? "Clear" : "Remove";
-      toast.push("error", `${verb} failed: ${errorMessage(err)}`);
+      toast.push("error", `${verb} failed: ${errorText(err)}`);
     } finally {
       setConfirmBusy(false);
     }
