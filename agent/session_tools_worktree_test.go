@@ -276,6 +276,25 @@ func TestWorktreeListSummaryLine(t *testing.T) {
 	}
 }
 
+// TestWorktreeListSummaryUnknownState: the summary is the one line a model may
+// read instead of the entries array, so an unreadable lane must not be rendered
+// with the zero values that read as "empty and clean".
+func TestWorktreeListSummaryUnknownState(t *testing.T) {
+	got := worktreeListSummary([]WorktreeListEntry{
+		{Name: "unreadable", DirtyUnknown: true, AheadUnknown: true},
+	})
+	for _, want := range []string{"ahead unknown", "dirty unknown"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary missing %q\ngot: %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"0 ahead", "clean"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("summary asserted %q for a lane it could not read\ngot: %s", unwanted, got)
+		}
+	}
+}
+
 // TestPruneDescriptionConveysBulkCleanup covers the F2 ergonomics fix: prune's
 // description must convey that it removes lanes with no unmerged work
 // (including from finished sessions), not read as a narrow "stale

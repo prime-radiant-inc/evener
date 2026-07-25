@@ -336,6 +336,67 @@ func TestDisposeDirtyLane_Kept(t *testing.T) {
 	}
 }
 
+// TestDisposeKeptLane_UnreadableStateReportedUnknown: the kept-lane note is
+// what a model reads to decide whether a preserved lane still matters. Its
+// ahead/dirty reads are best-effort, and their zero values render as
+// "0 ahead, dirty=false" — the description of a lane with nothing in it. A read
+// that failed must say so instead. The note itself is never suppressed: unlike
+// the delegate report (isolatedDelegateWorktreeReport, which returns nil and
+// emits nothing), this note is the only announcement that the lane was kept at
+// all, so dropping it would hide preserved work outright.
+func TestDisposeKeptLane_UnreadableStateReportedUnknown(t *testing.T) {
+	t.Run("ahead count unreadable", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		delegateID, lanePath, baseSHA := r.seedIsolationLane(t)
+		if err := os.WriteFile(filepath.Join(lanePath, "dirty.txt"), []byte("wip\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		// rev-list --count is not part of the disposal predicate, so failing it
+		// from the first call reaches the note-rendering read directly.
+		scriptedGitRunner(r.s, failGitArgsFrom(1, revListArgv(lanePath, baseSHA)...))
+
+		r.s.disposeDelegateLanesAtClose(context.Background())
+
+		msgs := warningMessages(r.s)
+		if !anyContainsAll(msgs, delegateID, "ahead unknown") {
+			t.Errorf("kept-lane note did not report the unreadable ahead count as unknown: %v", msgs)
+		}
+		if anyContainsAll(msgs, delegateID, "0 ahead") {
+			t.Errorf("kept-lane note reported an unreadable ahead count as 0 ahead: %v", msgs)
+		}
+	})
+
+	// The dirty read at the note is a REPEAT read: the disposal predicate
+	// already ran `status` twice for this lane (worktree.Unchanged's and
+	// laneAutoCollectible's own CleanTree). Failing every `status` would make
+	// the predicate bail first down the "state unverifiable" branch, so this
+	// fails from the third match onward — the shape a spent close budget has,
+	// where the predicate completed and the render-time read no longer can.
+	t.Run("dirty state unreadable at render time", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		delegateID, lanePath, _ := r.seedIsolationLane(t)
+		if err := os.WriteFile(filepath.Join(lanePath, "dirty.txt"), []byte("wip\n"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		scriptedGitRunner(r.s, failGitArgsFrom(3, statusArgv(lanePath)...))
+
+		r.s.disposeDelegateLanesAtClose(context.Background())
+
+		msgs := warningMessages(r.s)
+		if anyContainsAll(msgs, delegateID, "state unverifiable") {
+			t.Fatalf("predicate bailed before the render-time read; the third status call was not the one under test: %v", msgs)
+		}
+		if !anyContainsAll(msgs, delegateID, "dirty unknown") {
+			t.Errorf("kept-lane note did not report the unreadable tree state as unknown: %v", msgs)
+		}
+		if anyContainsAll(msgs, delegateID, "dirty=false") {
+			t.Errorf("kept-lane note reported an unreadable tree as clean: %v", msgs)
+		}
+	})
+}
+
 // TestDisposeRacingDirtyWrite_DowngradesToKeepUnlocked: the non-force remove
 // refuses because a write raced the clean check → downgrade to keep. At CLOSE
 // the policy is downgradeUnlockKeep (spec §P0: a dead owner whose lock nobody
