@@ -3,7 +3,6 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import type {
-  AnyNotification,
   SandboxEscalationRequested,
   Thread,
   ThreadCapabilities,
@@ -165,7 +164,7 @@ test("a live serf/sandbox/escalation/requested notification, folded through the 
   expect(result.current.pending).toEqual([]);
 
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
   });
 
   expect(result.current.pending).toHaveLength(1);
@@ -182,7 +181,7 @@ test("a notification for a DIFFERENT ref is ignored", async () => {
     fake.emitNotification({
       method: "serf/sandbox/escalation/requested",
       params: requested({ ref: "ref_other" }),
-    } as AnyNotification);
+    });
   });
 
   expect(result.current.pending).toEqual([]);
@@ -242,11 +241,11 @@ test("two distinct escalations both surface independently", async () => {
     fake.emitNotification({
       method: "serf/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_1" }),
-    } as AnyNotification);
+    });
     fake.emitNotification({
       method: "serf/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_2", deniedPath: "/etc/shadow" }),
-    } as AnyNotification);
+    });
   });
 
   expect(result.current.pending.map((e) => e.escalationId)).toEqual(["esc_1", "esc_2"]);
@@ -259,8 +258,8 @@ test("a duplicate notification for the same escalationId is de-duplicated, not a
 
   const { result } = renderHook(() => useSandboxEscalations("ref_a"));
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
   });
 
   expect(result.current.pending).toHaveLength(1);
@@ -282,7 +281,7 @@ test("clicking Allow immediately disables that card (before the resolve response
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -313,7 +312,7 @@ test("a rejected resolve surfaces an error on the card instead of an unhandled r
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -336,7 +335,7 @@ test("a subsequent successful resolve clears a previously shown error", async ()
 
   render(<SandboxEscalationRail sessionRef="ref_a" />);
   act(() => {
-    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() } as AnyNotification);
+    fake.emitNotification({ method: "serf/sandbox/escalation/requested", params: requested() });
   });
 
   const allow = await screen.findByRole("button", { name: /allow/i });
@@ -368,11 +367,11 @@ test("SandboxEscalationRail renders one card per pending escalation, keyed by es
     fake.emitNotification({
       method: "serf/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_1" }),
-    } as AnyNotification);
+    });
     fake.emitNotification({
       method: "serf/sandbox/escalation/requested",
       params: requested({ escalationId: "esc_2" }),
-    } as AnyNotification);
+    });
   });
   expect(screen.getAllByText(/sandbox approval/i)).toHaveLength(2);
 });
