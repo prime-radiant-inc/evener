@@ -58,6 +58,31 @@ class MemoryStorage {
   }
 }
 
+// Renders a route to completion so both halves of its lazy-loading cost are
+// already paid by the time a test measures it. The module cache is only the
+// first half: React.lazy keeps a payload of its own that stays uninitialized
+// until React first RENDERS the component, so a warm module cache still
+// leaves the first render suspending, committing its Suspense fallback, and
+// then waiting out react-dom's FALLBACK_THROTTLE_MS (300ms, react-dom 19.2)
+// before it will commit the revealed content - a flicker guard that is pure
+// wall clock and does not shrink on a fast machine. The welcome route
+// crosses two nested boundaries (AppShell's lazy DockHost, then PaneHost's
+// lazy Welcome); each other pane crosses one more of its own. Measured here:
+// ~654ms for the two-boundary welcome route and ~310-380ms per additional
+// pane the first time, ~10-20ms every time after. Mirrors App.test.tsx's own
+// warmRoute (commit c1a8616ea) for the same reason.
+async function warmRoute(path: string, findLandmark: () => Promise<unknown>): Promise<void> {
+  window.history.pushState({}, "", path);
+  render(<AppShell client={new FakeClient("ready")} />);
+  await findLandmark();
+  // Unmounting also clears DockHost's pending debounced layout save (its own
+  // effect cleanup), so no warm render leaks a write into a later test.
+  cleanup();
+  resetWorkspaceStoreForTests();
+  localStorage.clear();
+  window.history.pushState({}, "", "/");
+}
+
 // Await the welcome/session panes' lazy-loaded modules ONCE up front so
 // React.lazy resolves from a warm module cache - mirrors App.test.tsx's own
 // beforeAll pattern for the same reason: the slow part of lazy-loading is
@@ -77,6 +102,14 @@ beforeAll(async () => {
   // dockview is dead weight on the mobile path) - pre-warmed for the same
   // reason as the two panes above.
   await import("./DockHost");
+
+  // Then render each pane once, for the React.lazy half of the cost - see
+  // warmRoute above. Awaiting real completion, in a hook whose ceiling is a
+  // tripwire, rather than spending it inside a test's assertion window.
+  await warmRoute("/", () => screen.findByText("No session open"));
+  await warmRoute("/new", () => screen.findByRole("button", { name: "Start" }));
+  await warmRoute("/s/ref_warm", () => screen.findByText(/loading transcript/i));
+  await warmRoute("/settings/general", () => screen.findByRole("navigation", { name: "Settings sections" }));
 });
 
 beforeEach(() => {
