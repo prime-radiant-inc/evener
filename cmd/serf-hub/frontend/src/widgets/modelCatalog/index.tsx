@@ -381,7 +381,9 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾
-          </span>
+          </span>{" "}
+          {/* That separating space is load-bearing - see ModelSwitch.tsx's own
+              trigger for why the space cannot live inside either span. */}
           <span className={CLASS.srOnly}>— change model</span>
         </button>
       }

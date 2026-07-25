@@ -97,7 +97,7 @@ test("shows the current model label alongside a Change-model trigger", () => {
 // model") rides along visually-hidden so the spoken name says both.
 test("the trigger's spoken name names both the current model and the action", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  expect(screen.getByRole("button", { name: "anthropic/claude-sonnet-4-5— change model" })).toBe(trigger());
+  expect(screen.getByRole("button", { name: "anthropic/claude-sonnet-4-5 — change model" })).toBe(trigger());
 });
 
 // The label carries no box of its own - that was the double border.

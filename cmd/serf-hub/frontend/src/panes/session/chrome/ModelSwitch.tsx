@@ -130,7 +130,14 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾
-          </span>
+          </span>{" "}
+          {/* That separating space is load-bearing: the accessible name is this
+              button's children concatenated, and each child's own text is
+              trimmed first, so a space INSIDE either span would be dropped and
+              the name would run together as "…sonnet-4-5— change model". A
+              whitespace-only text node between them survives that trim and
+              renders nothing of its own (an all-whitespace anonymous flex item
+              is not laid out). */}
           <span className={CLASS.srOnly}>— change model</span>
         </button>
       }
