@@ -83,6 +83,14 @@ function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
+// Thread.createdAt/updatedAt are the wire's only Unix-SECONDS stamps
+// (cmd/serf-hub's hubcore.UnixSeconds for a past session,
+// appsource/local_daemon.go's entry.StartedAt.Unix() for a live one), unlike
+// every millisecond stamp epochMsToISO handles. Same absent-means-absent rule.
+function epochSecondsToISO(seconds: number | undefined): string | undefined {
+  return epochMsToISO(seconds === undefined || Number.isNaN(seconds) ? seconds : seconds * 1000);
+}
+
 // ItemModel.images/outputImages are display-ready string[], but the wire
 // carries structured InputItem/OutputImage objects. Take each image's
 // renderable handle, preferring url — the field the legacy web client
@@ -317,6 +325,8 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     cwd: thread.cwd,
     gitBranch: thread.gitInfo?.branch,
     projectPath: thread.projectPath,
+    createdAt: epochSecondsToISO(thread.createdAt),
+    updatedAt: epochSecondsToISO(thread.updatedAt),
   };
 }
 
