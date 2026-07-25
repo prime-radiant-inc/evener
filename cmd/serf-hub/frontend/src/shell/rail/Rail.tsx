@@ -9,6 +9,7 @@
 // through actions.ts, refetching the tree on success and toasting on failure
 // (no optimistic UI - out of this task's scope).
 import { type ChangeEvent, type CSSProperties, useEffect, useRef, useState } from "react";
+import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
 import {
   type TreeNode as ApiTreeNode,
@@ -70,10 +71,6 @@ function isEmptyTree(tree: TreeResponse): boolean {
     tree.archived_projects.length === 0 &&
     tree.test_runs.length === 0
   );
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 interface RailSectionProps {
@@ -228,7 +225,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       await fn();
       void treeStore.getState().refresh();
     } catch (err) {
-      toasts.push("error", `${failureMessage}: ${errorMessage(err)}`);
+      toasts.push("error", `${failureMessage}: ${errorText(err)}`);
     }
   }
 
@@ -291,7 +288,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       }
       void treeStore.getState().refresh();
     } catch (err) {
-      toasts.push("error", `Couldn't delete project: ${errorMessage(err)}`);
+      toasts.push("error", `Couldn't delete project: ${errorText(err)}`);
     }
   }
 

@@ -14,6 +14,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
@@ -149,10 +150,6 @@ function normalizeResponse(r: WireTreeResponse): TreeResponse {
 // /auth?token=).
 const FETCH_INIT: RequestInit = { credentials: "same-origin" };
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 async function parseErrorBody(res: Response): Promise<string> {
   try {
     const data = (await res.json()) as { error?: string };
@@ -203,7 +200,7 @@ export const treeStore = createStore<TreeStoreState>((set) => ({
       const tree = await fetchTree();
       set({ tree, loading: false, error: null });
     } catch (err) {
-      set({ loading: false, error: errorMessage(err) });
+      set({ loading: false, error: errorText(err) });
     }
   },
 

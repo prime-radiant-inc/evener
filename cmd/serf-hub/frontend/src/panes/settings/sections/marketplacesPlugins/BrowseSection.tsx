@@ -4,6 +4,7 @@
 // for why (its Refresh action needs to read this component's expansion
 // state).
 import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, Input, useToasts } from "../../../../widgets";
@@ -32,10 +33,6 @@ const CLASS = {
 };
 
 const FILTER_DEBOUNCE_MS = 150;
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function pluginMatchesFilter(plugin: MarketplaceCatalogPlugin, query: string): boolean {
   const q = query.toLowerCase();
@@ -132,7 +129,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
       toasts.push("success", `Installed ${target.plugin}`);
       setPendingInstall(null);
     } catch (err) {
-      toasts.push("error", `Install failed: ${errorMessage(err)}`);
+      toasts.push("error", `Install failed: ${errorText(err)}`);
     } finally {
       setInstallBusy(false);
     }

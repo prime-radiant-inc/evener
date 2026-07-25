@@ -4,6 +4,7 @@
 // (see its own comment), so this hook stays a plain, side-effect-free
 // selector a caller can use without implicitly acquiring the ref.
 import { useCallback, useRef, useState } from "react";
+import { errorText } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 
@@ -20,10 +21,6 @@ export interface UseTranscriptResult {
   // succeeded or none has been made. Cleared at the start of every attempt, so
   // a retry begins from a clean state.
   olderError: string | null;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export function useTranscript(ref: string): UseTranscriptResult {
@@ -55,7 +52,7 @@ export function useTranscript(ref: string): UseTranscriptResult {
 
   const loadOlderReportingError = useCallback(() => {
     setOlderError(null);
-    void loadOlder().catch((err) => setOlderError(errorMessage(err)));
+    void loadOlder().catch((err) => setOlderError(errorText(err)));
   }, [loadOlder]);
 
   return { model, loadOlder, loadingOlder, loadOlderReportingError, olderError };

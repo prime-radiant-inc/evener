@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ModelListResponse, ThreadCapabilities } from "../../../protocol/types.gen";
@@ -368,4 +369,32 @@ test("a failed setModel surfaces an error toast - the picker is already closed (
 
   await screen.findByText(/switch boom/i);
   expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+// thread/model/set resumes a cold session first (cmd/serf-hub/app_model.go's
+// setThreadModelWithResume). A failed resume is not a failed model change.
+test("a setModel that fails because the session would not start names the start, not the model change", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => {
+    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  render(
+    <>
+      <ModelSwitch sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+
+  await screen.findByText("Couldn't start this session: serf launch-check timed out");
+  expect(screen.queryByText(/couldn't change model/i)).toBeNull();
 });

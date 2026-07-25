@@ -36,7 +36,7 @@
 // failure: toast (the wave's failure-feedback convention) AND an inline
 // error state, since there is nothing left to show in its place.
 import { useEffect, useState } from "react";
-import { WireError } from "../../../protocol/errors";
+import { errorText, sessionActionError, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Sheet, useToasts } from "../../../widgets";
@@ -94,10 +94,6 @@ export const STATUS_TONE: Record<TaskStatus, ChipTone> = {
 
 function triggerLabel(tasks: ThreadModel["tasks"]): string {
   return tasks ? `Tasks ${tasks.done}/${tasks.total}` : "Tasks";
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 function isActionUnavailable(err: unknown): boolean {
@@ -177,9 +173,9 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
           return;
         }
         setRows(null);
-        const message = errorMessage(err);
+        const message = errorText(err);
         setError(message);
-        toasts.push("error", `Couldn't load tasks: ${message}`);
+        toasts.push("error", sessionActionError("Couldn't load tasks", err));
       });
     return () => {
       cancelled = true;

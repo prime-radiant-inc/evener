@@ -30,6 +30,7 @@
 // with the goal's status and a clear action, using this same setGoal(ref,
 // "") wiring.
 import { type ChangeEvent, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import type { GoalState } from "../../../protocol/types.gen";
 import { threadsStore } from "../../../stores/threads";
@@ -58,10 +59,6 @@ const CLASS = {
   label: requireClass(styles.label, "goalcontrol.module.css", "label"),
   footer: requireClass(styles.footer, "goalcontrol.module.css", "footer"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 function goalEquals(a: GoalState | null, b: GoalState | null): boolean {
   if (a === null || b === null) return a === b;
@@ -157,7 +154,7 @@ export function GoalControl({
       setGoalOverride(sessionRef, model.goal, { status: "active", iterations: 0 });
       onDialogOpenChange(false);
     } catch (err) {
-      toasts.push("error", `Couldn't set goal: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't set goal", err));
     } finally {
       setBusy(false);
     }
@@ -169,7 +166,7 @@ export function GoalControl({
       setGoalOverride(sessionRef, model.goal, null);
       setPopoverOpen(false);
     } catch (err) {
-      toasts.push("error", `Couldn't clear goal: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't clear goal", err));
     }
   }
 

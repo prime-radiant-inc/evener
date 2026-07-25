@@ -5,6 +5,7 @@
 // reload it" behavior (§12b) needs to read BrowseSection's expansion state,
 // and these are sibling components - see index.tsx's own comment.
 import { type FormEvent, useId, useState } from "react";
+import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceSourceInput } from "../../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, ConfirmDialog, FormRow, Input, PathField, RadioGroup, useToasts } from "../../../../widgets";
@@ -36,10 +37,6 @@ const SOURCE_OPTIONS = [
   { value: "github", label: "owner/repo" },
   { value: "directory", label: "Local path" },
 ];
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export interface MarketplacesSectionProps {
   /** Read-only here - only used to decide whether a Refresh should also
@@ -96,7 +93,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
       resetAddForm();
       toasts.push("success", `Added marketplace${trimmedName ? ` ${trimmedName}` : ""}`);
     } catch (err) {
-      toasts.push("error", `Add marketplace failed: ${errorMessage(err)}`);
+      toasts.push("error", `Add marketplace failed: ${errorText(err)}`);
     } finally {
       setSubmitting(false);
     }
@@ -118,7 +115,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
       if (expandedMarketplaces.has(name)) void extensionsStore.getState().browseMarketplace(name);
       toasts.push("success", `Refreshed ${name}`);
     } catch (err) {
-      toasts.push("error", `Refresh failed: ${errorMessage(err)}`);
+      toasts.push("error", `Refresh failed: ${errorText(err)}`);
     } finally {
       setRefreshBusy((prev) => {
         const next = new Set(prev);
@@ -137,7 +134,7 @@ export function MarketplacesSection({ expandedMarketplaces }: MarketplacesSectio
       toasts.push("success", `Removed marketplace ${name}`);
       setPendingRemove(null);
     } catch (err) {
-      toasts.push("error", `Remove marketplace failed: ${errorMessage(err)}`);
+      toasts.push("error", `Remove marketplace failed: ${errorText(err)}`);
     } finally {
       setRemoveBusy(false);
     }

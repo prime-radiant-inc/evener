@@ -17,6 +17,7 @@
 // CollectionEditor's own immediate-fire onRemove, keyed on a `pending` path
 // exactly like every other confirm-gated row in this settings cluster.
 import { useId, useState } from "react";
+import { errorText } from "../../../protocol/errors";
 import type { LaunchConfigLayer } from "../../../protocol/types.gen";
 import { extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
@@ -45,10 +46,6 @@ const CLASS = {
   addRow: requireClass(styles.addRow, "dirListSetting.module.css", "addRow"),
   addField: requireClass(styles.addField, "dirListSetting.module.css", "addField"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export interface PathListEditorProps {
   /** Accessible name for the row list. */
@@ -209,7 +206,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
       await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
       return { ok: true };
     } catch (err) {
-      return { ok: false, error: errorMessage(err) };
+      return { ok: false, error: errorText(err) };
     }
   }
 
@@ -219,7 +216,7 @@ export function DirListSetting({ wireField, label, copy }: DirListSettingProps) 
     try {
       await extensionsStore.getState().setLaunchLayer({ ...current, [wireField]: nextList });
     } catch (err) {
-      toasts.push("error", `Remove failed: ${errorMessage(err)}`);
+      toasts.push("error", `Remove failed: ${errorText(err)}`);
     }
   }
 

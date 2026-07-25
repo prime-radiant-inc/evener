@@ -22,6 +22,7 @@
 // (routing.ts's own navigate() dispatches popstate on every push, the same
 // signal AppShell itself listens for).
 import { useEffect, useState } from "react";
+import { errorText } from "../../../protocol/errors";
 import type { LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -56,10 +57,6 @@ type LoadState =
   | { phase: "error"; message: string }
   | { phase: "ready"; options: LaunchOption[]; current: LaunchConfigLayer; globalDefaults: LaunchConfigLayer };
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 export interface ProjectSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
@@ -93,7 +90,7 @@ export function ProjectSection(_props: ProjectSectionProps) {
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
       } catch (err) {
-        if (!isCancelled()) setLoad({ phase: "error", message: errorMessage(err) });
+        if (!isCancelled()) setLoad({ phase: "error", message: errorText(err) });
       }
     },
     [cwd],

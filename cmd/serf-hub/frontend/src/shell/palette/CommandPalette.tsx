@@ -7,7 +7,7 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { WireError } from "../../protocol/errors";
+import { errorText, isHubLaunchError } from "../../protocol/errors";
 import { type CadenceState, Chip, Dialog, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
@@ -121,15 +121,13 @@ interface ResultsView {
 // (search.js:867-871).
 //
 // The hubLaunch prefix keeps a failed auto-resume from being read as a failed
-// command. A session mutation against a cold session resumes it first
-// (app_model.go's setThreadModelWithResume and its siblings); when that
-// spawn fails, the hub returns the spawner's own raw text under
-// serfErrorInfo "hubLaunch" (appwire.HubLaunchError), which on its own says
-// nothing about which of the two steps died - and would send someone
-// debugging /goal when the daemon simply would not start.
+// command - see protocol/errors.ts's sessionActionError, which shares this
+// module's discriminator and covers the labelled session controls. The
+// palette states the resume in lower case because it has no command label to
+// give way to: it renders the rejection's own text, whatever that text is.
 export function commandErrorMessage(err: unknown): string {
-  if (err instanceof WireError && err.serfErrorInfo === "hubLaunch") {
-    return `couldn't start this session: ${err.message || "launch failed"}`;
+  if (isHubLaunchError(err)) {
+    return `couldn't start this session: ${errorText(err) || "launch failed"}`;
   }
   if (err instanceof Error && err.message) return err.message;
   const msg = String(err ?? "").trim();

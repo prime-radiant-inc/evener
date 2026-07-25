@@ -11,6 +11,7 @@
 // this settings cluster, this field intentionally gets no directory-picker
 // assist (parity floor's own note - matches the legacy exactly).
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { errorText } from "../../../protocol/errors";
 import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { Button, FormRow, Input } from "../../../widgets";
@@ -33,10 +34,6 @@ type Status =
   | { phase: "loading" }
   | { phase: "error"; message: string }
   | { phase: "resolved"; repo: RepoLaunchConfigStatus | undefined };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 const TRUST_NOTE: Record<string, string> = {
   untrusted: "Untrusted — review and approve below.",
@@ -68,7 +65,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       const resolved: LaunchConfigResolved = await launchConfigStore.getState().resolve(trimmed);
       setStatus({ phase: "resolved", repo: resolved.repo });
     } catch (err) {
-      setStatus({ phase: "error", message: errorMessage(err) });
+      setStatus({ phase: "error", message: errorText(err) });
     }
   }
 
@@ -115,7 +112,7 @@ export function InRepoSection(_props: InRepoSectionProps) {
       await launchConfigStore.getState().trustRepo(cwd.trim(), hash);
       await refresh(cwd);
     } catch (err) {
-      setTrustError(`Trust failed: ${errorMessage(err)}`);
+      setTrustError(`Trust failed: ${errorText(err)}`);
     } finally {
       setTrusting(false);
     }

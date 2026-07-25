@@ -17,6 +17,7 @@
 // never by waiting to observe its echo back in the transcript).
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { errorText } from "../../../../protocol/errors";
 import type { ThreadModel } from "../../../../protocol/model";
 import { ConflictError, threadsStore } from "../../../../stores/threads";
 import { type AskResolution, composeAskAnswers } from "./askCompose";
@@ -73,10 +74,6 @@ export interface AskDockState {
 }
 
 const EMPTY_REF_STATE: AskDockRefState = { batches: [], answers: {}, excludedKeys: new Set() };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // Batch ids are purely local identifiers (never sent over the wire) - a
 // monotonic counter is simplest and sufficient; resetAskDockStoreForTests
@@ -184,7 +181,7 @@ export const askDockStore = createStore<AskDockState>(() => ({
         return { outcome: "conflict", text: composedText };
       }
       setBatchSending(ref, batchId, false);
-      return { outcome: "error", message: errorMessage(err) };
+      return { outcome: "error", message: errorText(err) };
     }
   },
 }));

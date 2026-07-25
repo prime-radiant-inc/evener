@@ -1149,3 +1149,22 @@ test('"/" in a NON-empty composer is a literal slash, not a palette trigger', as
 
   expect(paletteStore.getState().open).toBe(false);
 });
+
+// A cold session is resumed behind turn/start (cmd/serf-hub/app_session_resume.go).
+// When that resume is what died, "Send failed" would send the user looking at
+// their message rather than at the daemon that would not start.
+test("a send that fails because the session would not start names the start, not the send", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", () => {
+    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  await user.type(textarea(), "hello");
+  await user.click(submitButton());
+
+  await waitFor(() =>
+    expect(screen.getByText("Couldn't start this session: serf launch-check timed out")).toBeTruthy(),
+  );
+  expect(screen.queryByText(/send failed/i)).toBeNull();
+});

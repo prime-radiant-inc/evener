@@ -6,6 +6,7 @@
 // agentMessage/reasoning there is no live/settled branch here at all.
 
 import { memo, type ReactNode, useState } from "react";
+import { sessionActionError } from "../../../../protocol/errors";
 import type { ItemModel } from "../../../../protocol/model";
 import { workspaceStore } from "../../../../shell/workspace";
 import { threadsStore } from "../../../../stores/threads";
@@ -23,10 +24,6 @@ const CLASS = {
   tag: requireClass(styles.tag, "usermessageitem.module.css", "tag"),
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // A simple line-and-node "fork" glyph (straight lines only, no arcs) -
 // chosen over a Unicode character (unlike QueueStrip.tsx's plain-glyph
@@ -75,7 +72,7 @@ function ForkFromHereButton({ sessionRef, turnId }: ForkFromHereButtonProps) {
       writeDraft(resp.thread.serf.ref, resp.originalInput ?? "");
       workspaceStore.getState().openPane("session", { ref: resp.thread.serf.ref });
     } catch (err) {
-      toasts.push("error", `Couldn't fork from here: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't fork from here", err));
     } finally {
       setBusy(false);
     }

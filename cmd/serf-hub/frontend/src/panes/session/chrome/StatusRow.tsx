@@ -31,6 +31,8 @@
 // loaded (thread/read's turnLimit windows those, so summing them would
 // silently under-count). Absent (no chip) when the daemon omits it: no token
 // data, or an uncataloged model - an honest "unknown", never a bogus "~$0.00".
+
+import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Meter, useToasts } from "../../../widgets";
@@ -69,10 +71,6 @@ const CLASS = {
 // render vs. whether a card is usable) and a shared constant would invite one
 // to drift into gating the other.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // Fallback effort ladder for a reasoning model whose own ladder the hub does
 // not enumerate. Ported verbatim from the legacy live picker (cmd/serf-hub/
@@ -114,7 +112,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
     try {
       await threadsStore.getState().setReasoningEffort(sessionRef, level);
     } catch (err) {
-      toasts.push("error", `Couldn't change reasoning effort: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't change reasoning effort", err));
     }
   }
 

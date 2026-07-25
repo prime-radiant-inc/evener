@@ -33,6 +33,7 @@
 // resolveEscalation), but no worse than before, and the common cold-open
 // case now works without any resolve happening at all.
 import { useCallback, useState } from "react";
+import { sessionActionError } from "../../../../protocol/errors";
 import type { SandboxEscalationRequested } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Button, Card, Chip } from "../../../../widgets";
@@ -117,10 +118,6 @@ export function useSandboxEscalations(ref: string): UseSandboxEscalationsResult 
 // <SandboxEscalationRail sessionRef={sessionRef} />. The prop is
 // `sessionRef`, not `ref` - the latter is reserved (React would try to
 // interpret a plain string value as an actual ref attempt).
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
   const { pending, resolve } = useSandboxEscalations(sessionRef);
   // Tracks escalations with a resolve() request currently in flight, so a
@@ -149,7 +146,7 @@ export function SandboxEscalationRail({ sessionRef }: { sessionRef: string }) {
     try {
       await resolve(escalationId, approve);
     } catch (err) {
-      setErrors((prev) => new Map(prev).set(escalationId, `Couldn't resolve: ${errorMessage(err)}`));
+      setErrors((prev) => new Map(prev).set(escalationId, sessionActionError("Couldn't resolve", err)));
     } finally {
       setResolving((prev) => {
         const next = new Set(prev);

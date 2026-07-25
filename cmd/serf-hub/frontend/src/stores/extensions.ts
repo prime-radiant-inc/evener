@@ -19,6 +19,7 @@
 //     convention.
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { errorText } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type {
   AnyNotification,
@@ -90,10 +91,6 @@ export interface ExtensionsStoreState {
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
   if (!client) {
@@ -116,7 +113,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
       const resp = await client.request("serf/marketplace/list", {});
       set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
     } catch (err) {
-      set({ marketplacesLoading: false, marketplacesError: errorMessage(err) });
+      set({ marketplacesLoading: false, marketplacesError: errorText(err) });
     }
   },
 
@@ -166,7 +163,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
     } catch (err) {
       set((s) => {
         const next = new Map(s.browseCatalogs);
-        next.set(name, { status: "error", error: errorMessage(err) });
+        next.set(name, { status: "error", error: errorText(err) });
         return { browseCatalogs: next };
       });
     }
@@ -183,7 +180,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
       const resp = await client.request("serf/plugin/list", {});
       set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
     } catch (err) {
-      set({ pluginsLoading: false, pluginsError: errorMessage(err) });
+      set({ pluginsLoading: false, pluginsError: errorText(err) });
     }
   },
 
@@ -234,7 +231,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
       const layer = await client.request("serf/launch/getLayer", GLOBAL_LAYER_PARAMS);
       set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null });
     } catch (err) {
-      set({ launchLayerLoading: false, launchLayerError: errorMessage(err) });
+      set({ launchLayerLoading: false, launchLayerError: errorText(err) });
     }
   },
 

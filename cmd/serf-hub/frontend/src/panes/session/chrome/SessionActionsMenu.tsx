@@ -14,6 +14,7 @@
 // properly rather than guessing at "the most recent user message". Aside
 // stays: unlike Fork it isn't about any particular message.
 import { type ChangeEvent, useState } from "react";
+import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { workspaceStore } from "../../../shell/workspace";
 import { threadsStore } from "../../../stores/threads";
@@ -37,10 +38,6 @@ const CLASS = {
   footer: requireClass(styles.footer, "sessionactionsmenu.module.css", "footer"),
   body: requireClass(styles.body, "sessionactionsmenu.module.css", "body"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 // openChildPane is Aside's success path: the response describes a DIFFERENT
 // ref (the new child thread, stores/threads.ts's own forkFromTurn doc
@@ -68,67 +65,54 @@ export function SessionActionsMenu({ sessionRef, model, onSetGoal = () => undefi
   // per the wave's failure-feedback convention, and leave dialog-open state
   // entirely to the caller - a caller that wants to close on success does so
   // itself, inside `action`, so a failure naturally leaves the dialog open
-  // with whatever the user typed still intact.
-  async function runGuarded(action: () => Promise<void>, failureMessage: (message: string) => string) {
+  // with whatever the user typed still intact. `failure` names the action; it
+  // gives way to the resume when the resume behind it is what died (see
+  // protocol/errors.ts's sessionActionError).
+  async function runGuarded(action: () => Promise<void>, failure: string) {
     setBusy(true);
     try {
       await action();
     } catch (err) {
-      toasts.push("error", failureMessage(errorMessage(err)));
+      toasts.push("error", sessionActionError(failure, err));
     } finally {
       setBusy(false);
     }
   }
 
   function handleAside() {
-    void runGuarded(
-      async () => {
-        const resp = await threadsStore.getState().forkFromTurn(sessionRef, { aside: true });
-        openChildPane(resp.thread.serf.ref);
-      },
-      (msg) => `Couldn't create aside: ${msg}`,
-    );
+    void runGuarded(async () => {
+      const resp = await threadsStore.getState().forkFromTurn(sessionRef, { aside: true });
+      openChildPane(resp.thread.serf.ref);
+    }, "Couldn't create aside");
   }
 
   function handleCompact() {
-    void runGuarded(
-      async () => {
-        await threadsStore.getState().compact(sessionRef);
-      },
-      (msg) => `Couldn't compact: ${msg}`,
-    );
+    void runGuarded(async () => {
+      await threadsStore.getState().compact(sessionRef);
+    }, "Couldn't compact");
   }
 
   function handleClearConfirm() {
-    void runGuarded(
-      async () => {
-        await threadsStore.getState().clearThread(sessionRef);
-        setClearOpen(false);
-      },
-      (msg) => `Couldn't clear conversation: ${msg}`,
-    );
+    void runGuarded(async () => {
+      await threadsStore.getState().clearThread(sessionRef);
+      setClearOpen(false);
+    }, "Couldn't clear conversation");
   }
 
   function handleShutdownConfirm() {
-    void runGuarded(
-      async () => {
-        await threadsStore.getState().shutdown(sessionRef);
-        setShutdownOpen(false);
-      },
-      (msg) => `Couldn't shut down session: ${msg}`,
-    );
+    void runGuarded(async () => {
+      await threadsStore.getState().shutdown(sessionRef);
+      setShutdownOpen(false);
+    }, "Couldn't shut down session");
   }
 
   function handleRenameSave() {
     const trimmed = renameValue.trim();
     if (!trimmed) return;
-    void runGuarded(
-      async () => {
-        await threadsStore.getState().rename(sessionRef, trimmed);
-        setRenameOpen(false);
-      },
-      (msg) => `Couldn't rename session: ${msg}`,
-    );
+    void runGuarded(async () => {
+      await threadsStore.getState().rename(sessionRef, trimmed);
+      setRenameOpen(false);
+    }, "Couldn't rename session");
   }
 
   const items: MenuItem[] = [

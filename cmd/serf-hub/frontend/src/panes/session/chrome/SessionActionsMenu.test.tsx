@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities } from "../../../protocol/types.gen";
@@ -417,3 +418,25 @@ test("a failed rename surfaces an error toast and leaves the dialog open", async
 // affordance, whose behavior is covered by UserMessageItem.test.tsx's own
 // "per-message fork affordance" block - a materially different flow
 // (deferInput + composer draft-seed, no in-menu dialog).
+
+// Every action in this menu resumes a cold session first (cmd/serf-hub/
+// app_session_resume.go). A failed resume is not a failed compact.
+test("a Compact that fails because the session would not start names the start, not the compact", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/compact/start", () => {
+    throw new WireError("serf launch-check failed: exit status 1", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  render(
+    <>
+      <SessionActionsMenu sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await openMenu(user);
+  await user.click(screen.getByRole("menuitem", { name: "Compact" }));
+
+  await screen.findByText("Couldn't start this session: serf launch-check failed: exit status 1");
+  expect(screen.queryByText(/couldn't compact/i)).toBeNull();
+});

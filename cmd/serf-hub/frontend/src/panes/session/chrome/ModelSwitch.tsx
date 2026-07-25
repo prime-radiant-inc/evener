@@ -22,6 +22,7 @@
 // the existing ReasoningEffortControl picks up the new model's profile
 // for free.
 import { useRef, useState } from "react";
+import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, Popover, useToasts } from "../../../widgets";
@@ -43,10 +44,6 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "modelswitch.module.css", "srOnly"),
   popoverPanel: requireClass(styles.popoverPanel, "modelswitch.module.css", "popoverPanel"),
 };
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
 
 export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const toasts = useToasts();
@@ -80,7 +77,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
       ]);
       setCatalog(mergeScopedCatalog(scoped.data, enrichment));
     } catch (err) {
-      setError(`Couldn't load models: ${errorMessage(err)}`);
+      setError(sessionActionError("Couldn't load models", err));
     } finally {
       setLoading(false);
     }
@@ -103,7 +100,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
     try {
       await threadsStore.getState().setModel(sessionRef, entry.provider, entry.model);
     } catch (err) {
-      toasts.push("error", `Couldn't change model: ${errorMessage(err)}`);
+      toasts.push("error", sessionActionError("Couldn't change model", err));
     }
   }
 

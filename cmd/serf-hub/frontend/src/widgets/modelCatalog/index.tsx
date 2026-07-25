@@ -11,6 +11,7 @@
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { errorText } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
@@ -80,10 +81,6 @@ export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
   loadCatalog: () => Promise<ModelCatalog>;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export interface ModelCatalogPanelProps {
@@ -330,7 +327,7 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
     try {
       setCatalog(await loadCatalog());
     } catch (err) {
-      setError(`Couldn't load models: ${errorMessage(err)}`);
+      setError(`Couldn't load models: ${errorText(err)}`);
     } finally {
       setLoading(false);
     }
