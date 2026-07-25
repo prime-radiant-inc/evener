@@ -4,6 +4,8 @@ import { afterEach, expect, test } from "vitest";
 import type { ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { buildCommands, type PaletteRunContext } from "../../../shell/palette/commands";
+import { requireClass } from "../../../widgets/internal/requireClass";
+import rawMeterStyles from "../../../widgets/meter/meter.module.css";
 import { DetailsPanel } from "./DetailsPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -89,6 +91,26 @@ test("the context row carries a meter at the session's pressure", async () => {
   const meter = screen.getByRole("meter", { name: /Context/ });
   expect(meter.getAttribute("aria-valuenow")).toBe("42000");
   expect(meter.getAttribute("aria-valuemax")).toBe("100000");
+});
+
+// The gauge's severity comes from the shared contextTone ladder (see
+// statusFormat.ts), which the status row reads too - the same session must
+// never look calm on one surface and alarming on the other. These pin the
+// rendered tone class at each tier, so a drifted threshold shows up here as a
+// wrong class rather than only as a helper-level unit failure.
+const meterToneClass = {
+  neutral: requireClass(rawMeterStyles.neutral, "meter.module.css", "neutral"),
+  attention: requireClass(rawMeterStyles.attention, "meter.module.css", "attention"),
+  danger: requireClass(rawMeterStyles.danger, "meter.module.css", "danger"),
+};
+
+test.each([
+  { pressure: 0.42, tone: "neutral" as const },
+  { pressure: 0.8, tone: "attention" as const },
+  { pressure: 0.95, tone: "danger" as const },
+])("the context meter renders the $tone tone at pressure $pressure", async ({ pressure, tone }) => {
+  await openPanel(testModel({ contextUsed: pressure * 100_000, contextPressure: pressure }));
+  expect(screen.getByTestId("meter-fill").classList.contains(meterToneClass[tone])).toBe(true);
 });
 
 test("a closed session gets the same no-context treatment as an ended one", async () => {

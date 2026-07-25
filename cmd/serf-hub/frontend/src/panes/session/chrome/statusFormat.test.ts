@@ -1,6 +1,9 @@
 // @vitest-environment node
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
-import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { contextTone, formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
 // formatWorkDuration mirrors the daemon's own compactDuration/formatWorkMillis
 // convention verbatim (cmd/serf-hub/web_format.go:79-102): a session's
@@ -84,4 +87,43 @@ test("ignores a pre-epoch (Go zero-time) or unparseable activeTurnStartedAt, fal
   const preEpoch = new Date(-6_000_000_000).toISOString(); // parses to a negative epoch-ms
   expect(totalWorkMillis(45_000, preEpoch, 1_800_000_000_000)).toBe(45_000);
   expect(totalWorkMillis(45_000, "not-a-timestamp", 1_800_000_000_000)).toBe(45_000);
+});
+
+// contextTone is the ONE ladder both gauge surfaces read (the status row and
+// the details panel). The thresholds are inclusive lower bounds, so the
+// boundary values themselves belong to the higher tier.
+test("context pressure below the warn threshold is neutral", () => {
+  expect(contextTone(0)).toBe("neutral");
+  expect(contextTone(0.5)).toBe("neutral");
+  expect(contextTone(0.799)).toBe("neutral");
+});
+
+test("context pressure from the warn threshold up to the danger tier is attention", () => {
+  expect(contextTone(0.8)).toBe("attention");
+  expect(contextTone(0.9)).toBe("attention");
+  expect(contextTone(0.949)).toBe("attention");
+});
+
+test("context pressure at or above the ceiling tier is danger", () => {
+  expect(contextTone(0.95)).toBe("danger");
+  expect(contextTone(1)).toBe("danger");
+  expect(contextTone(1.5)).toBe("danger");
+});
+
+// The two gauge surfaces each carried their own copy of this ladder, and two
+// copies can drift into reporting different severities for one session. This
+// asserts the copies are gone: each surface imports the one helper and
+// declares no contextTone of its own. Comments are stripped first, so a doc
+// comment that merely MENTIONS contextTone can't satisfy the import check or
+// trip the local-declaration check.
+test("both gauge surfaces read the one shared contextTone, not a local copy", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const surface of ["StatusRow.tsx", "DetailsPanel.tsx"]) {
+    const code = readFileSync(join(here, surface), "utf8")
+      .replace(/\/\/[^\n]*/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(code).toContain('from "./statusFormat"');
+    expect(code).toMatch(/import\s*\{[^}]*\bcontextTone\b[^}]*\}\s*from\s*"\.\/statusFormat"/);
+    expect(code).not.toMatch(/function\s+contextTone/);
+  }
 });
