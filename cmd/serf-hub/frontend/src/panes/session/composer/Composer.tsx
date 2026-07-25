@@ -632,6 +632,7 @@ export function Composer({ ref }: ComposerProps) {
                 label="Attach image"
                 icon="+"
                 variant="quiet"
+                size="sm"
                 type="button"
                 data-testid="composer-attach"
                 onClick={() => fileInputRef.current?.click()}
@@ -655,6 +656,7 @@ export function Composer({ ref }: ComposerProps) {
                 {showSteer && (
                   <Button
                     variant="quiet"
+                    size="sm"
                     type="button"
                     data-testid="composer-steer"
                     onClick={handleSteerClick}
@@ -666,6 +668,7 @@ export function Composer({ ref }: ComposerProps) {
                 <Button
                   type="submit"
                   variant="primary"
+                  size="sm"
                   data-testid="composer-submit"
                   disabled={busyAction !== null || !hasContent || (!availability.canSend && !availability.canQueue)}
                 >

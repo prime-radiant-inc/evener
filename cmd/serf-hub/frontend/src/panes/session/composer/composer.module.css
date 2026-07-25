@@ -81,11 +81,14 @@
   border-color: var(--accent);
 }
 
+/* One tight field: the seamless textarea inside carries no inset of its own,
+ * so this padding is the whole thing, and the gap to the control row below is
+ * the smallest step that still separates them. */
 .inputCard {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-1);
@@ -102,13 +105,13 @@
 .controls {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
 .controlsRight {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   margin-left: auto;
 }
 

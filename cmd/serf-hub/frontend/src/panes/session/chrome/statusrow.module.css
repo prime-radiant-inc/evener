@@ -2,7 +2,10 @@
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-3);
+  /* Tight enough that the whole strip reads as one line of status rather than
+   * widely-spaced islands; each item's own internal gap is smaller still, so
+   * the grouping still reads. */
+  gap: var(--space-2);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

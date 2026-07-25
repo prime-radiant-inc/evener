@@ -12,6 +12,8 @@ import { connectionStore } from "../../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import buttonStyles from "../../../widgets/button/button.module.css";
+import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import { Composer } from "./Composer";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -184,6 +186,25 @@ test("the submit button's spoken name is words, not the ⌘↵ glyphs it shows",
   const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
   expect(screen.getByRole("button", { name: `Send ${modWord}+Enter` })).toBe(submitButton());
   expect(submitButton().textContent).toContain("↵"); // the visible form really is the glyph run
+});
+
+// Density: the control row is the 28px (sm) size, not 32px (md) - three
+// nested gaps plus the card's padding plus a 32px row stacked up to a block
+// far taller than the input it framed.
+test("every control in the composer's button row is the sm size", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+
+  // IconButton overrides Button's own sm/md with its square sizing (see
+  // iconbutton.module.css), so the two icon controls carry that module's sm.
+  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
+    expect(control.className.split(" ")).toContain(iconButtonStyles.sm);
+  }
+  for (const control of [steerButton(), submitButton()]) {
+    expect(control.className.split(" ")).toContain(buttonStyles.sm);
+  }
 });
 
 // --- send / queue routing ---------------------------------------------------
