@@ -149,6 +149,9 @@ none — localStorage key `serf-hub.transcript.systemStatus` (JSON).
       (`hookExitsAll`), Hook exits — normal only (`hookExitsNormal`), Prompt Loaded
       (`promptLoaded`) — `templates/partials/settings/transcript.html:6-44`,
       `assets/settings-transcript.js:44-47` (missing/unparseable key ⇒ `{}` ⇒ every field falsy)
+  - **Addition:** the React pane adds a fifth, also default off — Token counts (`tokenCounts`,
+    `serf.prefs.transcriptTokenCounts`), gating the per-turn meta line's `↑in ↓out` segment. The old
+    UI had no preference for it at all.
 - [ ] Copy clarifies "Hook exits (all)" is a superset of "Hook exits (normal only)" — both can be
       independently on — `templates/partials/settings/transcript.html:23,33`
 - [ ] Static server-rendered label spans are hardcoded `"OFF"` for all four, matching the
@@ -171,6 +174,11 @@ localStorage key `serf-hub.composer` (JSON `{enterToSend, showCost}`).
 - [ ] "Show estimated cost" toggle, default **ON**: shows an estimated `~$` figure from catalog
       pricing next to token counts, explicitly "an estimate, not a billing-exact figure" —
       `templates/partials/settings/display.html:15-24`, `assets/settings-display.js:17`
+  - **Deliberate divergence:** the React pane defaults this **OFF**. The toggle now governs only the
+    per-turn transcript meta line's cost segment, whose two siblings (Transcript → Round timings,
+    Transcript → Token counts) are also opt-in; the footer status strip's session-total cost shows
+    unconditionally. The `serf.prefs.showCost` key name and `"1"/"0"` encoding are unchanged, so a
+    browser that has ever toggled the switch keeps its stored value.
 - [ ] Static label spans match computed defaults pre-JS ("OFF" for enterToSend, "ON" for showCost) —
       `templates/partials/settings/display.html:10,20`
 - [ ] enterToSend change: persist, sync label, call `applyComposerKeybindHints()`, toast "Settings

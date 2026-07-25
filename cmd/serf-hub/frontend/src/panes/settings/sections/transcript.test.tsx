@@ -48,9 +48,10 @@ function renderWithToasts() {
   );
 }
 
-test("all 4 toggles default to unchecked", () => {
+test("every toggle defaults to unchecked", () => {
   renderWithToasts();
   expect(screen.getByRole("switch", { name: "Round timings" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.getByRole("switch", { name: "Token counts" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "Hook exits (all)" }).getAttribute("aria-checked")).toBe("false");
   expect(screen.getByRole("switch", { name: "Hook exits (normal only)" }).getAttribute("aria-checked")).toBe("false");
   // Sentence-case fix: legacy copy is "Prompt Loaded" (Title Case), which
@@ -59,7 +60,7 @@ test("all 4 toggles default to unchecked", () => {
   expect(screen.getByRole("switch", { name: "Prompt loaded" }).getAttribute("aria-checked")).toBe("false");
 });
 
-test("toggling Round timings persists independently of the other 3 and toasts Settings saved", async () => {
+test("toggling Round timings persists independently of the others and toasts Settings saved", async () => {
   const user = userEvent.setup();
   renderWithToasts();
 
@@ -67,10 +68,25 @@ test("toggling Round timings persists independently of the other 3 and toasts Se
 
   expect(prefsStore.getState().transcript).toEqual({
     roundTimings: true,
+    tokenCounts: false,
     hookExitsAll: false,
     hookExitsNormal: false,
     promptLoaded: false,
   });
+  expect(await screen.findByText("Settings saved")).toBeTruthy();
+});
+
+// Token counts and Round timings gate two SEPARATE segments of the per-turn
+// transcript meta line, so neither may imply the other.
+test("toggling Token counts persists under its own key without switching Round timings on", async () => {
+  const user = userEvent.setup();
+  renderWithToasts();
+
+  await user.click(screen.getByRole("switch", { name: "Token counts" }));
+
+  expect(prefsStore.getState().transcript.tokenCounts).toBe(true);
+  expect(prefsStore.getState().transcript.roundTimings).toBe(false);
+  expect(localStorage.getItem("serf.prefs.transcriptTokenCounts")).toBe("1");
   expect(await screen.findByText("Settings saved")).toBeTruthy();
 });
 

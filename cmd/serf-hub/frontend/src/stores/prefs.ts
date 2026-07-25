@@ -14,7 +14,17 @@
 // (cross-wave contract break)") fixed readBool/writeBool back from a brief
 // "true"/"false" regression. Never repeat it - the key names and encoding
 // are permanent, not just this store's own choice, the way every other key
-// below is.
+// below is. The PIN covers the key NAME and the value ENCODING; a default
+// (what an unset key reads as) is a product decision and stays free to
+// change - a browser with a stored "1"/"0" is unaffected either way.
+//
+// transcript.roundTimings / transcript.tokenCounts / showCost each gate one
+// segment of the per-turn transcript meta line (TurnSeparator: duration,
+// token counts, cost). All three default OFF: the transcript is for prose
+// and tool calls, and the session Details panel already carries the exact
+// figures. The footer status strip's session-total cost is NOT gated by
+// showCost - that is the glance-level supervisory number, not per-turn
+// clutter.
 //
 // Hydrated once from localStorage at module load (mirroring every other
 // store's singleton-at-import-time shape - connection.ts/threads.ts/
@@ -67,7 +77,7 @@ import { createStore } from "zustand/vanilla";
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";
 export type FontSizePref = "s" | "m" | "l" | "xl";
-export type TranscriptStatusKey = "roundTimings" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
+export type TranscriptStatusKey = "roundTimings" | "tokenCounts" | "hookExitsAll" | "hookExitsNormal" | "promptLoaded";
 export type NotificationKey = "title" | "favicon" | "os" | "sound";
 export type NotificationsLoudScopePref = "asks" | "all";
 
@@ -205,6 +215,7 @@ const LOUD_SCOPE_VALUES: readonly NotificationsLoudScopePref[] = ["asks", "all"]
 // (never one shared JSON blob), per this file's own top comment.
 const TRANSCRIPT_KEY_NAMES: Record<TranscriptStatusKey, string> = {
   roundTimings: "transcriptRoundTimings",
+  tokenCounts: "transcriptTokenCounts",
   hookExitsAll: "transcriptHookExitsAll",
   hookExitsNormal: "transcriptHookExitsNormal",
   promptLoaded: "transcriptPromptLoaded",
@@ -220,6 +231,7 @@ const NOTIFICATION_KEY_NAMES: Record<NotificationKey, string> = {
 function loadTranscript(): Record<TranscriptStatusKey, boolean> {
   return {
     roundTimings: readBool(TRANSCRIPT_KEY_NAMES.roundTimings, false),
+    tokenCounts: readBool(TRANSCRIPT_KEY_NAMES.tokenCounts, false),
     hookExitsAll: readBool(TRANSCRIPT_KEY_NAMES.hookExitsAll, false),
     hookExitsNormal: readBool(TRANSCRIPT_KEY_NAMES.hookExitsNormal, false),
     promptLoaded: readBool(TRANSCRIPT_KEY_NAMES.promptLoaded, false),
@@ -333,7 +345,7 @@ function loadInitialState(): Omit<
     fontSize,
     transcript: loadTranscript(),
     enterToSend: readBool("enterToSend", false),
-    showCost: readBool("showCost", true),
+    showCost: readBool("showCost", false),
     notifications: loadNotifications(),
     notificationsLoudScope: readEnum("notificationsLoudScope", LOUD_SCOPE_VALUES, "asks"),
   };

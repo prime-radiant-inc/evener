@@ -54,8 +54,8 @@ export function DisplaySection() {
           }}
         />
         <p className={CLASS.help}>
-          Default on. Shows an estimated ~$ cost next to token counts, from catalog pricing — an estimate, not a
-          billing-exact figure.
+          Default off. Shows each round's estimated cost under the round, from catalog pricing — an estimate, not a
+          billing-exact figure. The session's total cost always shows in the footer.
         </p>
       </div>
     </div>

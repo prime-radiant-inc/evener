@@ -17,7 +17,12 @@ interface ToggleSpec {
 }
 
 const TOGGLES: ToggleSpec[] = [
-  { key: "roundTimings", label: "Round timings", help: "Show per-round timing summaries in the transcript." },
+  { key: "roundTimings", label: "Round timings", help: "Show how long each round took, under the round." },
+  {
+    key: "tokenCounts",
+    label: "Token counts",
+    help: "Show each round's input and output token counts, under the round.",
+  },
   { key: "hookExitsAll", label: "Hook exits (all)", help: "Show every hook exit line, including non-zero exits." },
   {
     key: "hookExitsNormal",
@@ -35,10 +40,10 @@ const TOGGLES: ToggleSpec[] = [
 ];
 
 /**
- * Settings -> Transcript (parity-m7-settings.md §4): 4 independent
+ * Settings -> Transcript (parity-m7-settings.md §4): independent
  * boolean toggles, all default off, localStorage-only (no wire access).
- * Rendered from one spec array rather than 4 near-identical blocks - the
- * legacy's 4 checkbox handlers are otherwise byte-identical modulo their
+ * Rendered from one spec array rather than near-identical blocks - the
+ * legacy's checkbox handlers are otherwise byte-identical modulo their
  * key/label/help, which prefs.ts's own setTranscriptStatus(key, value)
  * already generalizes on the store side.
  */
