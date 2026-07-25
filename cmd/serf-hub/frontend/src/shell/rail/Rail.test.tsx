@@ -347,9 +347,40 @@ describe("in-sidebar chrome (c8gt)", () => {
     await screen.findByText(/no sessions yet/i);
     const search = screen.getByTestId("rail-search");
     expect(search.getAttribute("data-search-trigger")).not.toBeNull(); // wired to the palette handler
-    expect(screen.getByText("⌘K")).toBeTruthy();
+    // Icon-only, so its accessible name is the whole affordance: an
+    // unlabelled ⌕ glyph would leave screen readers and tooltip-less
+    // discovery with nothing at all.
+    expect(search.getAttribute("aria-label")).toBe("Search");
     expect(screen.getByRole("button", { name: /new session/i })).toBeTruthy();
     expect(screen.getByTestId("rail-settings")).toBeTruthy();
+  });
+
+  test("search rides in the brand row rather than claiming a header row of its own", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+    renderRail();
+    await screen.findByText(/no sessions yet/i);
+    // The rail is 280px wide and every header row costs the session tree
+    // vertical space, so the palette opener shares the brand row's spare
+    // width instead of stacking under it.
+    const brandRow = screen.getByTestId("rail-brand");
+    expect(brandRow.contains(screen.getByTestId("rail-search"))).toBe(true);
+  });
+
+  test("hovering search reveals a Search tooltip, so the bare ⌕ glyph is never the only cue", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY_WIRE_TREE));
+      renderRail();
+      await vi.waitFor(() => expect(screen.getByText(/no sessions yet/i)).toBeTruthy());
+      fireEvent.mouseEnter(screen.getByTestId("rail-search"));
+      // Tooltip's own 300ms show delay (widgets/tooltip/index.tsx).
+      act(() => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(screen.getByRole("tooltip").textContent).toBe("Search");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("renders the SAME full chrome with no host props (drawer-hosted parity)", async () => {
