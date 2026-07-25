@@ -42,6 +42,11 @@ export interface TreeNode {
   rename?: boolean;
   live: boolean;
   ask_pending?: boolean;
+  // True for a session that has never run: no model response, no accepted
+  // input. It rides beside `state` rather than inside it, because a dormant
+  // session reports state "idle" - exactly what a session that ran and went
+  // quiet reports. See hubcore.TreeNode.Dormant for why it is not a state.
+  dormant?: boolean;
   updated_at?: string;
   age?: string;
   model?: string;

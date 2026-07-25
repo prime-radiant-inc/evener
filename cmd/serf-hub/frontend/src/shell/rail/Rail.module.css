@@ -439,6 +439,22 @@
   font-size: var(--font-size-caption);
 }
 
+/* Third occupant of the same right slot as .time and the Badge (RailRow.tsx
+ * shows exactly one of the three): the words a session that has never run
+ * shows INSTEAD of an age. Set in the UI sans face rather than .time's mono,
+ * because this is a sentence, not a measurement - and in --ink-mid rather than
+ * .time's --ink-low, because a glanceable age can sit below the AA text floor
+ * and a phrase the reader has to actually read cannot. Deliberately NOT a
+ * semantic hue: a session nobody has started yet is not an error and not an
+ * appeal for attention. */
+.notStarted {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 .star {
   flex: none;
   color: var(--ink-mid);
