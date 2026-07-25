@@ -5,6 +5,7 @@ import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { Toast } from "../../widgets";
+import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import Spawn from "./Spawn";
 
 class MemoryStorage {
@@ -121,6 +122,14 @@ async function setWorkingDir(user: ReturnType<typeof userEvent.setup>, path: str
   await user.keyboard(`${path}{Enter}`);
 }
 
+/** Waits for the mount-time catalogs to land. The Advanced-options toggle is
+ * the sentinel because it renders unconditionally and is not itself one of the
+ * awaited catalogs' outputs - unlike the harness select, which now lives INSIDE
+ * that collapsed panel and so isn't in the tree at rest. */
+async function settled(): Promise<void> {
+  await screen.findByRole("button", { name: "Advanced options" });
+}
+
 let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeAll(() => {
@@ -151,13 +160,127 @@ afterEach(() => {
   window.history.pushState({}, "", "/");
 });
 
-test("renders the five-field launch bar", async () => {
+// --- the page's shape ------------------------------------------------------
+//
+// Prompt card first, taking the page's slack; ONE configuration row beneath it
+// (working directory, model, effort); harness in Advanced options.
+
+test("the prompt card leads the page, ahead of every configuration field", async () => {
   renderSpawn(readyClient());
-  expect(await screen.findByLabelText("Harness")).toBeTruthy();
-  expect(screen.getByText("Model")).toBeTruthy();
-  expect(screen.getByLabelText("Reasoning effort")).toBeTruthy();
+  await settled();
+
+  const card = screen.getByTestId("spawn-prompt-card");
+  const dir = screen.getByLabelText("Working directory");
+  // DOCUMENT_POSITION_FOLLOWING (4): the directory field comes AFTER the card in
+  // document order - see MDN's Node.compareDocumentPosition bitmask.
+  expect(card.compareDocumentPosition(dir) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+test("the configuration row is working directory, model and effort - and nothing else", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
   expect(screen.getByLabelText("Working directory")).toBeTruthy();
-  expect(screen.getByLabelText("Branch")).toBeTruthy();
+  expect(screen.getByText("Model")).toBeTruthy();
+  expect(screen.getByLabelText("Effort")).toBeTruthy();
+});
+
+// Harness moves into Advanced options: most installs have exactly one, so a
+// field whose answer is always "serf" shouldn't lead the page. It stays fully
+// functional there - the switch still blanks a non-serf model (see the harness
+// tests in harnessModels.test.ts for that rule's own coverage).
+test("harness moved into Advanced options, and still works there", async () => {
+  const user = userEvent.setup();
+  renderSpawn(readyClient());
+  await settled();
+
+  expect(screen.queryByLabelText("Harness")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  await user.selectOptions(harness, "codex-cli");
+  expect(harness.value).toBe("codex-cli");
+});
+
+// "Start", not "Spawn": spawn is implementation vocabulary, and the rail's own
+// button already says "New session". The page title matches the verb.
+test("the primary verb is Start, in the card's own corner, and the page is titled to match", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  const start = screen.getByTestId("spawn-submit");
+  expect(start.textContent).toBe("Start");
+  expect(screen.getByRole("heading", { name: "Start an agent" })).toBeTruthy();
+  // Inside the card, not in a detached actions strip below it.
+  expect(screen.getByTestId("spawn-prompt-card").contains(start)).toBe(true);
+  expect(screen.queryByRole("button", { name: "Spawn" })).toBeNull();
+});
+
+// The dormant-start rule rides in the placeholder rather than a separate
+// instruction line above the form: it is a fact about THIS field.
+test("the dormant hint lives in the placeholder, not a standalone instruction line", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  const prompt = screen.getByRole("textbox", { name: "Prompt" });
+  expect(prompt.getAttribute("placeholder")).toBe("What should the agent work on? Leave blank to start it dormant.");
+  expect(screen.queryByText(/leave the prompt blank/i)).toBeNull();
+});
+
+// Writing the prompt is what starting an agent IS, so the caret starts there
+// rather than on whichever field happens to be first in the DOM.
+test("the prompt field is focused on mount", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Prompt" }));
+});
+
+// The card and the session composer are the SAME object: both render
+// widgets/promptcard. The class on the rendered card is the proof that reaches
+// across both files (Composer.test.tsx asserts the mirror image).
+test("the prompt card IS the shared PromptCard widget, not a lookalike", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(screen.getByTestId("spawn-prompt-card").className.split(" ")).toContain(promptCardStyles.card);
+});
+
+// The prompt takes the page's vertical slack via its own min-height, which is
+// what closes the dead gap that used to sit under the actions row.
+test("the prompt field opens at a size worth writing in, not one line", async () => {
+  renderSpawn(readyClient());
+  await settled();
+  expect(
+    (screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).style.getPropertyValue(
+      "--textarea-min-lines",
+    ),
+  ).toBe("6");
+});
+
+// --- branch: a read-only HEAD readout on the directory row -----------------
+
+test("branch renders as a suffix on the directory row, not as an editable peer field", async () => {
+  renderSpawn(readyClient());
+  await settled();
+
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("main"));
+  // Not a text box: it is a readout of the directory's HEAD, and the wire has
+  // nowhere to send a branch anyway (startThread.ts's own branch note).
+  expect(screen.queryByLabelText("Branch")).toBeNull();
+  expect(screen.getByTestId("spawn-branch").querySelector("input")).toBeNull();
+});
+
+test("the branch readout is absent when the working directory has no resolvable HEAD", async () => {
+  // The default fetch mock 404s everything except /api/git/head; override it so
+  // HEAD resolution fails soft to "" the way branch.ts documents.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response)),
+  );
+  localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/plain");
+  renderSpawn(readyClient());
+  await settled();
+
+  await waitFor(() => expectWorkingDir("/tmp/plain"));
+  expect(screen.queryByTestId("spawn-branch")).toBeNull();
 });
 
 // The icon controls draw real SVG glyphs rather than bare "+"/"×" characters,
@@ -165,7 +288,7 @@ test("renders the five-field launch bar", async () => {
 // IconButton's label either way.
 test("the attach control draws an SVG glyph, not a literal text character", async () => {
   renderSpawn(readyClient());
-  await screen.findByLabelText("Harness");
+  await settled();
 
   const attach = screen.getByRole("button", { name: "Attach image" });
   expect(attach.querySelector("svg")).toBeTruthy();
@@ -175,7 +298,7 @@ test("the attach control draws an SVG glyph, not a literal text character", asyn
 test("Access mode moved from the top-level bar into Advanced options (9ct0)", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient());
-  await screen.findByLabelText("Harness");
+  await settled();
 
   expect(screen.queryByLabelText("Access mode")).toBeNull();
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
@@ -186,13 +309,13 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
   await setWorkingDir(user, "/tmp/project");
   await user.click(screen.getByRole("button", { name: "Advanced options" }));
   await user.selectOptions(screen.getByLabelText("Access mode"), "Read-only");
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
   const start = fake.calls.find((c) => c.method === "thread/start");
@@ -209,9 +332,9 @@ test("blocks an empty prompt with no attachment", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   expect(await screen.findByText(/prompt is empty/i)).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
@@ -312,7 +435,7 @@ test("kata 11ee: a navigation with no ?dir=/?prompt= at all leaves already-typed
 test("stamps the last-working-directory global when the browse panel closes", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient((f) => f.on("serf/paths/complete", () => ({ data: ["/tmp/project/src"] }))));
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.click(workingDir());
   await screen.findByRole("combobox", { name: "Path" });
@@ -332,7 +455,7 @@ test("the browse panel opens on the stamped last-working-directory global", asyn
   localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
   const complete = vi.fn((_params: { prefix: string }) => ({ data: ["/home/me/lastone/src"] }));
   renderSpawn(readyClient((f) => f.on("serf/paths/complete", complete)));
-  await screen.findByLabelText("Harness");
+  await settled();
   // Nothing else may have seeded the field: the fallback is only consulted
   // when the value is empty, and an empty field shows its placeholder.
   expectWorkingDir("Working directory");
@@ -356,7 +479,7 @@ test("survives a null data payload from either list RPC", async () => {
       f.on("serf/paths/complete", () => nulled);
     }),
   );
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.click(workingDir());
 
@@ -375,11 +498,11 @@ test("offers to create a missing directory, then creates it and spawns", async (
     }));
   });
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
   await setWorkingDir(user, "/tmp/new");
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
 
@@ -392,9 +515,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   // doSpawn's busy reset is shared by both callers - handleCreateConfirm's
   // success path re-enables the button the same way handleSpawn's does.
-  await waitFor(() =>
-    expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false),
-  );
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 });
 
 test("aborts with the validator message for a non-fixable working dir", async () => {
@@ -403,17 +524,17 @@ test("aborts with the validator message for a non-fixable working dir", async ()
     f.on("serf/path/validate", () => ({ path: "/etc/hosts", valid: false, error: "path is not a directory" }));
   });
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "go");
   await setWorkingDir(user, "/etc/hosts");
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   expect(await screen.findByText("path is not a directory")).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
   // Failure paths already reset busy (verified, unchanged by this fix) - the
   // button must stay usable so the user can correct the path and retry.
-  expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {
@@ -480,7 +601,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
   await setWorkingDir(user, "/tmp/project");
@@ -489,7 +610,7 @@ test("resets the prompt and attachments after a successful spawn, but keeps stic
   await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 
@@ -509,7 +630,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
     });
   });
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   const prompt = screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement;
   await user.type(prompt, "do the thing");
@@ -517,7 +638,7 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   await waitFor(() => expect(prompt.value).toBe("do the thing[image 1]"));
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
 
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   await screen.findByText(/spawn failed/i);
   expect(prompt.value).toBe("do the thing[image 1]");
@@ -525,23 +646,23 @@ test("a failed spawn leaves the prompt and attachment staged (failure paths keep
   // handleSpawn's catch already resets busy on a thrown startThread (same
   // class of bug, verified already-fixed here - the button must stay usable
   // so the user can retry without reloading).
-  expect((screen.getByRole("button", { name: "Spawn" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
 
-test("re-enables the Spawn button after a successful spawn (post-success state hygiene, same class as §1.14)", async () => {
+test("re-enables the Start button after a successful start (post-success state hygiene, same class as §1.14)", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
-  await screen.findByLabelText("Harness");
+  await settled();
 
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
-  await user.click(screen.getByRole("button", { name: "Spawn" }));
+  await user.click(screen.getByTestId("spawn-submit"));
 
   await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
 
-  // Queried by a name that matches either label so a still-stuck "Spawning…"
-  // fails on the assertions below with a clear message, not a failed query.
-  const button = screen.getByRole("button", { name: /^spawn/i }) as HTMLButtonElement;
-  expect(button.textContent).toBe("Spawn");
+  // Addressed by testid so a still-stuck "Starting…" fails on the label
+  // assertion below with a clear message rather than on a failed query.
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.textContent).toBe("Start");
   expect(button.disabled).toBe(false);
 });
