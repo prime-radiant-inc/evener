@@ -135,6 +135,76 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 		}
 	})
 
+	// web-preflight's whole value is the builds it REFUSES: many agent
+	// worktrees symlink node_modules to one shared install, and npm ci deletes
+	// an existing node_modules before installing, so through a symlink it
+	// empties that install for every worktree at once. Both cases below are
+	// green under the old unguarded recipe.
+	t.Run("build-web/refuses-npm-ci-through-a-symlink", func(t *testing.T) {
+		fixture := newBuildWebFixture(t)
+		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+
+		// A shared install standing in for another worktree's node_modules,
+		// backdated so the -nt gate would fire npm ci and destroy it.
+		shared := filepath.Join(fixture.root, "shared-node-modules")
+		writeTestFile(t, filepath.Join(shared, "left-behind.txt"), []byte("shared\n"), 0o644)
+		if err := os.Symlink(shared, filepath.Join(frontendDir, "node_modules")); err != nil {
+			t.Fatalf("symlink node_modules: %v", err)
+		}
+		backdated := time.Now().Add(-1 * time.Hour)
+		if err := os.Chtimes(shared, backdated, backdated); err != nil {
+			t.Fatalf("backdate shared install: %v", err)
+		}
+
+		command := exec.Command("make", "LDFLAGS=make-test-flags", "build-web")
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("make build-web succeeded through a stale symlinked node_modules, want refusal; output = %s", output)
+		}
+		if !strings.Contains(string(output), "symlink") {
+			t.Fatalf("refusal does not explain the symlink, so the reader cannot act on it; output = %s", output)
+		}
+
+		// The point of refusing: the other worktrees' install survives.
+		if _, err := os.Stat(filepath.Join(shared, "left-behind.txt")); err != nil {
+			t.Fatalf("shared install was destroyed despite the refusal: %v", err)
+		}
+		_, _, logData := countNpmInvocations(t, fixture.logPath)
+		if strings.Contains(string(logData), "npm ci") {
+			t.Fatalf("npm ci ran against a symlinked node_modules; log = %q", logData)
+		}
+	})
+
+	// An empty node_modules that is merely NEWER than the lockfile skips npm ci
+	// on the -nt gate, so without a health check the build proceeds against a
+	// toolchain that isn't there.
+	t.Run("build-web/refuses-an-install-with-no-real-tsc", func(t *testing.T) {
+		fixture := newBuildWebFixture(t)
+		frontendDir := filepath.Join(fixture.root, "cmd", "serf-hub", "frontend")
+		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+		if err := os.MkdirAll(filepath.Join(frontendDir, "node_modules"), 0o755); err != nil {
+			t.Fatalf("mkdir empty node_modules: %v", err)
+		}
+		backdated := time.Now().Add(-1 * time.Hour)
+		if err := os.Chtimes(filepath.Join(frontendDir, "package-lock.json"), backdated, backdated); err != nil {
+			t.Fatalf("backdate package-lock.json: %v", err)
+		}
+
+		command := exec.Command("make", "LDFLAGS=make-test-flags", "build-web")
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("make build-web succeeded with an empty node_modules, want refusal; output = %s", output)
+		}
+		if !strings.Contains(string(output), "tsc") {
+			t.Fatalf("refusal does not name the toolchain check that failed; output = %s", output)
+		}
+	})
+
 	// dist and install both gained the build-web prerequisite, so the
 	// dependency graph itself (not just build/build-hub) must order the web
 	// build before the hub go build. make -n prints recipes without running
@@ -224,10 +294,17 @@ func installFrontendToolchainStubs(t *testing.T, fixture runtimeBuildFixture) {
 	if err := os.MkdirAll(filepath.Join(fixture.root, "cmd", "serf-hub", "frontend"), 0o755); err != nil {
 		t.Fatalf("mkdir frontend: %v", err)
 	}
+	// The fake npm ci lays down the one thing web-preflight inspects to prove
+	// the install is real: a node_modules/.bin/tsc that answers --version the
+	// way the TypeScript compiler does. An empty node_modules is exactly the
+	// broken state the preflight exists to catch, so a stub that only mkdir'd
+	// the directory would (correctly) fail the build.
 	writeTestFile(t, filepath.Join(fixture.fakeBin, "npm"), []byte(`#!/bin/sh
 printf 'npm %s\n' "$*" >> "$SERF_TEST_GO_LOG"
 if [ "$1" = "ci" ]; then
-  mkdir -p node_modules
+  mkdir -p node_modules/.bin
+  printf '#!/bin/sh\necho "Version 6.0.3"\n' > node_modules/.bin/tsc
+  chmod +x node_modules/.bin/tsc
 fi
 exit 0
 `), 0o755)

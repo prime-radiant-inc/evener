@@ -315,10 +315,15 @@ func checkCompletePaths_DotRunsOnRealTree(t *testing.T) {
 			want:         []string{"...odd" + sep, ".hidden-dir" + sep, ".hidden-file", ".other-hidden" + sep},
 		},
 		{
-			// Already correct before the fix, and must stay so.
+			// Already correct before the fix, and must stay so. Both dotted
+			// entries match: ".hidden-dir" on the prefix rule, ".other-hidden"
+			// on directoryMatchScore's subsequence fallback (the "." then the
+			// "h" of "hidden"), which ranks it below the prefix hit. The dot
+			// filter opens the dotted names up to the same scoring every other
+			// query gets - it does not narrow to a single answer.
 			name:   "one more character narrows within the dotted names",
 			prefix: home + sep + ".h",
-			want:   []string{".hidden-dir"},
+			want:   []string{".hidden-dir", ".other-hidden"},
 		},
 		{
 			// A real climb, not a filter: the response names home itself (the
