@@ -3,80 +3,32 @@
  * diagnostics list are all passive metadata, so they stay ink-neutral. */
 
 /* Floating combobox trigger (4y12): the chip itself IS the button - no
- * separate "Change model" button beside it. Mirrors ModelSwitch's own
- * trigger (panes/session/chrome/modelswitch.module.css's .trigger/.chevron/
- * .srOnly) so the in-session switcher and this widget share one interaction
- * shape. */
-/* Control-shaped (32px + one edge border, matching Input/Select) so the
- * trigger scans as one of the form's controls between the Harness and
- * Reasoning selects. It FILLS its container the way Input/Select do
- * (width: 100%, box-sizing so the border stays inside that width) rather
- * than hugging the model name — a form control whose width tracked its
- * value read as a stray tag wedged between two full-width fields. The
- * in-session ModelSwitch keeps its own quiet chrome-style trigger; this is
- * the form-context variant of the same interaction. */
+ * separate "Change model" button beside it. Composed from the shared
+ * picker-trigger box (widgets/internal/fieldTrigger.module.css) so this
+ * widget and the path field stay one object rather than two copies; only the
+ * sans face is this widget's own, since a button does not inherit the body
+ * font and a model id reads as prose, not as a path. The in-session
+ * ModelSwitch keeps its own quiet chrome-style trigger; this is the
+ * form-context variant of the same interaction. */
 .trigger {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  box-sizing: border-box;
-  width: 100%;
-  height: 32px;
-  padding: 0 var(--space-3);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-1);
-  cursor: pointer;
-  /* Matches Input/Select's own field text, since the value is now plain text
-   * in the field rather than a Chip with its own border and caption size. */
-  color: var(--ink-hi);
+  composes: trigger from "../internal/fieldTrigger.module.css";
   font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  text-align: left;
 }
 
-/* The current value, filling the field so the chevron stays at the trailing
- * edge. Long qualified ids ellipsize rather than widening the control. */
 .triggerValue {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: value from "../internal/fieldTrigger.module.css";
 }
 
-/* No model chosen: the harness default, in placeholder ink like Input's own. */
 .triggerDefault {
-  color: var(--ink-low);
-}
-
-.trigger:hover {
-  background: var(--surface-2);
-}
-
-.trigger:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  composes: default from "../internal/fieldTrigger.module.css";
 }
 
 .chevron {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
+  composes: chevron from "../internal/fieldTrigger.module.css";
 }
 
-/* Standard visually-hidden recipe (see modelswitch.module.css's own copy of
- * this comment) - names the trigger's action for assistive tech without
- * hiding the chip's own visible text. */
 .srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+  composes: srOnly from "../internal/fieldTrigger.module.css";
 }
 
 /* The floating panel's own content padding/sizing - widgets/popover's shared
