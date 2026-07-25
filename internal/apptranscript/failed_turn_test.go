@@ -135,13 +135,18 @@ func TestTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TurnsFromFile: %v", err)
 	}
-	var failed *appwire.Turn
-	for i := range turns {
-		if turns[i].Status == appwire.TurnStatusFailed {
-			failed = &turns[i]
+	// By value with a found flag, not a pointer: staticcheck cannot see that
+	// t.Fatalf terminates, so a nil-check-then-dereference here reads to it as
+	// a possible nil deref (SA5011). A zero Turn fails the assertions below
+	// loudly rather than panicking, so nothing is lost.
+	var failed appwire.Turn
+	var found bool
+	for _, turn := range turns {
+		if turn.Status == appwire.TurnStatusFailed {
+			failed, found = turn, true
 		}
 	}
-	if failed == nil {
+	if !found {
 		t.Fatalf("no failed turn in %d reloaded turns; a failed turn must not read as completed", len(turns))
 	}
 	if failed.Error == nil {
