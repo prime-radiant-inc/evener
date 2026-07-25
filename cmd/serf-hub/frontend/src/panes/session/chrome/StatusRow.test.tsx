@@ -560,9 +560,9 @@ test("shows no queue readout when the wire carries no queue at all", () => {
 
 // --- the ended state: an epitaph, not a cockpit ------------------------------
 //
-// Nothing on a finished session's strip can change again, so the live row of
-// instruments is replaced by one summary line. "notLoaded" is the shape a cold
-// exited serf session actually arrives in (cmd/serf-hub/app_threadread.go's
+// A finished session's work and cost are settled, so the live row of instruments
+// is replaced by one summary line. "notLoaded" is the shape a cold exited serf
+// session actually arrives in (cmd/serf-hub/app_threadread.go's
 // pastEntryThread), which is why it counts as ended here.
 
 const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
@@ -581,16 +581,31 @@ test.each(ENDED_STATUSES)("a %s session's strip is one summary line of model, wo
       now={1_000_000}
     />,
   );
-  expect(screen.getByTestId("status-row-summary-model").textContent).toBe("anthropic/claude-opus-5");
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
   expect(screen.getByTestId("status-row-work-time").textContent).toBe("14m worked");
   expect(screen.getByTestId("status-row-cost").textContent).toBe("~$1.83");
 });
 
-// No switcher, no gauge, no meter: a finished session's model can't be changed
-// and its context occupancy was never measured (the hub builds an exited
-// session's thread from persisted SessionMeta, which carries no context
-// figures).
-test("an ended session's strip carries no live instruments - no switcher, no gauge, no effort control", () => {
+// The model is the ONE live thing left on a finished session's strip: it can be
+// sent to again (the hub advertises Send and ChangeModel for a cold exited
+// thread and resumes it behind either), so the model its next turn runs on is
+// still a choice a user must be able to make - without first knowing that
+// "running" is a state a session has. The gauge and the effort control are not:
+// context occupancy was never measured for an exited session (the hub builds its
+// thread from persisted SessionMeta, which carries no context figures).
+test("an ended session keeps a WORKING model switch - its next turn's model is still a choice", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "notLoaded" }, modelProvider: "anthropic", model: "claude-opus-5" })}
+      now={1_000_000}
+    />,
+  );
+  const trigger = screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
+  expect(trigger.disabled).toBe(false);
+});
+
+test("an ended session's strip still drops the dead instruments - no gauge, no effort control", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -604,7 +619,6 @@ test("an ended session's strip carries no live instruments - no switcher, no gau
       now={1_000_000}
     />,
   );
-  expect(screen.queryByTestId("model-switch-trigger")).toBeNull();
   expect(screen.queryByRole("meter")).toBeNull();
   expect(screen.queryByRole("combobox", { name: /reasoning effort/i })).toBeNull();
 });

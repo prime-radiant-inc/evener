@@ -28,7 +28,6 @@ import { type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, Popover, 
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
-import { isTurnActive } from "../composer/submitRouting";
 import styles from "./modelswitch.module.css";
 import { modelLabel } from "./statusFormat";
 
@@ -57,11 +56,17 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
   const [catalog, setCatalog] = useState<ModelCatalog | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  // A model switch mid-turn is refused by the daemon, so the trigger follows
-  // the LIVE turn state, not only the static changeModel capability - the same
-  // isTurnActive predicate Composer's own Stop/Steer gate uses.
-  const busy = isTurnActive(model.status.type, model.activeTurnId);
-  const disabled = busy || !model.capabilities.changeModel;
+  // changeModel is the ONLY gate, and it is the wire's own answer: the hub
+  // advertises it for a cold exited thread as well as a live one (cmd/serf-hub/
+  // app_threadread.go's pastEntryThread) and resumes the session behind
+  // thread/model/set when it has to (app_model.go's setThreadModelWithResume),
+  // so a user never has to know whether their session is "running" to pick its
+  // next model. The turn-in-flight refusal stays where it belongs - the daemon
+  // answers Conflict for a switch mid-turn (server/appwire_runtime.go's
+  // handleAppThreadModelSet) and handlePick surfaces that as a toast. Gating on
+  // a client-side turn predicate here made the client guess at an answer only
+  // the daemon has, and it took the switch away from every cold session too.
+  const disabled = !model.capabilities.changeModel;
 
   async function openPicker() {
     if (disabled) return;

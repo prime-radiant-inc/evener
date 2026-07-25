@@ -115,17 +115,73 @@ test("the trigger is disabled when the thread's changeModel capability is unavai
   expect(trigger().disabled).toBe(true);
 });
 
-// Busy-gate: a model switch mid-turn is refused by the daemon, so the trigger
-// follows the LIVE turn state (isTurnActive - the same predicate Composer's
-// Stop/Steer gate uses), not only the static changeModel capability.
-test("the trigger is disabled while a turn is active, even when changeModel is capable", () => {
-  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
-  expect(trigger().disabled).toBe(true);
+// The capability is the ONLY gate. Whether a turn is in flight is not a fact
+// about whether this session's model can be changed - the wire answers that
+// question itself, for a running session and a cold exited one alike, and a
+// user should not have to know or care which state theirs is in.
+test.each([
+  ["a live turn is in flight", { status: { type: "active" }, activeTurnId: "turn_1" }],
+  ["the session already exited", { status: { type: "notLoaded" } }],
+  ["the session is idle", {}],
+] as const)("the trigger is enabled while changeModel is capable, even when %s", (_case, overrides) => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel(overrides)} />);
+  expect(trigger().disabled).toBe(false);
 });
 
-test("the trigger is enabled when idle and changeModel-capable", () => {
-  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  expect(trigger().disabled).toBe(false);
+// A mid-turn switch is the one case the daemon itself refuses (Conflict, see
+// server/appwire_runtime.go's handleAppThreadModelSet). The refusal belongs to
+// the wire and surfaces as a toast, not as a control the user can't press -
+// pre-emptively disabling it was the client guessing at an answer only the
+// daemon has, and it took the switch away from every cold session too.
+test("a mid-turn refusal surfaces as a toast rather than a disabled trigger", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  fake.on("thread/model/set", () => {
+    throw new Error("turn turn_1 is active");
+  });
+
+  render(
+    <>
+      <ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />
+      <Toast />
+    </>,
+  );
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+
+  await screen.findByText(/turn turn_1 is active/i);
+});
+
+// A cold exited session takes the SAME wire call as a live one: the hub resumes
+// the session behind thread/model/set and retries (cmd/serf-hub/app_model.go's
+// setThreadModelWithResume), so the choice is recorded server-side and there is
+// no client-side pending-model state to hold.
+test("a cold exited session sends the same thread/model/set - the hub owns the resume", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("model/list", () => modelListResponse());
+  let called: unknown;
+  fake.on("thread/model/set", (params) => {
+    called = params;
+    return {};
+  });
+
+  render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "notLoaded" } })} />);
+  await user.click(trigger());
+  const combobox = await screen.findByRole("combobox");
+  await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
+  await user.clear(combobox);
+  await user.keyboard("gpt");
+  await waitFor(() => expect(screen.getByRole("option", { name: /gpt-5\.5/i })).toBeTruthy());
+  await user.click(screen.getByRole("option", { name: /gpt-5\.5/i }));
+
+  await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {
