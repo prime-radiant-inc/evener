@@ -15,9 +15,20 @@ import { threadsStore, useThreadsStore } from "../stores/threads";
 import styles from "./DockHost.module.css";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
-import { type PanePanelParams, registerDockviewApi, useWorkspaceStore, workspaceStore } from "./workspace";
+import {
+  type OpenPaneRecord,
+  type PanePanelParams,
+  registerDockviewApi,
+  useWorkspaceStore,
+  workspaceStore,
+} from "./workspace";
 
-const LAYOUT_STORAGE_KEY = "serf.workspace.layout.v1";
+// .v2, not .v1: a layout saved before the one-pane-per-main-group rule can
+// hold several panes in the main group, which the rule says is not a valid
+// layout. Bumping the key means such a value is simply never read again -
+// cheaper and more honest than migration code for a shape it was never tested
+// against (Jesse: "do not care about current local storage").
+const LAYOUT_STORAGE_KEY = "serf.workspace.layout.v2";
 // Coalesces a whole user gesture (a drag-resize fires onDidLayoutChange
 // many times a second; dockview's own doc comment on that event says as
 // much: "may be worth debouncing outputs") into one localStorage write,
@@ -84,6 +95,62 @@ function persistLayout(json: unknown): void {
   } catch {
     // Best-effort: a full quota (or Safari private-mode) must never be
     // fatal to the workspace itself, only to persistence across reloads.
+  }
+}
+
+// Turns a pane's logical slot (workspace.ts's one placement rule) into the
+// dockview addPanel `position` that realizes it.
+//
+//   main      -> to the LEFT of the secondary group when one exists, so the
+//                main slot stays the top-left one it has always been (the case
+//                after the main pane is closed and welcome relaunches, or after
+//                a real pane displaces welcome). With no secondary group there
+//                is nothing to anchor to and no position is needed: dockview
+//                creates the one group itself.
+//   secondary -> stack into the existing secondary group when there is one
+//                ("within"), otherwise split to the RIGHT of the main pane,
+//                which is what creates that group in the first place. This is
+//                what makes a third pane join the second's group rather than
+//                making a third column ("generally open in a group to the
+//                right", singular).
+function positionFor(
+  api: DockviewApi,
+  pane: OpenPaneRecord,
+): { position: { referencePanel: string; direction: "left" | "right" | "within" } } | Record<string, never> {
+  const openIds = new Set(api.panels.map((p) => p.id));
+  const others = workspaceStore.getState().panes.filter((p) => p.id !== pane.id && openIds.has(p.id));
+  const secondary = others.find((p) => p.slot === "secondary");
+  if (pane.slot === "main") {
+    return secondary ? { position: { referencePanel: secondary.id, direction: "left" } } : {};
+  }
+  if (secondary) return { position: { referencePanel: secondary.id, direction: "within" } };
+  const main = others.find((p) => p.slot === "main");
+  return main ? { position: { referencePanel: main.id, direction: "right" } } : {};
+}
+
+// The main slot is never left empty: with no main pane, welcome goes there.
+// The one predicate both callers share - the boot sequence (nothing routed and
+// nothing restored, or a saved layout that was itself empty) and the
+// per-close relaunch (the user closed the single main pane). openPane's own
+// placement rule is what actually puts it in the main slot: the slot is empty,
+// so the next pane opened takes it.
+function ensureMainPane(): void {
+  const ws = workspaceStore.getState();
+  if (ws.mainPane() === null) ws.openPane("welcome");
+}
+
+// A group shows tabs only when it holds more than one pane: a lone pane's tab
+// is a label for something already unambiguous, and the main group holds
+// exactly one pane by rule, so it never shows one at all (Jesse: "I despise
+// having the tab bar on the 'main' section of the screen"). dockview supports
+// this natively - each group's `header.hidden` is its own documented flag, and
+// it round-trips through toJSON/fromJSON as `hideHeader` - so this needs no
+// CSS of its own. Identity is not lost with the tab gone: every pane draws its
+// own PaneScaffold header, carrying the same title the tab would have.
+function syncGroupHeaders(api: DockviewApi): void {
+  for (const group of api.groups) {
+    const hidden = group.panels.length <= 1;
+    if (group.model.header.hidden !== hidden) group.model.header.hidden = hidden;
   }
 }
 
@@ -166,7 +233,7 @@ export function DockHost() {
           component: PANE_COMPONENT_KEY,
           title: paneFor(pane.type).title(pane.params, bootTitleCtx),
           params: panelParams,
-          ...(pane.beside ? { position: { referencePanel: pane.beside, direction: "right" as const } } : {}),
+          ...positionFor(api, pane),
         });
         pushedParamsRef.current.set(pane.id, pane.params);
       } else if (pushedParamsRef.current.get(pane.id) !== pane.params) {
@@ -182,6 +249,17 @@ export function DockHost() {
         pushedParamsRef.current.delete(panel.id);
       }
     }
+
+    // Every add/remove above can change a group's pane count, so the tab-bar
+    // rule is re-applied here rather than at each mutation site - one pass over
+    // the current groups, idempotent, no bookkeeping.
+    syncGroupHeaders(api);
+
+    // The main slot never sits empty: closing the one main pane relaunches
+    // welcome there rather than promoting something from the right-hand group
+    // (Jesse's call). ensureMainPane is the same predicate the boot fallback
+    // uses, so "the main slot is empty, put welcome in it" exists once.
+    ensureMainPane();
   }, [api, panes]);
 
   // Focus reconciliation: pushes workspace.ts's focusedPaneId into dockview
@@ -283,18 +361,27 @@ export function DockHost() {
     if (stored !== undefined) {
       workspaceStore.getState().restoreLayout(stored);
     }
+    // keepExistingFocus: the restored layout's own active tab wins over the
+    // address bar for a pane the layout ALREADY contains. On an ordinary
+    // reload the URL still names whichever pane the user first deep-linked
+    // to, which is usually not the tab they were last on - re-opening it
+    // focused made every reload snap focus back to that first pane, silently
+    // discarding the active tab dockview had faithfully persisted (verified
+    // live: the saved leaf's `activeView` was correct both before and after
+    // the reload; only the in-page focus was wrong). A deep link to a pane
+    // the saved layout does NOT contain still creates a pane, and openPane
+    // still focuses that - a genuinely new deep link is exactly the case
+    // that should win.
     for (const pane of routed) {
-      workspaceStore.getState().openPane(pane.type, pane.params);
+      workspaceStore.getState().openPane(pane.type, pane.params, { keepExistingFocus: true });
     }
 
-    // Backstop, unchanged from before: a blank dockview with no chrome of
-    // its own to open a new pane from is a dead end - covers both "nothing
-    // was ever routed AND nothing was saved" and "a restore succeeded but
-    // the saved layout was itself already empty" (every tab closed before
-    // the last save).
-    if (workspaceStore.getState().panes.length === 0) {
-      workspaceStore.getState().openPane("welcome");
-    }
+    // Backstop: a blank main slot with no chrome of its own to open a new pane
+    // from is a dead end - covers both "nothing was ever routed AND nothing
+    // was saved" and "a restore succeeded but the saved layout was itself
+    // already empty" (every tab closed before the last save). The same
+    // predicate the reconciliation effect applies per-close.
+    ensureMainPane();
 
     setApi(event.api);
   }
