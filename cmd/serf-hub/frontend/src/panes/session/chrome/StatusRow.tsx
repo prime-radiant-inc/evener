@@ -1,10 +1,23 @@
-// StatusRow: the footer chrome's compact glanceable strip - state dot, model
-// chip, reasoning-effort switcher, work-time clock, context gauge, usage,
-// session cost. Promotes work-time and cost/usage into this ONE compact row
-// rather than replicating the legacy split (compact strip vs. a separate
-// details panel, parity-m5-composer.md finding #4) - a decision the wave plan
-// already made explicitly (design doc lines 94-97 list them together under
-// "status row").
+// StatusRow: the session footer's ONE quiet line of glance-level facts -
+// model · effort · context meter · clock · cost, with queue depth riding the
+// far right when there is any. Everything on it is something that could make
+// you act in the next minute; everything exact lives one click away in
+// DetailsPanel (the same session's cwd, branch, project, token counts and
+// precise figures), which is why this row carries a 64px gauge where that
+// panel carries "42% used · 42k / 100k · 58k left".
+//
+// What deliberately is NOT here:
+//   - a state dot. The pane header already renders Cadence for this session
+//     (Session.tsx passes it to PaneScaffold), so a second dot two rows down
+//     restated it.
+//   - cwd / branch / project. None of them can change mid-session, so they are
+//     reference material, not a status: they live in the details sheet.
+//   - raw ↑/↓ token counts. Cost is the glanceable form of the same fact, and
+//     the details sheet carries the exact figures.
+//
+// A finished session replaces the whole strip with one summary line
+// (model · N worked · cost) in --ink-mid: nothing on it can change again, so
+// it reads as an epitaph rather than a cockpit with dead instruments.
 //
 // Session dollar cost rides the wire as SerfThread.Cost (appwire/types.go) -
 // the "~$X.XX" string appwire.EstimateCost derives SERVER-SIDE from the
@@ -15,16 +28,13 @@
 // loaded (thread/read's turnLimit windows those, so summing them would
 // silently under-count). Absent (no chip) when the daemon omits it: no token
 // data, or an uncataloged model - an honest "unknown", never a bogus "~$0.00".
-import type { ChangeEvent } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { Meter, Select, StatusDot, useToasts } from "../../../widgets";
+import { Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
-import { LocationCluster } from "./LocationCluster";
 import { ModelSwitch } from "./ModelSwitch";
-import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -36,9 +46,26 @@ export interface StatusRowProps {
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
+  mono: requireClass(styles.mono, "statusrow.module.css", "mono"),
   meter: requireClass(styles.meter, "statusrow.module.css", "meter"),
+  queue: requireClass(styles.queue, "statusrow.module.css", "queue"),
+  summary: requireClass(styles.summary, "statusrow.module.css", "summary"),
+  separator: requireClass(styles.separator, "statusrow.module.css", "separator"),
+  effortTrigger: requireClass(styles.effortTrigger, "statusrow.module.css", "effortTrigger"),
+  effortValue: requireClass(styles.effortValue, "statusrow.module.css", "effortValue"),
+  effortChevron: requireClass(styles.effortChevron, "statusrow.module.css", "effortChevron"),
+  effortSelect: requireClass(styles.effortSelect, "statusrow.module.css", "effortSelect"),
   srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
+
+// The wire statuses that mean this session's story is over - the same set
+// Composer.tsx's own ENDED_STATUSES names, for the same reason ("notLoaded" is
+// how a cold exited serf session actually arrives; see that constant's comment
+// for the wire receipts). Kept as its own local set rather than shared: these
+// two modules answer different questions about the same statuses (what to
+// render vs. whether a card is usable) and a shared constant would invite one
+// to drift into gating the other.
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
 // contextTone escalates the gauge's tone as pressure climbs, mirroring the
 // legacy compact strip's own single warn threshold (parity-m5-composer.md
@@ -62,11 +89,22 @@ function errorMessage(err: unknown): string {
 // accepts, so an over-broad list is safe.
 const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 
-// ReasoningEffortControl renders an interactive Select for a reasoning model's
-// effort. The effective ladder is the model's own named levels, or - when it
-// reasons but names none - the DEFAULT_EFFORT_LEVELS fallback: the wire really
-// can emit supportsReasoning:true with an empty ladder (the daemon's Profile
-// sets p.reasoning and p.effortLevels from independent conditions,
+// The label an unset effort reads as - see the none-vs-(default) rule below.
+const DEFAULT_EFFORT_LABEL = "(default)";
+
+// ReasoningEffortControl renders the reasoning-effort switcher as a quiet
+// trigger matching the model switcher beside it: the current value IS the
+// visible control, no bordered <select> box competing with it in a row that has
+// to stay one 12px line. It is still a REAL native <select> underneath, laid
+// over the readout at zero opacity - so it keeps every behavior a box would
+// have (tab order, arrow keys, type-ahead, the platform's own dropdown, a
+// standard <label htmlFor> accessible name) rather than reimplementing a
+// listbox to save a border.
+//
+// The effective ladder is the model's own named levels, or - when it reasons
+// but names none - the DEFAULT_EFFORT_LEVELS fallback: the wire really can emit
+// supportsReasoning:true with an empty ladder (the daemon's Profile sets
+// p.reasoning and p.effortLevels from independent conditions,
 // agent/provider/profile.go:454 vs :442; the reducer coerces the absent ladder
 // to [], reducer.ts:263). A model that does not reason at all gets no control.
 //
@@ -80,8 +118,7 @@ const DEFAULT_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; model: ThreadModel }) {
   const toasts = useToasts();
 
-  async function handleChange(event: ChangeEvent<HTMLSelectElement>) {
-    const level = event.target.value;
+  async function handleChange(level: string) {
     try {
       await threadsStore.getState().setReasoningEffort(sessionRef, level);
     } catch (err) {
@@ -98,54 +135,98 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   if (levels.length === 0) return null;
 
   const current = model.reasoningEffort && model.reasoningEffort !== "none" ? model.reasoningEffort : "";
-  const options = [
-    { value: "", label: "(default)" },
-    ...levels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
-  ];
+  const options = ["", ...levels.filter((level) => level !== "none")];
 
   return (
-    <>
-      {/* Select forwards only value/onChange/options/disabled/id/name (no
-          rest-spread, no aria-label passthrough - widgets/select's own
-          index.tsx) - a standard <label htmlFor> association is the only
-          way left to name it accessibly. Visually hidden: the row is
-          already compact, and the select's own current value IS the
-          visible readout (matches the legacy chip's own bare-value
-          display, parity-m5-composer.md §H). */}
+    <span className={CLASS.effortTrigger} data-testid="status-row-effort">
+      {/* The visible readout, and the only thing that takes up space here: the
+          <select> over it is transparent, so this text is what a reader sees
+          and the native control is what they operate. aria-hidden because the
+          select already speaks its own value - without it the value would be
+          announced twice. */}
+      <span className={CLASS.effortValue} data-testid="status-row-effort-value" aria-hidden="true">
+        {current === "" ? DEFAULT_EFFORT_LABEL : current}
+      </span>
+      <span className={CLASS.effortChevron} aria-hidden="true">
+        ▾
+      </span>
       <label className={CLASS.srOnly} htmlFor="status-row-reasoning-effort">
         Reasoning effort
       </label>
-      <Select
+      {/* A native <select>, not widgets/select: that widget's own restyle is
+          the bordered 32px box this row is shedding, and it forwards no
+          className for an overlay variant. Rendered raw so this row can own
+          the presentation while keeping every native behavior. */}
+      <select
         id="status-row-reasoning-effort"
+        className={CLASS.effortSelect}
         value={current}
-        onChange={(e) => void handleChange(e)}
-        options={options}
-      />
-    </>
+        onChange={(e) => void handleChange(e.target.value)}
+      >
+        {options.map((level) => (
+          <option key={level} value={level}>
+            {level === "" ? DEFAULT_EFFORT_LABEL : level}
+          </option>
+        ))}
+      </select>
+    </span>
+  );
+}
+
+// EndedSummary is a finished session's whole strip: one line of what it was and
+// what it spent, in --ink-mid. Each fact is omitted when the wire never
+// measured it - the same honesty rule DetailsPanel's own header states, and the
+// reason an unmeasured work time shows nothing rather than a fabricated "1s"
+// (formatWorkDuration clamps a real sub-second duration up to 1s, which is
+// correct for a measurement and a lie for the absence of one).
+function EndedSummary({ model, workMs }: { model: ThreadModel; workMs: number }) {
+  const facts: Array<{ key: string; testId: string; text: string }> = [
+    { key: "model", testId: "status-row-summary-model", text: modelLabel(model.modelProvider, model.model) },
+  ];
+  if (workMs > 0) {
+    facts.push({ key: "work", testId: "status-row-work-time", text: `${formatWorkDuration(workMs)} worked` });
+  }
+  if (model.cost) facts.push({ key: "cost", testId: "status-row-cost", text: model.cost });
+
+  return (
+    <div className={`${CLASS.row} ${CLASS.summary}`} data-testid="status-row">
+      {facts.map((fact, index) => (
+        <span key={fact.key} className={CLASS.item}>
+          {index > 0 && (
+            <span className={CLASS.separator} aria-hidden="true">
+              ·
+            </span>
+          )}
+          <span className={CLASS.mono} data-testid={fact.testId}>
+            {fact.text}
+          </span>
+        </span>
+      ))}
+    </div>
   );
 }
 
 export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
-  const cadenceState = cadenceStateForStatus(model.status.type);
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const hasContext = model.contextWindow > 0;
+  // The clock reports an in-flight turn's elapsed time, so it has nothing to
+  // say when no turn is running - and a strip that keeps showing a frozen
+  // number implies otherwise. The banked total is still one click away in
+  // Session details.
+  const running = model.activeTurnStartedAt !== undefined;
+  const queueDepth = model.queue?.depth ?? 0;
+
+  if (ENDED_STATUSES.has(model.status.type)) return <EndedSummary model={model} workMs={workMs} />;
 
   return (
     <div className={CLASS.row} data-testid="status-row">
-      <span className={CLASS.item}>
-        <StatusDot state={cadenceState} />
-      </span>
       <ModelSwitch sessionRef={sessionRef} model={model} />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
-      <span className={CLASS.item} data-testid="status-row-work-time">
-        {formatWorkDuration(workMs)}
-      </span>
-      <LocationCluster model={model} />
       {/* The gauge is the whole readout: a used/window number pair beside it
           repeated what the fill already shows, in a row that has to stay one
           line. The exact counts are still available - spoken from the meter's
           own label, and on hover from this title, which follows the row's
-          "key value" tooltip convention (LocationCluster, status-row-cost). */}
+          "key value" tooltip convention (status-row-cost). */}
       {hasContext && (
         <span
           className={CLASS.item}
@@ -162,19 +243,35 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           </span>
         </span>
       )}
-      {model.usage && (
-        <span className={CLASS.item} data-testid="status-row-usage">
-          ↑{formatTokenCount(model.usage.inputTokens ?? 0)} ↓{formatTokenCount(model.usage.outputTokens ?? 0)}
+      {/* An unmeasured zero renders NOTHING, never formatWorkDuration's "1s":
+          that clamp exists so a real sub-second duration doesn't read "0s", so
+          feeding it an absence fabricates a measurement. Same gate
+          DetailsPanel's own work-time row uses. */}
+      {running && workMs > 0 && (
+        <span className={`${CLASS.item} ${CLASS.mono}`} data-testid="status-row-work-time">
+          {formatWorkDuration(workMs)}
         </span>
       )}
       {/* Session cost: the server-formatted SerfThread.Cost string shown
           verbatim (no client-side formatter — the pricing table is Go-side).
           A falsy cost (null/undefined/"" — the daemon's honest "unknown")
-          renders nothing rather than a misleading "~$0.00". The title follows
-          the row's "key value" tooltip convention (LocationCluster). */}
+          renders nothing rather than a misleading "~$0.00". */}
       {model.cost && (
-        <span className={CLASS.item} data-testid="status-row-cost" title={`session cost ${model.cost}`}>
+        <span
+          className={`${CLASS.item} ${CLASS.mono}`}
+          data-testid="status-row-cost"
+          title={`session cost ${model.cost}`}
+        >
           {model.cost}
+        </span>
+      )}
+      {/* Queue depth rides the FAR RIGHT, so Send's effect on a running session
+          is visible without a second row of chrome. Absent at zero: an empty
+          queue is the normal case and "0 queued" would be noise on every
+          session. */}
+      {queueDepth > 0 && (
+        <span className={`${CLASS.item} ${CLASS.mono} ${CLASS.queue}`} data-testid="status-row-queue">
+          {`${queueDepth} queued`}
         </span>
       )}
     </div>
