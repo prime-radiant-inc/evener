@@ -1,151 +1,169 @@
 #!/usr/bin/env bash
-# agent-test-shards.sh — run the agent package's tests as two concurrent shards.
+# agent-test-shards.sh — run the agent package's tests as cost-balanced shards.
 #
-# WHY: the agent package is one test binary of ~3550 tests, and ~117 of them
-# drive real `git` subprocesses. Those two populations have opposite shapes: the
-# git tests are syscall-bound (each spawns ~14 processes and spends most of its
-# time waiting on them), the rest are CPU-bound. Run as one binary they share a
-# single -parallel budget, so the CPU-bound bulk waits behind slots held by tests
-# that are only blocked on fork/exec.
+# WHY: the agent package is one test binary of ~2750 tests. Run as a single
+# invocation its wall time is ~26-32s, and raising -parallel does not help: the
+# suite's real work is only ~13s of user CPU, so past about 6 concurrent tests the
+# extra slots buy nothing and double the kernel time in scheduler churn.
 #
-# Splitting them into two concurrently-running invocations of the SAME prebuilt
-# binary lets the kernel overlap one population's waiting with the other's
-# computing. Measured on an idle 10-core box:
+# What does help is more OS processes, each modestly parallel. Measured on an idle
+# 10-core box:
 #
-#   one binary, -parallel 32          ~33 s
-#   two shards,  -parallel 8 each     ~23 s
+#   1 invocation, -parallel 32                 ~32s
+#   2 shards split by topic (git / rest)       ~26s
+#   3 shards x -parallel 3, cost-balanced      ~22s
+#   4 shards x -parallel 3, cost-balanced      ~21s   <- default
+#   6 shards x -parallel 3, cost-balanced      ~22s
 #
-# Note the parallelism has to come DOWN, not up: at -parallel 24+ per shard the
-# two shards oversubscribe each other and the win evaporates (~30 s).
+# BALANCE is what matters, not shard count. The first version of this script split
+# topically (real-git tests vs the rest) and left 25s of the 26s in one shard;
+# weighting by measured cost is what took it to 21s. Past ~4 shards the returns
+# flatten, because each shard's own floor (~7-9s) starts to dominate.
 #
-# This deliberately does NOT move the tests into a separate package. They
-# reference ~102 unexported agent identifiers, so a real package split would mean
-# exporting all of them — a large production-API change to buy a scheduling
-# effect that two -run filters already buy.
+# HOW THE WEIGHTS ARE DERIVED: a CACHED survey, refreshed only when the set of
+# tests changes.
+#
+# Surveying on every run is self-defeating — the survey is itself a full suite pass
+# (~28s), so it costs more than the sharding saves. But a checked-in profile would
+# silently rot: a new slow test would keep landing in whichever shard its name
+# sorted into, and the balance would decay invisibly.
+#
+# So the survey is cached under the build cache, keyed by the sorted list of test
+# names. Add, rename, or remove a test and the key changes and the survey re-runs
+# once; otherwise every run reuses it and pays nothing. Costs are stable across
+# runs in a way that name-order is not, and being ~23% high (vs. the isolated cost
+# scripts/test-cost.sh measures) is well inside what bin-packing needs.
 #
 # USAGE:
 #   scripts/agent-test-shards.sh [go-test-flags...]
 #     scripts/agent-test-shards.sh -short -count=1
 #
-#   AGENT_SHARD_GIT_PARALLEL    -parallel for the git shard (default 8)
-#   AGENT_SHARD_REST_PARALLEL   -parallel for the rest (default 32)
-#   AGENT_SHARD_SKIP       regex of test names to skip in both shards
+#   AGENT_SHARD_COUNT      number of shards (default 4)
+#   AGENT_SHARD_PARALLEL   -parallel within each shard (default 3)
+#   AGENT_SHARD_SKIP       regex of tests to skip in every shard
+#   AGENT_SHARD_NO_SURVEY  1 = ignore the cache and weight every test equally
+#                          (loses balance; for debugging the harness itself)
+#   AGENT_SHARD_RESURVEY   1 = force the survey to re-run even on a cache hit
 #
-# The shard membership is DERIVED from the source, not hardcoded: any test whose
-# body calls newWorktreeRepo* is a git test. A new git test therefore joins the
-# right shard automatically, and the script verifies the two shards are
-# exhaustive and disjoint before trusting them — a regex split that silently
-# dropped tests would look like a passing, faster suite.
+# Every test lands in exactly one shard, and the script proves that before running
+# anything: a filter bug that dropped tests would otherwise present as a faster,
+# still-green suite.
 #
-# OUTPUT: one PASS/FAIL line per shard with wall time. Exits non-zero if either
-# shard fails or if the membership check finds a gap.
+# OUTPUT: one PASS/FAIL line per shard with wall time. Non-zero exit if any shard
+# fails or the partition check finds a discrepancy.
 set -uo pipefail
 
 cd "$(dirname "$0")/../agent" || { echo "agent-test-shards: no agent dir" >&2; exit 2; }
 
 flags="$*"
-# Both shards run modestly parallel, deliberately LOWER than the machine could
-# nominally take. Measured on an idle 10-core box, rest shard, medians of 3:
-#
-#   -parallel  wall    sys    reported test-work   longest test
-#   6         23.7s   12.3s          99s               3.00s
-#   8         25.6s   14.0s         121s               2.97s
-#   32        24.2s   24.5s         451s               4.94s
-#
-# Wall time is FLAT from 6 to 32 — the suite's real work is ~13s of user CPU, so
-# extra concurrency buys nothing and costs double the kernel time in scheduler
-# churn. Worse, it corrupts measurement: at 32 a test's reported elapsed is mostly
-# runqueue wait, so the same suite "weighs" 451s instead of 99s and the ranking
-# used to decide what to optimize becomes noise. One test measured 0.05s alone and
-# 2.08s in-suite — a 42x stretch that is pure starvation.
-#
-# Keep these low. Raising them will not make the gate faster, and it will make
-# every duration it reports a lie.
-gitPar=${AGENT_SHARD_GIT_PARALLEL:-6}
-restPar=${AGENT_SHARD_REST_PARALLEL:-6}
+shards=${AGENT_SHARD_COUNT:-4}
+par=${AGENT_SHARD_PARALLEL:-3}
 skip=${AGENT_SHARD_SKIP:-}
+noSurvey=${AGENT_SHARD_NO_SURVEY:-0}
 logdir="$(mktemp -d -t agent-test-shards.XXXXXX)"
-
-# gitTestNames prints every test whose body calls the real-git harness.
-gitTestNames() {
-	python3 - <<'PY'
-import glob, re
-names = []
-for path in sorted(glob.glob('*_test.go')):
-    src = open(path).read()
-    if 'newWorktreeRepo' not in src:
-        continue
-    for m in re.finditer(r'^func (Test\w+)\(t \*testing\.T\) \{((?:.|\n)*?)(?=\nfunc |\Z)', src, re.M):
-        if 'newWorktreeRepo' in m.group(2):
-            names.append(m.group(1))
-print('\n'.join(sorted(set(names))))
-PY
-}
-
-names="$(gitTestNames)"
-if [ -z "$names" ]; then
-	echo "agent-test-shards: found no real-git tests; refusing to shard on an empty set" >&2
-	exit 2
-fi
-# Anchor each name so a prefix cannot pull in an unrelated test.
-gitRe="^($(printf '%s' "$names" | tr '\n' '|' | sed 's/|$//'))\$"
 
 build="$logdir/agent.test"
 if ! go test -c -o "$build" . >"$logdir/build.log" 2>&1; then
 	echo "agent-test-shards: build failed"; cat "$logdir/build.log"; exit 1
 fi
 
-# Shard B is "everything that is not shard A", plus any caller-supplied skip, so
-# the two are disjoint by construction.
-shardBSkip="$gitRe"
-[ -n "$skip" ] && shardBSkip="($gitRe)|($skip)"
+# Survey, cached by the identity of the test set. On a hit this costs nothing; on
+# a miss it pays one suite pass and every later run reuses it.
+cacheDir="${AGENT_SHARD_CACHE_DIR:-$(go env GOCACHE)/serf-agent-shards}"
+mkdir -p "$cacheDir" 2>/dev/null
+testSetKey="$("$build" -test.list '.*' 2>/dev/null | sort | shasum -a 256 | cut -c1-16)"
+cachedSurvey="$cacheDir/survey-$testSetKey.log"
 
-# Membership guard: the shards must together select exactly the whole suite, so a
-# filter bug cannot silently drop tests and look like a faster green run. Counted
-# from the source rather than by running the binary — a dry run costs as much as
-# the suite itself, and -test.list ignores -test.run so it cannot answer this.
-membershipCheck() {
-	python3 - "$1" <<'PY2'
-import glob, re, sys
-gitNames = set(sys.argv[1].split())
-total = git = 0
-for path in glob.glob('*_test.go'):
-    src = open(path).read()
-    for m in re.finditer(r'^func (Test\w+)\(t \*testing\.T\) \{', src, re.M):
-        total += 1
-        if m.group(1) in gitNames:
-            git += 1
-    total += len(re.findall(r'^func (Example\w*)\(\)', src, re.M))
-missing = sorted(gitNames - {
-    m.group(1)
-    for path in glob.glob('*_test.go')
-    for m in re.finditer(r'^func (Test\w+)\(t \*testing\.T\) \{', open(path).read(), re.M)
-})
-if missing:
-    print('unlocatable git tests: ' + ' '.join(missing), file=sys.stderr)
+if [ "$noSurvey" -eq 0 ]; then
+	if [ "${AGENT_SHARD_RESURVEY:-0}" -eq 0 ] && [ -s "$cachedSurvey" ]; then
+		cp "$cachedSurvey" "$logdir/survey.log"
+	else
+		printf 'agent-test-shards: surveying test costs (one-time for this test set)\n'
+		surveyArgs=(-test.count=1 -test.parallel 6 -test.run '^(Test|Example)' -test.v)
+		[ -n "$skip" ] && surveyArgs+=(-test.skip "$skip")
+		case " $flags " in *" -short "*) surveyArgs+=(-test.short) ;; esac
+		if ! "$build" "${surveyArgs[@]}" >"$logdir/survey.log" 2>&1; then
+			echo "agent-test-shards: the survey pass failed — the suite is red" >&2
+			grep -E "^(--- FAIL|panic:)" "$logdir/survey.log" | head -20 >&2
+			echo "full log: $logdir/survey.log" >&2
+			exit 1
+		fi
+		cp "$logdir/survey.log" "$cachedSurvey" 2>/dev/null
+	fi
+fi
+
+# Partition the surveyed tests into $shards balanced groups, one name-list each.
+# Longest-processing-time-first greedy: optimal enough, and the weights are
+# approximate to begin with.
+if ! python3 - "$logdir" "$shards" "$noSurvey" "$build" > "$logdir/plan.txt" <<'PY'
+import re, subprocess, sys
+
+logdir, shards, noSurvey, build = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+
+weights = {}
+if not noSurvey:
+    for line in open(f'{logdir}/survey.log', errors='replace'):
+        m = re.match(r'--- (?:PASS|SKIP): (\S+) \(([0-9.]+)s\)', line.strip())
+        if m and '/' not in m.group(1):
+            weights[m.group(1)] = float(m.group(2))
+
+if not weights:
+    # No survey, or it measured nothing: weight every test equally. This still
+    # partitions correctly, it is just unbalanced.
+    out = subprocess.run([build, '-test.list', '.*'],
+                         capture_output=True, text=True).stdout
+    weights = {l.strip(): 1.0 for l in out.splitlines()
+               if re.match(r'^(Test|Example)', l.strip())}
+
+if not weights:
+    print('agent-test-shards: found no tests to shard', file=sys.stderr)
     sys.exit(1)
-print(f'{git} {total - git}')
-PY2
-}
 
-counts="$(membershipCheck "$names")" || {
-	echo "agent-test-shards: shard membership check failed" >&2
-	exit 1
-}
-a="${counts%% *}"
-b="${counts##* }"
-if [ -z "$a" ] || [ -z "$b" ] || [ "$a" -eq 0 ] || [ "$b" -eq 0 ]; then
-	printf 'agent-test-shards: refusing to shard on a degenerate split (A=%s B=%s)\n' "$a" "$b" >&2
+bins = [[] for _ in range(shards)]
+load = [0.0] * shards
+for name, cost in sorted(weights.items(), key=lambda kv: -kv[1]):
+    i = load.index(min(load))
+    bins[i].append(name)
+    load[i] += cost
+
+# Partition proof: every surveyed test in exactly one shard, and nothing invented.
+placed = [n for b in bins for n in b]
+if len(placed) != len(set(placed)) or set(placed) != set(weights):
+    print('agent-test-shards: partition is not a bijection over the test set',
+          file=sys.stderr)
+    sys.exit(1)
+if any(not b for b in bins):
+    print(f'agent-test-shards: asked for {shards} shards but only '
+          f'{sum(1 for b in bins if b)} are non-empty; lower AGENT_SHARD_COUNT',
+          file=sys.stderr)
+    sys.exit(1)
+
+for i, b in enumerate(bins):
+    with open(f'{logdir}/shard{i}.names', 'w') as fh:
+        fh.write('\n'.join(sorted(b)))
+    print(f'{i} {len(b)} {load[i]:.1f}')
+PY
+then
+	echo "agent-test-shards: partitioning failed" >&2
 	exit 1
 fi
 
-runShard() {
-	local name="$1" runRe="$2" skipRe="$3"
-	local shardPar="$4"
-	local args=(-test.parallel "$shardPar" -test.run "$runRe")
-	[ -n "$skipRe" ] && args+=(-test.skip "$skipRe")
-	# Translate the caller's `go test` flags to the binary's -test.* spelling.
-	local f
+shardCount="$(wc -l < "$logdir/plan.txt" | tr -d ' ')"
+printf 'agent-test-shards: %s shards, -parallel %s each\n' "$shardCount" "$par"
+
+# nameRegex <file> — anchored alternation over the names in file, so no name can
+# prefix-match a different test.
+nameRegex() {
+	python3 - "$1" <<'PY'
+import re, sys
+print('^(' + '|'.join(re.escape(n) for n in open(sys.argv[1]).read().split()) + ')$')
+PY
+}
+
+pids=(); names=()
+for i in $(seq 0 $((shardCount - 1))); do
+	args=(-test.count=1 -test.parallel "$par" -test.run "$(nameRegex "$logdir/shard$i.names")")
+	# Translate the caller's `go test` flags into the binary's -test.* spelling.
 	for f in $flags; do
 		case "$f" in
 			-short|-race) args+=("-test.${f#-}") ;;
@@ -153,32 +171,28 @@ runShard() {
 			-v) args+=(-test.v) ;;
 		esac
 	done
-	/usr/bin/time -p "$build" "${args[@]}" >"$logdir/$name.log" 2>&1
-}
-
-runShard git "$gitRe" "$skip" "$gitPar" &
-gitPID=$!
-runShard rest '^(Test|Example)' "$shardBSkip" "$restPar" &
-restPID=$!
+	/usr/bin/time -p "$build" "${args[@]}" >"$logdir/shard$i.log" 2>&1 &
+	pids+=("$!"); names+=("$i")
+done
 
 fail=0
-for pair in "git:$gitPID" "rest:$restPID"; do
-	name="${pair%%:*}"; pid="${pair##*:}"
-	if wait "$pid"; then
-		printf 'PASS  agent:%-5s %s (%s tests)\n' "$name" \
-			"$(awk '/^real /{print $2"s"}' "$logdir/$name.log" | tail -1)" \
-			"$([ "$name" = git ] && echo "$a" || echo "$b")"
+for k in "${!pids[@]}"; do
+	i="${names[$k]}"
+	if wait "${pids[$k]}"; then
+		printf 'PASS  agent:%-2s %8s (%s tests)\n' "$i" \
+			"$(awk '/^real /{print $2"s"}' "$logdir/shard$i.log" | tail -1)" \
+			"$(awk -v s="$i" '$1==s{print $2}' "$logdir/plan.txt")"
 	else
-		printf 'FAIL  agent:%-5s\n' "$name"; fail=1
+		printf 'FAIL  agent:%-2s\n' "$i"; fail=1
 	fi
 done
 
 if [ "$fail" -ne 0 ]; then
 	echo
 	echo "=== failing shard output ==="
-	for name in git rest; do
-		if grep -qE "^(FAIL|--- FAIL|panic:)" "$logdir/$name.log" 2>/dev/null; then
-			echo "----- agent:$name -----"; cat "$logdir/$name.log"
+	for i in $(seq 0 $((shardCount - 1))); do
+		if grep -qE "^(FAIL|--- FAIL|panic:)" "$logdir/shard$i.log" 2>/dev/null; then
+			echo "----- agent:$i -----"; cat "$logdir/shard$i.log"
 		fi
 	done
 	echo
