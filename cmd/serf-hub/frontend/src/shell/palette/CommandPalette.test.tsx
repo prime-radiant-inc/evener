@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../protocol/types.gen";
@@ -8,7 +9,7 @@ import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { CommandPalette } from "./CommandPalette";
+import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
 
 // See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
@@ -185,6 +186,63 @@ test("a blocked command keeps the palette open and shows the inline error strip"
   expect(screen.getByRole("alert").textContent).toBe("interrupt failed: no active turn");
   expect(screen.getByRole("dialog")).toBeTruthy();
   expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(false);
+});
+
+// --- unavailable commands: present and explained, never hidden (kata zshh) ---
+
+test("an ended session still lists /model, and it runs", async () => {
+  const user = userEvent.setup();
+  const fake = new FakeClient("ready");
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
+  fake.on("thread/model/set", () => ({}));
+  connectionStore.getState().connect(fake);
+  // pastEntryThread's advertisement for a cold exited thread.
+  focusSession("ref_a", {
+    status: { type: "ended" },
+    capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
+  });
+  render(<CommandPalette />);
+  act(() => openPalette("/model"));
+
+  const row = screen.getByRole("option", { name: /Switch model/ });
+  expect(row.getAttribute("aria-disabled")).toBeNull();
+  await user.click(row);
+  await user.click(await screen.findByRole("option", { name: /gpt-5\.5/ }));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/model/set")).toBe(true));
+});
+
+test("a command the wire refuses renders disabled with its reason, and choosing it explains itself", async () => {
+  const user = userEvent.setup();
+  const fake = new FakeClient("ready");
+  connectionStore.getState().connect(fake);
+  focusSession("ref_a", { status: { type: "ended" }, capabilities: { ...CAPS, steer: false } });
+  render(<CommandPalette />);
+  act(() => openPalette("/steer"));
+
+  // Present, not hidden - a missing row is indistinguishable from one the user
+  // misremembered, and it breaks a keyboard user's motor pattern.
+  const row = screen.getByRole("option", { name: /Steer model/ });
+  expect(row.getAttribute("aria-disabled")).toBe("true");
+  expect(row.textContent).toContain("not available right now");
+
+  await user.click(row);
+  expect(screen.getByRole("alert").textContent).toBe("/steer is not available right now");
+  // Did NOT enter args mode, and made no wire call.
+  expect(screen.getByRole("combobox").getAttribute("placeholder")).not.toBe("steer text…");
+  expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(false);
+});
+
+test("a failed auto-resume is attributed to the session, not blamed on the command", () => {
+  // The hub returns the spawner's own raw text under serfErrorInfo hubLaunch
+  // when the resume behind a cold-session mutation fails; unprefixed it reads
+  // as the command having failed.
+  expect(
+    commandErrorMessage(new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" })),
+  ).toBe("couldn't start this session: fork/exec serf: no such file");
+  // Every other rejection is passed through untouched.
+  expect(commandErrorMessage(new WireError("turn t1 is active", -32013, { serfErrorInfo: "conflict" }))).toBe(
+    "turn t1 is active",
+  );
 });
 
 test("/help renders the seven fixed keyboard-shortcut rows", async () => {

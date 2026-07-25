@@ -9,6 +9,8 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
+import type { ThreadModel } from "../../protocol/model";
+import type { ThreadCapabilities } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
@@ -18,17 +20,15 @@ import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
-import {
-  focusedModel,
-  hasActiveTurn,
-  isSessionBusy,
-  isSessionEnded,
-  type OnPage,
-  type PaletteContext,
-} from "./paletteContext";
+import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
 
-export type CommandScope = "global" | "session" | "ended-ok";
+// A command is either global (no session needed) or session-scoped (a session
+// pane must be focused). There is deliberately no third "works on an ended
+// session too" scope: whether a session command can run is the hub's per-
+// action capability flag, which it publishes for cold exited threads as
+// readily as for live ones - see commandsInScope.
+export type CommandScope = "global" | "session";
 
 export interface CommandArgsEnumItem {
   id: string;
@@ -76,11 +76,32 @@ export interface Command {
   hint: string;
   keywords: string[];
   scope: CommandScope;
+  // The ThreadCapabilities flag the hub publishes for this command's action,
+  // and the sole authority on whether it can run against the focused session.
+  // Absent means the hub gates the action on nothing either (/reasoning-effort
+  // has no capability field - see app_rpc.go's "No capability gate" note - and
+  // the read-only /copy-id, /tasks, /status, /project touch no session state
+  // at all), so the command is always offered once a session is focused.
+  capability?: keyof ThreadCapabilities;
   // stayOpen commands (/search, /help) never close and never record recency.
   stayOpen?: boolean;
   args?: CommandArgs;
   run?(ctx: PaletteRunContext): CommandResult;
 }
+
+// A registry Command resolved against the focused session. unavailableReason
+// is set when the wire's capability flag for this command is false: the row
+// still renders (disabled, carrying the reason) rather than vanishing, so a
+// keyboard user's motor pattern survives and a missing command is never
+// indistinguishable from one they misremembered.
+export interface ScopedCommand extends Command {
+  unavailableReason?: string;
+}
+
+// The one reason text. It says "right now" rather than naming a cause because
+// a boolean is all the wire gives us, and it is temporal for a live session
+// (mid-turn /clear) as much as it is for a cold or foreign-source one.
+export const UNAVAILABLE_REASON = "not available right now";
 
 // splitModelId reconstructs a ModelDescriptor {provider, model} from the
 // "provider/model" id the /model enum item carries. A provider never contains
@@ -148,7 +169,7 @@ function upgrade(ctx: PaletteRunContext): CommandResult {
 
 // buildCommands rebuilds the registry fresh on every call (search.js:326:
 // "The command registry is rebuilt fresh on every call"). All 23 entries: 8
-// global, 11 session (live-only), 4 session-info (ended-ok). /fork is
+// global, 11 session mutations, 4 read-only session commands. /fork is
 // intentionally OMITTED (floor §2.5, search.js:497-499) - it needs an edited
 // message the palette has no UI to collect; the transcript row's own edit
 // affordance is the entry point.
@@ -252,13 +273,14 @@ export function buildCommands(): Command[] {
       run: (ctx) => upgrade(ctx),
     },
 
-    // --- session (live only) ---
+    // --- session: mutations, each carrying the capability that authorizes it ---
     {
       id: "compact",
       title: "Compact transcript",
       hint: "free up token space",
       keywords: ["compress"],
       scope: "session",
+      capability: "compact",
       run: (ctx) => (ctx.sessionRef ? threadsStore.getState().compact(ctx.sessionRef) : undefined),
     },
     {
@@ -267,6 +289,7 @@ export function buildCommands(): Command[] {
       hint: "cancel in-flight turn",
       keywords: ["cancel", "stop"],
       scope: "session",
+      capability: "interrupt",
       run: (ctx) => {
         const model = focusedModel(ctx.sessionRef);
         if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("interrupt failed: no active turn");
@@ -279,6 +302,7 @@ export function buildCommands(): Command[] {
       hint: "start fresh in this session",
       keywords: [],
       scope: "session",
+      capability: "clear",
       run: (ctx) => (ctx.sessionRef ? threadsStore.getState().clearThread(ctx.sessionRef) : undefined),
     },
     {
@@ -287,6 +311,7 @@ export function buildCommands(): Command[] {
       hint: "side question, same permissions",
       keywords: ["fork", "side"],
       scope: "session",
+      capability: "forkFromTurn",
       run: (ctx) => {
         if (!ctx.sessionRef) return undefined;
         return threadsStore
@@ -303,6 +328,7 @@ export function buildCommands(): Command[] {
       hint: "ends this session",
       keywords: ["kill"],
       scope: "session",
+      capability: "shutdown",
       run: (ctx) => {
         if (!ctx.sessionRef) return undefined;
         return threadsStore
@@ -325,6 +351,7 @@ export function buildCommands(): Command[] {
       hint: "",
       keywords: [],
       scope: "session",
+      capability: "changeModel",
       args: {
         kind: "enum",
         placeholder: "choose a model…",
@@ -337,10 +364,15 @@ export function buildCommands(): Command[] {
           const resp = await threadsStore.getState().listModels();
           return resp.data.map((m) => ({ id: `${m.provider}/${m.model}`, label: m.model, hint: m.provider }));
         },
+        // No client-side turn-in-flight guard: only the daemon knows, and it
+        // answers. It resumes a cold session behind the call and retries
+        // (app_model.go's setThreadModelWithResume), and refuses a genuine
+        // mid-turn switch with a Conflict (server/appwire_runtime.go's
+        // handleAppThreadModelSet), which surfaces below as the error toast
+        // plus the palette's own error strip. Guessing here refused switches
+        // the hub would have accepted - the same mistake ModelSwitch.tsx made.
         run: (ctx, item) => {
           if (!ctx.sessionRef) return undefined;
-          const model = focusedModel(ctx.sessionRef);
-          if (model && isSessionBusy(model)) return blocked("model change failed: turn in progress");
           const { provider, model: modelId } = splitModelId(item.id);
           return threadsStore
             .getState()
@@ -401,6 +433,7 @@ export function buildCommands(): Command[] {
       hint: "inject mid-turn",
       keywords: [],
       scope: "session",
+      capability: "steer",
       args: {
         kind: "free",
         placeholder: "steer text…",
@@ -417,6 +450,7 @@ export function buildCommands(): Command[] {
       hint: "process after active turn",
       keywords: ["enqueue"],
       scope: "session",
+      capability: "queue",
       args: {
         kind: "free",
         placeholder: "queue text…",
@@ -433,6 +467,7 @@ export function buildCommands(): Command[] {
       hint: "agent pursues until done",
       keywords: ["objective", "pursue"],
       scope: "session",
+      capability: "goal",
       args: {
         kind: "free",
         placeholder: "objective… (empty to clear)",
@@ -446,6 +481,7 @@ export function buildCommands(): Command[] {
       hint: "force-steer combined action",
       keywords: ["force-steer", "drain"],
       scope: "session",
+      capability: "steer",
       run: (ctx) => {
         const model = focusedModel(ctx.sessionRef);
         if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("drain failed: no active turn");
@@ -453,13 +489,13 @@ export function buildCommands(): Command[] {
       },
     },
 
-    // --- session info (live or ended) ---
+    // --- session: read-only, no capability to gate on ---
     {
       id: "copy-id",
       title: "Copy session ID",
       hint: "clipboard",
       keywords: ["clipboard"],
-      scope: "ended-ok",
+      scope: "session",
       run: (ctx) => {
         if (!ctx.sessionRef) return;
         copyToClipboard(ctx.sessionRef).catch(() => ctx.toasts.push("error", "Couldn't copy session id"));
@@ -470,7 +506,7 @@ export function buildCommands(): Command[] {
       title: "Toggle tasks panel",
       hint: "",
       keywords: [],
-      scope: "ended-ok",
+      scope: "session",
       run: () => clickTrigger("[data-tasks-trigger]"),
     },
     {
@@ -478,7 +514,7 @@ export function buildCommands(): Command[] {
       title: "Toggle session details",
       hint: "",
       keywords: ["details", "info"],
-      scope: "ended-ok",
+      scope: "session",
       run: () => clickTrigger("[data-details-trigger]"),
     },
     {
@@ -486,7 +522,7 @@ export function buildCommands(): Command[] {
       title: "Reveal session's project in sidebar",
       hint: "scroll sidebar",
       keywords: ["folder"],
-      scope: "ended-ok",
+      scope: "session",
       run: (ctx) => {
         if (ctx.sessionRef) revealSessionInRail(ctx.sessionRef);
       },
@@ -501,22 +537,39 @@ export function rememberableId(command: Command): string {
   return command.stayOpen ? "" : command.id;
 }
 
-// commandsInScope filters the registry by the current context's scope
-// (search.js:581-588): global always; ended-ok whenever a session pane is
-// focused (live OR ended); bare session only for a LIVE focused session.
-export function commandsInScope(ctx: PaletteContext): Command[] {
+// commandsInScope resolves the registry against the focused session: global
+// commands always, session commands whenever a session pane is focused, each
+// carrying the hub's own verdict on whether it can run.
+//
+// Session LIVENESS is not a gate here, and that is the point (katas cjzc,
+// zshh). The palette used to hide every session command for an ended session,
+// which took /model /goal /clear /compact /aside away from exactly the
+// sessions the hub advertises them for: pastEntryThread (app_threadread.go)
+// publishes ChangeModel/Send/Compact/Clear/Shutdown/Goal/Rename for a cold
+// exited thread and the handlers resume it behind the call, while deliberately
+// leaving Steer/Interrupt/Queue false because those need a turn no cold
+// session has. Reading those flags gives the user the same answer the hub
+// would, and spares them having to know whether a session is "running".
+//
+// An unhydrated model (no snapshot in the store yet) leaves everything
+// enabled: unknown is not the same as refused, and the hub still gets the
+// final word on the call itself.
+export function commandsInScope(ctx: PaletteContext): ScopedCommand[] {
   const model = focusedModel(ctx.sessionRef);
-  const ended = model ? isSessionEnded(model) : false;
-  return buildCommands().filter((c) => {
-    if (c.scope === "global") return true;
-    if (c.scope === "ended-ok") return ctx.sessionRef !== null;
-    return ctx.sessionRef !== null && !ended;
-  });
+  return buildCommands()
+    .filter((c) => c.scope === "global" || ctx.sessionRef !== null)
+    .map((c) => scopeCommand(c, model));
+}
+
+function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedCommand {
+  const capability = command.capability;
+  if (!capability || !model || model.capabilities[capability]) return command;
+  return { ...command, unavailableReason: UNAVAILABLE_REASON };
 }
 
 export interface FilteredCommands {
-  recent: Command[];
-  commands: Command[];
+  recent: ScopedCommand[];
+  commands: ScopedCommand[];
 }
 
 // filterCommands is renderCommands' data half (search.js:637-651): with an
@@ -531,7 +584,7 @@ export function filterCommands(ctx: PaletteContext, rawFilter: string): Filtered
     ? []
     : readRecentCommandIds()
         .map((id) => scoped.find((c) => c.id === id))
-        .filter((c): c is Command => c !== undefined);
+        .filter((c): c is ScopedCommand => c !== undefined);
   const recentIds = new Set(recent.map((c) => c.id));
   const commands = q
     ? scoped

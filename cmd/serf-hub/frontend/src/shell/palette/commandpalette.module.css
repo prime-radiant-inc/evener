@@ -110,6 +110,21 @@
   background: var(--surface-2);
 }
 
+/* A command the hub says it will not carry out right now. It recedes to the
+ * same --ink-low the Menu widget's disabled item uses, but keeps pointer and
+ * keyboard reach: choosing it prints its reason in the error strip, which is
+ * the whole point of showing it instead of hiding it. */
+.rowUnavailable {
+  color: var(--ink-low);
+}
+
+.unavailable {
+  flex: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  font-style: italic;
+}
+
 .glyph {
   flex: none;
   color: var(--ink-low);
