@@ -277,6 +277,19 @@
   }
 }
 
+/* Leading signal gutter (RailRow's Signal): holds a Cadence dot only for the
+ * states that carry information - working / waiting on you / failed. A quiet
+ * row leaves it empty rather than shrinking it, so the width is a constant
+ * (one 6px Cadence dot, matching cadence.module.css's own .dot) and every
+ * title in the list lines up regardless of state - no ragged left edge as
+ * sessions come alive and end, and no state-dependent row width. */
+.signal {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  width: 6px;
+}
+
 .chevron {
   flex: none;
   display: inline-flex;
@@ -311,8 +324,9 @@
 }
 
 /* Second line: a short, honest gloss of the row's own state (RailRow.tsx's
- * humanizeState) - never a faked liveness cue, just the same state the dot
- * above already encodes, worded for a person. */
+ * humanizeState) - never a faked liveness cue. This line carries the state
+ * for EVERY row, which is why the signal gutter above only spends a dot on
+ * the states that need to be spotted from across the list. */
 .activity {
   overflow: hidden;
   white-space: nowrap;

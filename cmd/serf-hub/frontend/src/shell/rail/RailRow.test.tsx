@@ -78,6 +78,54 @@ describe("cadenceStateFor", () => {
   });
 });
 
+// The signal gutter (§ the dot earns its space): a row only shows a Cadence
+// dot for a state that TELLS you something - working, waiting on you,
+// failed. idle/ended rows show an empty gutter instead, because the row's
+// second line already prints that state in words (humanizeState) and a
+// mid-grey dot repeating it is pure noise. The gutter itself is
+// unconditional so a title's x-position never moves as a session changes
+// state (and so row width never depends on state).
+describe("signal gutter", () => {
+  test.each([
+    ["active", "Working"],
+    ["awaiting", "Needs you"],
+    ["warning", "Needs you"],
+    ["errored", "Failed"],
+  ] as const)("state %s shows a %s dot in the gutter", (state, label) => {
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+    const gutter = screen.getByTestId("rail-row-signal");
+    expect(within(gutter).getByTestId("cadence-dot")).toBeTruthy();
+    expect(within(gutter).getByRole("img", { name: label })).toBeTruthy();
+  });
+
+  test.each(["ended", "idle", "notLoaded", ""] as const)("state %s shows no dot at all", (state) => {
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    // ...but the gutter still occupies the row, so an ended row's title
+    // lines up with a working row's and neither row is wider than the other.
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+  });
+
+  test("a project row's rollup state follows the same rule", () => {
+    const { rerender } = render(
+      <RailRow node={projectRailNode(apiProject({ rollup_state: "active" }))} info={info()} actions={actions()} />,
+    );
+    expect(within(screen.getByTestId("rail-row-signal")).getByTestId("cadence-dot")).toBeTruthy();
+
+    rerender(
+      <RailRow node={projectRailNode(apiProject({ rollup_state: "ended" }))} info={info()} actions={actions()} />,
+    );
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+  });
+
+  test("a project row with no rollup state at all shows no dot", () => {
+    render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+  });
+});
+
 describe("loading row", () => {
   test("renders a non-interactive loading indicator", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
