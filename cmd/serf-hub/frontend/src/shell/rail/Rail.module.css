@@ -349,12 +349,17 @@
   }
 }
 
-/* Leading signal gutter (RailRow's Signal): holds a Cadence dot only for the
- * states that carry information - working / waiting on you / failed. A quiet
- * row leaves it empty rather than shrinking it, so the width is a constant
- * (one 6px Cadence dot, matching cadence.module.css's own .dot) and every
- * title in the list lines up regardless of state - no ragged left edge as
- * sessions come alive and end, and no state-dependent row width. */
+/* The two leading gutters (RailRow's RowGutter): each holds its content only
+ * when this row has any, and each reserves its width unconditionally. A gutter
+ * that collapsed when empty would move every title after it, so a row with
+ * children indented differently from one without and the list read as a ragged
+ * left edge. Fixed widths (not min-widths) keep that x-position a constant at
+ * every nesting depth.
+ *
+ * .signal holds a Cadence dot only for the states that carry information -
+ * working / waiting on you / failed - at exactly one dot's width (6px, matching
+ * cadence.module.css's own .dot), so a title's position never depends on state
+ * either, even as sessions come alive and end under a live tree. */
 .signal {
   flex: none;
   display: inline-flex;
@@ -362,12 +367,23 @@
   width: 6px;
 }
 
+/* .chevron holds the expand/collapse button only on a branch row. */
 .chevron {
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: var(--space-4);
+}
+
+/* The button inside the chevron gutter: fills its slot exactly, so a leaf row's
+ * empty slot and a branch row's filled one measure the same. */
+.chevronButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--ink-mid);

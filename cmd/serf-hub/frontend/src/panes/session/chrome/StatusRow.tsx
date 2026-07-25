@@ -16,8 +16,11 @@
 //     the details sheet carries the exact figures.
 //
 // A finished session replaces the whole strip with one summary line
-// (model · N worked · cost) in --ink-mid: nothing on it can change again, so
-// it reads as an epitaph rather than a cockpit with dead instruments.
+// (model · N worked · cost) in --ink-mid: its work and cost are settled, so it
+// reads as an epitaph rather than a cockpit with dead instruments. The model is
+// the one thing on it that is still LIVE - a finished session can be sent to
+// again, so the model its next turn will run on is still a choice; see
+// EndedSummary.
 //
 // Session dollar cost rides the wire as SerfThread.Cost (appwire/types.go) -
 // the "~$X.XX" string appwire.EstimateCost derives SERVER-SIDE from the
@@ -34,7 +37,7 @@ import { Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
-import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
+import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
 
 export interface StatusRowProps {
@@ -173,30 +176,36 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
-// EndedSummary is a finished session's whole strip: one line of what it was and
-// what it spent, in --ink-mid. Each fact is omitted when the wire never
-// measured it - the same honesty rule DetailsPanel's own header states, and the
-// reason an unmeasured work time shows nothing rather than a fabricated "1s"
-// (formatWorkDuration clamps a real sub-second duration up to 1s, which is
-// correct for a measurement and a lie for the absence of one).
-function EndedSummary({ model, workMs }: { model: ThreadModel; workMs: number }) {
-  const facts: Array<{ key: string; testId: string; text: string }> = [
-    { key: "model", testId: "status-row-summary-model", text: modelLabel(model.modelProvider, model.model) },
-  ];
+// EndedSummary is a finished session's whole strip: what it was, what it spent,
+// and the model its NEXT turn will run on. Work and cost are settled figures in
+// --ink-mid; each is omitted when the wire never measured it - the same honesty
+// rule DetailsPanel's own header states, and the reason an unmeasured work time
+// shows nothing rather than a fabricated "1s" (formatWorkDuration clamps a real
+// sub-second duration up to 1s, which is correct for a measurement and a lie for
+// the absence of one).
+//
+// The model is the exception, and it stays a live ModelSwitch: this session can
+// still be sent to (the hub advertises Send and ChangeModel for a cold exited
+// thread and resumes it behind either call - cmd/serf-hub/app_threadread.go's
+// pastEntryThread, app_model.go's setThreadModelWithResume), and Composer
+// already renders a follow-up card here for that reason. A user picking the
+// model for that follow-up should not have to first resume the session, or know
+// that "running" is a state a session has.
+function EndedSummary({ sessionRef, model, workMs }: { sessionRef: string; model: ThreadModel; workMs: number }) {
+  const settled: Array<{ key: string; testId: string; text: string }> = [];
   if (workMs > 0) {
-    facts.push({ key: "work", testId: "status-row-work-time", text: `${formatWorkDuration(workMs)} worked` });
+    settled.push({ key: "work", testId: "status-row-work-time", text: `${formatWorkDuration(workMs)} worked` });
   }
-  if (model.cost) facts.push({ key: "cost", testId: "status-row-cost", text: model.cost });
+  if (model.cost) settled.push({ key: "cost", testId: "status-row-cost", text: model.cost });
 
   return (
     <div className={`${CLASS.row} ${CLASS.summary}`} data-testid="status-row">
-      {facts.map((fact, index) => (
+      <ModelSwitch sessionRef={sessionRef} model={model} />
+      {settled.map((fact) => (
         <span key={fact.key} className={CLASS.item}>
-          {index > 0 && (
-            <span className={CLASS.separator} aria-hidden="true">
-              ·
-            </span>
-          )}
+          <span className={CLASS.separator} aria-hidden="true">
+            ·
+          </span>
           <span className={CLASS.mono} data-testid={fact.testId}>
             {fact.text}
           </span>
@@ -216,7 +225,9 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const running = model.activeTurnStartedAt !== undefined;
   const queueDepth = model.queue?.depth ?? 0;
 
-  if (ENDED_STATUSES.has(model.status.type)) return <EndedSummary model={model} workMs={workMs} />;
+  if (ENDED_STATUSES.has(model.status.type)) {
+    return <EndedSummary sessionRef={sessionRef} model={model} workMs={workMs} />;
+  }
 
   return (
     <div className={CLASS.row} data-testid="status-row">
