@@ -25,6 +25,12 @@
 #   --run REGEX         -run regex for the verification suite
 #                       (default '^(Test|Example)')
 #   --parallel N        -parallel for verification (default 32)
+#   --runs N            suite runs per verification (default 1). Shared-state
+#                       couplings are often intermittent: a sweep that passed a
+#                       single run per file was later measured failing 6 of 12
+#                       full runs. Use --runs 3 or more when the result is meant
+#                       to be trusted; a verification passes only if every run
+#                       passes.
 #   --dry-run           report what would be attempted, change nothing
 #   --keep-going        continue after a file fails (default: yes)
 #   --bisect            convert every candidate file at once, then binary-search
@@ -43,7 +49,7 @@
 # non-zero if the package could not be returned to a passing state.
 set -uo pipefail
 
-dir=""; candidates=""; runre='^(Test|Example)'; par=32; dryrun=0; bisect=0
+dir=""; candidates=""; runre='^(Test|Example)'; par=32; dryrun=0; bisect=0; runs=1
 
 die() { printf 'parallelize-tests: %s\n' "$1" >&2; exit 2; }
 
@@ -53,6 +59,7 @@ while [ $# -gt 0 ]; do
 		--candidates) candidates="${2:-}"; shift 2 ;;
 		--run) runre="${2:-}"; shift 2 ;;
 		--parallel) par="${2:-}"; shift 2 ;;
+		--runs) runs="${2:-}"; shift 2 ;;
 		--dry-run) dryrun=1; shift ;;
 		--bisect) bisect=1; shift ;;
 		--keep-going) shift ;;
@@ -73,8 +80,17 @@ logdir="$(mktemp -d -t parallelize-tests.XXXXXX)"
 
 # verify runs the package suite and reports success via exit code only.
 verify() {
-	local log="$1"
-	go test -short -count=1 -parallel "$par" -run "$runre" . >"$log" 2>&1
+	local log="$1" i
+	# Every run must pass. One green run does not establish safety: shared-state
+	# collisions surface only in some interleavings.
+	for i in $(seq 1 "$runs"); do
+		if ! go test -short -count=1 -parallel "$par" -run "$runre" . >"$log.$i" 2>&1; then
+			cp "$log.$i" "$log"
+			return 1
+		fi
+	done
+	cp "$log.$runs" "$log"
+	return 0
 }
 
 # convert adds t.Parallel() to the candidate tests in one file; prints the count.
