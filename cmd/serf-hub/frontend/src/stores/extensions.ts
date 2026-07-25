@@ -273,7 +273,10 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
   async completePaths(prefix, includeFiles) {
     const client = requireClient();
     const resp = await client.request("serf/paths/complete", { prefix, includeFiles });
-    return resp.data;
+    // Defence in depth against a null `data`. The hub sends [] and the wire type
+    // says string[], but a null here would reach every PathField on the page and
+    // a form must not come down over an empty directory listing.
+    return resp.data ?? [];
   },
 }));
 

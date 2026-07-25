@@ -484,6 +484,17 @@ describe("completePaths", () => {
     });
     await expect(extensionsStore.getState().completePaths("/etc/", true)).resolves.toEqual(["/etc/ssl/", "/etc/hosts"]);
   });
+
+  test("a null data payload resolves to an empty list", async () => {
+    const fake = connectFakeClient();
+    // A Go handler returning a nil slice sends `null` here, which the generated
+    // type declares cannot happen; every PathField would then crash its whole
+    // form on the first .length. Coalesced at the seam so no caller has to.
+    // The cast is the point: the generated type forbids this payload, which is
+    // exactly why TypeScript could never catch the real crash.
+    fake.on("serf/paths/complete", () => ({ data: null }) as unknown as { data: string[] });
+    await expect(extensionsStore.getState().completePaths("/etc/", true)).resolves.toEqual([]);
+  });
 });
 
 describe("notification-triggered refetch", () => {
