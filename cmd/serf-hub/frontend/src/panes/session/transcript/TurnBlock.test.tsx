@@ -1,11 +1,18 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
-afterEach(cleanup);
+// A tool row's open/closed state lives in the shared disclosureStore keyed by
+// item.id, so a row this file opens must not leak into another test's row of the
+// same id.
+afterEach(() => {
+  cleanup();
+  resetDisclosureStoreForTests();
+});
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "somethingUnregistered", text: "", ...overrides };
@@ -70,6 +77,11 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   const items = [item({ id: "a", type: "commandExecution", toolName: "tb-tool-x", output: "tool output" })];
   render(<TurnBlock turn={turn(items)} />);
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
+  // A tool row starts collapsed and now mounts its body only while open, so the
+  // output is proof of dispatch only once the row is opened. The dispatch itself
+  // is what this test is about; the row above is already evidence of it, and the
+  // output confirms the descriptor's body ran rather than an empty shell.
+  fireEvent.click(screen.getByTestId("tool-row"));
   expect(screen.getByText("tool output")).toBeTruthy();
 });
 

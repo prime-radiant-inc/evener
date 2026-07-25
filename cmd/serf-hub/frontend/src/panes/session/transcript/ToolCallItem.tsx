@@ -17,6 +17,7 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./type
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
+  detail: requireClass(styles.detail, "toolcallitem.module.css", "detail"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
 
@@ -59,6 +60,9 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // exited nonzero is a clean tool RESULT the reader still needs marked).
   const failed = toolFailed(item) || (descriptor.failed?.(item) ?? false);
   const hasErrorText = item.error !== undefined && item.error !== "";
+  // Rendered in TWO places, deliberately: the collapsed row's hover title (a
+  // glance) and the expanded body as real text (the keyboard-reachable copy).
+  const detail = descriptor.detail?.(item);
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
@@ -109,7 +113,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           expandable={false}
           expanded={false}
           trailing={openBesideButton}
-          title={descriptor.detail?.(item)}
+          title={detail}
         />
       </div>
     );
@@ -139,7 +143,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // on AND survives a remount (yt2q).
         onToggle={() => toggleDisclosure(item.id, autoDefault)}
         trailing={openBesideButton}
-        title={descriptor.detail?.(item)}
+        title={detail}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
@@ -147,6 +151,17 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
         <div className={CLASS.body} data-testid="tool-call-body">
+          {/* The descriptor's detail (a shell call's exit code and untruncated
+              command) ALSO rides the collapsed row's hover title, but a title is
+              mouse-only in practice - no keyboard path, uneven screen-reader
+              support. Repeating it here as real text is what actually makes it
+              reachable, which is the whole point of A2 keeping it reachable
+              rather than just moving it off the headline. */}
+          {detail !== undefined && (
+            <div className={CLASS.detail} data-testid="tool-call-detail">
+              {detail}
+            </div>
+          )}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} />}
           <ImageGallery images={item.outputImages} />

@@ -30,7 +30,7 @@ summary.row {
 }
 
 /* An ink wash, NOT var(--surface-2): measured in the running app, the light
- * theme resolves --surface-1 and --surface-2 to the same #FFFFFF as the pane
+ * theme resolves --surface-1 and --surface-2 to the same white as the pane
  * itself, so a surface-token hover was completely invisible there. A tint of
  * the ink reads against whatever surface the row happens to sit on, in both
  * themes. Same idiom as widgets/chip's own remove-button hover. */
@@ -125,6 +125,17 @@ summary.row:hover .demoted {
   to {
     opacity: 1;
   }
+}
+
+/* The descriptor's own detail line (a shell call's exit code + untruncated
+ * command): machine text, so mono, and quiet - it is the fact the collapsed row
+ * deliberately declined to headline, kept reachable here without a mouse. */
+.detail {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+  margin-bottom: var(--space-1);
+  overflow-wrap: anywhere;
 }
 
 /* The tool-result error/denial text (ItemModel.error), shown verbatim above

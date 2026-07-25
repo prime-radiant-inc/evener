@@ -176,9 +176,14 @@ test("body renders nothing for a command with no output at all", () => {
   expect(container.textContent).toBe("");
 });
 
-test("detail carries the UNTRUNCATED command, which the summary clips", () => {
+// detail() carries the exit code ONLY - deliberately not the untruncated
+// command as well. detail() renders as real text in the expanded body (which is
+// what makes it keyboard-reachable rather than a mouse-only title), so folding
+// the command in would put a second copy of the call under the row: exactly the
+// repetition A4 removes.
+test("detail does NOT repeat the command - that is what A4 took out of the body", () => {
   const d = toolRendererFor("shell");
   const longCmd = "x".repeat(100);
   expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(80)}…`);
-  expect(d.detail?.(withCommand(longCmd))).toBe(`$ ${longCmd}`);
+  expect(d.detail?.(withCommand(longCmd, { exitCode: 0 }))).toBe("exit 0");
 });

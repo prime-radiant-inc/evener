@@ -12,6 +12,11 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 import { ToolCallItem } from "./ToolCallItem";
 import { statedPurposeOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer } from "./toolRenderers";
+// The failure-glyph and exit-code tests below drive the REAL shell descriptor
+// (its failed()/detail() hooks are the whole point of A2), so this file has to
+// register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
+// those assertions test nothing. Same precedent as ToolCallItem.test.tsx.
+import "./tools/shellTool";
 
 afterEach(() => {
   cleanup();
@@ -171,6 +176,29 @@ test("the exit code stops being the headline: it is reachable via the row's titl
   );
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
   expect(screen.getByTestId("tool-row").getAttribute("title")).toContain("exit 1");
+});
+
+// A title alone is mouse-only: no keyboard path, uneven screen-reader support.
+// "Reachable" has to mean reachable without a mouse, so the detail is also real
+// text in the expanded body.
+test("the exit code is reachable WITHOUT a mouse - real text in the expanded body, not only a title", () => {
+  render(
+    <ToolCallItem
+      item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), exitCode: 1 })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  // A nonzero exit auto-expands, so the detail is already on screen.
+  expect(screen.getByTestId("tool-call-detail").textContent).toContain("exit 1");
+});
+
+test("a descriptor with no detail renders no detail element in the body", () => {
+  registerToolRenderer({ match: "trg_no_detail", summary: () => "s", body: () => <div>b</div> });
+  render(<ToolCallItem item={item({ toolName: "trg_no_detail" })} turn={turn} live={false} />);
+  fireEvent.click(screen.getByTestId("tool-row"));
+  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  expect(screen.queryByTestId("tool-call-detail")).toBe(null);
 });
 
 // --- A3: the row looks clickable ------------------------------------------
