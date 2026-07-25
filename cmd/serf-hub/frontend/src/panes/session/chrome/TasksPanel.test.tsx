@@ -444,7 +444,13 @@ test("a first fetch that fails offers Try again, which fetches again", async () 
 
   render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
   await user.click(screen.getByRole("button", { name: "Tasks" }));
-  await screen.findByText(/couldn.t load tasks: tasks boom/i);
+  // Headline and detail are asserted separately here, unlike the stale-notice
+  // tests above: with no previous page to keep, this path renders EmptyState,
+  // whose title and hint are two elements. The stale notice renders the same
+  // failure as one sentence in one element. Same words either way - a combined
+  // matcher just cannot span the EmptyState pair.
+  await screen.findByText("Couldn't load tasks");
+  await screen.findByText("tasks boom");
 
   await user.click(screen.getByRole("button", { name: "Try again" }));
 
