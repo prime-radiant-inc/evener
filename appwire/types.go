@@ -598,12 +598,22 @@ type ThreadItem struct {
 	// timestamps; nil when no honest span was recorded (issue #37: the web
 	// hover meta shows real times or nothing).
 	DurationMS *int64 `json:"durationMs,omitempty"`
-	// ExitCode is a shell tool call's process exit code, promoted onto the
-	// settled commandExecution item from the ToolState JSON snapshot the
-	// projector/transcript already hold (the "exit_code" field of
-	// shellToolResult, agent/session_tools_shell.go:483; wire-honesty spec
-	// Part A). Nil for any tool whose ToolState carries no exit_code — never
-	// fabricated as zero.
+	// ExitCode is the exit status of the process behind this item, on the two
+	// item kinds that have one:
+	//
+	//   - a shell tool call's process, promoted onto the settled
+	//     commandExecution item from the ToolState JSON snapshot the
+	//     projector/transcript already hold (the "exit_code" field of
+	//     shellToolResult, agent/session_tools_shell.go:483; wire-honesty
+	//     spec Part A);
+	//   - a hook's process, on a systemMessage item with EventKind
+	//     ThreadItemEventKindHookCompleted, from events.HookEndData.ExitCode.
+	//     Clients split "show every hook exit" from "show clean exits only"
+	//     on this number instead of re-parsing the "... exit N" announcement
+	//     prose, so rewording that text cannot change what a reader sees.
+	//
+	// Nil on every other item, and on any of the above whose source carries
+	// no exit code — never fabricated as zero.
 	ExitCode  *int64          `json:"exitCode,omitempty"`
 	Raw       json.RawMessage `json:"raw,omitempty"`
 	EventKind string          `json:"eventKind,omitempty"`

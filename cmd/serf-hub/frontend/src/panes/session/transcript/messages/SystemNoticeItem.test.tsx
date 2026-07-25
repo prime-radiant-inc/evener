@@ -1,10 +1,48 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";
 import { itemRendererFor } from "../types";
 import { SystemNoticeItem } from "./SystemNoticeItem";
+
+// See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
+// window.localStorage with its own (non-functional under vitest) global. These
+// tests render through TurnBlock, which reads the transcript visibility prefs.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
+
+beforeEach(() => {
+  localStorage.clear();
+  resetPrefsStoreForTests();
+});
+
+// The prompt-loaded setting gates whether a system-prompt item reaches a
+// renderer at all (transcriptVisibility.ts). These tests are about how such an
+// item RENDERS once shown, so they opt it in; visibility itself is covered by
+// transcriptVisibility.test.ts and TurnBlock.test.tsx.
+function showSystemPrompt() {
+  prefsStore.getState().setTranscriptStatus("promptLoaded", true);
+}
 
 afterEach(() => {
   cleanup();
@@ -123,6 +161,7 @@ test("a systemMessage item with blank text falls back to a sentence-case categor
 // non-scaffold notice stays a quiet line.
 
 test("a system_prompt eventKind item renders as a collapsed scaffold disclosure, even when its text is short", () => {
+  showSystemPrompt();
   render(<TurnBlock turn={turnWith([item("a", { text: "short", eventKind: "system_prompt" })])} />);
   const scaffold = screen.getByTestId("system-notice-scaffold") as HTMLDetailsElement;
   expect(scaffold.tagName).toBe("DETAILS");
@@ -147,6 +186,7 @@ test("a long systemMessage notice with no scaffold eventKind stays a plain quiet
 // prompt projected by an older daemon that predates the typed eventKind, so a
 // heterogeneous-version relay still collapses it correctly.
 test("the item_system_prompt id still classifies as scaffold when the wire carries no eventKind (old-daemon fallback)", () => {
+  showSystemPrompt();
   render(<TurnBlock turn={turnWith([item("item_system_prompt", { text: "You are Serf." })])} />);
   expect(screen.getByTestId("system-notice-scaffold")).toBeTruthy();
   expect(screen.getByTestId("system-notice-scaffold").querySelector("summary")?.textContent).toBe(

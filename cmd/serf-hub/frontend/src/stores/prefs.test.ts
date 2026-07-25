@@ -69,13 +69,18 @@ describe("defaults (empty localStorage)", () => {
   test("fontSize defaults to m", () => {
     expect(prefsStore.getState().fontSize).toBe("m");
   });
-  test("every transcript toggle defaults to false", () => {
+  // promptLoaded is the one transcript toggle that defaults ON, because it is
+  // the only one governing items the transcript already renders unconditionally
+  // (the system-prompt scaffold and each "prompt loaded" notice). Defaulting it
+  // off would delete those for every user who never opened Settings; the other
+  // four gate lines that do not exist until you ask for them.
+  test("transcript toggles default off, except promptLoaded", () => {
     expect(prefsStore.getState().transcript).toEqual({
       roundTimings: false,
       tokenCounts: false,
       hookExitsAll: false,
       hookExitsNormal: false,
-      promptLoaded: false,
+      promptLoaded: true,
     });
   });
   test("enterToSend defaults to false", () => {
@@ -132,9 +137,18 @@ describe("hydration from existing localStorage", () => {
       roundTimings: true,
       tokenCounts: true,
       hookExitsAll: false,
+      // Stored nothing for this one, so it falls back to its ON default.
+      promptLoaded: true,
       hookExitsNormal: true,
-      promptLoaded: false,
     });
+  });
+
+  // The mirror of the case above: promptLoaded's stored "0" has to WIN over its
+  // ON default, or turning it off would not survive a reload.
+  test("a stored promptLoaded of 0 beats its on-by-default", () => {
+    localStorage.setItem(KEY("transcriptPromptLoaded"), "0");
+    resetPrefsStoreForTests();
+    expect(prefsStore.getState().transcript.promptLoaded).toBe(false);
   });
 
   // Both default off, so "1" is the value that actually proves the stored
@@ -442,7 +456,7 @@ describe("setTranscriptStatus", () => {
       tokenCounts: false,
       hookExitsAll: true,
       hookExitsNormal: false,
-      promptLoaded: false,
+      promptLoaded: true,
     });
   });
 

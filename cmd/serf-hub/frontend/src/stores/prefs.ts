@@ -234,7 +234,13 @@ function loadTranscript(): Record<TranscriptStatusKey, boolean> {
     tokenCounts: readBool(TRANSCRIPT_KEY_NAMES.tokenCounts, false),
     hookExitsAll: readBool(TRANSCRIPT_KEY_NAMES.hookExitsAll, false),
     hookExitsNormal: readBool(TRANSCRIPT_KEY_NAMES.hookExitsNormal, false),
-    promptLoaded: readBool(TRANSCRIPT_KEY_NAMES.promptLoaded, false),
+    // Defaults ON, unlike its two neighbours, because it is the only one of the
+    // three that governs items the transcript ALREADY renders: the system-prompt
+    // scaffold and each "prompt loaded" notice are unfiltered until this pref
+    // gains a consumer. Off would make a working, visible feature disappear for
+    // everyone who never opened Settings. The hook toggles govern lines nothing
+    // renders yet, so off costs those nothing.
+    promptLoaded: readBool(TRANSCRIPT_KEY_NAMES.promptLoaded, true),
   };
 }
 

@@ -1482,6 +1482,56 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 	}
 }
 
+// A hook-completed announcement must carry the hook's exit code as a typed
+// field, not only inside its prose ("... exit 1"). The web's Settings ->
+// Transcript "Hook exits (normal only)" toggle has to split exit-0 from
+// nonzero hooks, and it must do so off the wire's own number rather than by
+// re-parsing English out of the announcement text.
+func TestAppEventProjectorHookEndCarriesTypedExitCode(t *testing.T) {
+	for _, code := range []int{0, 1, -1, 127} {
+		projector := NewAppEventProjector("th_1", "local:th_1")
+		out := projector.Project(events.SessionEvent{Kind: events.EventHookEnd, SessionID: "th_1", Data: events.HookEndData{
+			Event: "PreToolUse", HookType: "command", ExitCode: code,
+		}})
+
+		turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+		if len(turn.Items) != 1 {
+			t.Fatalf("turn=%+v", turn)
+		}
+		item := turn.Items[0]
+		if item.EventKind != appwire.ThreadItemEventKindHookCompleted {
+			t.Fatalf("item eventKind=%q, want %q", item.EventKind, appwire.ThreadItemEventKindHookCompleted)
+		}
+		if item.ExitCode == nil {
+			t.Fatalf("hook item carries no typed ExitCode (text-only %q)", item.Text)
+		}
+		if *item.ExitCode != int64(code) {
+			t.Fatalf("hook item ExitCode=%d, want %d", *item.ExitCode, code)
+		}
+	}
+}
+
+// Only hook items get an exit code. A skill/plugin/compaction announcement
+// has no process behind it, so fabricating a zero there would let the web
+// mistake it for a cleanly-exited hook.
+func TestAppEventProjectorNonHookAnnouncementsCarryNoExitCode(t *testing.T) {
+	events_ := []events.SessionEvent{
+		{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "using-superpowers"}},
+		{Kind: events.EventPromptLoaded, SessionID: "th_1", Data: events.PromptLoadedData{Label: "system.md", Size: 2048}},
+		{Kind: events.EventLoopDetection, SessionID: "th_1", Data: events.LoopDetectionData{Message: "loop"}},
+	}
+	for _, event := range events_ {
+		projector := NewAppEventProjector("th_1", "local:th_1")
+		turn := notificationTurn(t, projector.Project(event), appwire.NotifyTurnCompleted)
+		if len(turn.Items) != 1 {
+			t.Fatalf("turn=%+v", turn)
+		}
+		if got := turn.Items[0].ExitCode; got != nil {
+			t.Fatalf("%s item ExitCode=%d, want nil", event.Kind, *got)
+		}
+	}
+}
+
 // A context-compaction announcement must carry the structured before/after
 // numbers (not only prose) so the web can render an honest, inspectable
 // before→after expand (mockup #17 Alt A) instead of re-parsing the text.
