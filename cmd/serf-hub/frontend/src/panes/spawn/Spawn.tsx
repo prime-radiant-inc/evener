@@ -178,7 +178,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   );
   const validatePath = useCallback(
     (path: string, kind: string) =>
-      client.request("serf/path/validate", { path, kind }).then((r) => ({ valid: r.valid, error: r.error })),
+      // `path` is the server-canonicalized spelling, which a pathList add stores
+      // in place of the raw input (matching the settings-side pathList field).
+      client
+        .request("serf/path/validate", { path, kind })
+        .then((r) => ({ valid: r.valid, error: r.error, path: r.path })),
     [client],
   );
   const resolveConfig = useCallback(

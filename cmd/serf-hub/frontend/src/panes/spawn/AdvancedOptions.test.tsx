@@ -350,6 +350,87 @@ test("each pathList add picker is named by its own option", async () => {
   }
 });
 
+// A pathList add reaches the daemon on the same wire field a Settings add does,
+// so it is gated the same way: serf/path/validate runs on the add itself. The
+// assertion is on the validate CALL, not on the add's side effect - an
+// unvalidated add produces the same override, so only the RPC distinguishes
+// them.
+test("a pathList add is validated server-side with the option's own kind", async () => {
+  const user = userEvent.setup();
+  const { validatePath, onOverridesChange } = renderPanel([
+    option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await browseAndAdd(user, "skills");
+
+  await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/skills", "dir"));
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
+});
+
+// The mcpConfigs list holds files, and the kind sent has to be the RPC's own
+// spelling - schemaPathKind owns that mapping for both surfaces.
+test.each([
+  ["file", "file"],
+  ["outputFile", "output-file"],
+])("a %s-kind pathList add validates with the RPC's own kind %s", async (pathKind, wireKind) => {
+  const user = userEvent.setup();
+  const { validatePath } = renderPanel([
+    option({ wireField: "mcpConfigs", kind: "pathList", label: "MCP config files", pathKind }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await typePath(user, pathTrigger(), "/tmp/mcp.json");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+
+  await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/tmp/mcp.json", wireKind));
+});
+
+test("a pathList add the server rejects shows an inline error and is not collected", async () => {
+  const user = userEvent.setup();
+  const validatePath = vi.fn().mockResolvedValue({ valid: false, error: "path does not exist" });
+  const { onOverridesChange } = renderPanel(
+    [option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" })],
+    { validatePath },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await typePath(user, pathTrigger(), "/nope");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+
+  expect(await screen.findByText("path does not exist")).toBeTruthy();
+  expect(onOverridesChange).not.toHaveBeenCalledWith({ skillsDirs: ["/nope"] });
+});
+
+test("a pathList add stores the server-canonicalized path", async () => {
+  const user = userEvent.setup();
+  const validatePath = vi.fn().mockResolvedValue({ valid: true, path: "/opt/skills" });
+  const { onOverridesChange } = renderPanel(
+    [option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" })],
+    { validatePath },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await typePath(user, pathTrigger(), "/opt/../opt/skills");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
+});
+
+test("a pathList add is not blocked when the validate RPC itself fails", async () => {
+  const user = userEvent.setup();
+  const validatePath = vi.fn().mockRejectedValue(new Error("socket closed"));
+  const { onOverridesChange } = renderPanel(
+    [option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" })],
+    { validatePath },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await browseAndAdd(user, "skills");
+
+  await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/opt/skills"] }));
+});
+
 test("a pathList field rejects a path already in the list", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([
