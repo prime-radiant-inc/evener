@@ -103,14 +103,19 @@ function triggerLabel(tasks: ThreadModel["tasks"]): string {
 const LOAD_FAILURE = "Couldn't load tasks";
 
 // The inline report, split the way EmptyState renders it: the headline names
-// the step that died, the detail is the rejection's own text.
+// the step that died, the detail is the rejection's own text. A rejection
+// carrying no text of its own leaves the detail out entirely, the same way
+// sessionActionError drops the separator, so the two reports of this one
+// failure stay word-for-word the same.
 interface LoadFailure {
   headline: string;
-  detail: string;
+  detail?: string;
 }
 
 function loadFailure(err: unknown): LoadFailure {
-  return { headline: sessionActionHeadline(LOAD_FAILURE, err), detail: errorText(err).trim() };
+  const headline = sessionActionHeadline(LOAD_FAILURE, err);
+  const detail = errorText(err).trim();
+  return detail ? { headline, detail } : { headline };
 }
 
 function isActionUnavailable(err: unknown): boolean {
@@ -213,9 +218,7 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
       );
     }
     if (error) {
-      // Same drop-the-empty-detail rule sessionActionError applies to the
-      // toast, so the two reports stay word-for-word the same failure.
-      return <EmptyState title={error.headline} hint={error.detail || undefined} />;
+      return <EmptyState title={error.headline} hint={error.detail} />;
     }
     if (rows === null) {
       return <p className={CLASS.state}>Loading tasks…</p>;

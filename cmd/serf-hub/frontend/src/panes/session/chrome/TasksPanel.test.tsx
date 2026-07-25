@@ -290,3 +290,22 @@ test("a failed auto-resume names the resume in BOTH the toast and the inline sta
   // The action's own name is gone from both, not merely absent from one.
   expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
 });
+
+// The toast drops the separator when a rejection carries no text of its own
+// (protocol/errors.ts). The inline half has to drop the detail line for the
+// same rejection, or one failure reads as a headline in the toast and a
+// headline plus a blank line in the panel. No <Toast/> here: it would put a
+// second "Couldn't load tasks" on screen and blunt the count below.
+test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw new Error("");
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  const headline = await screen.findByText("Couldn't load tasks");
+  expect(headline.parentElement?.querySelectorAll("p")).toHaveLength(1);
+});
