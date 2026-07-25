@@ -69,8 +69,31 @@ Jesse: *"Inconsistent between tool types"* and *"Too much vertical space per cal
 - [ ] Each renderer keeps its own *content* decisions (what the target is, what meta it shows) and
       loses its own *layout* decisions.
 
-**Do not** change what any renderer decides to display. This task is layout unification only; a
-behavior change here would be indistinguishable from a regression.
+**Do not** change what any renderer decides to display, with the single exception of A1b below.
+Otherwise this task is layout unification only; a behavior change here would be indistinguishable
+from a regression.
+
+### Task A1b: the tool's own "why am I using this" line comes back
+
+**Files:** shared `ToolRow` from A1, `panes/session/transcript/ToolCallItem.tsx`
+**Test:** `toolRowGrammar.test.tsx`
+
+Jesse: *"our new UI is no longer showing the 'why am i using this tool' description like it should"*.
+
+Already root-caused, build on this: `ItemModel.description` IS populated — `protocol/reducer.ts:125`
+maps the wire's `ThreadItem.description`, and `protocol/model.ts:24-26` documents it as "Tool-call
+purpose … Dropped historically by wireItemToModel; now carried." But the ONLY consumer is
+`tools/subagentModule.tsx:192,213` (the subagent activity feed). No main-transcript tool renderer
+reads it, so the purpose line is silently dropped for every ordinary tool call.
+
+- [ ] The shared row renders `item.description` when present. It is the agent's stated reason, so it
+      is the most human-readable thing on the row — decide whether it leads or trails the
+      verb/target and say why.
+- [ ] Absent description → no placeholder, no empty element, no stray separator.
+- [ ] Do NOT duplicate `subagentModule`'s treatment; if both surfaces want the same presentation,
+      that's a shared helper, not a copy (DRY).
+- [ ] Check how the legacy UI on `main` presented it (`cmd/serf-hub/assets/renderer-tools.js`)
+      before designing — Jesse's "like it should" is a comparison to that.
 
 ### Task A2: a failed call is marked, and success costs no space
 
@@ -304,7 +327,7 @@ there and the client is refusing anyway.
 
 ## Sequencing
 
-- **A1 first**, then A2/A3/A4/A5/A6 (they all build on the shared row). A1 is the DRY move; doing
+- **A1 first**, then A1b/A2/A3/A4/A5/A6 (they all build on the shared row). A1 is the DRY move; doing
   the others first means undoing them.
 - **B1, C1, C2, C3, D1, D2 are independent** of stream A and of each other. C1 must be diagnosed
   before C2 (both touch `DockHost.tsx`).
