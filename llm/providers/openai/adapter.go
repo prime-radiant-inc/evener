@@ -639,7 +639,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("responses.create failed: %v", raw)
+		msg := llm.ProviderFailureMessage("responses.create", rawBytes)
 		responsesErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		if a.shouldFallbackToChatCompletions(req, responsesErr) {
 			completeAttempt(nil, responsesErr)

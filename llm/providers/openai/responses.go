@@ -277,7 +277,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		dec.UseNumber()
 		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("responses.create(stream) failed: %v", raw)
+		msg := llm.ProviderFailureMessage("responses.create(stream)", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {

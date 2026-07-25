@@ -212,7 +212,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("messages.create", rawBytes)
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 	r := fromAnthropicResponse(raw, req.Model)
@@ -292,7 +292,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	decodeErr := json.Unmarshal(rawBytes, &raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "messages.count_tokens failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("messages.count_tokens", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr
@@ -382,7 +382,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var raw map[string]any
 		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "messages.create(stream) failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("messages.create(stream)", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {

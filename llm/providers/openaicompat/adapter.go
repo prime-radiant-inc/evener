@@ -264,7 +264,7 @@ func (a *Adapter) completeViaChatCompletions(ctx context.Context, req llm.Reques
 		return llm.Response{}, err
 	}
 	if wire.status != http.StatusOK {
-		msg := extractErrorMessage(wire.raw)
+		msg := llm.ProviderFailureMessage("chat.completions", wire.rawRespBody)
 		retryAfter := llm.ParseRetryAfter(wire.headers.Get("Retry-After"), time.Now())
 		return llm.Response{}, llm.ErrorFromHTTPStatus("openai-compatible", wire.status, msg, wire.raw, retryAfter)
 	}
@@ -343,7 +343,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		b, readErr := io.ReadAll(resp.Body)
 		var raw map[string]any
 		jsonErr := json.Unmarshal(b, &raw)
-		msg := extractErrorMessage(raw)
+		msg := llm.ProviderFailureMessage("chat.completions(stream)", b)
 		retryAfter := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		returnedErr := llm.ErrorFromHTTPStatus("openai-compatible", resp.StatusCode, msg, raw, retryAfter)
 		decodeErr := jsonErr
@@ -785,16 +785,4 @@ func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCred
 		}
 	}
 	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
-}
-
-func extractErrorMessage(raw map[string]any) string {
-	if raw == nil {
-		return ""
-	}
-	if errObj, ok := raw["error"].(map[string]any); ok {
-		if msg, ok := errObj["message"].(string); ok {
-			return msg
-		}
-	}
-	return ""
 }
