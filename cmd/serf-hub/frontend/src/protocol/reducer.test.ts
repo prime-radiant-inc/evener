@@ -22,6 +22,7 @@ import type {
   ThreadReadResponse,
   ThreadTurnsListResponse,
 } from "./types.gen";
+import { NOTIFICATION_NAMES } from "./types.gen";
 
 // Each fixture is newline-delimited JSON: the first line is
 // {"hydrate": ThreadReadResponse, "ref": string}, every following line is a
@@ -38,13 +39,64 @@ const FIXTURE_TEXT: Record<string, string> = {
   "queue-and-status": queueAndStatusFixture,
 };
 
-function readFixture(name: string): unknown[] {
+const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
+
+interface Fixture {
+  header: FixtureHeader;
+  notifications: AnyNotification[];
+}
+
+// parseFixture turns one fixture's text into a header plus a list of
+// notifications, checking every record's method against the hub's generated
+// catalog on the way through.
+//
+// The check has to happen HERE, at the read, because a fixture is data: it is
+// JSON on disk, so no type check reaches it — not tsc (the notifications never
+// exist as source literals) and not FakeClient's emitNotification guard (the
+// replay drives applyNotification directly, never a client). Left unchecked, a
+// notification renamed on the wire leaves every recorded line stale, the
+// reducer's `default:` case returns the model unchanged for each one, and the
+// replay's toMatchSnapshot() assertion re-records the resulting do-nothing
+// model as the new truth on the next `-u` run. The suite goes green on a lie.
+// Validating the name at load turns that silent staleness into a failure that
+// names the fixture and the line.
+function parseFixture(name: string, text: string): Fixture {
+  const records = text
+    .split("\n")
+    .map((line, index) => ({ text: line.trim(), line: index + 1 }))
+    .filter((record) => record.text.length > 0)
+    .map((record) => ({ ...record, value: JSON.parse(record.text) as { method?: unknown } }));
+
+  const first = records[0];
+  if (!first) throw new Error(`fixture ${name} is empty`);
+  const header = first.value as unknown as FixtureHeader;
+  if (header.hydrate === undefined || header.ref === undefined) {
+    throw new Error(`fixture ${name} line ${first.line}: expected a {hydrate, ref} header, got ${first.text}`);
+  }
+
+  const notifications = records.slice(1).map((record) => {
+    const method = record.value.method;
+    if (typeof method !== "string") {
+      throw new Error(`fixture ${name} line ${record.line}: record has no string "method"`);
+    }
+    if (!KNOWN_NOTIFICATIONS.has(method)) {
+      throw new Error(
+        `fixture ${name} line ${record.line}: unknown notification "${method}" — not in the hub's generated ` +
+          `notification catalog (NOTIFICATION_NAMES in protocol/types.gen.ts). Either the notification was ` +
+          `renamed or removed on the wire and this recorded replay is stale, or the name is a typo; either way ` +
+          `the reducer would ignore this line via its default: case and the snapshot would record nothing.`,
+      );
+    }
+    return record.value as AnyNotification;
+  });
+
+  return { header, notifications };
+}
+
+function readFixture(name: string): Fixture {
   const text = FIXTURE_TEXT[name];
   if (text === undefined) throw new Error(`no fixture registered for ${name}`);
-  return text
-    .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line) as unknown);
+  return parseFixture(name, text);
 }
 
 function turnAt(model: ThreadModel, index: number): TurnModel {
@@ -111,15 +163,52 @@ function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): Sa
 
 for (const f of ["basic-turn", "streaming-with-reset", "tool-and-jobs", "queue-and-status"]) {
   test(`fixture ${f} reduces to the expected model`, () => {
-    const lines = readFixture(f);
-    const header = lines[0] as FixtureHeader;
+    const { header, notifications } = readFixture(f);
     let model = hydrateThread(header.hydrate, header.ref, 1000);
-    for (const [i, n] of lines.slice(1).entries()) {
-      model = applyNotification(model, n as AnyNotification, 1000 + i);
+    for (const [i, n] of notifications.entries()) {
+      model = applyNotification(model, n, 1000 + i);
     }
     expect(model).toMatchSnapshot();
   });
 }
+
+// The replay above is the only place in this suite that reaches
+// applyNotification with data instead of a source literal — everywhere else
+// the notification is an object literal in an AnyNotification position, which
+// tsc checks against the generated union. So parseFixture's name check is the
+// entire guard on the fixture path, and these cover it.
+const PROBE_HEADER = JSON.stringify({ hydrate: { thread: testThread() }, ref: "ref_t" });
+
+function probeFixture(...records: object[]): string {
+  return [PROBE_HEADER, ...records.map((r) => JSON.stringify(r))].join("\n");
+}
+
+test("a fixture record naming a notification the hub no longer sends is rejected, not replayed", () => {
+  // What a wire rename leaves behind: a recorded line whose method the hub
+  // stopped sending. Unchecked it would reduce to nothing and re-snapshot green.
+  const stale = probeFixture({ method: "turn/renamed", params: { turnId: "turn_1" } });
+  expect(() => parseFixture("probe", stale)).toThrow(/unknown notification "turn\/renamed"/);
+  expect(() => parseFixture("probe", stale)).toThrow(/NOTIFICATION_NAMES/);
+});
+
+test("a rejected fixture record is reported by fixture name and line number", () => {
+  const stale = probeFixture({ method: "turn/started", params: {} }, { method: "item/agentMessage/chunk", params: {} });
+  expect(() => parseFixture("tool-and-jobs", stale)).toThrow(/fixture tool-and-jobs line 3/);
+});
+
+test("every name in the generated catalog is accepted by the fixture reader", () => {
+  const everyName = probeFixture(...NOTIFICATION_NAMES.map((method) => ({ method, params: {} })));
+  const parsed = parseFixture("probe", everyName);
+  expect(parsed.notifications.map((n) => n.method)).toEqual([...NOTIFICATION_NAMES]);
+});
+
+test("a fixture whose records lack a method, or whose first line is not a header, is rejected", () => {
+  expect(() => parseFixture("probe", probeFixture({ params: {} }))).toThrow(/line 2: record has no string "method"/);
+  expect(() => parseFixture("probe", JSON.stringify({ method: "turn/started", params: {} }))).toThrow(
+    /line 1: expected a \{hydrate, ref\} header/,
+  );
+  expect(() => parseFixture("probe", "")).toThrow(/fixture probe is empty/);
+});
 
 test("hydrate carries the thread's location facts (cwd, git branch, project path)", () => {
   const model = testHydrate({
@@ -149,7 +238,7 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -162,7 +251,7 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -170,7 +259,7 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" },
-    } as AnyNotification,
+    },
     1003,
   );
   model = applyNotification(
@@ -178,7 +267,7 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" },
-    } as AnyNotification,
+    },
     1004,
   );
 
@@ -196,7 +285,7 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello!", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1005,
   );
 
@@ -216,7 +305,7 @@ test("item/completed inserts an item that had no preceding item/started", () => 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   expect(turnAt(model, 0).items).toHaveLength(0);
@@ -231,7 +320,7 @@ test("item/completed inserts an item that had no preceding item/started", () => 
         turnId: "turn_1",
         item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "Hi there", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -247,7 +336,7 @@ test("agentMessage/reset discards the in-flight item", () => {
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -260,7 +349,7 @@ test("agentMessage/reset discards the in-flight item", () => {
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   expect(turnAt(model, 0).items).toHaveLength(1);
@@ -270,7 +359,7 @@ test("agentMessage/reset discards the in-flight item", () => {
     {
       method: "item/agentMessage/reset",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1" },
-    } as AnyNotification,
+    },
     1003,
   );
   expect(turnAt(model, 0).items).toHaveLength(0);
@@ -283,7 +372,7 @@ test("notification for a different thread is ignored (same object returned)", ()
     {
       method: "thread/status/changed",
       params: { threadId: "thr_t", ref: "some_other_ref", status: { type: "active" } },
-    } as AnyNotification,
+    },
     2000,
   );
   expect(result).toBe(model);
@@ -294,7 +383,7 @@ test("notification method with no handler leaves the model unchanged", () => {
   // model any state for (ThreadModel has no auth-provider fields); it also
   // carries neither ref nor threadId, so it can never target a thread.
   const model = testHydrate();
-  const result = applyNotification(model, { method: "serf/auth/updated", params: {} } as AnyNotification, 2000);
+  const result = applyNotification(model, { method: "serf/auth/updated", params: {} }, 2000);
   expect(result).toBe(model);
 });
 
@@ -305,7 +394,7 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
       {
         method: "thread/status/changed",
         params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
-      } as AnyNotification,
+      },
       model,
     ),
   ).toBe(true);
@@ -314,25 +403,22 @@ test("notificationTargetsThread matches on ref, falls back to threadId, else fal
       {
         method: "thread/status/changed",
         params: { threadId: "thr_t", ref: "not_ref_t", status: { type: "active" } },
-      } as AnyNotification,
+      },
       model,
     ),
   ).toBe(false);
   // serf/task/updated's ref is optional; when absent, threadId is the fallback key.
   expect(
-    notificationTargetsThread(
-      { method: "serf/task/updated", params: { threadId: "thr_t", total: 1, done: 0 } } as AnyNotification,
-      model,
-    ),
+    notificationTargetsThread({ method: "serf/task/updated", params: { threadId: "thr_t", total: 1, done: 0 } }, model),
   ).toBe(true);
   expect(
     notificationTargetsThread(
-      { method: "serf/task/updated", params: { threadId: "not_thr_t", total: 1, done: 0 } } as AnyNotification,
+      { method: "serf/task/updated", params: { threadId: "not_thr_t", total: 1, done: 0 } },
       model,
     ),
   ).toBe(false);
   // Neither field present (e.g. serf/auth/updated) targets no thread model.
-  expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} } as AnyNotification, model)).toBe(false);
+  expect(notificationTargetsThread({ method: "serf/auth/updated", params: {} }, model)).toBe(false);
 });
 
 test("turn/completed applies even though its payload carries no ref or threadId", () => {
@@ -348,14 +434,14 @@ test("turn/completed applies even though its payload carries no ref or threadId"
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   const beforeCompletion = model;
-  const turnCompleted = {
+  const turnCompleted: AnyNotification = {
     method: "turn/completed",
     params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "", items: [] } },
-  } as AnyNotification;
+  };
 
   expect(notificationTargetsThread(turnCompleted, model)).toBe(false);
   model = applyNotification(model, turnCompleted, 1002);
@@ -379,7 +465,7 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
     {
       method: "turn/started",
       params: { threadId: "thr_a", ref: "ref_a", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   expect(modelA.activeTurnId).toBe("turn_1");
@@ -398,7 +484,7 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_a1", turnId: "turn_1", text: "A's answer", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1500,
   );
 
@@ -421,10 +507,10 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   // internal/appprojector/appwire_projection.go: EventUserInput,
   // EventGoalContinuation, EventError, EventSessionEnd all emit
   // Turn{ID,Status[,Error]} with Items nil, ItemsView "") — no items key.
-  const aTurnCompleted = {
+  const aTurnCompleted: AnyNotification = {
     method: "turn/completed",
     params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-  } as AnyNotification;
+  };
 
   // Sanity: the same notification legitimately completes A's own active
   // turn — and A's already-streamed item SURVIVES the bare settle stamp.
@@ -452,7 +538,7 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -465,7 +551,7 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "Hello, world!", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   expect(turnAt(model, 0).items).toHaveLength(1);
@@ -475,7 +561,7 @@ test("turn/completed with a bare stamp preserves the turn's already-streamed ite
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -491,7 +577,7 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -512,7 +598,7 @@ test("turn/completed's bare stamp fields (status, timing, usage, cost) land on t
           cost: "0.01",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -537,7 +623,7 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -550,7 +636,7 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -565,7 +651,7 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
         summaryIndex: 0,
         delta: "thinking...",
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -582,7 +668,7 @@ test('turn/completed with itemsView "full" still replaces items, and mergeReason
           items: [{ type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" }],
         },
       },
-    } as AnyNotification,
+    },
     1004,
   );
 
@@ -603,7 +689,7 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -616,7 +702,7 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_x", turnId: "turn_1", text: "X's text", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   expect(turnAt(model, 0).items).toHaveLength(1);
@@ -634,7 +720,7 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
           items: [{ type: "agentMessage", id: "item_y", turnId: "turn_1", text: "Y's text", status: "completed" }],
         },
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -652,7 +738,7 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -665,7 +751,7 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -673,7 +759,7 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "Hel" },
-    } as AnyNotification,
+    },
     1003,
   );
   model = applyNotification(
@@ -681,7 +767,7 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "lo" },
-    } as AnyNotification,
+    },
     1004,
   );
 
@@ -692,7 +778,7 @@ test("turn/completed's settle fold joins a mid-stream item's pendingText into te
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
-    } as AnyNotification,
+    },
     1005,
   );
 
@@ -709,7 +795,7 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -722,7 +808,7 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", text: "partial answer", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -732,7 +818,7 @@ test("turn/completed's failed-turn stamp (EventError shape) preserves items and 
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -757,7 +843,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -770,7 +856,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
         turnId: "turn_1",
         item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -778,7 +864,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "partial " },
-    } as AnyNotification,
+    },
     1003,
   );
   model = applyNotification(
@@ -786,7 +872,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
     {
       method: "item/agentMessage/delta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta: "answer" },
-    } as AnyNotification,
+    },
     1004,
   );
 
@@ -796,7 +882,7 @@ test("turn/completed's failed-turn stamp folds a mid-stream item's pendingText A
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "failed", itemsView: "", error } },
-    } as AnyNotification,
+    },
     1005,
   );
 
@@ -825,7 +911,7 @@ test('serf/steering/injected with source "user" appends a steering item to the a
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -834,7 +920,7 @@ test('serf/steering/injected with source "user" appends a steering item to the a
     {
       method: "serf/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "please also check X", source: "user" },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -857,7 +943,7 @@ test("serf/steering/injected with no source field appends an item with source un
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -866,7 +952,7 @@ test("serf/steering/injected with no source field appends an item with source un
     {
       method: "serf/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "daemon steer text" },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -882,13 +968,13 @@ test("two steers in one turn get distinct ids in arrival order", () => {
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } } as AnyNotification,
+    { method: "serf/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "first" } },
     1002,
   );
   model = applyNotification(
@@ -896,7 +982,7 @@ test("two steers in one turn get distinct ids in arrival order", () => {
     {
       method: "serf/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "second" },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -914,7 +1000,7 @@ test("serf/steering/injected with no active turn only updates lastFrameAt (no tu
     {
       method: "serf/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "orphaned steer" },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -929,7 +1015,7 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -937,7 +1023,7 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
     {
       method: "serf/steering/injected",
       params: { threadId: "thr_t", ref: "ref_t", text: "mid-turn steer" },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -946,7 +1032,7 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -967,7 +1053,7 @@ test("serf/steering/injected images populate display-ready strings via the same 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -981,7 +1067,7 @@ test("serf/steering/injected images populate display-ready strings via the same 
         text: "",
         images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "screenshot.png" }],
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1043,27 +1129,26 @@ test("askPending is wire-authoritative from the thread snapshot", () => {
 });
 
 test("item lifecycle never clobbers the wire's thread-level askPending", () => {
-  const turnStarted = {
+  const turnStarted: AnyNotification = {
     method: "turn/started",
     params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-  } as AnyNotification;
-  const askUser = (method: "item/started" | "item/completed", status: string) =>
-    ({
-      method,
-      params: {
-        threadId: "thr_t",
-        ref: "ref_t",
+  };
+  const askUser = (method: "item/started" | "item/completed", status: string): AnyNotification => ({
+    method,
+    params: {
+      threadId: "thr_t",
+      ref: "ref_t",
+      turnId: "turn_1",
+      item: {
+        type: "commandExecution",
+        id: "item_ask",
         turnId: "turn_1",
-        item: {
-          type: "commandExecution",
-          id: "item_ask",
-          turnId: "turn_1",
-          toolName: "ask_user",
-          callId: "call_ask",
-          status,
-        },
+        toolName: "ask_user",
+        callId: "call_ask",
+        status,
       },
-    }) as AnyNotification;
+    },
+  });
 
   // A session the wire says is waiting on a human (askPending: true) stays
   // waiting across an ask_user call's whole open->settle lifecycle: the tool
@@ -1096,7 +1181,7 @@ test("item/completed maps the wire item's error onto the model (live path)", () 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1117,7 +1202,7 @@ test("item/completed maps the wire item's error onto the model (live path)", () 
           status: "completed",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   const item = itemAt(turnAt(model, 0), 0);
@@ -1163,7 +1248,7 @@ test("item/completed maps the wire item's exitCode onto the model (live path)", 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1185,7 +1270,7 @@ test("item/completed maps the wire item's exitCode onto the model (live path)", 
           status: "completed",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   expect(itemAt(turnAt(model, 0), 0).exitCode).toBe(2);
@@ -1347,7 +1432,7 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
     {
       method: "thread/reasoning-effort/changed",
       params: { threadId: "thr_t", ref: "ref_t", reasoningEffort: "high" },
-    } as AnyNotification,
+    },
     2000,
   );
   expect(model.reasoningEffort).toBe("high");
@@ -1377,7 +1462,7 @@ test("thread/model/changed updates modelProvider/model and the new reasoning-eff
         reasoningEffortLevels: ["low", "medium", "high"],
         supportsReasoning: true,
       },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -1404,7 +1489,7 @@ test("thread/model/changed resets reasoningEffortLevels/supportsReasoning to emp
     {
       method: "thread/model/changed",
       params: { threadId: "thr_t", ref: "ref_t", modelProvider: "openai", model: "gpt-5.5" },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -1427,7 +1512,7 @@ test("first reasoning delta stamps observedStartedAt; a later delta does not mov
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1440,7 +1525,7 @@ test("first reasoning delta stamps observedStartedAt; a later delta does not mov
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1456,7 +1541,7 @@ test("first reasoning delta stamps observedStartedAt; a later delta does not mov
         summaryIndex: 0,
         delta: "thinking",
       },
-    } as AnyNotification,
+    },
     1003,
   );
   expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString());
@@ -1466,7 +1551,7 @@ test("first reasoning delta stamps observedStartedAt; a later delta does not mov
     {
       method: "item/reasoning/summaryTextDelta",
       params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_r", summaryIndex: 0, delta: " more" },
-    } as AnyNotification,
+    },
     1050,
   );
   expect(itemAt(turnAt(model, 0), 0).observedStartedAt).toBe(new Date(1003).toISOString()); // unchanged by the second delta
@@ -1479,7 +1564,7 @@ test("item/completed stamps observedCompletedAt when observation began; the wire
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1492,7 +1577,7 @@ test("item/completed stamps observedCompletedAt when observation began; the wire
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -1507,7 +1592,7 @@ test("item/completed stamps observedCompletedAt when observation began; the wire
         summaryIndex: 0,
         delta: "thinking",
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1521,7 +1606,7 @@ test("item/completed stamps observedCompletedAt when observation began; the wire
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1010,
   );
 
@@ -1539,7 +1624,7 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1552,7 +1637,7 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -1567,7 +1652,7 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
         summaryIndex: 0,
         delta: "thinking",
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1577,7 +1662,7 @@ test("a reasoning item still in-flight at a bare turn/completed settle gets obse
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "interrupted", itemsView: "" } },
-    } as AnyNotification,
+    },
     1020,
   );
 
@@ -1611,7 +1696,7 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1624,7 +1709,7 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -1639,7 +1724,7 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
         summaryIndex: 0,
         delta: "thinking",
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1660,7 +1745,7 @@ test("wire startedAt/completedAt, when present, coexist untouched alongside obse
           completedAt: 6000,
         },
       },
-    } as AnyNotification,
+    },
     1004,
   );
 
@@ -1684,7 +1769,7 @@ test("warning mid-turn appends an item to the active turn with text=message and 
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -1700,7 +1785,7 @@ test("warning mid-turn appends an item to the active turn with text=message and 
         title: "Provider warning",
         hint: "slow down",
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1723,18 +1808,18 @@ test("two warnings in one turn get distinct ids in arrival order", () => {
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
   model = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "first" } } as AnyNotification,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "first" } },
     1002,
   );
   model = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "second" } } as AnyNotification,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "second" } },
     1003,
   );
 
@@ -1749,7 +1834,7 @@ test("warning with no active turn only updates lastFrameAt (no turn fabricated c
 
   const result = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "orphaned warning" } } as AnyNotification,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "orphaned warning" } },
     2000,
   );
 
@@ -1764,12 +1849,12 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
     model,
-    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } } as AnyNotification,
+    { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "mid-turn warning" } },
     1002,
   );
 
@@ -1778,7 +1863,7 @@ test("a warning item survives a bare turn/completed settle stamp (composition wi
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1798,7 +1883,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -1815,7 +1900,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
         hint: "",
         cause: "context canceled",
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1842,7 +1927,7 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1863,7 +1948,7 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
           status: "inProgress",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1885,7 +1970,7 @@ test("item/completed without argumentsJson keeps the item's original argumentsJS
           status: "completed",
         },
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1902,7 +1987,7 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -1923,7 +2008,7 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
           status: "inProgress",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -1945,7 +2030,7 @@ test("item/completed with its own argumentsJson replaces the old value (wire tru
           status: "completed",
         },
       },
-    } as AnyNotification,
+    },
     1003,
   );
 
@@ -1960,7 +2045,7 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -1974,7 +2059,7 @@ test("item/completed inserting a never-started item has no argumentsJSON (no cra
         turnId: "turn_1",
         item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "hi", status: "completed" },
       },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -2117,7 +2202,7 @@ test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive li
     {
       method: "thread/status/changed",
       params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2154,7 +2239,7 @@ test("thread/status/changed to a non-active status clears the live work-clock an
     {
       method: "thread/status/changed",
       params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2185,7 +2270,7 @@ test("turn/completed clears the live work-clock anchor — the active turn just 
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2207,7 +2292,7 @@ test("thread/status/changed staying active preserves the live work-clock anchor"
     {
       method: "thread/status/changed",
       params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2225,7 +2310,7 @@ test("pendingEscalations survives a turn/started notification — thread-level s
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -2242,7 +2327,7 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
 
@@ -2251,7 +2336,7 @@ test("pendingEscalations survives a turn/completed bare-stamp settle — thread-
     {
       method: "turn/completed",
       params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
-    } as AnyNotification,
+    },
     1002,
   );
 
@@ -2262,11 +2347,7 @@ test('"serf/sandbox/escalation/requested" appends a new card with full field map
   let model = testHydrate();
   const escalation = testEscalation({ command: "rm -rf /tmp/x", outputSoFar: "partial output", partiallyRan: true });
 
-  model = applyNotification(
-    model,
-    { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification,
-    2000,
-  );
+  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation }, 2000);
 
   expect(model.pendingEscalations).toEqual([escalation]);
   expect(model.lastFrameAt).toBe(2000);
@@ -2290,11 +2371,7 @@ test('"serf/sandbox/escalation/requested" with an already-present escalationId r
   });
 
   const updatedFirst = testEscalation({ escalationId: "esc_1", mode: "exempt_path_prefix", partiallyRan: true });
-  model = applyNotification(
-    model,
-    { method: "serf/sandbox/escalation/requested", params: updatedFirst } as AnyNotification,
-    2000,
-  );
+  model = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: updatedFirst }, 2000);
 
   expect(model.pendingEscalations).toEqual([updatedFirst, second]);
 });
@@ -2303,11 +2380,7 @@ test('"serf/sandbox/escalation/requested" for a different thread is a same-refer
   const model = testHydrate();
   const escalation = testEscalation({ ref: "some_other_ref", threadId: "thr_other" });
 
-  const result = applyNotification(
-    model,
-    { method: "serf/sandbox/escalation/requested", params: escalation } as AnyNotification,
-    2000,
-  );
+  const result = applyNotification(model, { method: "serf/sandbox/escalation/requested", params: escalation }, 2000);
 
   expect(result).toBe(model);
 });
@@ -2328,7 +2401,7 @@ test('"serf/sandbox/escalation/resolved" clears the matching card by id and stam
     {
       method: "serf/sandbox/escalation/resolved",
       params: { threadId: "thr_t", ref: "ref_t", escalationId: escalation.escalationId },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2351,7 +2424,7 @@ test('"serf/sandbox/escalation/resolved" for an id this client never held leaves
     {
       method: "serf/sandbox/escalation/resolved",
       params: { threadId: "thr_t", ref: "ref_t", escalationId: "esc_never_held" },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2370,7 +2443,7 @@ test('"serf/sandbox/escalation/resolved" for a different thread is a same-refere
     {
       method: "serf/sandbox/escalation/resolved",
       params: { threadId: "thr_other", ref: "some_other_ref", escalationId: escalation.escalationId },
-    } as AnyNotification,
+    },
     2000,
   );
 
@@ -2414,7 +2487,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
     {
       method: "turn/started",
       params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
-    } as AnyNotification,
+    },
     1001,
   );
   model = applyNotification(
@@ -2435,7 +2508,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
           status: "inProgress",
         },
       },
-    } as AnyNotification,
+    },
     1002,
   );
   model = applyNotification(
@@ -2456,7 +2529,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
           status: "inProgress",
         },
       },
-    } as AnyNotification,
+    },
     1003,
   );
   model = applyNotification(
@@ -2469,7 +2542,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
         turnId: "turn_1",
         item: { type: "reasoning", id: "item_r", turnId: "turn_1", status: "inProgress" },
       },
-    } as AnyNotification,
+    },
     1004,
   );
   model = applyNotification(
@@ -2484,7 +2557,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
         summaryIndex: 0,
         delta: "thinking...",
       },
-    } as AnyNotification,
+    },
     1005,
   );
 
@@ -2521,7 +2594,7 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
           ],
         },
       },
-    } as AnyNotification,
+    },
     1006,
   );
 
