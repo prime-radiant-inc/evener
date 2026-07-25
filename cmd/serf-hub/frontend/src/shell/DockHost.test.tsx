@@ -91,7 +91,51 @@ beforeAll(async () => {
   await import("../panes/session/Session");
   await import("../panes/welcome"); // registerPane("welcome") side effect
   await import("../panes/session"); // registerPane("session") side effect
+
+  // Then RENDER the two panes whose Suspense reveal a test would otherwise
+  // wait out. Importing a module is only half a React.lazy's cost: lazy keeps
+  // a payload of its own that stays uninitialized until React first renders
+  // the component, so the first render still suspends, still commits its
+  // Suspense fallback, and then waits out react-dom's FALLBACK_THROTTLE_MS
+  // (300ms, react-dom 19.2) before it will commit the revealed content - a
+  // flicker guard that is pure wall clock and does not shrink on a fast
+  // machine. An already-resolved promise does not dodge it: the `doc` and
+  // `settings` fixtures above are lazy(() => Promise.resolve(...)) and still
+  // suspend once each. Measured here: the doc fixture's first render cost
+  // 337ms and welcome's 322ms, both inside a findBy budget that defaults to
+  // 1000ms. Paying it in a hook whose ceiling is a tripwire, rather than
+  // inside an assertion window. Same fix as App.test.tsx (commit c1a8616ea).
+  // Only these two: the `settings` fixture and the real session pane are
+  // never awaited through their own Suspense boundary anywhere in this file
+  // (measured - every test that opens one settles in single-digit ms off the
+  // synchronously-rendered dockview tab title), so warming them would be
+  // cost with no benefit.
+  await warmPane(
+    () => workspaceStore.getState().openPane("doc", { ref: "ref_warm" }),
+    () => screen.findByText(/doc pane: ref_warm/),
+  );
+  // No pane open: DockHost's own boot fallback opens welcome in the main slot.
+  await warmPane(
+    () => {},
+    () => screen.findByText("No session open"),
+  );
 });
+
+// Renders DockHost once with `open`'s pane in it and awaits its landmark, so
+// both halves of that pane's lazy-loading cost are already paid by the time a
+// test measures it. See the beforeAll above for why the module cache alone is
+// not enough.
+async function warmPane(open: () => void, findLandmark: () => Promise<unknown>): Promise<void> {
+  open();
+  render(<DockHost />);
+  await findLandmark();
+  // Unmounting also clears DockHost's pending debounced layout save (its own
+  // effect cleanup), so no warm render leaks a write into a later test.
+  cleanup();
+  resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+  localStorage.clear();
+}
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
