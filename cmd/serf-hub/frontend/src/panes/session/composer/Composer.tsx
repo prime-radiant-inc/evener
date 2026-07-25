@@ -249,11 +249,17 @@ export function Composer({ ref }: ComposerProps) {
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments;
 
-  const showStop =
-    model.status.type !== "ended" &&
-    model.status.type !== "closed" &&
-    (model.capabilities.interrupt || model.capabilities.steer || model.capabilities.send || model.capabilities.queue);
-  const showSteer = model.capabilities.steer || model.capabilities.send || model.capabilities.queue;
+  // Stop and Steer both act on an IN-FLIGHT turn - there is no turn to
+  // interrupt and nothing to steer into otherwise, so they are rendered only
+  // while one is running (`busy`) AND the harness advertises the matching
+  // capability. `busy` also subsumes the ended/closed statuses isTurnActive
+  // can never report as active. Both routes a Steer click can take need the
+  // live turn: classic turn/steer carries expectedTurnId, and
+  // turn/drainAsSteer is refused with "no active turn to steer" when nothing
+  // is processing (server/appwire_runtime.go's handleAppTurnDrainAsSteer), so
+  // a non-empty queue does not make Steer meaningful on an idle session.
+  const showStop = busy && model.capabilities.interrupt;
+  const showSteer = busy && model.capabilities.steer;
   const submitLabel = availability.canQueue ? "Queue" : "Send";
 
   function handleTextChange(event: { target: { value: string } }): void {
@@ -650,7 +656,10 @@ export function Composer({ ref }: ComposerProps) {
                     type="button"
                     data-testid="composer-stop"
                     onClick={() => void handleInterruptClick()}
-                    disabled={!busy || !model.capabilities.interrupt || busyAction !== null}
+                    // busy + the interrupt capability are already what makes
+                    // this render at all, so only an in-flight request of our
+                    // own is left to gate on.
+                    disabled={busyAction !== null}
                   />
                 )}
                 {showSteer && (
@@ -660,7 +669,9 @@ export function Composer({ ref }: ComposerProps) {
                     type="button"
                     data-testid="composer-steer"
                     onClick={handleSteerClick}
-                    disabled={!busy || !model.capabilities.steer || busyAction !== null}
+                    // Same as Stop above: busy + the steer capability already
+                    // gate this control's existence.
+                    disabled={busyAction !== null}
                   >
                     Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} compact />}
                   </Button>
