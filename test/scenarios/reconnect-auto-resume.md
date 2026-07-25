@@ -65,12 +65,16 @@ button uses the SAME path.
   managed-launch sessions, `t65c` + `ws5f` cover the equivalent path
   — write a `reconnect-codex-managed.md` scenario for that flow if
   you have a working codex setup.
-- The `e465` UI button (`Reconnect & retry`) is only surfaced when
-  a `source=hub` diagnostic exists. This scenario tests the path
-  WITHOUT a diagnostic — the auto-resume fires from the server
-  even on a "cold" send to a dead daemon. The button is the user-
-  visible escape hatch for cases where the auto-resume itself
-  failed (e.g. spawner not configured, launch config invalid).
+- The `Reconnect & retry` button (kata `e465`) is surfaced only by a
+  connection-class `turn.error`, which reaches the client from the
+  daemon's own diagnostic or from a persisted `TURN_FAILURE` entry —
+  never from the hub. So killing a daemon does **not** produce it: the
+  daemon dies before it can record anything, and the hub's relay
+  re-dials in silence (kata `3h02`). This scenario is the path that
+  still works, and it needs no diagnostic — auto-resume fires from the
+  server on a "cold" send to a dead daemon. A companion scenario for
+  the button was retired for the same reason (kata `h0cc`); the button
+  itself is covered by `TurnFailureEndCap.test.tsx`.
 - If the daemon was hung-but-alive (not killed; deadlocked), `xcas`
   is the relevant kata — the dial timeout maps to `SessionUnavailable`
   and triggers the same resume. Worth a separate hung-daemon
