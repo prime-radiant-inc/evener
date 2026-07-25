@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Tree, type TreeRowInfo } from "../../widgets";
-import { cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
+import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
 
 afterEach(cleanup);
@@ -126,6 +126,21 @@ describe("signal gutter", () => {
     render(<RailRow node={projectRailNode(apiProject())} info={info()} actions={actions()} />);
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
     expect(screen.getByTestId("rail-row-signal")).toBeTruthy();
+  });
+});
+
+describe("activityGloss", () => {
+  test("states the humanized state alone when the session carries no other metadata", () => {
+    expect(activityGloss(apiNode({ state: "active" }))).toBe("working");
+  });
+
+  test("joins state, branch, tier and model in that order", () => {
+    const session = apiNode({ state: "awaiting", branch: "main", tier: "archived", model: "opus" });
+    expect(activityGloss(session)).toBe("waiting on you · main · archived · opus");
+  });
+
+  test("omits an empty branch and the unremarkable 'current' tier", () => {
+    expect(activityGloss(apiNode({ state: "idle", branch: "", tier: "current", model: "opus" }))).toBe("idle · opus");
   });
 });
 
@@ -304,7 +319,60 @@ describe("session row", () => {
 
   test("shows the tier as a secondary label when it isn't 'current'", () => {
     render(<RailRow node={sessionRailNode(apiNode({ tier: "recent" }))} info={info()} actions={actions()} />);
-    expect(screen.getByText("recent")).toBeTruthy();
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/recent/);
+  });
+
+  // Title-first row (rail truncation round): branch/tier are secondary
+  // metadata that used to sit in the row's main line as flex:none siblings,
+  // so at the rail's 280px they took their width off the top of the ONE
+  // thing that identifies a row. They now ride the second line, which
+  // ellipsizes on its own; the title keeps the whole main line minus the
+  // (short, fixed) age.
+  test("keeps branch and tier out of the title's line, on the activity line instead", () => {
+    const session = apiNode({ state: "active", branch: "main", tier: "archived", age: "47m" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.textContent).toMatch(/main/);
+    expect(activity.textContent).toMatch(/archived/);
+    // The row's main line holds the title and the age, and nothing else
+    // that reserves width: every other text node lives on line two.
+    const title = screen.getByText("Fix flaky test");
+    const mainLine = title.parentElement?.parentElement;
+    expect(mainLine).toBeTruthy();
+    const mainLineText = [...(mainLine?.children ?? [])]
+      .filter((child) => child !== title.parentElement)
+      .map((child) => child.textContent)
+      .join(" ");
+    expect(mainLineText).not.toMatch(/main/);
+    expect(mainLineText).not.toMatch(/archived/);
+    expect(screen.getByTestId("rail-row-time").textContent).toBe("47m");
+  });
+
+  // vitest leaves CSS Modules unprocessed (vite.config.ts sets no test.css),
+  // so the rule that actually keeps a long gloss from wrapping the row to a
+  // third line is only checkable against the stylesheet text - the same way
+  // StackHost.test.tsx / radiogroup.test.tsx pin their own layout-critical
+  // declarations.
+  test("the activity line's stylesheet rule ellipsizes rather than wraps, so metadata never grows the row", () => {
+    const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8");
+    const activityRule = /\.activity\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(activityRule).toMatch(/white-space:\s*nowrap/);
+    expect(activityRule).toMatch(/text-overflow:\s*ellipsis/);
+    expect(activityRule).toMatch(/overflow:\s*hidden/);
+  });
+
+  test("a truncated title stays readable via a hover tooltip", () => {
+    const long = "It looks like a lot of the sidebar rows are truncating their titles";
+    render(<RailRow node={sessionRailNode(apiNode({ title: long }))} info={info()} actions={actions()} />);
+    expect(screen.getByText(long).getAttribute("title")).toBe(long);
+  });
+
+  test("the activity line carries its own full text as a tooltip, since it ellipsizes too", () => {
+    const session = apiNode({ state: "active", model: "opus", branch: "feature/long-branch-name" });
+    render(<RailRow node={sessionRailNode(session)} info={info()} actions={actions()} />);
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.getAttribute("title")).toBe(activity.textContent);
   });
 
   // hub tree-wire gaps round (wave 3 task 6): a live-tier row's own

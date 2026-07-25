@@ -395,10 +395,15 @@
   font-size: var(--font-size-ui);
 }
 
-/* Second line: a short, honest gloss of the row's own state (RailRow.tsx's
- * humanizeState) - never a faked liveness cue. This line carries the state
- * for EVERY row, which is why the signal gutter above only spends a dot on
- * the states that need to be spotted from across the list. */
+/* Second line: a short, honest gloss of the row's own state plus its
+ * secondary metadata - branch, tier, model (RailRow.tsx's activityGloss).
+ * Never a faked liveness cue, just the state worded for a person. This line
+ * carries the state for EVERY row, which is why the signal gutter above only
+ * spends a dot on the states that need to be spotted from across the list.
+ * It is also where metadata yields: it ellipsizes inside the same
+ * min-width:0 column as the title, so a long branch name costs the branch
+ * its tail rather than costing the title, the one thing that identifies the
+ * row. */
 .activity {
   overflow: hidden;
   white-space: nowrap;
@@ -416,13 +421,6 @@
   color: var(--ink-low);
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
-}
-
-.meta {
-  flex: none;
-  color: var(--ink-low);
-  font-size: var(--font-size-caption);
-  font-family: var(--font-mono);
 }
 
 .star {
