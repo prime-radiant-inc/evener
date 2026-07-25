@@ -34,6 +34,11 @@
   border: none;
   border-radius: 0;
   background: transparent;
+  /* The native resize grabber draws itself against the field's own corner; on
+   * a field with no corner it floats loose inside the host card. A seamless
+   * field is sized by its host (autoGrow, or the card's own height), so the
+   * grabber has nothing left to do. */
+  resize: none;
 }
 
 .seamless:focus-visible {

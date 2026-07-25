@@ -149,6 +149,8 @@ test("the seamless modifier removes the field's own box and its focus ring", () 
   expect(rule).toContain("background: transparent");
   expect(rule).toContain("border-radius: 0");
   expect(rule).toContain("padding: 0");
+  // The native resize grabber has no corner to sit in on a seamless field.
+  expect(rule).toContain("resize: none");
   // The enclosing card owns the focus affordance instead (:focus-within).
   expect(css).toMatch(/\.seamless:focus-visible\s*\{\s*outline: none;\s*\}/);
 });

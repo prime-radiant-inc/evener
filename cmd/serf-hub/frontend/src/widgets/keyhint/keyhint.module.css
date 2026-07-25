@@ -30,11 +30,15 @@
   font-size: var(--font-size-caption);
 }
 
-/* The compact form: one bare glyph run, no box of its own, quiet enough to
- * annotate the control it sits inside rather than compete with it. Mono for
- * the same reason .key is (a verbatim keystroke). */
+/* The compact form: one bare glyph run, no box of its own. Subordinate to the
+ * control it annotates by SIZE and face (mono caption, matching the command
+ * palette's own help-row glyph runs), never by a thinner color: this form sits
+ * inside buttons of every variant, and a filled primary button's accent
+ * background leaves no contrast headroom to give away - its own label already
+ * sits near the AA floor. Inheriting currentColor means the hint is exactly as
+ * legible as the label beside it, whatever variant hosts it. */
 .glyphs {
-  color: var(--ink-low);
+  color: inherit;
   font-family: var(--font-mono);
   font-size: var(--font-size-caption);
   line-height: 1;

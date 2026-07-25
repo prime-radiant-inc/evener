@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { KeyHint } from "./index";
@@ -109,6 +112,17 @@ test("compact's spoken words match the non-compact form's own accessible name", 
     </button>,
   );
   expect(screen.getByRole("button", { name: plainName ?? "" })).toBeTruthy();
+});
+
+// The compact form sits inside buttons of every variant, including a filled
+// primary whose own label already sits near the AA contrast floor - so it
+// stays subordinate by size and face, never by a thinner color that would go
+// illegible on that background.
+test("compact inherits the host control's own text color rather than thinning it", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "keyhint.module.css"), "utf8");
+  const rule = /\.glyphs\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("color: inherit");
+  expect(rule).toContain("font-size: var(--font-size-caption)");
 });
 
 test("compact hides the glyph run from assistive tech", () => {
