@@ -251,17 +251,22 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 		if !s.unlockLaneIfOwn(run, worktree.EvDisposeChanged, st, lanePath, metaDir, lane.delegateID) {
 			return "", false // foreign / session-locked — not the disposer's dlg lock
 		}
-		dirty := false
+		// These two reads describe how much work the kept lane holds, and
+		// their zero values ("0 ahead, dirty=false") describe a lane holding
+		// none — the reading that invites discarding it. A read that failed
+		// says so instead. The note itself is never withheld: it is the only
+		// announcement that this lane was kept, so a partial note beats none.
+		dirty := "dirty unknown"
 		if clean, _, cErr := worktree.CleanTree(run, lanePath); cErr == nil {
-			dirty = !clean
+			dirty = fmt.Sprintf("dirty=%t", !clean)
 		}
-		ahead := 0
+		ahead := "ahead unknown"
 		if aheadOut, aErr := run("-C", lanePath, "rev-list", "--count", sc.BaseSHA+"..HEAD"); aErr == nil {
 			if n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
-				ahead = n
+				ahead = fmt.Sprintf("%d ahead", n)
 			}
 		}
-		return fmt.Sprintf("%s at %s (branch %s, %d ahead, dirty=%t)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
+		return fmt.Sprintf("%s at %s (branch %s, %s, %s)", lane.delegateID, lanePath, lane.delegateID, ahead, dirty), true
 	}
 
 	// COLLECTIBLE → unlock, then `git worktree remove` (non-force), then mark the

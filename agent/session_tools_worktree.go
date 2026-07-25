@@ -149,6 +149,12 @@ type WorktreeRemoveResult struct {
 // CreatedAt, AgeSeconds, BaseSHA, MergeTarget, AheadCommits, Merged,
 // MergedArm, MergeTargetUnknown) are then zero values rather than an error —
 // list surfaces provenance-unknown entries instead of refusing them.
+//
+// DirtyUnknown and AheadUnknown mark the two reads whose zero value is an
+// affirmative "this lane holds nothing" — the answer that makes abandoning it
+// look safe. When their git read fails they are set rather than left to
+// degrade into "clean, 0 ahead". Merged has no such flag: its zero value is
+// "not merged", which errs toward keeping the lane.
 type WorktreeListEntry struct {
 	Name           string
 	Path           string
@@ -166,8 +172,10 @@ type WorktreeListEntry struct {
 	AgeSeconds     float64
 
 	Dirty              bool
+	DirtyUnknown       bool
 	BaseSHA            string
 	AheadCommits       int
+	AheadUnknown       bool
 	MergeTarget        string
 	Merged             bool
 	MergedArm          string
@@ -1897,21 +1905,32 @@ func (s *Session) worktreeRemove(ctx context.Context, name string, force, forceD
 // model that reads only the result message — not the structured entries array —
 // still learns which lanes have work. A live ergonomics run showed a strong
 // model shell out to `git log` per lane when the message was a bare count.
+//
+// A lane whose state could not be read says so. Rendering its zero values would
+// describe it as empty and clean, which is the description a model acts on by
+// discarding it.
 func worktreeListSummary(entries []WorktreeListEntry) string {
 	if len(entries) == 0 {
 		return "0 managed worktree(s)."
 	}
 	parts := make([]string, len(entries))
 	for i, e := range entries {
+		ahead := fmt.Sprintf("%d ahead", e.AheadCommits)
+		if e.AheadUnknown {
+			ahead = "ahead unknown"
+		}
 		state := "clean"
-		if e.Dirty {
+		switch {
+		case e.DirtyUnknown:
+			state = "dirty unknown"
+		case e.Dirty:
 			state = "dirty"
 		}
 		merged := "unmerged"
 		if e.Merged {
 			merged = "merged"
 		}
-		parts[i] = fmt.Sprintf("%s (%d ahead, %s, %s)", e.Name, e.AheadCommits, state, merged)
+		parts[i] = fmt.Sprintf("%s (%s, %s, %s)", e.Name, ahead, state, merged)
 	}
 	return fmt.Sprintf("%d managed worktree(s): %s.", len(entries), strings.Join(parts, "; "))
 }
@@ -1934,8 +1953,10 @@ func worktreeListEntryToMap(e WorktreeListEntry) map[string]any {
 		"created_at":           e.CreatedAt,
 		"age_seconds":          e.AgeSeconds,
 		"dirty":                e.Dirty,
+		"dirty_unknown":        e.DirtyUnknown,
 		"base_sha":             e.BaseSHA,
 		"ahead_commits":        e.AheadCommits,
+		"ahead_unknown":        e.AheadUnknown,
 		"merge_target":         e.MergeTarget,
 		"merged":               e.Merged,
 		"merged_arm":           e.MergedArm,
@@ -2024,13 +2045,21 @@ func (s *Session) worktreeList(ctx context.Context) ([]WorktreeListEntry, error)
 		if _, statErr := os.Stat(e.Path); statErr == nil {
 			if clean, _, cErr := worktree.CleanTree(run, e.Path); cErr == nil {
 				entry.Dirty = !clean
+			} else {
+				entry.DirtyUnknown = true
 			}
 			if entry.HasMetadata && entry.BaseSHA != "" {
-				if aheadOut, aErr := run("-C", e.Path, "rev-list", "--count", entry.BaseSHA+"..HEAD"); aErr == nil {
-					if n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut)); convErr == nil {
-						entry.AheadCommits = n
-					}
+				aheadOut, aErr := run("-C", e.Path, "rev-list", "--count", entry.BaseSHA+"..HEAD")
+				n, convErr := strconv.Atoi(strings.TrimSpace(aheadOut))
+				switch {
+				case aErr != nil, convErr != nil:
+					entry.AheadUnknown = true
+				default:
+					entry.AheadCommits = n
 				}
+				// A failed merge read leaves Merged false, which reads as
+				// "unmerged" — the direction that keeps the lane rather than
+				// inviting its removal, so it needs no unknown marker.
 				if tipOut, tErr := run("-C", e.Path, "rev-parse", "HEAD"); tErr == nil {
 					tip := strings.TrimSpace(tipOut)
 					if mr, mErr := worktree.Merged(run, tip, entry.MergeTarget, entry.BaseSHA); mErr == nil {

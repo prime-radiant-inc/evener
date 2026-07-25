@@ -534,11 +534,14 @@ func (g *scriptedWorktreeGit) runAtPath(args []string) (string, error) {
 	case len(args) == 5 && args[2] == "status" && args[3] == "--porcelain=v1" && args[4] == "--untracked-files=all":
 		return g.porcelainStatus(path)
 	case len(args) == 5 && args[2] == "rev-list" && args[3] == "--count":
-		// Ahead-count is equally unmodeled, but unlike the verdicts above it
-		// cannot be made to fail loudly: every production caller treats a
-		// rev-list error as best-effort and falls back to 0, the same answer
-		// this constant gives. No shape of the model protects an ahead-count
-		// assertion — those belong on the real-git harness.
+		// Ahead-count is equally unmodeled. It was left a constant because no
+		// erroring answer was distinguishable from it — every production caller
+		// degraded a rev-list error to 0. That is no longer true: list reports
+		// ahead_unknown, the kept-lane close note says "ahead unknown", and the
+		// delegate report emits nothing, so this arm CAN now fail loudly like
+		// the verdicts above. Converting it is a follow-up, not a free change:
+		// two delegate-report tests read the report on this harness and would
+		// need their ahead counts moved to real git first.
 		return "0\n", nil
 	default:
 		return "", fmt.Errorf("scripted git: unsupported -C argv %q", args)

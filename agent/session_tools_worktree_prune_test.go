@@ -363,6 +363,75 @@ func TestWorktreeList_StalenessFieldsThreeWorktreeFixture(t *testing.T) {
 	})
 }
 
+// TestWorktreeList_UnreadableStateReportsUnknownNotClean covers the direction a
+// failed git read must fall in. list's dirty/ahead reads are best-effort, and
+// their zero values ("clean", "0 ahead") are exactly the answer a model reads
+// as "this lane holds nothing; abandoning it is safe". A read that failed must
+// therefore be reported as unknown, both in the structured entry and in the
+// summary message a model may read on its own.
+func TestWorktreeList_UnreadableStateReportsUnknownNotClean(t *testing.T) {
+	t.Run("status unreadable", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		lane := r.addManagedWorktreeFixture(t, "status-unreadable")
+		scriptedGitRunner(r.s, failGitArgsFrom(1, statusArgv(lane)...))
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "status-unreadable")
+		if e["dirty_unknown"] != true {
+			t.Errorf("dirty_unknown = %v, want true when the status read failed", e["dirty_unknown"])
+		}
+		msg, _ := out["message"].(string)
+		if !strings.Contains(msg, "dirty unknown") {
+			t.Errorf("summary must not present an unreadable tree as clean; got: %s", msg)
+		}
+	})
+
+	t.Run("ahead count unreadable", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		lane := r.addManagedWorktreeFixture(t, "ahead-unreadable")
+		commitInWorktree(t, lane, "a.txt", "a\n", "advance ahead-unreadable")
+		scriptedGitRunner(r.s, failGitArgsFrom(1, revListArgv(lane, r.head)...))
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "ahead-unreadable")
+		if e["ahead_unknown"] != true {
+			t.Errorf("ahead_unknown = %v, want true when the rev-list read failed", e["ahead_unknown"])
+		}
+		msg, _ := out["message"].(string)
+		if strings.Contains(msg, "0 ahead") {
+			t.Errorf("summary reported an unreadable ahead count as 0 ahead; got: %s", msg)
+		}
+		if !strings.Contains(msg, "ahead unknown") {
+			t.Errorf("summary must say the ahead count is unknown; got: %s", msg)
+		}
+	})
+
+	// The readable case must stay unflagged, so the unknown flags cannot be
+	// satisfied by setting them unconditionally.
+	t.Run("readable state is not unknown", func(t *testing.T) {
+		t.Parallel()
+		r := newWorktreeRepo(t)
+		r.addManagedWorktreeFixture(t, "readable")
+
+		out, err := r.listOp(t)
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		e := findEntry(t, listEntries(t, out), "readable")
+		if e["dirty_unknown"] != false || e["ahead_unknown"] != false {
+			t.Errorf("readable lane flagged unknown: dirty_unknown=%v ahead_unknown=%v", e["dirty_unknown"], e["ahead_unknown"])
+		}
+	})
+}
+
 func TestWorktreeList_PrefixCollisionFiltering(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)

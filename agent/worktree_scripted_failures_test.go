@@ -113,3 +113,30 @@ func TestResumeWorktreeReentry_ManagedUnlockedRelocksFromSharedListing(t *testin
 		t.Fatalf("lock = (%v,%q), want locked with %q", entry.Locked, entry.LockReason, want)
 	}
 }
+
+// failGitArgsFrom returns a scriptedGitRunner script that fails every
+// invocation whose argv matches argv exactly, starting with the nth (1-based)
+// such match, and passes everything else through to real git. Failing "from
+// the nth" rather than "the nth only" is what a spent deadline looks like from
+// the caller's side: once the budget is gone, every later read fails too.
+func failGitArgsFrom(n int, argv ...string) func([]string) (string, error, bool) {
+	seen := 0
+	return func(args []string) (string, error, bool) {
+		if !scriptedArgs(args, argv...) {
+			return "", nil, false
+		}
+		seen++
+		if seen < n {
+			return "", nil, false
+		}
+		return "", &gitCmdError{code: 1, args: args, stderr: "forced read failure"}, true
+	}
+}
+
+func statusArgv(lanePath string) []string {
+	return []string{"-C", lanePath, "status", "--porcelain=v1", "--untracked-files=all"}
+}
+
+func revListArgv(lanePath, baseSHA string) []string {
+	return []string{"-C", lanePath, "rev-list", "--count", baseSHA + "..HEAD"}
+}
