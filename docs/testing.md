@@ -104,9 +104,9 @@ something only git can produce:
 - dirtiness from a *modified or staged tracked file*, real ahead-counts, and
   git's own refusal to remove a dirty worktree without `--force`. The scripted
   model derives dirtiness from untracked files it can see on disk, so an
-  untracked-file assertion may stay scripted; it still answers `rev-list
-  --count` with a constant 0, so an ahead-count assertion on the scripted
-  boundary proves nothing and belongs on real git.
+  untracked-file assertion may stay scripted; it refuses to answer `rev-list
+  --count` at all (like the ancestry verdicts above), so an ahead-count
+  assertion belongs on real git.
 - the real `--porcelain` output shape, including flags like `prunable` and a
   reasonless `worktree lock`
 - git's ref rules — e.g. that it rejects the branch name `HEAD`

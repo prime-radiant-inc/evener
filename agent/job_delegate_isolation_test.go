@@ -30,14 +30,17 @@ import (
 //   - TestDelegateIsolation_SpawnCreatesLockedManagedWorktree — the lane's .git
 //     pointer file and a lock that really lands in git's registry
 //   - TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty — real ahead-count
-//     and real dirty detection over committed work. The scripted model answers
-//     `rev-list --count` with 0, so the ahead=1 assertion would invert silently
-//     while still passing, and the model derives dirtiness from untracked files
-//     only — it cannot see a modified tracked file.
+//     and real dirty detection over committed work. The model derives dirtiness
+//     from untracked files only — it cannot see a modified tracked file.
 //   - TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools — the lane
 //     must SURVIVE the parent's close, which needs a real ancestry verdict: the
 //     close pass keeps only a lane git judges unmerged, and the scripted model
 //     refuses to answer `merge-base --is-ancestor` at all
+//   - TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree
+//     and TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
+//     — both read a worktree report's Ahead field, and the scripted model's
+//     `rev-list --count` arm fails loudly (matching every other verdict git
+//     alone can answer), so a real ahead=0 is required here too
 
 // wtDlgRepo is a real git repo plus a parent session rooted at it, wired for
 // delegate-isolation tests: a real StateDir (so isolation lanes land under
@@ -481,15 +484,15 @@ func TestDelegateIsolation_ManageWorktreeDeniedAfterRestoreAllTools(t *testing.T
 // --- Second job in the same lane; per-job worktree report ---
 
 // The subject here is that the SECOND job stays in the first job's lane and gets
-// its own report, which is serf's own bookkeeping. The fresh-lane ahead=0 and
-// dirty=false values below are the scripted model's constants, so they are proven
-// against real git state by
-// TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty instead; asserting
-// them here just pins that the report is populated at all.
+// its own report, which is serf's own bookkeeping. Runs on real git (rather
+// than the scripted boundary) because it reads the report's Ahead field, and
+// TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty is this file's sole
+// authority for that value over committed work; the fresh-lane ahead=0 here is
+// a genuine real-git answer (no commits are made in this test), not a re-proof.
 func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree(t *testing.T) {
 	t.Parallel()
 	c := delegateTestClient(func(req llm.Request) llm.Response { return communicateWithDefaultOutput("done") })
-	r := newScriptedWtDlgRepo(t, c)
+	r := newWtDlgRepo(t, c)
 
 	res := r.s.createDelegate(context.Background(), delegateArgs{
 		Task:           "first job",
@@ -552,8 +555,10 @@ func TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorkt
 // so the parent can merge the lane between jobs.
 //
 // The subject is the notification BLOCK's shape — that the four fields are
-// rendered into the model request at all. Their fresh-lane values are proven
-// against real git state by
+// rendered into the model request at all. Runs on real git for the same reason
+// as TestDelegateIsolation_SecondJobViaDelegateSendRunsInSameLaneAndReportsWorktree:
+// it reads the report's Ahead field, and the fresh-lane ahead=0 rendered here
+// is a genuine real-git answer, not a re-proof of
 // TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty.
 func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport(t *testing.T) {
 	t.Parallel()
@@ -562,7 +567,7 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 	}}
 	c := llm.NewClient()
 	c.Register(adapter)
-	r := newScriptedWtDlgRepo(t, c)
+	r := newWtDlgRepo(t, c)
 
 	res := r.s.createDelegate(context.Background(), delegateArgs{
 		Task:       "do isolated work",
@@ -600,9 +605,11 @@ func TestDelegateIsolation_BackgroundCompletionNotificationCarriesWorktreeReport
 // real git state, without needing a scripted tool call inside the fake LLM
 // turn.
 //
-// REAL git: this is the file's authority for ahead-count and dirty detection. The
-// scripted model answers `rev-list --count` with 0 and reports every tree clean,
-// so the ahead=1 and dirty=true assertions would silently invert against it.
+// REAL git: this is the file's authority for ahead-count and dirty detection.
+// The scripted model refuses to answer `rev-list --count` at all (so the
+// ahead=1 assertion would fail loudly there, not prove anything), and it
+// derives dirtiness from untracked files only, so the dirty=true assertion on
+// a modified tracked file would silently invert against it.
 func TestDelegateIsolation_WorktreeReportDetectsAheadAndDirty(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
