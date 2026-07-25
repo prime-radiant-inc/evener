@@ -4,14 +4,13 @@
 // writes the field as you go: a directory click both descends and becomes the
 // value, so there is nothing to commit and no Cancel to undo.
 //
-// Wire-free by design, exactly like the PathPicker and DirField it replaces:
-// the caller injects `complete` (serf/paths/complete) and, where recents mean
-// something, `listRecents` (serf/projects/recent). includeFiles is derived
-// from `kind` here, never passed in.
+// Wire-free by design: the caller injects `complete` (serf/paths/complete)
+// and, where recents mean something, `listRecents` (serf/projects/recent).
+// includeFiles is derived from `kind` here, never passed in.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
-// same reason collectioneditor/pathpicker import ../button directly).
+// same reason collectioneditor imports ../button directly).
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
@@ -181,8 +180,8 @@ export interface PathFieldPanelProps {
  * The ARIA 1.2 combobox-with-listbox pattern: role="combobox" on the input, a
  * role="listbox" sibling, aria-activedescendant tracking the highlighted row -
  * real DOM focus never leaves the input, so typing is never interrupted.
- * Unlike widgets/combobox the listbox is ALWAYS shown while the panel is open
- * (aria-expanded stays true): the panel itself is the popup.
+ * The listbox is ALWAYS shown while the panel is open (aria-expanded stays
+ * true): the panel itself is the popup.
  *
  * Dismissal is the enclosing Popover's job (Escape bubbles to its panel
  * handler, outside-click is its document listener), which is why there is no
@@ -206,7 +205,7 @@ export function PathFieldPanel({
   const [entries, setEntries] = useState<string[] | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   // Recents are dropped permanently by the first keystroke, for this panel's
-  // lifetime - the same rule DirField had.
+  // lifetime: once the user is typing a path, a recents list is noise.
   const [showRecents, setShowRecents] = useState(listRecents !== undefined);
   // The highlighted row, by KEY rather than by list position: rows arrive
   // asynchronously (the listing, and the Recent group behind it), and an index
@@ -221,7 +220,7 @@ export function PathFieldPanel({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Monotonic request id: a completion response older than the newest request
   // is dropped, so an out-of-order resolution never overwrites fresher
-  // entries (PathPicker's `active` guard and DirField's reqId, kept).
+  // entries.
   const reqIdRef = useRef(0);
   // The filter the entries in hand were fetched WITH. The hub hides dotfiles
   // unless the filter itself starts with a dot, so the listing's contents
@@ -371,7 +370,7 @@ export function PathFieldPanel({
     clearTimeout(debounceRef.current);
     // With a filter present, the typed text itself IS the prefix: the hub
     // splits it into listDir + filter and does the matching (and the dotfile
-    // decision) server-side, which is what DirField did too.
+    // decision) server-side.
     const prefix = nextFilter === "" ? childrenPrefix(dir) : next;
     debounceRef.current = setTimeout(() => runCompletion(prefix), COMPLETE_DEBOUNCE_MS);
   }

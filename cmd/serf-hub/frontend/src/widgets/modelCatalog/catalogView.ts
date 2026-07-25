@@ -1,13 +1,15 @@
 // Pure view helpers for the rich model catalog: turning the /api/models
-// entries into the searchable Combobox's options, provider grouping, and the
+// entries into the picker's searchable options, provider grouping, and the
 // per-row metadata (capability badges, cost, context window). No React, no
 // wire - unit-tested in isolation (catalogView.test.ts). The widget
 // (index.tsx) composes these into rows; the swap sites never see them.
-import type { ComboboxOption } from "../combobox";
 import type { ModelCatalogEntry } from "./index";
 
-/** A Combobox option plus the catalog metadata its rich row renders. */
-export interface CatalogOption extends ComboboxOption {
+/** One selectable row of the model picker: an identified, labelled option plus
+ * the catalog metadata its rich row renders. */
+export interface CatalogOption {
+  id: string;
+  label: string;
   qualified: string; // "provider/model", the value emitted on pick
   entry: ModelCatalogEntry;
   /** Provider name on the first option of each provider run (a group head);

@@ -7,15 +7,13 @@
 // widget itself is wire-free and both swap sites drop it in with a
 // one-import change.
 //
-// This panel deliberately does NOT use widgets/combobox: that widget's
-// contract is options-only rows and a popup that stays closed until you type,
-// and this picker needs group heads, non-interactive diagnostic lines, and a
-// list that is expanded the moment it opens. Combobox stays as-is for the
-// pickers that do fit it (pathpicker).
+// The list rendering is this widget's own rather than a shared generic
+// options-list: it needs provider group heads, non-interactive diagnostic
+// lines, and a list expanded the moment it opens.
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
-// same reason collectioneditor/pathpicker import ../button directly).
+// same reason collectioneditor imports ../button directly).
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
@@ -112,9 +110,9 @@ function rowDomId(listboxId: string, key: string): string {
  * The ARIA 1.2 combobox-with-listbox pattern: role="combobox" on the input,
  * a role="listbox" sibling, aria-activedescendant tracking the highlighted
  * option - real DOM focus never leaves the input, so typing is never
- * interrupted. Unlike widgets/combobox the listbox is ALWAYS shown while the
- * panel is open (aria-expanded stays true): the panel itself is the popup,
- * and an empty picker over a hidden list was the defect this replaced.
+ * interrupted. The listbox is ALWAYS shown while the panel is open
+ * (aria-expanded stays true): the panel itself is the popup, and an empty
+ * picker over a hidden list was the defect this replaced.
  *
  * Dismissal is the enclosing Popover's job (Escape bubbles to its panel
  * handler, outside-click is its document listener). There is no Cancel

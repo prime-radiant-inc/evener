@@ -376,9 +376,7 @@ const LAYOUT_KEY = "serf.workspace.layout.v1";
 
 // The debounce timer fires outside any React-tracked event, so advancing
 // it must be wrapped in act() or the resulting state update isn't flushed
-// before the next assertion reads the DOM/localStorage - same idiom
-// widgets/combobox's own debounce test uses (see that file's identical
-// helper and comment).
+// before the next assertion reads the DOM/localStorage.
 function advance(ms: number) {
   act(() => {
     vi.advanceTimersByTime(ms);
@@ -392,8 +390,7 @@ test("debounces saving the layout to localStorage after a change", async () => {
   // timers for an unrelated concern (mounting), and keeps this test
   // focused on the ONE thing it's actually proving: the debounce window
   // itself, asserted synchronously against localStorage after each
-  // act(() => advanceTimersByTime()) call, mirroring combobox.test.tsx's
-  // own debounce test exactly.
+  // act(() => advanceTimersByTime()) call.
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);

@@ -21,9 +21,8 @@ const LAYOUT_STORAGE_KEY = "serf.workspace.layout.v1";
 // Coalesces a whole user gesture (a drag-resize fires onDidLayoutChange
 // many times a second; dockview's own doc comment on that event says as
 // much: "may be worth debouncing outputs") into one localStorage write,
-// same idiom as widgets/combobox's onQuery debounce (see that widget's own
-// comment) - a timer is fine for the SAVE side; only a test asserting the
-// persisted payload needs fake timers, never a bare sleep.
+// A timer is fine for the SAVE side; only a test asserting the persisted
+// payload needs fake timers, never a bare sleep.
 const LAYOUT_SAVE_DEBOUNCE_MS = 400;
 
 // Every open pane renders through this ONE dockview "component" key - the

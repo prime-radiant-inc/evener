@@ -118,8 +118,8 @@ describe("contextWindowLabel", () => {
   });
 });
 
-// A CatalogOption is a ComboboxOption plus the catalog metadata the rich rows
-// render off; pinned so the widget's renderOption keeps a stable shape.
+// A CatalogOption is an id/label option plus the catalog metadata the rich rows
+// render off; pinned so the widget's row rendering keeps a stable shape.
 test("CatalogOption carries id/label/qualified/entry", () => {
   const opt: CatalogOption = { id: "p/m", label: "M", qualified: "p/m", entry: entry() };
   expect(opt.qualified).toBe("p/m");

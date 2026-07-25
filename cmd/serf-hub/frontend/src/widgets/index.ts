@@ -17,8 +17,6 @@ export type { CodeBlockProps } from "./codeblock";
 export { CodeBlock } from "./codeblock";
 export type { CollectionAddResult, CollectionEditorProps } from "./collectioneditor";
 export { CollectionEditor } from "./collectioneditor";
-export type { ComboboxOption, ComboboxProps } from "./combobox";
-export { Combobox } from "./combobox";
 export type { ConfirmDialogProps } from "./confirmdialog";
 export { ConfirmDialog } from "./confirmdialog";
 export type { DialogProps } from "./dialog";
@@ -47,8 +45,7 @@ export type { MenuItem, MenuProps } from "./menu";
 export { Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
-// ModelCatalog is both the component and the /api/models envelope type (T1
-// ships the interim-Combobox stub; wave-8 T2 fills the rich catalog). The
+// ModelCatalog is both the component and the /api/models envelope type. The
 // plain re-export carries BOTH meanings; only the pure-type members need
 // `export type` (a second `export type { ModelCatalog }` would duplicate it).
 export type { ModelCatalogEntry, ModelCatalogPanelProps, ModelCatalogProps } from "./modelCatalog";

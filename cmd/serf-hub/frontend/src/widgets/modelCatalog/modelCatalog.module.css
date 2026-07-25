@@ -98,7 +98,7 @@
   gap: var(--space-2);
 }
 
-/* Matches Input/Combobox's own field recipe (32px control height, hairline
+/* Matches Input's own field recipe (32px control height, hairline
  * edge, control radius) so the picker's field is the same object the rest of
  * the app's forms use. */
 .input {
