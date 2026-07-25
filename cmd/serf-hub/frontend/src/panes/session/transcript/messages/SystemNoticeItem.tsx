@@ -120,21 +120,23 @@ function ScaffoldDisclosure({ item }: { item: ItemModel }) {
 
 // FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
 // message nor a description. It is the same category-label-over-invisible-row
-// rule FALLBACK_LABEL follows, worded for the one event where an unlabelled row
-// would be worst.
+// rule FALLBACK_LABEL follows, worded for the one event where the generic
+// "System event" would be worst: a row that says a failure happened beats one
+// that files it under nothing in particular.
 const FAILURE_FALLBACK_LABEL = "Turn failed";
 
 // What the failure row says. The end cap that closes a failed turn (TurnBlock
 // renders it on exactly this condition) already states the message with its
-// taxonomy chip, hint and recovery action, so the row names the event and lets
-// the cap carry the detail - saying the same sentence twice, ten pixels apart,
-// is what a reloaded failure did before. With no cap (an item that reached a
-// client without a turn-level error) the row carries the message itself: a
-// failure is never left unstated.
+// taxonomy chip, hint and recovery action, so with a cap the row names the
+// event and lets the cap carry the detail - saying the same sentence twice, ten
+// pixels apart, is what a reloaded failure did before. With no cap (an item
+// that reached a client without a turn-level error) the row leads with the
+// message, since nothing else will carry it: a failure is never left unstated.
 function failureText(item: ItemModel, turn: TurnModel): string {
   const named = item.description?.trim();
-  if (asTurnError(turn.error)) return named || noticeText(item);
-  return item.text.trim() || named || FAILURE_FALLBACK_LABEL;
+  const message = item.text.trim();
+  const preferred = asTurnError(turn.error) ? [named, message] : [message, named];
+  return preferred.find((candidate) => candidate) ?? FAILURE_FALLBACK_LABEL;
 }
 
 // FailureLine is a turn failure: the one systemMessage a reader is hunting for

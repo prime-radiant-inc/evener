@@ -240,9 +240,15 @@ test("with no end cap the failure row carries the message itself", () => {
   expect(screen.getByTestId("system-notice-failure").textContent).toBe("openai error (status=401): incorrect API key");
 });
 
-test("a failure with neither description nor text still names itself rather than rendering blank", () => {
+test("a failure with neither description nor text names the event rather than filing it as a generic notice", () => {
   render(<TurnBlock turn={failedTurn([failureItem({ text: "", description: "" })])} />);
   expect(screen.getByTestId("system-notice-failure").textContent).toBe("Turn failed");
+  expect(screen.queryByText("System event")).toBeNull();
+});
+
+test("with no end cap and no message, the row falls back to the wire's own description", () => {
+  render(<TurnBlock turn={turnWith([failureItem({ text: "", description: "Provider rejected the request" })])} />);
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Provider rejected the request");
 });
 
 test("a failure among lifecycle notices is never folded into their collapsed group", () => {
