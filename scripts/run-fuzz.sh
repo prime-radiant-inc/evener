@@ -677,7 +677,6 @@ TARGETS=(
 	"native:.:./cmd/serf-hub:FuzzThreadDataPass5::"
 	"native:.:./cmd/serf-hub:FuzzThreadLifecycleListPass6::"
 	"native:.:./cmd/serf-hub:FuzzWebAPIResiduePass5::"
-	"native:.:./cmd/serf-hub:FuzzWebSettingsPass5::"
 	"native:.:./cmd/serf-hub:FuzzWebWorkspacePass5::"
 	"native:.:./cmd/serf-hub:FuzzWorkspaceMutationsPass6::"
 	"native:.:./cmd/serf-hub:FuzzCovAppWireValidation::"
