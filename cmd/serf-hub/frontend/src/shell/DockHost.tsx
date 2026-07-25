@@ -147,6 +147,17 @@ function ensureMainPane(): void {
 // it round-trips through toJSON/fromJSON as `hideHeader` - so this needs no
 // CSS of its own. Identity is not lost with the tab gone: every pane draws its
 // own PaneScaffold header, carrying the same title the tab would have.
+//
+// THE MAIN PANE IS REPLACEABLE, NOT CLOSEABLE - deliberate (Jesse, round 3).
+// Every per-group header affordance dockview offers (the native tab (x), the
+// "Pop out" right-header action) lives inside the container this hides, so the
+// main pane has none of them. That is the intended design, not an oversight to
+// route around: you change what the main slot shows by opening something else
+// into it (openPane's placement rule displaces a welcome placeholder; anything
+// else stacks to the right), never by closing it. Do not add a close button
+// here, and do not un-hide this header to get one back.
+// DockHost.test.tsx pins both halves ("the main pane offers no way to close
+// it") so this can't be quietly undone as a "missing button" bug fix.
 function syncGroupHeaders(api: DockviewApi): void {
   for (const group of api.groups) {
     const hidden = group.panels.length <= 1;

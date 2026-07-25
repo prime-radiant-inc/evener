@@ -7,12 +7,12 @@ import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { AppShell } from "./AppShell";
 import { paletteStore } from "./palette/paletteController";
-import { resetWorkspaceStoreForTests } from "./workspace";
+import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // Matches DockHost.tsx's own LAYOUT_STORAGE_KEY exactly (not exported - a
 // deliberately internal implementation detail; duplicated here the same
 // way DockHost.test.tsx's own LAYOUT_KEY is).
-const LAYOUT_KEY = "serf.workspace.layout.v1";
+const LAYOUT_KEY = "serf.workspace.layout.v2";
 
 const ALL_FEATURES_OFF = {
   threadList: false,
@@ -329,12 +329,15 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
-  const tabs = document.querySelectorAll(".dv-tab");
-  // The restored "Welcome" tab (phase 1's whole saved layout) is still
-  // there - a merge, not a replacement - with the routed deep link
-  // appended after it and focused/active.
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Welcome", "ref_new_session"]);
-  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("ref_new_session");
+  // Still a MERGE, not a replacement - the saved layout restores as the base and
+  // the deep link opens into it, focused. What changed in round 3 is where it
+  // lands: phase 1's saved layout is a lone WELCOME pane in the main slot, and
+  // welcome is that slot's empty state, so the routed session DISPLACES it
+  // rather than opening beside it. A restored layout with any real pane in it
+  // would still merge additively (DockHost.test.tsx covers that shape).
+  expect(workspaceStore.getState().panes.map((p) => p.type)).toEqual(["session"]);
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "ref_new_session" });
+  expect(screen.queryByText("No session open")).toBeNull();
 });
 
 // --- single-pane mode (/thread/{ref} share link, wave 8 T1) -----------

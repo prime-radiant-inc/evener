@@ -257,16 +257,21 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     try {
       dockviewApi.fromJSON(json as SerializedDockview);
       // Slots come back from dockview's OWN restored geometry, not from the
-      // saved JSON: api.groups is in grid order, so its first group is the
-      // main one and the sole pane in it is the main pane. A layout that
-      // somehow restores several panes into that first group leaves only the
-      // first as "main" - which cannot happen for a layout this build saved
-      // (the one-pane rule holds on the way in), and degrades to a stacked
-      // main group rather than a crash for anything else.
-      const mainGroupId = dockviewApi.groups[0]?.id;
+      // saved JSON: api.panels is in grid order, so the FIRST panel is the one
+      // in the top-left group - the main pane. Read only `panels` (plus each
+      // panel's own group), never api.groups: this function's whole
+      // dockview surface stays the four members it already used
+      // (fromJSON/panels/activePanel/clear), which is also what keeps the unit
+      // doubles in workspace.test.ts/paneRestore.test.ts honest doubles rather
+      // than a growing mirror of the real api.
+      //
+      // A layout that somehow restores a SECOND panel into that same first
+      // group leaves only the first as "main" - impossible for a layout this
+      // build saved (the one-pane rule holds on the way in), and it degrades to
+      // a stacked main group rather than a crash for anything else.
       const panes = dockviewApi.panels.map((panel, index) => {
         const { paneType, paneParams } = readPanelParams(panel);
-        const slot: PaneSlot = index === 0 && panel.group?.id === mainGroupId ? "main" : "secondary";
+        const slot: PaneSlot = index === 0 ? "main" : "secondary";
         return { id: panel.id, type: paneType, params: paneParams, slot };
       });
       bumpPastRestoredIds(panes);

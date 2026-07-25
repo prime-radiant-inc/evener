@@ -26,6 +26,11 @@ function fixtureDescriptor<P>(
 beforeAll(() => {
   registerPane(fixtureDescriptor("settings", { singleton: true }));
   registerPane(fixtureDescriptor("doc"));
+  // "welcome" is a real PaneTypeId and the main slot's empty state, so the
+  // placement tests below open one. openPane has ALWAYS resolved its type
+  // through paneFor (that is where an unregistered type throws), so this is a
+  // missing fixture registration, not the store reaching somewhere new.
+  registerPane(fixtureDescriptor("welcome", { singleton: true }));
 });
 
 beforeEach(() => {
@@ -163,7 +168,7 @@ describe("openPane", () => {
 
     expect(again).toBe(first);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: first, type: "settings", params: { section: "credentials" }, beside: undefined },
+      { id: first, type: "settings", params: { section: "credentials" }, slot: "main" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe(first);
   });
@@ -295,8 +300,10 @@ describe("layoutJSON / restoreLayout (against a fake DockviewApi)", () => {
     expect(ok).toBe(true);
     expect(receivedData).toEqual({ the: "json" });
     expect(workspaceStore.getState().panes).toEqual([
-      { id: "p1", type: "settings", params: { section: "appearance" } },
-      { id: "p2", type: "doc", params: { ref: "a", path: "x" } },
+      // Slots are re-derived from the restored grid order: the first panel is
+      // the top-left (main) one, everything after it is in the group to its right.
+      { id: "p1", type: "settings", params: { section: "appearance" }, slot: "main" },
+      { id: "p2", type: "doc", params: { ref: "a", path: "x" }, slot: "secondary" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });

@@ -13,8 +13,20 @@
   color: var(--ink-low);
 }
 
+/* No --danger here, by the same reasoning livenessline.module.css's own
+ * .stalled already applies one element away in this same overlay strip: this
+ * file is not on the --attention/--alive/--danger allowlist (token-contract
+ * .test.ts gates those to src/widgets/<name>/), and the flow overlay reserves
+ * colour escalation for the new-content pill's single attention signal - a red
+ * row pinned at the top of the transcript would compete with it permanently.
+ * The failure is carried by the words ("Couldn't load older turns: …"), the
+ * role=alert announcement, and the Retry beside it; weight and full-contrast
+ * ink are what lift it off the quiet idle label. Earning an allowlist entry
+ * would mean promoting a one-line paging notice to a widget directory plus a
+ * gallery section, which is more machinery than this needs. */
 .error {
-  color: var(--danger);
+  color: var(--ink-hi);
+  font-weight: var(--font-weight-medium);
 }
 
 .retry {
