@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
@@ -202,13 +203,23 @@ func projectName(m schema.SessionMeta) string {
 
 // nodeTitle computes the display title for a tree node.
 //
-// Older sessions persisted before OriginalPrompt was captured fall back to a
-// short, human-friendlier rendering of the session ID rather than the full
-// 22-character UUIDv7 base62 payload, which clutters the sidebar.
+// A session with neither a generated name nor a prompt falls back to a short,
+// human-friendlier rendering of its ID rather than the full 22-character
+// UUIDv7 base62 payload, which clutters the sidebar. Older sessions persisted
+// before OriginalPrompt was captured are one such case; an empty-prompt spawn
+// (kata ytpa), which starts a session dormant and unnamed, is the ordinary one.
+//
+// The fallback triggers on SessionDisplayName having nothing better to offer
+// than the ID itself, not on it returning "" — returning the bare ID IS its
+// documented last resort, so an emptiness check could only ever fire for a
+// session with no ID at all. Testing for the ID also keeps this row agreeing
+// with the live tier, which renders ShortID directly while the past index
+// catches up: without it a freshly spawned session showed the short form for a
+// few seconds and then replaced it with the raw payload.
 func nodeTitle(m schema.SessionMeta, kind string) string {
 	base := truncateTitle(schema.SessionDisplayName(m))
-	if base == "" {
-		base = ShortID(m.ID)
+	if base == "" || base == strings.TrimSpace(m.ID) {
+		base = ShortID(strings.TrimSpace(m.ID))
 	}
 	if kind == "fork" && m.ForkLabel != "" {
 		return base + " · " + m.ForkLabel
