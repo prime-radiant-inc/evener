@@ -9,7 +9,7 @@ import (
 )
 
 func FuzzSanitizeDirPrefix(f *testing.F) {
-	for _, prefix := range []string{"", "/tmp/", "../etc", "/tmp/a/../b", "  /tmp/x  "} {
+	for _, prefix := range []string{"", "/tmp/", "../etc", "/tmp/a/../b", "  /tmp/x  ", "/tmp/.", "/tmp/..", "/tmp/...", "/tmp/./", "."} {
 		f.Add(prefix)
 	}
 	f.Fuzz(func(t *testing.T, prefix string) {
@@ -23,8 +23,21 @@ func FuzzSanitizeDirPrefix(f *testing.F) {
 			}
 			return
 		}
-		if strings.TrimSpace(prefix) != "" && filepath.Clean(got) != got && !strings.HasSuffix(got, string(filepath.Separator)) {
+		// The result is Clean apart from the two markers the autocomplete's
+		// prefix protocol carries in the string itself: a trailing separator
+		// ("list this directory's children") and a lone trailing dot ("filter
+		// to the dotted names"). Strip those and the rest must be canonical.
+		bare := strings.TrimSuffix(got, string(filepath.Separator))
+		bare = strings.TrimSuffix(bare, string(filepath.Separator)+".")
+		if strings.TrimSpace(prefix) != "" && bare != "" && filepath.Clean(bare) != bare {
 			t.Fatalf("result is not clean: %q", got)
+		}
+		// A traversal element never survives sanitization: it is either
+		// normalized away or rejected.
+		for _, seg := range strings.Split(got, string(filepath.Separator)) {
+			if seg == ".." {
+				t.Fatalf("traversal survived sanitization: %q", got)
+			}
 		}
 	})
 }

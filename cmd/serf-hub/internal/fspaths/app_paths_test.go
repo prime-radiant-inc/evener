@@ -271,6 +271,106 @@ func checkCompletePaths_SymlinksOnRealTree(t *testing.T) {
 	}
 }
 
+// checkCompletePaths_DotRunsOnRealTree walks the whole family of dot-shaped
+// last components against a real tree, because they are only distinguishable
+// once the filesystem is asked: "." is a no-op path element to filepath.Clean
+// (the user means "show me the dotted names"), ".." is a real climb, and
+// "..."/"...." are ordinary filenames that happen to start with dots.
+func checkCompletePaths_DotRunsOnRealTree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sep := string(filepath.Separator)
+	dirs := []string{".hidden-dir", ".other-hidden", "...odd", "visible-dir"}
+	for _, d := range dirs {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range []string{".hidden-file", "visible-file"} {
+		if err := os.WriteFile(filepath.Join(home, f), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cases := []struct {
+		name         string
+		prefix       string
+		includeFiles bool
+		// want holds names relative to home; a trailing separator marks a name
+		// the response must carry the descendable marker on. A nil want means
+		// "no suggestions at all".
+		want []string
+	}{
+		{
+			// The bug: a lone trailing dot must reveal the dotted entries, not
+			// collapse to the directory itself and answer with nothing useful.
+			name:   "lone trailing dot lists dotted dirs",
+			prefix: home + sep + ".",
+			want:   []string{"...odd", ".hidden-dir", ".other-hidden"},
+		},
+		{
+			name:         "lone trailing dot lists dotted files too",
+			prefix:       home + sep + ".",
+			includeFiles: true,
+			want:         []string{"...odd" + sep, ".hidden-dir" + sep, ".hidden-file", ".other-hidden" + sep},
+		},
+		{
+			// Already correct before the fix, and must stay so.
+			name:   "one more character narrows within the dotted names",
+			prefix: home + sep + ".h",
+			want:   []string{".hidden-dir"},
+		},
+		{
+			// A real climb, not a filter: the response names home itself (the
+			// parent listed, filtered by home's own basename).
+			name:   "parent traversal climbs a level",
+			prefix: home + sep + "sub" + sep + "..",
+			want:   []string{""},
+		},
+		{
+			// A three-dot run is a filename, so it matches the entry named
+			// "...odd" and nothing else.
+			name:   "three-dot run is an ordinary name filter",
+			prefix: home + sep + "...",
+			want:   []string{"...odd"},
+		},
+		{
+			// Four dots match no entry: correctly nothing, unlike the bug.
+			name:   "four-dot run matches nothing",
+			prefix: home + sep + "....",
+			want:   nil,
+		},
+		{
+			// A slash after the dot means "list children", so the dot is not a
+			// filter and the dotted names stay hidden.
+			name:   "dot followed by a slash lists children without dotfiles",
+			prefix: home + sep + "." + sep,
+			want:   []string{"visible-dir"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: tc.prefix, IncludeFiles: tc.includeFiles})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			want := make([]string, len(tc.want))
+			for i, name := range tc.want {
+				want[i] = filepath.Join(home, strings.TrimSuffix(name, sep))
+				if strings.HasSuffix(name, sep) {
+					want[i] += sep
+				}
+			}
+			if len(want) == 0 && len(resp.Data) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(resp.Data, want) {
+				t.Fatalf("prefix %q completions = %v, want %v", tc.prefix, resp.Data, want)
+			}
+		})
+	}
+}
+
 func checkCompletePaths_TraversalReturnsNoSuggestions(t *testing.T) {
 	resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: "../"})
 	if err != nil {
