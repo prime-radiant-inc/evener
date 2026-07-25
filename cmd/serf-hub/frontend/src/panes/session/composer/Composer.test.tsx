@@ -164,6 +164,28 @@ test("focusing the message field lights the input card's own focus affordance", 
   expect(screen.getByTestId("composer-input-card").matches(":focus-within")).toBe(true);
 });
 
+// The key hints inside these buttons render as bare glyphs (⇧↵, ⌘↵), which
+// are unspeakable - so the buttons' spoken names must stay words. These two
+// tests are the ONE place that asserts an accessible name deliberately;
+// everywhere else addresses controls by testid.
+test("the Steer button's spoken name is words, not the ⇧↵ glyphs it shows", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(screen.getByRole("button", { name: "Steer Shift+Enter" })).toBe(steerButton());
+});
+
+test("the submit button's spoken name is words, not the ⌘↵ glyphs it shows", async () => {
+  await mountComposer("ref_a");
+  // KeyHint renders "Mod" as ⌘ on Apple platforms and Ctrl elsewhere, in the
+  // spoken words as well as the glyphs, so the expected primary modifier
+  // follows whichever platform this run reports.
+  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
+  expect(screen.getByRole("button", { name: `Send ${modWord}+Enter` })).toBe(submitButton());
+  expect(submitButton().textContent).toContain("↵"); // the visible form really is the glyph run
+});
+
 // --- send / queue routing ---------------------------------------------------
 
 test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {

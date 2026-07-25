@@ -656,7 +656,7 @@ export function Composer({ ref }: ComposerProps) {
                     onClick={handleSteerClick}
                     disabled={!busy || !model.capabilities.steer || busyAction !== null}
                   >
-                    Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} />}
+                    Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} compact />}
                   </Button>
                 )}
                 <Button
@@ -665,7 +665,7 @@ export function Composer({ ref }: ComposerProps) {
                   data-testid="composer-submit"
                   disabled={busyAction !== null || !hasContent || (!availability.canSend && !availability.canQueue)}
                 >
-                  {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} />
+                  {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} compact />
                 </Button>
               </div>
             </div>

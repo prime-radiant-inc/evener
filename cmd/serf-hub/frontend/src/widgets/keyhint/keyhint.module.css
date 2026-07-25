@@ -29,3 +29,27 @@
   color: var(--ink-low);
   font-size: var(--font-size-caption);
 }
+
+/* The compact form: one bare glyph run, no box of its own, quiet enough to
+ * annotate the control it sits inside rather than compete with it. Mono for
+ * the same reason .key is (a verbatim keystroke). */
+.glyphs {
+  color: var(--ink-low);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  line-height: 1;
+}
+
+/* Standard visually-hidden recipe - carries the chord's words so an enclosing
+ * control's accessible name reads "Steer Shift+Enter", never the glyphs. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
