@@ -23,6 +23,7 @@ import type { ItemModel } from "../../../../protocol/model";
 import { Markdown } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { firstLine, formatCharCount } from "./format";
 import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
@@ -38,12 +39,10 @@ const CLASS = {
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
 };
 
-// The session's system prompt (apptranscript.go's PreludeTurn) arrives as a
-// systemMessage item with this exact, static id. It is the narrow fallback
-// signal for a system prompt projected by an older daemon that predates the
-// typed system_prompt eventKind (below) - the id has been stable across every
-// version, so a heterogeneous-version relay still collapses it correctly.
-const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
+// SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
+// system prompt projected by an older daemon that predates the typed
+// system_prompt eventKind - see its definition in transcriptVisibility.ts,
+// which classifies the same item for the "Prompt loaded" setting.
 
 // The systemMessage eventKinds (appwire.ThreadItemEventKind*) whose text is a
 // scaffolding block a reader collapses by default rather than a quiet

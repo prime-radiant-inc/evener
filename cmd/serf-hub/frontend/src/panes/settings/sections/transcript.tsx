@@ -35,7 +35,10 @@ const TOGGLES: ToggleSpec[] = [
     // per this wave's sentence-case gate (see the wave-7 report).
     key: "promptLoaded",
     label: "Prompt loaded",
-    help: "Show an expandable disclosure containing the full system prompt.",
+    // Names both item kinds this one toggle governs (system_prompt and
+    // prompt_loaded - see transcriptVisibility.ts): the old copy described
+    // only the disclosure, leaving the notices an unannounced surprise.
+    help: "Show the session's system prompt as an expandable disclosure, and a notice for each prompt loaded.",
   },
 ];
 
@@ -58,7 +61,14 @@ export function TranscriptSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>System status items default off. Saved per-browser.</p>
+      {/* Not "System status items ...": that framing dates from when all four
+          toggles gated the legacy's systemStatus blob, and it misdescribes
+          Round timings and Token counts, which annotate turns rather than
+          show a system event. What every row here has in common is that it
+          adds optional detail to the transcript. */}
+      <p className={CLASS.intro}>
+        Optional transcript detail, all off by default. Each browser keeps its own settings.
+      </p>
       {TOGGLES.map((toggle) => (
         <div key={toggle.key} className={CLASS.row}>
           <Switch

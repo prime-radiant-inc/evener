@@ -117,3 +117,12 @@ test("toggling Prompt loaded persists under its own key", async () => {
   expect(prefsStore.getState().transcript.promptLoaded).toBe(true);
   expect(localStorage.getItem("serf.prefs.transcriptPromptLoaded")).toBe("1");
 });
+
+// The intro copy dates from when all four toggles gated one "system status"
+// blob. Round timings and Token counts annotate a turn rather than show a
+// system event, so that framing now misdescribes half the section.
+test("the intro describes the section as optional transcript detail, not system status items", () => {
+  renderWithToasts();
+  expect(screen.getByText(/Optional transcript detail, all off by default\./)).toBeTruthy();
+  expect(screen.queryByText(/System status items/)).toBeNull();
+});

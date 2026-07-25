@@ -656,7 +656,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventHookEnd:
 		p.clearSkillCandidate()
 		data := eventData[events.HookEndData](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data))
+		return p.systemAnnouncementWithExitCode(appwire.ThreadItemEventKindHookCompleted, "Hook", hookEndAnnouncement(data), data.ExitCode)
 	case events.EventForkSummary:
 		p.clearSkillCandidate()
 		data := eventData[events.ForkSummaryData](event.Data)
@@ -950,7 +950,7 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 }
 
 func (p *AppEventProjector) systemAnnouncement(eventKind, description, text string) []AppNotification {
-	return p.systemAnnouncementWithRaw(eventKind, description, text, nil)
+	return p.systemAnnouncementItem(eventKind, description, text, nil, nil)
 }
 
 // systemAnnouncementWithRaw renders a lifecycle system one-liner like
@@ -959,6 +959,21 @@ func (p *AppEventProjector) systemAnnouncement(eventKind, description, text stri
 // before→after expand, mockup #17 Alt A) from real numbers instead of
 // re-parsing the prose text.
 func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind, description, text string, raw json.RawMessage) []AppNotification {
+	return p.systemAnnouncementItem(eventKind, description, text, raw, nil)
+}
+
+// systemAnnouncementWithExitCode renders a lifecycle system one-liner like
+// systemAnnouncement, additionally promoting the exit status of the process
+// behind it onto the item's typed ExitCode field. Only a hook has such a
+// process; the web splits "show every hook exit" from "show clean exits only"
+// on this number rather than re-parsing the "... exit N" prose, so a reworded
+// announcement can never change which lines a reader has chosen to see.
+func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind, description, text string, exitCode int) []AppNotification {
+	code := int64(exitCode)
+	return p.systemAnnouncementItem(eventKind, description, text, nil, &code)
+}
+
+func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
 	description = strings.TrimSpace(description)
 	text = strings.TrimSpace(text)
 	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
@@ -981,6 +996,7 @@ func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind, description, te
 		Status:      appwire.TurnStatusCompleted,
 		Raw:         raw,
 		EventKind:   strings.TrimSpace(eventKind),
+		ExitCode:    exitCode,
 	}
 	if p.activeTurnID == "" {
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{

@@ -7,10 +7,13 @@
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
 import "./ToolCallItem";
+import { useMemo } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { usePrefsStore } from "../../../stores/prefs";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TurnSeparator } from "./messages";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
+import { visibleItems } from "./transcriptVisibility";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor } from "./types";
@@ -50,11 +53,31 @@ export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
   // turn); its presence is the signal to close the turn with a diagnostic
   // end-cap, corroborated by the honest status "failed" the wire stamps.
   const failure = asTurnError(turn.error);
+  // Settings -> Transcript's hook-exit and prompt-loaded toggles hide whole
+  // items. Apply them HERE, to the turn the renderers receive, rather than
+  // letting each renderer bow out: SystemNoticeItem computes its
+  // consecutive-run grouping from turn.items, so an item hidden any later
+  // would still be counted by the group it was meant to leave. Subscribing
+  // to each toggle individually keeps a flip in Settings re-rendering the
+  // transcript live, and leaves every unrelated pref change inert.
+  const hookExitsAll = usePrefsStore((s) => s.transcript.hookExitsAll);
+  const hookExitsNormal = usePrefsStore((s) => s.transcript.hookExitsNormal);
+  const promptLoaded = usePrefsStore((s) => s.transcript.promptLoaded);
+  const shown = useMemo(
+    () => visibleItems(turn.items, { hookExitsAll, hookExitsNormal, promptLoaded }),
+    [turn.items, hookExitsAll, hookExitsNormal, promptLoaded],
+  );
+  // Reuse the turn object outright when nothing is hidden (visibleItems is
+  // identity-stable then), so the memoized renderers' `turn` prop churns no
+  // more than it already did.
+  const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
   return (
     <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
-      {turn.items.map((item) => {
+      {shown.map((item) => {
         const ItemRenderer = itemRendererFor(item.type);
-        return <ItemRenderer key={item.id} item={item} turn={turn} live={isItemLive(item)} sessionRef={sessionRef} />;
+        return (
+          <ItemRenderer key={item.id} item={item} turn={shownTurn} live={isItemLive(item)} sessionRef={sessionRef} />
+        );
       })}
       {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
       <TurnSeparator turn={turn} />

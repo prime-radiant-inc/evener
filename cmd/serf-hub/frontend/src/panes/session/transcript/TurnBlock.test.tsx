@@ -1,10 +1,41 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo } from "react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { isItemLive, TurnBlock } from "./TurnBlock";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
+
+// See TurnSeparator.test.tsx's identical comment: Node 26 shadows jsdom's real
+// window.localStorage with its own (non-functional under vitest) global, so
+// every test file that touches localStorage needs this same small in-memory
+// stand-in. TurnBlock reads the transcript visibility prefs.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
+
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
+
+beforeEach(() => {
+  localStorage.clear();
+  resetPrefsStoreForTests();
+});
 
 // A tool row's open/closed state lives in the shared disclosureStore keyed by
 // item.id, so a row this file opens must not leak into another test's row of the
@@ -138,4 +169,95 @@ test("a renderer memoized with ignoringTurn does not re-render when only the enc
   rerender(<TurnBlock turn={turn([sharedItem], { id: "turn_2" })} />);
   expect(renderCount).toBe(1);
   expect(screen.getByTestId("memo-echo").textContent).toBe("stable");
+});
+
+// --- Settings -> Transcript visibility toggles ------------------------------
+// TurnBlock applies them to the turn the renderers receive, so a hidden item
+// is gone before SystemNoticeItem computes its consecutive-run grouping.
+
+function systemItem(id: string, overrides: Partial<ItemModel> = {}): ItemModel {
+  return { id, turnId: "turn_1", type: "systemMessage", text: `notice ${id}`, ...overrides };
+}
+
+function hookItem(id: string, exitCode: number): ItemModel {
+  return systemItem(id, { eventKind: "hook_completed", text: `hook ${id} exit ${exitCode}`, exitCode });
+}
+
+test("with both hook toggles off (the default), a hook exit line is not rendered", () => {
+  render(<TurnBlock turn={turn([hookItem("h", 0), hookItem("i", 1)])} />);
+  expect(screen.queryByText(/hook h exit 0/)).toBeNull();
+  expect(screen.queryByText(/hook i exit 1/)).toBeNull();
+});
+
+test("hookExitsAll renders hook exits of every code; hookExitsNormal renders only exit 0", () => {
+  const items = [hookItem("clean", 0), hookItem("failed", 1)];
+  const { rerender } = render(<TurnBlock turn={turn(items)} />);
+
+  act(() => prefsStore.getState().setTranscriptStatus("hookExitsAll", true));
+  rerender(<TurnBlock turn={turn(items)} />);
+  expect(screen.getByText(/hook clean exit 0/)).toBeTruthy();
+  expect(screen.getByText(/hook failed exit 1/)).toBeTruthy();
+
+  act(() => {
+    prefsStore.getState().setTranscriptStatus("hookExitsAll", false);
+    prefsStore.getState().setTranscriptStatus("hookExitsNormal", true);
+  });
+  rerender(<TurnBlock turn={turn(items)} />);
+  expect(screen.getByText(/hook clean exit 0/)).toBeTruthy();
+  expect(screen.queryByText(/hook failed exit 1/)).toBeNull();
+});
+
+test("flipping a toggle re-renders the transcript live, without a new turn object", () => {
+  const items = [hookItem("h", 0)];
+  const sameTurn = turn(items);
+  render(<TurnBlock turn={sameTurn} />);
+  expect(screen.queryByText(/hook h exit 0/)).toBeNull();
+
+  act(() => prefsStore.getState().setTranscriptStatus("hookExitsAll", true));
+  expect(screen.getByText(/hook h exit 0/)).toBeTruthy();
+});
+
+// The reason filtering happens in TurnBlock rather than inside each renderer:
+// SystemNoticeItem groups a run of 3+ ADJACENT systemMessage items into one
+// disclosure whose summary counts them. Hiding an item any later would leave
+// the survivors wrongly grouped and the count overstated.
+test("a hidden item is excluded from system-run grouping, not merely from the output", () => {
+  const items = [systemItem("a"), hookItem("h", 1), systemItem("c")];
+  render(<TurnBlock turn={turn(items)} />);
+
+  // Three adjacent system items minus the hidden hook leaves two - below the
+  // grouping threshold, so each must stand alone and no group may appear.
+  expect(screen.queryByTestId("system-notice-group")).toBeNull();
+  expect(screen.getByText("notice a")).toBeTruthy();
+  expect(screen.getByText("notice c")).toBeTruthy();
+});
+
+test("the same three items DO group once the hidden one is shown again", () => {
+  const items = [systemItem("a"), hookItem("h", 1), systemItem("c")];
+  act(() => prefsStore.getState().setTranscriptStatus("hookExitsAll", true));
+  render(<TurnBlock turn={turn(items)} />);
+
+  const group = screen.getByTestId("system-notice-group");
+  expect(group.textContent).toContain("3 system events");
+});
+
+test("promptLoaded off hides the system-prompt scaffold disclosure; on shows it", () => {
+  const items = [systemItem("p", { eventKind: "system_prompt", text: "You are a helpful assistant." })];
+  const { rerender } = render(<TurnBlock turn={turn(items)} />);
+  expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
+
+  act(() => prefsStore.getState().setTranscriptStatus("promptLoaded", true));
+  rerender(<TurnBlock turn={turn(items)} />);
+  expect(screen.getByTestId("system-notice-scaffold").textContent).toContain("System prompt");
+});
+
+test("items no toggle governs are untouched with every toggle off", () => {
+  const items = [
+    item({ id: "u", type: "userMessage", text: "hello" }),
+    systemItem("s", { eventKind: "skill_activated", text: "Activated skill: x" }),
+  ];
+  render(<TurnBlock turn={turn(items)} />);
+  const text = screen.getByTestId("turn-block").textContent ?? "";
+  expect(text).toContain("hello");
+  expect(text).toContain("Activated skill: x");
 });
