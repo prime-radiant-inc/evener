@@ -215,9 +215,20 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // The one placement rule, in the one place every open goes through: the
     // main slot takes a pane only when it is empty, so it holds exactly one at
     // a time and everything else stacks in the secondary group to its right.
+    //
+    // A welcome pane in the main slot counts as empty. Welcome IS the main
+    // slot's empty state ("No session open"), so the first real pane replaces
+    // it instead of opening beside it - without this, navigating from "/" to a
+    // session left the workspace split between a session and a placeholder
+    // telling the user nothing was open (seen in a real browser, not a
+    // fixture). Only the main slot's welcome is displaced, and only by a pane
+    // that is not itself welcome.
     const id = nextPaneId(type);
-    const slot: PaneSlot = state.panes.some((p) => p.slot === "main") ? "secondary" : "main";
-    set({ panes: [...state.panes, { id, type, params, slot }], focusedPaneId: id });
+    const main = state.panes.find((p) => p.slot === "main");
+    const displaced = type !== "welcome" && main?.type === "welcome" ? main : undefined;
+    const slot: PaneSlot = main === undefined || displaced !== undefined ? "main" : "secondary";
+    const kept = displaced ? state.panes.filter((p) => p.id !== displaced.id) : state.panes;
+    set({ panes: [...kept, { id, type, params, slot }], focusedPaneId: id });
     return id;
   },
 

@@ -85,6 +85,28 @@ describe("openPane", () => {
     expect(workspaceStore.getState().mainPane()?.id).toBe(first);
   });
 
+  // Welcome is the main slot's empty state, not a peer: it exists to say
+  // "nothing is open here". The first real pane therefore takes the main slot
+  // FROM it rather than opening beside it - otherwise navigating from "/" to a
+  // session leaves half the workspace showing "No session open" while the
+  // session itself sits in the secondary group (observed in a real browser).
+  test("the first real pane displaces a welcome placeholder from the main slot", () => {
+    const welcome = workspaceStore.getState().openPane("welcome");
+    const session = workspaceStore.getState().openPane("doc", { ref: "a" });
+
+    expect(workspaceStore.getState().mainPane()?.id).toBe(session);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([session]);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(welcome);
+  });
+
+  test("welcome is NOT displaced once a real pane already holds the main slot", () => {
+    const main = workspaceStore.getState().openPane("doc", { ref: "a" });
+    const welcome = workspaceStore.getState().openPane("welcome"); // secondary, oddly, but the user asked for it
+
+    expect(workspaceStore.getState().mainPane()?.id).toBe(main);
+    expect(workspaceStore.getState().panes.map((p) => p.id)).toContain(welcome);
+  });
+
   test("every pane after the first goes to the secondary slot", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
     const second = workspaceStore.getState().openPane("doc", { ref: "b" });

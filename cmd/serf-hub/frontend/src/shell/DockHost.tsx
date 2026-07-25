@@ -101,11 +101,12 @@ function persistLayout(json: unknown): void {
 // Turns a pane's logical slot (workspace.ts's one placement rule) into the
 // dockview addPanel `position` that realizes it.
 //
-//   main      -> no position at all. Either the workspace is empty (dockview
-//                creates the one group) or the main pane was just closed and
-//                is being relaunched, in which case it goes to the LEFT of the
-//                surviving secondary group so the main slot stays the top-left
-//                one it has always been.
+//   main      -> to the LEFT of the secondary group when one exists, so the
+//                main slot stays the top-left one it has always been (the case
+//                after the main pane is closed and welcome relaunches, or after
+//                a real pane displaces welcome). With no secondary group there
+//                is nothing to anchor to and no position is needed: dockview
+//                creates the one group itself.
 //   secondary -> stack into the existing secondary group when there is one
 //                ("within"), otherwise split to the RIGHT of the main pane,
 //                which is what creates that group in the first place. This is
@@ -118,11 +119,10 @@ function positionFor(
 ): { position: { referencePanel: string; direction: "left" | "right" | "within" } } | Record<string, never> {
   const openIds = new Set(api.panels.map((p) => p.id));
   const others = workspaceStore.getState().panes.filter((p) => p.id !== pane.id && openIds.has(p.id));
-  if (pane.slot === "main") {
-    const anchor = others[0];
-    return anchor ? { position: { referencePanel: anchor.id, direction: "left" } } : {};
-  }
   const secondary = others.find((p) => p.slot === "secondary");
+  if (pane.slot === "main") {
+    return secondary ? { position: { referencePanel: secondary.id, direction: "left" } } : {};
+  }
   if (secondary) return { position: { referencePanel: secondary.id, direction: "within" } };
   const main = others.find((p) => p.slot === "main");
   return main ? { position: { referencePanel: main.id, direction: "right" } } : {};

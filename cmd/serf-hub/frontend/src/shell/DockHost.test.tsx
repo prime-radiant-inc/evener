@@ -219,6 +219,23 @@ test("the main pane keeps a visible title with no tab of its own (PaneScaffold h
   expect(visibleTabTexts()).toEqual([]);
 });
 
+// Found in a real browser, not in a fixture: routing from "/" to a session left
+// the workspace split between the session and a "No session open" placeholder,
+// because the boot welcome pane had taken the main slot and the session opened
+// beside it. Welcome is the main slot's empty state, so the first real pane
+// takes it over.
+test("navigating from the boot welcome pane to a real pane replaces it in the main group", async () => {
+  render(<DockHost />);
+  await screen.findByText("No session open"); // the boot fallback's welcome pane
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+
+  await screen.findByText(/doc pane: ref_a/);
+  expect(screen.queryByText("No session open")).toBeNull();
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1); // one column, not a split
+  expect(workspaceStore.getState().mainPane()?.type).toBe("doc");
+});
+
 test("closing the only main pane relaunches welcome in the main slot", async () => {
   const main = workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
