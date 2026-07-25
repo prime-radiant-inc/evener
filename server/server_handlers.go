@@ -282,6 +282,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	cmfn := s.contextMetricsFn
 	dfn := s.detailedStatusFn
 	wmfn := s.workMetricsFn
+	ftcfn := s.failedToolCallsFn
 	pafn := s.pendingAskFn
 	pefn := s.pendingEscalationFn
 	processing := s.processing
@@ -317,6 +318,11 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status.WorkMillis = workMillis
 		status.Usage = usage
 		status.ActiveTurnStartedAt = activeTurnStartedAt
+	}
+	if ftcfn != nil {
+		if count, measured := ftcfn(); measured {
+			status.FailedToolCalls = &count
+		}
 	}
 	if pafn != nil {
 		status.PendingAsk = pafn()

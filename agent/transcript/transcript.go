@@ -206,6 +206,57 @@ type Writer struct {
 
 	dirty    bool
 	lastSync time.Time
+
+	// failures counts the session's failed tool calls as they are written, for
+	// the live figure a running session reports. Nil until TrackFailures
+	// installs it, and a nil counter reports ABSENT rather than zero: a writer
+	// nobody asked to count has measured nothing, and "0 failed" from a
+	// producer that never looked is the false all-clear the count exists to
+	// prevent.
+	failures *FailureCounter
+}
+
+// TrackFailures installs a running count of the session's failed tool calls,
+// seeded from the entries already on disk and advanced by every entry this
+// writer appends from here on.
+//
+// That split is what makes the live figure whole-session rather than
+// since-restart: seed carries the run before this process, and the writer sees
+// every entry after it, because a turn reaches the transcript before any client
+// can ask about it. The alternative — re-deriving from the file on demand —
+// reads a transcript still being appended to and returns a stale floor, and the
+// alternative to THAT — counting the session's in-memory history — sheds
+// everything compaction summarizes away. Both under-report, which for failures
+// is worse than reporting nothing.
+//
+// fromEntryOrdinal bounds the seed to the session's own span; see
+// NewFailureCounter.
+func (w *Writer) TrackFailures(seed []Entry, fromEntryOrdinal int) {
+	if w == nil {
+		return
+	}
+	counter := NewFailureCounter(fromEntryOrdinal)
+	for _, entry := range seed {
+		counter.Observe(entry.Turn)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.failures = counter
+}
+
+// FailedToolCalls is how many of the session's tool calls have failed so far,
+// and whether anyone counted. It stays readable after Close so a session that
+// ends while someone is watching keeps reporting its settled figure.
+func (w *Writer) FailedToolCalls() (int, bool) {
+	if w == nil {
+		return 0, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failures == nil {
+		return 0, false
+	}
+	return w.failures.Count(), true
 }
 
 // NewWriter creates a transcript file at path, writes the header as the first line,
@@ -327,6 +378,10 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	}
 
 	w.seq++
+	// Counted only once the entry is on its way to the file and no rollback can
+	// take it back: the figure is a statement about the transcript, so it moves
+	// for exactly the entries a later reader of that transcript would see.
+	w.failures.Observe(turn)
 	return nil
 }
 

@@ -278,11 +278,12 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   return (
     <div className={CLASS.row} data-testid="status-row">
       <ModelSwitch sessionRef={sessionRef} model={model} />
-      {/* Driven purely by the wire figure, not by which strip is rendering.
-          Today only a session the hub reads from disk carries one - a live
-          session's transcript is still being written, so a disk-derived count
-          would be a stale floor - but a producer that grows an honest live
-          count needs no second render path here. */}
+      {/* Driven purely by the wire figure, not by which strip is rendering -
+          which is why a running session lights this up with no second render
+          path. The daemon counts its own failures as it writes them to the
+          transcript, so the figure a live session carries is whole-session,
+          not the stale floor a re-read of a file still being appended to
+          would give. */}
       <FailureCount count={model.failedToolCalls} />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       {/* The gauge is the whole readout: a used/window number pair beside it

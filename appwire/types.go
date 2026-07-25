@@ -292,14 +292,23 @@ type SerfThread struct {
 	// that fraction would report a comforting "0 failed" for a session full of
 	// failures nobody has scrolled to.
 	//
+	// TWO PRODUCERS, one rule and one scope. A running session's count comes
+	// from the daemon, which counts failures as it writes them to the transcript
+	// and seeds from the file on resume — complete for a live session, where
+	// re-reading the file would return a floor (it is still being appended to)
+	// and counting in-memory history would shed whatever compaction summarized
+	// away. A cold session's count comes from the hub scanning the finished
+	// transcript. Both apply agent/transcript.FailedToolResult over the
+	// session's own span, so the figure does not move when a session goes cold.
+	//
 	// A pointer, because 0 and unknown are different claims and only one of
-	// them is good news. Zero means the whole transcript was read and nothing
+	// them is good news. Zero means the whole session was counted and nothing
 	// failed. Nil means nobody counted: the transcript is unreadable (a legacy
-	// format_version 1 file, or a missing one), or the producer does not derive
-	// the figure at all — the hub derives it only on its single-thread past-read
-	// paths, since a live session's transcript is still being written and the
-	// per-entry list sweeps cannot afford a scan per session. Consumers render
-	// nil as nothing, never as a fabricated zero.
+	// format_version 1 file, or a missing one), the session has no transcript,
+	// or the producer does not derive the figure at all — an old daemon, a
+	// Codex-sourced thread, or the hub's per-entry list sweeps, which cannot
+	// afford a scan per session. Consumers render nil as nothing, never as a
+	// fabricated zero.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
 	// true while an ask_user question is unanswered. Additive: absent on old

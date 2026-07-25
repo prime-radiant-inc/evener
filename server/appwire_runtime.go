@@ -754,6 +754,7 @@ func (s *Server) appThread() appwire.Thread {
 	qtfn := s.queueTextsFn
 	gsfn := s.goalStatusFn
 	wmfn := s.workMetricsFn
+	ftcfn := s.failedToolCallsFn
 	metafn := s.sessionMetaFn
 	pafn := s.pendingAskFn
 	pesfn := s.pendingEscalationsSnapshotFn
@@ -820,6 +821,17 @@ func (s *Server) appThread() appwire.Thread {
 	if wmfn != nil {
 		workMillis, usage, activeTurnStartedAt = wmfn()
 	}
+	// The live session's own running failure count. Absent unless the daemon
+	// actually measured it — the strip must not vouch for a session nobody
+	// counted, and an unmeasured zero would read as "nothing went wrong".
+	failedToolCalls := status.FailedToolCalls
+	if ftcfn != nil {
+		if count, measured := ftcfn(); measured {
+			failedToolCalls = &count
+		} else {
+			failedToolCalls = nil
+		}
+	}
 	askPending := status.PendingAsk
 	if pafn != nil {
 		askPending = pafn()
@@ -875,6 +887,7 @@ func (s *Server) appThread() appwire.Thread {
 			Cost:                  appwire.EstimateCost(status.Model, usage),
 			WorkMillis:            workMillis,
 			ActiveTurnStartedAt:   activeTurnStartedAt,
+			FailedToolCalls:       failedToolCalls,
 			AskPending:            askPending,
 			PendingEscalations:    pendingEscalations,
 			ReasoningEffort:       reasoningEffort,
