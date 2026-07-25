@@ -236,17 +236,37 @@ not a missing feature.
 **Test:** `shell/DockHost.test.tsx`
 
 Jesse: *"I'm finding that I despise having the tab bar on the 'main' section of the screen"* →
-chose **hide it when only one pane**, and added: *"and never open new panes into the main group?"*
+chose **hide it when only one pane**. Then, asked what "never open new panes into the main group"
+meant concretely: *"There should, I think, only ever be one pane in the 'main group' in the top left
+(to the right of the sidebar) and other newly opened panes should generally open in a group to the
+right of that group."*
 
-- [ ] Tab bar does not render when a group holds exactly one pane; it appears when a second opens.
-      Check dockview's own API for this before hand-rolling CSS — it may support it natively.
-- [ ] The pane still needs its identity: `PaneScaffold` already draws a pane header. Verify the
-      title is visible with the bar gone; don't leave an unlabelled pane.
-- [ ] **The second half of Jesse's answer:** new panes should not open into the main group. Read
-      `workspace.ts`'s `openPane` and dockview's group targeting, then report what "never open into
-      the main group" means concretely for this layout before implementing it — where SHOULD a new
-      pane go, and what happens when there is only one group? This one needs a follow-up question
-      answered before it can be built; flag it rather than guessing.
+So there are two rules, and they compose: the main group holds exactly one pane, therefore the main
+group never shows a tab bar at all. The secondary group to its right is where everything else
+stacks, and that one shows tabs (it can hold several).
+
+- [ ] **Main group holds at most one pane.** A second pane opens in a group to the RIGHT. A third
+      joins that same right-hand group rather than making a third column ("generally open in a group
+      to the right", singular).
+- [ ] The plumbing already exists and is one chokepoint: `workspace.ts`'s
+      `openPane(type, params, opts?: {beside?})` records `beside`, and `DockHost.tsx:169` turns it
+      into dockview's `position: { referencePanel: pane.beside, direction: "right" }`. Today only
+      `paneActions.ts:46` passes `beside`, so everything else lands in the main group by default.
+      **Put the policy in `openPane`, not at the 21 call sites** — that is the DRY seam.
+- [ ] Decide what happens when the ONE main pane is closed: does the next pane from the right-hand
+      group get promoted into the main slot, or does the main slot sit empty? Empty-with-a-populated-
+      right-group looks broken; promotion is probably right. Say which you implemented and why.
+- [ ] Tab bar does not render for a group holding exactly one pane. Check dockview's own API for
+      this before hand-rolling CSS — it may support it natively. With the rule above, the main group
+      qualifies permanently and the right-hand group shows tabs whenever it has more than one.
+- [ ] The main pane still needs its identity with no tab: `PaneScaffold` already draws a pane header.
+      Verify the title is visible; don't leave an unlabelled pane.
+- [ ] `mobile/StackHost.tsx` is a separate single-pane stack (no dockview groups) — confirm this
+      change doesn't touch it, and say so.
+- [ ] This interacts with C1: whatever the persisted layout restores must not violate the one-pane
+      rule. Do C1's diagnosis first, and check that a layout saved BEFORE this change (a main group
+      with several tabs, already in Jesse's localStorage) either migrates or is rejected cleanly
+      rather than restoring a state the app no longer allows.
 - [ ] No setting. Jesse picked the automatic behavior; a toggle is YAGNI until he asks.
 
 ### Task C3: older turns auto-load
@@ -329,8 +349,10 @@ there and the client is refusing anyway.
 
 - **A1 first**, then A1b/A2/A3/A4/A5/A6 (they all build on the shared row). A1 is the DRY move; doing
   the others first means undoing them.
-- **B1, C1, C2, C3, D1, D2 are independent** of stream A and of each other. C1 must be diagnosed
-  before C2 (both touch `DockHost.tsx`).
+- **B1, C3, D1, D2 are independent** of stream A and of each other.
+- **C1 → C2, in that order, same agent.** Both touch `DockHost.tsx`, and C2's one-pane-per-main-group
+  rule changes what a valid persisted layout even is — so the persistence bug has to be understood
+  before the layout policy lands on top of it.
 - One agent per stream, sequentially per the no-parallel-tests rule; A's tasks are one agent.
 
 ## Out of scope (noted, not doing)
