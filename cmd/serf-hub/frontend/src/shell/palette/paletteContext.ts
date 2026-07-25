@@ -1,9 +1,10 @@
 // The palette's runtime context: the new-shell successor to search.js's
 // buildCtx (search.js:568-579), which read #conversation's data-session-id /
 // data-state and the URL path. Here the "current session" is the focused
-// workspace pane, and its live/ended state comes from that session's
-// ThreadModel in the threads store, not a DOM attribute. Scope gating and the
-// per-command idle guards derive entirely from these.
+// workspace pane, and everything a command needs to know about it comes from
+// that session's ThreadModel in the threads store, not a DOM attribute:
+// which commands exist (scope), which of them the hub will carry out
+// (capabilities), and whether a turn is in flight to act on.
 
 import type { ThreadModel } from "../../protocol/model";
 import { threadsStore } from "../../stores/threads";
@@ -36,8 +37,8 @@ function onPageForType(type: string): OnPage {
       return "home";
     default:
       // transcript (a standalone read-only history view) and doc panes carry
-      // no interactive session context, so they read as "other" - session/
-      // ended-ok commands gate on sessionRef, which stays null for them.
+      // no interactive session context, so they read as "other" - session
+      // commands gate on sessionRef, which stays null for them.
       return "other";
   }
 }
@@ -60,22 +61,18 @@ export function focusedModel(sessionRef: string | null): ThreadModel | undefined
   return sessionRef ? threadsStore.getState().threads.get(sessionRef) : undefined;
 }
 
-// isSessionEnded / isSessionBusy / hasActiveTurn are the palette's three
-// model-derived predicates. isSessionEnded gates the "session" (live-only)
-// scope; isSessionBusy is the /model "turn in progress" guard (mirrors
-// panes/session/composer/submitRouting.isTurnActive - the canonical
-// interrupt/steer/model-switch busy predicate: status active AND a turn id
-// has actually landed); hasActiveTurn is the interrupt/steer/queue/drain "no
-// active turn" guard (the legacy's plain `!activeTurnId()` check, which is
-// deliberately weaker than isSessionBusy - see submitRouting.ts's own note).
-export function isSessionEnded(model: ThreadModel): boolean {
-  return model.status.type === "ended" || model.status.type === "closed";
-}
-
-export function isSessionBusy(model: ThreadModel): boolean {
-  return model.status.type === "active" && !!model.activeTurnId;
-}
-
+// hasActiveTurn is the palette's ONE model-derived predicate, and it answers
+// exactly one question: is there a turn to act on right now. It belongs to
+// /interrupt, /steer, /queue and /drain, which are meaningless without one
+// (the legacy's plain `!activeTurnId()` check).
+//
+// It is deliberately the only one left. A "session is busy" and a "session has
+// ended" predicate used to live here too, gating /model and the whole
+// session scope respectively - both session-scoped decisions made from
+// turn-scoped information (kata cjzc). Whether the NEXT turn can be
+// configured is the hub's answer, not this module's: it advertises a
+// per-action capability for every thread, cold ones included, and resumes
+// behind the call. commands.ts reads those flags instead.
 export function hasActiveTurn(model: ThreadModel): boolean {
   return !!model.activeTurnId;
 }

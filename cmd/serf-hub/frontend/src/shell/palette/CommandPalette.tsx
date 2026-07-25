@@ -7,6 +7,7 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { WireError } from "../../protocol/errors";
 import { type CadenceState, Chip, Dialog, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
@@ -19,6 +20,7 @@ import {
   type PaletteRunContext,
   type PaletteUi,
   rememberableId,
+  type ScopedCommand,
 } from "./commands";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
@@ -43,6 +45,8 @@ const CLASS = {
   results: requireClass(styles.results, "commandpalette.module.css", "results"),
   sectionHeader: requireClass(styles.sectionHeader, "commandpalette.module.css", "sectionHeader"),
   row: requireClass(styles.row, "commandpalette.module.css", "row"),
+  rowUnavailable: requireClass(styles.rowUnavailable, "commandpalette.module.css", "rowUnavailable"),
+  unavailable: requireClass(styles.unavailable, "commandpalette.module.css", "unavailable"),
   glyph: requireClass(styles.glyph, "commandpalette.module.css", "glyph"),
   title: requireClass(styles.title, "commandpalette.module.css", "title"),
   cmdId: requireClass(styles.cmdId, "commandpalette.module.css", "cmdId"),
@@ -99,7 +103,7 @@ type PaletteItem =
   | { kind: "live"; result: SearchResult }
   | { kind: "past"; result: SearchResult }
   | { kind: "insession"; match: InSessionMatch }
-  | { kind: "command"; command: Command }
+  | { kind: "command"; command: ScopedCommand }
   | { kind: "arg"; item: CommandArgsEnumItem };
 
 // One render entry: a section header or a navigable row carrying its flat
@@ -115,7 +119,18 @@ interface ResultsView {
 // commandErrorMessage extracts a rejected command Promise's message, falling
 // back through the stringified error to the literal "command failed"
 // (search.js:867-871).
-function commandErrorMessage(err: unknown): string {
+//
+// The hubLaunch prefix keeps a failed auto-resume from being read as a failed
+// command. A session mutation against a cold session resumes it first
+// (app_model.go's setThreadModelWithResume and its siblings); when that
+// spawn fails, the hub returns the spawner's own raw text under
+// serfErrorInfo "hubLaunch" (appwire.HubLaunchError), which on its own says
+// nothing about which of the two steps died - and would send someone
+// debugging /goal when the daemon simply would not start.
+export function commandErrorMessage(err: unknown): string {
+  if (err instanceof WireError && err.serfErrorInfo === "hubLaunch") {
+    return `couldn't start this session: ${err.message || "launch failed"}`;
+  }
   if (err instanceof Error && err.message) return err.message;
   const msg = String(err ?? "").trim();
   return msg || "command failed";
@@ -326,6 +341,20 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     finishSuccess(opts);
   }
 
+  // activateCommand is the single entry point for "the user chose this row",
+  // shared by Enter and click. An unavailable command stays selectable and
+  // answers with its reason in the error strip rather than being unreachable:
+  // a row you can see but cannot land on is as confusing as a missing one, and
+  // silently running the NEXT command instead would be worse than either.
+  function activateCommand(command: ScopedCommand) {
+    if (command.unavailableReason) {
+      setError(`/${command.id} is ${command.unavailableReason}`);
+      return;
+    }
+    if (command.args) enterArgsMode(command);
+    else runArgless(command);
+  }
+
   function runArgless(command: Command) {
     let result: unknown;
     try {
@@ -379,8 +408,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     }
     if (mode === "command-filter") {
       if (item?.kind !== "command") return;
-      if (item.command.args) enterArgsMode(item.command);
-      else runArgless(item.command);
+      activateCommand(item.command);
       return;
     }
     // command-args
@@ -489,8 +517,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       return;
     }
     if (mode === "command-filter" && item.kind === "command") {
-      if (item.command.args) enterArgsMode(item.command);
-      else runArgless(item.command);
+      activateCommand(item.command);
       return;
     }
     if (mode === "command-args" && item.kind === "arg" && selectedCommand) {
@@ -654,13 +681,18 @@ function Row({
   active: boolean;
   onActivate: (index: number) => void;
 }) {
+  // aria-disabled, never the disabled attribute: the row must stay focusable
+  // and activatable so choosing it explains itself (activateCommand), instead
+  // of swallowing the keystroke.
+  const unavailable = item.kind === "command" && item.command.unavailableReason !== undefined;
   return (
     <button
       type="button"
       id={`palette-row-${index}`}
-      className={CLASS.row}
+      className={unavailable ? `${CLASS.row} ${CLASS.rowUnavailable}` : CLASS.row}
       role="option"
       aria-selected={active}
+      aria-disabled={unavailable || undefined}
       onClick={() => onActivate(index)}
     >
       <RowContent item={item} query={query} />
@@ -677,7 +709,14 @@ function RowContent({ item, query }: { item: PaletteItem; query: string }) {
         </span>
         <span className={CLASS.title}>{item.command.title}</span>
         <span className={CLASS.cmdId}>/{item.command.id}</span>
-        {item.command.hint && <span className={CLASS.hint}>{item.command.hint}</span>}
+        {/* The reason takes the hint's place rather than sitting beside it:
+            on a row the user cannot run, why is the only thing worth the
+            width. */}
+        {item.command.unavailableReason ? (
+          <span className={CLASS.unavailable}>{item.command.unavailableReason}</span>
+        ) : (
+          item.command.hint && <span className={CLASS.hint}>{item.command.hint}</span>
+        )}
       </>
     );
   }

@@ -17,6 +17,7 @@ import {
   filterCommands,
   type PaletteRunContext,
   splitModelId,
+  UNAVAILABLE_REASON,
 } from "./commands";
 import { buildPaletteContext } from "./paletteContext";
 import { RECENT_COMMANDS_KEY } from "./recentCommands";
@@ -70,6 +71,20 @@ const CAPS: ThreadCapabilities = {
   queue: true,
   goal: true,
   rename: true,
+};
+
+const NO_CAPS: ThreadCapabilities = {
+  send: false,
+  steer: false,
+  interrupt: false,
+  compact: false,
+  clear: false,
+  forkFromTurn: false,
+  shutdown: false,
+  changeModel: false,
+  queue: false,
+  goal: false,
+  rename: false,
 };
 
 function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -173,7 +188,7 @@ test("with no focused session, only the 8 global commands are in scope", () => {
   expect(inScope).toHaveLength(8);
 });
 
-test("a live focused session exposes global + session + ended-ok (all 23 commands)", () => {
+test("a live focused session exposes global + session (all 23 commands)", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const inScope = commandsInScope(buildPaletteContext());
@@ -182,13 +197,64 @@ test("a live focused session exposes global + session + ended-ok (all 23 command
   expect(inScope.some((c) => c.id === "project")).toBe(true);
 });
 
-test("an ended focused session drops the live-only session commands, keeping global + ended-ok", () => {
+// The kata-zshh ruling: an ended session keeps the whole registry. The hub
+// advertises ChangeModel/Send/Compact/Clear/Shutdown/Goal/Rename for a cold
+// exited thread (app_threadread.go's pastEntryThread) and resumes it behind
+// the call, so the palette must not decide for it.
+test("an ended focused session still lists every command; only the wire's own false flags disable one", () => {
   focusSession("ref_a");
-  seedModel("ref_a", { status: { type: "ended" } });
+  seedModel("ref_a", {
+    status: { type: "ended" },
+    // Exactly pastEntryThread's advertisement for a cold exited thread.
+    capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
+  });
   const inScope = commandsInScope(buildPaletteContext());
-  expect(inScope.map((c) => c.id)).not.toContain("steer");
-  expect(inScope.map((c) => c.id)).toContain("copy-id");
-  expect(inScope).toHaveLength(12); // 8 global + 4 ended-ok
+  expect(inScope).toHaveLength(23);
+  const byId = new Map(inScope.map((c) => [c.id, c]));
+  for (const id of ["model", "goal", "clear", "compact", "aside", "shutdown", "copy-id"]) {
+    expect(byId.get(id)?.unavailableReason).toBeUndefined();
+  }
+  for (const id of ["steer", "interrupt", "queue", "drain-as-steer"]) {
+    expect(byId.get(id)?.unavailableReason).toBe(UNAVAILABLE_REASON);
+  }
+});
+
+// The mechanism assertion: flip ONLY the capability flag and the verdict
+// flips with it, in both directions, with session liveness held constant.
+// A test that merely asserted "/model appears on an ended session" would
+// pass just as well against a status-based gate.
+test("the wire capability flag, not session liveness, decides availability", () => {
+  focusSession("ref_a");
+  const reasonFor = (id: string) => commandsInScope(buildPaletteContext()).find((c) => c.id === id)?.unavailableReason;
+
+  // Live and idle, but the wire says no: unavailable.
+  seedModel("ref_a", { status: { type: "idle" }, capabilities: { ...CAPS, compact: false } });
+  expect(reasonFor("compact")).toBe(UNAVAILABLE_REASON);
+
+  // Ended, but the wire says yes: available.
+  seedModel("ref_a", { status: { type: "ended" }, capabilities: { ...CAPS, compact: true } });
+  expect(reasonFor("compact")).toBeUndefined();
+});
+
+test("a session command with no wire capability is never capability-gated", () => {
+  focusSession("ref_a");
+  // Every flag off. /reasoning-effort has no ThreadCapabilities field (the hub
+  // gates it on nothing either - app_rpc.go's "No capability gate" comment),
+  // so it must stay enabled while its capability-backed siblings do not.
+  seedModel("ref_a", {
+    status: { type: "ended" },
+    capabilities: NO_CAPS,
+  });
+  const byId = new Map(commandsInScope(buildPaletteContext()).map((c) => [c.id, c]));
+  expect(byId.get("reasoning-effort")?.unavailableReason).toBeUndefined();
+  expect(byId.get("clear")?.unavailableReason).toBe(UNAVAILABLE_REASON);
+});
+
+test("a focused session whose model has not hydrated yet leaves every command enabled", () => {
+  focusSession("ref_a");
+  const inScope = commandsInScope(buildPaletteContext());
+  expect(inScope).toHaveLength(23);
+  expect(inScope.every((c) => c.unavailableReason === undefined)).toBe(true);
 });
 
 // --- filterCommands (search.js:637-651) ---
@@ -272,15 +338,23 @@ test("/interrupt, /queue, /drain-as-steer each block with their own no-active-tu
   expect(blockedMessage(cmd("drain-as-steer").run?.(runContext()))).toBe("drain failed: no active turn");
 });
 
-// --- /model: busy guard + provider/model split + toast ---
+// --- /model: no client-side turn guess + provider/model split + toast ---
 
-test("/model is blocked while a turn is in progress", () => {
+// The palette used to answer "is a turn in flight" itself and refuse. Only the
+// daemon knows: it answers Conflict for a genuine mid-turn switch
+// (server/appwire_runtime.go's handleAppThreadModelSet) and resumes a cold
+// session for everyone else (app_model.go's setThreadModelWithResume).
+test("/model sends thread/model/set even while a turn is in progress, letting the daemon rule", async () => {
+  const fake = connectFake();
+  fake.on("thread/model/set", () => ({}));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1" });
   const c = cmd("model");
   if (c.args?.kind !== "enum") throw new Error("expected enum args");
   const result = c.args.run(runContext(), { id: "openai/gpt-5.5", label: "gpt-5.5" });
-  expect(blockedMessage(result)).toBe("model change failed: turn in progress");
+  expect(isBlocked(result)).toBe(false);
+  await result;
+  expect(fake.calls.some((call) => call.method === "thread/model/set")).toBe(true);
 });
 
 test("/model source lists models and run sets the split provider/model with a success toast", async () => {
