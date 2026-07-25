@@ -343,17 +343,42 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   expect(localStorage.getItem("serf-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
 });
 
-test("blocks an empty prompt with no attachment", async () => {
+// A blank prompt starts a DORMANT session, exactly as the placeholder
+// promises. The daemon honours it: hubThreadStart calls StartTurn only when
+// len(params.Input) > 0 (cmd/serf-hub/app_threadlifecycle.go), and buildInput
+// drops a blank prompt, so the wire carries input: [] - the session is created
+// and no turn is started.
+test("an empty prompt starts a dormant session rather than erroring", async () => {
   const user = userEvent.setup();
   const fake = readyClient();
   renderSpawn(fake);
   await settled();
 
+  await setWorkingDir(user, "/tmp/project");
   await user.click(screen.getByTestId("spawn-submit"));
 
-  expect(await screen.findByText(/prompt is empty/i)).toBeTruthy();
-  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
-  expect(window.location.pathname).toBe("/");
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ cwd: "/tmp/project", input: [] });
+  expect(screen.queryByText(/prompt is empty/i)).toBeNull();
+});
+
+// Whitespace is a blank prompt: buildInput keeps the text item only when it is
+// non-empty AFTER trimming, so "   " takes the same dormant path rather than
+// starting a turn that says nothing.
+test("a whitespace-only prompt starts a dormant session too", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "   ");
+  await setWorkingDir(user, "/tmp/project");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ input: [] });
 });
 
 test("loads sticky defaults from localStorage on mount", async () => {

@@ -364,10 +364,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       toasts.push("error", "Image attachment is still processing.");
       return;
     }
-    if (prompt.trim() === "" && attachments.items.length === 0) {
-      toasts.push("error", "Prompt is empty. Type something before spawning.");
-      return;
-    }
+    // A blank prompt is NOT an error: it starts a dormant session, which is
+    // what the prompt placeholder promises. buildInput drops the empty text
+    // item, and hubThreadStart starts a turn only for a non-empty input
+    // (cmd/serf-hub/app_threadlifecycle.go), so the session is created and
+    // simply waits for its first prompt in the session composer.
     setBusy(true);
     try {
       const outcome = await preflightDir(client, cwd);
