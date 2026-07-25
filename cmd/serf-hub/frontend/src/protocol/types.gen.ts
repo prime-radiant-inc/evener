@@ -1197,35 +1197,38 @@ export const METHOD_NAMES = [
 
 export type MethodName = (typeof METHOD_NAMES)[number];
 
-export type NotificationName =
-  | "thread/started"
-  | "thread/closed"
-  | "thread/status/changed"
-  | "thread/queueChanged"
-  | "serf/thread/name/changed"
-  | "thread/model/changed"
-  | "thread/reasoning-effort/changed"
-  | "turn/started"
-  | "turn/completed"
-  | "item/started"
-  | "item/completed"
-  | "item/agentMessage/delta"
-  | "item/agentMessage/reset"
-  | "item/reasoning/summaryTextDelta"
-  | "item/toolOutput/delta"
-  | "warning"
-  | "serf/steering/injected"
-  | "serf/job/started"
-  | "serf/job/finished"
-  | "serf/auth/updated"
-  | "serf/launch/updated"
-  | "serf/attention/changed"
-  | "serf/marketplace/updated"
-  | "serf/plugin/updated"
-  | "serf/task/updated"
-  | "serf/sandbox/escalation/requested"
-  | "serf/sandbox/escalation/resolved"
-  | "serf/tree/changed";
+export const NOTIFICATION_NAMES = [
+  "thread/started",
+  "thread/closed",
+  "thread/status/changed",
+  "thread/queueChanged",
+  "serf/thread/name/changed",
+  "thread/model/changed",
+  "thread/reasoning-effort/changed",
+  "turn/started",
+  "turn/completed",
+  "item/started",
+  "item/completed",
+  "item/agentMessage/delta",
+  "item/agentMessage/reset",
+  "item/reasoning/summaryTextDelta",
+  "item/toolOutput/delta",
+  "warning",
+  "serf/steering/injected",
+  "serf/job/started",
+  "serf/job/finished",
+  "serf/auth/updated",
+  "serf/launch/updated",
+  "serf/attention/changed",
+  "serf/marketplace/updated",
+  "serf/plugin/updated",
+  "serf/task/updated",
+  "serf/sandbox/escalation/requested",
+  "serf/sandbox/escalation/resolved",
+  "serf/tree/changed",
+] as const;
+
+export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
 
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
