@@ -83,9 +83,29 @@ async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
 const CONTAINER_HEIGHT = 500;
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
 
+// jsdom has no IntersectionObserver either, and LoadOlderRow's automatic paging
+// sentinel needs one. This stub reports the observed element as visible
+// immediately, which is what a real browser does for a sentinel sitting at the
+// top of a short transcript - so a pane rendered here pages exactly as it would
+// there. LoadOlderRow's own suite drives a scriptable version for the
+// enter/leave/blocked cases; this one only has to make the pane's own wiring
+// reachable.
+class StubIntersectionObserver {
+  constructor(private readonly callback: IntersectionObserverCallback) {}
+  observe(target: Element): void {
+    this.callback(
+      [{ target, isIntersecting: true } as IntersectionObserverEntry],
+      this as unknown as IntersectionObserver,
+    );
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
 });
@@ -93,6 +113,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   if (offsetHeightDescriptor) {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", offsetHeightDescriptor);
   }
@@ -610,15 +631,13 @@ test("clicking the real NewContentPill clears it", async () => {
   expect(screen.queryByTestId("new-content-pill")).toBeNull();
 });
 
-// --- toast failure convention (wave 5 T1) --------------------------------
+// --- older-turn paging failure (round-3 C3) ------------------------------
 //
-// A user-initiated action that fails surfaces via the existing useToasts()
-// singleton - no new banner systems, no silent `.catch(() => {})`. This
-// loadOlder() catch is the wave's reference implementation; every other
-// stream's own failure handling (composer send/steer/queue, queue strip
-// promote/edit/cancel, ask answering, session actions) follows the same
-// pattern.
-test("a failed loadOlder surfaces an error toast instead of failing silently", async () => {
+// Paging is automatic (LoadOlderRow's own IntersectionObserver sentinel), so a
+// failure has no user gesture to report back to and would be silent. It surfaces
+// INLINE, at the top of the transcript where history stops, with a Retry - not
+// as a toast, which is reserved for actions the user actually initiated.
+test("a failed older-page fetch surfaces inline with a retry instead of failing silently", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({
     thread: testThread("ref_a", {
@@ -644,10 +663,46 @@ test("a failed loadOlder surfaces an error toast instead of failing silently", a
     </ClientProvider>,
   );
 
-  const loadOlderButton = await screen.findByTestId("load-older-row");
-  fireEvent.click(loadOlderButton);
+  // No click anywhere: the sentinel's own visibility is what fetched, which is
+  // the whole point of C3. The failure still has to be visible.
+  await screen.findByText(/couldn't load older turns: boom/i);
+  expect(screen.getByTestId("load-older-retry")).toBeTruthy();
+});
 
-  await screen.findByText(/couldn't load older messages: boom/i);
+test("older turns load with no click at all once the paging sentinel is in view", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({
+    thread: testThread("ref_a", {
+      turns: [
+        {
+          id: "turn_2",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_2", turnId: "turn_2", type: "userMessage", text: "recent", status: "completed" }],
+        },
+      ],
+    }),
+    olderCursor: "cursor_1",
+  }));
+  fake.on("thread/turns/list", () => ({
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "older history", status: "completed" }],
+      },
+    ],
+    nextCursor: undefined,
+  }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByText("older history")).toBeTruthy();
 });
 
 // --- Composer / SessionChrome slots (wave 5 T1) --------------------------
