@@ -668,7 +668,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
-	if err := s.transcript.Append(t); err != nil {
+	if err := s.writeTranscript(t); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))

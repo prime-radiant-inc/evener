@@ -258,12 +258,28 @@ func newWriterFS(fs afero.Fs, path string, header Header) (*Writer, error) {
 
 // Append writes a turn as an Entry to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
+//
+// The nil no-op exists so a session with no state directory can write without
+// every call site nil-checking, and that is the common case. Its cost is that
+// "I wrote this" and "there was nowhere to write it" are the same answer to the
+// caller — nil. A caller that reaches a writer which does not exist YET, rather
+// than one that will never exist, therefore loses the turn in silence, with no
+// error to report and nothing for a test to catch. That is exactly what
+// happened to SessionStart hook exits in kata qm9y; kata d4es is the hazard.
+//
+// Do not add nil-checks at call sites to compensate: they cannot tell the two
+// cases apart either. Serf's agent package instead routes every write through
+// Session.writeTranscript/writeTranscriptDurable, which hold turns until
+// Session.attachTranscript has settled whether a writer exists at all. Any new
+// consumer of this package that can write before it has opened its writer needs
+// the same gate; a bare Append there reports success and drops the turn.
 func (w *Writer) Append(turn schema.Turn) error {
 	return w.append(turn, false)
 }
 
 // AppendDurable writes a turn and fsyncs it before returning.
-// Safe for concurrent use. No-op if the receiver is nil.
+// Safe for concurrent use. No-op if the receiver is nil — see Append for why
+// that makes a write into a not-yet-open writer silently succeed.
 func (w *Writer) AppendDurable(turn schema.Turn) error {
 	return w.append(turn, true)
 }
