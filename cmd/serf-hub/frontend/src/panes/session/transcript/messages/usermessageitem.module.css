@@ -66,19 +66,26 @@
 
 /* --ink-hi, the strongest step, even though the words below it are --ink-mid.
  *
- * That inversion is the point. The tag is not a quieter version of the message
- * - it is the transcript's only structural landmark, the thing a reader scans
- * for. The message is content they already wrote and already know, which is
- * why it stays demoted (see the file header). Signpost strong, known content
- * quiet.
+ * This fixes the LOCAL hierarchy - the label against its own message - and
+ * nothing more. The boundary itself is drawn by the 32px above, measured; do
+ * not read this rule as the landmark mechanism. --ink-hi is not a scarce ink
+ * reserved for structure: tool-row-purpose uses it too, at 13px, dozens of
+ * times per session, so the tag sits IN the transcript's ordinary heading tier
+ * rather than above it.
  *
  * Measured against --surface-1: --ink-low, where this started, is 2.97:1 in
  * the dark theme and 3.64:1 in the light one - the faintest text on screen and
  * under the 4.5:1 AA floor in both. --ink-mid clears AA at 6.86/6.56 but is
- * the EXACT colour of the user text it labels, so colour separated nothing and
- * the landmark still receded against every piece of prose around it. --ink-hi
- * is 14.33:1 and 17.3:1, and restores a real contrast step between the label
- * and its own message. At 12px medium it marks without shouting. */
+ * the EXACT colour of the user text it labels, so colour separated the label
+ * from its message not at all. --ink-hi is 14.33:1 and 17.3:1, a 2.09/2.64:1
+ * step over the message beneath it. At 12px medium it marks without shouting -
+ * checked in a browser at reading distance, both themes.
+ *
+ * The inversion is deliberate: a reader scans for the label and already wrote
+ * the message. Known side effect - the user's own sentence now renders dimmer
+ * than both the word "You" above it and the agent's tool titles below it. That
+ * falls out of the pre-existing --ink-mid body decision (see the file header),
+ * but this rule is what makes it visible. */
 .tag {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
