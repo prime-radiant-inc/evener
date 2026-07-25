@@ -31,7 +31,40 @@ const (
 	// systemMessage item by both projection paths, and excluded from
 	// expandHistory (never sent to the model).
 	TurnModelSwitch TurnKind = "MODEL_SWITCH"
+	// TurnFailure is a turn recording that the turn in progress failed
+	// terminally — the diagnostic rides Turn.Error. Presentational only: like
+	// TurnModelSwitch it is rendered as a systemMessage item by both
+	// projection paths and excluded from expandHistory (never sent to the
+	// model). Without it a failure existed only as a live event, so a reload
+	// showed the prompt and no answer and read as a hang rather than a break.
+	TurnFailure TurnKind = "TURN_FAILURE"
 )
+
+// TurnFailureInfo is the persisted diagnostic of a failed turn: the same
+// message/source/title/hint/cause a live client receives on the error event,
+// so a reloaded transcript describes the failure exactly as the live session
+// did rather than in a poorer summary of it.
+type TurnFailureInfo struct {
+	Message string `json:"message"`
+	Source  string `json:"source,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Hint    string `json:"hint,omitempty"`
+	// Cause is an optional structured classifier so readers can typed-branch
+	// instead of substring-matching Message. Nil means the failure source is
+	// unknown.
+	Cause *TurnFailureCause `json:"cause,omitempty"`
+}
+
+// TurnFailureCause is the structured root cause of a failed turn. It mirrors
+// the event-side cause deliberately rather than reusing it: this shape is
+// persisted transcript data, and must stay stable independently of the event
+// payload's evolution.
+type TurnFailureCause struct {
+	Kind     string `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   int    `json:"status,omitempty"`
+}
 
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
@@ -48,6 +81,9 @@ type Turn struct {
 	// so replay/hydration can render user steering as user speech
 	// (issue #24). Empty on non-steering turns.
 	SteeringSource string `json:"steering_source,omitempty"`
+	// Error carries the diagnostic of a terminally failed turn. Set only on
+	// TurnFailure turns; nil everywhere else.
+	Error *TurnFailureInfo `json:"error,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

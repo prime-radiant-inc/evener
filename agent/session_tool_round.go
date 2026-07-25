@@ -39,7 +39,7 @@ func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool,
 	switch dec.TerminalKind {
 	case noToolTerminalEmptyExhausted:
 		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
-		s.emit(events.EventError, errorDataFromError(err))
+		s.emitTurnFailure(errorDataFromError(err))
 		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 		return false, err
 	case noToolTerminalBareTextExhausted:
@@ -47,7 +47,7 @@ func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool,
 			toolName: s.resultToolName(),
 			retries:  maxBareTextRetries,
 		}
-		s.emit(events.EventError, errorDataFromError(err))
+		s.emitTurnFailure(errorDataFromError(err))
 		s.finishProcessingAtBoundary(context.Background(), SessionIdle)
 		return false, err
 	}

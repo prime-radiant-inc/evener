@@ -570,6 +570,10 @@ const (
 	ThreadItemEventKindForkSummary       = "fork_summary"
 	ThreadItemEventKindRoundTimings      = "round_timings"
 	ThreadItemEventKindToolRepair        = "tool_repair"
+	// ThreadItemEventKindError marks the systemMessage item a reloaded
+	// transcript renders for a turn that failed terminally. It lets clients
+	// find the failure by type rather than by reading the item's prose.
+	ThreadItemEventKindError = "error"
 )
 
 type ThreadItem struct {

@@ -789,6 +789,13 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Model switch\n", seq)
 		writeCompactNote(b, "Model switch", e.Turn, wantFullTurn(opt, seq))
 
+	case schema.TurnFailure:
+		// A failure is the reason a reader opened the transcript, so it stays
+		// legible in the compact render rather than collapsing to
+		// "[TURN_FAILURE turn omitted]" (kata mcgh).
+		fmt.Fprintf(b, "\n## Turn %d — Turn failed\n", seq)
+		writeCompactNote(b, "Turn failed", e.Turn, wantFullTurn(opt, seq))
+
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
 		// assistant turn that owns the tool call. Skip silently as a no-op.

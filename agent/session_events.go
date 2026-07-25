@@ -3,11 +3,14 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provenance"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
@@ -68,6 +71,44 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 	if kind == events.EventWarning {
 		s.fireNotificationHook(warningHookMessage(data))
 	}
+}
+
+// emitTurnFailure reports a terminal turn failure on both channels a client
+// can reach it by: the live error event, and a TurnFailure transcript entry
+// that survives reload. Both are built from the same events.ErrorData, so the
+// failure a returning user reads can never disagree with the one a watching
+// user saw. Turn cancellations do NOT come through here — they are not
+// failures (the interrupted SessionEnd owns that turn's terminal state), and
+// callers on the cancellation path emit the bare event instead.
+func (s *Session) emitTurnFailure(data events.ErrorData) {
+	s.emit(events.EventError, data)
+	s.recordTurnFailure(data)
+}
+
+// recordTurnFailure persists the diagnostic of a failed turn as a TurnFailure
+// entry. It enriches the data exactly as the event pipeline does, so the
+// stored source/title/hint match what the live event carried.
+func (s *Session) recordTurnFailure(data events.ErrorData) {
+	enriched := enrichErrorData(data)
+	info := schema.TurnFailureInfo{
+		Message: strings.TrimSpace(enriched.Error),
+		Source:  enriched.Source,
+		Title:   enriched.Title,
+		Hint:    enriched.Hint,
+	}
+	if enriched.Cause != nil {
+		info.Cause = &schema.TurnFailureCause{
+			Kind:     enriched.Cause.Kind,
+			Provider: enriched.Cause.Provider,
+			Model:    enriched.Cause.Model,
+			Status:   enriched.Cause.Status,
+		}
+	}
+	// The message also rides the turn's own text so renderers that read only
+	// turn text still show the failure.
+	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
+	turn.Error = &info
+	s.recordTurn(turn, turn)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

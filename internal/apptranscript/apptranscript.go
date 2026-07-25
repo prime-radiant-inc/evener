@@ -154,6 +154,52 @@ func SettledToolStatus(isError bool) string {
 	return appwire.TurnStatusCompleted
 }
 
+// FailedTurnFallbackText is what a persisted turn failure reads as when it
+// carries no diagnostic text of its own. Saying the turn failed without
+// detail still beats the old behaviour, where the failure left no trace and
+// the session read as a hang.
+const FailedTurnFallbackText = "The turn failed."
+
+// StampTurnFailure applies a persisted TurnFailure entry's terminal status and
+// diagnostic to the reloaded turn that wraps it, so a reloaded failure carries
+// the same status/error shape the live NotifyTurnCompleted did instead of the
+// blanket "completed" every reloaded turn otherwise claims. Both bounded and
+// whole-file reads call this, so the two paths cannot disagree. Non-failure
+// entries are left untouched.
+func StampTurnFailure(turn *appwire.Turn, entryTurn schema.Turn) {
+	if turn == nil || entryTurn.Kind != schema.TurnFailure {
+		return
+	}
+	turn.Status = appwire.TurnStatusFailed
+	info := entryTurn.Error
+	if info == nil {
+		message := strings.TrimSpace(entryTurn.Message.Text())
+		if message == "" {
+			message = FailedTurnFallbackText
+		}
+		turn.Error = &appwire.TurnError{Message: message}
+		return
+	}
+	turnError := &appwire.TurnError{
+		Message: strings.TrimSpace(info.Message),
+		Source:  info.Source,
+		Title:   info.Title,
+		Hint:    info.Hint,
+	}
+	if turnError.Message == "" {
+		turnError.Message = FailedTurnFallbackText
+	}
+	if info.Cause != nil {
+		turnError.Cause = &appwire.DiagnosticCause{
+			Kind:     info.Cause.Kind,
+			Provider: info.Cause.Provider,
+			Model:    info.Cause.Model,
+			Status:   info.Cause.Status,
+		}
+	}
+	turn.Error = turnError
+}
+
 // StringifyToolContent returns transcript text for arbitrary tool result
 // content.
 func StringifyToolContent(v any) string {
@@ -231,6 +277,28 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Description:          "Model switch",
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
+		}}
+	case schema.TurnFailure:
+		// Unlike the marker kinds above, a failure with no text still renders:
+		// the whole point of persisting it is that a returning reader can tell
+		// a broken turn from an unanswered one (kata mcgh).
+		text := strings.TrimSpace(turn.Message.Text())
+		if turn.Error != nil && strings.TrimSpace(turn.Error.Message) != "" {
+			text = strings.TrimSpace(turn.Error.Message)
+		}
+		if text == "" {
+			text = FailedTurnFallbackText
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_turn_failure_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Turn failed",
+			Text:                 text,
+			Error:                text,
+			Status:               appwire.TurnStatusFailed,
+			EventKind:            appwire.ThreadItemEventKindError,
 		}}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
@@ -559,6 +627,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 		if err != nil {
 			return err
 		}
+		StampTurnFailure(&turn, entry.Turn)
 		if !entry.Turn.Timestamp.IsZero() {
 			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt
