@@ -85,6 +85,80 @@ func TestSessionUsesConfiguredEnvironmentSnapshot(t *testing.T) {
 	}
 }
 
+// scriptedLaneForModel adds one locked managed lane straight through the model,
+// bypassing the session, for tests whose subject is the model's own answers.
+func scriptedLaneForModel(t *testing.T, g *scriptedWorktreeGit, name, path string) {
+	t.Helper()
+	if _, err := g.run("worktree", "add", "--lock", "--reason", "scripted", "-b", name, "--", path, "base-sha"); err != nil {
+		t.Fatalf("worktree add %q: %v", name, err)
+	}
+}
+
+// TestScriptedWorktreeGitDerivesDirtinessFromDisk pins the status arm to the
+// lane's real contents. It is the assertion a constant clean answer cannot
+// satisfy, which is what keeps the arm honest: a model that always reports
+// clean lets every dirty-detection assertion on this harness pass regardless of
+// what the production predicate does.
+func TestScriptedWorktreeGitDerivesDirtinessFromDisk(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	git := newScriptedWorktreeGit(root)
+	lane := filepath.Join(root, "lane")
+	scriptedLaneForModel(t, git, "feature", lane)
+
+	clean, offending, err := worktree.CleanTree(git.run, lane)
+	if err != nil {
+		t.Fatalf("CleanTree on fresh lane: %v", err)
+	}
+	if !clean || len(offending) != 0 {
+		t.Fatalf("fresh lane: clean=%v offending=%v, want clean with nothing offending", clean, offending)
+	}
+
+	if err := os.MkdirAll(filepath.Join(lane, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir lane subdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(lane, "sub", "work.txt"), []byte("uncommitted"), 0o644); err != nil {
+		t.Fatalf("write uncommitted file: %v", err)
+	}
+
+	clean, offending, err = worktree.CleanTree(git.run, lane)
+	if err != nil {
+		t.Fatalf("CleanTree on dirty lane: %v", err)
+	}
+	if clean {
+		t.Fatal("lane holding an uncommitted file reported clean")
+	}
+	if len(offending) != 1 || offending[0] != "?? sub/work.txt" {
+		t.Fatalf("offending = %q, want [\"?? sub/work.txt\"]", offending)
+	}
+}
+
+// TestScriptedWorktreeGitRefusesUnmodeledMergeVerdicts pins the merged
+// predicate's arms to a loud failure. The model has no commit graph, so any
+// answer it gave would be a stub of the very verdict the caller is asking
+// about, and a merged-outcome assertion would pass without the predicate being
+// exercised at all.
+func TestScriptedWorktreeGitRefusesUnmodeledMergeVerdicts(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	git := newScriptedWorktreeGit(root)
+	lane := filepath.Join(root, "lane")
+	scriptedLaneForModel(t, git, "feature", lane)
+
+	if _, err := git.run("merge-base", "--is-ancestor", "base-sha", "base-sha"); err == nil {
+		t.Fatal("merge-base --is-ancestor answered a verdict the model does not derive")
+	}
+	if _, err := git.run("cherry", "base-sha", "base-sha", "base-sha"); err == nil {
+		t.Fatal("cherry answered a verdict the model does not derive")
+	}
+
+	if _, err := worktree.Merged(git.run, "base-sha", "main", "base-sha"); err == nil {
+		t.Fatal("Merged reported an outcome; the model must make the caller fail loudly instead")
+	}
+}
+
 func TestScriptedWorktreeSessionPreservesLockAndRestoreInvariants(t *testing.T) {
 	h := newScriptedWorktreeSession(t)
 
@@ -333,10 +407,13 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 		return g.resolveRef(args[1])
 	case len(args) == 3 && args[0] == "for-each-ref":
 		return "", nil
-	case len(args) == 4 && args[0] == "merge-base" && args[1] == "--is-ancestor":
-		return "", nil
-	case len(args) == 4 && args[0] == "cherry":
-		return "", nil
+	case len(args) == 4 && args[0] == "merge-base" && args[1] == "--is-ancestor",
+		len(args) == 4 && args[0] == "cherry":
+		// Ancestry and patch-equivalence are verdicts over a commit graph the
+		// model does not have. An unconditional success here reads as "merged"
+		// for every lane, which satisfies a merged-outcome assertion without
+		// the production predicate being exercised.
+		return "", scriptedUnmodeledVerdict(args)
 	case len(args) == 3 && args[0] == "branch" && args[1] == "-D":
 		if args[2] == "main" {
 			return "", errors.New("scripted git: refusing to delete main")
@@ -349,6 +426,15 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 	default:
 		return "", fmt.Errorf("scripted git: unsupported argv %q", args)
 	}
+}
+
+// scriptedUnmodeledVerdict reports a command whose answer is a git verdict the
+// model has no state to derive — merge state or working-tree dirtiness. It
+// errors instead of answering so an assertion that depends on the verdict
+// fails loudly, per docs/testing.md's rule that the model never stubs the
+// specific answer an assertion is looking for.
+func scriptedUnmodeledVerdict(args []string) error {
+	return fmt.Errorf("scripted git: %q is a verdict the model does not derive; assert it on the real-git harness", args)
 }
 
 func scriptedArgs(got []string, want ...string) bool {
@@ -446,12 +532,57 @@ func (g *scriptedWorktreeGit) runAtPath(args []string) (string, error) {
 	case len(args) == 6 && args[2] == "symbolic-ref" && args[3] == "--quiet" && args[4] == "--short" && args[5] == "HEAD":
 		return branch + "\n", nil
 	case len(args) == 5 && args[2] == "status" && args[3] == "--porcelain=v1" && args[4] == "--untracked-files=all":
-		return "", nil
+		return g.porcelainStatus(path)
 	case len(args) == 5 && args[2] == "rev-list" && args[3] == "--count":
+		// Ahead-count is equally unmodeled, but unlike the verdicts above it
+		// cannot be made to fail loudly: every production caller treats a
+		// rev-list error as best-effort and falls back to 0, the same answer
+		// this constant gives. No shape of the model protects an ahead-count
+		// assertion — those belong on the real-git harness.
 		return "0\n", nil
 	default:
 		return "", fmt.Errorf("scripted git: unsupported -C argv %q", args)
 	}
+}
+
+// porcelainStatus derives the porcelain status of a worktree from its real
+// directory: the model never commits, so every file present other than git's
+// own `.git` pointer is untracked. Dirtiness is read from state the model
+// actually has instead of being answered with a constant clean, so a test that
+// writes a file into a lane now gets a genuinely dirty verdict.
+//
+// Only untracked files are derived. Modified and staged tracked files remain
+// unmodeled — an assertion that needs either belongs on the real-git harness.
+func (g *scriptedWorktreeGit) porcelainStatus(path string) (string, error) {
+	var lines []string
+	err := filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p != path && d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() == ".git" && filepath.Dir(p) == path {
+			return nil
+		}
+		rel, relErr := filepath.Rel(path, p)
+		if relErr != nil {
+			return relErr
+		}
+		lines = append(lines, "?? "+filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("scripted git: status %s: %w", path, err)
+	}
+	if len(lines) == 0 {
+		return "", nil
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n") + "\n", nil
 }
 
 func (g *scriptedWorktreeGit) pathState(path string) (branch, head string, ok bool) {
