@@ -312,6 +312,25 @@ test("stamps the last-working-directory global when the browse panel closes", as
   await waitFor(() => expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src"));
 });
 
+// The read side of that same global (spec 3.4): with no ?dir= prefill and no
+// per-project blob the field is empty, and the panel opens on the last
+// directory a session was launched in rather than on $HOME.
+test("the browse panel opens on the stamped last-working-directory global", async () => {
+  const user = userEvent.setup();
+  localStorage.setItem(LAST_WORKING_DIR_KEY, "/home/me/lastone");
+  const complete = vi.fn((_params: { prefix: string }) => ({ data: ["/home/me/lastone/src"] }));
+  renderSpawn(readyClient((f) => f.on("serf/paths/complete", complete)));
+  await screen.findByLabelText("Harness");
+  // Nothing else may have seeded the field: the fallback is only consulted
+  // when the value is empty, and an empty field shows its placeholder.
+  expectWorkingDir("Working directory");
+
+  await user.click(workingDir());
+  await screen.findByRole("combobox", { name: "Path" });
+
+  await waitFor(() => expect(complete.mock.calls.map(([params]) => params.prefix)).toContain("/home/me/lastone/"));
+});
+
 // Both list RPCs behind the working-directory field return a Go slice, which
 // marshals as JSON null rather than [] when it is empty - a hub with no
 // remembered projects, or a directory with no children, answers `null`. Caught

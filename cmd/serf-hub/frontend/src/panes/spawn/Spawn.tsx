@@ -39,7 +39,13 @@ import { ModelField } from "./ModelField";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchSerfOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
-import { resolveInitialDefaults, saveDefaults, setGlobalLastWorkingDir, sweepStaleModels } from "./spawnDefaults";
+import {
+  getGlobalLastWorkingDir,
+  resolveInitialDefaults,
+  saveDefaults,
+  setGlobalLastWorkingDir,
+  sweepStaleModels,
+} from "./spawnDefaults";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
 
@@ -429,6 +435,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               kind="dir"
               listRecents={listRecents}
               complete={complete}
+              // With no ?dir= prefill and no per-project blob the field starts
+              // empty; the panel then opens on the last directory a session was
+              // launched in rather than on $HOME (spec 3.4). Read here rather
+              // than captured at mount so it reflects the latest stamp.
+              fallbackDir={getGlobalLastWorkingDir()}
               placeholder="Working directory"
               // Browsing writes the field on every step, so the last-used
               // directory is recorded once the panel closes rather than

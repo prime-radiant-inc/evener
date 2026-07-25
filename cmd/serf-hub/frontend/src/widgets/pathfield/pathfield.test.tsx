@@ -35,6 +35,7 @@ function renderField(props: Partial<PathFieldProps> = {}) {
       kind={props.kind}
       complete={complete}
       listRecents={props.listRecents}
+      fallbackDir={props.fallbackDir}
       disabled={props.disabled}
       onPanelClose={onPanelClose}
     />,
@@ -147,6 +148,37 @@ test("a field holding / opens on the filesystem root, not on home", async () => 
   expect(screen.queryByText("Home")).toBeNull();
   // Root has no parent to climb to.
   expect(screen.queryByRole("option", { name: "../" })).toBeNull();
+});
+
+// fallbackDir is what the spawn field's last-working-directory global feeds
+// (spec 3.4): with no value at all, opening on the last place a session was
+// launched beats opening on $HOME.
+test("an empty dir field opens on fallbackDir", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "",
+    fallbackDir: "/home/me/lastone",
+    complete: lister({ "/home/me/lastone/": ["/home/me/lastone/src"] }),
+  });
+
+  await open(user);
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/home/me/lastone/", false));
+  expect(await screen.findByRole("option", { name: /src/ })).toBeTruthy();
+});
+
+test("a dir field holding a value ignores fallbackDir", async () => {
+  const user = userEvent.setup();
+  const { complete } = renderField({
+    value: "/etc",
+    fallbackDir: "/home/me/lastone",
+    complete: lister({ "/etc/": ["/etc/ssl"] }),
+  });
+
+  await open(user);
+
+  await waitFor(() => expect(complete).toHaveBeenCalledWith("/etc/", false));
+  expect(complete).not.toHaveBeenCalledWith("/home/me/lastone/", false);
 });
 
 test("typing / lists the filesystem root", async () => {

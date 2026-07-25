@@ -62,6 +62,11 @@ export interface PathFieldProps {
    * this; a skills-directory field has no meaningful "recents". A rejection
    * (an older hub without the RPC) degrades silently to no Recent group. */
   listRecents?: () => Promise<string[]>;
+  /** The directory to browse when `value` is empty, instead of letting the hub
+   * default to $HOME (spec 3.4). Only the spawn working-directory field has a
+   * meaningful one - the last directory a session was launched in - so it is
+   * optional everywhere else. */
+  fallbackDir?: string;
   /** Fired once when the panel closes, with the field's final value. The spawn
    * working-directory field uses this to stamp its last-used-directory global
    * (spec 3.7) rather than writing it on every browse step. */
@@ -95,11 +100,12 @@ function withoutTrailingSlash(dir: string): string {
 }
 
 /** The directory the panel opens on: a directory field browses the value
- * itself, a file field browses the file's parent. An empty value browses ""
- * which the hub resolves to $HOME. */
-function openingDir(kind: PathFieldKind, value: string): string {
+ * itself, a file field browses the file's parent. An empty value browses
+ * `fallbackDir` when the caller has one, otherwise "" which the hub resolves
+ * to $HOME. */
+function openingDir(kind: PathFieldKind, value: string, fallbackDir?: string): string {
   const trimmed = value.trim();
-  if (trimmed === "") return "";
+  if (trimmed === "") return withoutTrailingSlash((fallbackDir ?? "").trim());
   if (kind === "dir") return withoutTrailingSlash(trimmed);
   return trimmed.includes("/") ? parentOf(trimmed) : "";
 }
@@ -162,6 +168,8 @@ export interface PathFieldPanelProps {
   onCommit: (value: string) => void;
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   listRecents?: () => Promise<string[]>;
+  /** The directory to browse when `value` is empty - see PathFieldProps. */
+  fallbackDir?: string;
 }
 
 /**
@@ -187,13 +195,14 @@ export function PathFieldPanel({
   onCommit,
   complete,
   listRecents,
+  fallbackDir,
 }: PathFieldPanelProps): JSX.Element {
   // null means "the user hasn't typed yet": the input SHOWS the current value
   // (selected, so the first keystroke replaces it) while the list stays
   // unfiltered. Once typing starts the typed text is both the input's value
   // and the filter - including when it's cleared back to "".
   const [typed, setTyped] = useState<string | null>(null);
-  const [currentDir, setCurrentDir] = useState(() => openingDir(kind, value));
+  const [currentDir, setCurrentDir] = useState(() => openingDir(kind, value, fallbackDir));
   const [entries, setEntries] = useState<string[] | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   // Recents are dropped permanently by the first keystroke, for this panel's
@@ -279,7 +288,7 @@ export function PathFieldPanel({
     const input = inputRef.current;
     input?.focus();
     input?.select();
-    runCompletion(childrenPrefix(openingDir(kind, value)));
+    runCompletion(childrenPrefix(openingDir(kind, value, fallbackDir)));
     listRecents?.().then(
       (result) => setRecents(result),
       () => setRecents([]),
@@ -508,6 +517,7 @@ export function PathField({
   kind = "dir",
   complete,
   listRecents,
+  fallbackDir,
   onPanelClose,
   placeholder,
   disabled = false,
@@ -590,6 +600,7 @@ export function PathField({
           onCommit={commit}
           complete={complete}
           listRecents={listRecents}
+          fallbackDir={fallbackDir}
         />
       </div>
     </Popover>
