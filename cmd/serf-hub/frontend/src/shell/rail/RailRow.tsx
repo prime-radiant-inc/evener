@@ -1,7 +1,8 @@
 // RailRow is the Tree widget's renderRow implementation for the sidebar:
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
-// a chevron (branches only), a Cadence liveness dot, a two-line text column
+// a chevron (branches only), a signal gutter (a Cadence dot for the states
+// worth spotting - see SIGNAL_STATES), a two-line text column
 // (title + a humanized activity gloss - see humanizeState), a favorite star
 // / secondary tier tag / attention Badge as applicable, a right-aligned
 // relative timestamp (session rows only, when there's no Badge to show
@@ -29,6 +30,7 @@ const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
   actions: requireClass(styles.actions, "Rail.module.css", "actions"),
   chevron: requireClass(styles.chevron, "Rail.module.css", "chevron"),
+  signal: requireClass(styles.signal, "Rail.module.css", "signal"),
   textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
   activity: requireClass(styles.activity, "Rail.module.css", "activity"),
@@ -96,6 +98,28 @@ function humanizeState(wireState: string): string {
     default: // "idle", "notLoaded", "", and any future/unknown value
       return "idle";
   }
+}
+
+// The Cadence states worth spending a dot on: a row is working, a human is
+// needed, or something failed. idle/ended are deliberately absent - the
+// row's second line already says "idle"/"ended" in words (humanizeState
+// above), so a mid-grey dot restating it adds a glyph and no information,
+// and a sidebar full of identical grey dots trains the eye to ignore the one
+// dot that matters. This is the RAIL asking for less, not the widget
+// changing: every other Cadence surface still renders all five states.
+const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
+
+// The row's leading signal slot, shared by session and project rows. The
+// slot is ALWAYS rendered - an empty fixed-width gutter for a quiet row - so
+// every title in the list shares one x-position and no row's width depends
+// on its state, even as sessions change state under a live tree.
+function Signal({ wireState }: { wireState: string }) {
+  const state = cadenceStateFor(wireState);
+  return (
+    <span data-testid="rail-row-signal" className={CLASS.signal}>
+      {SIGNAL_STATES.has(state) && <Cadence state={state} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />}
+    </span>
+  );
 }
 
 export interface RailRowActions {
@@ -247,7 +271,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     // into view - the ref is stable and unique per session, unlike the label.
     <span className={CLASS.row} data-session-ref={session.ref}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
-      <Cadence state={cadenceStateFor(session.state)} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
+      <Signal wireState={session.state} />
       {/* Two-line text column (§2.3): the title, then a humanized activity
           gloss - row anatomy for the subagent tree's already-existing
           recursion (toSessionNode/Tree), not new recursion of its own. */}
@@ -304,7 +328,7 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
   return (
     <span className={CLASS.row}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
-      <Cadence state={cadenceStateFor(project.rollup_state ?? "idle")} frameTimes={NO_FRAME_TIMES} now={INERT_NOW} />
+      <Signal wireState={project.rollup_state ?? "idle"} />
       {/* Same reasoning as SessionRow's own label above. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
