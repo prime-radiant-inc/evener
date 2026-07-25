@@ -1420,7 +1420,7 @@ describe("frameTimes tracking (threads store)", () => {
     // notificationTargetsThread) but falls through the reducer's `default:`
     // case, which returns the exact same model reference - handleNotification
     // must not treat that as "applied" for frameTimes purposes either.
-    fake.emitNotification({ method: "totally/unknown", params: { ref: "ref_a" } } as unknown as AnyNotification);
+    fake.emitUnknownNotification({ method: "totally/unknown", params: { ref: "ref_a" } });
 
     expect(threadsStore.getState().frameTimes.get("ref_a")).toBeUndefined();
   });
