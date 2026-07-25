@@ -1,33 +1,16 @@
 package main
 
 import (
-	"encoding/json"
 	"testing"
 
 	"primeradiant.com/serf/agent/schema"
-	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/llm"
 )
 
-func replayHookEntry(t *testing.T, persisted schema.Turn) hubcore.ReplayTurn {
-	t.Helper()
-	raw, err := json.Marshal(transcript.Entry{Kind: "entry", Seq: 1, Turn: persisted})
-	if err != nil {
-		t.Fatalf("marshal entry: %v", err)
-	}
-	var entry hubcore.ReplayEntry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatalf("unmarshal replay entry: %v", err)
-	}
-	return entry.Turn
-}
-
-// kata qm9y: hubcore.ReplayTurn is a hand-maintained partial mirror of
-// schema.Turn, so a hook's exit code has to be named here too or the hub's
-// reload path drops it — and the two hook-exit toggles go back to governing
-// nothing on exactly the path this kata was filed about.
+// kata qm9y: a hook's typed exit code has to survive the trip from the
+// transcript back into a thread item, or the two hook-exit toggles govern
+// nothing at all on the reload path.
 func TestReplayTurnCarriesHookExitCode(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnHookCompleted, llm.System("Stop hook my-plugin exit 3"))
 	persisted.Hook = &schema.HookInfo{
@@ -38,13 +21,13 @@ func TestReplayTurnCarriesHookExitCode(t *testing.T) {
 		ExitCode:   3,
 		DurationMS: 12,
 	}
-	got, _ := replayTurnToAgentTurn(replayHookEntry(t, persisted))
+	got := hubDecodedTurn(t, persisted)
 
 	if got.Kind != schema.TurnHookCompleted {
 		t.Fatalf("Kind = %q, want %q", got.Kind, schema.TurnHookCompleted)
 	}
 	if got.Hook == nil {
-		t.Fatal("Hook is nil: the hook detail did not survive the ReplayTurn round trip")
+		t.Fatal("Hook is nil: the hook detail did not survive the transcript round trip")
 	}
 	if got.Hook.ExitCode != 3 {
 		t.Errorf("Hook.ExitCode = %d, want 3", got.Hook.ExitCode)
@@ -54,14 +37,14 @@ func TestReplayTurnCarriesHookExitCode(t *testing.T) {
 	}
 }
 
-// A hook that exited 0 must arrive as a present zero. If the mirror serialised
-// it away, the reloaded item would carry no code and "Hook exits (normal
-// only)" would hide the clean hook it exists to show.
+// A hook that exited 0 must arrive as a present zero. Serialised away, the
+// reloaded item would carry no code and "Hook exits (normal only)" would hide
+// the clean hook it exists to show.
 func TestReplayedCleanHookKeepsItsZeroExit(t *testing.T) {
 	persisted := schema.NewTurn(schema.TurnHookCompleted, llm.System("SessionStart hook exit 0"))
 	persisted.Hook = &schema.HookInfo{Event: "SessionStart", ExitCode: 0}
 
-	items := appItemsFromReplayTurn("s", "turn_1", 1, replayHookEntry(t, persisted), map[string]string{})
+	items := appItemsFromReplayTurn("s", "turn_1", 1, hubDecodedTurn(t, persisted), map[string]string{})
 
 	if len(items) != 1 {
 		t.Fatalf("items = %+v, want exactly one", items)

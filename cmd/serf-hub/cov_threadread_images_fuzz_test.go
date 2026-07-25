@@ -100,23 +100,22 @@ func covThreadReadSeed(t *testing.T) {
 	full.Name, full.ModelProvider, full.Path, full.CWD, full.Source, full.Serf.Profile = "n", "m", "p", cwd, "local", "profile"
 	_, _ = mergePastThreadForRead(web.cfg, appwire.ThreadReadParams{ThreadID: session, IncludeTurns: true}, full)
 
-	parts := []hubcore.ReplayPart{
-		{Kind: string(llm.ContentText), Text: "text"},
-		{Kind: string(llm.ContentThinking)}, {Kind: string(llm.ContentThinking), Thinking: &hubcore.ReplayThinking{Text: "think"}},
-		{Kind: string(llm.ContentRedThinking)},
-		{Kind: string(llm.ContentAudio)}, {Kind: string(llm.ContentAudio), Audio: &hubcore.ReplayMedia{URL: "u"}},
-		{Kind: string(llm.ContentDocument)}, {Kind: string(llm.ContentDocument), Document: &hubcore.ReplayMedia{FileName: "d"}},
-		{Kind: string(llm.ContentWebSearch)}, {Kind: string(llm.ContentWebSearch), WebSearch: &hubcore.ReplayWebSearch{Query: "q"}},
-		{Kind: string(llm.ContentImage)}, {Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{}}, {Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{Data: []byte("i"), Name: "i.png"}},
-		{Kind: string(llm.ContentToolCall)}, {Kind: string(llm.ContentToolCall), ToolCall: &hubcore.ReplayToolCall{ID: "c", Name: "shell"}},
-		{Kind: string(llm.ContentToolResult)}, {Kind: string(llm.ContentToolResult), ToolResult: &hubcore.ReplayToolResult{ToolCallID: "c"}},
-		{Kind: string(llm.ContentToolResult), ToolResult: &hubcore.ReplayToolResult{ToolCallID: "c", ImageData: []byte("img")}},
+	parts := []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "text"},
+		{Kind: llm.ContentThinking}, {Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think"}},
+		{Kind: llm.ContentRedThinking},
+		{Kind: llm.ContentAudio}, {Kind: llm.ContentAudio, Audio: &llm.AudioData{URL: "u"}},
+		{Kind: llm.ContentDocument}, {Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "d"}},
+		{Kind: llm.ContentWebSearch}, {Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q"}},
+		{Kind: llm.ContentImage}, {Kind: llm.ContentImage, Image: &llm.ImageData{}}, {Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("i")}},
+		{Kind: llm.ContentToolCall}, {Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c", Name: "shell"}},
+		{Kind: llm.ContentToolResult}, {Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c", ImageData: []byte("img")}},
 	}
-	turn := hubcore.ReplayTurn{Kind: "assistant", Message: hubcore.ReplayMessage{Role: "assistant", Content: parts}}
-	_, _ = replayTurnToAgentTurn(turn)
+	turn := schema.Turn{Kind: "assistant", Message: llm.Message{Role: "assistant", Content: parts}}
 	_ = appItemsFromReplayTurn("a/b", "turn", 0, turn, map[string]string{})
-	_ = appItemsFromReplayTurn("a/b", "user", 1, hubcore.ReplayTurn{Kind: "USER_INPUT", Message: hubcore.ReplayMessage{Role: "user", Content: []hubcore.ReplayPart{{Kind: "image", Image: &hubcore.ReplayImage{}}, {Kind: "image", Image: &hubcore.ReplayImage{Data: []byte("named"), Name: "n.png"}}}}}, map[string]string{})
-	_ = appItemsFromReplayTurn("a/b", "tool", 2, hubcore.ReplayTurn{Kind: "TOOL_RESULTS", Message: hubcore.ReplayMessage{Role: "tool", Content: []hubcore.ReplayPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &hubcore.ReplayToolResult{}}, {Kind: "tool_result", ToolResult: &hubcore.ReplayToolResult{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, map[string]string{})
+	_ = appItemsFromReplayTurn("a/b", "user", 1, schema.Turn{Kind: "USER_INPUT", Message: llm.Message{Role: "user", Content: []llm.ContentPart{{Kind: "image", Image: &llm.ImageData{}}, {Kind: "image", Image: &llm.ImageData{Data: []byte("named")}}}}}, map[string]string{})
+	_ = appItemsFromReplayTurn("a/b", "tool", 2, schema.Turn{Kind: "TOOL_RESULTS", Message: llm.Message{Role: "tool", Content: []llm.ContentPart{{Kind: "tool_result"}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{}}, {Kind: "tool_result", ToolResult: &llm.ToolResultData{ImageData: []byte("x"), ImageMediaType: "image/jpeg"}}}}}, map[string]string{})
 
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{})
 	_ = enrichThreadFileBackedOutputImages(appwire.Thread{ID: "x"})

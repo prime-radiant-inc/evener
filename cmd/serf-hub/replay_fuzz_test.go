@@ -10,16 +10,14 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/llm"
 )
 
 // replayFuzzSeeds are real assistant/user/tool turns covering each content kind,
-// shared by both Target-4 fuzz functions. Each is the JSON of one transcript
-// Entry. The malformed inputs are inline bootstrap; richer per-kind turns arrive
-// from 8.4.
+// shared by the live-vs-reload fuzz targets. Each is the JSON of one transcript
+// Entry; the malformed inputs prove the no-panic floor.
 var replayFuzzSeeds = []string{
 	// Assistant turn: text + thinking + redacted_thinking + tool_call.
 	`{"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"thinking","thinking":{"text":"reasoning"}},{"kind":"redacted_thinking","thinking":{"redacted":true}},{"kind":"text","text":"answer"},{"kind":"tool_call","tool_call":{"id":"c1","name":"shell","arguments":{"command":"ls"}}}]},"timestamp":"2026-06-01T10:00:00Z"}}`,
@@ -32,8 +30,8 @@ var replayFuzzSeeds = []string{
 	// Compaction turn.
 	`{"kind":"entry","seq":5,"turn":{"kind":"SUMMARY","message":{"role":"assistant","content":[{"kind":"text","text":"summary"}]},"timestamp":"2026-06-01T10:00:04Z"}}`,
 	// Human-typed steering: carries turn-level provenance (steering_source),
-	// so it also guards the carry-through of turn FIELDS, not just content
-	// parts — the drift that made a reloaded steer anonymous (issue #24).
+	// which reload must render as the person's own speech rather than as the
+	// grey daemon divider (issue #24).
 	`{"kind":"entry","seq":6,"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[{"kind":"text","text":"new worktree"}]},"timestamp":"2026-06-01T10:00:05Z"}}`,
 	// Daemon nudge: same turn kind, deliberately no provenance.
 	`{"kind":"entry","seq":7,"turn":{"kind":"STEERING","message":{"role":"user","content":[{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}]},"timestamp":"2026-06-01T10:00:06Z"}}`,
@@ -60,9 +58,9 @@ func jsonEqItems(t *testing.T, a, b any) (bool, []byte, []byte) {
 // canonicalEntry returns the entry as it would exist on disk: transcript.Writer
 // marshals each entry, so the persisted bytes are the compact form of the
 // in-memory turn. Projecting from this canonical form (rather than the raw fuzz
-// bytes) keeps 4a focused on ReplayPart carry-through structure, not on the
-// benign whitespace normalization that the extra marshal hop applies to
-// json.RawMessage tool arguments.
+// bytes) keeps the comparison on rendered content, not on the benign whitespace
+// normalization that the extra marshal hop applies to json.RawMessage tool
+// arguments.
 func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte) {
 	t.Helper()
 	b, err := json.Marshal(e)
@@ -76,68 +74,9 @@ func canonicalEntry(t *testing.T, e transcript.Entry) (transcript.Entry, []byte)
 	return canon, b
 }
 
-// FuzzHubReplayCarryThrough isolates the hub reload round-trip
-// (Entry → ReplayEntry → replayTurnToAgentTurn) against the shared projector.
-// It projects both the canonical on-disk turn and its reload-roundtripped
-// reconstruction through the SAME apptranscript.ProjectTurn and asserts the two
-// item lists are equal. Any divergence is attributable to the round-trip alone:
-// if ReplayPart / replayTurnToAgentTurn fails to carry a content kind (thinking,
-// web_search, audio, document, image, tool_call, tool_result), the reload
-// projection loses items the original kept. This generalizes the hand-fixed
-// regressions 0a6b65b0 (thinking) and ec96619c (web_search/audio/document).
-func FuzzHubReplayCarryThrough(f *testing.F) {
-	for _, s := range replayFuzzSeeds {
-		f.Add([]byte(s))
-	}
-
-	f.Fuzz(func(t *testing.T, raw []byte) {
-		var e transcript.Entry
-		if json.Unmarshal(raw, &e) != nil {
-			return // rejected input: no-panic floor proven
-		}
-		canon, canonBytes := canonicalEntry(t, e)
-
-		var re hubcore.ReplayEntry
-		if err := json.Unmarshal(canonBytes, &re); err != nil {
-			t.Fatalf("decode ReplayEntry from canonical bytes: %v", err)
-		}
-		reconstructed, _ := replayTurnToAgentTurn(re.Turn)
-
-		live := stripSyntheticIDs(projectIsolated(canon.Turn))
-		reload := stripSyntheticIDs(projectIsolated(reconstructed))
-		if eq, a, b := jsonEqItems(t, live, reload); !eq {
-			t.Fatalf("hub reload carry-through diverged:\n original=%s\n reload  =%s\n entry=%s", a, b, canonBytes)
-		}
-	})
-}
-
-// projectIsolated projects a turn through ProjectTurn with a fresh toolNames map
-// (ProjectTurn mutates and deletes from it) and the default image projector.
-func projectIsolated(turn schema.Turn) []appwire.ThreadItem {
-	return apptranscript.ProjectTurn("turn_1", 1, turn, map[string]string{}, nil, nil)
-}
-
-// stripSyntheticIDs zeroes the index-derived ID and the constant TurnID so the
-// comparison is over rendered CONTENT, not synthetic numbering. The reload path
-// legitimately drops content parts whose kind it does not recognize (an honest
-// transform), which compacts the content slice and shifts the array index that
-// ProjectTurn bakes into item IDs. That index drift is invisible in production
-// (the live appprojector uses an unrelated global-counter ID scheme, so reload
-// IDs never need to match live IDs) and is not the carry-through bug class. A
-// genuinely DROPPED renderable item still shows up as a list length/content
-// difference, which this normalization preserves.
-func stripSyntheticIDs(items []appwire.ThreadItem) []appwire.ThreadItem {
-	out := append([]appwire.ThreadItem(nil), items...)
-	for i := range out {
-		out[i].ID = ""
-		out[i].TurnID = ""
-	}
-	return out
-}
-
 // FuzzHubReplayLiveVsReload is the full live-vs-reload metamorphic: it compares
 // what the user saw LIVE (the appprojector stream) against what the hub renders
-// on RELOAD (Entry → ReplayEntry → replayTurnToAgentTurn → ProjectTurn), for one
+// on RELOAD (saved bytes → decodeTranscriptTurn → ProjectTurn), for one
 // turn. The live side synthesizes the SessionEvent stream the turn would have
 // produced, feeds it through a fresh AppEventProjector, and folds the emitted
 // notifications back into final ThreadItems (the streaming projector emits
@@ -182,12 +121,11 @@ func checkLiveVsReload(t *testing.T, raw []byte) {
 	}
 	live := normalizeMetamorphic(foldLiveItems(notes))
 
-	// Reload side: the same path as 4a.
-	var re hubcore.ReplayEntry
-	if err := json.Unmarshal(canonBytes, &re); err != nil {
-		t.Fatalf("decode ReplayEntry: %v", err)
+	// Reload side: the hub's own path off the saved bytes.
+	reconstructed, ok := decodeTranscriptTurn(canonBytes)
+	if !ok {
+		t.Fatalf("hub decode rejected the canonical entry: %s", canonBytes)
 	}
-	reconstructed, _ := replayTurnToAgentTurn(re.Turn)
 	reload := normalizeMetamorphic(apptranscript.ProjectTurn("turn_1", 1, reconstructed, map[string]string{}, nil, nil))
 
 	if eq, a, b := jsonEqItems(t, live, reload); !eq {

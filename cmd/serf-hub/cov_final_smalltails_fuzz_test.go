@@ -106,7 +106,7 @@ func FuzzFinalSmalltails(f *testing.F) {
 		_ = threadRef(appwire.Thread{})
 		_ = transcriptTargetSource("bad", "fallback")
 		_, _ = pastEntryTurns(hubcore.PastEntry{Meta: meta, StateDir: state})
-		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{}, map[string]string{})
+		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{}, map[string]string{})
 		_ = variant
 	})
 }
