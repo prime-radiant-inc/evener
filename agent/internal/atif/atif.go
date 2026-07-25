@@ -256,6 +256,50 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			}
 			steps = append(steps, step)
 			stepID++
+
+		default:
+			// A turn kind this exporter has not been taught. TurnKind is a
+			// growing enum and nothing notifies this switch when it grows, so
+			// the unrecognized case has to carry the turn rather than discard
+			// it: a switch that drops what it does not recognize exports a
+			// trajectory that disagrees with the transcript it was built
+			// from, and does it again for every kind added afterwards.
+			//
+			// That was not hypothetical. TURN_FAILURE and HOOK_COMPLETED both
+			// landed in this position, and the first of them meant an
+			// exported trajectory could not say the run failed — it read as a
+			// run that simply stopped (kata 3d56).
+			// agent/transcript_render.go takes the same posture for the same
+			// reason: unknown kinds are labeled, never silently dropped.
+			//
+			// The encoding is the one CHECKPOINT, SUMMARY and MODEL_SWITCH
+			// already use: a system step tagged with extra.serf_kind. ATIF's
+			// own vocabulary is not ours to extend — Step.Source is the
+			// format's enum — whereas extra is the extension point the format
+			// provides and this exporter's stated fidelity rule ("Lossless
+			// Preservation via extra", docs/superpowers/plans/
+			// 2026-03-02-native-atif-export-design.md) already spends on
+			// every other serf-specific kind.
+			step := Step{
+				StepID:    stepID,
+				Source:    "system",
+				Message:   turn.Message.Text(),
+				Timestamp: formatTimestamp(turn),
+				Extra:     map[string]any{"serf_kind": strings.ToLower(string(turn.Kind))},
+			}
+			// Whatever structured payload the turn carries travels with it.
+			// Exporting a TURN_FAILURE step while dropping the diagnostic on
+			// Turn.Error would be the same silence one level down, and the
+			// diagnostic is the part an eval needs to tell a break from a
+			// hang.
+			if turn.Error != nil {
+				step.Extra["turn_error"] = turn.Error
+			}
+			if turn.Hook != nil {
+				step.Extra["hook"] = turn.Hook
+			}
+			steps = append(steps, step)
+			stepID++
 		}
 	}
 
