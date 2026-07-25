@@ -2,7 +2,10 @@ import { type ButtonHTMLAttributes, forwardRef, type MouseEvent, type ReactNode 
 import { requireClass } from "../internal/requireClass";
 import styles from "./button.module.css";
 
-export type ButtonVariant = "primary" | "quiet" | "danger";
+/** dangerQuiet is a destructive action that is not the primary one on its row
+ * (the composer's Stop beside Send): danger on the glyph/label, no filled
+ * background. */
+export type ButtonVariant = "primary" | "quiet" | "danger" | "dangerQuiet";
 export type ButtonSize = "sm" | "md";
 
 export interface ButtonProps
@@ -25,6 +28,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary: requireClass(styles.primary, "button.module.css", "primary"),
   quiet: requireClass(styles.quiet, "button.module.css", "quiet"),
   danger: requireClass(styles.danger, "button.module.css", "danger"),
+  dangerQuiet: requireClass(styles.dangerQuiet, "button.module.css", "dangerQuiet"),
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {

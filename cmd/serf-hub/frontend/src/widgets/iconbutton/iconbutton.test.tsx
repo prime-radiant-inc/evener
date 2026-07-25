@@ -39,7 +39,10 @@ test("each variant renders a distinct class", () => {
   rerender(<IconButton label="Go" icon={<DotIcon />} variant="danger" />);
   const dangerClass = screen.getByRole("button").className;
 
-  expect(new Set([primaryClass, quietClass, dangerClass]).size).toBe(3);
+  rerender(<IconButton label="Go" icon={<DotIcon />} variant="dangerQuiet" />);
+  const dangerQuietClass = screen.getByRole("button").className;
+
+  expect(new Set([primaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(4);
 });
 
 test("each size renders a distinct class", () => {

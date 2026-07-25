@@ -637,11 +637,15 @@ export function Composer({ ref }: ComposerProps) {
                 onClick={() => fileInputRef.current?.click()}
               />
               <div className={styles.controlsRight}>
+                {/* Stop is a secondary action beside Send, so it carries
+                    danger on the glyph rather than as a filled square
+                    competing with the primary control. */}
                 {showStop && (
                   <IconButton
                     label="Stop"
                     icon="■"
-                    variant="danger"
+                    variant="dangerQuiet"
+                    size="sm"
                     type="button"
                     data-testid="composer-stop"
                     onClick={() => void handleInterruptClick()}
