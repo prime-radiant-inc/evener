@@ -2,13 +2,19 @@
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
 // a chevron (branches only), a signal gutter (a Cadence dot for the states
-// worth spotting - see SIGNAL_STATES), a two-line text column (title + a
-// metadata gloss - see activityGloss), a favorite star / attention Badge as
-// applicable, a right-aligned relative timestamp (session rows only, when
-// there's no Badge to show instead), and an actions Menu overlaid on that
-// timestamp. Pure presentation: every mutation goes back
+// worth spotting - see SIGNAL_STATES), a text column, a favorite star /
+// attention Badge as applicable, a right-aligned relative timestamp (session
+// rows only, when there's no Badge to show instead), and an actions Menu
+// overlaid on that timestamp. Pure presentation: every mutation goes back
 // out through the `actions` prop, which Rail.tsx implements against
 // actions.ts + the tree store's refresh().
+//
+// The rail is a TRIAGE surface: who needs me, nothing else. A quiet session
+// (idle, ended, notLoaded) is one line - title + age - because the empty signal
+// gutter and a grey age already say nothing is happening. Only a signal state
+// (working / needs-you / failed) earns the second line, which glosses why. So
+// rows change height as sessions change state; see SessionRow's own comment for
+// why that trade is deliberate.
 //
 // CLASS.actions (Rail.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
@@ -102,12 +108,16 @@ function humanizeState(wireState: string): string {
 }
 
 // The Cadence states worth spending a dot on: a row is working, a human is
-// needed, or something failed. idle/ended are deliberately absent - the
-// row's second line already says "idle"/"ended" in words (humanizeState
-// above), so a mid-grey dot restating it adds a glyph and no information,
-// and a sidebar full of identical grey dots trains the eye to ignore the one
-// dot that matters. This is the RAIL asking for less, not the widget
-// changing: every other Cadence surface still renders all five states.
+// needed, or something failed. idle/ended are deliberately absent - a sidebar
+// full of identical grey dots trains the eye to ignore the one dot that
+// matters, and an EMPTY gutter beside a grey age already reads as "nothing
+// happening here" without a glyph asserting it. This is the RAIL asking for
+// less, not the widget changing: every other Cadence surface still renders all
+// five states.
+//
+// This set is also what decides whether a row gets its gloss line at all (see
+// SessionRow): the dot and the second line answer the same question, so they
+// appear and disappear together.
 const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
 
 // The row's leading signal slot, shared by session and project rows. The
@@ -123,22 +133,26 @@ function Signal({ wireState }: { wireState: string }) {
   );
 }
 
-// The row's whole second line: state, then whatever secondary metadata the
-// session carries, in decreasing order of how often it distinguishes one row
-// from its neighbours. Branch and tier live here rather than beside the title
-// because the title is the one thing that identifies a row: as fixed-width
-// siblings on the main line they charged their width to the title at the
-// rail's default 280px, and a branch is typically identical on every row of a
-// project ("main", "main", "main"...) - near-zero information at the title's
-// expense. A "current" tier is likewise unremarkable (it's the default state
-// of a session, same exclusion the old secondary tier tag made). Exported for
-// direct testing of the join, which the rendered line can only assert on as
-// one flat string.
+// The gloss a SIGNAL row gets: the state in words, plus the branch when the
+// session carries one. Rendered only for the states worth spotting from across
+// the list (SIGNAL_STATES), which is what earns it the second line.
+//
+// The model is deliberately NOT here. It is a property of the session, not a
+// reason to look at it, and the session pane's own status strip reports it the
+// moment you open the row - so on a rail whose whole job is triage it was three
+// facts of noise. Tier is likewise gone from the visible line: it survives in
+// the row's title tooltip (see SessionRow), where a fact a title cannot carry
+// stays reachable without spending a line on it.
+//
+// Branch stays because it distinguishes SIBLINGS in the case that matters - two
+// working sessions in the same project, on different branches - and it is on
+// the second line rather than beside the title because as a fixed-width sibling
+// on the main line it charged its width to the title at the rail's default
+// 280px. Exported for direct testing of the join, which the rendered line can
+// only assert on as one flat string.
 export function activityGloss(session: ApiTreeNode): string {
   const parts = [humanizeState(session.state)];
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
-  if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
-  if (session.model !== undefined && session.model !== "") parts.push(session.model);
   return parts.join(" · ");
 }
 
@@ -282,9 +296,34 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
   ];
 }
 
+// rowTooltip is the title on a row's own label: the session title, plus the
+// facts the visible row no longer spends space on. A quiet row's dropped state
+// word and every row's tier land here - real information a title cannot carry,
+// reachable on hover without costing the list a line. The title always leads, so
+// a truncated title is still recoverable from it (the case this tooltip
+// originally existed for).
+function rowTooltip(session: ApiTreeNode, showsGloss: boolean): string {
+  const parts = [session.title];
+  // A signal row already prints its state; a quiet one doesn't, so only the
+  // quiet case needs the word here.
+  if (!showsGloss) parts.push(humanizeState(session.state));
+  // "current" is the unremarkable default state of a session - the same
+  // exclusion the visible line used to make.
+  if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
+  return parts.join(" · ");
+}
+
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   const needsYouCount = needsYouDescendantCount(session);
+  // A quiet row (idle, ended, notLoaded, unknown) is title + age, one line: the
+  // empty signal gutter and a grey age already say "nothing is happening here",
+  // so a second line restating "idle" in words was the state living at two
+  // altitudes on the row whose whole job is triage. A signal row keeps its
+  // gloss, and with it its second line - which makes signal rows physically
+  // taller than quiet ones. That is the point: the rows worth finding are bigger
+  // than the rows that aren't, and the list's evenness is worth less than that.
+  const showsGloss = SIGNAL_STATES.has(cadenceStateFor(session.state));
   const gloss = activityGloss(session);
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
@@ -293,9 +332,10 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
     <span className={CLASS.row} data-session-ref={session.ref}>
       {info.hasChildren && <Chevron expanded={info.expanded} onToggle={info.toggle} />}
       <Signal wireState={session.state} />
-      {/* Two-line text column (§2.3): the title, then a humanized activity
-          gloss - row anatomy for the subagent tree's already-existing
-          recursion (toSessionNode/Tree), not new recursion of its own. */}
+      {/* The text column: the title, and - on a signal row only - a second line
+          glossing why it wants attention. Row anatomy for the subagent tree's
+          already-existing recursion (toSessionNode/Tree), not new recursion of
+          its own. */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see below */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see below */}
       <span className={CLASS.textCol} onClick={info.activate}>
@@ -305,13 +345,16 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             separate aria-label on the row). */}
         {/* Both lines ellipsize, so both carry their own full text as a
             native tooltip - nothing a narrow rail cuts off becomes
-            unreachable. */}
-        <span className={CLASS.label} title={session.title}>
+            unreachable. The title's tooltip also carries what the visible row
+            drops (rowTooltip). */}
+        <span className={CLASS.label} title={rowTooltip(session, showsGloss)}>
           {session.title}
         </span>
-        <span data-testid="rail-row-activity" className={CLASS.activity} title={gloss}>
-          {gloss}
-        </span>
+        {showsGloss && (
+          <span data-testid="rail-row-activity" className={CLASS.activity} title={gloss}>
+            {gloss}
+          </span>
+        )}
       </span>
       {session.favorite === true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>

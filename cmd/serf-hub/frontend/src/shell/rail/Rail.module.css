@@ -374,10 +374,11 @@
   cursor: default;
 }
 
-/* Two-line text column (§2.3): title over a humanized activity gloss. A
- * column rather than two siblings directly in `.row` so the row's own
- * `align-items: center` centers the PAIR vertically instead of stretching
- * each line to the row's full height. */
+/* The row's text column: the title, and on a signal row a gloss line under it.
+ * A column rather than two siblings directly in `.row` so the row's own
+ * `align-items: center` centers whatever it holds vertically instead of
+ * stretching each line to the row's full height - which is what keeps a
+ * one-line quiet row and a two-line signal row both vertically centered. */
 .textCol {
   display: flex;
   flex-direction: column;
@@ -395,15 +396,14 @@
   font-size: var(--font-size-ui);
 }
 
-/* Second line: a short, honest gloss of the row's own state plus its
- * secondary metadata - branch, tier, model (RailRow.tsx's activityGloss).
- * Never a faked liveness cue, just the state worded for a person. This line
- * carries the state for EVERY row, which is why the signal gutter above only
- * spends a dot on the states that need to be spotted from across the list.
- * It is also where metadata yields: it ellipsizes inside the same
- * min-width:0 column as the title, so a long branch name costs the branch
- * its tail rather than costing the title, the one thing that identifies the
- * row. */
+/* Second line, rendered only on a SIGNAL row (RailRow.tsx's SessionRow): a
+ * short, honest gloss of why that row wants attention - the state worded for a
+ * person, plus its branch. Never a faked liveness cue. A quiet row has no
+ * second line at all, so this is also what makes signal rows taller than quiet
+ * ones - deliberately, so the rows worth finding are physically bigger.
+ * It ellipsizes inside the same min-width:0 column as the title, so a long
+ * branch name costs the branch its tail rather than costing the title, the one
+ * thing that identifies the row. */
 .activity {
   overflow: hidden;
   white-space: nowrap;
