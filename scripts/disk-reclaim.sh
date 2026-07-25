@@ -80,6 +80,8 @@ git rev-parse --verify --quiet "$INTO" >/dev/null || {
 	exit 1
 }
 
+into_tip=$(git rev-parse "$INTO^{commit}")
+
 free_report() { df -h "$repo_root" | awk 'NR==2 {print $4 " free of " $2 " (" $5 " used)"}'; }
 
 echo "disk-reclaim: $(free_report)"
@@ -101,7 +103,24 @@ while read -r path _hash branchfield; do
 	branch=${branch%\]}
 	[ -n "$branch" ] || continue
 	[ "$branch" = "(detached" ] && continue
-	if git merge-base --is-ancestor "$branch" "$INTO" 2>/dev/null; then
+	# A branch with no commits of its own is UNSTARTED, not merged - and
+	# --is-ancestor cannot tell the difference, because a branch that has not
+	# diverged yet is trivially an ancestor of what it was cut from. This
+	# script deleted six worktrees ninety seconds after they were created for
+	# six running agents, and the dirty-check did not save them: a fresh
+	# checkout nobody has written to yet is perfectly clean.
+	#
+	# So "removable" needs both halves: the branch has commits of its own, AND
+	# those commits have landed. Same tip as the base means the first half
+	# fails, and the worktree is left alone.
+	# An unresolvable branch is classified unmerged: this script's failure mode
+	# must always be "kept something it could have removed", never the reverse.
+	tip=$(git rev-parse --verify --quiet "$branch^{commit}" 2>/dev/null) || tip=""
+	if [ -z "$tip" ]; then
+		unmerged+=("$path	$branch (unresolvable)")
+	elif [ "$tip" = "$into_tip" ]; then
+		unmerged+=("$path	$branch (unstarted)")
+	elif git merge-base --is-ancestor "$branch" "$INTO" 2>/dev/null; then
 		merged+=("$path	$branch")
 	else
 		unmerged+=("$path	$branch")
