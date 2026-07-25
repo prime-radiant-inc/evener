@@ -138,6 +138,26 @@ test("a failing path validation flags the field invalid so it is dropped from th
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({}));
 });
 
+// serf/path/validate spells the output-file kind "output-file"; the schema
+// spells it "outputFile". Sending the schema spelling falls through the RPC's
+// switch to a plain stat, which rejects the not-yet-existing file an
+// outputFile field exists to name (spec 3.4).
+test.each([
+  ["file", "file"],
+  ["dir", "dir"],
+  ["outputFile", "output-file"],
+])("a %s-kind path field validates with the RPC's own kind %s", async (pathKind, wireKind) => {
+  const user = userEvent.setup();
+  const { validatePath } = renderPanel([
+    option({ wireField: "traceFile", kind: "path", label: "Trace file", pathKind }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await typePath(user, pathTrigger("Trace file"), "/opt/new.log");
+
+  await waitFor(() => expect(validatePath).toHaveBeenCalledWith("/opt/new.log", wireKind));
+});
+
 test("show resolved config previews the effective launch config", async () => {
   const user = userEvent.setup();
   renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);

@@ -18,6 +18,7 @@ import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSp
 import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
 import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
 import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
 
@@ -78,7 +79,7 @@ export function AdvancedOptions({
   function updateScalar(opt: LaunchOption, value: string): void {
     update(opt.wireField, { value });
     if (opt.pathKind && value.trim() !== "") {
-      validatePath(value, opt.pathKind).then(
+      validatePath(value, schemaPathKind(opt.pathKind)).then(
         (result) => {
           setErrors((prev) => ({ ...prev, [opt.wireField]: result.valid ? "" : (result.error ?? "invalid path") }));
           // Re-mark the stored value invalid so collect drops it (floor §1.11).
