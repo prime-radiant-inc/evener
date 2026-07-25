@@ -124,10 +124,22 @@ test("applies the dockview-theme-serf class dockview-theme.css targets", async (
   expect(container.querySelector(".dockview-theme-serf")).not.toBeNull();
 });
 
+// Pop out is a dockview RIGHT-HEADER action, so it lives inside the same
+// per-group header container the one-pane rule hides (dockview-core's
+// tabsContainer owns both the tabs and the right-actions slot, and
+// header.hidden display:none's the lot). It is therefore reachable on the
+// secondary group - which shows its header whenever it holds more than one
+// pane - and not on the main pane. Same shape as the absent close (x): the
+// main pane deliberately has no header affordances at all.
 test("wires the 'Pop out' group-header affordance into the live dockview host", async () => {
-  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
+  await screen.findByText(/doc pane: ref_main/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   await screen.findByText(/doc pane: ref_a/);
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // secondary group now shows its header
+  await screen.findByText(/doc pane: ref_b/);
+
   // The affordance is a dockview right-header action rendered by the real
   // host - proof popout is actually reachable (no longer dormant), which the
   // isolated PopoutHeaderAction unit test cannot establish on its own.
@@ -157,6 +169,29 @@ function visibleTabTexts(): string[] {
   return Array.from(document.querySelectorAll<HTMLElement>(".dv-tabs-and-actions-container"))
     .filter((el) => el.style.display !== "none")
     .flatMap((el) => Array.from(el.querySelectorAll(".dv-tab")).map((t) => t.textContent ?? ""));
+}
+
+// Native tab close controls the user can actually reach - i.e. those inside a
+// header container that is not display:none. Same filter as visibleTabTexts,
+// for the same reason: the elements themselves survive inside a hidden header.
+function visibleCloseControlCount(): number {
+  return Array.from(document.querySelectorAll<HTMLElement>(".dv-tabs-and-actions-container"))
+    .filter((el) => el.style.display !== "none")
+    .reduce((n, el) => n + el.querySelectorAll(".dv-default-tab-action").length, 0);
+}
+
+// `.dv-active-tab` is applied PER GROUP (dockview-core's own tab.js/
+// tabsContainer.js toggle it off each panel's own api.isActive), so once the
+// workspace has two groups there are TWO active tabs - one per group - and
+// `document.querySelector(".dv-tab.dv-active-tab")` silently returns whichever
+// comes FIRST in the DOM. That is the main group's tab, not the workspace's
+// focused one. Asking "is the tab with this title the active tab in its own
+// group" is the question that stays well-defined however many groups exist.
+function tabIsActive(title: string): boolean {
+  const tabs = Array.from(document.querySelectorAll<HTMLElement>(".dv-tab")).filter((t) => t.textContent === title);
+  if (tabs.length !== 1)
+    throw new Error(`expected exactly one tab titled ${JSON.stringify(title)}, found ${tabs.length}`);
+  return tabs[0]?.classList.contains("dv-active-tab") ?? false;
 }
 
 test("a second pane opens in a group to the RIGHT of the main pane, not stacked on it", async () => {
@@ -207,6 +242,34 @@ test("a group holding exactly one pane renders no tab bar; a group with two does
   // The right-hand group now stacks two panes, so it needs its tabs back; the
   // main group still holds one and stays bare.
   expect(headerHiddenFlags()).toEqual([true, false]);
+});
+
+// The main pane is REPLACEABLE, NOT CLOSEABLE (Jesse, round 3). Pinned as an
+// invariant on purpose: the absent (x) reads like a missing button to whoever
+// finds it next, and "restore the tab bar so it can be closed" would undo both
+// halves of the rule at once.
+test("the main pane offers no way to close it - it is replaceable, not closeable", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: ref_a/);
+
+  // No tab bar, therefore no REACHABLE native (x), and no other close control.
+  // Counted through the same visible-header filter visibleTabTexts uses, not a
+  // `:not([style*='none'])` attribute match: dockview's own (x) element stays in
+  // the DOM inside the hidden container (measured live - the main group has one
+  // there and zero visible), so a query that ignores the container's display
+  // would report a button no user can click and pass for the wrong reason.
+  expect(headerHiddenFlags()).toEqual([true]);
+  expect(visibleTabTexts()).toEqual([]);
+  expect(visibleCloseControlCount()).toBe(0);
+  expect(screen.queryByRole("button", { name: /close/i })).toBeNull();
+
+  // And the main slot is never empty: closing it programmatically (the only
+  // route left, since no affordance does) puts welcome back rather than
+  // leaving a hole.
+  workspaceStore.getState().closePane(workspaceStore.getState().mainPane()!.id);
+  await screen.findByText("No session open");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("welcome");
 });
 
 test("the main pane keeps a visible title with no tab of its own (PaneScaffold header)", async () => {
@@ -331,7 +394,12 @@ test("clicking a different tab updates workspaceStore.focusedPaneId", async () =
   expect(workspaceStore.getState().focusedPaneId).toBe(second);
 });
 
-test("clicking a tab's native close button updates workspaceStore.panes", async () => {
+// A native tab (x) only exists where a tab bar does, which - by the one-pane
+// rule - is the SECONDARY group, never the main one. The behaviour under test
+// (dockview's own close mirroring back into the store) is unchanged and still
+// worth covering; it just lives on a secondary pane now. See the main-pane
+// invariant test above for the deliberate absence on the other side.
+test("clicking a secondary tab's native close button updates workspaceStore.panes", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
@@ -341,8 +409,10 @@ test("clicking a tab's native close button updates workspaceStore.panes", async 
   await screen.findByText(/doc pane: ref_b/);
 
   const user = userEvent.setup();
-  const closeAction = document
-    .querySelector(".dv-tab.dv-active-tab")
+  // Scoped to the tab titled ref_b specifically: `.dv-active-tab` alone is
+  // per-group and would find the MAIN group's tab first (see tabIsActive).
+  const closeAction = Array.from(document.querySelectorAll<HTMLElement>(".dv-tab"))
+    .find((t) => t.textContent === "Doc ref_b")
     ?.querySelector(".dv-default-tab-action") as HTMLElement | null;
   expect(closeAction).not.toBeNull();
   await user.click(closeAction as HTMLElement);
@@ -394,7 +464,7 @@ test("workspace.focusPane activates the corresponding dockview tab", async () =>
   workspaceStore.getState().focusPane(first);
 
   expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
-  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toContain("Doc ref_a");
+  expect(tabIsActive("Doc ref_a")).toBe(true);
 });
 
 // --- session pane tab titles: PaneTitleCtx <-> the real threads store -----
@@ -692,7 +762,7 @@ test("a routed pane opened before mount merges into a stale saved layout as its 
     "Doc ref_stale_c",
     "Doc ref_routed",
   ]);
-  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_routed");
+  expect(tabIsActive("Doc ref_routed")).toBe(true);
   expect(workspaceStore.getState().panes).toHaveLength(4);
 
   // Clicking back to "Doc ref_stale_b" proves its CONTENT survived intact,
@@ -748,7 +818,10 @@ test("a reload keeps the focused tab even when the URL routes to a different, al
   render(<DockHost />);
 
   await screen.findByText(/doc pane: ref_b \(focused=true\)/);
-  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_b");
+  expect(tabIsActive("Doc ref_b")).toBe(true);
+  expect(workspaceStore.getState().focusedPaneId).toBe(
+    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === "ref_b")?.id,
+  );
   // No duplicate: the routed pane merged into the restored one by params.
   expect(document.querySelectorAll(".dv-tab")).toHaveLength(3);
 });
@@ -774,7 +847,7 @@ test("a deep link to a pane the saved layout does NOT contain still wins focus",
   render(<DockHost />);
 
   expect(await screen.findByText(/doc pane: ref_fresh \(focused=true\)/)).toBeTruthy();
-  expect(document.querySelector(".dv-tab.dv-active-tab")?.textContent).toBe("Doc ref_fresh");
+  expect(tabIsActive("Doc ref_fresh")).toBe(true);
 });
 
 test("a corrupt saved layout never suppresses a routed pane - the deep link wins alone (failure-mode floor)", async () => {

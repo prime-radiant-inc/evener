@@ -78,8 +78,10 @@ describe("boot-time registration lets a persisted layout with lazy panes restore
     expect(ok).toBe(true);
     expect(fake.cleared).toBe(false);
     expect(workspaceStore.getState().panes).toEqual([
-      { id: "p1", type: "doc", params: { ref: "a", path: "notes.md" } },
-      { id: "p2", type: "transcript", params: { ref: "b" } },
+      // slot is re-derived from the restored grid order (workspace.ts's
+      // restoreLayout): the first panel is the top-left/main one.
+      { id: "p1", type: "doc", params: { ref: "a", path: "notes.md" }, slot: "main" },
+      { id: "p2", type: "transcript", params: { ref: "b" }, slot: "secondary" },
     ]);
     expect(workspaceStore.getState().focusedPaneId).toBe("p2");
   });
