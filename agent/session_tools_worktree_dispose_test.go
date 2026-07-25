@@ -55,6 +55,7 @@ func requireRefusalContains(t *testing.T, err error, want string) {
 }
 
 func TestDispose_UnknownID_InvalidRequest(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	err := disposeErr(t, r, "dlg_doesnotexist", false, false)
 	requireRefusalContains(t, err, "invalid_request")
@@ -62,6 +63,7 @@ func TestDispose_UnknownID_InvalidRequest(t *testing.T) {
 }
 
 func TestDispose_NonDelegateID_InvalidRequest(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	err := disposeErr(t, r, "some-worktree-name", false, false)
 	requireRefusalContains(t, err, "invalid_request")
@@ -69,12 +71,14 @@ func TestDispose_NonDelegateID_InvalidRequest(t *testing.T) {
 }
 
 func TestDispose_EmptyID_InvalidRequest(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	err := disposeErr(t, r, "   ", false, false)
 	requireRefusalContains(t, err, "invalid_request")
 }
 
 func TestDispose_ForwardedRecord_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	// Append a worktree-isolation delegate record owned by ANOTHER session (a
 	// forwarded descendant copy). No disk lane is needed: ownership is checked
@@ -99,6 +103,7 @@ func TestDispose_ForwardedRecord_Refused(t *testing.T) {
 }
 
 func TestDispose_RunningJob_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedIsolationLane(t)
 
@@ -115,6 +120,7 @@ func TestDispose_RunningJob_Refused(t *testing.T) {
 }
 
 func TestDispose_ArmedWatchSendTo_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedIsolationLane(t)
 
@@ -129,6 +135,7 @@ func TestDispose_ArmedWatchSendTo_Refused(t *testing.T) {
 }
 
 func TestDispose_PendingWatchSend_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedIsolationLane(t)
 
@@ -144,6 +151,7 @@ func TestDispose_PendingWatchSend_Refused(t *testing.T) {
 }
 
 func TestDispose_LiveShellUnderLane_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -160,6 +168,7 @@ func TestDispose_LiveShellUnderLane_Refused(t *testing.T) {
 }
 
 func TestDispose_ForeignLock_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -174,6 +183,7 @@ func TestDispose_ForeignLock_Refused(t *testing.T) {
 }
 
 func TestDispose_UnchangedLane_Disposed(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	// A freshly cut lane is Unchanged (tip == base) and clean → collectible.
@@ -187,6 +197,7 @@ func TestDispose_UnchangedLane_Disposed(t *testing.T) {
 }
 
 func TestDispose_UnmergedRefusedForceOverrides(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	laneCommit(t, lanePath)
@@ -201,6 +212,7 @@ func TestDispose_UnmergedRefusedForceOverrides(t *testing.T) {
 }
 
 func TestDispose_DirtyRefusedForceDirtyOverrides(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	mustWriteFile(t, filepath.Join(lanePath, "dirty.txt"), "uncommitted")
@@ -214,6 +226,7 @@ func TestDispose_DirtyRefusedForceDirtyOverrides(t *testing.T) {
 }
 
 func TestDispose_HalfRemoved_MergedDisposed_UnmergedRefused(t *testing.T) {
+	t.Parallel()
 	// Unmerged half-removed: commit on the branch, then remove only the worktree
 	// dir (branch + record + sidecar remain).
 	r := newWorktreeRepo(t)
@@ -232,6 +245,7 @@ func TestDispose_HalfRemoved_MergedDisposed_UnmergedRefused(t *testing.T) {
 }
 
 func TestDispose_HalfRemovedUnchanged_Disposed(t *testing.T) {
+	t.Parallel()
 	// A half-removed lane whose branch tip == base (unchanged) is collectible.
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
@@ -241,6 +255,7 @@ func TestDispose_HalfRemovedUnchanged_Disposed(t *testing.T) {
 }
 
 func TestDispose_AlreadyDisposed_IdempotentCleanup(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	// Mark disposed but leave branch + sidecar as remnants (crash between mark
@@ -267,6 +282,7 @@ func TestDispose_AlreadyDisposed_IdempotentCleanup(t *testing.T) {
 }
 
 func TestDispose_ReissuedAfterDisposal_CleanAlreadyDisposed(t *testing.T) {
+	t.Parallel()
 	// A successful dispose deletes the sidecar (step 8). Re-issuing dispose on the
 	// same id must reach the idempotent already-disposed short-circuit and report a
 	// clean no-op — NOT fail the sidecar read with "sidecar unreadable" (the live
@@ -296,6 +312,7 @@ func TestDispose_ReissuedAfterDisposal_CleanAlreadyDisposed(t *testing.T) {
 }
 
 func TestDispose_SessionClosing_Refused(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, _, _ := r.seedIsolationLane(t)
 	r.s.mu.Lock()

@@ -103,6 +103,7 @@ func (r *wtRepo) delegateResumability(t *testing.T, id string) delegateResumabil
 // gated, evicted (closed + removed from the table), its lane removed and marked
 // disposed, and a later delegate_send hits the disposed refusal (restore path).
 func TestDispose_EvictsRetainedChild(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	child := r.trackRetainedIsolationChild(t, id, lanePath)
@@ -143,6 +144,7 @@ func TestDispose_EvictsRetainedChild(t *testing.T) {
 // a concurrent collector removes the lane between our unlock and our remove; the
 // non-force remove fails, we stat GONE and finish the disposal bookkeeping.
 func TestDispose_RemoveRefused_LaneGone_MarkedDisposed(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -175,6 +177,7 @@ func TestDispose_RemoveRefused_LaneGone_MarkedDisposed(t *testing.T) {
 // refuses, and the lane is downgraded to KEPT-after-eviction — re-locked with the
 // disposer's own marker, NOT marked disposed, still resumable.
 func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -217,6 +220,7 @@ func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
 // conservative KEEP path — never marked disposed, branch intact — rather than
 // being destroyed while the worktree still exists.
 func TestDispose_RemoveRefused_TransientStatError_Kept(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -248,6 +252,7 @@ func TestDispose_RemoveRefused_TransientStatError_Kept(t *testing.T) {
 // the late-dirty lane cannot be re-locked (already locked by another owner mid
 // race); disposal warns naming the lane and still keeps it.
 func TestDispose_RemoveRefused_RelockFailure_Warns(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 
@@ -278,6 +283,7 @@ func TestDispose_RemoveRefused_RelockFailure_Warns(t *testing.T) {
 // worktree to remove, dispose marks disposed and deletes the leftover branch +
 // sidecar.
 func TestDispose_HalfRemoved_MarksAndDeletesBranch(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	metaDir := r.metaDir(t, r.canonicalMain(t))
@@ -306,6 +312,7 @@ func TestDispose_HalfRemoved_MarksAndDeletesBranch(t *testing.T) {
 // refusal after the gate is armed (here a step-6 unmerged refusal) reverses the
 // gate via the deferred clear-unless-consumed, and the child is NOT evicted.
 func TestDispose_PostGateRefusal_ClearsGate(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	child := r.trackRetainedIsolationChild(t, id, lanePath)
@@ -337,6 +344,7 @@ func TestDispose_PostGateRefusal_ClearsGate(t *testing.T) {
 // child is evicted (removed from the table) even though the lane is downgraded to
 // KEPT-after-eviction, and the lane stays resumable (no disposed mark).
 func TestDispose_KeptAfterEviction_GateConsumed(t *testing.T) {
+	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
 	child := r.trackRetainedIsolationChild(t, id, lanePath)
