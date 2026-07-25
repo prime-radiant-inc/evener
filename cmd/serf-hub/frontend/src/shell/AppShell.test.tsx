@@ -338,18 +338,26 @@ test("navigating from a 404 straight to a session deep link opens only that pane
 
 test("a saved layout from a previous session merges with a fresh deep link, which lands focused", async () => {
   // Phase 1: generate a REAL saved layout at the default route (the
-  // welcome pane) - real timers throughout; the welcome pane's own
-  // addPanel() already schedules the debounced save (addPanel fires
-  // onDidLayoutChange - see DockHost.test.tsx's own probe-verified
-  // comment on that), so waitFor polling for the actual write to land is
-  // enough, no fake-timer juggling needed for this test's own concern.
+  // welcome pane). The welcome pane's own addPanel() schedules the debounced
+  // save (addPanel fires onDidLayoutChange - see DockHost.test.tsx's own
+  // probe-verified comment on that), and unmount FLUSHES that pending save
+  // rather than dropping it, so the write has landed by the time unmount()
+  // returns - no waiting out the 400ms debounce on the real clock, which is
+  // what used to make this the slowest test in the file.
   window.history.pushState({}, "", "/");
   const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
-  await waitFor(() => {
-    expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
-  });
   unmount();
+  // Asserting the saved layout actually CONTAINS the welcome pane, not
+  // merely that the key exists: phase 2's whole subject is a stale layout
+  // merging with a deep link, so an empty or degenerate layout here would
+  // leave that assertion passing for the wrong reason.
+  const savedPanels = (
+    JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? "null") as {
+      panels?: Record<string, { params?: { paneType?: string } }>;
+    } | null
+  )?.panels;
+  expect(Object.values(savedPanels ?? {}).map((p) => p.params?.paneType)).toEqual(["welcome"]);
   resetWorkspaceStoreForTests(); // simulates a fresh page load: in-memory workspace state resets
 
   // Phase 2: fresh mount at a NEW deep link. Deliberately NOT calling

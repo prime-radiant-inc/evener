@@ -89,8 +89,16 @@ function readStoredLayout(): unknown {
   }
 }
 
-function persistLayout(json: unknown): void {
+// Serializes the live layout and writes it. Skips a null layout outright:
+// layoutJSON() returns null with no dockview api registered, and persisting
+// that would replace a perfectly good saved layout with the literal "null" -
+// which readStoredLayout hands back as a defined value, sending the next boot
+// down restoreLayout's structural-failure path (an empty workspace) rather
+// than restoring anything.
+function saveLayout(): void {
   try {
+    const json = workspaceStore.getState().layoutJSON();
+    if (json === null) return;
     localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(json));
   } catch {
     // Best-effort: a full quota (or Safari private-mode) must never be
@@ -206,12 +214,33 @@ export function DockHost() {
     const layoutSub = api.onDidLayoutChange(() => {
       clearTimeout(saveTimer);
       saveTimer = setTimeout(() => {
-        persistLayout(workspaceStore.getState().layoutJSON());
+        saveTimer = undefined;
+        saveLayout();
       }, LAYOUT_SAVE_DEBOUNCE_MS);
     });
 
     return () => {
-      clearTimeout(saveTimer);
+      // A pending save is FLUSHED, not dropped. The debounce exists to
+      // coalesce a gesture's many onDidLayoutChange bursts into one write
+      // (see LAYOUT_SAVE_DEBOUNCE_MS) - "fewer writes", never "maybe no
+      // write at all". Cancelling the timer without writing loses whatever
+      // the user last did in the 400ms before DockHost came down: this
+      // component unmounts on any route the shell doesn't resolve to a pane
+      // (AppShell's NotFound branch), so a splitter drag immediately
+      // followed by such a navigation silently forgot the new geometry.
+      //
+      // Flushing SYNCHRONOUSLY here is what keeps the original hazard this
+      // cleanup was written for - a stray timer firing against a torn-down
+      // api after teardown - fixed: the write happens now, while the api is
+      // still registered (registerDockviewApi(null) is below, deliberately
+      // after), and the timer that could have fired later is gone either
+      // way. React destroys a parent's effects before its children's, so
+      // DockviewReact has not disposed its grid yet at this point;
+      // saveLayout's own null guard covers the case regardless.
+      if (saveTimer !== undefined) {
+        clearTimeout(saveTimer);
+        saveLayout();
+      }
       removeSub.dispose();
       activeSub.dispose();
       layoutSub.dispose();

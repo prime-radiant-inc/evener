@@ -697,7 +697,7 @@ test("debounces saving the layout to localStorage after a change", async () => {
   expect(Object.keys(parsed.panels)).toEqual(["pane_doc_1", "pane_doc_2"]);
 });
 
-test("unmounting clears a pending debounced save instead of writing after teardown", async () => {
+test("unmounting flushes a pending debounced save rather than writing after teardown", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   const { unmount } = render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
@@ -708,10 +708,27 @@ test("unmounting clears a pending debounced save instead of writing after teardo
   });
   await Promise.resolve();
   advance(200); // mid-debounce: a save is pending, not yet fired
+  expect(localStorage.getItem(LAYOUT_KEY)).toBeNull();
 
   unmount();
-  advance(1000); // long past the debounce window, but nothing is mounted to fire it
 
+  // The pending write lands DURING teardown, carrying the real layout - both
+  // panes, not an empty or null one. A debounce defers a write; it must never
+  // silently discard it just because the host came down inside the window
+  // (a splitter drag followed straight away by a route the shell renders
+  // NotFound for used to forget the new geometry outright).
+  const flushed = localStorage.getItem(LAYOUT_KEY);
+  expect(flushed).not.toBeNull();
+  expect(Object.keys((JSON.parse(flushed!) as { panels: Record<string, unknown> }).panels)).toEqual([
+    "pane_doc_1",
+    "pane_doc_2",
+  ]);
+
+  // ...and nothing fires AFTER teardown: the original hazard this cleanup
+  // was written for. Clearing the key and running the clock long past the
+  // debounce window proves the timer itself is gone, not merely early.
+  localStorage.removeItem(LAYOUT_KEY);
+  advance(1000);
   expect(localStorage.getItem(LAYOUT_KEY)).toBeNull();
 });
 
@@ -877,19 +894,15 @@ test("a reload keeps the focused tab even when the URL routes to a different, al
   workspaceStore.getState().focusPane(second);
   await screen.findByText(/doc pane: ref_b \(focused=true\)/);
 
-  // REAL timers, waiting for the write - not fake timers. The save is scheduled
-  // by DockHost's onDidLayoutChange handler at the moment focus changes, i.e.
-  // above, on the real clock; a later vi.useFakeTimers() cannot flush a timeout
-  // the real setTimeout already created (advanceTimersByTime only drives timers
-  // created after the swap), so nothing was ever written and this assertion died
-  // before the test reached its actual subject. Same shape, and the same
-  // reasoning, as AppShell.test.tsx's own merge test. Waiting on the specific
-  // activeView (not just a non-null key) is what makes this the focus change's
-  // save rather than the mount's - see savedActiveViews.
-  await vi.waitFor(() => {
-    expect(savedActiveViews()).toContain(second);
-  });
+  // No timer wait at all: unmount FLUSHES the pending debounced save (see
+  // DockHost's cleanup), so the write this phase exists to produce has
+  // already landed by the time unmount() returns and can be asserted
+  // synchronously. This used to poll for 400ms of real clock, which is the
+  // whole reason it was the slowest test in the file. Asserting the
+  // specific activeView (not just a non-null key) is what makes this the
+  // focus change's save rather than the mount's - see savedActiveViews.
   unmount();
+  expect(savedActiveViews()).toContain(second);
   resetWorkspaceStoreForTests();
 
   // Phase 2: the reload. AppShell's routing glue re-opens the pane the address
@@ -915,12 +928,9 @@ test("a deep link to a pane the saved layout does NOT contain still wins focus",
   workspaceStore.getState().focusPane(second);
   await screen.findByText(/doc pane: ref_b \(focused=true\)/);
 
-  // Real timers, waiting for the focus change's own save to land - see the
-  // previous test's comment for why fake timers cannot flush it here.
-  await vi.waitFor(() => {
-    expect(savedActiveViews()).toContain(second);
-  });
+  // unmount flushes the focus change's own save - see the previous test.
   unmount();
+  expect(savedActiveViews()).toContain(second);
   resetWorkspaceStoreForTests();
 
   workspaceStore.getState().openPane("doc", { ref: "ref_fresh" }); // not in the saved layout
