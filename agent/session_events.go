@@ -37,6 +37,9 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingMCPWarnings = nil
+	// SessionStart hook completions collected before the transcript writer
+	// existed (kata qm9y).
+	s.flushPendingHookTurns()
 	for _, src := range promptSources {
 		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
@@ -109,6 +112,64 @@ func (s *Session) recordTurnFailure(data events.ErrorData) {
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(info.Message))
 	turn.Error = &info
 	s.recordTurn(turn, turn)
+}
+
+// emitHookCompleted reports a finished hook on both channels a client can
+// reach it by: the live HOOK_END event, and a TurnHookCompleted transcript
+// entry that survives reload. Both carry the same fields, so the hook line a
+// returning reader sees cannot disagree with the one a watching reader saw.
+//
+// The entry is written unconditionally. Whether a hook line is SHOWN is a
+// per-client display choice (Settings → Transcript's two hook-exit toggles,
+// which live in browser storage and are applied at render time); recording
+// only what some client currently wants to see would make one reader's
+// preference destroy another's history, and would make the toggle retroactive
+// — turning it on would reveal only hooks that ran afterwards, which is the
+// same "switch that governs nothing" complaint this fixes (kata qm9y).
+func (s *Session) emitHookCompleted(data events.HookEndData) {
+	s.emit(events.EventHookEnd, data)
+	info := schema.HookInfo{
+		Event:      data.Event,
+		HookType:   data.HookType,
+		Matcher:    data.Matcher,
+		PluginName: data.PluginName,
+		ExitCode:   data.ExitCode,
+		DurationMS: data.DurationMS,
+	}
+	// The announcement also rides the turn's own text so renderers that read
+	// only turn text still show the hook.
+	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
+	turn.Hook = &info
+
+	// SessionStart hooks run inside initSessionState, which completes BEFORE
+	// the transcript writer is created — a nil writer's Append is a silent
+	// no-op, so recording here directly would lose exactly the hooks that
+	// open a session. Hold them until emitSessionStartEnvelope, the same
+	// point the plugin/hook-config diagnostics collected during construction
+	// are released. Hooks run in parallel goroutines, hence the lock.
+	s.mu.Lock()
+	if s.transcript == nil {
+		s.pendingHookTurns = append(s.pendingHookTurns, turn)
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+
+	s.recordTurn(turn, turn)
+}
+
+// flushPendingHookTurns records the hook completions collected before the
+// transcript writer existed. A session with no state directory never gets a
+// writer at all; Append is nil-safe, so those drain harmlessly here rather
+// than accumulating for the session's lifetime.
+func (s *Session) flushPendingHookTurns() {
+	s.mu.Lock()
+	pending := s.pendingHookTurns
+	s.pendingHookTurns = nil
+	s.mu.Unlock()
+	for _, turn := range pending {
+		s.recordTurn(turn, turn)
+	}
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

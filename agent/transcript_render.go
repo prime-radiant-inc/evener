@@ -796,6 +796,10 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		fmt.Fprintf(b, "\n## Turn %d — Turn failed\n", seq)
 		writeCompactNote(b, "Turn failed", e.Turn, wantFullTurn(opt, seq))
 
+	case schema.TurnHookCompleted:
+		fmt.Fprintf(b, "\n## Turn %d — Hook\n", seq)
+		writeCompactNote(b, "Hook", e.Turn, wantFullTurn(opt, seq))
+
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
 		// assistant turn that owns the tool call. Skip silently as a no-op.

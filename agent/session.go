@@ -307,8 +307,12 @@ type Session struct {
 	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
-	pendingMCPWarnings  []events.WarningData
-	hookRunner          *hooks.Runner
+	// pendingHookTurns holds HOOK_COMPLETED turns produced before the
+	// transcript writer existed (SessionStart hooks run during construction).
+	// Drained by flushPendingHookTurns from emitSessionStartEnvelope.
+	pendingHookTurns   []schema.Turn
+	pendingMCPWarnings []events.WarningData
+	hookRunner         *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands,
 	// namespaced "plugin-name:command-name" like skills. Looked up by
 	// expandSlashCommand via plugin.ResolveCommand.

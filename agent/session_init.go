@@ -1119,7 +1119,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 
 	// The runner callback carries hook lifecycle events (HookStart/HookEnd) and
 	// any genuine warnings raised during hook execution; route them through emit.
+	// A completed hook additionally goes to disk (kata qm9y): a hook exit that
+	// exists only as a live event leaves the transcript's hook-exit toggles
+	// governing nothing for any session a reader comes back to.
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
+			s.emitHookCompleted(end)
+			return
+		}
 		s.emit(kind, data)
 	})
 	s.hookRunner = runner
