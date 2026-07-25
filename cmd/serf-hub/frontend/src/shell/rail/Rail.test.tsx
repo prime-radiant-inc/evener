@@ -458,16 +458,27 @@ describe("project expansion", () => {
 // .body's scrolling is the necessary other half - it is what the rows too wide
 // for a non-shrinking rail spill into.
 describe("width stability across expand/collapse", () => {
+  // Comments are stripped before matching: these rules' own doc comments
+  // quote the very declarations being asserted ("`flex: none` + `min-width:
+  // 0` make this width AUTHORITATIVE"), so a naive substring check passes on
+  // the prose alone and keeps passing after the declaration is deleted.
   const railCSS = (): string => {
     const here = dirname(fileURLToPath(import.meta.url));
-    return readFileSync(join(here, "Rail.module.css"), "utf8");
+    return readFileSync(join(here, "Rail.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   };
 
   test(".rail refuses to shrink below its declared width", () => {
     const rule = /\.rail\s*\{[^}]*\}/.exec(railCSS());
     expect(rule).not.toBeNull();
-    expect(rule?.[0]).toContain("width: 280px");
-    expect(rule?.[0]).toContain("flex-shrink: 0");
+    // The declared width is the dragged --rail-width, falling back to the
+    // sidebar-width default; either spelling of "don't flex" satisfies the
+    // no-shrink half (`flex: none` IS flex-grow:0 + flex-shrink:0).
+    expect(rule?.[0]).toMatch(/width:\s*var\(--rail-width/);
+    expect(rule?.[0]).toMatch(/flex:\s*none|flex-shrink:\s*0/);
+    // The other half of the same contract: without this, a flex item's
+    // default `min-width: auto` floors the rail at its content's minimum
+    // size, so a wide row widens the sidebar - which is the bug itself.
+    expect(rule?.[0]).toMatch(/min-width:\s*0/);
   });
 
   test(".body scrolls the rows a non-shrinking rail can't widen for", () => {
