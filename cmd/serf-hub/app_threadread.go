@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/apptranscript"
@@ -388,11 +389,11 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
 	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		var entryRec hubcore.ReplayEntry
-		if err := json.Unmarshal(raw, &entryRec); err != nil {
+		turn, ok := decodeTranscriptTurn(raw)
+		if !ok {
 			return nil
 		}
-		return appItemsFromReplayTurn(entry.Meta.ID, turnID, entryIndex, entryRec.Turn, toolNames)
+		return appItemsFromReplayTurn(entry.Meta.ID, turnID, entryIndex, turn, toolNames)
 	})
 	if err != nil {
 		return nil, err
@@ -409,11 +410,23 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 }
 
 func projectBoundedPastTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	var entryRec hubcore.ReplayEntry
-	if err := json.Unmarshal(raw, &entryRec); err != nil {
+	turn, ok := decodeTranscriptTurn(raw)
+	if !ok {
 		return nil
 	}
-	return appItemsFromReplayTurn("", turnID, entryIndex, entryRec.Turn, toolNames)
+	return appItemsFromReplayTurn("", turnID, entryIndex, turn, toolNames)
+}
+
+// decodeTranscriptTurn reads one saved transcript line into the turn the daemon
+// wrote, using the daemon's own type. It is the hub's only entry point from
+// transcript bytes to a turn, so every field schema.Turn carries reaches the
+// reload path by construction (kata kq8c).
+func decodeTranscriptTurn(raw json.RawMessage) (schema.Turn, bool) {
+	var entryRec transcript.Entry
+	if err := json.Unmarshal(raw, &entryRec); err != nil {
+		return schema.Turn{}, false
+	}
+	return entryRec.Turn, true
 }
 
 func pastEntryLatestTurns(entry hubcore.PastEntry, limit int) ([]appwire.Turn, string, error) {
@@ -466,23 +479,20 @@ func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread
 	return enrichThreadFileBackedOutputImages(thread)
 }
 
-func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {
-	agentTurn, imageNames := replayTurnToAgentTurn(turn)
-	return apptranscript.ProjectTurn(turnID, turnIndex, agentTurn, toolNames, func(image llm.ImageData) appwire.InputItem {
-		return projectReplayInputImage(image, imageNames)
-	}, func(result *llm.ToolResultData) []appwire.OutputImage {
+func appItemsFromReplayTurn(sessionID, turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, turnIndex, turn, toolNames, projectReplayInputImage, func(result *llm.ToolResultData) []appwire.OutputImage {
 		return projectReplayOutputImages(sessionID, result)
 	})
 }
 
-func projectReplayInputImage(image llm.ImageData, imageNames map[string]string) appwire.InputItem {
+// projectReplayInputImage stamps the sha and size the client needs to fetch an
+// inline image back out of the transcript over /s/<session>/images/<sha>.
+func projectReplayInputImage(image llm.ImageData) appwire.InputItem {
 	item := apptranscript.DefaultImageProjector(image)
 	if len(image.Data) == 0 {
 		return item
 	}
-	sha := imageSha(image.Data)
-	item.Name = imageNames[sha]
-	item.Metadata = map[string]string{"sha": sha, "size": strconv.Itoa(len(image.Data))}
+	item.Metadata = map[string]string{"sha": imageSha(image.Data), "size": strconv.Itoa(len(image.Data))}
 	return item
 }
 
@@ -576,142 +586,6 @@ func outputImageDescriptorKey(img appwire.OutputImage) string {
 		return "path:" + img.Path
 	}
 	return ""
-}
-
-func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]string) {
-	imageNames := map[string]string{}
-	content := make([]llm.ContentPart, 0, len(turn.Message.Content))
-	for _, part := range turn.Message.Content {
-		switch part.Kind {
-		case string(llm.ContentText):
-			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: part.Text})
-		case string(llm.ContentThinking):
-			thinking := &llm.ThinkingData{}
-			if part.Thinking != nil {
-				thinking.Text = part.Thinking.Text
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
-		case string(llm.ContentRedThinking):
-			content = append(content, llm.ContentPart{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{Redacted: true}})
-		case string(llm.ContentAudio):
-			if part.Audio == nil {
-				continue
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentAudio, Audio: &llm.AudioData{
-				URL:       part.Audio.URL,
-				MediaType: part.Audio.MediaType,
-			}})
-		case string(llm.ContentDocument):
-			if part.Document == nil {
-				continue
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentDocument, Document: &llm.DocumentData{
-				URL:       part.Document.URL,
-				MediaType: part.Document.MediaType,
-				FileName:  part.Document.FileName,
-			}})
-		case string(llm.ContentWebSearch):
-			if part.WebSearch == nil {
-				continue
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{
-				Query: part.WebSearch.Query,
-				Raw:   part.WebSearch.Raw,
-			}})
-		case string(llm.ContentImage):
-			if part.Image == nil {
-				continue
-			}
-			image := llm.ImageData{
-				Data:      part.Image.Data,
-				MediaType: part.Image.MediaType,
-			}
-			if len(part.Image.Data) > 0 && part.Image.Name != "" {
-				imageNames[imageSha(part.Image.Data)] = part.Image.Name
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentImage, Image: &image})
-		case string(llm.ContentToolCall):
-			if part.ToolCall == nil {
-				continue
-			}
-			content = append(content, llm.ContentPart{
-				Kind: llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{
-					ID:        part.ToolCall.ID,
-					Name:      part.ToolCall.Name,
-					Arguments: part.ToolCall.Arguments,
-				},
-			})
-		case string(llm.ContentToolResult):
-			if part.ToolResult == nil {
-				continue
-			}
-			content = append(content, llm.ContentPart{
-				Kind: llm.ContentToolResult,
-				ToolResult: &llm.ToolResultData{
-					ToolCallID:     part.ToolResult.ToolCallID,
-					Name:           part.ToolResult.Name,
-					Content:        part.ToolResult.Content,
-					IsError:        part.ToolResult.IsError,
-					ToolState:      part.ToolResult.ToolState,
-					ImageData:      part.ToolResult.ImageData,
-					ImageMediaType: part.ToolResult.ImageMediaType,
-				},
-			})
-		}
-	}
-	return schema.Turn{
-		Kind:           schema.TurnKind(turn.Kind),
-		Timestamp:      turn.Timestamp,
-		SteeringSource: turn.SteeringSource,
-		Error:          replayTurnFailureInfo(turn.Error),
-		Hook:           replayTurnHookInfo(turn.Hook),
-		Message: llm.Message{
-			Role:    llm.Role(turn.Message.Role),
-			Content: content,
-		},
-	}, imageNames
-}
-
-// replayTurnFailureInfo restores a failed turn's persisted diagnostic. Without
-// it a reloaded failure would reach the client with its message alone, losing
-// the source/title/hint/cause the live error event carried (kata mcgh).
-func replayTurnFailureInfo(replayed *hubcore.ReplayTurnError) *schema.TurnFailureInfo {
-	if replayed == nil {
-		return nil
-	}
-	info := &schema.TurnFailureInfo{
-		Message: replayed.Message,
-		Source:  replayed.Source,
-		Title:   replayed.Title,
-		Hint:    replayed.Hint,
-	}
-	if replayed.Cause != nil {
-		info.Cause = &schema.TurnFailureCause{
-			Kind:     replayed.Cause.Kind,
-			Provider: replayed.Cause.Provider,
-			Model:    replayed.Cause.Model,
-			Status:   replayed.Cause.Status,
-		}
-	}
-	return info
-}
-
-// replayTurnHookInfo restores a completed hook's persisted detail. Without it
-// a reloaded hook line would reach the client with its prose alone, losing the
-// typed exit code the two hook-exit toggles split on (kata qm9y).
-func replayTurnHookInfo(replayed *hubcore.ReplayTurnHook) *schema.HookInfo {
-	if replayed == nil {
-		return nil
-	}
-	return &schema.HookInfo{
-		Event:      replayed.Event,
-		HookType:   replayed.HookType,
-		Matcher:    replayed.Matcher,
-		PluginName: replayed.PluginName,
-		ExitCode:   replayed.ExitCode,
-		DurationMS: replayed.DurationMS,
-	}
 }
 
 func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {

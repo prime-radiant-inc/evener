@@ -136,11 +136,11 @@ func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, hubcore.ReplayTurn{
+	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
-			ToolCall: &hubcore.ReplayToolCall{
+			ToolCall: &llm.ToolCallData{
 				ID:        "call_1",
 				Name:      "communicate",
 				Arguments: []byte(`{"message":"done","end_turn":true}`),
@@ -152,11 +152,11 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		t.Fatalf("communicate items=%+v", items)
 	}
 
-	results := appItemsFromReplayTurn("01TEST", "turn_2", 2, hubcore.ReplayTurn{
+	results := appItemsFromReplayTurn("01TEST", "turn_2", 2, schema.Turn{
 		Kind: "TOOL_RESULTS",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind:       "tool_result",
-			ToolResult: &hubcore.ReplayToolResult{ToolCallID: "call_1", Content: `{"accepted":true}`},
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Content: `{"accepted":true}`},
 		}}},
 	}, toolNames)
 	if len(results) != 0 {
@@ -165,11 +165,11 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, hubcore.ReplayTurn{
+	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
 		Kind: "TOOL_RESULTS",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_result",
-			ToolResult: &hubcore.ReplayToolResult{
+			ToolResult: &llm.ToolResultData{
 				ToolCallID: "call_delegate_send",
 				Name:       "delegate_send",
 				Content:    "started delegate turn",
@@ -187,7 +187,7 @@ func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
 		`{"kind":"thinking","thinking":{"text":"Let me plan this out."}},` +
 		`{"kind":"text","text":"The answer is 42."}` +
@@ -209,7 +209,7 @@ func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
 		`{"kind":"redacted_thinking","thinking":{"redacted":true,"encrypted_content":"xyz"}},` +
 		`{"kind":"text","text":"ok"}` +
@@ -228,7 +228,7 @@ func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
 		`{"kind":"web_search","web_search":{"query":"go context","raw":{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}}}` +
 		`]}}}`)
@@ -248,7 +248,7 @@ func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[` +
 		`{"kind":"text","text":"summarize"},` +
 		`{"kind":"document","document":{"file_name":"report.pdf","media_type":"application/pdf"}},` +
@@ -274,11 +274,11 @@ func TestAppItemsFromReplayTurnProjectsAudioAndDocument(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, hubcore.ReplayTurn{
+	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "commandExecution",
-			ToolCall: &hubcore.ReplayToolCall{
+			ToolCall: &llm.ToolCallData{
 				ID:        "call_legacy",
 				Name:      "read_file",
 				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
@@ -293,11 +293,11 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, hubcore.ReplayTurn{
+	items := appItemsFromReplayTurn("01TEST", "turn_1", 1, schema.Turn{
 		Kind: "ASSISTANT",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "tool_call",
-			ToolCall: &hubcore.ReplayToolCall{
+			ToolCall: &llm.ToolCallData{
 				ID:        "call_read",
 				Name:      "read_file",
 				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
@@ -317,14 +317,13 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	img := []byte("png")
-	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, hubcore.ReplayTurn{
+	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, schema.Turn{
 		Kind: "STEERING",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
+		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: "image",
-			Image: &hubcore.ReplayImage{
+			Image: &llm.ImageData{
 				Data:      img,
 				MediaType: "image/png",
-				Name:      "steer.png",
 			},
 		}}},
 	}, map[string]string{})
@@ -348,7 +347,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 // exactly like a prompt (issue #24), and an empty Source is stripped by
 // omitempty, leaving the client no source at all rather than a wrong one.
 func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[` +
 		`{"kind":"text","text":"new worktree"}` +
 		`]}}}`)
@@ -368,7 +367,7 @@ func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
 // Daemon nudges carry no steering_source on disk, and must stay anonymous:
 // they render as the quiet collapsible divider, never as user speech.
 func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T) {
-	var entry hubcore.ReplayEntry
+	var entry transcript.Entry
 	raw := []byte(`{"turn":{"kind":"STEERING","message":{"role":"user","content":[` +
 		`{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}` +
 		`]}}}`)
@@ -386,9 +385,9 @@ func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T)
 }
 
 func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
-	checkpoint := appItemsFromReplayTurn("01TEST", "turn_4", 4, hubcore.ReplayTurn{
+	checkpoint := appItemsFromReplayTurn("01TEST", "turn_4", 4, schema.Turn{
 		Kind:    "CHECKPOINT",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
+		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
 	}, map[string]string{})
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
@@ -397,9 +396,9 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 		t.Fatalf("checkpoint item=%+v", got)
 	}
 
-	summary := appItemsFromReplayTurn("01TEST", "turn_5", 5, hubcore.ReplayTurn{
+	summary := appItemsFromReplayTurn("01TEST", "turn_5", 5, schema.Turn{
 		Kind:    "SUMMARY",
-		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
+		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
 	}, map[string]string{})
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)

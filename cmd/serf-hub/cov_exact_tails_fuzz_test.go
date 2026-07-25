@@ -139,11 +139,11 @@ func FuzzExactTails(f *testing.F) {
 		if pe, ok := past.Find("past"); ok {
 			_, _ = pastEntryTurns(pe)
 		}
-		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{Kind: string(schema.TurnUserInput), Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{
-			{Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{}},
+		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Kind: schema.TurnUserInput, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentImage, Image: &llm.ImageData{}},
 		}}}, map[string]string{})
-		_ = appItemsFromReplayTurn("s", "t", 0, hubcore.ReplayTurn{Kind: string(schema.TurnAssistant), Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{
-			{Kind: string(llm.ContentToolResult), ToolResult: &hubcore.ReplayToolResult{ImageData: []byte("x")}},
+		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ImageData: []byte("x")}},
 		}}}, map[string]string{})
 		_ = projectReplayInputImage(llm.ImageData{}, nil)
 		_ = projectReplayInputImage(llm.ImageData{Data: []byte("x")}, map[string]string{})

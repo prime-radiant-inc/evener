@@ -91,23 +91,23 @@ func FuzzThreadDataPass5(f *testing.F) {
 			_ = normalizeThreadListStatusFilter("active")
 
 		case 2:
-			parts := []hubcore.ReplayPart{
-				{Kind: string(llm.ContentText), Text: "answer"},
-				{Kind: string(llm.ContentThinking), Thinking: &hubcore.ReplayThinking{Text: "think"}},
-				{Kind: string(llm.ContentRedThinking)},
-				{Kind: string(llm.ContentImage), Image: &hubcore.ReplayImage{Data: []byte("image"), MediaType: "image/png", Name: "shot.png"}},
-				{Kind: string(llm.ContentAudio), Audio: &hubcore.ReplayMedia{URL: "audio"}},
-				{Kind: string(llm.ContentDocument), Document: &hubcore.ReplayMedia{URL: "doc", FileName: "a.txt"}},
-				{Kind: string(llm.ContentWebSearch), WebSearch: &hubcore.ReplayWebSearch{Query: "query"}},
-				{Kind: string(llm.ContentToolCall), ToolCall: &hubcore.ReplayToolCall{ID: "call", Name: "view", Arguments: json.RawMessage(`{}`)}},
-				{Kind: string(llm.ContentToolResult), ToolResult: &hubcore.ReplayToolResult{ToolCallID: "call", Name: "view", Content: "ok", ImageData: []byte("png")}},
+			parts := []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "answer"},
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "think"}},
+				{Kind: llm.ContentRedThinking},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte("image"), MediaType: "image/png"}},
+				{Kind: llm.ContentAudio, Audio: &llm.AudioData{URL: "audio"}},
+				{Kind: llm.ContentDocument, Document: &llm.DocumentData{URL: "doc", FileName: "a.txt"}},
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "query"}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call", Name: "view", Arguments: json.RawMessage(`{}`)}},
+				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call", Name: "view", Content: "ok", ImageData: []byte("png")}},
 			}
-			turn := hubcore.ReplayTurn{Kind: string(schema.TurnAssistant), Message: hubcore.ReplayMessage{Role: string(llm.RoleAssistant), Content: parts}}
+			turn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: parts}}
 			items := appItemsFromReplayTurn("id/escaped", "turn", 2, turn, map[string]string{})
 			if len(items) == 0 {
 				t.Fatal("replay projected no items")
 			}
-			_ = appItemsFromReplayTurn(id, "empty", 0, hubcore.ReplayTurn{}, nil)
+			_ = appItemsFromReplayTurn(id, "empty", 0, schema.Turn{}, nil)
 			_ = windowedReadResponse(appwire.Thread{Turns: []appwire.Turn{{ID: "one"}, {ID: "two"}}}, 1)
 			for _, params := range []appwire.ThreadReadParams{{}, {Ref: "bad"}, {Ref: "remote:x"}, {ThreadID: id}} {
 				_, _, _ = pastThreadForRead(cfg, params)
