@@ -253,9 +253,11 @@ stacks, and that one shows tabs (it can hold several).
       into dockview's `position: { referencePanel: pane.beside, direction: "right" }`. Today only
       `paneActions.ts:46` passes `beside`, so everything else lands in the main group by default.
       **Put the policy in `openPane`, not at the 21 call sites** — that is the DRY seam.
-- [ ] Decide what happens when the ONE main pane is closed: does the next pane from the right-hand
-      group get promoted into the main slot, or does the main slot sit empty? Empty-with-a-populated-
-      right-group looks broken; promotion is probably right. Say which you implemented and why.
+- [ ] **Closing the one main pane relaunches the welcome pane there** (Jesse's call — no promotion
+      from the right-hand group, no empty main slot). Note `DockHost.tsx:295` already does exactly
+      this shape (`if (panes.length === 0) openPane("welcome")`) but only at BOOT; the new rule is
+      per-close and scoped to the main group, not the whole workspace. Reuse rather than duplicate:
+      one predicate for "the main group is empty, put welcome in it".
 - [ ] Tab bar does not render for a group holding exactly one pane. Check dockview's own API for
       this before hand-rolling CSS — it may support it natively. With the rule above, the main group
       qualifies permanently and the right-hand group shows tabs whenever it has more than one.
@@ -263,10 +265,12 @@ stacks, and that one shows tabs (it can hold several).
       Verify the title is visible; don't leave an unlabelled pane.
 - [ ] `mobile/StackHost.tsx` is a separate single-pane stack (no dockview groups) — confirm this
       change doesn't touch it, and say so.
-- [ ] This interacts with C1: whatever the persisted layout restores must not violate the one-pane
-      rule. Do C1's diagnosis first, and check that a layout saved BEFORE this change (a main group
-      with several tabs, already in Jesse's localStorage) either migrates or is rejected cleanly
-      rather than restoring a state the app no longer allows.
+- [ ] **No migration for existing persisted layouts** (Jesse: "do not care about current local
+      storage"). Bump `LAYOUT_STORAGE_KEY` (`DockHost.tsx:20`, currently
+      `"serf.workspace.layout.v1"`) to `.v2` so a pre-rule layout is simply never read — cheaper and
+      more honest than a migration path for one user's stale value, and it leaves no code claiming to
+      handle a shape it was never tested against. Going forward, what C1 persists must satisfy the
+      one-pane rule; a restore that would violate it is a bug in C1, not a case to migrate.
 - [ ] No setting. Jesse picked the automatic behavior; a toggle is YAGNI until he asks.
 
 ### Task C3: older turns auto-load
