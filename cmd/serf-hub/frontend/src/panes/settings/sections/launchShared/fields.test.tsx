@@ -127,6 +127,25 @@ describe("ScalarField: a browsable path kind renders the path picker", () => {
     expect(await screen.findByRole("option", { name: /prompt\.md/ })).toBeTruthy();
   });
 
+  // outputFile is the pathKind of 3 of the 5 scalar path fields (traceFile,
+  // cpuProfile, exportATIFPath), and the kind is exactly what decides
+  // includeFiles: mapped to a directory kind, none of those three could ever
+  // point at an existing file to overwrite.
+  test("an outputFile field lists files, so an existing target can be picked", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ prefix: string; includeFiles?: boolean }> = [];
+    const fake = connectFakeClient();
+    fake.on("serf/paths/complete", (params) => {
+      calls.push(params);
+      return { data: ["/tmp/traces/", "/tmp/trace.jsonl"] };
+    });
+    render(<ScalarField option={pathOption()} layer="global" value="/tmp/trace.jsonl" onChange={() => {}} />);
+
+    await user.click(screen.getByLabelText("Trace file"));
+    expect(await screen.findByRole("option", { name: /trace\.jsonl/ })).toBeTruthy();
+    expect(calls).toEqual([{ prefix: "/tmp/", includeFiles: true }]);
+  });
+
   test("picking a file row reports it via onChange", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
