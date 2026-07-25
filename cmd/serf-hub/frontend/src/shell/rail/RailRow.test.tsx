@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -496,5 +499,90 @@ describe("roving-tabindex integration (Tree + RailRow)", () => {
     expect(rowATreeitem.tabIndex).toBe(0); // still Row A's roving tabindex...
     expect(rowBTreeitem.tabIndex).toBe(-1); // ...not silently moved to Row B
     expect(document.activeElement).toBe(rowATrigger); // and focus is back on Row A's own trigger
+  });
+});
+
+// --- the actions overlay the row's right edge -------------------------
+//
+// jsdom applies no stylesheet at all (vite.config.ts's test block enables
+// no `css` processing), so "hovering a row costs zero layout width" is not
+// assertable against a rendered tree here. These read Rail.module.css off
+// disk and pin the structure that makes it true - same mechanism as
+// styles/display-gates.test.ts and widgets/tooltip's own touch gate.
+describe("row actions overlay (Rail.module.css)", () => {
+  const RAIL_CSS = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "Rail.module.css"), "utf8");
+  // Block comments stripped so a class or token named only in prose can
+  // never satisfy an assertion (same discipline as token-contract.test.ts).
+  const CSS = RAIL_CSS.replace(/\/\*[\s\S]*?\*\//g, " ");
+
+  function ruleFor(selector: string): string | null {
+    const escaped = selector.replace(/[.[\]"^$*+?()|{}\\]/g, "\\$&");
+    const match = new RegExp(`(?:^|\\})\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(CSS);
+    return match ? match[1]! : null;
+  }
+
+  test("actions are taken out of flow and pinned to the row's right edge, so revealing them shifts nothing", () => {
+    const actionsRule = ruleFor(".actions");
+    expect(actionsRule).not.toBeNull();
+    expect(actionsRule).toMatch(/position:\s*absolute/);
+    expect(actionsRule).toMatch(/right:\s*0/);
+    // Absolute positioning only resolves against .row if .row is itself a
+    // containing block; without this the overlay escapes to the nearest
+    // positioned ancestor (the scrolling rail body, or the viewport).
+    expect(ruleFor(".row")).toMatch(/position:\s*relative/);
+  });
+
+  test("the reveal drives the actions container, not just its buttons - the mask has to hide too", () => {
+    // An opacity that lives on `.actions button` alone would leave the
+    // container's own masking background painted at rest, permanently
+    // covering the timestamp it sits on top of.
+    expect(ruleFor(".actions")).toMatch(/opacity:\s*0/);
+    const reveal = /([^{}]*)\{\s*opacity:\s*1;?\s*\}/g;
+    const revealRules = [...CSS.matchAll(reveal)].map((m) => m[1]!.trim());
+    const rule = revealRules.find((s) => s.includes(".row:hover"));
+    expect(rule, "row hover must reveal the actions").toBeTruthy();
+    // Split on commas and require each of the three reveal paths to TARGET
+    // `.actions` itself. A trailing descendant (`.row:hover .actions button`)
+    // fails these: the container - and so its mask - would stay at opacity 0.
+    const targets = rule!.split(",").map((s) => s.trim());
+    expect(targets).toEqual(
+      expect.arrayContaining([
+        ".row:hover .actions",
+        '[role="treeitem"]:focus .actions',
+        '.actions:has(button[aria-expanded="true"])',
+      ]),
+    );
+  });
+
+  test("the overlay masks what it covers with the rail's own surface token", () => {
+    const actionsRule = ruleFor(".actions");
+    // Same token .rail declares as its background - a row has no hover
+    // surface of its own (widgets/tree/tree.module.css paints none), so
+    // this is literally what shows through behind a row.
+    expect(ruleFor(".rail")).toMatch(/background:\s*var\(--surface-1\)/);
+    expect(actionsRule).toMatch(/background:[^;]*var\(--surface-1\)/);
+  });
+
+  test("the mask's leading edge fades in, so it never slices covered text mid-glyph", () => {
+    // A flat opaque background cuts whatever it covers at a hard vertical
+    // line - a half-rendered letter at the overlay's left edge reads as a
+    // rendering bug. A gradient ramps the mask in from transparent instead.
+    const actionsRule = ruleFor(".actions");
+    expect(actionsRule).toMatch(/linear-gradient\(\s*to right\s*,\s*transparent\s*,/);
+    // The buttons must sit past the ramp (padding) rather than on top of
+    // the partly-faded text the ramp exists to soften.
+    expect(actionsRule).toMatch(/padding-left:\s*var\(--space-\d\)/);
+  });
+
+  test("touch keeps the actions in flow beside the timestamp instead of permanently masking it", () => {
+    // Below the mobile breakpoint the actions are always visible (no hover
+    // to reveal them), so an overlay there would hide the age forever.
+    const media = /@media\s*\(max-width:\s*899px\)\s*\{([\s\S]*?)\n\}/g;
+    const blocks = [...CSS.matchAll(media)].map((m) => m[1]!);
+    const actionsBlock = blocks.find((b) => b.includes(".actions"));
+    expect(actionsBlock, "the 899px block must still address .actions").toBeTruthy();
+    expect(actionsBlock).toMatch(/position:\s*static/);
+    expect(actionsBlock).toMatch(/opacity:\s*1/);
+    expect(actionsBlock).toMatch(/background:\s*none/);
   });
 });
