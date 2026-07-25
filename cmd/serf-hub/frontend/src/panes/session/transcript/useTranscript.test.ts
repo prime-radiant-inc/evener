@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadTurnsListResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
@@ -235,8 +236,31 @@ test("loadOlderReportingError records a failed fetch's message instead of reject
     await flushUntil(() => result.current.olderError !== null);
   });
 
-  expect(result.current.olderError).toBe("network error");
+  expect(result.current.olderError).toBe("Couldn't load older turns: network error");
   expect(result.current.loadingOlder).toBe(false);
+});
+
+// Paging routes through the hub's transparent resume like every other
+// session call, so a cold session's dead spawner can be what rejects here.
+// The page never arrived, so the resume takes the whole sentence: a reader
+// told the transcript failed would go hunting in the transcript.
+test("a failed auto-resume names the resume, not the page fetch", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
+  await act(async () => {
+    await threadsStore.getState().ensureThread("ref_a");
+  });
+  fake.on("thread/turns/list", () =>
+    Promise.reject(new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" })),
+  );
+
+  const { result } = renderHook(() => useTranscript("ref_a"));
+  await act(async () => {
+    result.current.loadOlderReportingError();
+    await flushUntil(() => result.current.olderError !== null);
+  });
+
+  expect(result.current.olderError).toBe("Couldn't start this session: serf launch-check timed out");
 });
 
 test("a successful fetch leaves olderError null", async () => {
@@ -278,7 +302,7 @@ test("a retry after a failure clears the previous error before re-fetching", asy
     result.current.loadOlderReportingError();
     await flushUntil(() => result.current.olderError !== null);
   });
-  expect(result.current.olderError).toBe("network error");
+  expect(result.current.olderError).toBe("Couldn't load older turns: network error");
 
   fake.on("thread/turns/list", () => ({
     data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],

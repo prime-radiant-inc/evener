@@ -8,6 +8,7 @@ import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { STATUS_TONE, TasksPanel } from "./TasksPanel";
 
 const CAPABILITIES: ThreadCapabilities = {
@@ -69,6 +70,10 @@ const TASKS_DATA = [
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // The toast queue is module state and outlives cleanup(): without this, a
+  // toast an earlier test pushed is still on screen when a later test asserts
+  // a message is ABSENT, and the matcher finds the stale one.
+  resetToastStoreForTests();
 });
 
 afterEach(() => {
@@ -258,4 +263,49 @@ test("a generic fetch failure surfaces an error toast AND an inline error state"
   // the inline one separately from the toast region so this doesn't just
   // pass because the toast's own text happened to match.
   expect(screen.getAllByText(/couldn.t load tasks/i).length).toBeGreaterThanOrEqual(2);
+});
+
+// The hub resumes a cold session before it can list anything
+// (cmd/serf-hub/app_session_resume.go's withSessionResume). Both of this
+// panel's two reports have to give way together: a toast blaming the daemon
+// beside an inline heading blaming the task list is worse than either alone.
+test("a failed auto-resume names the resume in BOTH the toast and the inline state", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  });
+
+  render(
+    <>
+      <TasksPanel sessionRef="ref_a" model={testModel()} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  await screen.findByText("Couldn't start this session: serf launch-check timed out"); // the toast
+  expect(screen.getByText("Couldn't start this session")).toBeTruthy(); // the inline heading
+  expect(screen.getByText("serf launch-check timed out")).toBeTruthy(); // the inline detail
+  // The action's own name is gone from both, not merely absent from one.
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});
+
+// The toast drops the separator when a rejection carries no text of its own
+// (protocol/errors.ts). The inline half has to drop the detail line for the
+// same rejection, or one failure reads as a headline in the toast and a
+// headline plus a blank line in the panel. No <Toast/> here: it would put a
+// second "Couldn't load tasks" on screen and blunt the count below.
+test("a rejection with no text of its own shows the headline alone, with no empty detail line", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw new Error("");
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel()} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  const headline = await screen.findByText("Couldn't load tasks");
+  expect(headline.parentElement?.querySelectorAll("p")).toHaveLength(1);
 });

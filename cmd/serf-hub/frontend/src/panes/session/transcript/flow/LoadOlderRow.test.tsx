@@ -99,12 +99,22 @@ test("idle with more history to fetch, it still says what it is - never an empty
 });
 
 test("a failed fetch surfaces inline, announced, with a Retry - never silently", () => {
-  render(<LoadOlderRow onLoad={() => {}} loading={false} error="network error" />);
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't load older turns: network error" />);
 
   const alert = screen.getByRole("alert");
   expect(alert.textContent).toMatch(/couldn't load older turns/i);
   expect(alert.textContent).toMatch(/network error/);
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+
+// The row renders the sentence it is handed and adds nothing: useTranscript
+// composes it, because only useTranscript holds the rejection and can tell a
+// failed page fetch from the failed session resume behind it. A label re-added
+// here would talk over that.
+test("the row shows the caller's own sentence verbatim, adding no label of its own", () => {
+  render(<LoadOlderRow onLoad={() => {}} loading={false} error="Couldn't start this session: fork/exec serf" />);
+
+  expect(screen.getByRole("alert").textContent).toBe("Couldn't start this session: fork/exec serf");
 });
 
 test("Retry calls onLoad", () => {

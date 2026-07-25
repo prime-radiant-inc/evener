@@ -139,7 +139,10 @@ export function AskDock({ ref: sessionRef, onFallbackToComposer }: AskDockProps)
     if (outcome.outcome === "conflict") {
       onFallbackToComposer(outcome.text);
     } else if (outcome.outcome === "error") {
-      toasts.push("error", `Couldn't send answers: ${outcome.message}`);
+      // Already the finished sentence, labelled by the store - the one place
+      // that can still tell a failed send from the failed session resume
+      // behind it (askDockStore's SendBatchOutcome).
+      toasts.push("error", outcome.message);
     }
     // "sent"/"stale": nothing further to do here - a successful send's own
     // batch removal, and a stale click's own no-op, are both already

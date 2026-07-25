@@ -351,10 +351,32 @@ describe("sendBatch", () => {
 
     const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
 
-    expect(outcome).toEqual({ outcome: "error", message: "network hiccup" });
+    expect(outcome).toEqual({ outcome: "error", message: "Couldn't send answers: network hiccup" });
     const batch = askDockStore.getState().byRef.get("ref_a")?.batches[0];
     expect(batch?.id).toBe(batchId);
     expect(batch?.sending).toBe(false);
+  });
+
+  // The hub resumes a cold session before the answers ever reach a turn
+  // (cmd/serf-hub/app_session_resume.go's withSessionResume). Nothing was
+  // sent when the resume is what died, so the whole message gives way to it -
+  // naming the send would leave the reader retrying answers that never left.
+  test("a failed auto-resume names the resume, not the send", async () => {
+    const fake = connectFakeClient();
+    const batchId = await setupOneBatch(fake);
+    fake.on("turn/start", () => {
+      throw new WireError("fork/exec serf: no such file", -32014, { serfErrorInfo: "hubLaunch" });
+    });
+
+    const outcome = await askDockStore.getState().sendBatch("ref_a", batchId);
+
+    expect(outcome).toEqual({
+      outcome: "error",
+      message: "Couldn't start this session: fork/exec serf: no such file",
+    });
+    // Still retryable: the resume failing leaves the batch exactly where a
+    // network failure does.
+    expect(askDockStore.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
   });
 
   test("is a no-op (never calls turn/start) when the batch no longer exists - already resolved elsewhere", async () => {

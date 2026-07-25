@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { errorText, isHubLaunchError, sessionActionError, WireError } from "./errors";
+import { errorText, isHubLaunchError, sessionActionError, sessionActionHeadline, WireError } from "./errors";
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");
@@ -46,5 +46,17 @@ test("sessionActionError drops the separator when the failure carries no detail"
   expect(sessionActionError("Couldn't compact", new Error(""))).toBe("Couldn't compact");
   expect(sessionActionError("Couldn't compact", new WireError("", -32014, { serfErrorInfo: "hubLaunch" }))).toBe(
     "Couldn't start this session",
+  );
+});
+
+// A surface that renders the headline and the detail in separate slots (an
+// EmptyState's title/hint) needs the same substitution without the join, and
+// must not carry its own copy of the resume's wording.
+test("sessionActionHeadline picks the same headline sessionActionError would", () => {
+  const launch = new WireError("serf launch-check timed out", -32014, { serfErrorInfo: "hubLaunch" });
+  expect(sessionActionHeadline("Couldn't load tasks", launch)).toBe("Couldn't start this session");
+  expect(sessionActionHeadline("Couldn't load tasks", new Error("tasks boom"))).toBe("Couldn't load tasks");
+  expect(sessionActionError("Couldn't load tasks", launch)).toBe(
+    `${sessionActionHeadline("Couldn't load tasks", launch)}: serf launch-check timed out`,
   );
 });
