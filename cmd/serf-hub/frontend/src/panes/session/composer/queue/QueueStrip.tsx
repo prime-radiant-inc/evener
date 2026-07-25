@@ -219,11 +219,16 @@ export function QueueStrip({
           // asynchronously - the 10s timeout reaper (there is no other way
           // to observe that second case from this handler's own try/catch
           // below, which only wraps the initial await).
+          // The partial branch keeps its own wording rather than deferring to
+          // sessionActionError: it is QueuedDrainPartial by construction,
+          // never a launch failure, and its label records a step that already
+          // succeeded - the resume must not take it over and drop "Queued".
           onFailure: (err) => {
-            const message = errorText(err);
             toasts.push(
               "error",
-              isQueuedDrainPartial(err) ? `Queued, but drain failed: ${message}` : `Drain failed: ${message}`,
+              isQueuedDrainPartial(err)
+                ? `Queued, but drain failed: ${errorText(err)}`
+                : sessionActionError("Drain failed", err),
             );
           },
         },
