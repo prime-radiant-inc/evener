@@ -269,6 +269,10 @@ test("the prompt field opens at a size worth writing in, not one line", async ()
 // --- branch: a read-only HEAD readout on the directory row -----------------
 
 test("branch renders as a suffix on the directory row, not as an editable peer field", async () => {
+  // The readout's only source is the chosen directory's HEAD, so a working
+  // directory has to exist before there is a branch to show - an empty cwd
+  // correctly renders nothing. ?dir= is how every other test here seeds one.
+  window.history.pushState({}, "", "/new?dir=%2Fhome%2Fme%2Fapp");
   renderSpawn(readyClient());
   await settled();
 

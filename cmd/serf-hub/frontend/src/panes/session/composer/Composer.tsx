@@ -306,12 +306,15 @@ export function Composer({ ref }: ComposerProps) {
   const ended = ENDED_STATUSES.has(model.status.type);
   // A finished session can still be sent to when the source says so: the hub
   // advertises Send for an exited serf thread and auto-resumes it on the first
-  // message (that thread arrives as "notLoaded", which the availability table
-  // treats as plain-send). When the wire says otherwise - a genuinely closed
-  // session, whose availability is both-false - no card is rendered at all: an
-  // unusable field is worse than no field.
+  // message. The CAPABILITY is the authority here, not
+  // deriveSendQueueAvailability - that table answers "can this turn be sent to
+  // or queued behind right now", and it deliberately reports both-false for
+  // ended/closed, which is the wrong question for a follow-up that resumes the
+  // session first. Gating on it renders no card for exactly the sessions the
+  // hub says are resumable. When the wire really advertises no send, no card is
+  // rendered at all: an unusable field is worse than no field.
   const canCompose = availability.canSend || availability.canQueue;
-  const showFollowUpCard = ended && canCompose && model.capabilities.send;
+  const showFollowUpCard = ended && model.capabilities.send;
 
   function handleTextChange(event: { target: { value: string } }): void {
     updateText(event.target.value);
