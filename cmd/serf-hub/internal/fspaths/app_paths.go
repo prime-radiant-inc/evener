@@ -26,7 +26,11 @@ func noPathSuggestions() appwire.PathsCompleteResponse {
 func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) (appwire.PathsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
-		prefix = envvars.Home.Getenv()
+		// An empty prefix means "list HOME's children" (the client sends it for
+		// an empty field). The trailing separator is what carries that meaning
+		// below: a bare $HOME would instead filter HOME's SIBLINGS by HOME's
+		// own basename.
+		prefix = envvars.Home.Getenv() + string(filepath.Separator)
 	}
 	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
 		prefix = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(prefix, "~"))

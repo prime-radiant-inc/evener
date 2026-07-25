@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -30,18 +31,22 @@ func checkCompletePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Run("empty prefix expands to home", func(t *testing.T) {
-		// An empty prefix expands to HOME with no trailing slash, so the SUT
-		// lists home's PARENT filtered by home's basename — which matches home
-		// itself and nothing else. Pinning the exact result catches a regression
-		// where the empty prefix no longer maps to HOME (e.g. defaulting to "/").
+	t.Run("empty prefix lists home's children", func(t *testing.T) {
+		// The client sends an empty prefix for an empty field and the hub
+		// resolves it to HOME's CONTENTS (spec §3.4) - not to HOME's siblings,
+		// which is what a prefix of HOME with no trailing separator would mean.
 		resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		want := []string{home}
-		if len(resp.Data) != 1 || resp.Data[0] != home {
-			t.Fatalf("expected %v, got %v", want, resp.Data)
+		want := []string{
+			filepath.Join(home, "Alpha"),
+			filepath.Join(home, "Beta"),
+			filepath.Join(home, "Gamma"),
+			filepath.Join(home, "delta"),
+		}
+		if !reflect.DeepEqual(resp.Data, want) {
+			t.Fatalf("empty-prefix data = %v, want %v", resp.Data, want)
 		}
 	})
 
