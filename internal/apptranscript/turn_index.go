@@ -60,6 +60,7 @@ type ReadStats struct {
 	journalRecords        int64
 	rebuilt               bool
 	usageScans            int64
+	failureScans          int64
 }
 
 var (

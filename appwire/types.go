@@ -283,6 +283,24 @@ type SerfThread struct {
 	// earlier turns are repriced at current rates (the flat CumulativeUsage
 	// carries no per-model breakdown; identical to the legacy computation).
 	Cost string `json:"cost,omitempty"`
+	// FailedToolCalls is how many of this session's tool calls failed — the
+	// session-scale count of exactly what the transcript marks with a failure
+	// glyph (a tool result carrying an error, or a shell command that ran and
+	// exited nonzero). It answers "did anything go wrong in here" without
+	// reading the transcript, which a client cannot answer for itself: a
+	// windowed thread/read hands it a fraction of the session, and a count over
+	// that fraction would report a comforting "0 failed" for a session full of
+	// failures nobody has scrolled to.
+	//
+	// A pointer, because 0 and unknown are different claims and only one of
+	// them is good news. Zero means the whole transcript was read and nothing
+	// failed. Nil means nobody counted: the transcript is unreadable (a legacy
+	// format_version 1 file, or a missing one), or the producer does not derive
+	// the figure at all — the hub derives it only on its single-thread past-read
+	// paths, since a live session's transcript is still being written and the
+	// per-entry list sweeps cannot afford a scan per session. Consumers render
+	// nil as nothing, never as a fabricated zero.
+	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 	// AskPending mirrors StatusInfo.PendingAsk (Track A §2 ask-tiering) —
 	// true while an ask_user question is unanswered. Additive: absent on old
 	// daemons and Codex threads, decoding as false.

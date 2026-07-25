@@ -135,6 +135,19 @@ export interface ThreadModel {
   // sets it and the reducer's ...model spread preserves it; no live push, so
   // it refreshes on the next thread/read (e.g. a reconnect re-hydrate).
   cost?: string | null;
+  // failedToolCalls is how many of this session's tool calls failed, counted
+  // SERVER-SIDE over the whole transcript (wire: SerfThread.FailedToolCalls).
+  // It is not derivable here: thread/read windows turns, so a count over
+  // model.turns covers only the loaded suffix, and a "0 failed" from a partial
+  // window is the very misreading the figure exists to prevent.
+  //
+  // undefined means nobody counted — an unreadable transcript, or a producer
+  // that does not derive it (today the hub derives it only for a session it
+  // reads from disk; a live session's transcript is still being written). A
+  // real 0 means the whole transcript was read and nothing failed. Consumers
+  // must render BOTH as nothing: absent is unknown, and zero is not news.
+  // Snapshot-only like usage/cost/workMillis; no live push.
+  failedToolCalls?: number;
   workMillis: number;
   // activeTurnStartedAt is undefined when no turn is active (an ISO string,
   // like every other timestamp on this model, converted from the wire's
