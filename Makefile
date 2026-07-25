@@ -167,7 +167,7 @@ test-short:
 # its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
 # unaffected by it, so `make test` owns the web stream instead of paying it twice.
 test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
+	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= $(MEMCAP) scripts/run-module-tests.sh -race -short -count=1
 
 # e2e-cover measures END-TO-END coverage of the real serf/serf-tui binaries via
 # `go build -cover` + GOCOVERDIR — the main()/CLI/dispatch/serve paths unit tests

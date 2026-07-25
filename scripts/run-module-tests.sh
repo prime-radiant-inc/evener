@@ -67,6 +67,10 @@ fi
 # Package/test parallelism controls for heavyweight modules. Explicit empty
 # values mean "don't pass the flag" so go test uses its defaults; the -race gate
 # sets AGENT_PARALLEL empty to avoid oversubscribing few-core CI.
+# AGENT_SHARDS=0 runs the agent module as a single `go test` invocation instead of
+# the sharded split. The -race gate uses it: under -race everything is ~10x
+# slower and CPU-bound, so two shards just oversubscribe each other.
+AGENT_SHARDS=${AGENT_SHARDS:-1}
 ROOT_P=${ROOT_P-6}
 AGENT_PARALLEL=${AGENT_PARALLEL-32}
 AGENT_P=${AGENT_P-4}
@@ -99,6 +103,25 @@ run_module() {
 		done < <(go list ./...)
 		/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${packages[@]}"
 		return
+	fi
+	if [ "$m" = "agent" ] && [ "$AGENT_SHARDS" -ne 0 ]; then
+		# The agent module's wall time is dominated by its top-level package, one
+		# binary holding ~3550 tests whose git-driving and CPU-bound halves want
+		# opposite -parallel settings. agent-test-shards.sh runs those halves as
+		# two concurrently-scheduled invocations of one prebuilt binary (~32s ->
+		# ~26s). Its subpackages are small and already concurrent, so they run
+		# normally alongside.
+		local shardStatus=0
+		(cd .. && ./scripts/agent-test-shards.sh $flags) || shardStatus=$?
+		local subpkgs=()
+		local pkg
+		while IFS= read -r pkg; do
+			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
+		done < <(go list ./...)
+		if [ "${#subpkgs[@]}" -gt 0 ]; then
+			/usr/bin/time -p go test $flags -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+		fi
+		return "$shardStatus"
 	fi
 	/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" ./...
 }

@@ -66,9 +66,7 @@ export function TranscriptSection() {
           Round timings and Token counts, which annotate turns rather than
           show a system event. What every row here has in common is that it
           adds optional detail to the transcript. */}
-      <p className={CLASS.intro}>
-        Optional transcript detail. Each browser keeps its own settings.
-      </p>
+      <p className={CLASS.intro}>Optional transcript detail. Each browser keeps its own settings.</p>
       {TOGGLES.map((toggle) => (
         <div key={toggle.key} className={CLASS.row}>
           <Switch
