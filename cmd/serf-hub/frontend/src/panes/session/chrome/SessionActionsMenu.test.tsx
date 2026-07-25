@@ -10,8 +10,8 @@ import { registerPane } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 
 // A minimal, test-only "session" pane registration - real registerPane/

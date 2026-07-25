@@ -7,8 +7,8 @@ import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ModelListResponse, ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
-import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Toast } from "../../../widgets";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { ModelSwitch } from "./ModelSwitch";
 import rawStyles from "./modelswitch.module.css";
 
