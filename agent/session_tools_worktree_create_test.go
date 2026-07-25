@@ -62,6 +62,11 @@ func TestMain(m *testing.M) {
 		}
 	}
 
+	// The worktree tests reach git through `sh -c "git …"`, so PATH order decides
+	// which git binary every call pays for. See prependFastGitToPath: no-op off
+	// macOS and whenever the fast path cannot be resolved safely.
+	fastGitDirForTest = prependFastGitToPath()
+
 	testHome, err := os.MkdirTemp("", "serf-agent-home-*")
 	if err == nil {
 		_ = os.Setenv("HOME", testHome)
