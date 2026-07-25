@@ -32,8 +32,10 @@ the area they exercise.
   are detected against the harness list and cleared with an inline
   notice; sweep also drops sibling per-project blobs (katas `bvfh`,
   `hnvv`).
-- `spawn-empty-prompt-blocked.md` — empty/whitespace prompt shows
-  inline error, no spawn POST (kata `xj9j`).
+- `spawn-empty-prompt-starts-dormant.md` — empty/whitespace prompt
+  starts a dormant session: `input: []` on the wire, no turn, no
+  error (kata `ytpa`; replaces the old `spawn-empty-prompt-blocked.md`,
+  kata `xj9j`).
 - `spawn-picker-enter-noop.md` — pressing Enter inside the model
   picker search selects first match and prevents form submit (kata
   `t13x`).
