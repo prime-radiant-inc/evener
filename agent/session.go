@@ -307,12 +307,8 @@ type Session struct {
 	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
-	// pendingHookTurns holds HOOK_COMPLETED turns produced before the
-	// transcript writer existed (SessionStart hooks run during construction).
-	// Drained by flushPendingHookTurns from emitSessionStartEnvelope.
-	pendingHookTurns   []schema.Turn
-	pendingMCPWarnings []events.WarningData
-	hookRunner         *hooks.Runner
+	pendingMCPWarnings  []events.WarningData
+	hookRunner          *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands,
 	// namespaced "plugin-name:command-name" like skills. Looked up by
 	// expandSlashCommand via plugin.ResolveCommand.
@@ -423,8 +419,15 @@ type Session struct {
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
 
-	// transcript writer (nil when StateDir is empty)
+	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer
+	// transcriptReady records that attachTranscript has run, i.e. that the
+	// session has finished deciding whether it has a transcript at all. Until
+	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a
+	// nil writer AFTER the transition is a session that will never have one,
+	// and its turns are dropped rather than accumulated. Guarded by s.mu.
+	transcriptReady        bool
+	pendingTranscriptTurns []schema.Turn
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition
@@ -989,14 +992,81 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.mu.Lock()
 	s.history = append(s.history, live)
 	s.mu.Unlock()
-	if err := s.transcript.Append(persisted); err != nil {
+	if err := s.writeTranscript(persisted); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+}
+
+// The transcript writer cannot exist for the whole of a session's life. Its
+// header carries the rendered system prompt and the agent's starting task list,
+// so it can only be opened once initSessionState has loaded plugins, skills and
+// tools — and SessionStart hooks run inside that same window, producing turns
+// while there is still nowhere to put them. transcript.Writer.Append is nil-safe
+// (a session with no state directory has to be able to write without every call
+// site nil-checking), which makes such a write indistinguishable from a
+// successful one: it returns nil and the turn is gone. That is how kata qm9y
+// lost every SessionStart hook exit with a green test suite.
+//
+// writeTranscript and writeTranscriptDurable are the only two doors to the
+// writer, so no call site has to know which side of that window it is on. A turn
+// written before attachTranscript is held; everything after goes straight
+// through. Both report a held turn as written (nil error), which is accurate —
+// it has not failed, it has not been flushed yet.
+
+// writeTranscript records a turn in the durable transcript, holding it if the
+// session has not yet decided whether it has one.
+func (s *Session) writeTranscript(t schema.Turn) error {
+	if s.holdTurnUntilTranscriptReady(t) {
+		return nil
+	}
+	return s.transcript.Append(t)
+}
+
+// writeTranscriptDurable is writeTranscript with an fsync before returning.
+func (s *Session) writeTranscriptDurable(t schema.Turn) error {
+	if s.holdTurnUntilTranscriptReady(t) {
+		return nil
+	}
+	return s.transcript.AppendDurable(t)
+}
+
+// holdTurnUntilTranscriptReady queues t and reports true when the session has
+// not yet reached attachTranscript. Reading transcriptReady under the lock also
+// orders the caller's subsequent unlocked read of s.transcript against the
+// write attachTranscript makes under the same lock.
+func (s *Session) holdTurnUntilTranscriptReady(t schema.Turn) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.transcriptReady {
+		return false
+	}
+	s.pendingTranscriptTurns = append(s.pendingTranscriptTurns, t)
+	return true
+}
+
+// attachTranscript installs the session's transcript writer and releases the
+// turns recorded before it existed. It is the single readiness transition and
+// must run on every construction path, including the ones that produce no
+// writer: w is nil for a session with no state directory and for one whose
+// writer could not be opened, and marking those ready is what stops their turns
+// accumulating for the session's lifetime.
+func (s *Session) attachTranscript(w *transcript.Writer) {
+	s.mu.Lock()
+	s.transcript = w
+	s.transcriptReady = true
+	held := s.pendingTranscriptTurns
+	s.pendingTranscriptTurns = nil
+	s.mu.Unlock()
+	for _, t := range held {
+		if err := w.Append(t); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		}
 	}
 }
 
 func (s *Session) appendTurnDurably(kind schema.TurnKind, m llm.Message) error {
 	t := schema.NewTurn(kind, m)
-	if err := s.transcript.AppendDurable(t); err != nil {
+	if err := s.writeTranscriptDurable(t); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		return err
 	}
@@ -1041,7 +1111,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
-	if err := s.transcript.Append(t); err != nil {
+	if err := s.writeTranscript(t); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }

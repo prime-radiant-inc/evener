@@ -281,9 +281,7 @@ func isSessionNameCompactionTurn(turn schema.Turn) bool {
 }
 
 func (s *Session) handleCompactionTurn(t schema.Turn) {
-	if s.transcript != nil {
-		s.reportCompactionTranscriptAppend(s.transcript.Append(t))
-	}
+	s.reportCompactionTranscriptAppend(s.writeTranscript(t))
 	if isSessionNameCompactionTurn(t) {
 		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}

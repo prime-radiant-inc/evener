@@ -37,9 +37,6 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emitDiagnosticWarning(w)
 	}
 	s.pendingMCPWarnings = nil
-	// SessionStart hook completions collected before the transcript writer
-	// existed (kata qm9y).
-	s.flushPendingHookTurns()
 	for _, src := range promptSources {
 		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
@@ -141,35 +138,10 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
 	turn.Hook = &info
 
-	// SessionStart hooks run inside initSessionState, which completes BEFORE
-	// the transcript writer is created — a nil writer's Append is a silent
-	// no-op, so recording here directly would lose exactly the hooks that
-	// open a session. Hold them until emitSessionStartEnvelope, the same
-	// point the plugin/hook-config diagnostics collected during construction
-	// are released. Hooks run in parallel goroutines, hence the lock.
-	s.mu.Lock()
-	if s.transcript == nil {
-		s.pendingHookTurns = append(s.pendingHookTurns, turn)
-		s.mu.Unlock()
-		return
-	}
-	s.mu.Unlock()
-
+	// SessionStart hooks run inside initSessionState, before the transcript
+	// writer exists (kata d4es). recordTurn holds the turn until it does; no
+	// buffering is needed here.
 	s.recordTurn(turn, turn)
-}
-
-// flushPendingHookTurns records the hook completions collected before the
-// transcript writer existed. A session with no state directory never gets a
-// writer at all; Append is nil-safe, so those drain harmlessly here rather
-// than accumulating for the session's lifetime.
-func (s *Session) flushPendingHookTurns() {
-	s.mu.Lock()
-	pending := s.pendingHookTurns
-	s.pendingHookTurns = nil
-	s.mu.Unlock()
-	for _, turn := range pending {
-		s.recordTurn(turn, turn)
-	}
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

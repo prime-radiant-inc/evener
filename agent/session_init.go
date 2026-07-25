@@ -243,7 +243,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 
-	// Create transcript writer if state persistence is enabled.
+	// Create the transcript writer if state persistence is enabled. Its header
+	// carries s.cachedSystemPrompt and the starting task list, so it cannot be
+	// opened any earlier than this — the SessionStart hooks that initSessionState
+	// just ran had nowhere to write (kata d4es). attachTranscript below is what
+	// releases what they recorded, and it runs on every path, writer or not.
+	var tw *transcript.Writer
 	if s.stateDir != "" {
 		var agentTasks []task.Task
 		if s.taskStore != nil {
@@ -264,7 +269,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			AgentTasks:       agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		var tw *transcript.Writer
 		var twErr error
 		if fault := s.sessionInitFault("new_transcript"); fault != nil {
 			twErr = fault
@@ -277,8 +281,8 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
 		}
-		s.transcript = tw
 	}
+	s.attachTranscript(tw)
 
 	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
@@ -626,10 +630,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		})
 	}
 
-	// Open or create transcript for appending.
+	// Open or create transcript for appending. Resume defers its SessionStart
+	// hooks to the first user turn, so nothing has been recorded yet — but
+	// attachTranscript still runs on both branches so the readiness gate that
+	// writeTranscript consults is closed exactly once, on every path.
+	var tw *transcript.Writer
 	if s.stateDir != "" {
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw := resumeTranscript
+		tw = resumeTranscript
 		if tw == nil {
 			hdr := transcript.Header{
 				SessionID:        s.id,
@@ -658,8 +666,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
 		}
-		s.transcript = tw
 	}
+	s.attachTranscript(tw)
 
 	if !restoreCfg.deferRestoreSideEffects {
 		if err := s.restoreSideEffect("retry_watch_sends", func() error { return s.retryRestoredPendingWatchSends(context.Background()) }); err != nil {

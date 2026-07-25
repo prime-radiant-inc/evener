@@ -172,13 +172,11 @@ func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []string) 
 func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 	for _, record := range records {
 		appendTurn := s.cfg.testOnly.appendCompactionTurn
-		if appendTurn == nil && s.transcript != nil {
-			appendTurn = s.transcript.Append
+		if appendTurn == nil {
+			appendTurn = s.writeTranscript
 		}
-		if appendTurn != nil {
-			if err := appendTurn(record.turn); err != nil {
-				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			}
+		if err := appendTurn(record.turn); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text})
 	}
