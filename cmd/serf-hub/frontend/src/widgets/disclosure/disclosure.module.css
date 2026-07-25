@@ -18,8 +18,7 @@
 .chevron {
   display: inline-flex;
   color: var(--ink-low);
-  font-size: 10px;
-  transition: transform var(--motion-duration-overlay) ease;
+  font-size: var(--font-size-caption);
 }
 
 .chevron[data-open="true"] {
@@ -28,4 +27,35 @@
 
 .body {
   margin-top: var(--space-1);
+}
+
+/* Opening a disclosure is a small acknowledgement, not a performance: the
+ * chevron turns and the body fades up. Both run at --motion-duration-overlay
+ * (120ms) with --motion-easing-standard - the app's only three motion values
+ * are attention/overlay/easing, and overlay is the one that means "a surface
+ * appeared". No slide, no scale, no height animation (a height transition needs
+ * a measured pixel target, which would cost a layout read per open for a 120ms
+ * effect - and this widget's body is only mounted while open, so there is no
+ * from-height to transition out of).
+ *
+ * Gated behind prefers-reduced-motion: no-preference, matching the pattern in
+ * widgets/cadence/cadence.module.css - a reader who asked for less motion gets
+ * an instant open. */
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+
+  .body {
+    animation: disclosure-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+@keyframes disclosure-body-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

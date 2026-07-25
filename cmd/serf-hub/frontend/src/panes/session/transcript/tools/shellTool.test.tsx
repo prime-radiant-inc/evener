@@ -23,10 +23,43 @@ test("summary: leads with the command, no result suffix on a clean run", () => {
   expect(d.summary(withCommand("go test ./...", { output: out }))).toBe("Ran go test ./...");
 });
 
-test("summary: a nonzero exit parsed from the output footer is appended", () => {
+// A2: the exit code stops being the summary's headline. The failure glyph
+// (failed()) announces a nonzero exit; the number itself moves to detail().
+
+test("summary: a nonzero exit is NOT in the summary text - the glyph carries that signal", () => {
   const d = toolRendererFor("shell");
   const out = "some output\n[exit 1]";
-  expect(d.summary(withCommand("false", { output: out }))).toBe("Ran false · exit 1");
+  expect(d.summary(withCommand("false", { output: out }))).toBe("Ran false");
+});
+
+test("failed: true for a nonzero exit parsed from the output footer", () => {
+  const d = toolRendererFor("shell");
+  expect(d.failed?.(withCommand("false", { output: "some output\n[exit 1]" }))).toBe(true);
+});
+
+test("failed: false on a clean exit - success reserves no glyph", () => {
+  const d = toolRendererFor("shell");
+  expect(d.failed?.(withCommand("true", { output: "x\n[exit 0]" }))).toBe(false);
+});
+
+test("failed: false when no exit code is detectable at all (still running/backgrounded)", () => {
+  const d = toolRendererFor("shell");
+  expect(d.failed?.(withCommand("sleep 10", { output: "still going" }))).toBe(false);
+});
+
+test("detail: the exit code stays reachable as the row's hover title", () => {
+  const d = toolRendererFor("shell");
+  expect(d.detail?.(withCommand("false", { output: "x\n[exit 1]" }))).toBe("exit 1");
+});
+
+test("detail: a clean exit still reports its code (0 is a fact, not an absence)", () => {
+  const d = toolRendererFor("shell");
+  expect(d.detail?.(withCommand("true", { exitCode: 0 }))).toBe("exit 0");
+});
+
+test("detail: undefined when no exit code exists at all", () => {
+  const d = toolRendererFor("shell");
+  expect(d.detail?.(withCommand("sleep 10", { output: "still going" }))).toBeUndefined();
 });
 
 test("summary: no footer at all (still running, or backgrounded) shows no exit suffix", () => {
@@ -34,14 +67,15 @@ test("summary: no footer at all (still running, or backgrounded) shows no exit s
   expect(d.summary(withCommand("sleep 10", { output: "partial output so far" }))).toBe("Ran sleep 10");
 });
 
-test("summary: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
+test("detail: also recognizes the buffered-execenv fallback's differently-shaped trailer (no brackets)", () => {
   // agent/session_tools_shell.go's runBufferedShell path (used when the
   // execution environment doesn't support streaming) has no StateResult/
   // bracketed footer at all - it ends in a bare
   // "exit_code=N duration_ms=N timed_out=bool" line instead.
   const d = toolRendererFor("shell");
   const out = "stdout here\nexit_code=2 duration_ms=15 timed_out=false";
-  expect(d.summary(withCommand("false", { output: out }))).toBe("Ran false · exit 2");
+  expect(d.detail?.(withCommand("false", { output: out }))).toBe("exit 2");
+  expect(d.failed?.(withCommand("false", { output: out }))).toBe(true);
 });
 
 test("summary: a long command is clipped", () => {
@@ -91,16 +125,18 @@ test("autoExpand: false when no exit code is detectable at all (no false failure
 // output-footer text heuristic above stays only as the old-daemon fallback
 // (every test above carries no exitCode, so those now exercise that fallback).
 
-test("summary: uses the typed exitCode directly, with no output footer to parse", () => {
+test("detail: uses the typed exitCode directly, with no output footer to parse", () => {
   const d = toolRendererFor("shell");
-  expect(d.summary(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe("Ran make test · exit 2");
+  expect(d.detail?.(withCommand("make test", { exitCode: 2, output: "boom" }))).toBe("exit 2");
 });
 
-test("summary: the typed exitCode wins over a conflicting output footer", () => {
+test("detail/failed: the typed exitCode wins over a conflicting output footer", () => {
   const d = toolRendererFor("shell");
   // Typed 0 (clean) must not be overridden by a stray bracketed "[exit 5]" in
   // the command's own output text — the structured field is authoritative.
-  expect(d.summary(withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" }))).toBe("Ran make test");
+  const clean = withCommand("make test", { exitCode: 0, output: "done\n[exit 5]" });
+  expect(d.detail?.(clean)).toBe("exit 0");
+  expect(d.failed?.(clean)).toBe(false);
 });
 
 test("autoExpand: true from a typed nonzero exitCode with no footer text", () => {
@@ -125,12 +161,24 @@ test("the command reads straight from a settled item's own argumentsJSON (the mo
   expect(d.summary(settled)).toBe("Ran echo settled");
 });
 
-test("body renders the command header and the output", () => {
+test("body renders the output only - it does NOT repeat the command the row already named", () => {
   const d = toolRendererFor("shell");
   const Body = d.body!;
-  render(<Body item={withCommand("echo hi", { output: "hi\n[exit 0]" })} live={false} />);
-  expect(screen.getByText("$ echo hi")).toBeTruthy();
-  // "hi" alone would also match the header's own "echo hi" text - assert on
-  // the output-specific footer text instead to target the output body.
+  const { container } = render(<Body item={withCommand("echo hi", { output: "hi\n[exit 0]" })} live={false} />);
   expect(screen.getByText(/\[exit 0\]/)).toBeTruthy();
+  expect(container.textContent).not.toContain("$ echo hi");
+});
+
+test("body renders nothing for a command with no output at all", () => {
+  const d = toolRendererFor("shell");
+  const Body = d.body!;
+  const { container } = render(<Body item={withCommand("true", { output: "" })} live={false} />);
+  expect(container.textContent).toBe("");
+});
+
+test("detail carries the UNTRUNCATED command, which the summary clips", () => {
+  const d = toolRendererFor("shell");
+  const longCmd = "x".repeat(100);
+  expect(d.summary(withCommand(longCmd))).toBe(`Ran ${"x".repeat(80)}…`);
+  expect(d.detail?.(withCommand(longCmd))).toBe(`$ ${longCmd}`);
 });

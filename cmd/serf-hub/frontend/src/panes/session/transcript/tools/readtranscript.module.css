@@ -1,0 +1,8 @@
+/* The read's own honest report that it dropped turns - a caption above the
+ * content, quiet: it describes the read, not the conversation. */
+.elision {
+  margin-bottom: var(--space-1);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  color: var(--ink-low);
+}

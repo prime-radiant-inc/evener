@@ -1,17 +1,24 @@
+/* A hairline frame on --surface-1 - no heavy fill, no shadow. Measured in the
+ * light theme --surface-1 is the same #FFFFFF as the pane behind it, so the
+ * edge is what separates the block from the prose; that is deliberate (the
+ * block should read as framed text, not as a slab). */
 .root {
+  position: relative;
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
-  background: var(--surface-0);
-  overflow: hidden;
+  background: var(--surface-1);
 }
 
+/* Not a band across the block: an overlay strip in its top-right corner, out
+ * of the content flow, so the block's whole height is content. */
 .header {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  z-index: 1;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-1) var(--space-2);
-  border-bottom: 1px solid var(--edge);
-  background: var(--surface-1);
+  gap: var(--space-2);
 }
 
 .language {
@@ -20,23 +27,45 @@
   font-size: var(--font-size-caption);
 }
 
-.copyWrapper {
-  /* keeps the copy button pinned to the header's trailing edge whether or
-   * not a language label is present, without an empty placeholder element */
+/* At rest the copy control is nearly invisible so it never competes with the
+ * output; it comes forward on hover over the block, and always when focused
+ * (keyboard users get no hover). opacity, not display/visibility, keeps it in
+ * the accessibility tree and reachable by tab at all times. */
+.copy {
   flex: none;
-  margin-left: auto;
+  opacity: 0.35;
 }
 
+.root:hover .copy,
+.copy:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .copy {
+    transition: opacity var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+/* Long lines WRAP; the block never scrolls horizontally - see the component's
+ * own doc comment for why (and for why DiffBlock keeps its scroller). The extra
+ * right padding leaves room for the inset copy control so a first line of output
+ * never runs under it. */
 .pre {
   margin: 0;
-  padding: var(--space-3) var(--space-4);
-  overflow-x: auto;
+  padding: var(--space-2) var(--space-3);
+  padding-right: var(--space-6);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
+/* --font-size-caption, not --font-size-body: an expanded tool body must not read
+ * LARGER than the transcript rows around it, which are --font-size-ui (13px);
+ * body is 14px (A4). */
 .code {
   color: var(--ink-hi);
   font-family: var(--font-mono);
-  font-size: var(--font-size-body);
+  font-size: var(--font-size-caption);
   line-height: var(--line-height-body);
 }
 

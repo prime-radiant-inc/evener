@@ -400,6 +400,7 @@ const SEMANTIC_USE_ALLOWLIST = [
   "dialog", // danger footer
   "formrow", // error-state left border + message text (wave 7)
   "collectioneditor", // inline add-validation error text (wave 7)
+  "failureglyph", // the ✗ that marks a failure - the hue IS the content
 ];
 
 const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;

@@ -5,18 +5,18 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
-import { Chip } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
+import { ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolRendererFor } from "./toolRenderers";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
-  summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
+  body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
 
@@ -54,7 +54,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // owned by any one descriptor - rendered here, once, so every current and
   // future tool gets it for free rather than each body wiring it in itself.
   const hasOutputImages = (item.outputImages?.length ?? 0) > 0;
-  const failed = toolFailed(item);
+  // Two independent failure signals, OR'd: the generic wire one (error text /
+  // honest status) and the descriptor's own (a shell command that ran and
+  // exited nonzero is a clean tool RESULT the reader still needs marked).
+  const failed = toolFailed(item) || (descriptor.failed?.(item) ?? false);
   const hasErrorText = item.error !== undefined && item.error !== "";
 
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
@@ -99,8 +102,15 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   if (!Body && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
-        <span className={CLASS.summary}>{descriptor.summary(item)}</span>
-        {openBesideButton}
+        <ToolRow
+          summary={descriptor.summary(item)}
+          purpose={item.description}
+          failed={false}
+          expandable={false}
+          expanded={false}
+          trailing={openBesideButton}
+          title={descriptor.detail?.(item)}
+        />
       </div>
     );
   }
@@ -118,29 +128,30 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       data-attention={failed ? "error" : undefined}
       open={expanded}
     >
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable (implicit role="button", Enter/Space already synthesize this same click) */}
-      <summary
-        className={CLASS.summary}
-        onClick={(e) => {
-          // Fully controlled rather than relying on <details>' own native
-          // toggle: preventDefault stops the browser from also flipping
-          // `open` itself, so the disclosureStore stays the single source of
-          // truth. toggleDisclosure writes an explicit store entry against
-          // this id, so the user's own choice wins over autoDefault (the
-          // fallback) from here on AND survives a remount (yt2q).
-          e.preventDefault();
-          toggleDisclosure(item.id, autoDefault);
-        }}
-      >
-        {/* Only failure earns a glyph - a danger-toned marker, colour spent on
-            the one thing that needs the eye (parity §11:261). */}
-        {failed && <Chip tone="danger">Failed</Chip>}
-        {descriptor.summary(item)}
-        {openBesideButton}
-      </summary>
-      {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-      {Body && <Body item={item} live={live} />}
-      <ImageGallery images={item.outputImages} />
+      <ToolRow
+        summary={descriptor.summary(item)}
+        purpose={item.description}
+        failed={failed}
+        expandable
+        expanded={expanded}
+        // toggleDisclosure writes an explicit store entry against this id, so
+        // the user's own choice wins over autoDefault (the fallback) from here
+        // on AND survives a remount (yt2q).
+        onToggle={() => toggleDisclosure(item.id, autoDefault)}
+        trailing={openBesideButton}
+        title={descriptor.detail?.(item)}
+      />
+      {/* The expanded content is one wrapper, so the open transition (A6) and
+          the row-to-body spacing live in one rule rather than per-descriptor.
+          Rendered only when open: an unmounted body can animate in on the next
+          open, and a collapsed row costs nothing to render. */}
+      {expanded && (
+        <div className={CLASS.body} data-testid="tool-call-body">
+          {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
+          {Body && <Body item={item} live={live} />}
+          <ImageGallery images={item.outputImages} />
+        </div>
+      )}
     </details>
   );
 }, ignoringTurn);

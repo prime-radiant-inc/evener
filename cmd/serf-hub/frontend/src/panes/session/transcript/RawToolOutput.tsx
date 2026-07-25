@@ -1,16 +1,14 @@
-// RawToolOutput is the tool-renderer registry's default body (T1 ships
-// only this fallback; T3 registers real per-tool bodies - read/grep/shell/
-// diff/...). Plain raw output text, no formatting/truncation - exactly
-// "fallback body = raw output" per the wave-4 plan.
+// RawToolOutput is the tool-renderer registry's default body: the output of a
+// tool with no descriptor of its own. It renders through CodeBlock so the
+// fallback body carries the identical weight, wrapping, font size and inset
+// copy control as every descriptor body that already uses it (A4) - a
+// same-shaped block is the whole point of a fallback.
 
-import { requireClass } from "../../../widgets/internal/requireClass";
-import styles from "./rawtooloutput.module.css";
+import { CodeBlock } from "../../../widgets";
 import type { ToolRenderProps } from "./toolRenderers";
 
-const CLASS = {
-  output: requireClass(styles.output, "rawtooloutput.module.css", "output"),
-};
-
 export function RawToolOutput({ item }: ToolRenderProps) {
-  return <pre className={CLASS.output}>{item.output ?? ""}</pre>;
+  const output = item.output ?? "";
+  if (output === "") return null;
+  return <CodeBlock text={output} copyLabel="Copy output" />;
 }
