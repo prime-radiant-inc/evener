@@ -52,10 +52,6 @@ the area they exercise.
 - `reconnect-auto-resume.md` — killing the daemon and sending a
   new turn transparently spawns a fresh daemon and replays (katas
   `e465`, `t65c`, `ws5f`, `xcas`).
-- `reconnect-button-source-hub.md` — kill -9 mid-stream surfaces a
-  `source=hub` diagnostic; the card shows a `Reconnect & retry`
-  button (not `Retry turn`) that re-issues the turn through the
-  same auto-resume path (kata `0e7h`).
 - `meta-flush-on-completion.md` — `meta.json` `turn_count` tracks
   committed exchanges across happy + error exits (katas `3tgv`,
   `ztne`, `wnfz`).

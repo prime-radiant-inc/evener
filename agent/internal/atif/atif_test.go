@@ -1330,3 +1330,174 @@ func TestConvertToATIF_TurnSystem(t *testing.T) {
 		t.Errorf("Message = %q", step.Message)
 	}
 }
+
+// TestConvertToATIF_TurnFailure pins the property kata 3d56 was filed about:
+// an exported trajectory must be able to say the run failed. A TURN_FAILURE
+// turn that produced no step at all exported as a run that simply stopped.
+func TestConvertToATIF_TurnFailure(t *testing.T) {
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	header := transcript.Header{SessionID: "sess-fail", Model: "gpt-5.5"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:      schema.TurnFailure,
+			Message:   llm.System("provider error (status=529): overloaded"),
+			Timestamp: ts,
+			Error: &schema.TurnFailureInfo{
+				Message: "provider error (status=529): overloaded",
+				Source:  "provider",
+				Title:   "Provider error",
+				Hint:    "Retry the turn.",
+				Cause: &schema.TurnFailureCause{
+					Kind:     "provider",
+					Provider: "anthropic",
+					Model:    "claude-opus-4-6",
+					Status:   529,
+				},
+			},
+		}},
+	}
+
+	traj := Convert(header, entries)
+
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1 — a failed turn must not vanish from the trajectory", len(traj.Steps))
+	}
+	step := traj.Steps[0]
+	if step.Source != "system" {
+		t.Errorf("Source = %q, want %q", step.Source, "system")
+	}
+	if step.Extra["serf_kind"] != "turn_failure" {
+		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "turn_failure")
+	}
+	if step.Message != "provider error (status=529): overloaded" {
+		t.Errorf("Message = %q, want the failure text", step.Message)
+	}
+
+	// The diagnostic rides Turn.Error, so exporting the step without it would
+	// be the same silent drop one level down.
+	failure, ok := step.Extra["turn_error"].(*schema.TurnFailureInfo)
+	if !ok {
+		t.Fatalf("Extra[turn_error] = %#v, want *schema.TurnFailureInfo", step.Extra["turn_error"])
+	}
+	if failure.Source != "provider" || failure.Title != "Provider error" || failure.Hint != "Retry the turn." {
+		t.Errorf("turn_error lost diagnostic fields: %+v", failure)
+	}
+	if failure.Cause == nil || failure.Cause.Status != 529 || failure.Cause.Provider != "anthropic" {
+		t.Errorf("turn_error lost structured cause: %+v", failure.Cause)
+	}
+
+	// It has to survive marshalling: extra is what a harbor reader actually sees.
+	blob, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var round Trajectory
+	if err := json.Unmarshal(blob, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	extra, ok := round.Steps[0].Extra["turn_error"].(map[string]any)
+	if !ok {
+		t.Fatalf("round-tripped Extra[turn_error] = %#v, want object", round.Steps[0].Extra["turn_error"])
+	}
+	if extra["source"] != "provider" {
+		t.Errorf("round-tripped turn_error[source] = %v, want %q", extra["source"], "provider")
+	}
+	cause, ok := extra["cause"].(map[string]any)
+	if !ok || cause["status"] != float64(529) {
+		t.Errorf("round-tripped turn_error[cause] = %#v, want status 529", extra["cause"])
+	}
+}
+
+// TestConvertToATIF_HookCompleted covers the second kind that landed in the
+// same position as TURN_FAILURE (kata qm9y): the export must carry it, and the
+// typed exit code the hook-exit toggles split on must survive.
+func TestConvertToATIF_HookCompleted(t *testing.T) {
+	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	header := transcript.Header{SessionID: "sess-hook", Model: "gpt-5.5"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:      schema.TurnHookCompleted,
+			Message:   llm.System("PreToolUse hook finished"),
+			Timestamp: ts,
+			Hook: &schema.HookInfo{
+				Event:      "PreToolUse",
+				HookType:   "command",
+				PluginName: "superpowers",
+				ExitCode:   0,
+				DurationMS: 12,
+			},
+		}},
+	}
+
+	traj := Convert(header, entries)
+
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
+	}
+	step := traj.Steps[0]
+	if step.Source != "system" {
+		t.Errorf("Source = %q, want %q", step.Source, "system")
+	}
+	if step.Extra["serf_kind"] != "hook_completed" {
+		t.Errorf("Extra[serf_kind] = %v, want %q", step.Extra["serf_kind"], "hook_completed")
+	}
+	hook, ok := step.Extra["hook"].(*schema.HookInfo)
+	if !ok {
+		t.Fatalf("Extra[hook] = %#v, want *schema.HookInfo", step.Extra["hook"])
+	}
+	if hook.Event != "PreToolUse" || hook.PluginName != "superpowers" || hook.DurationMS != 12 {
+		t.Errorf("hook lost detail: %+v", hook)
+	}
+
+	// exit_code 0 is the common and meaningful value, so it must be a present
+	// zero rather than an absent field (schema.HookInfo deliberately omits
+	// omitempty for it).
+	blob, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var round Trajectory
+	if err := json.Unmarshal(blob, &round); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	extra, ok := round.Steps[0].Extra["hook"].(map[string]any)
+	if !ok {
+		t.Fatalf("round-tripped Extra[hook] = %#v, want object", round.Steps[0].Extra["hook"])
+	}
+	if _, present := extra["exit_code"]; !present {
+		t.Errorf("round-tripped hook dropped exit_code: %#v", extra)
+	}
+}
+
+// TestConvertToATIF_UnknownTurnKind is the point of the default arm. TurnKind
+// is a growing enum and this exporter is not notified when it grows, so a kind
+// it has never heard of must still reach the trajectory.
+func TestConvertToATIF_UnknownTurnKind(t *testing.T) {
+	header := transcript.Header{SessionID: "sess-unknown", Model: "gpt-5.5"}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:      schema.TurnKind("SOME_FUTURE_KIND"),
+			Message:   llm.System("a kind this exporter has never heard of"),
+			Timestamp: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC),
+		}},
+	}
+
+	traj := Convert(header, entries)
+
+	if len(traj.Steps) != 1 {
+		t.Fatalf("len(Steps) = %d, want 1 — an unknown kind must not be dropped in silence", len(traj.Steps))
+	}
+	step := traj.Steps[0]
+	if step.Source != "system" {
+		t.Errorf("Source = %q, want %q", step.Source, "system")
+	}
+	if step.Extra["serf_kind"] != "some_future_kind" {
+		t.Errorf("Extra[serf_kind] = %v, want the kind itself so a reader can tell what it was", step.Extra["serf_kind"])
+	}
+	if step.Message != "a kind this exporter has never heard of" {
+		t.Errorf("Message = %q, want the turn text", step.Message)
+	}
+	if traj.FinalMetrics.TotalSteps != 1 {
+		t.Errorf("FinalMetrics.TotalSteps = %d, want 1", traj.FinalMetrics.TotalSteps)
+	}
+}
