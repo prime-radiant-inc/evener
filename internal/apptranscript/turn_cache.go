@@ -37,6 +37,11 @@ type turnCacheEntry struct {
 	// toolResolver is private scanning state. indexMu protects it; published
 	// turnIndex snapshots never reference this mutable map.
 	toolResolver map[string]string
+	// usageTotal memoizes UsageTotalFromFile's full-transcript token sum for
+	// one file identity and divergence ordinal. Kept alongside the parse memo
+	// so both are evicted together, and separate from it because the sum is a
+	// different projection of the same immutable bytes.
+	usageTotal *usageTotalMemo
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.
