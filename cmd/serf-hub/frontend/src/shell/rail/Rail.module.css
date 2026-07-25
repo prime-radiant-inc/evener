@@ -23,9 +23,10 @@
 }
 
 /* The sidebar owns its own chrome (c8gt): a header zone stacking the brand
- * row, a full-width palette-opening search field, the primary "+ New session"
- * button, and the "Sessions" section label - a column so none of it steals a
- * full-width top bar's worth of the workspace's vertical space. */
+ * row (which carries the search and hide icon buttons in its own spare
+ * horizontal room) and the primary "+ New session" button - a column so none
+ * of it steals a full-width top bar's worth of the workspace's vertical
+ * space. */
 .header {
   flex: none;
   display: flex;
@@ -48,45 +49,6 @@
   font-size: var(--font-size-ui);
   font-weight: var(--font-weight-semibold);
   letter-spacing: var(--tracking-display);
-}
-
-/* Search field is a button (a palette opener), styled to read as an input:
- * full-width, quiet surface, muted placeholder-like label, ⌘K chord pinned
- * right in the mono face. */
-.search {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  color: var(--ink-low);
-  font-family: var(--font-sans);
-  font-size: var(--font-size-ui);
-  cursor: text;
-}
-
-.search:hover {
-  border-color: var(--accent);
-}
-
-.search:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-.searchLabel {
-  flex: 1 1 auto;
-  text-align: left;
-}
-
-.searchChord {
-  flex: none;
-  color: var(--ink-low);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
 }
 
 /* Stretches the primary Button to the rail's full width without touching the

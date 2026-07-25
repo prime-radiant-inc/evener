@@ -176,6 +176,20 @@ test("clicking any [data-search-trigger] element opens the command palette", asy
   trigger.remove();
 });
 
+test("clicking the rail's own Search button opens the command palette", async () => {
+  const user = userEvent.setup();
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+
+  // The real shipped affordance, not a synthetic stand-in: the rail header's
+  // icon-only Search button is the app's one clickable way into the palette,
+  // so the wiring between it and the global listener is worth an end-to-end
+  // assertion of its own.
+  await user.click(screen.getByTestId("rail-search"));
+
+  expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
+});
+
 test("populates connectionStore.serverInfo from the injected client's scripted connect() response", async () => {
   const fake = new FakeClient("ready");
   const scripted: InitializeResponse = {

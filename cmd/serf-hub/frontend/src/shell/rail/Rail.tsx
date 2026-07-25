@@ -1,4 +1,5 @@
-// Rail is the workspace shell's sidebar: brand/search/new-session header,
+// Rail is the workspace shell's sidebar: a brand row (with search and hide
+// icon buttons) over a "+ New session" button as its header,
 // session tree over stores/tree.ts, and the pinned identity/settings footer.
 // It renders the SAME full chrome everywhere it appears — docked on desktop
 // (always; collapsed mode was removed 2026-07-24 at Jesse's direction) and
@@ -23,6 +24,7 @@ import {
   IconButton,
   Input,
   Skeleton,
+  Tooltip,
   Tree,
   type TreeRowInfo,
   useToasts,
@@ -47,9 +49,6 @@ const CLASS = {
   header: requireClass(styles.header, "Rail.module.css", "header"),
   brand: requireClass(styles.brand, "Rail.module.css", "brand"),
   brandName: requireClass(styles.brandName, "Rail.module.css", "brandName"),
-  search: requireClass(styles.search, "Rail.module.css", "search"),
-  searchLabel: requireClass(styles.searchLabel, "Rail.module.css", "searchLabel"),
-  searchChord: requireClass(styles.searchChord, "Rail.module.css", "searchChord"),
   newSession: requireClass(styles.newSession, "Rail.module.css", "newSession"),
   footer: requireClass(styles.footer, "Rail.module.css", "footer"),
   footerIdentity: requireClass(styles.footerIdentity, "Rail.module.css", "footerIdentity"),
@@ -293,8 +292,28 @@ export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {})
   return (
     <div className={CLASS.rail}>
       <div className={CLASS.header}>
-        <div className={CLASS.brand}>
+        <div data-testid="rail-brand" className={CLASS.brand}>
           <span className={CLASS.brandName}>serf</span>
+          {/* Search is a palette opener, never a text input, so it rides in
+              the brand row as an icon button instead of claiming a row of the
+              sidebar's vertical space for itself. data-search-trigger is what
+              AppShell's global click handler listens for; the palette's own
+              help rows teach what it searches and the ⌘K / Ctrl-K chord that
+              opens it from the keyboard. The tooltip stays one short word:
+              its bubble is center-anchored with no collision handling
+              (widgets/tooltip/tooltip.module.css) and this button sits at the
+              right edge of a 280px rail, so a longer label clips against the
+              rail's own boundary. */}
+          <Tooltip label="Search">
+            <IconButton
+              data-testid="rail-search"
+              data-search-trigger="true"
+              label="Search"
+              icon={<span aria-hidden="true">{"⌕"}</span>}
+              variant="quiet"
+              size="sm"
+            />
+          </Tooltip>
           {onHide && (
             <IconButton
               label="Hide sidebar"
@@ -305,15 +324,6 @@ export function Rail({ onHide, revealTarget, onRevealConsumed }: RailProps = {})
             />
           )}
         </div>
-        {/* A palette opener styled as a search field, not a text input: it
-            carries data-search-trigger so AppShell's global click handler
-            opens the command palette (the app's one search surface), and
-            shows the ⌘K chord that does the same from the keyboard. */}
-        <button type="button" data-testid="rail-search" data-search-trigger="true" className={CLASS.search}>
-          <span aria-hidden="true">{"⌕"}</span>
-          <span className={CLASS.searchLabel}>Search</span>
-          <span className={CLASS.searchChord}>{"⌘K"}</span>
-        </button>
         {/* Grid wrapper stretches the primary Button to the rail's full
             width without reaching into the widget's own computed className. */}
         <div className={CLASS.newSession}>
