@@ -22,8 +22,14 @@ import (
 // (locks, sidecars, env mutation) for these same scenarios are already
 // covered in depth by session_tools_worktree_{create,switch,remove,prune}_test.go
 // (Tasks 13-16); this file exists to make the error-TEXT contract explicit
-// and exhaustive against the spec table, reusing those files' wtRepo/wtGit
-// fixtures (same package).
+// and exhaustive against the spec table.
+//
+// The subject of an error-surface row is serf's own refusal decision — which
+// rung fires, what the message names, whether git was reached at all — not
+// git's behavior, so these run on the scripted git boundary (scriptedLaneRepo,
+// driven through wtRepo's shared operation helpers). Two rows below are
+// deliberate exceptions and stay on real git; each says why at its own doc
+// comment. See docs/testing.md for the rule.
 //
 // Row 8 ("delegate_send to a delegate whose isolation worktree was
 // disposed") is STILL OUT OF SCOPE here: Task 21 built spawn/restore/revival
@@ -54,8 +60,8 @@ func TestWorktreeErrors_NotInGitRepo(t *testing.T) {
 
 func TestWorktreeErrors_NameFailsValidationBeforeAnyGitCall(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 
 	_, err := r.create(t, map[string]any{"name": "has space"})
 	if err == nil {
@@ -65,9 +71,8 @@ func TestWorktreeErrors_NameFailsValidationBeforeAnyGitCall(t *testing.T) {
 	if !strings.Contains(err.Error(), wantElem) {
 		t.Errorf("error = %q, want it to contain %q", err.Error(), wantElem)
 	}
-	if _, statErr := os.Stat(logPath); statErr == nil {
-		b, _ := os.ReadFile(logPath)
-		t.Errorf("git was invoked before the name-validation error fired: %s", string(b))
+	if calls := sr.gitCalls(); len(calls) != 0 {
+		t.Errorf("git was invoked before the name-validation error fired: %q", calls)
 	}
 }
 
@@ -83,8 +88,8 @@ func TestWorktreeErrors_BadBaseRefBeforeWorktreeAdd(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			r := newWorktreeRepo(t)
-			logPath := gitArgvRecordingRepoShim(t, r.mainRoot)
+			sr := newScriptedLaneRepo(t)
+			r := sr.wt()
 
 			_, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
 			if err == nil {
@@ -93,8 +98,8 @@ func TestWorktreeErrors_BadBaseRefBeforeWorktreeAdd(t *testing.T) {
 			if !strings.Contains(err.Error(), c.wantElem) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), c.wantElem)
 			}
-			if b, readErr := os.ReadFile(logPath); readErr == nil && strings.Contains(string(b), "worktree add") {
-				t.Errorf("git worktree add was invoked despite the rejected base_ref: %s", string(b))
+			if sr.sawGitCommand("worktree", "add") {
+				t.Errorf("git worktree add was invoked despite the rejected base_ref: %q", sr.gitCalls())
 			}
 		})
 	}
@@ -106,8 +111,9 @@ func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 	t.Parallel()
 	t.Run("unmanaged branch: no switch suggestion", func(t *testing.T) {
 		t.Parallel()
-		r := newWorktreeRepo(t)
-		wtGit(t, r.mainRoot, "branch", "plain", r.head)
+		sr := newScriptedLaneRepo(t)
+		r := sr.wt()
+		sr.seedBranch(t, "plain")
 
 		_, err := r.create(t, map[string]any{"name": "plain"})
 		if err == nil {
@@ -123,7 +129,7 @@ func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 
 	t.Run("managed worktree: switch suggested", func(t *testing.T) {
 		t.Parallel()
-		r := newWorktreeRepo(t)
+		r := newScriptedLaneRepo(t).wt()
 		if _, err := r.create(t, map[string]any{"name": "dup"}); err != nil {
 			t.Fatalf("first create: %v", err)
 		}
@@ -144,7 +150,7 @@ func TestWorktreeErrors_NameExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) {
 
 func TestWorktreeErrors_SwitchToNonexistentWorktree(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.switchOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
 		t.Fatal("expected switch to a nonexistent worktree to error")
@@ -156,7 +162,7 @@ func TestWorktreeErrors_SwitchToNonexistentWorktree(t *testing.T) {
 
 func TestWorktreeErrors_RemoveNonexistentWorktree(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.removeOp(t, map[string]any{"name": "never-created"})
 	if err == nil {
 		t.Fatal("expected remove of a nonexistent worktree to error")
@@ -176,7 +182,7 @@ func TestWorktreeErrors_RemoveNonexistentWorktree(t *testing.T) {
 // create but for remove's own case arm.
 func TestWorktreeErrors_RemoveDispatchRequiresName(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	_, err := r.removeOp(t, map[string]any{"name": ""})
 	if err == nil || !strings.Contains(err.Error(), "name is required") {
 		t.Fatalf("remove with empty name: err = %v, want it to contain %q", err, "name is required")
@@ -187,7 +193,7 @@ func TestWorktreeErrors_RemoveDispatchRequiresName(t *testing.T) {
 
 func TestWorktreeErrors_SwitchByPathUnregistered(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	stray := t.TempDir()
 
 	_, err := r.switchOp(t, map[string]any{"path": stray})
@@ -205,7 +211,8 @@ func TestWorktreeErrors_SwitchByPathUnregistered(t *testing.T) {
 
 func TestWorktreeErrors_SwitchForeignSessionLockNamesReason(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -215,7 +222,7 @@ func TestWorktreeErrors_SwitchForeignSessionLockNamesReason(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000009")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, path)
+	sr.setLaneLock(t, path, foreignReason)
 
 	_, err = r.switchOp(t, map[string]any{"name": "lane"})
 	if err == nil {
@@ -228,7 +235,8 @@ func TestWorktreeErrors_SwitchForeignSessionLockNamesReason(t *testing.T) {
 
 func TestWorktreeErrors_SwitchForeignDelegateLockNamesReason(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -238,7 +246,7 @@ func TestWorktreeErrors_SwitchForeignDelegateLockNamesReason(t *testing.T) {
 		t.Fatalf("exit: %v", err)
 	}
 	delegateReason := worktree.FormatDelegateMarker("dlg_01FOREIGNDELEGATE0001", "01FOREIGNPARENTSESSION02")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", delegateReason, path)
+	sr.setLaneLock(t, path, delegateReason)
 
 	_, err = r.switchOp(t, map[string]any{"name": "lane"})
 	if err == nil {
@@ -251,7 +259,8 @@ func TestWorktreeErrors_SwitchForeignDelegateLockNamesReason(t *testing.T) {
 
 func TestWorktreeErrors_RemoveForeignLockRefusesForceDoesNotOverride(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -261,7 +270,7 @@ func TestWorktreeErrors_RemoveForeignLockRefusesForceDoesNotOverride(t *testing.
 		t.Fatalf("exit: %v", err)
 	}
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000010")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, path)
+	sr.setLaneLock(t, path, foreignReason)
 
 	_, err = r.removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {
@@ -275,6 +284,11 @@ func TestWorktreeErrors_RemoveForeignLockRefusesForceDoesNotOverride(t *testing.
 	}
 }
 
+// TestWorktreeErrors_RemoveOwnMarkerCrashResidueNeverARawGitFatal stays on REAL
+// git: the whole claim is that git's own "already locked" fatal never surfaces,
+// which is only falsifiable against the git binary that would emit it. A
+// scripted boundary would have to hardcode whether `worktree remove` refuses a
+// locked entry, making the assertion circular.
 func TestWorktreeErrors_RemoveOwnMarkerCrashResidueNeverARawGitFatal(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -305,7 +319,7 @@ func TestWorktreeErrors_RemoveOwnMarkerCrashResidueNeverARawGitFatal(t *testing.
 
 func TestWorktreeErrors_RemoveTargetResolvesOutsideManagedDir(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	canonicalMain := r.canonicalMain(t)
 	target := r.managedPath(t, canonicalMain, "escape")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -329,7 +343,7 @@ func TestWorktreeErrors_RemoveTargetResolvesOutsideManagedDir(t *testing.T) {
 
 func TestWorktreeErrors_ExitNotInWorktree(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	before := r.s.currentEnv().WorkingDirectory()
 
 	_, err := r.exitOp(t)
@@ -352,13 +366,10 @@ func TestWorktreeErrors_ExitNotInWorktree(t *testing.T) {
 
 func TestWorktreeErrors_GitTooOldPreflightNamesRequiredVersionNoDegradedMode(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	r.requireGitVersionPreflight()
-
-	shim := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
-		"echo \"shim: unexpected git $*\" >&2; exit 1\n"
-	writeRepoGitShim(t, r.mainRoot, shim)
+	sr.reportGitVersion("2.20.0")
 
 	_, err := r.create(t, map[string]any{"name": "x"})
 	if err == nil {
@@ -376,7 +387,7 @@ func TestWorktreeErrors_GitTooOldPreflightNamesRequiredVersionNoDegradedMode(t *
 
 func TestWorktreeErrors_RemoveLiveWorkGuard(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -416,7 +427,8 @@ func TestWorktreeErrors_RemoveLiveWorkGuard(t *testing.T) {
 
 func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "shared"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -425,7 +437,7 @@ func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
 	if _, err := r.exitOp(t); err != nil {
 		t.Fatalf("exit: %v", err)
 	}
-	r2 := r.secondSession(t)
+	r2 := sr.sessionAt(t, sr.mainRoot).wt()
 
 	if _, err := r2.removeOp(t, map[string]any{"name": "shared"}); err != nil {
 		t.Fatalf("cross-creator remove of an unlocked lane must not error under F1, got: %v", err)
@@ -439,19 +451,19 @@ func TestWorktreeErrors_RemoveCrossCreatorUnlockedNoLongerErrors(t *testing.T) {
 
 func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(t, canonicalMain, "launch")
 	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
 		t.Fatalf("mkdir launch parent: %v", err)
 	}
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
+	sr.addLane(t, "launch", launchPath)
 
 	// A session launched directly inside a managed worktree (never entering
 	// via create/switch) has no saved restore env.
-	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
-	s2.stateDir = r.stateDir
-	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
+	r2 := sr.sessionAt(t, launchPath).wt()
+	s2 := r2.s
 	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
@@ -481,7 +493,7 @@ func TestWorktreeErrors_RemoveCurrentNoSafeRestoreEnv(t *testing.T) {
 
 func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
@@ -526,7 +538,7 @@ func TestWorktreeErrors_NonLocalExecutionEnvironment(t *testing.T) {
 // rt.Exec exactly as the model would invoke it.
 func TestWorktreeErrors_PruneDispatchPropagatesNonLocalEnvError(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
@@ -541,6 +553,11 @@ func TestWorktreeErrors_PruneDispatchPropagatesNonLocalEnvError(t *testing.T) {
 // (no git binary needed for the linked-worktree case); lifecycle operations
 // require git and error clearly (not panic) if it is absent ---
 
+// TestWorktreeErrors_GitUnavailableLifecycleOpsErrorClearly stays on REAL git:
+// its subject is the absence of a git binary — ResolveMainRepoRoot's structural
+// walk succeeding over a real repo with PATH emptied, and a lifecycle op failing
+// through a real absent subprocess. A scripted runner would answer every command
+// and there would be no missing binary to prove anything about.
 func TestWorktreeErrors_GitUnavailableLifecycleOpsErrorClearly(t *testing.T) {
 	r := newWorktreeRepo(t)
 	if _, err := r.create(t, map[string]any{"name": "lane"}); err != nil {
@@ -595,7 +612,7 @@ func mkToolCall(id, name string, args map[string]any) llm.ToolCallData {
 
 func TestWorktreeOrdering_ReadBeforeSeesOldEnvReadAfterSeesNewEnv(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 
 	// Pre-create "lane" with distinguishing content, then exit back to
 	// mainRoot so this test's batch starts from a known env.

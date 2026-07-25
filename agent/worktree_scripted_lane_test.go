@@ -181,10 +181,112 @@ func (r *scriptedLaneRepo) appendDisposed(t *testing.T, delegateID string) {
 	}
 }
 
+// disposedEventPresent reads the durable Disposed mark for delegateID out of the
+// session's own jobstore, which stays real under the scripted boundary — so the
+// wtRepo reader serves unchanged.
+func (r *scriptedLaneRepo) disposedEventPresent(t *testing.T, delegateID string) bool {
+	t.Helper()
+	return r.wt().disposedEventPresent(t, delegateID)
+}
+
+// wrapRunner interposes mw in front of the session's worktree git runner, so a
+// test can inject a git-level failure the scripted model does not itself model
+// (git refusing to remove a dirty worktree, or to lock an already-locked one).
+// mw receives the next runner in the chain, so wraps compose.
+func (r *scriptedLaneRepo) wrapRunner(mw func(next worktree.GitRunner, args []string) (string, error)) {
+	inner := r.s.cfg.testOnly.worktreeGitRunner
+	r.s.cfg.testOnly.worktreeGitRunner = func(ctx context.Context, env execenv.ExecutionEnvironment) worktree.GitRunner {
+		next := inner(ctx, env)
+		return func(args ...string) (string, error) { return mw(next, args) }
+	}
+}
+
 // seedIsolationLane creates a delegate lane through the real production path
 // (createDelegateWorktree drives the scripted git boundary) and records the
 // job/delegate events a resumed session reads back.
 func (r *scriptedLaneRepo) seedIsolationLane(t *testing.T) (delegateID, lanePath string) {
 	t.Helper()
 	return seedIsolationLaneOn(t, r.s)
+}
+
+// wt exposes the scripted session through wtRepo, so the shared manage_worktree
+// operation drivers (create, switchOp, exitOp, removeOp, pruneOp, listOp) and
+// path helpers (managedPath, canonicalMain, metaDir) drive it unchanged. head is
+// the scripted model's main tip, the SHA every lane is based on.
+func (r *scriptedLaneRepo) wt() *wtRepo {
+	return &wtRepo{s: r.s, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.git.branches["main"]}
+}
+
+// sessionAt builds an additional session over the SAME scripted git boundary,
+// main repo and state dir, rooted at dir: a second session for a cross-session
+// guard, or a session launched directly inside a lane (which therefore has no
+// saved restore env).
+func (r *scriptedLaneRepo) sessionAt(t *testing.T, dir string) *scriptedLaneRepo {
+	t.Helper()
+	cfg := worktreeTestSessionConfig()
+	cfg.StateDir = r.stateDir
+	cfg.clock = r.s.cfg.clock
+	cfg.testOnly.environmentInfo = scriptedEnvironmentInfo
+	cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+		return r.git.run
+	}
+
+	s := newSession(t, withDir(dir), withConfig(cfg))
+	s.stateDir = r.stateDir
+	s.mu.Lock()
+	s.worktreeGitVersionOK = true
+	s.mu.Unlock()
+	return &scriptedLaneRepo{t: t, s: s, git: r.git, mainRoot: r.mainRoot, stateDir: r.stateDir, clock: r.clock}
+}
+
+// seedBranch adds a branch to the scripted branch set at the main tip, standing
+// in for `git branch <name>` in the main checkout.
+func (r *scriptedLaneRepo) seedBranch(t *testing.T, name string) {
+	t.Helper()
+	if _, exists := r.git.branches[name]; exists {
+		t.Fatalf("scripted branch %q already exists", name)
+	}
+	r.git.branches[name] = r.git.branches["main"]
+}
+
+// addLane registers an unlocked worktree at path on a new branch, standing in
+// for a `git worktree add` that manage_worktree did not perform — the fixture
+// for a session that was launched inside a lane rather than entering one.
+func (r *scriptedLaneRepo) addLane(t *testing.T, name, path string) {
+	t.Helper()
+	if _, err := r.git.run("worktree", "add", "--lock", "--reason", "", "-b", name, "--", path, r.git.branches["main"]); err != nil {
+		t.Fatalf("scripted worktree add %q: %v", name, err)
+	}
+}
+
+// reportGitVersion makes the boundary answer `git version` with version,
+// leaving every other command to the scripted model — the fixture for the
+// once-per-session version preflight.
+func (r *scriptedLaneRepo) reportGitVersion(version string) {
+	r.s.cfg.testOnly.worktreeGitRunner = func(context.Context, execenv.ExecutionEnvironment) worktree.GitRunner {
+		return func(args ...string) (string, error) {
+			if len(args) == 1 && args[0] == "version" {
+				return "git version " + version + "\n", nil
+			}
+			return r.git.run(args...)
+		}
+	}
+}
+
+// gitCalls returns the argv of every command the session has sent to the
+// scripted boundary, for a test whose subject is that serf refused BEFORE
+// reaching git.
+func (r *scriptedLaneRepo) gitCalls() [][]string { return r.git.calls }
+
+// sawGitCommand reports whether any recorded argv starts with prefix.
+func (r *scriptedLaneRepo) sawGitCommand(prefix ...string) bool {
+	for _, call := range r.git.calls {
+		if len(call) < len(prefix) {
+			continue
+		}
+		if scriptedArgs(call[:len(prefix)], prefix...) {
+			return true
+		}
+	}
+	return false
 }

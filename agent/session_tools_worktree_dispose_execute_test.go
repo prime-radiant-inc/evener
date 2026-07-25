@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -13,7 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// seedIsolationLaneOn seeds a real isolation delegate lane owned by sess (the
+// seedIsolationLaneOn seeds an isolation delegate lane owned by sess (the
 // session-parameterized core of wtRepo.seedIsolationLane), so a coordinator child
 // session can be given its own grandchild lanes for the nested-cascade test.
 func seedIsolationLaneOn(t *testing.T, sess *Session) (delegateID, lanePath string) {
@@ -66,18 +67,35 @@ func seedIsolationLaneOn(t *testing.T, sess *Session) (delegateID, lanePath stri
 	return delegateID, path
 }
 
-// These are REAL-git unit tests for dispose EXECUTION (spec §P1 steps 7-8):
-// retained-child eviction, the remove ladder (gone / present-dirty / re-lock
-// failure), and the nested-coordinator cascade budget.
+// These are unit tests for dispose EXECUTION (spec §P1 steps 7-8): retained-child
+// eviction, the remove ladder (gone / present-dirty / re-lock failure), and the
+// nested-coordinator cascade budget.
+//
+// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// rule. Most tests' subject is serf's own decision-making — which arm of the
+// remove ladder fires, whether the child is evicted, what serf wrote to its
+// jobstore, which warning it emitted, how many cascade budgets it minted — so
+// they run on the scripted git boundary (scriptedLaneRepo), with the refusals the
+// ladder reacts to injected at the boundary. These stay on real git (wtRepo)
+// because their subject IS git's own behavior:
+//
+//   - TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction — git's refusal to
+//     remove a dirty worktree without --force
+//   - TestDispose_PostGateRefusal_ClearsGate — a real unmerged verdict fires the
+//     post-gate refusal
+//   - TestDispose_Depth2Cascade_SharedBudget — the grandchild KEEP arm needs a
+//     real unmerged tip
+//   - TestDispose_HalfRemoved_MarksAndDeletesBranch — the surviving branch's tip
+//     is judged, and the branch deleted, in the real ref store
 
-// trackRetainedIsolationChild builds a real, quiescent child *Session rooted at
-// the lane and tracks it as a retained subagent keyed by the delegate id, so a
+// trackRetainedIsolationChild builds a quiescent child *Session rooted at the
+// lane and tracks it as a retained subagent keyed by the delegate id, so a
 // dispose op sees a live retained child to evict (spec §P1 step 7). ownsEnv=true
 // mirrors a per-lane re-rooted delegate whose env the disposer must Cleanup().
-func (r *wtRepo) trackRetainedIsolationChild(t *testing.T, delegateID, lanePath string) *Session {
+func trackRetainedIsolationChild(t *testing.T, parent *Session, delegateID, lanePath string) *Session {
 	t.Helper()
 	child := newSession(t, withDir(lanePath), withoutGitSnapshot())
-	r.s.subagents.track(&subagent{
+	parent.subagents.track(&subagent{
 		id:      delegateID,
 		sess:    child,
 		ownsEnv: true,
@@ -86,9 +104,9 @@ func (r *wtRepo) trackRetainedIsolationChild(t *testing.T, delegateID, lanePath 
 	return child
 }
 
-func (r *wtRepo) delegateResumability(t *testing.T, id string) delegateResumability {
+func delegateResumabilityOf(t *testing.T, s *Session, id string) delegateResumability {
 	t.Helper()
-	recs, err := r.s.jobManager.store.Load()
+	recs, err := s.jobManager.store.Load()
 	if err != nil {
 		t.Fatalf("load store: %v", err)
 	}
@@ -96,7 +114,31 @@ func (r *wtRepo) delegateResumability(t *testing.T, id string) delegateResumabil
 	if desc == nil {
 		t.Fatalf("no delegate lane record for %s", id)
 	}
-	return r.s.assessDelegateResumability(rec, delegateResumabilityProjection)
+	return s.assessDelegateResumability(rec, delegateResumabilityProjection)
+}
+
+// refuseNonForceRemove makes the boundary reject a non-force `worktree remove`
+// for lanePath, the way git refuses to discard a dirty worktree. The lane stays
+// registered and on disk, so the disposer's present/gone classifier sees a
+// present lane and takes the KEEP path.
+func refuseNonForceRemove(r *scriptedLaneRepo, lanePath string) {
+	want := filepath.Clean(lanePath)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) >= 3 && args[0] == "worktree" && args[1] == "remove" &&
+			filepath.Clean(args[len(args)-1]) == want && !scriptedHasForce(args) {
+			return "", errors.New("scripted git: worktree contains modified files")
+		}
+		return next(args...)
+	})
+}
+
+func scriptedHasForce(args []string) bool {
+	for _, a := range args {
+		if a == "--force" {
+			return true
+		}
+	}
+	return false
 }
 
 // TestDispose_EvictsRetainedChild is spec test 12: a retained quiescent child is
@@ -104,9 +146,9 @@ func (r *wtRepo) delegateResumability(t *testing.T, id string) delegateResumabil
 // disposed, and a later delegate_send hits the disposed refusal (restore path).
 func TestDispose_EvictsRetainedChild(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, lanePath, _ := r.seedIsolationLane(t)
-	child := r.trackRetainedIsolationChild(t, id, lanePath)
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
+	child := trackRetainedIsolationChild(t, r.s, id, lanePath)
 
 	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
 	if err != nil {
@@ -135,7 +177,7 @@ func TestDispose_EvictsRetainedChild(t *testing.T) {
 		t.Error("branch not deleted after eviction")
 	}
 	// delegate_send now hits the disposed refusal via the restore path.
-	if a := r.delegateResumability(t, id); a.Resumable || a.Reason != notResumableWorktreeDisposed {
+	if a := delegateResumabilityOf(t, r.s, id); a.Resumable || a.Reason != notResumableWorktreeDisposed {
 		t.Errorf("post-dispose resumability = %+v, want disposed refusal", a)
 	}
 }
@@ -145,14 +187,12 @@ func TestDispose_EvictsRetainedChild(t *testing.T) {
 // non-force remove fails, we stat GONE and finish the disposal bookkeeping.
 func TestDispose_RemoveRefused_LaneGone_MarkedDisposed(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, lanePath, _ := r.seedIsolationLane(t)
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
 
 	// Simulate a concurrent collector winning the remove: after our unlock, before
 	// our remove, the lane directory disappears.
-	r.s.worktreeDisposeBeforeRemove = func(p string) {
-		wtGit(t, r.mainRoot, "worktree", "remove", "--force", p)
-	}
+	r.s.worktreeDisposeBeforeRemove = func(p string) { r.removeLane(t, p) }
 
 	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
 	if err != nil {
@@ -176,6 +216,9 @@ func TestDispose_RemoveRefused_LaneGone_MarkedDisposed(t *testing.T) {
 // (present arm): a late dirty write races the clean check, the non-force remove
 // refuses, and the lane is downgraded to KEPT-after-eviction — re-locked with the
 // disposer's own marker, NOT marked disposed, still resumable.
+//
+// REAL git: the refusal that triggers the downgrade is git's own reaction to a
+// dirty worktree, so the lane and the write are real.
 func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -208,7 +251,7 @@ func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
 	}
 	// Not disposed-refused: the descriptor was never marked, so the delegate is
 	// still resumable via the restore path (no Disposed reason).
-	if a := r.delegateResumability(t, id); a.Reason == notResumableWorktreeDisposed {
+	if a := delegateResumabilityOf(t, r.s, id); a.Reason == notResumableWorktreeDisposed {
 		t.Errorf("KEPT-after-eviction wrongly reports a disposed refusal: %+v", a)
 	}
 }
@@ -221,13 +264,11 @@ func TestDispose_RemoveRefused_PresentDirty_KeptAfterEviction(t *testing.T) {
 // being destroyed while the worktree still exists.
 func TestDispose_RemoveRefused_TransientStatError_Kept(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, lanePath, _ := r.seedIsolationLane(t)
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
 
-	// Late dirty write refuses the non-force remove so the classifier runs.
-	r.s.worktreeDisposeBeforeRemove = func(p string) {
-		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
-	}
+	// The non-force remove is refused so the classifier runs.
+	refuseNonForceRemove(r, lanePath)
 	// The lane IS still present, but its stat transiently fails (not ENOENT).
 	r.s.worktreeLaneStat = func(string) (os.FileInfo, error) {
 		return nil, &os.PathError{Op: "stat", Path: lanePath, Err: syscall.EIO}
@@ -249,20 +290,23 @@ func TestDispose_RemoveRefused_TransientStatError_Kept(t *testing.T) {
 }
 
 // TestDispose_RemoveRefused_RelockFailure_Warns is spec test 13 (re-lock failure):
-// the late-dirty lane cannot be re-locked (already locked by another owner mid
-// race); disposal warns naming the lane and still keeps it.
+// the kept lane cannot be re-locked (already locked by another owner mid race);
+// disposal warns naming the lane and still keeps it.
 func TestDispose_RemoveRefused_RelockFailure_Warns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, lanePath, _ := r.seedIsolationLane(t)
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
 
-	r.s.worktreeDisposeBeforeRemove = func(p string) {
-		// Late dirty write refuses the non-force remove, and a foreign lock lands
-		// so our re-lock attempt fails.
-		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
-		foreign := worktree.FormatDelegateMarker("dlg_other", "other-session")
-		wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreign, p)
-	}
+	// The non-force remove is refused, and the re-lock attempt that follows fails
+	// the way it would against a lane a foreign owner locked mid-race.
+	refuseNonForceRemove(r, lanePath)
+	want := filepath.Clean(lanePath)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) == 5 && args[0] == "worktree" && args[1] == "lock" && filepath.Clean(args[4]) == want {
+			return "", errors.New("scripted git: worktree is already locked")
+		}
+		return next(args...)
+	})
 
 	res, err := r.s.worktreeDispose(context.Background(), id, false, false)
 	if err != nil {
@@ -279,9 +323,11 @@ func TestDispose_RemoveRefused_RelockFailure_Warns(t *testing.T) {
 	}
 }
 
-// TestDispose_HalfRemoved_EvictsAndCleans proves half-removed execution: with no
-// worktree to remove, dispose marks disposed and deletes the leftover branch +
-// sidecar.
+// TestDispose_HalfRemoved_MarksAndDeletesBranch proves half-removed execution:
+// with no worktree to remove, dispose marks disposed and deletes the leftover
+// branch + sidecar.
+// REAL git: with the worktree gone, both the collectibility verdict and the
+// branch deletion act on the real ref store.
 func TestDispose_HalfRemoved_MarksAndDeletesBranch(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -311,15 +357,18 @@ func TestDispose_HalfRemoved_MarksAndDeletesBranch(t *testing.T) {
 // TestDispose_PostGateRefusal_ClearsGate is the clearing half of spec test 10: a
 // refusal after the gate is armed (here a step-6 unmerged refusal) reverses the
 // gate via the deferred clear-unless-consumed, and the child is NOT evicted.
+//
+// REAL git: the refusal that fires the reversal is a real unmerged verdict over a
+// real commit.
 func TestDispose_PostGateRefusal_ClearsGate(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
 	id, lanePath, _ := r.seedIsolationLane(t)
-	child := r.trackRetainedIsolationChild(t, id, lanePath)
+	child := trackRetainedIsolationChild(t, r.s, id, lanePath)
 	laneCommit(t, lanePath) // unmerged → step-6 refuses (no force)
 
 	sub := r.s.subagents.get(id)
-	err := disposeErr(t, r, id, false, false)
+	err := disposeErr(t, r.s, id, false, false)
 	requireRefusalContains(t, err, "unmerged commit")
 
 	sub.mu.Lock()
@@ -345,12 +394,10 @@ func TestDispose_PostGateRefusal_ClearsGate(t *testing.T) {
 // KEPT-after-eviction, and the lane stays resumable (no disposed mark).
 func TestDispose_KeptAfterEviction_GateConsumed(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	id, lanePath, _ := r.seedIsolationLane(t)
-	child := r.trackRetainedIsolationChild(t, id, lanePath)
-	r.s.worktreeDisposeBeforeRemove = func(p string) {
-		_ = os.WriteFile(filepath.Join(p, "raced.txt"), []byte("late\n"), 0o644)
-	}
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
+	child := trackRetainedIsolationChild(t, r.s, id, lanePath)
+	refuseNonForceRemove(r, lanePath)
 
 	if _, err := r.s.worktreeDispose(context.Background(), id, false, false); err != nil {
 		t.Fatalf("dispose: %v", err)
@@ -373,8 +420,12 @@ func TestDispose_KeptAfterEviction_GateConsumed(t *testing.T) {
 
 // TestDispose_Depth2Cascade_SharedBudget is spec test 12a: disposing a coordinator
 // child runs the child's OWN close-time lane disposal — its unchanged grandchild
-// lane is collected, its unmerged grandchild lane is KEPT — and the whole
-// depth-2 cascade consumes ONE shared budget (no descendant mints a fresh one).
+// lane is collected, its unmerged grandchild lane is KEPT — and the whole depth-2
+// cascade consumes ONE shared budget (no descendant mints a fresh one).
+//
+// REAL git: the grandchild KEEP arm turns on a real unmerged verdict over a real
+// commit, which the scripted boundary cannot express (its ancestry answer is
+// always "yes", so every changed lane there reads as merged).
 func TestDispose_Depth2Cascade_SharedBudget(t *testing.T) {
 	// NOT parallel: it asserts on the process-global closeBudgetMintHook, which is
 	// only safe when no other test runs concurrently.
