@@ -212,6 +212,23 @@ test("every control in the composer's button row is the sm size", async () => {
   }
 });
 
+// The two icon controls draw real SVG glyphs, not bare "+"/"■" characters,
+// which render inconsistently across fonts and read as typos at 28px. Their
+// spoken names come from IconButton's label and stay words either way.
+test("the attach and stop controls draw SVG glyphs, not literal text characters", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+
+  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
+    expect(control.querySelector("svg")).toBeTruthy();
+    expect(control.textContent).toBe("");
+  }
+  expect(screen.getByRole("button", { name: "Attach image" })).toBe(screen.getByTestId("composer-attach"));
+  expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
+});
+
 // --- send / queue routing ---------------------------------------------------
 
 test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {

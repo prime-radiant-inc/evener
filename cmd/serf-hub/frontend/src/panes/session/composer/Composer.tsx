@@ -25,6 +25,7 @@ import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ImageGallery } from "../transcript/flow/ImageGallery";
 import { AskDock, useAskDockPending } from "./askDock";
+import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -54,6 +55,17 @@ function RemoveIcon() {
   return (
     <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
       <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// The interrupt control's glyph: the universal stop square, drawn rather than
+// typed as "■" (whose weight and baseline shift from font to font). Filled,
+// not stroked - a hollow square at this size reads as an empty checkbox.
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+      <rect x="2.5" y="2.5" width="7" height="7" rx="1" fill="currentColor" />
     </svg>
   );
 }
@@ -636,7 +648,7 @@ export function Composer({ ref }: ComposerProps) {
                   style follows StatusRow's own status-row-* testids. */}
               <IconButton
                 label="Attach image"
-                icon="+"
+                icon={<AttachIcon />}
                 variant="quiet"
                 size="sm"
                 type="button"
@@ -650,7 +662,7 @@ export function Composer({ ref }: ComposerProps) {
                 {showStop && (
                   <IconButton
                     label="Stop"
-                    icon="■"
+                    icon={<StopIcon />}
                     variant="dangerQuiet"
                     size="sm"
                     type="button"
