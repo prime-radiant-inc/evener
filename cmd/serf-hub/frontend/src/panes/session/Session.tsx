@@ -47,6 +47,32 @@ export interface SessionPaneParams {
 
 const EMPTY_FRAME_TIMES: number[] = [];
 
+// An empty transcript is two situations wearing one face, and no single line
+// is true for both.
+//
+// Since dormant spawn shipped (kata ytpa) a session can exist having never run
+// a turn. That transcript is blank because it is waiting on the USER, and the
+// composer that ends the wait sits directly below it - so its empty state
+// names the act, using the same word the composer's own button carries
+// ("Send"), and the same word the rail row uses for the same fact ("Not
+// started", shell/rail/RailRow.tsx).
+//
+// A session spawned WITH a prompt shows the same blank transcript until its
+// first frame lands, and there the wait belongs to the AGENT. Inviting that
+// user to send would ask them to redo what they just did, so that window
+// reports the wait instead and confirms the message arrived.
+//
+// `status.type === "active"` is the wire vocabulary's word for "a turn is
+// running right now" (appwire's ThreadStatus, mapped in ./liveness), which is
+// exactly the mid-first-turn window. Every other status with zero turns -
+// idle, notLoaded, closed, "" - has nothing running, so the invitation holds.
+function EmptyTranscript({ active }: { active: boolean }) {
+  if (active) {
+    return <EmptyState title="Waiting for the first reply" hint="The agent has your message." />;
+  }
+  return <EmptyState title="Send the first message" hint="This session hasn't started yet." />;
+}
+
 // A reasonable average-turn guess for VirtualList's `dynamic` mode to
 // correct post-mount from each turn's real rendered height (turns vary
 // wildly: a one-line tool call vs. a long streamed response) - see
@@ -162,7 +188,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     >
       <SandboxEscalationRail sessionRef={ref} />
       {model.turns.length === 0 ? (
-        <EmptyState title="No turns yet" hint="This session hasn't sent or received anything yet." />
+        <EmptyTranscript active={model.status.type === "active"} />
       ) : (
         <div className={styles.transcript}>
           <FlowOverlay

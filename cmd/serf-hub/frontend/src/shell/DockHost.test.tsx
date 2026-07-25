@@ -567,8 +567,11 @@ test("a session pane's tab title prefers the live ThreadModel name over the raw 
   );
 
   // The real session pane's own body (wave 4): synced against the
-  // pre-seeded model, whose fixture turns default to [].
-  await screen.findByText(/no turns yet/i);
+  // pre-seeded model, whose fixture turns default to [] - so the body settles
+  // on its empty state. Matched by testid, not by that empty state's copy:
+  // this test is about the TAB title, and has no business pinning wording the
+  // session pane owns.
+  await screen.findByTestId("empty-state");
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Debug the flaky test");
 });
 
@@ -597,7 +600,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   );
   // The real session pane's own body (wave 4): synced against the
   // pre-seeded model, whose fixture turns default to [].
-  await screen.findByText(/no turns yet/i);
+  await screen.findByTestId("empty-state");
   expect(document.querySelector(".dv-tab")?.textContent).toBe("Original name");
 
   threadsStore.setState((s) => {
@@ -612,7 +615,7 @@ test("a session pane's tab title live-updates when the thread is renamed, with n
   // Still the same pane, not a fresh one - the session pane's own body
   // (which doesn't read the thread name at all, only its turns) is
   // untouched throughout the rename.
-  expect(screen.getByText(/no turns yet/i)).toBeTruthy();
+  expect(screen.getByTestId("empty-state")).toBeTruthy();
 });
 
 // --- layout persistence -----------------------------------------------
