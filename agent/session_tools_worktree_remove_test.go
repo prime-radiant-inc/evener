@@ -12,9 +12,41 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// These are REAL-git integration tests for the manage_worktree remove arm
-// (spec §5 remove). They reuse wtRepo/wtGit/wtLaunchSession from
+// These are integration tests for the manage_worktree remove arm (spec §5
+// remove). They reuse wtRepo/wtGit/wtLaunchSession from
 // session_tools_worktree_create_test.go and session_tools_worktree_switch_test.go.
+//
+// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// rule. A test whose subject is serf's own decision-making — which refusal rung
+// fires, its error text, the restore-state bookkeeping, what serf wrote to its
+// own sidecar — runs on the scripted git boundary (scriptedLaneRepo, driven
+// through wtRepo's shared operation helpers). These stay on real git because
+// their subject IS git's observable behavior:
+//
+//   - TestWorktreeRemove_BasicDispositionMatrix, ...ForceDoesNotDiscardUncommitted
+//     — real dirty detection and git's own refusal to discard uncommitted work.
+//     The scripted model reports every tree CLEAN, so a converted dirty gate
+//     would invert silently while still passing.
+//   - TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate,
+//     ...DeleteBranchUnmergedRefusesEvidenceSidecarKept,
+//     ...DeleteBranchMergeTargetUnknownRefusesWithEvidence,
+//     ...DetachedHeadReviewRefusesNeverInvokesLowercaseD — real ancestry. The
+//     model's `merge-base --is-ancestor` always succeeds, so every lane reads as
+//     merged and both verdicts of the gate would stop being distinguishable.
+//   - TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation — git's own
+//     one-checkout-per-branch rule and the location it reports
+//   - TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds — the proof
+//     that the auto-unlock really happened is that git's `worktree remove`, which
+//     refuses a locked entry, then succeeded. The model does not check locks on
+//     remove, so a converted version would pass even if the unlock were skipped.
+//   - TestWorktreeRemove_RemoveCurrentRestoresAndRelocks — real lock/unlock
+//     effects read back through real `--porcelain`
+//   - TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied,
+//     ...CrashResidueUnlockFailsOnPermissionDenied,
+//     ...RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied — git's own
+//     failure writing its lock marker into a read-only internal directory
+//   - TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable — the
+//     absence of a git binary
 
 // removeOp drives the remove operation through the registered tool surface.
 func (r *wtRepo) removeOp(t *testing.T, args map[string]any) (map[string]any, error) {
@@ -38,20 +70,6 @@ func (r *wtRepo) removeOp(t *testing.T, args map[string]any) (map[string]any, er
 	return m, nil
 }
 
-// secondSession builds a second session rooted at r.mainRoot sharing the same
-// worktreeRoot (stateDir) but with a different session id, for cross-session
-// guard tests.
-func (r *wtRepo) secondSession(t *testing.T) *wtRepo {
-	t.Helper()
-	s2 := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{
-		MaxSubagentDepth: 1,
-		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true},
-	}))
-	s2.stateDir = r.stateDir
-	return &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
-}
-
 func gitArgvRecordingRepoShim(t *testing.T, repoRoot string) (logPath string) {
 	t.Helper()
 	realGit, err := exec.LookPath("git")
@@ -70,7 +88,7 @@ func gitArgvRecordingRepoShim(t *testing.T, repoRoot string) (logPath string) {
 // repository" guard.
 func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir() // not a git repo at all
+	dir := t.TempDir() // not a git repo at all; no git boundary is reached
 	s := newSession(t, withDir(dir))
 	_, err := s.worktreeRemove(context.Background(), "x", false, false, false)
 	if err == nil || !strings.Contains(err.Error(), "not in a git repository") {
@@ -80,6 +98,9 @@ func TestWorktreeRemove_NotInGitRepo(t *testing.T) {
 
 // TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable covers
 // step 3's lockStateOf error branch for a non-current target.
+//
+// REAL git: the subject is the ABSENCE of a git binary; a scripted runner would
+// answer every command, leaving nothing missing to prove anything about.
 func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -99,6 +120,9 @@ func TestWorktreeRemove_TargetLockInspectionErrorsWhenGitUnavailable(t *testing.
 // residue) while the session is NOT currently inside it, so Decide resolves
 // to ActUnlockProceed — but the unlock command itself fails because its
 // internal .git/worktrees/<id> directory is read-only.
+//
+// REAL git: the failure under test is git's own, removing its lock marker from a
+// directory it cannot write.
 func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -125,8 +149,9 @@ func TestWorktreeRemove_CrashResidueUnlockFailsOnPermissionDenied(t *testing.T) 
 // error rather than the "no metadata sidecar" unmanaged-provenance message.
 func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	path := sr.addManagedLane(t, "lane")
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(t, canonicalMain)
 	sidecarPath := filepath.Join(metaDir, worktree.EncodeSidecarName("lane")+".json")
@@ -150,17 +175,20 @@ func TestWorktreeRemove_SidecarGarbageJSONErrors(t *testing.T) {
 // fail.
 func TestWorktreeRemove_DirtyCheckErrorsWhenStatusFails(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	path := sr.addManagedLane(t, "lane")
 
-	gitFailOnArgsRepoShim(t, r.mainRoot, "-C", path, "status", "--porcelain=v1", "--untracked-files=all")
+	sr.failGitArgs("-C", path, "status", "--porcelain=v1", "--untracked-files=all")
 
-	_, err := r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := sr.wt().removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "checking for uncommitted changes") {
 		t.Fatalf("remove with the dirtiness-check status call failing: err = %v, want the checking-for-uncommitted-changes error", err)
 	}
 }
 
+// REAL git: the clean arm proves git really deregistered the worktree, and both
+// dirty arms turn on real dirty detection — the scripted model reports every tree
+// clean, so a converted dirty refusal would invert while still passing.
 func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 	t.Run("clean", func(t *testing.T) {
 		t.Parallel()
@@ -261,6 +289,8 @@ func TestWorktreeRemove_BasicDispositionMatrix(t *testing.T) {
 
 // --- 4: delete_branch on a merged branch deletes with -D after the gate ---
 
+// REAL git: the gate's MERGED verdict comes from real ancestry after a real
+// fast-forward, and the branch really leaves the ref store.
 func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -297,12 +327,12 @@ func TestWorktreeRemove_DeleteBranchMergedDeletesAfterGate(t *testing.T) {
 // (the worktree is already removed by step 8 at this point).
 func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	sr.addManagedLane(t, "lane")
 
-	gitFailOnArgsRepoShim(t, r.mainRoot, "rev-parse", "--verify", "refs/heads/lane")
+	sr.failGitArgs("rev-parse", "--verify", "refs/heads/lane")
 
-	out, err := r.removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
+	out, err := sr.wt().removeOp(t, map[string]any{"name": "lane", "delete_branch": true})
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
@@ -314,8 +344,8 @@ func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 		t.Errorf("branch_kept_reason = %q, want it to explain the branch lookup failed", reason)
 	}
 	// The branch itself is untouched (the failure was in inspecting it, not
-	// deleting it) — it still really exists.
-	if !branchExistsInRepo(t, r.mainRoot, "lane") {
+	// deleting it) — it still exists.
+	if !sr.branchExists(t, "lane") {
 		t.Error("branch removed despite the tip lookup failing")
 	}
 }
@@ -325,6 +355,10 @@ func TestWorktreeRemove_DeleteBranchTipLookupErrorsKeepsBranch(t *testing.T) {
 // worktreeRemove's own delete_branch evidence message: the lane's recorded
 // merge_target branch no longer exists anywhere (deleted after the lane was
 // created), so Merged cannot judge it at all.
+//
+// REAL git: TargetUnknown is a fact about the real ref store — neither a local
+// nor a remote-tracking ref by that name resolves — and the lane must carry a
+// real commit past its base for the gate to be consulted at all.
 func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -370,6 +404,10 @@ func TestWorktreeRemove_DeleteBranchMergeTargetUnknownRefusesWithEvidence(t *tes
 // directory is made read-only right before the merged-branch delete lands,
 // so the branch itself deletes cleanly but removing its now-orphaned
 // sidecar file fails with a genuine permission error.
+//
+// REAL git: reaching the branch-deleted arm at all needs a real MERGED verdict
+// over real commits, and the assertion that only the sidecar cleanup failed is
+// checked against the real ref store.
 func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -402,8 +440,9 @@ func TestWorktreeRemove_DeleteSidecarFailsOnPermissionDenied(t *testing.T) {
 // UpdateSidecar's read succeeds but its truncating write fails.
 func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	path := sr.addManagedLane(t, "lane")
 
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(t, canonicalMain)
@@ -429,6 +468,9 @@ func TestWorktreeRemove_MarkSidecarRemovedFailsOnPermissionDenied(t *testing.T) 
 
 // --- 5: delete_branch on an unmerged branch refuses with evidence, keeps the branch and sidecar ---
 
+// REAL git: the refusal needs a genuinely UNMERGED tip. The scripted model's
+// `merge-base --is-ancestor` always succeeds, so every lane reads as merged and
+// this assertion would invert while still passing.
 func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -487,6 +529,9 @@ func TestWorktreeRemove_DeleteBranchUnmergedRefusesEvidenceSidecarKept(t *testin
 
 // --- 6: detached-HEAD-review fixture — serf's own gate refuses where `-d` would succeed ---
 
+// REAL git: the trap only exists against real git — `branch -d` under a real
+// detached HEAD at the lane's tip would succeed, and the argv log that proves
+// serf never issued it comes from a real git shim.
 func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -539,6 +584,8 @@ func TestWorktreeRemove_DetachedHeadReviewRefusesNeverInvokesLowercaseD(t *testi
 
 // --- 7: branch checked out elsewhere surfaces the checkout location ---
 
+// REAL git: the only refusal in play is git's own one-checkout-per-branch rule,
+// and the surfaced location is the path git itself reports.
 func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -571,13 +618,13 @@ func TestWorktreeRemove_BranchCheckedOutElsewhereSurfacesLocation(t *testing.T) 
 
 func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	path := sr.addManagedLane(t, "lane")
 
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000003")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, path)
+	sr.setLaneLock(t, path, foreignReason)
 
-	_, err := r.removeOp(t, map[string]any{"name": "lane", "force": true})
+	_, err := sr.wt().removeOp(t, map[string]any{"name": "lane", "force": true})
 	if err == nil {
 		t.Fatal("expected remove of a foreign-locked target to be refused even with force")
 	}
@@ -587,14 +634,17 @@ func TestWorktreeRemove_ForeignLockRefusesRegardlessOfForce(t *testing.T) {
 	if _, statErr := os.Stat(path); statErr != nil {
 		t.Errorf("worktree removed despite the foreign-lock refusal: %v", statErr)
 	}
-	e := r.porcelainEntry(t, path)
-	if !e.Locked || e.LockReason != foreignReason {
-		t.Errorf("foreign lock mutated: got (%v,%q), want unchanged (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	if got := sr.laneLockReason(t, path); got != foreignReason {
+		t.Errorf("foreign lock mutated: got %q, want unchanged %q", got, foreignReason)
 	}
 }
 
 // --- 9: own-marker crash residue auto-unlocks and proceeds ---
 
+// REAL git: the proof that the auto-unlock happened is that git's own `worktree
+// remove` — which refuses a LOCKED entry — then succeeded. The scripted model
+// does not check locks on remove, so a converted version would pass even if the
+// unlock were skipped entirely.
 func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -620,6 +670,9 @@ func TestWorktreeRemove_OwnMarkerCrashResidueAutoUnlocksAndProceeds(t *testing.T
 // failure: the session is currently inside the target with its own marker
 // (EvRemoveCurrent -> ActUnlock), but the internal .git/worktrees/<id>
 // directory backing the target has been made read-only.
+//
+// REAL git: the failure under test is git's own, removing its lock marker from a
+// directory it cannot write.
 func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -647,12 +700,12 @@ func TestWorktreeRemove_RemoveCurrentUnlockBeforeRestoreFailsOnPermissionDenied(
 // fails.
 func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	path := sr.addManagedLane(t, "lane")
 
-	gitFailOnArgsRepoShim(t, r.mainRoot, "worktree", "remove", "--", path)
+	sr.failGitArgs("worktree", "remove", "--", path)
 
-	_, err := r.removeOp(t, map[string]any{"name": "lane"})
+	_, err := sr.wt().removeOp(t, map[string]any{"name": "lane"})
 	if err == nil || !strings.Contains(err.Error(), "git worktree remove failed") {
 		t.Fatalf("remove with the git worktree remove command failing: err = %v, want the git-worktree-remove-failed error", err)
 	}
@@ -661,6 +714,9 @@ func TestWorktreeRemove_GitWorktreeRemoveCommandFails(t *testing.T) {
 	}
 }
 
+// REAL git: the restore-land rule's effect is a lock that really lands in git's
+// registry on a lane git itself reports as unlocked, and the removed lane really
+// leaves the registry.
 func TestWorktreeRemove_RemoveCurrentRestoresAndRelocks(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -705,22 +761,19 @@ func TestWorktreeRemove_RemoveCurrentRestoresAndRelocks(t *testing.T) {
 
 func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(t, canonicalMain, "launch")
-	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
-		t.Fatalf("mkdir launch parent: %v", err)
-	}
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
+	sr.addLane(t, "launch", launchPath)
 
 	// A session launched directly inside a managed worktree, having never
 	// gone through create/switch — no restore env was ever saved. Give it a
 	// real sidecar (as a genuine prior `create` would have) so the isolated
 	// behavior under test is step 7's no-safe-restore-env refusal, not step
 	// 5's unmanaged-provenance refusal.
-	s2 := newSession(t, withDir(launchPath), withConfig(worktreeTestSessionConfig()))
-	s2.stateDir = r.stateDir
-	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
+	r2 := sr.sessionAt(t, launchPath).wt()
+	s2 := r2.s
 	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
@@ -764,13 +817,11 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefuses(t *testing.T) {
 // safe-restore-env refusal and no warning.
 func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaunch(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	canonicalMain := r.canonicalMain(t)
 	launchPath := r.managedPath(t, canonicalMain, "launch")
-	if err := os.MkdirAll(filepath.Dir(launchPath), 0o755); err != nil {
-		t.Fatalf("mkdir launch parent: %v", err)
-	}
-	wtGit(t, r.mainRoot, "worktree", "add", "-b", "launch", launchPath, r.head)
+	sr.addLane(t, "launch", launchPath)
 
 	// A symlink elsewhere pointing at the real worktree directory, spelled
 	// differently from the canonical projectDir+name join.
@@ -785,9 +836,8 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 	// ever saved. Give it a real sidecar (as a genuine prior `create` would
 	// have) so the isolated behavior under test is step 7's
 	// no-safe-restore-env refusal, not step 5's unmanaged-provenance refusal.
-	s2 := newSession(t, withDir(aliasPath), withConfig(worktreeTestSessionConfig()))
-	s2.stateDir = r.stateDir
-	r2 := &wtRepo{s: s2, mainRoot: r.mainRoot, stateDir: r.stateDir, head: r.head}
+	r2 := sr.sessionAt(t, aliasPath).wt()
+	s2 := r2.s
 	metaDir := r2.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
 		t.Fatalf("mkdir metaDir: %v", err)
@@ -823,8 +873,9 @@ func TestWorktreeRemove_RemoveCurrentNoSafeRestoreEnvRefusesThroughSymlinkedLaun
 
 func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "lane")
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	path := sr.addManagedLane(t, "lane")
 
 	// worktreeLiveWorkStub stands in for Task 20's background-shell-job
 	// launch-workdir field (spec §5 remove step 4's "New plumbing"); this
@@ -865,12 +916,12 @@ func TestWorktreeRemove_LiveWorkGuardRefusesViaStub(t *testing.T) {
 // force_dirty.) This inverts the pre-F1 cross-creator refusal.
 func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	path := r.addManagedWorktreeFixture(t, "shared")
+	sr := newScriptedLaneRepo(t)
+	path := sr.addManagedLane(t, "shared")
 
-	r2 := r.secondSession(t)
-	if r2.s.id == r.s.id {
-		t.Fatal("secondSession returned the same session id")
+	r2 := sr.sessionAt(t, sr.mainRoot).wt()
+	if r2.s.id == sr.s.id {
+		t.Fatal("sessionAt returned the same session id")
 	}
 
 	if _, err := r2.removeOp(t, map[string]any{"name": "shared"}); err != nil {
@@ -885,6 +936,10 @@ func TestWorktreeRemove_CrossCreatorUnlockedLaneProceeds(t *testing.T) {
 // overrides provenance/merge gating but NOT uncommitted work; a dirty tree is
 // still refused (needs force_dirty), so forcing past a provenance refusal
 // cannot silently discard an edit. The live S5 eval caught exactly this loss.
+//
+// REAL git: the whole test turns on real dirty detection. The scripted model
+// reports every tree clean, so the force refusal would silently stop firing while
+// the test still "passed".
 func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -917,13 +972,14 @@ func TestWorktreeRemove_ForceDoesNotDiscardUncommitted(t *testing.T) {
 
 func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	s2, r2, launchPath, pathWork := wtLaunchSession(t, r)
+	sr := newScriptedLaneRepo(t)
+	launch, launchPath, pathWork := sr.launchSession(t)
+	s2, r2 := launch.s, launch.wt()
 
 	// Simulate another session/tool claiming the launch worktree while s2 was
 	// away in "work".
 	foreignReason := worktree.FormatSessionMarker("01FOREIGNSESSIONID0000002")
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", foreignReason, launchPath)
+	sr.setLaneLock(t, launchPath, foreignReason)
 
 	out, err := r2.removeOp(t, map[string]any{"name": "work"})
 	if err != nil {
@@ -953,8 +1009,7 @@ func TestWorktreeRemove_RemoveCurrentForeignLockedRestoreWarns(t *testing.T) {
 	}
 	// The foreign lock on the launch worktree is left untouched (co-occupy,
 	// not a forced takeover).
-	e := r2.porcelainEntry(t, launchPath)
-	if !e.Locked || e.LockReason != foreignReason {
-		t.Errorf("launch worktree lock = (%v,%q), want untouched (%v,%q)", e.Locked, e.LockReason, true, foreignReason)
+	if got := sr.laneLockReason(t, launchPath); got != foreignReason {
+		t.Errorf("launch worktree lock = %q, want untouched %q", got, foreignReason)
 	}
 }

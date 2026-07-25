@@ -16,10 +16,31 @@ import (
 	"primeradiant.com/serf/agent/internal/worktree"
 )
 
-// These are REAL-git integration tests for the manage_worktree create arm
-// (spec §3). They init a throwaway repo under t.TempDir(), drive create through
-// the session tool surface and the worktreeCreate handler directly, and assert
-// against actual git state (porcelain, refs, checked-out files).
+// These are integration tests for the manage_worktree create arm (spec §3),
+// driving create through the session tool surface and the worktreeCreate handler
+// directly.
+//
+// This file also DEFINES the real-git harness (wtRepo, newWorktreeRepo, wtGit,
+// worktreeBaseRepo, addManagedWorktreeFixture, …) that the whole worktree test
+// family shares, and it is MIXED across the two lane harnesses; see
+// docs/testing.md for the rule. A test whose subject is serf's own
+// decision-making — argument validation, which refusal rung fires, what serf
+// wrote to its own sidecar, the preflight — runs on the scripted git boundary.
+// These stay on real git because their subject IS git's observable behavior:
+//
+//   - TestManagedWorktreeStorageUsesOneProjectIDFromMainAndLinkedCheckout — a
+//     real linked checkout's git common directory
+//   - TestWorktreeCreate_CreatesWorktreeWithGitPointer — the .git pointer file
+//   - TestWorktreeCreate_SwapsEnvIntoWorktree — a real checkout of files
+//   - TestWorktreeCreate_AtomicLockWithOwnMarker — `worktree add --lock` really
+//     locking the registry entry
+//   - TestWorktreeCreate_AddFailureCleansSidecarSameCall — git's own D/F ref-lock
+//     failure is what the cleanup reacts to
+//   - TestWorktreeCreate_BaseIsActiveWorktreeHead — a real advanced HEAD
+//   - TestWorktreeCreate_CreateAwayUnlocksOldWorktree — real lock/unlock effects
+//   - TestWorktreeCreate_ExplicitBaseRefs — real resolution of a sha, tag,
+//     branch and remote-tracking ref
+//   - TestWorktreeCreate_RejectsGitReservedNameHEAD — git's own ref rules
 
 var (
 	wtBaseRepoOnce sync.Once
@@ -332,6 +353,9 @@ func (r *wtRepo) create(t *testing.T, args map[string]any) (map[string]any, erro
 	return m, nil
 }
 
+// REAL git: the resolver's job is to follow a genuine linked checkout's git
+// common directory back to the same canonical project, which needs a real
+// `worktree add` and a real .git pointer to follow.
 func TestManagedWorktreeStorageUsesOneProjectIDFromMainAndLinkedCheckout(t *testing.T) {
 	r := newWorktreeRepo(t)
 	mainProject := resolvedProjectID(t, r.s.currentEnv(), r.mainRoot)
@@ -423,6 +447,8 @@ func (r *wtRepo) addManagedWorktreeFixture(t *testing.T, name string) string {
 
 // --- Tests ---
 
+// REAL git: the claim is that a linked worktree's ".git" is a POINTER FILE, a
+// fact about git's own on-disk layout.
 func TestWorktreeCreate_CreatesWorktreeWithGitPointer(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -450,6 +476,8 @@ func TestWorktreeCreate_CreatesWorktreeWithGitPointer(t *testing.T) {
 	}
 }
 
+// REAL git: the swapped env is proven against a real CHECKOUT — the worktree's
+// own copy of README that only `git worktree add` materializes.
 func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -484,6 +512,8 @@ func TestWorktreeCreate_SwapsEnvIntoWorktree(t *testing.T) {
 	}
 }
 
+// REAL git: the subject is that `worktree add --lock --reason` really lands a
+// lock in git's registry, read back through real `--porcelain` output.
 func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -503,7 +533,7 @@ func TestWorktreeCreate_AtomicLockWithOwnMarker(t *testing.T) {
 
 func TestWorktreeCreate_WritesSidecarProvenance(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	res, err := r.create(t, map[string]any{"name": "prov"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -530,6 +560,8 @@ func TestWorktreeCreate_WritesSidecarProvenance(t *testing.T) {
 	}
 }
 
+// REAL git: the failure the same-call cleanup reacts to is git's own refs/heads
+// directory/file ref-lock conflict, which only the git binary produces.
 func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -558,6 +590,8 @@ func TestWorktreeCreate_AddFailureCleansSidecarSameCall(t *testing.T) {
 	}
 }
 
+// REAL git: the base default is proven by really ADVANCING one worktree's HEAD
+// with a commit and watching the next create resolve against it.
 func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -588,6 +622,8 @@ func TestWorktreeCreate_BaseIsActiveWorktreeHead(t *testing.T) {
 	}
 }
 
+// REAL git: both halves of the lock move (A unlocked, B locked) are read out of
+// git's own registry via real `--porcelain`.
 func TestWorktreeCreate_CreateAwayUnlocksOldWorktree(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -616,6 +652,8 @@ func TestWorktreeCreate_CreateAwayUnlocksOldWorktree(t *testing.T) {
 	}
 }
 
+// REAL git: each case's point is that real base-ref resolution accepts a sha, a
+// tag, a branch and a remote-tracking ref, all resolving to the same commit.
 func TestWorktreeCreate_ExplicitBaseRefs(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -674,13 +712,13 @@ func TestWorktreeCreate_RejectsBadBaseRefs(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			r := newWorktreeRepo(t)
-			_, err := r.create(t, map[string]any{"name": c.name, "base_ref": c.ref})
+			sr := newScriptedLaneRepo(t)
+			_, err := sr.wt().create(t, map[string]any{"name": c.name, "base_ref": c.ref})
 			if err == nil {
 				t.Fatalf("expected create to reject %s base_ref %q", c.why, c.ref)
 			}
 			// No worktree registered for a rejected base.
-			if branchExistsInRepo(t, r.mainRoot, c.name) {
+			if sr.branchExists(t, c.name) {
 				t.Errorf("branch %q created despite a rejected base_ref", c.name)
 			}
 		})
@@ -692,8 +730,9 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 	// (a) A plain branch with no managed worktree: error, NO switch suggestion.
 	t.Run("unmanaged branch", func(t *testing.T) {
 		t.Parallel()
-		r := newWorktreeRepo(t)
-		wtGit(t, r.mainRoot, "branch", "plain", r.head)
+		sr := newScriptedLaneRepo(t)
+		r := sr.wt()
+		sr.seedBranch(t, "plain")
 		_, err := r.create(t, map[string]any{"name": "plain"})
 		if err == nil {
 			t.Fatal("expected an error for an existing branch")
@@ -706,7 +745,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 	// (b) A managed worktree already exists: error DOES suggest switch.
 	t.Run("managed worktree", func(t *testing.T) {
 		t.Parallel()
-		r := newWorktreeRepo(t)
+		r := newScriptedLaneRepo(t).wt()
 		if _, err := r.create(t, map[string]any{"name": "dup"}); err != nil {
 			t.Fatalf("first create: %v", err)
 		}
@@ -722,7 +761,7 @@ func TestWorktreeCreate_BranchExistsSuggestsSwitchOnlyWhenManaged(t *testing.T) 
 
 func TestWorktreeCreate_RejectsInvalidName(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	for _, bad := range []string{"", "-lead", "has space", "a..b", "trailing/"} {
 		if _, err := r.create(t, map[string]any{"name": bad}); err == nil {
 			t.Errorf("expected create to reject name %q", bad)
@@ -732,7 +771,7 @@ func TestWorktreeCreate_RejectsInvalidName(t *testing.T) {
 
 func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	// Swap the session env to a non-local one; create must refuse clearly.
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
@@ -746,16 +785,13 @@ func TestWorktreeCreate_NonLocalEnvErrors(t *testing.T) {
 
 func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	r.requireGitVersionPreflight()
 
-	// Repo-shim a `git` that reports an ancient version. The main repo root
-	// resolves structurally (no git needed), so the shim is only hit by the
-	// version preflight, which must refuse before any lifecycle git call.
-	shim := "#!/bin/sh\n" +
-		"if [ \"$1\" = \"version\" ]; then echo \"git version 2.20.0\"; exit 0; fi\n" +
-		"echo \"shim: unexpected git $*\" >&2; exit 1\n"
-	writeRepoGitShim(t, r.mainRoot, shim)
+	// The boundary reports an ancient version. The preflight must refuse before
+	// any lifecycle git call.
+	sr.reportGitVersion("2.20.0")
 
 	_, err := r.create(t, map[string]any{"name": "x"})
 	if err == nil || !strings.Contains(err.Error(), "too old") {
@@ -774,7 +810,7 @@ func TestWorktreeCreate_TooOldGitPreflightErrors(t *testing.T) {
 // non-local env even though `active` itself is a perfectly valid local one.
 func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	active := r.s.currentEnv().(*execenv.LocalExecutionEnvironment)
 
 	r.s.mu.Lock()
@@ -794,6 +830,11 @@ func TestWorktreeCreateCore_ControlEnvNonLocalEnvErrors(t *testing.T) {
 // "HEAD" matches ValidateName's regex and every explicit ValidateName check
 // (no dots, no leading dash, no path components), but git's own
 // `check-ref-format --branch` rejects it as a reserved name.
+//
+// REAL git: the whole subject is git's own reserved-name rule. The scripted
+// boundary deliberately does not model it (see
+// session_tools_worktree_scripted_test.go's check-ref-format arm), so a
+// converted version would prove nothing.
 func TestWorktreeCreate_RejectsGitReservedNameHEAD(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -812,7 +853,7 @@ func TestWorktreeCreate_RejectsGitReservedNameHEAD(t *testing.T) {
 // with ENOTDIR, before any sidecar write or git call.
 func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	canonicalMain := r.canonicalMain(t)
 	projectDir := filepath.Dir(r.managedPath(t, canonicalMain, "x"))
 	if err := os.MkdirAll(filepath.Dir(projectDir), 0o755); err != nil {
@@ -836,7 +877,7 @@ func TestWorktreeCreate_MetaDirMkdirFailsWhenProjectDirIsAFile(t *testing.T) {
 // error.
 func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	canonicalMain := r.canonicalMain(t)
 	metaDir := r.metaDir(t, canonicalMain)
 	if err := os.MkdirAll(metaDir, 0o755); err != nil {
@@ -877,7 +918,7 @@ func TestWorktreeCreate_SidecarAlreadyExistsRace(t *testing.T) {
 // the just-written sidecar (proven here, not just the error text).
 func TestWorktreeCreate_WorktreeParentMkdirFailsWhenPathComponentIsAFile(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t).wt()
 	canonicalMain := r.canonicalMain(t)
 	// name "blocked/nested" needs a parent dir at managedPath(.., "blocked");
 	// occupy that exact path with a file instead.
