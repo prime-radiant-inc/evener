@@ -10,7 +10,7 @@ import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
-import { ToolRow } from "./ToolRow";
+import { statedPurposeOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer } from "./toolRenderers";
 
 afterEach(() => {
@@ -106,6 +106,16 @@ test("a whitespace-only description is absence, not a purpose", () => {
   registerToolRenderer({ match: "trg_blank_purpose", summary: () => "Ran ls" });
   render(<ToolCallItem item={item({ toolName: "trg_blank_purpose", description: "   " })} turn={turn} live={false} />);
   expect(screen.queryByTestId("tool-row-purpose")).toBe(null);
+});
+
+// The subagent activity feed reads the SAME field with a very different
+// presentation; the two must at least agree on when it exists, which is what
+// this shared helper is for (see its doc comment).
+test("statedPurposeOf is the one absent-vs-present rule both surfaces share", () => {
+  expect(statedPurposeOf({ description: "  Check the tree.  " })).toBe("Check the tree.");
+  expect(statedPurposeOf({ description: "   " })).toBeUndefined();
+  expect(statedPurposeOf({ description: "" })).toBeUndefined();
+  expect(statedPurposeOf({})).toBeUndefined();
 });
 
 // --- A2: failure is a glyph on the left; success costs no space -----------

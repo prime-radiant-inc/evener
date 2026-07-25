@@ -48,9 +48,20 @@ export interface ToolRowProps {
   title?: string;
 }
 
+/** The one rule for reading a tool call's stated purpose (ItemModel.description):
+ * trimmed, and blank means ABSENT. Shared with the subagent activity feed
+ * (tools/subagentModule.tsx), which presents the same field very differently
+ * (a numbered feed of a child's steps) but must agree on when it exists at all -
+ * otherwise a whitespace-only description is a line in one surface and nothing
+ * in the other. */
+export function statedPurposeOf(item: { description?: string }): string | undefined {
+  const trimmed = item.description?.trim();
+  return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+}
+
 export function ToolRow({ summary, purpose, failed, expandable, expanded, onToggle, trailing, title }: ToolRowProps) {
-  const statedPurpose = purpose?.trim();
-  const hasPurpose = statedPurpose !== undefined && statedPurpose !== "";
+  const statedPurpose = statedPurposeOf({ description: purpose });
+  const hasPurpose = statedPurpose !== undefined;
   const content = (
     <>
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.

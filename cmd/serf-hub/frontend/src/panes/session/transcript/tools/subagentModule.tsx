@@ -36,6 +36,7 @@ import { Button, Chip, type ChipTone } from "../../../../widgets";
 import { Disclosure } from "../../../../widgets/disclosure";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../../liveness";
+import { statedPurposeOf } from "../ToolRow";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
@@ -189,7 +190,15 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
 
   const model = useThreadsStore((s) => s.watchedThreads.get(transcriptRef));
   const items = model ? model.turns.flatMap((t) => t.items) : [];
-  const activity = items.filter((it) => it.description);
+  // Same "does this item state a purpose" rule the main transcript's tool row
+  // uses (ToolRow.tsx's statedPurposeOf) - the PRESENTATION differs deliberately
+  // (a numbered feed of a child's steps here, a leading line on the row there),
+  // but a whitespace-only description must not be a step in one and nothing in
+  // the other.
+  const activity = items.flatMap((it) => {
+    const purpose = statedPurposeOf(it);
+    return purpose === undefined ? [] : [{ id: it.id, purpose }];
+  });
   const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
 
@@ -210,7 +219,7 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
                   key={it.id}
                   className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}
                 >
-                  {it.description}
+                  {it.purpose}
                 </li>
               );
             })}
