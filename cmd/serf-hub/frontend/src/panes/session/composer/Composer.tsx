@@ -37,13 +37,12 @@ export interface ComposerProps {
   ref: string;
 }
 
-// Only this one class goes through requireClass (the design-system's rule
-// for any NEW class) - the file's five pre-existing classNames below are
-// bare direct module references, this file's own established convention
-// (unlike QueueStrip.tsx's full CLASS table); flagged rather than silently
-// mixed, and not "fixed" wholesale since rewriting five unrelated, already-
-// working references is outside this fix's own scope.
 const CLASS = {
+  composer: requireClass(styles.composer, "composer.module.css", "composer"),
+  chips: requireClass(styles.chips, "composer.module.css", "chips"),
+  inputCard: requireClass(styles.inputCard, "composer.module.css", "inputCard"),
+  controls: requireClass(styles.controls, "composer.module.css", "controls"),
+  controlsRight: requireClass(styles.controlsRight, "composer.module.css", "controlsRight"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
@@ -546,7 +545,7 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   return (
-    <div className={styles.composer}>
+    <div className={CLASS.composer}>
       {/* T4: ask dock - renders above the queue strip; onFallbackToComposer
           reuses the same restoreTextToComposer merge as QueueStrip's own
           onRestoreToComposer above (see that function's own doc comment for
@@ -580,7 +579,7 @@ export function Composer({ ref }: ComposerProps) {
         onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
       />
       {hasAttachments && (
-        <div className={styles.chips} hidden={askPending} inert={askPending}>
+        <div className={CLASS.chips} hidden={askPending} inert={askPending}>
           {attachments.items.map((item) => {
             const isImage =
               item.mediaType.startsWith("image/") &&
@@ -626,7 +625,7 @@ export function Composer({ ref }: ComposerProps) {
       )}
       <form ref={formRef} onSubmit={handleFormSubmit}>
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={styles.inputCard} data-testid="composer-input-card" hidden={askPending} inert={askPending}>
+          <div className={CLASS.inputCard} data-testid="composer-input-card" hidden={askPending} inert={askPending}>
             <Textarea
               ref={textareaRef}
               value={text}
@@ -640,7 +639,7 @@ export function Composer({ ref }: ComposerProps) {
               placeholder="Message the agent…"
               aria-label="Message"
             />
-            <div className={styles.controls}>
+            <div className={CLASS.controls}>
               {/* data-testid on every control in this row: two different
                   buttons here start with "Steer" (this one and QueueStrip's
                   "Steer queue now"), so tests address controls by a stable
@@ -655,7 +654,7 @@ export function Composer({ ref }: ComposerProps) {
                 data-testid="composer-attach"
                 onClick={() => fileInputRef.current?.click()}
               />
-              <div className={styles.controlsRight}>
+              <div className={CLASS.controlsRight}>
                 {/* Stop is a secondary action beside Send, so it carries
                     danger on the glyph rather than as a filled square
                     competing with the primary control. */}
