@@ -222,6 +222,11 @@
   gap: var(--space-2);
   width: 100%;
   min-width: 0;
+  /* Containing block for the absolutely-positioned `.actions` overlay
+   * below - without it that overlay resolves against the nearest
+   * positioned ancestor instead (the scrolling rail body, or the viewport)
+   * and detaches from its own row entirely. */
+  position: relative;
 }
 
 /* Nested-level guide rail (§2.3): widgets/tree exposes no depth class of
@@ -239,7 +244,8 @@
   border-left: 1px solid var(--edge);
 }
 
-/* Row actions (RailRow's "+"/"..." trigger buttons): quiet by default -
+/* Row actions (RailRow's "+"/"..." trigger buttons; both a session row's
+ * single "..." and a project row's "+" pair): quiet by default -
  * transparent, borderless, invisible - revealed on row hover/focus so the
  * rail reads as dense and quiet (design bar: Linear/VS Code-quality sidebar)
  * instead of every row showing a permanently-loud bordered button. `.row` is
@@ -250,29 +256,58 @@
  * treeitem being focused). `:has(button[aria-expanded="true"])` keeps a row
  * revealed while ITS OWN menu is open (closing on blur/Escape already
  * reverts it via Menu's own isOpen state); an ancestor selector is scoped
- * to `.actions` so an open menu on one row never reveals another's. */
+ * to `.actions` so an open menu on one row never reveals another's.
+ *
+ * Out of flow and pinned to the row's right edge, so a hidden->revealed
+ * transition costs the row's own content exactly zero width: the title
+ * column and the timestamp/Badge lay out as if these buttons weren't
+ * there, and the revealed buttons paint ON TOP of the timestamp instead of
+ * claiming a slot beside it (which made every actionable row narrower for
+ * its title than its neighbours). `.row` above is the containing block.
+ *
+ * The masking background is what makes overlapping legible: `--surface-1`
+ * is the rail's own background (`.rail`), and a row paints no surface of
+ * its own (widgets/tree/tree.module.css sets none), so this is exactly the
+ * color already behind the timestamp - the overlay reads as the row's own
+ * right edge rather than a floating island, and the covered text can't
+ * bleed through the "⋯" glyph. It's a left-to-right gradient rather than a
+ * flat fill because a hard opaque edge slices whatever it covers mid-glyph
+ * (a half-rendered letter reads as a rendering bug); the ramp reaches full
+ * opacity before `padding-left` ends, so the buttons themselves always sit
+ * on fully-masked ground. The opacity lives on the container, not the
+ * buttons, so the mask fades in and out with what it's masking. */
 .actions {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
   display: inline-flex;
+  align-items: center;
   flex: none;
   gap: var(--space-1);
-}
-
-.actions button {
+  padding-left: var(--space-5);
+  background: linear-gradient(to right, transparent, var(--surface-1) var(--space-5));
   opacity: 0;
   transition: opacity 120ms var(--motion-easing-standard);
 }
 
-.row:hover .actions button,
-[role="treeitem"]:focus .actions button,
-.actions:has(button[aria-expanded="true"]) button {
+.row:hover .actions,
+[role="treeitem"]:focus .actions,
+.actions:has(button[aria-expanded="true"]) {
   opacity: 1;
 }
 
 /* Touch has no hover to reveal these with - stay visible below the mobile
  * breakpoint (useIsMobile.ts's own 899px threshold), matching TreeDrawer's
- * touch-first rail presentation. */
+ * touch-first rail presentation. Permanently visible means permanently
+ * masking, so touch drops the overlay entirely and goes back to a real
+ * flex slot beside the timestamp: the age stays readable, and there is no
+ * hover state left for an overlay to buy zero-shift for anyway. */
 @media (max-width: 899px) {
-  .actions button {
+  .actions {
+    position: static;
+    padding-left: 0;
+    background: none;
     opacity: 1;
   }
 }

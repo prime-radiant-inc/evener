@@ -13,10 +13,12 @@
 // project row's "+") quiet: transparent/borderless by default, revealed only
 // on row hover/focus, matching the design bar (Linear/VS Code-quality
 // sidebar - quiet, hover-revealed, zero layout shift) instead of a
-// permanently-visible bordered button on every row. See Rail.module.css's
-// own comment on .actions for the exact selectors (row hover, treeitem
-// focus, open-menu, and the <900px touch fallback that keeps it visible
-// with no hover to reveal it).
+// permanently-visible bordered button on every row. They overlay the row's
+// right edge (over the timestamp/Badge) rather than occupying a slot beside
+// it, so revealing them costs this row's own content zero width. See
+// Rail.module.css's own comment on .actions for the exact selectors (row
+// hover, treeitem focus, open-menu, and the <900px touch fallback that
+// keeps it visible - in flow, not overlaid - with no hover to reveal it).
 import type { ReactNode } from "react";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Badge, Cadence, type CadenceState, IconButton, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
