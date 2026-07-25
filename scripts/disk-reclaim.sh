@@ -10,10 +10,28 @@
 # errors — four test failures were once root-caused to transient exhaustion
 # after being investigated as flakes. Recovery has needed a human each time.
 #
-# The three consumers, measured 2026-07-25:
-#   go build cache      16G   (largest by far, fully regenerable)
-#   git worktrees      5.6G   (~130MB per checkout, 42 registered)
-#   frontend node_modules     one real 189MB install, symlinked from the rest
+# The three consumers, re-measured 2026-07-25 (the fleet had grown since the
+# first pass the same day - these numbers move; re-run the report, don't trust
+# either set):
+#   go build cache      10-13G (largest by far, fully regenerable; a single
+#                        `go test -c` of the biggest package alone grew it by
+#                        ~1G from a warm cache - that is the real burn rate,
+#                        not a one-time cost)
+#   git worktrees       3.6G   (~80-90MB per fresh checkout, up to ~260MB with
+#                        build artifacts; 22 registered)
+#   frontend node_modules     one real install, symlinked from the rest
+# Free space on the Data volume at measurement time: ~12-17G of 228G (92-94%
+# used) - i.e. the whole floor most of this script cares about is smaller than
+# ONE fresh package's build-cache growth, multiplied by however many agents in
+# the fleet touch different code at once.
+#
+# A fourth consumer this script does NOT see or touch: ~40 checkouts under
+# .claude/worktrees (~1.6G) whose `.git` file points at this repo's OLD path
+# from before a directory rename, so `git worktree list` here has no record of
+# them at all - `git worktree remove`/`prune` can't reach what it doesn't know
+# about. Real, but small next to the build cache, and removing them needs a
+# human to confirm they're truly abandoned rather than someone's stashed work
+# on an old checkout of this same repo. See the filed follow-up kata.
 #
 # Usage:
 #   scripts/disk-reclaim.sh                 # report only, changes nothing
@@ -22,6 +40,19 @@
 #   scripts/disk-reclaim.sh --all           # both
 #   scripts/disk-reclaim.sh --into <ref>    # "merged" means merged into <ref>
 #                                           # (default: the current HEAD)
+#   scripts/disk-reclaim.sh --check         # exit 1 with a specific message if
+#                                           # free space is below the floor;
+#                                           # silent, exit 0, otherwise. Fast:
+#                                           # a bare df, nothing else. This is
+#                                           # what scripts/run-module-tests.sh
+#                                           # calls before every test run (kata
+#                                           # 98x9): a silent-exhaustion failure
+#                                           # is a mystery ("no space left on
+#                                           # device" 40s into a build) unless
+#                                           # something already on the path
+#                                           # everyone runs catches it first.
+#                                           # Floor defaults to 5 (GiB); override
+#                                           # with SERF_DISK_MIN_FREE_GB.
 #
 # Safety: an unmerged worktree is NEVER removed, and neither is the one you are
 # standing in. ~/.serf and ~/.local/state/serf are never touched. Emptying the
@@ -30,12 +61,14 @@ set -uo pipefail
 
 RECLAIM_CACHE=0
 RECLAIM_WORKTREES=0
+CHECK_ONLY=0
 INTO=""
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--cache) RECLAIM_CACHE=1 ;;
 	--worktrees) RECLAIM_WORKTREES=1 ;;
+	--check) CHECK_ONLY=1 ;;
 	--all)
 		RECLAIM_CACHE=1
 		RECLAIM_WORKTREES=1
@@ -49,7 +82,7 @@ while [ $# -gt 0 ]; do
 		}
 		;;
 	-h | --help)
-		sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,59p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*)
@@ -65,6 +98,31 @@ repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
 	exit 1
 }
 cd "$repo_root" || exit 1
+
+if [ "$CHECK_ONLY" = 1 ]; then
+	# Deliberately does none of the reporting below: this runs on every single
+	# test invocation across the fleet (wired into run-module-tests.sh), so it
+	# has to be a single fast syscall, not a du of a 10G+ build cache or a
+	# merge-base walk over twenty-odd worktrees.
+	min_gb=${SERF_DISK_MIN_FREE_GB:-5}
+	avail_kb=$(df -k "$repo_root" | awk 'NR==2 {print $4}')
+	min_kb=$((min_gb * 1024 * 1024))
+	if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
+		avail_gb=$((avail_kb / 1024 / 1024))
+		cat >&2 <<-MSG
+			disk-reclaim: only ${avail_gb}G free on $repo_root (floor is ${min_gb}G) — kata 98x9.
+			Left alone this shows up as an unrelated-looking failure instead of this message:
+			"link: mapping output file failed: no space left on device", a t.TempDir() setup
+			failure, or a jobstore open error. Free some space, then re-run:
+			  scripts/disk-reclaim.sh --cache       # empty the Go build cache (fully regenerable, ~2-3min cold rebuild)
+			  scripts/disk-reclaim.sh --worktrees   # remove worktrees already merged into HEAD
+			  scripts/disk-reclaim.sh --all         # both
+			Override the floor for this run only: SERF_DISK_MIN_FREE_GB=<N> (default 5).
+		MSG
+		exit 1
+	fi
+	exit 0
+fi
 
 # The worktrees live beside the MAIN checkout, not beside whichever worktree you
 # happen to be standing in - and --show-toplevel gives the latter. The common
@@ -93,16 +151,25 @@ fi
 
 # Classify every registered worktree as merged-into-$INTO or not. Only the
 # merged ones are ever removal candidates.
+#
+# Parsed from `git worktree list --porcelain`, NOT the human-readable
+# `git worktree list`: the human format appends a bare "locked" or "prunable"
+# word after the `[branch]` bracket for a locked or administratively-stale
+# worktree, and simple bracket-stripping folded that word into the branch name
+# itself (e.g. "k6-worktreefollow] locked"). That name never resolves as a
+# ref, so every locked/prunable worktree silently fell into the "unresolvable"
+# bucket - never a data-loss risk (unresolvable is kept, same as unmerged),
+# but it meant --worktrees could never even consider them. The porcelain
+# format gives the branch on its own `branch refs/heads/<name>` line, with
+# `locked`/`prunable` as separate lines entirely.
 merged=()
 unmerged=()
 here=$(git rev-parse --show-toplevel)
-while read -r path _hash branchfield; do
-	[ -n "$path" ] || continue
-	[ "$path" = "$here" ] && continue
-	branch=${branchfield#\[}
-	branch=${branch%\]}
-	[ -n "$branch" ] || continue
-	[ "$branch" = "(detached" ] && continue
+classify_worktree() {
+	local path="$1" branch="$2" tip
+	[ -n "$path" ] || return
+	[ "$path" = "$here" ] && return
+	[ -n "$branch" ] || return # detached HEAD: nothing to classify against
 	# A branch with no commits of its own is UNSTARTED, not merged - and
 	# --is-ancestor cannot tell the difference, because a branch that has not
 	# diverged yet is trivially an ancestor of what it was cut from. This
@@ -125,7 +192,27 @@ while read -r path _hash branchfield; do
 	else
 		unmerged+=("$path	$branch")
 	fi
-done < <(git worktree list | tail -n +1)
+}
+wt_path="" wt_branch=""
+while IFS= read -r line; do
+	case "$line" in
+	"worktree "*)
+		wt_path=${line#worktree }
+		wt_branch=""
+		;;
+	"branch "*)
+		wt_branch=${line#branch }
+		wt_branch=${wt_branch#refs/heads/}
+		;;
+	"detached") wt_branch="" ;;
+	"")
+		classify_worktree "$wt_path" "$wt_branch"
+		wt_path=""
+		wt_branch=""
+		;;
+	esac
+done < <(git worktree list --porcelain
+	echo)
 
 wt_size=$(du -sh "$worktrees_dir" 2>/dev/null | cut -f1)
 echo "  worktrees        ${wt_size:-0}	${#merged[@]} merged into ${INTO:0:12}, ${#unmerged[@]} unmerged"
