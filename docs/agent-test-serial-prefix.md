@@ -25,7 +25,7 @@ serialization ceiling, not a concurrency shortfall.
 
 | cost | share | family |
 |---|---|---|
-| 5.4s | 37% | real-git `wtRepo` harness (`Dispose_*`, `P3Sweep_*`, worktree tools) |
+| 5.4s | 37% | real-git `wtRepo` harness — 4.5s of it in the two `dispose` files alone (since fixed, below) |
 | 2.6s | 18% | `*SeqFuzz` (shared sequence state) |
 | 6.5s | 45% | everything else |
 
@@ -52,16 +52,20 @@ tests then compete for the same cores as the existing parallel bulk.
 The sweep was **not landed**: trading a clean baseline for a 1-in-6 flake rate
 is a bad deal on a gate.
 
-## Why the remaining 10.1s is stuck
+## Why the broad sweep flaked
 
-Two hard blockers, both verified rather than assumed:
+Two blockers, both verified rather than assumed. Note the first is about the
+*sweep*, not about git tests in general — the dispose files parallelized fine on
+their own (see below). What breaks is converting the wider package around them.
 
-1. **The real-git `wtRepo` harness.** These tests drive actual `git`
-   (init/commit/worktree add/merge/push/fetch) against a shared base repo.
-   Parallelizing them fails — and, more importantly, parallelizing *other*
-   files still breaks them: `TestP3Sweep_*` and `TestP3CloseResidue_*` flaked
-   even with every git-harness file reverted, because the added CPU contention
-   alone is enough. The coupling is package-wide, not per-file.
+1. **Package-wide contention reaches the real-git tests.** `TestP3Sweep_*` and
+   `TestP3CloseResidue_*` flaked under the 340-test sweep *even with every
+   git-harness file reverted*: the added CPU contention from unrelated files was
+   enough on its own. These tests drive actual `git`
+   (init/commit/worktree add/merge/push/fetch), so they are the most
+   timing-exposed work in the package. The coupling is package-wide, not
+   per-file — which is why a targeted change succeeded where the broad one did
+   not.
 
 2. **Process-global state that static screening cannot see.** Two classes bit
    this effort:
@@ -88,10 +92,43 @@ callees transitively.
 single-run gate and then failed 6 of 12 full runs. `scripts/parallelize-tests.sh`
 now takes `--runs N` and keeps a file only if every run passes.
 
-## Recommendation
+## What was landed instead: 25 tests, same win, no flakes
 
-The cheap win is ~4s and costs suite reliability, so it is not worth taking as-is.
-Getting the full prefix back requires decoupling the real-git harness — giving
-each test an isolated repo, or moving that suite into its own package so its
-serial prefix runs concurrently with the rest of the module. That is the
-monolith-split refactor, and it needs a design decision, not a sweep.
+Investigating "move the real-git tests to their own package" turned up a much
+cheaper answer. Two facts reframed it:
+
+- **Most real-git files were already parallel.** Of the 13 wtRepo files, only
+  the two `dispose` suites were fully serial. The "real-git tests are serial"
+  premise was wrong.
+- **They were serial for no stated reason.** 25 of the 26 dispose tests carried
+  no `t.Parallel()` and no comment explaining why. Each already owns an isolated
+  repo and git env via the harness, so they parallelize as-is. The one genuine
+  exception — `TestDispose_Depth2Cascade_SharedBudget`, which asserts on the
+  process-global `closeBudgetMintHook` — stays serial.
+
+| | pristine | 340-test sweep | **25 dispose tests** |
+|---|---|---|---|
+| prefix ends at | 18.0s | 11.6s | **11.9s** |
+| serial work | 14.4s | 10.1s | **10.2s** |
+| wall time | ~39.6s | ~35.6s | **~35.2s** |
+| 12-run stress | 12/12 | 10/12 | **12/12** |
+
+25 tests bought the same prefix reduction as 340, with none of the flakes,
+in a 25-line diff. The broad sweep's extra 315 conversions contributed
+essentially nothing to wall time while introducing every flake — the cost was
+never spread across the long tail, it was concentrated in a handful of files.
+
+## What is left, and what it would take
+
+The residual ~10.2s prefix is spread thin: ~350 sub-0.15s tests whose cost is
+per-test fixed overhead, plus 2.6s of `*SeqFuzz`. There is no remaining
+concentration to exploit, and the measurements above show converting the tail
+does not move wall time.
+
+Moving the real-git tests into their own package was scoped and rejected: those
+files reference **102 unexported identifiers** from package `agent`
+(`worktreeDispose`, `disposeOneDelegateLane`, `jobManager`, `emit`, …), so an
+external test package would require exporting all of them — a large, invasive
+change to production code for a test-layout benefit. If the package split is
+ever done, it should be driven by the compile-time argument (168K test LOC in
+one compilation unit, ~5s per test-file edit), not by this prefix.
