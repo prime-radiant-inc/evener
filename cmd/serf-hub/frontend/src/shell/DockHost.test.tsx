@@ -584,6 +584,38 @@ function advance(ms: number) {
   });
 }
 
+// The `activeView` of every group in the CURRENTLY SAVED layout - dockview's own
+// record of which tab is active, per group (see workspace.ts's restoreLayout for
+// the reading side). Returns [] when nothing is saved yet.
+//
+// Why the tests below wait on THIS rather than merely "the key is non-null":
+// mounting already schedules a save of its own, and the debounce coalesces - so
+// a save from the initial mount can land BEFORE the focus change this file cares
+// about, satisfying a non-null check while the persisted activeView is still the
+// pre-focus one. Unmounting then cancels the pending correct save (DockHost
+// clears the timer on teardown, deliberately), leaving the test to restore a
+// layout that never recorded the focus it was supposed to be about - passing or
+// failing for reasons unrelated to what it claims to test. Waiting for the
+// specific pane id closes that window.
+function savedActiveViews(): string[] {
+  const raw = localStorage.getItem(LAYOUT_KEY);
+  if (raw === null) return [];
+  const parsed = JSON.parse(raw) as { grid: { root: unknown } };
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node !== "object" || node === null) return;
+    const n = node as { type?: string; data?: unknown };
+    if (n.type === "branch" && Array.isArray(n.data)) {
+      for (const child of n.data) walk(child);
+    } else if (n.type === "leaf") {
+      const active = (n.data as { activeView?: string } | undefined)?.activeView;
+      if (active !== undefined) out.push(active);
+    }
+  };
+  walk(parsed.grid.root);
+  return out;
+}
+
 test("debounces saving the layout to localStorage after a change", async () => {
   // Real timers for the initial mount (findByText's own polling), fake
   // timers only from here on - this sidesteps any question of whether
@@ -801,13 +833,18 @@ test("a reload keeps the focused tab even when the URL routes to a different, al
   workspaceStore.getState().focusPane(second);
   await screen.findByText(/doc pane: ref_b \(focused=true\)/);
 
-  vi.useFakeTimers();
-  act(() => {
-    vi.advanceTimersByTime(500); // flush the debounced save of the focus change
+  // REAL timers, waiting for the write - not fake timers. The save is scheduled
+  // by DockHost's onDidLayoutChange handler at the moment focus changes, i.e.
+  // above, on the real clock; a later vi.useFakeTimers() cannot flush a timeout
+  // the real setTimeout already created (advanceTimersByTime only drives timers
+  // created after the swap), so nothing was ever written and this assertion died
+  // before the test reached its actual subject. Same shape, and the same
+  // reasoning, as AppShell.test.tsx's own merge test. Waiting on the specific
+  // activeView (not just a non-null key) is what makes this the focus change's
+  // save rather than the mount's - see savedActiveViews.
+  await vi.waitFor(() => {
+    expect(savedActiveViews()).toContain(second);
   });
-  const saved = localStorage.getItem(LAYOUT_KEY);
-  expect(saved).not.toBeNull();
-  vi.useRealTimers();
   unmount();
   resetWorkspaceStoreForTests();
 
@@ -834,12 +871,11 @@ test("a deep link to a pane the saved layout does NOT contain still wins focus",
   workspaceStore.getState().focusPane(second);
   await screen.findByText(/doc pane: ref_b \(focused=true\)/);
 
-  vi.useFakeTimers();
-  act(() => {
-    vi.advanceTimersByTime(500);
+  // Real timers, waiting for the focus change's own save to land - see the
+  // previous test's comment for why fake timers cannot flush it here.
+  await vi.waitFor(() => {
+    expect(savedActiveViews()).toContain(second);
   });
-  expect(localStorage.getItem(LAYOUT_KEY)).not.toBeNull();
-  vi.useRealTimers();
   unmount();
   resetWorkspaceStoreForTests();
 
