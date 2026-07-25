@@ -48,10 +48,13 @@ function renderWithToasts() {
   );
 }
 
-test("Enter sends defaults OFF, Show estimated cost defaults ON - the asymmetric defaults parity requires", () => {
+// Both default off: the per-turn cost segment Show estimated cost gates is
+// opt-in transcript detail, and the session total in the footer strip shows
+// regardless.
+test("Enter sends and Show estimated cost both default OFF", () => {
   renderWithToasts();
   expect(screen.getByRole("switch", { name: "Enter sends" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("switch", { name: "Show estimated cost" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("switch", { name: "Show estimated cost" }).getAttribute("aria-checked")).toBe("false");
 });
 
 test("toggling Enter sends persists to the PINNED serf.prefs.enterToSend key ('1'/'0' encoding, matching W5's shipped reader) and toasts Settings saved", async () => {
@@ -71,9 +74,14 @@ test("toggling Show estimated cost persists to the PINNED serf.prefs.showCost ke
 
   await user.click(screen.getByRole("switch", { name: "Show estimated cost" }));
 
-  expect(prefsStore.getState().showCost).toBe(false);
+  expect(prefsStore.getState().showCost).toBe(true);
   expect(prefsStore.getState().enterToSend).toBe(false); // unaffected
-  expect(localStorage.getItem("serf.prefs.showCost")).toBe("0");
+  expect(localStorage.getItem("serf.prefs.showCost")).toBe("1");
+});
+
+test("Show estimated cost help text says the session total stays in the footer", () => {
+  renderWithToasts();
+  expect(screen.getByText(/The session's total cost always shows in the footer\./)).toBeTruthy();
 });
 
 test("Enter sends help text explains both keybind modes", () => {
