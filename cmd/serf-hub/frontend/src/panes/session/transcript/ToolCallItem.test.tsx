@@ -39,19 +39,28 @@ test("renders the resolved descriptor's summary", () => {
   expect(screen.getByText("did a thing")).toBeTruthy();
 });
 
+// The expanded content mounts only while the row is open (the same shape
+// widgets/disclosure uses), so a body assertion has to open the row first.
+function expandRow(): void {
+  fireEvent.click(screen.getByTestId("tool-row"));
+}
+
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
   render(
     <ToolCallItem item={item({ toolName: "tci_unregistered", output: "raw bytes here" })} turn={turn} live={false} />,
   );
   expect(screen.getByText("tci_unregistered")).toBeTruthy(); // default summary = tool name
+  expandRow();
   expect(screen.getByText("raw bytes here")).toBeTruthy(); // default body = raw output
 });
 
 test("renders no body element when the resolved descriptor has none", () => {
   registerToolRenderer({ match: "tci_no_body", summary: () => "no body here" });
-  const { container } = render(<ToolCallItem item={item({ toolName: "tci_no_body" })} turn={turn} live={false} />);
-  // Only the summary span - no second child carrying body content.
-  expect(container.querySelector('[data-testid="tool-call-item"]')?.children).toHaveLength(1);
+  render(<ToolCallItem item={item({ toolName: "tci_no_body" })} turn={turn} live={false} />);
+  // Only the shared row - nothing carrying body content, and no chevron
+  // promising something to open.
+  expect(screen.queryByTestId("tool-call-body")).toBe(null);
+  expect(screen.queryByTestId("tool-row-chevron")).toBe(null);
 });
 
 test("passes live through to the descriptor's body component", () => {
@@ -60,6 +69,7 @@ test("passes live through to the descriptor's body component", () => {
   }
   registerToolRenderer({ match: "tci_live_echo", summary: () => "s", body: LiveEcho });
   render(<ToolCallItem item={item({ toolName: "tci_live_echo" })} turn={turn} live={true} />);
+  expandRow();
   expect(screen.getByTestId("live-echo").textContent).toBe("true");
 });
 
@@ -173,6 +183,7 @@ test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", ()
 test("a tool call's outputImages render as gallery thumbnails", () => {
   registerToolRenderer({ match: "tci_images", summary: () => "s", body: () => <div>body</div> });
   render(<ToolCallItem item={item({ toolName: "tci_images", outputImages: ["a", "b"] })} turn={turn} live={false} />);
+  expandRow();
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
 
@@ -189,6 +200,7 @@ test("outputImages render even for a body-less descriptor (the row still becomes
   );
   const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
   expect(details.tagName).toBe("DETAILS");
+  expandRow();
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
 });
 
@@ -222,15 +234,33 @@ test("an errored tool row earns a failure marker in its summary", () => {
   registerToolRenderer({ match: "tci_err_glyph", summary: () => "did a thing" });
   render(<ToolCallItem item={item({ toolName: "tci_err_glyph", error: "nope" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
-  expect(screen.getByText("Failed")).toBeTruthy();
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
 });
 
 test("a clean tool call earns NO failure marker and stays collapsed (success recedes)", () => {
   registerToolRenderer({ match: "tci_ok_glyph", summary: () => "did a thing", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_ok_glyph" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
-  expect(screen.queryByText("Failed")).toBe(null);
+  expect(screen.queryByTestId("failure-glyph")).toBe(null);
   expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a descriptor's own failed() predicate marks the row even with no wire error (nonzero shell exit)", () => {
+  registerToolRenderer({
+    match: "tci_descriptor_failed",
+    summary: () => "s",
+    failed: (it) => it.exitCode === 1,
+  });
+  render(<ToolCallItem item={item({ toolName: "tci_descriptor_failed", exitCode: 1 })} turn={turn} live={false} />);
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe("true");
+});
+
+test("a descriptor's detail() becomes the row's hover title, never its headline text", () => {
+  registerToolRenderer({ match: "tci_detail", summary: () => "Ran false", detail: () => "exit 1" });
+  render(<ToolCallItem item={item({ toolName: "tci_detail" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("tool-row").getAttribute("title")).toBe("exit 1");
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran false");
 });
 
 test("a body-less descriptor still becomes an expandable details when the call errored (shows the error)", () => {

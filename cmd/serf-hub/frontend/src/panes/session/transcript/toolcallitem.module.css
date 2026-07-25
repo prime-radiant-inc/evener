@@ -1,28 +1,129 @@
+/* One tool call. A call with no inline body is a single line of text: the
+ * padding below is the row's only vertical cost. */
 .call {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) 0;
+  padding: var(--space-1) 0;
 }
 
+/* The shared row (ToolRow.tsx) - see that file for the row grammar it
+ * implements. A purpose-bearing row wraps onto two lines (purpose above, quiet
+ * verb/target below) via the flex-basis rule further down; without a purpose it
+ * stays on one. */
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  list-style: none; /* the <summary> variant: no native disclosure triangle */
+  cursor: default;
+}
+
+.row::-webkit-details-marker {
+  display: none;
+}
+
+/* Only the expandable variant is a <summary>; make that one, and only that
+ * one, read as clickable. */
+summary.row {
+  cursor: pointer;
+}
+
+summary.row:hover {
+  background: var(--surface-2);
+}
+
+summary.row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+/* The agent's stated reason for the call - the one part of the row written for
+ * a human, so it gets the sans face and the full-contrast ink. */
+.purpose {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
+/* verb + target + meta, the descriptor's own summary() string: machine text,
+ * so mono. */
 .summary {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
   color: var(--ink-mid);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+/* With a purpose above it the summary is a glanceable detail, not the story:
+ * it takes the whole next line, dimmer and clipped to one line rather than
+ * wrapping and out-shouting the purpose. flex-basis 100% is what forces the
+ * line break inside the wrapping row. */
+.demoted {
+  flex: 0 0 100%;
+  color: var(--ink-low);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
+summary.row:hover .demoted {
+  color: var(--ink-mid);
+}
+
+/* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure. */
+.chevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+.chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+/* The expanded body: hairline-framed, --surface-1, no heavy fill. */
+.body {
+  margin-top: var(--space-1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .body {
+    animation: tool-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+@keyframes tool-body-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 /* The tool-result error/denial text (ItemModel.error), shown verbatim above
  * the descriptor's own body on a failed row. Failure colour lives entirely on
- * the Chip marker inside the summary (its danger tone is allowlisted in
- * token-contract.test.ts); this text block itself stays on neutral ink tokens
- * like every other rule here, so the reader gets the message without a wall of
+ * the FailureGlyph in the row (a widget, the only place --danger may be
+ * referenced from); this text block itself stays on neutral ink tokens like
+ * every other rule here, so the reader gets the message without a wall of
  * red. */
 .error {
   font-family: var(--font-mono);
-  font-size: var(--font-size-ui);
+  font-size: var(--font-size-caption);
   color: var(--ink-hi);
   white-space: pre-wrap;
   word-break: break-word;

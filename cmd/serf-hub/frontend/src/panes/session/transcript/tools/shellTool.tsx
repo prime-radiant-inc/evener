@@ -21,18 +21,12 @@
 
 import type { ItemModel } from "../../../../protocol/model";
 import { CodeBlock } from "../../../../widgets";
-import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { clip, parseArgs, str, tailFold, tailSlice, trailingBracketFooter } from "./helpers";
-import styles from "./shelltool.module.css";
 
 const COMMAND_CLIP = 80;
 const TAIL_MAX_CHARS = 8000;
-
-const CLASS = {
-  header: requireClass(styles.header, "shelltool.module.css", "header"),
-};
 
 function shellCommand(args: Record<string, unknown>): string {
   return str(args, "command") ?? str(args, "cmd") ?? "";
@@ -69,29 +63,45 @@ function shellExitCode(item: ItemModel): number | undefined {
   return item.exitCode ?? parseShellExitCode(item.output ?? "");
 }
 
+// The body is the OUTPUT, nothing else. It does not repeat the command: the
+// collapsed row above already names it (A4 - "repeats the tool call but not
+// truncated"). The row's own summary is what clips a long command, and a reader
+// who wants the untruncated form gets it from the row's hover title, not from a
+// second copy of the call under it.
 function ShellBody({ item, live }: ToolRenderProps) {
-  const args = parseArgs(item.argumentsJSON);
   const output = item.output ?? "";
+  if (output === "") return null;
   const body = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
-  return (
-    <div>
-      <div className={CLASS.header}>$ {shellCommand(args)}</div>
-      {body !== "" && <CodeBlock text={body} />}
-    </div>
-  );
+  return <CodeBlock text={body} copyLabel="Copy output" />;
+}
+
+// nonzeroExit is the "this command failed" predicate shared by failed() and
+// autoExpand() so the glyph and the auto-open can never disagree.
+function nonzeroExit(item: ItemModel): boolean {
+  const exitCode = shellExitCode(item);
+  return exitCode !== undefined && exitCode !== 0;
 }
 
 registerToolRenderer({
   match: (name) => name === "shell" || name === "exec_command" || name === "run_shell_command",
+  // The exit code is NOT in the summary: a nonzero exit is announced by the
+  // row's failure glyph instead (A2 - "exit 1" as the headline made every
+  // failure look like a footnote). The number itself stays reachable via
+  // detail() below, which the row hangs off its hover title.
   summary(item: ItemModel) {
     const args = parseArgs(item.argumentsJSON);
-    const command = clip(shellCommand(args), COMMAND_CLIP);
-    const exitCode = shellExitCode(item);
-    return exitCode ? `Ran ${command} · exit ${exitCode}` : `Ran ${command}`;
+    return `Ran ${clip(shellCommand(args), COMMAND_CLIP)}`;
   },
   body: ShellBody,
-  autoExpand(item: ItemModel) {
+  failed: nonzeroExit,
+  // The hover title carries the two facts the row itself deliberately doesn't
+  // shout: the UNTRUNCATED command (the summary clips at COMMAND_CLIP) and the
+  // exit code.
+  detail(item: ItemModel) {
+    const command = shellCommand(parseArgs(item.argumentsJSON));
     const exitCode = shellExitCode(item);
-    return exitCode !== undefined && exitCode !== 0;
+    const exit = exitCode === undefined ? "" : ` · exit ${exitCode}`;
+    return command === "" && exit === "" ? undefined : `$ ${command}${exit}`;
   },
+  autoExpand: nonzeroExit,
 });

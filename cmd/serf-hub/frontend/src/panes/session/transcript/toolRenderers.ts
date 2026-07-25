@@ -17,6 +17,18 @@ export interface ToolRendererDescriptor {
   summary(item: ItemModel): string; // one-line purpose-first summary
   body?: ComponentType<ToolRenderProps>; // expanded content; default raw output
   autoExpand?(item: ItemModel): boolean; // e.g. shell on nonzero exit
+  // failed is a TOOL-SPECIFIC failure signal, OR'd with the generic one
+  // ToolCallItem derives from ItemModel.error/status. It exists because a
+  // clean tool RESULT can still report a failed action: a shell command that
+  // ran and exited nonzero carries no ItemModel.error at all (the wire stamps
+  // status "completed"), yet it is exactly what the reader needs the failure
+  // glyph for. Mirrors the legacy renderer's own toolLooksGood, which likewise
+  // treated a nonzero exit_code as not-good (renderer-format.js:593).
+  failed?(item: ItemModel): boolean;
+  // detail is secondary fact the row must keep REACHABLE without making it the
+  // headline - rendered as the row's hover title. The shell exit code is the
+  // motivating case (A2: "exit 1" stops being the failure signal, the glyph is).
+  detail?(item: ItemModel): string | undefined;
   // suppress removes the whole tool-call row from the transcript when true -
   // no summary, no body, nothing (ToolCallItem renders null). Used for a
   // task_list `action:"view"` (a read that legacy renders nothing for) and a
