@@ -39,7 +39,14 @@ const HOOK_EXIT_EVENT_KIND = "hook_completed";
 // event.
 const PROMPT_EVENT_KINDS = new Set(["system_prompt", "prompt_loaded"]);
 
+// "Round timings" reports one measurement on two surfaces: TurnSeparator's
+// friendly per-turn annotation, and this raw projector line ("Round 2
+// total=1.5s llm=1.2s context=25ms ..."). Both answer to the one setting, or
+// turning it off would leave the rawer of the two on screen.
+const ROUND_TIMINGS_EVENT_KIND = "round_timings";
+
 export interface TranscriptVisibilityPrefs {
+  roundTimings: boolean;
   hookExitsAll: boolean;
   hookExitsNormal: boolean;
   promptLoaded: boolean;
@@ -70,6 +77,7 @@ export function isItemVisible(item: ItemModel, prefs: TranscriptVisibilityPrefs)
     return prefs.hookExitsAll || (prefs.hookExitsNormal && item.exitCode === 0);
   }
   if (isPromptItem(item)) return prefs.promptLoaded;
+  if (item.eventKind === ROUND_TIMINGS_EVENT_KIND) return prefs.roundTimings;
   return true;
 }
 

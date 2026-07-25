@@ -7,7 +7,12 @@ import {
   visibleItems,
 } from "./transcriptVisibility";
 
-const ALL_OFF: TranscriptVisibilityPrefs = { hookExitsAll: false, hookExitsNormal: false, promptLoaded: false };
+const ALL_OFF: TranscriptVisibilityPrefs = {
+  roundTimings: false,
+  hookExitsAll: false,
+  hookExitsNormal: false,
+  promptLoaded: false,
+};
 
 function prefs(overrides: Partial<TranscriptVisibilityPrefs> = {}): TranscriptVisibilityPrefs {
   return { ...ALL_OFF, ...overrides };
@@ -133,4 +138,28 @@ test("visibleItems preserves each surviving item's own object identity", () => {
   const keep = item({ id: "a", type: "userMessage" });
   const result = visibleItems([keep, hook(1)], prefs());
   expect(result[0]).toBe(keep);
+});
+
+// --- round timings ----------------------------------------------------------
+// "Round timings" governs TWO surfaces that report the same measurement:
+// TurnSeparator's friendly per-turn annotation, and this raw system item -
+// "Round 2 total=1.5s llm=1.2s context=25ms ..." - which the projector emits
+// as its own line. Only the first was gated, so turning the setting OFF left
+// the rawer of the two on screen: the opposite of what it says it does.
+
+test("a round_timings system item is hidden when Round timings is off", () => {
+  const timings = item({ id: "rt", eventKind: "round_timings", text: "Round 2 total=1.5s llm=1.2s context=25ms" });
+  expect(isItemVisible(timings, prefs())).toBe(false);
+});
+
+test("a round_timings system item shows when Round timings is on", () => {
+  const timings = item({ id: "rt", eventKind: "round_timings", text: "Round 2 total=1.5s llm=1.2s context=25ms" });
+  expect(isItemVisible(timings, prefs({ roundTimings: true }))).toBe(true);
+});
+
+test("Round timings does not govern the other toggles' items, or theirs it", () => {
+  const timings = item({ id: "rt", eventKind: "round_timings" });
+  expect(isItemVisible(timings, prefs({ hookExitsAll: true, promptLoaded: true }))).toBe(false);
+  expect(isItemVisible(hook(0), prefs({ roundTimings: true }))).toBe(false);
+  expect(isItemVisible(item({ eventKind: "system_prompt" }), prefs({ roundTimings: true }))).toBe(false);
 });

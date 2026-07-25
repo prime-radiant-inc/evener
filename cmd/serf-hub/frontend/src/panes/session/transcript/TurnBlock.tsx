@@ -60,12 +60,13 @@ export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
   // would still be counted by the group it was meant to leave. Subscribing
   // to each toggle individually keeps a flip in Settings re-rendering the
   // transcript live, and leaves every unrelated pref change inert.
+  const roundTimings = usePrefsStore((s) => s.transcript.roundTimings);
   const hookExitsAll = usePrefsStore((s) => s.transcript.hookExitsAll);
   const hookExitsNormal = usePrefsStore((s) => s.transcript.hookExitsNormal);
   const promptLoaded = usePrefsStore((s) => s.transcript.promptLoaded);
   const shown = useMemo(
-    () => visibleItems(turn.items, { hookExitsAll, hookExitsNormal, promptLoaded }),
-    [turn.items, hookExitsAll, hookExitsNormal, promptLoaded],
+    () => visibleItems(turn.items, { roundTimings, hookExitsAll, hookExitsNormal, promptLoaded }),
+    [turn.items, roundTimings, hookExitsAll, hookExitsNormal, promptLoaded],
   );
   // Reuse the turn object outright when nothing is hidden (visibleItems is
   // identity-stable then), so the memoized renderers' `turn` prop churns no
