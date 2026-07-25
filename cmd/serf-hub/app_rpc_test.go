@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -337,6 +338,50 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	}
 	if got.Images[0].Metadata["sha"] != imageSha(img) || got.Images[0].Metadata["size"] != strconv.Itoa(len(img)) {
 		t.Fatalf("image metadata=%+v, want sha/size", got.Images[0].Metadata)
+	}
+}
+
+// A steer the human typed is a person speaking, and reload must say so.
+// Decoded from the real on-disk JSON shape (agent/schema.Turn's
+// steering_source tag) so the wire tag is under test, not just the field:
+// the web UI's SteeringItem branches on source === "user" to render the steer
+// exactly like a prompt (issue #24), and an empty Source is stripped by
+// omitempty, leaving the client no source at all rather than a wrong one.
+func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"new worktree"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("01TEST", "turn_3", 3, entry.Turn, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	if items[0].Type != "steering" || items[0].Source != events.SteeringSourceUser {
+		t.Fatalf("steering item=%+v, want type steering with source %q", items[0], events.SteeringSourceUser)
+	}
+}
+
+// Daemon nudges carry no steering_source on disk, and must stay anonymous:
+// they render as the quiet collapsible divider, never as user speech.
+func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T) {
+	var entry hubcore.ReplayEntry
+	raw := []byte(`{"turn":{"kind":"STEERING","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("01TEST", "turn_4", 4, entry.Turn, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	if items[0].Source != "" {
+		t.Fatalf("steering item source=%q, want empty for a daemon nudge", items[0].Source)
 	}
 }
 

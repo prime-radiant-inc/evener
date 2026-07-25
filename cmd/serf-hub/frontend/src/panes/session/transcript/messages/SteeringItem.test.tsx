@@ -43,6 +43,15 @@ test('source "user" steering with images renders the same gallery thumbnails a r
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
 
+// A user steer lands MID-turn, interrupting work already under way rather than
+// starting new work, so it reuses the prompt's look without claiming the
+// exchange boundary a prompt marks. Asserted here, at the branch SteeringItem
+// actually takes, not only at UserMessageView's own opensExchange prop.
+test('source "user" steering does NOT open an exchange - it interrupts one', () => {
+  render(<SteeringItem item={item({ text: "actually, stop", source: "user" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBeNull();
+});
+
 // --- daemon-sourced (no source, or any non-"user" source) -> quiet divider --
 
 test("no source at all renders the collapsible steering divider, not a user bubble", () => {

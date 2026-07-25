@@ -27,6 +27,11 @@ type ReplayTurn struct {
 	// Timestamp is the turn's recorded time, carried through reload so
 	// replayed tool items can be stamped with real server times (issue #37).
 	Timestamp time.Time `json:"timestamp,omitempty"`
+	// SteeringSource carries a steering turn's provenance through reload:
+	// "user" for a steer the human typed, empty for a daemon nudge. Without
+	// it a reloaded human steer arrives anonymous and renders as the grey
+	// divider rather than as the person's own speech (issue #24).
+	SteeringSource string `json:"steering_source,omitempty"`
 }
 
 type ReplayMessage struct {
