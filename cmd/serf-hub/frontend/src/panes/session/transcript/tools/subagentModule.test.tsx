@@ -388,12 +388,14 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
   // reachable via openBeside, never a URL) - opened against the child's own ref.
   const opened = panes.find((p) => p.type === "transcript");
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
-  expect(opened?.beside).toBeUndefined(); // no split on mobile
+  // Slots are desktop geometry; StackHost has no groups and shows the focused
+  // pane full-screen, so the first-pane-takes-main rule is all that applies.
+  expect(opened?.slot).toBe("main");
   // The row must no longer open a live SESSION pane for the child.
   expect(panes.some((p) => p.type === "session")).toBe(false);
 });
 
-test("open transcript splits the transcript pane BESIDE the focused pane (desktop host present)", async () => {
+test("open transcript opens the transcript pane in the secondary group, not the main one (desktop host present)", async () => {
   registerDockviewApi(fakeApi());
   const anchor = workspaceStore.getState().openPane("transcript", { ref: "ref_parent_view" });
   const user = userEvent.setup();
@@ -402,7 +404,9 @@ test("open transcript splits the transcript pane BESIDE the focused pane (deskto
   await user.click(screen.getByRole("button", { name: /open transcript/i }));
   const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript" && p.id !== anchor);
   expect(opened?.params).toEqual({ ref: "ref_child_open" });
-  expect(opened?.beside).toBe(anchor); // split beside the pane that was focused
+  // The main slot already holds the pane being read, so this lands beside it
+  // rather than replacing it - which is what "open transcript" means here.
+  expect(opened?.slot).toBe("secondary");
 });
 
 test("no open-transcript button when the row has no transcriptRef yet", () => {

@@ -124,7 +124,10 @@ function connectFake(): FakeClient {
 }
 
 function focusSession(ref: string): void {
-  workspaceStore.setState({ panes: [{ id: "p1", type: "session", params: { ref } }], focusedPaneId: "p1" });
+  workspaceStore.setState({
+    panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
+    focusedPaneId: "p1",
+  });
 }
 
 function seedModel(ref: string, overrides: Partial<ThreadModel> = {}): void {

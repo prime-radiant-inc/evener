@@ -27,23 +27,22 @@ export interface PaneRef {
   params: unknown;
 }
 
-// openBeside opens `pane` in a split group beside the currently-focused pane
-// (workspace.ts records the `beside` hint; DockHost turns it into dockview's
-// addPanel position {referencePanel, direction:"right"}). Deduping is the
-// store's own job: openPane already focuses an identical already-open pane
-// (same type + deep-equal params) instead of opening a duplicate, so re-opening
-// a pane beside just focuses it (floor §3.2). The mobile StackHost registers no
-// dockview api (getDockviewApi() === null), which is the "no split capability"
-// signal: there openBeside degrades to a plain open, and the one pane simply
-// becomes the focused, full-screen screen the stack shows (its own "navigate"
-// equivalent - a doc/transcript pane has no URL to navigate to).
+// openBeside opens `pane` in the secondary group, to the right of the main
+// pane. It is now a plain openPane() call: placement is workspace.ts's own
+// single rule (the main slot holds one pane, everything else stacks to its
+// right), so "beside" is what EVERY open does on desktop and this function no
+// longer needs to ask for it. Kept as a named entry point because its callers
+// (the session's file/image tool cards, subagent "open transcript" rows) mean
+// something specific by it - "open this next to what I'm reading, don't
+// replace it" - and that intent is worth naming even when the mechanism is now
+// the default.
+//
+// Deduping is the store's own job: openPane already focuses an identical
+// already-open pane (same type + deep-equal params) instead of opening a
+// duplicate (floor §3.2). Mobile needs no special case either - StackHost has
+// no groups at all and simply shows the focused pane full-screen.
 export function openBeside(pane: PaneRef): void {
-  const ws = workspaceStore.getState();
-  // Split only when a dockview host is present AND something is focused to
-  // split beside; otherwise open with no positioning hint (a fresh pane, or
-  // the mobile full-screen degrade).
-  const beside = getDockviewApi() !== null ? ws.focusedPaneId : null;
-  ws.openPane(pane.type, pane.params, beside !== null ? { beside } : undefined);
+  workspaceStore.getState().openPane(pane.type, pane.params);
 }
 
 // popOutPane promotes an open panel to a dockview-native popout window (floor
