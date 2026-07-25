@@ -1,4 +1,12 @@
+/* The smallest comfortable target, in text lines - kept in step with the
+ * widget's own MIN_ROWS (widgets/textarea/index.tsx), which the test suite
+ * pins to this value. It is a FLOOR, not a size: autoGrow still drives the
+ * real height from measured content, and this only stops the field from ever
+ * rendering shorter than a usable click target - including the instant before
+ * a first successful measurement, when a field mounted with no layout box has
+ * no inline height at all. */
 .textarea {
+  --textarea-min-lines: 2;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   border: 1px solid var(--edge);
@@ -7,6 +15,9 @@
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
   line-height: var(--line-height-body);
+  /* box-sizing is border-box app-wide (styles/global.css), so the floor has to
+   * carry this variant's own vertical padding on top of the text lines. */
+  min-height: calc(var(--textarea-min-lines) * var(--line-height-body) * 1em + 2 * var(--space-2));
   resize: vertical;
 }
 
@@ -31,6 +42,9 @@
  * outline too. */
 .seamless {
   padding: 0;
+  /* Same line-count floor as the base variant, minus the padding this one
+   * drops - the host card supplies the inset instead. */
+  min-height: calc(var(--textarea-min-lines) * var(--line-height-body) * 1em);
   border: none;
   border-radius: 0;
   background: transparent;

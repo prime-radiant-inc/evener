@@ -42,7 +42,10 @@ export interface TextareaProps {
   seamless?: boolean;
 }
 
-const MIN_ROWS = 2;
+/** The field's smallest comfortable target, in text lines. Mirrored by
+ * textarea.module.css's own --textarea-min-lines floor (CSS cannot read a TS
+ * constant, so the test suite pins the two together). */
+export const MIN_ROWS = 2;
 // Matches the legacy composer's clamp fraction exactly (see autoGrow's own
 // doc comment above for the cited line).
 export const MAX_HEIGHT_VIEWPORT_FRACTION = 0.5;
@@ -53,14 +56,32 @@ const BASE_CLASS = {
 };
 
 // resizeToFitContent mirrors the legacy composer's grow() (cmd/serf-hub/
-// assets/renderer.js:6307-6314) exactly: reset to "auto" FIRST so a
-// shrinking value (e.g. a cleared draft) reflects its smaller natural
-// height instead of the still-large explicit height left over from before,
-// then measure scrollHeight and clamp it.
+// assets/renderer.js:6307-6314): reset to "auto" FIRST so a shrinking value
+// (e.g. a cleared draft) reflects its smaller natural height instead of the
+// still-large explicit height left over from before, then measure
+// scrollHeight and clamp it.
+//
+// UNMEASURABLE MOUNTS: a field with no layout box - detached from the
+// document, or under a display:none ancestor - reports scrollHeight 0.
+// dockview builds a panel's content element detached and mounts the React
+// tree into it before attaching (dockview-react's ReactPanelContentPart),
+// so the pane that is not the boot-active one measures 0 on its first
+// layout effect. Writing that 0 as an explicit height pins the field
+// invisible and unclickable forever, since nothing else re-measures.
+// Restoring whatever height was there instead (on a first mount, none at
+// all, so `rows` + the CSS min-height floor size the field) leaves the
+// element measurable later, which the ResizeObserver below re-measures the
+// moment the field gains a box.
 function resizeToFitContent(el: HTMLTextAreaElement): void {
+  const before = el.style.height;
   el.style.height = "auto";
+  const measured = el.scrollHeight;
+  if (measured === 0) {
+    el.style.height = before;
+    return;
+  }
   const maxHeight = window.innerHeight * MAX_HEIGHT_VIEWPORT_FRACTION;
-  el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+  el.style.height = `${Math.min(measured, maxHeight)}px`;
 }
 
 /** A multi-line text field. Controlled only, mirroring Input. Forwards its
@@ -94,6 +115,33 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     const el = textareaRef.current;
     if (el) resizeToFitContent(el);
   }, [autoGrow, value]);
+
+  // Re-measures on the layout changes the value-keyed effect above cannot
+  // see, from two complementary sources:
+  //
+  // ResizeObserver, on the field's OWN box: a pane revealed (or attached)
+  // after its first mount, a pane the workspace switched back to, and a width
+  // change that rewraps the same text into a different number of visual
+  // lines. Guarded because jsdom has no ResizeObserver.
+  //
+  // A window resize listener, for the clamp: MAX_HEIGHT_VIEWPORT_FRACTION is
+  // a function of window.innerHeight, not of the field's box, so a value tall
+  // enough to be clamped keeps its old, now-stale ceiling when the window
+  // grows - the element's box never changed, so the observer alone never
+  // fires.
+  useLayoutEffect(() => {
+    if (!autoGrow) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    const remeasure = () => resizeToFitContent(el);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(remeasure);
+    observer?.observe(el);
+    window.addEventListener("resize", remeasure);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", remeasure);
+    };
+  }, [autoGrow]);
 
   return (
     <textarea
