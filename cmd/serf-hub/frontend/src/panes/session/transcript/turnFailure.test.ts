@@ -32,8 +32,30 @@ test("a hub-source failure is a connection error with a reconnect recovery label
   expect(info.recoveryLabel).toBe("Reconnect & retry");
 });
 
-test("a reconnect-class message (no hub source) still classifies as connection", () => {
-  expect(classifyTurnError(err({ message: "resume timed out waiting for rendezvous" })).connection).toBe(true);
+// One case per keyword, spelled out rather than ranged over RECONNECT_KEYWORDS:
+// a table derived from the implementation would keep passing if a keyword were
+// deleted from it. Go carries the same vocabulary and the same shape of table
+// (agent/diagnostic), and TestHubFailureKeywordsMatchWebClient in cmd/serf-hub
+// fails if the two lists stop agreeing.
+test.each([
+  "resume timed out waiting for rendezvous",
+  "daemon spawn failed",
+  "process exited before rendezvous",
+  "appwire connection dropped",
+  "websocket: close 1006 (abnormal closure)",
+  "stream failed to connect",
+  "source not found: ref_a",
+  "local daemon unavailable: dial tcp 127.0.0.1:9180: connect: connection refused",
+  "session unavailable",
+])("a reconnect-class message with no hub source still classifies as connection: %s", (message) => {
+  const info = classifyTurnError(err({ message }));
+  expect(info.connection).toBe(true);
+  expect(info.badge).toBe("connection");
+  expect(info.recoveryLabel).toBe("Reconnect & retry");
+});
+
+test("an unrelated failure is not dragged into the reconnect class", () => {
+  expect(classifyTurnError(err({ message: "the tool wrote no output" })).connection).toBe(false);
 });
 
 test("a plain source with no cause becomes that source's badge", () => {

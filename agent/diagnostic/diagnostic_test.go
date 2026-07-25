@@ -84,7 +84,17 @@ func TestClassifySpawnFailureAsHub(t *testing.T) {
 		"websocket closed",
 		"stream failed to connect",
 		"source not found: xyz",
+		// The hub's own dial failure (cmd/serf-hub/internal/appsource) and the
+		// wire error it raises. Both were classified "Serf error" until 3qb2 —
+		// telling the user to read the log of a daemon that may never have
+		// started, while the web client already called the same message a
+		// connection failure.
+		"local daemon unavailable: dial tcp 127.0.0.1:9180: connect: connection refused",
+		"session unavailable",
 	}
+	// Cases are spelled out rather than ranged over HubFailureKeywords on
+	// purpose: a table derived from the implementation would keep passing if a
+	// keyword were deleted from it.
 	for _, msg := range cases {
 		info := Classify(msg)
 		if info.Source != SourceHub {

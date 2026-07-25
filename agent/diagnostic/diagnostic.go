@@ -248,15 +248,39 @@ func isSerfConfiguration(message string) bool {
 		strings.Contains(message, "no model:")
 }
 
+// HubFailureKeywords is the vocabulary of a hub failure: a daemon or session
+// that went away, or the transport between them, where the honest recovery is
+// to reconnect and re-issue the turn rather than to go read a log.
+//
+// It is exported and data-shaped because Go is not the only reader. The hub's
+// web client runs the same vocabulary over the same messages to decide between
+// "Retry" and "Reconnect & retry" on a failed turn
+// (frontend/src/panes/session/transcript/turnFailure.ts), and the two lists had
+// already drifted apart in both directions by the time anyone noticed. They are
+// held together now by TestHubFailureKeywordsMatchWebClient in cmd/serf-hub.
+//
+// Every entry must be lowercase: isHubFailure matches against an
+// already-lowercased message, so an uppercase keyword would never fire.
+var HubFailureKeywords = []string{
+	"rendezvous",
+	"daemon spawn",
+	"resume timed out",
+	"process exited before rendezvous",
+	"appwire",
+	"websocket",
+	"stream failed",
+	"source not found",
+	"local daemon unavailable",
+	"session unavailable",
+}
+
 func isHubFailure(message string) bool {
-	return strings.Contains(message, "rendezvous") ||
-		strings.Contains(message, "daemon spawn") ||
-		strings.Contains(message, "resume timed out") ||
-		strings.Contains(message, "process exited before rendezvous") ||
-		strings.Contains(message, "appwire") ||
-		strings.Contains(message, "websocket") ||
-		strings.Contains(message, "stream failed") ||
-		strings.Contains(message, "source not found")
+	for _, keyword := range HubFailureKeywords {
+		if strings.Contains(message, keyword) {
+			return true
+		}
+	}
+	return false
 }
 
 func isProviderFailure(message string) bool {

@@ -55,6 +55,8 @@ var diagnosticProgramMessages = []diagnosticProgramMessage{
 	{"websocket", SourceHub, "Hub error"},
 	{"stream failed", SourceHub, "Hub error"},
 	{"source not found", SourceHub, "Hub error"},
+	{"local daemon unavailable", SourceHub, "Hub error"},
+	{"session unavailable", SourceHub, "Hub error"},
 	{"provider unavailable", SourceProvider, "Provider error"},
 	{"api key", SourceProvider, "Provider error"},
 	{"rate limit", SourceProvider, "Provider error"},
