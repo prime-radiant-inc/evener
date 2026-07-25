@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )
 

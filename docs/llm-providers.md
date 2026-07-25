@@ -710,7 +710,7 @@ provider/model>`, surviving reload and daemon restart.
 - OpenAI Responses→chat endpoint-fallback signal: `classify.go:118` on the
   error's `BehaviorTag()` (falls back to `Provider()` when the tag is empty).
 - Provider-failure diagnostics classify on the structured `llm.Error` (provider +
-  tag), not a hardcoded name list (`internal/diagnostic`, `diagnostics.js`).
+  tag), not a hardcoded name list (`agent/diagnostic`, `diagnostics.js`).
 
 ## Phase 1a, 1b & 1c done / Phase 2 next
 

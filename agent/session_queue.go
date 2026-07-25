@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/agent/provenance"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"

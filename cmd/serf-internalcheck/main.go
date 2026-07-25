@@ -35,6 +35,7 @@ import (
 // must not name serf-internal types.
 var libraryPackages = []string{
 	"primeradiant.com/serf/agent",
+	"primeradiant.com/serf/agent/diagnostic",
 	"primeradiant.com/serf/agent/execenv",
 	"primeradiant.com/serf/agent/mcpconfig",
 	"primeradiant.com/serf/agent/plugin",

@@ -7,11 +7,11 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// F3: each isSerfConfiguration keyword is tested independently so removing
-// either one would leave a failing test.
+// Each isSerfConfiguration keyword is tested independently so removing either
+// one would leave a failing case.
 func TestClassifyUnknownProviderAsSerfConfiguration(t *testing.T) {
 	cases := []struct{ name, msg string }{
-		{"unknown provider keyword only", "unknown provider: foo"},
+		{"unknown provider keyword only", "unknown provider: openrouter"},
 		{"configuration error keyword only", "configuration error: bad value"},
 	}
 	for _, tc := range cases {
@@ -33,7 +33,8 @@ func TestDefaultForEverySource(t *testing.T) {
 		source  Source
 		message string
 	}{
-		{SourceUI, ""}, {SourceMCP, ""}, {SourceSerf, "configuration provider invalid"},
+		{SourceUI, ""}, {SourceMCP, ""}, {SourceHook, ""},
+		{SourceSerf, "configuration provider invalid"},
 		{SourceSerf, "ordinary failure"},
 		{Source("unknown"), "hub connection failed"},
 	} {
@@ -72,21 +73,25 @@ func TestClassifyProviderHTTPFailureAsProvider(t *testing.T) {
 	}
 }
 
-// F4: assert Title; test each isHubFailure keyword independently so removing
-// any single keyword would leave a failing sub-case.
+// D3 fix: per-keyword cases so deleting any single arm of isHubFailure breaks
+// exactly the case that names it. D5 fix: assert Title as well.
 func TestClassifySpawnFailureAsHub(t *testing.T) {
-	cases := []struct{ name, msg string }{
-		{"daemon spawn keyword", "daemon spawn failed"},
-		{"rendezvous keyword", "process timed out at rendezvous"},
-		{"appwire keyword", "appwire connection refused"},
+	cases := []string{
+		"rendezvous failed",
+		"daemon spawn timed out",
+		"resume timed out after 30s",
+		"appwire dropped",
+		"websocket closed",
+		"stream failed to connect",
+		"source not found: xyz",
 	}
-	for _, tc := range cases {
-		info := Classify(tc.msg)
+	for _, msg := range cases {
+		info := Classify(msg)
 		if info.Source != SourceHub {
-			t.Errorf("%s: Source=%q, want %q", tc.name, info.Source, SourceHub)
+			t.Errorf("Classify(%q): Source=%q, want %q", msg, info.Source, SourceHub)
 		}
 		if info.Title != "Hub error" {
-			t.Errorf("%s: Title=%q, want Hub error", tc.name, info.Title)
+			t.Errorf("Classify(%q): Title=%q, want Hub error", msg, info.Title)
 		}
 	}
 }
@@ -94,23 +99,41 @@ func TestClassifySpawnFailureAsHub(t *testing.T) {
 // --- Structured llm.Error classification tests (PRI-1880) ---
 
 // TestFromError_StructuredLLMError_IsProvider verifies that FromError classifies
-// a structured llm.Error with a non-empty provider as SourceProvider, regardless
-// of whether the provider name appears in the hardcoded list.
+// a structured llm.Error with a non-empty provider as SourceProvider via the
+// structured-error fast path, not keyword matching. The message "internal server
+// error" matches no keyword in isProviderFailure, so the structured path is the
+// only route to SourceProvider. D1 + D5 fix.
 func TestFromError_StructuredLLMError_IsProvider(t *testing.T) {
-	// "work" is not in any hardcoded list, but it is a structured llm.Error.
-	err := llm.ErrorFromHTTPStatus("work", 429, "rate limited", nil, nil)
+	err := llm.ErrorFromHTTPStatus("work", 500, "internal server error", nil, nil)
 	info := FromError(err)
 	if info.Source != SourceProvider {
 		t.Fatalf("FromError(llm.Error with provider='work'): Source=%q, want %q", info.Source, SourceProvider)
 	}
+	if info.Title != "Provider error" {
+		t.Fatalf("FromError(llm.Error with provider='work'): Title=%q, want Provider error", info.Title)
+	}
 }
 
-// F2+F5: replace the near-duplicate renamed-instance test with a case that
-// exercises the Provider() arm of the OR condition in isolation (StatusCode==0),
-// so the `||` cannot be mutated to `&&` without a test failing.
+// TestFromError_StructuredLLMError_RenamedInstance_IsProvider verifies that an
+// instance named "my-gpt" classifies as SourceProvider via FromError even though
+// "my-gpt" matches no keyword and "server error" matches no isProviderFailure
+// keyword. D5 fix: assert Title.
+func TestFromError_StructuredLLMError_RenamedInstance_IsProvider(t *testing.T) {
+	err := llm.ErrorFromHTTPStatus("my-gpt", 500, "server error", nil, nil)
+	info := FromError(err)
+	if info.Source != SourceProvider {
+		t.Fatalf("FromError(llm.Error with provider='my-gpt'): Source=%q, want %q", info.Source, SourceProvider)
+	}
+	if info.Title != "Provider error" {
+		t.Fatalf("FromError(llm.Error with provider='my-gpt'): Title=%q, want Provider error", info.Title)
+	}
+}
+
+// Exercises the Provider() arm of the OR condition in isolation
+// (StatusCode()==0), so the `||` cannot be mutated to `&&` without failing.
 func TestFromError_ProviderOnlyNoStatusCode_IsProvider(t *testing.T) {
 	// NewRequestTimeoutError produces a non-HTTP error: Provider() is non-empty
-	// but StatusCode()==0 and ErrorCode()=="".  This exercises the first OR arm.
+	// but StatusCode()==0 and ErrorCode()=="".
 	err := llm.NewRequestTimeoutError("mymodel", "context deadline exceeded", nil)
 	info := FromError(err)
 	if info.Source != SourceProvider {
@@ -118,9 +141,8 @@ func TestFromError_ProviderOnlyNoStatusCode_IsProvider(t *testing.T) {
 	}
 }
 
-// F2: exercise the ErrorCode() arm of the OR condition in isolation
-// (Provider()=="" and StatusCode()==0), so the `||` cannot be mutated to `&&`
-// without this test failing.
+// Exercises the ErrorCode() arm of the OR condition in isolation
+// (Provider()=="" and StatusCode()==0).
 func TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider(t *testing.T) {
 	raw := map[string]any{"error": map[string]any{"code": "rate_limit_exceeded"}}
 	err := llm.ErrorFromHTTPStatus("", 0, "some error", raw, nil)
@@ -129,26 +151,6 @@ func TestFromError_ErrorCodeOnlyNoProviderNoStatus_IsProvider(t *testing.T) {
 		t.Fatalf("FromError(llm.Error with only ErrorCode): Source=%q, want %q", info.Source, SourceProvider)
 	}
 }
-
-func TestClassifyStreamTruncationAsProvider(t *testing.T) {
-	cases := []string{
-		"stream ended without finish event",
-		"stream ended without response",
-		"stream error",
-		"missing response in finish event",
-	}
-	for _, msg := range cases {
-		info := Classify(msg)
-		if info.Source != SourceProvider {
-			t.Errorf("Classify(%q): Source=%q, want %q", msg, info.Source, SourceProvider)
-		}
-		if info.Title != "Provider error" {
-			t.Errorf("Classify(%q): Title=%q, want Provider error", msg, info.Title)
-		}
-	}
-}
-
-// --- FromError coverage (F1) ---
 
 func TestFromError_Nil_IsSerfFailure(t *testing.T) {
 	info := FromError(nil)
@@ -181,11 +183,28 @@ func TestFromError_PlainError_FallsThroughToClassify(t *testing.T) {
 	}
 }
 
-// --- FromFields coverage (F1) ---
+func TestClassifyStreamTruncationAsProvider(t *testing.T) {
+	cases := []string{
+		"stream ended without finish event",
+		"stream ended without response",
+		"stream error",
+		"missing response in finish event",
+	}
+	for _, msg := range cases {
+		info := Classify(msg)
+		if info.Source != SourceProvider {
+			t.Errorf("Classify(%q): Source=%q, want %q", msg, info.Source, SourceProvider)
+		}
+		if info.Title != "Provider error" {
+			t.Errorf("Classify(%q): Title=%q, want Provider error", msg, info.Title)
+		}
+	}
+}
 
 // TestFromFields_SourceOverridesClassify verifies that a recognised source
 // string forces the returned Info.Source regardless of what Classify would
-// pick from the (empty) message.
+// pick from the (empty) message. Every declared source is listed: one that is
+// stamped by an emitter but unrecognised here would be silently rewritten.
 func TestFromFields_SourceOverridesClassify(t *testing.T) {
 	cases := []struct {
 		source string
@@ -195,6 +214,8 @@ func TestFromFields_SourceOverridesClassify(t *testing.T) {
 		{"hub", SourceHub},
 		{"ui", SourceUI},
 		{"serf", SourceSerf},
+		{"hook", SourceHook},
+		{"mcp", SourceMCP},
 	}
 	for _, tc := range cases {
 		info := FromFields(tc.source, "", "", "")
@@ -238,6 +259,19 @@ func TestFromFields_SourceUI_DefaultTitle(t *testing.T) {
 	}
 	if info.Title != "UI error" {
 		t.Fatalf("Title=%q, want UI error", info.Title)
+	}
+}
+
+// A hook-sourced warning keeps its attribution when a downstream surface
+// re-derives it, even though the message alone would classify as something
+// else. Title is asserted so a change to defaultForSource(SourceHook) is caught.
+func TestFromFields_HookSourcePreserved(t *testing.T) {
+	info := FromFields("hook", "", "", "rate limit exceeded")
+	if info.Source != SourceHook {
+		t.Fatalf("Source = %q, want hook (must not be reclassified by message content)", info.Source)
+	}
+	if info.Title != "Hook message" {
+		t.Fatalf("Title = %q, want Hook message", info.Title)
 	}
 }
 

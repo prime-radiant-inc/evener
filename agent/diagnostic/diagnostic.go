@@ -1,3 +1,13 @@
+// Package diagnostic answers one question about a failure — "whose fault was
+// this, and what should the user do about it?" — and answers it identically for
+// every surface that asks.
+//
+// It is public, and lives in the agent module, because both sides of a
+// diagnostic's life need it: the agent stamps a Source onto the events.WarningData
+// and events.ErrorData it emits, and the hub, CLI, and TUI re-derive Title and
+// Hint from those same fields when projecting them for display. A second copy
+// in the root module would let those two answers drift apart, so the classifier
+// that stamps an event and the classifier that renders it are the same code.
 package diagnostic
 
 import (
@@ -8,8 +18,12 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// Source names the component a diagnostic is attributed to.
 type Source string
 
+// The sources a diagnostic may be attributed to. A Source that is stamped by
+// one surface must be recognized by every other, or attribution is lost when
+// the diagnostic is re-derived downstream.
 const (
 	SourceProvider Source = "provider"
 	SourceSerf     Source = "serf"
@@ -19,12 +33,15 @@ const (
 	SourceMCP      Source = "mcp"
 )
 
+// Info is a classified diagnostic: who it came from, and the user-facing
+// headline and guidance that go with it.
 type Info struct {
 	Source Source
 	Title  string
 	Hint   string
 }
 
+// Classify infers a diagnostic from a bare message by keyword.
 func Classify(message string) Info {
 	lower := strings.ToLower(strings.TrimSpace(message))
 	switch {
@@ -43,6 +60,8 @@ func Classify(message string) Info {
 	}
 }
 
+// FromError classifies an error, preferring its structured category over the
+// wording of its message.
 func FromError(err error) Info {
 	if err == nil {
 		return serfFailure()
@@ -63,6 +82,10 @@ func FromError(err error) Info {
 	return Classify(err.Error())
 }
 
+// FromFields re-derives a diagnostic from fields already carried on an event,
+// filling in whatever the emitter left blank. A source it recognizes is
+// authoritative and suppresses keyword classification; a title or hint the
+// emitter supplied is preserved verbatim.
 func FromFields(source, title, hint, message string) Info {
 	info := Classify(message)
 	if src := normalizeSource(source); src != "" {

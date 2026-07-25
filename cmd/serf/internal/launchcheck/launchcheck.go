@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/envvars"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )

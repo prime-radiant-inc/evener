@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/invariant"
 	"primeradiant.com/serf/llm"
 )
