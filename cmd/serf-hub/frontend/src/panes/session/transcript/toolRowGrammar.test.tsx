@@ -2,6 +2,9 @@
 // (ToolRow.tsx). These tests are about the ROW, not about any one tool's
 // content - they drive it both directly and through ToolCallItem, which is the
 // only production caller.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
@@ -16,6 +19,15 @@ afterEach(() => {
 });
 
 const turn: TurnModel = { id: "turn_1", status: "inProgress", items: [] };
+
+// jsdom runs no animations and computes no cursor, so the row's affordances and
+// A6's motion can only be asserted at the declaration level. Comments are
+// stripped FIRST: a stylesheet grep that matches its own comment prose asserts
+// nothing (this repo has that precedent).
+function rowCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "toolcallitem.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
 
 function item(overrides: Partial<ItemModel> = {}): ItemModel {
   return { id: "item_1", turnId: "turn_1", type: "commandExecution", text: "", ...overrides };
@@ -186,4 +198,36 @@ test("the chevron reports its open state for the stylesheet's rotation, and is h
   expect(chevron.getAttribute("data-open")).toBe("false");
   fireEvent.click(screen.getByTestId("tool-row"));
   expect(screen.getByTestId("tool-row-chevron").getAttribute("data-open")).toBe("true");
+});
+
+test("an expandable row reads as clickable - a pointer cursor and a hover state", () => {
+  const css = rowCss();
+  expect(css).toMatch(/summary\.row\s*\{[^}]*cursor:\s*pointer/);
+  expect(css).toMatch(/summary\.row:hover\s*\{[^}]*background:/);
+  expect(css).toMatch(/summary\.row:focus-visible\s*\{[^}]*outline:/);
+});
+
+// --- A6: the tool disclosure animates, subtly, honoring reduced motion ----
+
+test("the chevron rotation and the body fade are declared with real motion", () => {
+  const css = rowCss();
+  expect(css).toMatch(/\.chevron\s*\{[^}]*transition:\s*transform/);
+  expect(css).toMatch(/\.body\s*\{[^}]*animation:\s*tool-body-in/);
+});
+
+test("the row's motion uses only existing motion tokens - no invented duration", () => {
+  const css = rowCss();
+  expect(css.match(/(?:transition|animation):[^;]*?\d+m?s/g)).toBe(null);
+  expect(css).toContain("var(--motion-duration-overlay)");
+  expect(css).toContain("var(--motion-easing-standard)");
+});
+
+test("all of the row's motion sits behind a prefers-reduced-motion gate", () => {
+  const css = rowCss();
+  const gates = css.match(/@media\s*\(prefers-reduced-motion:\s*no-preference\)\s*\{[\s\S]*?\n\}/g);
+  expect(gates).not.toBeNull();
+  let outsideGates = css;
+  for (const gate of gates ?? []) outsideGates = outsideGates.replace(gate, "");
+  expect(outsideGates).not.toMatch(/\btransition:/);
+  expect(outsideGates).not.toMatch(/\banimation:/);
 });

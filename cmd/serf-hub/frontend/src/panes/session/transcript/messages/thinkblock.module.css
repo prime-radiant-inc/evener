@@ -46,3 +46,24 @@
   padding-left: var(--space-3);
   border-left: 2px solid var(--edge);
 }
+
+/* Same subtle open as every other disclosure in the app (A6): an opacity fade
+ * at --motion-duration-overlay, gated behind prefers-reduced-motion the way
+ * widgets/cadence/cadence.module.css does it. The <details> body here is always
+ * mounted (unlike widgets/disclosure's), so the animation is scoped to the open
+ * state via the parent's [open] attribute - otherwise a collapsed block would
+ * "animate" invisibly on every render. */
+@media (prefers-reduced-motion: no-preference) {
+  .details[open] > .body {
+    animation: thinkblock-body-in var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
+}
+
+@keyframes thinkblock-body-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
