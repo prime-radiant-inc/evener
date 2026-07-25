@@ -7,7 +7,7 @@
 // state-change injection. No sockets, no timers.
 import type { AppwireClient, ConnectionState } from "../client";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
-import { METHOD_NAMES } from "../types.gen";
+import { METHOD_NAMES, NOTIFICATION_NAMES } from "../types.gen";
 
 // The hub's real method catalog, as data. MethodName alone is a compile-time
 // constraint, and a compile-time constraint is silent whenever it has been
@@ -27,6 +27,15 @@ function assertKnownMethod(method: string): void {
     );
   }
 }
+
+// The hub's real notification catalog, as data. The compile-time union is
+// even weaker here than on the request side: injecting a notification means
+// hand-building its whole payload, so the suite reaches for
+// `as AnyNotification` almost everywhere, and a cast silences the union's
+// `method` check along with the payload's. A renamed notification would
+// therefore satisfy neither tsc nor this fake — it would simply stop
+// matching production and take every assertion about it down quietly.
+const KNOWN_NOTIFICATIONS: ReadonlySet<string> = new Set(NOTIFICATION_NAMES);
 
 export interface AppwireClientLike {
   connect: AppwireClient["connect"];
@@ -180,8 +189,37 @@ export class FakeClient implements AppwireClientLike {
 
   // --- test-side injection: simulates the server/transport side ---
 
-  // emitNotification simulates one incoming wire notification.
+  // emitNotification simulates one incoming wire notification. The method
+  // must be one the hub actually sends; to exercise handling of a name the
+  // hub does not send, say so explicitly via emitUnknownNotification below.
   emitNotification(n: AnyNotification): void {
+    if (!KNOWN_NOTIFICATIONS.has(n.method)) {
+      throw new Error(
+        `FakeClient: unknown notification "${n.method}" — not in the hub's generated notification catalog (NOTIFICATION_NAMES in protocol/types.gen.ts). ` +
+          `Either the notification was renamed or removed on the wire, or this is a typo; no production listener can ever see this name. ` +
+          `If the test means to inject an unrecognized notification, call emitUnknownNotification instead.`,
+      );
+    }
+    this.deliverNotification(n);
+  }
+
+  // emitUnknownNotification simulates a notification whose method is NOT in
+  // the catalog — what a client sees when a newer hub sends something this
+  // build predates. It is the narrow opt-out from emitNotification's guard,
+  // for the handful of tests that exercise unrecognized-notification
+  // handling (e.g. the reducer's `default:` case), and it refuses a name the
+  // hub really does send so it cannot double as a quiet way to keep a
+  // renamed notification green.
+  emitUnknownNotification(n: { method: string; params: unknown }): void {
+    if (KNOWN_NOTIFICATIONS.has(n.method)) {
+      throw new Error(
+        `FakeClient: "${n.method}" is a real notification in the hub's catalog — use emitNotification, which type-checks its payload.`,
+      );
+    }
+    this.deliverNotification(n as AnyNotification);
+  }
+
+  private deliverNotification(n: AnyNotification): void {
     for (const cb of Array.from(this.notificationHandlers)) cb(n);
   }
 

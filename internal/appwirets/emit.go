@@ -253,18 +253,22 @@ func registerTopLevel(reg *registry, v any, fallbackName string) string {
 	return name
 }
 
-// writeUnion emits an exported TS string-literal union type from names:
-// `export type <typeName> =\n  | "a"\n  | "b";\n\n`.
-func writeUnion(b *strings.Builder, typeName string, names []string) {
-	fmt.Fprintf(b, "export type %s =\n", typeName)
-	for i, name := range names {
-		sep := "\n"
-		if i == len(names)-1 {
-			sep = ";\n"
-		}
-		fmt.Fprintf(b, "  | %q%s", name, sep)
+// writeNameCatalog emits a wire-name catalog as a runtime value plus the
+// type derived from it:
+//
+//	export const <constName> = [\n  "a",\n  "b",\n] as const;
+//	export type <typeName> = (typeof <constName>)[number];
+//
+// A type-only union would vanish at runtime, leaving the test doubles in
+// protocol/testing/ nothing to validate a scripted name against; deriving
+// the type from the value keeps the two from ever disagreeing.
+func writeNameCatalog(b *strings.Builder, constName, typeName string, names []string) {
+	fmt.Fprintf(b, "export const %s = [\n", constName)
+	for _, name := range names {
+		fmt.Fprintf(b, "  %q,\n", name)
 	}
-	b.WriteString("\n")
+	b.WriteString("] as const;\n\n")
+	fmt.Fprintf(b, "export type %s = (typeof %s)[number];\n\n", typeName, constName)
 }
 
 type methodEntry struct {
@@ -319,23 +323,13 @@ func EmitCatalog() string {
 	for i, m := range methods {
 		methodNames[i] = m.name
 	}
-	// The method catalog is emitted as a runtime value, with MethodName
-	// derived from it, because a type-only union vanishes at runtime: test
-	// doubles (protocol/testing/fakeClient.ts) have nothing to validate a
-	// scripted method name against unless the catalog also exists as data.
-	// Deriving the type from the value keeps the two from ever disagreeing.
-	b.WriteString("export const METHOD_NAMES = [\n")
-	for _, name := range methodNames {
-		fmt.Fprintf(&b, "  %q,\n", name)
-	}
-	b.WriteString("] as const;\n\n")
-	b.WriteString("export type MethodName = (typeof METHOD_NAMES)[number];\n\n")
+	writeNameCatalog(&b, "METHOD_NAMES", "MethodName", methodNames)
 
 	notificationNames := make([]string, len(notifications))
 	for i, n := range notifications {
 		notificationNames[i] = n.name
 	}
-	writeUnion(&b, "NotificationName", notificationNames)
+	writeNameCatalog(&b, "NOTIFICATION_NAMES", "NotificationName", notificationNames)
 
 	b.WriteString("export interface MethodTypes {\n")
 	for _, m := range methods {

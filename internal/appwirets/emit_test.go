@@ -421,34 +421,44 @@ func interfaceBody(t *testing.T, out, name string) string {
 	return out[start : start+end]
 }
 
+// runtimeNameList parses one `export const <constName> = [ ... ] as const;`
+// array back out of the generated output, failing the test if the block is
+// missing or an entry is not a comma-terminated quoted string.
+func runtimeNameList(t *testing.T, out, constName string) []string {
+	t.Helper()
+	open := fmt.Sprintf("export const %s = [\n", constName)
+	start := strings.Index(out, open)
+	if start == -1 {
+		t.Fatalf("missing export const %s", constName)
+	}
+	end := strings.Index(out[start:], "\n] as const;\n")
+	if end == -1 {
+		t.Fatalf("%s has no `] as const;` terminator", constName)
+	}
+	body := out[start+len(open) : start+end]
+
+	var got []string
+	for _, line := range strings.Split(body, "\n") {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), `"`)
+		if !ok {
+			t.Fatalf("%s entry is not a quoted string: %q", constName, line)
+		}
+		name, ok = strings.CutSuffix(name, `",`)
+		if !ok {
+			t.Fatalf("%s entry is not comma-terminated: %q", constName, line)
+		}
+		got = append(got, name)
+	}
+	return got
+}
+
 // METHOD_NAMES is the runtime counterpart of the MethodName type union: a
 // type-only union is invisible to a running test, so FakeClient needs a real
 // value to validate a scripted method name against. Every catalog method
 // must appear in it, in catalog order, and nothing else may.
 func TestEmitCatalogEmitsRuntimeMethodNames(t *testing.T) {
 	out := EmitCatalog()
-	start := strings.Index(out, "export const METHOD_NAMES = [\n")
-	if start == -1 {
-		t.Fatal("missing export const METHOD_NAMES")
-	}
-	end := strings.Index(out[start:], "\n] as const;\n")
-	if end == -1 {
-		t.Fatal("METHOD_NAMES has no `] as const;` terminator")
-	}
-	body := out[start+len("export const METHOD_NAMES = [\n") : start+end]
-
-	got := make([]string, 0, len(appwire.Methods))
-	for _, line := range strings.Split(body, "\n") {
-		name, ok := strings.CutPrefix(strings.TrimSpace(line), `"`)
-		if !ok {
-			t.Fatalf("METHOD_NAMES entry is not a quoted string: %q", line)
-		}
-		name, ok = strings.CutSuffix(name, `",`)
-		if !ok {
-			t.Fatalf("METHOD_NAMES entry is not comma-terminated: %q", line)
-		}
-		got = append(got, name)
-	}
+	got := runtimeNameList(t, out, "METHOD_NAMES")
 	if len(got) != len(appwire.Methods) {
 		t.Fatalf("METHOD_NAMES has %d entries, want %d", len(got), len(appwire.Methods))
 	}
@@ -462,6 +472,28 @@ func TestEmitCatalogEmitsRuntimeMethodNames(t *testing.T) {
 	// independent literal union, so the two cannot drift apart.
 	if !strings.Contains(out, "export type MethodName = (typeof METHOD_NAMES)[number];\n") {
 		t.Error("MethodName is not derived from METHOD_NAMES")
+	}
+}
+
+// The notification catalog needs the same runtime form as METHOD_NAMES, and
+// for the same reason: the whole test suite injects notifications through
+// FakeClient.emitNotification with an `as AnyNotification` cast, so the
+// compile-time union checks nothing there and a value is the only thing left
+// that can catch a renamed or misspelled notification.
+func TestEmitCatalogEmitsRuntimeNotificationNames(t *testing.T) {
+	out := EmitCatalog()
+	got := runtimeNameList(t, out, "NOTIFICATION_NAMES")
+	if len(got) != len(appwire.Notifications) {
+		t.Fatalf("NOTIFICATION_NAMES has %d entries, want %d", len(got), len(appwire.Notifications))
+	}
+	for i, n := range appwire.Notifications {
+		if got[i] != n.Name {
+			t.Errorf("NOTIFICATION_NAMES[%d] = %q, want %q", i, got[i], n.Name)
+		}
+	}
+
+	if !strings.Contains(out, "export type NotificationName = (typeof NOTIFICATION_NAMES)[number];\n") {
+		t.Error("NotificationName is not derived from NOTIFICATION_NAMES")
 	}
 }
 
