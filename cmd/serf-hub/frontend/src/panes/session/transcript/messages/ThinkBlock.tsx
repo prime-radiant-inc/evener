@@ -18,8 +18,33 @@
 // independent StreamingText per index sidesteps this entirely: each index's
 // own chunk array is safe in isolation, regardless of what any other index
 // does.
+//
+// MARKDOWN, AND WHY ONLY WHEN SETTLED: agents write reasoning in markdown,
+// so the settled body parses it through the same Markdown widget that
+// renders a settled agent message. The live path deliberately does NOT -
+// it keeps streaming literal text. The trade-off, stated plainly:
+//
+//   - What live gives up: markdown formatting is visible as source
+//     (`## heading`, `**bold**`) for the seconds a thought is in flight.
+//   - What live keeps: StreamingText's append-only DOM contract, and with
+//     it the interleaving guarantee above. A markdown parser consumes a
+//     WHOLE document and emits a whole element tree, so parsing while live
+//     would mean either re-parsing every index on every delta (throwing
+//     away the append-only fast path that exists precisely because a burst
+//     of deltas must not re-diff settled text) or flattening indices into
+//     one document (which breaks interleaving outright).
+//
+// Per-paragraph parsing was the alternative and was rejected: a markdown
+// block is not always one paragraph (a fenced code block, a multi-line
+// list, a table all span blank lines), so "parse each summaryIndex as it
+// stabilizes" has no reliable signal for "stabilized" mid-stream - the
+// reducer never tells us an index is finished, only that the whole item
+// is. Since the item settling IS that signal, parse there. This mirrors
+// AgentMessageItem's identical live-plain/settled-markdown split, so both
+// message types behave the same way under streaming.
 
 import { memo } from "react";
+import { Markdown } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
@@ -99,16 +124,16 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
           {thoughtLabel(seconds, preview)}
         </summary>
         <div className={CLASS.body}>
-          {paragraphs.map((text, i) => (
-            // This settled view only renders once item.reasoningSummaries
-            // has stopped streaming (the live branch above is the only one
-            // still growing) - paragraphs is a frozen snapshot by the time
-            // this runs, so index is stable for this render's whole life.
-            // biome-ignore lint/suspicious/noArrayIndexKey: frozen settled snapshot, see above
-            <p key={i} className={CLASS.paragraph}>
-              {text}
-            </p>
-          ))}
+          {/* One document, not one per summaryIndex: a markdown parser needs
+              the whole text to resolve block structure. Blank-line joined so
+              each index still starts its own block-level token rather than
+              being folded into the previous index's paragraph. Safe here and
+              only here - this settled branch runs after reasoningSummaries
+              has stopped growing, so there is no append-only invariant left
+              to violate (see this file's top comment). Markdown owns its own
+              paragraph/heading/list layout, so nothing re-wraps it in
+              .paragraph. */}
+          <Markdown source={paragraphs.join("\n\n")} />
         </div>
       </details>
     </div>

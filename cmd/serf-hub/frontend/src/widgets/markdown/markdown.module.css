@@ -1,5 +1,11 @@
+/* The body ink is a custom property so a host can render markdown at a
+ * quieter weight without reaching into this module's descendant selectors.
+ * It has to be a property rather than plain inheritance because .root sets
+ * `color` on the element itself, which shadows anything the host sets on an
+ * ancestor. Thinking blocks are the one caller that overrides it; the rest
+ * (doc pane, notifications, agent messages) take the --ink-hi default. */
 .root {
-  color: var(--ink-hi);
+  color: var(--markdown-ink, var(--ink-hi));
   font-family: var(--font-sans);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
