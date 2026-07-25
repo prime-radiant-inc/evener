@@ -103,9 +103,29 @@ function ForkFromHereButton({ sessionRef, turnId }: ForkFromHereButtonProps) {
 // mid-turn steer never grows one of its own. item.images renders as real
 // gallery thumbnails (ImageGallery already no-ops on an empty/absent array,
 // so no conditional wrapper is needed here).
-export function UserMessageView({ item, actions }: { item: ItemModel; actions?: ReactNode }) {
+//
+// opensExchange marks this message as the start of a new exchange - one thing
+// the user asked and everything the agent did about it. That, not the turn, is
+// the unit a reader scrolls looking for: a "turn" here is one LLM round-trip,
+// and measured on a real session 72 of 74 turns did not open with a user
+// message at all, so the transcript's own turn boundaries fall inside one
+// continuous piece of work. SteeringItem's reuse passes false - a user steer
+// lands mid-turn and interrupts the work rather than starting it.
+export function UserMessageView({
+  item,
+  actions,
+  opensExchange = true,
+}: {
+  item: ItemModel;
+  actions?: ReactNode;
+  opensExchange?: boolean;
+}) {
   return (
-    <div className={CLASS.message} data-testid="user-message-item">
+    <div
+      className={CLASS.message}
+      data-testid="user-message-item"
+      data-opens-exchange={opensExchange ? "true" : undefined}
+    >
       <div className={CLASS.header}>
         <span className={CLASS.tag}>You</span>
         {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}

@@ -9,6 +9,34 @@
   padding: var(--space-2) 0;
 }
 
+/* The exchange boundary, and the transcript's only structural break.
+ *
+ * Space rather than a rule, for two measured reasons. The transcript's whole
+ * vertical alphabet is 8/12/16px and every one of those values already appears
+ * BOTH inside a turn and across a turn boundary, so spacing currently carries
+ * no structural meaning at all - which means a break has to clear 16px by
+ * enough to be unmistakable, and 32px does. And a hairline was the obvious
+ * alternative until it was measured: --edge against --surface-1 is 1.26:1 in
+ * the dark theme and 1.35:1 in the light one, so a rule drawn in it is
+ * invisible in exactly the theme where the transcript is densest. The app
+ * spends --edge on framing boxes, not on separating prose, and this follows
+ * that.
+ *
+ * Deliberately NOT on every turn: a turn is one LLM round-trip, and a real
+ * session runs dozens of them per thing the user asked (measured: 84 turns
+ * against 4 accepted inputs). Marking each would slice one continuous piece of
+ * agent work into arbitrary slabs. This fires a handful of times per session,
+ * at the boundaries a reader is actually looking for. */
+.message[data-opens-exchange] {
+  margin-top: var(--space-6);
+}
+
+/* Except the first one, which opens the transcript and has nothing to break
+ * away from - the gap would just be dead space above the session's first line. */
+.message[data-opens-exchange]:first-child {
+  margin-top: 0;
+}
+
 .header {
   display: flex;
   align-items: center;
@@ -35,11 +63,17 @@
   opacity: 1;
 }
 
+/* --ink-mid, not --ink-low. The user's TEXT stays demoted on purpose (see the
+ * file header); this tag is different, because it is the only structural
+ * landmark the transcript has. Measured against --surface-1, --ink-low is
+ * 2.97:1 in the dark theme and 3.64:1 in the light one - the faintest text on
+ * screen, and under the 4.5:1 AA floor in both. --ink-mid measures 6.86:1 and
+ * 6.56:1. Size and weight still separate the tag from the prose below it. */
 .tag {
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
 .text {

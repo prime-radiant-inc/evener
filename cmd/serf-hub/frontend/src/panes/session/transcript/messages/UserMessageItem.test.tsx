@@ -230,3 +230,25 @@ describe("per-message fork affordance", () => {
     expect(workspaceStore.getState().panes).toHaveLength(0);
   });
 });
+
+// --- the exchange boundary --------------------------------------------------
+// A "turn" in this codebase is one LLM round-trip, and a real session has many
+// of them per thing the user actually asked: measured on a live transcript, 72
+// of 74 turns did not open with a user message at all. So marking every turn
+// boundary would draw dozens of lines through one continuous piece of agent
+// work. The boundary a reader looks for is the EXCHANGE - where they last
+// spoke - and a user message is what opens one.
+//
+// SteeringItem reuses UserMessageView verbatim for a user-sourced steer, which
+// lands MID-turn and is an interjection inside the work rather than the start
+// of new work. It must not carry the marker.
+
+test("a user message marks itself as the start of an exchange", () => {
+  render(<UserMessageView item={item({ text: "do the thing" })} />);
+  expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBe("true");
+});
+
+test("a user-sourced steer reuses the same view WITHOUT the exchange marker", () => {
+  render(<UserMessageView item={item({ text: "actually, stop" })} opensExchange={false} />);
+  expect(screen.getByTestId("user-message-item").getAttribute("data-opens-exchange")).toBeNull();
+});

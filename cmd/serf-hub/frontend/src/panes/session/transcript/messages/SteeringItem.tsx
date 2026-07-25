@@ -71,7 +71,10 @@ function SteeringDivider({ id, label, detail, text }: { id: string; label: strin
 }
 
 export const SteeringItem = memo(function SteeringItem({ item }: ItemRenderProps) {
-  if (item.source === "user") return <UserMessageView item={item} />;
+  // opensExchange={false}: a steer the human typed lands MID-turn, interrupting
+  // work already under way rather than starting a new exchange, so it renders
+  // like a prompt without claiming the boundary a prompt marks.
+  if (item.source === "user") return <UserMessageView item={item} opensExchange={false} />;
   if (!item.text) return null; // no text, no images path here - nothing to show
   const classification = classifySteering(item.text);
   const treatment = steeringTreatment(classification.kind);
