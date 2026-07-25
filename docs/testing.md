@@ -149,6 +149,33 @@ Default to the scripted boundary. Reach for real git only when you can name the
 git behavior the assertion depends on, and say so in the test's comment so the
 next reader does not "optimize" it onto the fake.
 
+## Seeding Hub Fixtures
+
+A hub fixture's session and project identifiers are encodings, not names: a
+session id is a 22-character base62 UUIDv7 payload, and a project directory is
+`<readable>-<10 base62>`. A hand-written placeholder that looks plausible is
+rejected, and `PastIndex.Rebuild` then leaves the seeded session out of the
+index — so the fixture is invisible rather than wrong, and the test failure
+points nowhere near the id.
+
+Mint them with `cmd/serf-hub/internal/hubtest` instead of writing them out:
+
+```go
+sessionID := hubtest.SessionID(t)            // e.g. 02wMz5Txv1C3Hut0M8GCeB
+projectDir := hubtest.ProjectID(t, "alpha")  // alpha-0123456789
+```
+
+When the fixture has a real checkout on disk, use `identifier.ResolveProject`
+instead — the hub cross-checks a project's id against its working directory,
+and only the resolved id matches.
+
+Rebuild now names what it refused to index and why, so a seeding mistake that
+does slip through shows up on the hub's stderr:
+
+```
+[hub] past index: skipped /…/projects/alpha-0123456789/sessions/placeholder.meta.json: invalid session id (want a 22-character base62 UUIDv7 payload): invalid UUID payload
+```
+
 ## MCP Server E2E
 
 The MCP manager has opt-in live tests against `npx -y
