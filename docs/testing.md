@@ -33,6 +33,52 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## A Test That Never Runs
+
+A test that does not execute is worse than a missing test: it reports the
+coverage without providing it, and the suite stays green either way. Two shapes
+in this repo produce one, and neither announces itself.
+
+**Registered `check*` functions.** Several packages drive their behavioral
+contracts through a fuzz entry point that replays one check selected by the fuzz
+input — `FuzzFSPathsBehaviorProgram` and friends in `cmd/serf-hub/internal/`
+(`fspaths`, `hostlock`, `hubedge`, `codexlaunch`, `launchconfig`). A
+`check*(t *testing.T)` function in those packages runs **only** if it appears in
+its `checks := []func(*testing.T){…}` seed table. Write one, forget the table
+entry, and `go test` passes without ever calling it.
+
+The reachability proxy is `golangci-lint run ./path/to/pkg/`, whose `unused`
+linter reports the unregistered check as a dead function:
+
+```
+paths_test.go:411:6: func checkSanitizeDirPrefix_PreservesLoneTrailingDot is unused (unused)
+```
+
+`go vet` does **not** catch this — verified by unregistering a real check and
+running both. Run the linter after adding a check, and state which table each
+new check is registered in when handing work off.
+
+**A stylesheet assertion that matches its own comment.** A test that greps CSS
+text (`expect(css).toContain("flex: none")`) will match the declaration quoted
+in a doc comment above the rule. One of these passed with its implementation
+deleted. Strip comments before matching:
+
+```ts
+const css = readFileSync(…, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+```
+
+The general rule: **prove a new test can fail.** Break the thing it covers,
+watch it go red, then put it back. A test you have only ever seen pass has not
+been tested. Two corollaries, both from real incidents here:
+
+- "No tests" is not "tests passed". A broken file makes vitest print
+  `Tests no tests` next to a transform error; a grep for `Tests ` reads that as
+  benign. Check exit codes, never a grep of piped output.
+- Assert the mechanism, not a side effect a broken implementation also produces.
+  An "onAdd called once" assertion passed with validation entirely removed,
+  because committing the add unmounted the panel either way. Asserting the
+  validate call itself distinguishes them.
+
 ## MCP Server E2E
 
 The MCP manager has opt-in live tests against `npx -y
