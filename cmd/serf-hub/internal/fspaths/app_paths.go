@@ -62,9 +62,6 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 	}
 	matches := make([]match, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() && !params.IncludeFiles {
-			continue
-		}
 		name := entry.Name()
 		if strings.HasPrefix(name, ".") && !strings.HasPrefix(filter, ".") {
 			continue
@@ -74,21 +71,31 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 			continue
 		}
 		path := filepath.Join(listDir, name)
+		// ReadDir does not follow symlinks, so entry.IsDir() is false for a
+		// link to a directory: only a stat of the target resolves it. Doing it
+		// after the name filters keeps it to one call per surviving
+		// non-directory entry, and one resolution serves both the
+		// include/exclude decision and the trailing-separator marker.
+		//
+		// An entry we cannot stat (a broken link, a permissions failure, a race
+		// with a deletion) is not one we can promise is a directory: a
+		// dirs-only field leaves it out, and an includeFiles field lists it
+		// without the marker.
+		isDir := entry.IsDir()
+		if !isDir {
+			if info, statErr := stat(path); statErr == nil && info.IsDir() {
+				isDir = true
+			}
+		}
+		if !isDir && !params.IncludeFiles {
+			continue
+		}
 		// With files in the mix the client needs to know which entries it can
 		// descend into; a trailing separator carries that bit and is already
 		// the prefix protocol's own "list this directory's children" form.
-		// Dirs-only responses stay unsuffixed for every existing caller, so
-		// they skip the stat entirely.
-		//
-		// ReadDir does not follow symlinks, so entry.IsDir() is false for a
-		// link to a directory: only stat resolves it. An entry we cannot stat
-		// (a broken link, a permissions failure, a race with a deletion) goes
-		// out unsuffixed - a path we cannot stat is not one we can promise is
-		// descendable.
-		if params.IncludeFiles {
-			if info, statErr := stat(path); statErr == nil && info.IsDir() {
-				path += string(filepath.Separator)
-			}
+		// Dirs-only responses stay unsuffixed for every existing caller.
+		if isDir && params.IncludeFiles {
+			path += string(filepath.Separator)
 		}
 		matches = append(matches, match{path: path, score: score})
 	}

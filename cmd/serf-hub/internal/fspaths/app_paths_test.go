@@ -202,6 +202,75 @@ func checkCompletePaths(t *testing.T) {
 	})
 }
 
+// checkCompletePaths_SymlinksOnRealTree exercises symlink handling against a
+// real directory tree rather than a hand-built entry list: os.ReadDir reports
+// a symlink-to-directory with IsDir() false, which no fabricated DirEntry
+// reproduces faithfully, and browsing to a symlinked project directory is the
+// user-visible behavior at stake.
+func checkCompletePaths_SymlinksOnRealTree(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	realDir := filepath.Join(home, "alpha")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realFile := filepath.Join(home, "beta.txt")
+	if err := os.WriteFile(realFile, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	links := map[string]string{
+		"link-to-dir":  realDir,
+		"link-to-file": realFile,
+		"link-broken":  filepath.Join(home, "does-not-exist"),
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(home, name)); err != nil {
+			t.Skipf("symlink unsupported: %v", err)
+		}
+	}
+
+	sep := string(filepath.Separator)
+	cases := []struct {
+		name         string
+		includeFiles bool
+		want         []string
+	}{
+		{
+			// A symlink to a directory is a directory to browse into; a symlink
+			// to a file and a broken symlink are not directories, so a
+			// dirs-only field omits them.
+			name: "dirs only lists the symlinked directory",
+			want: []string{"alpha", "link-to-dir"},
+		},
+		{
+			// With files in the mix every entry is listed, and the trailing
+			// separator marks the two that are descendable. A broken symlink
+			// cannot be resolved, so it goes out unsuffixed.
+			name:         "includeFiles suffixes only the resolvable directories",
+			includeFiles: true,
+			want:         []string{"alpha" + sep, "beta.txt", "link-broken", "link-to-dir" + sep, "link-to-file"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: home + sep, IncludeFiles: tc.includeFiles})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			want := make([]string, len(tc.want))
+			for i, name := range tc.want {
+				want[i] = filepath.Join(home, strings.TrimSuffix(name, sep))
+				if strings.HasSuffix(name, sep) {
+					want[i] += sep
+				}
+			}
+			if !reflect.DeepEqual(resp.Data, want) {
+				t.Fatalf("completions = %v, want %v", resp.Data, want)
+			}
+		})
+	}
+}
+
 func checkCompletePaths_TraversalReturnsNoSuggestions(t *testing.T) {
 	resp, err := fspaths.CompletePaths(appwire.PathsCompleteParams{Prefix: "../"})
 	if err != nil {

@@ -205,26 +205,64 @@ func checkCompletePaths_IncludeFilesUnstattableEntryStaysUnsuffixed(t *testing.T
 	}
 }
 
-func checkCompletePaths_DirsOnlySkipsStat(t *testing.T) {
-	// Dirs-only is the hot path for every existing caller: nothing is
-	// suffixed, so entry.IsDir() alone decides and no stat is warranted.
-	stats := 0
+func checkCompletePaths_StatsEachEntryAtMostOnce(t *testing.T) {
+	// A directory entry needs no stat at all (ReadDir already said so), and a
+	// non-directory entry needs exactly one - the same resolution decides both
+	// whether to list it and whether to mark it descendable. Entries the name
+	// filter rejects are never stat'd.
+	for _, includeFiles := range []bool{false, true} {
+		stats := map[string]int{}
+		_, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("s"), IncludeFiles: includeFiles}, fakeReadDir(
+			fakeDirEntry{name: "sub", dir: true},
+			fakeDirEntry{name: "slink"},
+			fakeDirEntry{name: "filtered-out"},
+		), func(path string) (os.FileInfo, error) {
+			stats[path]++
+			return fakeFileInfo{dir: true}, nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := map[string]int{basePath("slink"): 1}
+		if !reflect.DeepEqual(stats, want) {
+			t.Fatalf("includeFiles=%v stat calls = %v, want %v", includeFiles, stats, want)
+		}
+	}
+}
+
+func checkCompletePaths_DirsOnlyListsSymlinkedDir(t *testing.T) {
+	// ReadDir reports a symlink to a directory with IsDir false; only the stat
+	// resolves it. A dirs-only field must still offer it (it is browsable),
+	// unsuffixed like every other dirs-only entry, while a symlink to a file
+	// and an unstattable link stay out.
 	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
+		fakeDirEntry{name: "dirlink"},
+		fakeDirEntry{name: "filelink"},
 		fakeDirEntry{name: "sub", dir: true},
-		fakeDirEntry{name: "link"},
+	), statDirs(basePath("dirlink")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{basePath("dirlink"), basePath("sub")}
+	if !reflect.DeepEqual(resp.Data, want) {
+		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
+	}
+}
+
+func checkCompletePaths_DirsOnlyDropsUnstattableEntry(t *testing.T) {
+	// A broken symlink, a permissions failure, or a race with a deletion: a
+	// path we cannot stat is not one we can promise is a directory, so a
+	// dirs-only field leaves it out.
+	resp, err := completePaths(appwire.PathsCompleteParams{Prefix: baseDirPrefix("")}, fakeReadDir(
+		fakeDirEntry{name: "broken"},
 	), func(string) (os.FileInfo, error) {
-		stats++
-		return fakeFileInfo{dir: true}, nil
+		return nil, errors.New("stat failed")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats != 0 {
-		t.Fatalf("dirs-only made %d stat calls, want none", stats)
-	}
-	want := []string{basePath("sub")}
-	if !reflect.DeepEqual(resp.Data, want) {
-		t.Fatalf("dirs-only data = %v, want %v", resp.Data, want)
+	if len(resp.Data) != 0 {
+		t.Fatalf("dirs-only data = %v, want no entries", resp.Data)
 	}
 }
 

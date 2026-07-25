@@ -5,6 +5,7 @@ import "testing"
 func FuzzAppPathsBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
 		checkCompletePaths,
+		checkCompletePaths_SymlinksOnRealTree,
 		checkCompletePaths_TraversalReturnsNoSuggestions,
 		checkCompletePaths_EmptyResultMarshalsAsEmptyArray,
 		checkValidateLaunchPath,
