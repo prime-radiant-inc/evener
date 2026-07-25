@@ -18,6 +18,21 @@ export const EDGE_MARGIN = 8;
 // matches the pre-portal popup's own `top: calc(100% + var(--space-1))`.
 export const TRIGGER_GAP = 4;
 
+// Slide `preferred` along one axis until a `size`-long box starting there sits
+// inside [EDGE_MARGIN, viewportSize - EDGE_MARGIN] - the "shift" half of
+// flip-then-clamp, and the whole of the collision handling for an overlay that
+// has no meaningful flipped alternative (a centered tooltip bubble: mirroring a
+// centered box lands it right back where it started).
+//
+// When the box is wider than the space between the two margins it cannot honor
+// both, so the near edge wins: Math.max runs last, which pins the box to
+// EDGE_MARGIN and lets it overhang the far margin rather than pushing its
+// leading edge off-screen. Nothing is lost that way - the overhang eats into
+// clear space the layout reserved, not into the viewport.
+export function clampIntoViewport(preferred: number, size: number, viewportSize: number): number {
+  return Math.max(EDGE_MARGIN, Math.min(preferred, viewportSize - size - EDGE_MARGIN));
+}
+
 // One axis (horizontal or vertical) of the flip-then-clamp placement: try
 // `primary` (the popup's default, unflipped offset - left-aligned to the
 // trigger, or opening below it); if the popup would overflow the far edge
@@ -29,7 +44,7 @@ export const TRIGGER_GAP = 4;
 export function resolveAxis(primary: number, flipped: number, size: number, viewportSize: number): number {
   if (primary + size <= viewportSize - EDGE_MARGIN) return primary;
   if (flipped >= EDGE_MARGIN) return flipped;
-  return Math.max(EDGE_MARGIN, Math.min(primary, viewportSize - size - EDGE_MARGIN));
+  return clampIntoViewport(primary, size, viewportSize);
 }
 
 // The popup's position:fixed viewport coordinates, computed fresh every

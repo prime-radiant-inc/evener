@@ -124,3 +124,73 @@ test("re-measures placement when the panel's own size changes after opening", as
     globalThis.ResizeObserver = original;
   }
 });
+
+// The panel animates in from scale(0.96) (popoverFadeScale), and the measuring
+// layout effect runs in the same commit that mounts it - the frame where that
+// `from` keyframe is still in force. getBoundingClientRect() reports the box
+// AFTER transforms, so measuring the panel that way reads 96% of the settled
+// size and places a panel that is about to be 4% wider. Measured live against
+// a real hub at a 390px viewport: a 376px directory panel rected as 361px,
+// clamped to left 21.03, and settled at right 397.03 - seven pixels past the
+// viewport's own edge, with the same panel landing at left 8 / right 384 once
+// the animation was disabled. offsetWidth/offsetHeight report the untransformed
+// layout box, which is the size the panel will actually settle at.
+//
+// jsdom performs no layout, so both metrics have to be supplied here; the point
+// of the test is which of the two the component reads, and the two are given
+// deliberately different values so only one placement can result.
+test("places the panel from its untransformed layout box, not its mid-animation rect", () => {
+  const SETTLED_WIDTH = 376;
+  const ANIMATING_WIDTH = Math.round(SETTLED_WIDTH * 0.96); // 361, scale(0.96)
+  // A trigger hard against the right edge, so the placement flips and the
+  // panel's own width lands in the arithmetic (a left-aligned placement would
+  // read the same either way and prove nothing).
+  const TRIGGER = { left: 900, right: 940, top: 100, bottom: 120 };
+
+  const isPanel = (el: Element) => (el as HTMLElement).dataset?.testid === "panel";
+  const originalRect = Element.prototype.getBoundingClientRect;
+  const originalOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+  const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+
+  Element.prototype.getBoundingClientRect = function stubbedRect(this: Element) {
+    if (isPanel(this)) return { ...TRIGGER, width: ANIMATING_WIDTH, height: 100 } as DOMRect;
+    if (this.tagName === "SPAN") return { ...TRIGGER, width: 40, height: 20 } as DOMRect;
+    return originalRect.call(this);
+  };
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isPanel(this) ? SETTLED_WIDTH : 0;
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get(this: HTMLElement) {
+      return isPanel(this) ? 100 : 0;
+    },
+  });
+
+  try {
+    render(
+      <Popover open onClose={() => {}} trigger={<button type="button">open</button>} data-testid="panel">
+        <div>panel body</div>
+      </Popover>,
+    );
+    // Right-aligned to the trigger: 940 - 376 = 564. Measuring the animating
+    // 361px box instead would have produced 940 - 361 = 579, and the panel
+    // would then grow 15px past where it was placed.
+    expect(screen.getByTestId("panel").style.left).toBe(`${TRIGGER.right - SETTLED_WIDTH}px`);
+  } finally {
+    Element.prototype.getBoundingClientRect = originalRect;
+    restoreOwnProperty(HTMLElement.prototype, "offsetWidth", originalOffsetWidth);
+    restoreOwnProperty(HTMLElement.prototype, "offsetHeight", originalOffsetHeight);
+  }
+});
+
+// Puts back exactly what was there, including "nothing at all" - a stub left
+// installed on HTMLElement.prototype would follow every later test file in the
+// same worker.
+function restoreOwnProperty(target: object, key: string, descriptor: PropertyDescriptor | undefined) {
+  if (descriptor) Object.defineProperty(target, key, descriptor);
+  else delete (target as Record<string, unknown>)[key];
+}
