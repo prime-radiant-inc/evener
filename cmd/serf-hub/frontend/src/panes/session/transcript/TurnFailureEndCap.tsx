@@ -19,7 +19,7 @@
 import { sessionActionError } from "../../../protocol/errors";
 import type { TurnModel } from "../../../protocol/model";
 import type { TurnError } from "../../../protocol/types.gen";
-import { threadsStore } from "../../../stores/threads";
+import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, Chip, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { classifyTurnError } from "./turnFailure";
@@ -43,6 +43,32 @@ function retryText(turn: TurnModel): string | undefined {
   return text ? text : undefined;
 }
 
+/**
+ * The input that opened the exchange `turnId` ended, searched backwards from
+ * that turn.
+ *
+ * A LIVE failure keeps the input in its own turn, where retryText finds it. A
+ * RELOADED one does not: one persisted transcript entry becomes one turn
+ * (apptranscript.go's ProjectTurn), so a failure entry is a turn holding only
+ * the failure, and the input sits in an earlier one. Retry was therefore
+ * offered while a reader watched a failure happen and withheld from the reader
+ * who came back to it - the same failure, the same recovery, present or absent
+ * on nothing but when you looked.
+ *
+ * The search stops AT the failed turn: a later prompt is a different exchange,
+ * and re-issuing it would answer a question the reader did not ask.
+ */
+export function originatingInput(turns: TurnModel[], turnId: string): string | undefined {
+  const found = turns.findIndex((t) => t.id === turnId);
+  const from = found === -1 ? turns.length - 1 : found;
+  for (let i = from; i >= 0; i--) {
+    const turn = turns[i];
+    const text = turn && retryText(turn);
+    if (text) return text;
+  }
+  return undefined;
+}
+
 export function TurnFailureEndCap({
   error,
   turn,
@@ -54,7 +80,12 @@ export function TurnFailureEndCap({
 }) {
   const info = classifyTurnError(error);
   const toasts = useToasts();
-  const text = retryText(turn);
+  // Selected down to a plain string so this cap re-renders only when the text
+  // it would re-issue actually changes, not on every delta the thread takes.
+  const priorInput = useThreadsStore((s) =>
+    sessionRef === undefined ? undefined : originatingInput(s.threads.get(sessionRef)?.turns ?? [], turn.id),
+  );
+  const text = retryText(turn) ?? priorInput;
   const canRetry = sessionRef !== undefined && text !== undefined;
 
   // Recovery re-issues the turn's originating input via the existing

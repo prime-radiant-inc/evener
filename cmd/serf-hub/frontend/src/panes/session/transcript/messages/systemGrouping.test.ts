@@ -78,3 +78,50 @@ test("shouldGroup: a run longer than 3 groups", () => {
   const items = Array.from({ length: 5 }, (_, i) => item(String(i), "systemMessage"));
   expect(shouldGroup({ items, isFirst: true })).toBe(true);
 });
+
+// --- a turn failure never joins a run (kata 0wb6) ----------------------------
+// A persisted turn failure arrives as a systemMessage item carrying the typed
+// "error" eventKind. It is the one system item a reader is hunting for, so it
+// must never be foldable into a collapsed "N system events · <the FIRST item's
+// line>" disclosure - a summary that can describe something else entirely.
+
+function failure(id: string): ItemModel {
+  return { id, turnId: "turn_1", type: "systemMessage", text: `text-${id}`, eventKind: "error" };
+}
+
+test("a turn failure is its own run of one, and is first, so it always renders itself", () => {
+  const run = systemRunFor([failure("boom")], "boom");
+  expect(run?.items.map((i) => i.id)).toEqual(["boom"]);
+  expect(run?.isFirst).toBe(true);
+  expect(shouldGroup(run!)).toBe(false);
+});
+
+test("a turn failure surrounded by lifecycle notices still stands alone", () => {
+  const items = [item("a", "systemMessage"), failure("boom"), item("b", "systemMessage")];
+  expect(systemRunFor(items, "boom")?.items.map((i) => i.id)).toEqual(["boom"]);
+  expect(systemRunFor(items, "boom")?.isFirst).toBe(true);
+});
+
+test("a turn failure breaks the run around it, so no group can summarise it away", () => {
+  const items = [
+    item("a", "systemMessage"),
+    item("b", "systemMessage"),
+    failure("boom"),
+    item("c", "systemMessage"),
+    item("d", "systemMessage"),
+  ];
+  expect(systemRunFor(items, "a")?.items.map((i) => i.id)).toEqual(["a", "b"]);
+  expect(systemRunFor(items, "c")?.items.map((i) => i.id)).toEqual(["c", "d"]);
+  expect(systemRunFor(items, "c")?.isFirst).toBe(true);
+});
+
+// The efme rule: whatever leaves a run must not still be COUNTED by it, or the
+// group announces more events than it shows. Membership and rendering are
+// derived from one predicate here, so a run of two notices either side of a
+// failure stays two - never three.
+test("a run's count excludes the failure that broke it", () => {
+  const items = [item("a", "systemMessage"), item("b", "systemMessage"), failure("boom")];
+  const run = systemRunFor(items, "a");
+  expect(run?.items).toHaveLength(2);
+  expect(shouldGroup(run!)).toBe(false);
+});

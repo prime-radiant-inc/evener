@@ -3,12 +3,14 @@
 // ...) plus the scaffolding blocks (the session system prompt and compaction
 // summaries). Scaffolding is classified off the wire's typed
 // ThreadItem.eventKind discriminator (carried onto ItemModel by reducer.ts's
-// wireItemToModel) and rendered as a collapsed-by-default disclosure; every
-// other systemMessage kind gets the SAME honest, quiet one-line/grouped
-// treatment, without a separate visual identity per sub-kind. That already
-// satisfies "system/skill notices: collapsed-by-default quiet groups"
-// literally (a skill activation IS a systemMessage item, so it gets the
-// quiet/grouped treatment). See the wave-4 T2 report for the uniform
+// wireItemToModel) and rendered as a collapsed-by-default disclosure. One more
+// kind earns an identity of its own: a persisted turn failure ("error"), which
+// is the one system item a reader actively hunts for rather than scrolls past
+// - see FailureLine below. Every other kind gets the SAME honest, quiet
+// one-line/grouped treatment, without a separate visual identity per sub-kind.
+// That already satisfies "system/skill notices: collapsed-by-default quiet
+// groups" literally (a skill activation IS a systemMessage item, so it gets
+// the quiet/grouped treatment). See the wave-4 T2 report for the uniform
 // non-scaffold treatment as a deliberate scope simplification.
 //
 // Grouping (systemGrouping.ts's systemRunFor/shouldGroup) is recomputed
@@ -17,20 +19,25 @@
 // run's FIRST member (every other member of a grouped run renders nothing -
 // its content already appears inside the first member's group). A run
 // under 3 renders each item as its own standalone line, matching parity
-// (contracts-transcript-scroll-liveness.md #12).
+// (contracts-transcript-scroll-liveness.md #12). A failure joins no run at
+// all, so no disclosure can hold it behind a summary describing a different
+// item.
 
-import type { ItemModel } from "../../../../protocol/model";
-import { Markdown } from "../../../../widgets";
+import type { ItemModel, TurnModel } from "../../../../protocol/model";
+import { FailureGlyph, Markdown } from "../../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
+import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
 import { firstLine, formatCharCount } from "./format";
-import { type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
+import { isTurnFailureItem, type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 
 const CLASS = {
   line: requireClass(styles.line, "systemnoticeitem.module.css", "line"),
+  failure: requireClass(styles.failure, "systemnoticeitem.module.css", "failure"),
+  failureText: requireClass(styles.failureText, "systemnoticeitem.module.css", "failureText"),
   group: requireClass(styles.group, "systemnoticeitem.module.css", "group"),
   summary: requireClass(styles.summary, "systemnoticeitem.module.css", "summary"),
   groupBody: requireClass(styles.groupBody, "systemnoticeitem.module.css", "groupBody"),
@@ -111,7 +118,44 @@ function ScaffoldDisclosure({ item }: { item: ItemModel }) {
   );
 }
 
-function SystemLine({ item }: { item: ItemModel }) {
+// FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
+// message nor a description. It is the same category-label-over-invisible-row
+// rule FALLBACK_LABEL follows, worded for the one event where the generic
+// "System event" would be worst: a row that says a failure happened beats one
+// that files it under nothing in particular.
+const FAILURE_FALLBACK_LABEL = "Turn failed";
+
+// What the failure row says. The end cap that closes a failed turn (TurnBlock
+// renders it on exactly this condition) already states the message with its
+// taxonomy chip, hint and recovery action, so with a cap the row names the
+// event and lets the cap carry the detail - saying the same sentence twice, ten
+// pixels apart, is what a reloaded failure did before. With no cap (an item
+// that reached a client without a turn-level error) the row leads with the
+// message, since nothing else will carry it: a failure is never left unstated.
+function failureText(item: ItemModel, turn: TurnModel): string {
+  const named = item.description?.trim();
+  const message = item.text.trim();
+  const preferred = asTurnError(turn.error) ? [named, message] : [message, named];
+  return preferred.find((candidate) => candidate) ?? FAILURE_FALLBACK_LABEL;
+}
+
+// FailureLine is a turn failure: the one systemMessage a reader is hunting for
+// (three research personas named a failure first, unprompted), so it wears the
+// same row grammar a failed tool call does - the --danger FailureGlyph widget
+// plus full-contrast ink - rather than the quiet --ink-low one-liner every
+// lifecycle notice shares. data-attention="error" is the same urgent anchor
+// ToolCallItem tags a failed row with (parity §11).
+function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
+  return (
+    <div className={CLASS.failure} data-testid="system-notice-failure" data-attention="error">
+      <FailureGlyph />
+      <span className={CLASS.failureText}>{failureText(item, turn)}</span>
+    </div>
+  );
+}
+
+function SystemLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
+  if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
@@ -120,7 +164,7 @@ function SystemLine({ item }: { item: ItemModel }) {
   );
 }
 
-function SystemGroup({ run }: { run: SystemRun }) {
+function SystemGroup({ run, turn }: { run: SystemRun; turn: TurnModel }) {
   const count = run.items.length;
   // Every SystemGroup caller already checked shouldGroup(run), i.e.
   // count >= MIN_GROUP_SIZE - so items[0] always exists. That guarantee
@@ -148,7 +192,7 @@ function SystemGroup({ run }: { run: SystemRun }) {
       </summary>
       <div className={CLASS.groupBody}>
         {run.items.map((it) => (
-          <SystemLine key={it.id} item={it} />
+          <SystemLine key={it.id} item={it} turn={turn} />
         ))}
       </div>
     </details>
@@ -175,10 +219,10 @@ export function SystemNoticeItem({ item, turn }: ItemRenderProps) {
 
   if (shouldGroup(run)) {
     if (!run.isFirst) return null; // absorbed into the run's first member
-    return <SystemGroup run={run} />;
+    return <SystemGroup run={run} turn={turn} />;
   }
 
-  return <SystemLine item={item} />;
+  return <SystemLine item={item} turn={turn} />;
 }
 
 registerItemRenderer("systemMessage", SystemNoticeItem);

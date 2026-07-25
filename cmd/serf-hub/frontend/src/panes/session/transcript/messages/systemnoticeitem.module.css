@@ -8,6 +8,29 @@
   color: var(--ink-low);
 }
 
+/* A turn failure is the one system notice that is not churn, so it wears the
+ * failed tool row's grammar rather than the quiet line's: glyph, then text at
+ * reading contrast. The hue is entirely the FailureGlyph widget's - a
+ * non-widget stylesheet may not reference --danger (token-contract.test.ts) -
+ * and the text stays off --ink-low, which is under the AA floor in both
+ * themes. Same flex/baseline/gap as toolcallitem's .row, so the two failure
+ * marks in a transcript sit on one grammar. */
+.failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.failureText {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-ui);
+  color: var(--ink-hi);
+}
+
 .group {
   padding: var(--space-1) 0;
 }

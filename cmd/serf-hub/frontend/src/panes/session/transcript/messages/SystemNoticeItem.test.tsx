@@ -182,6 +182,92 @@ test("a long systemMessage notice with no scaffold eventKind stays a plain quiet
   expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
 });
 
+// --- a turn failure is marked, not quiet (kata 0wb6) -------------------------
+// A reloaded turn failure arrives as a systemMessage item with the typed
+// "error" eventKind. Every other system notice is lifecycle churn a reader
+// scrolls past; this one is the thing readers hunt for, so it carries the same
+// row-level mark a failed tool call does and full-contrast ink.
+
+function failureItem(overrides: Partial<ItemModel> = {}): ItemModel {
+  return item("boom", {
+    text: "openai error (status=401): incorrect API key",
+    description: "Turn failed",
+    error: "openai error (status=401): incorrect API key",
+    status: "failed",
+    eventKind: "error",
+    ...overrides,
+  });
+}
+
+function failedTurn(items: ItemModel[]): TurnModel {
+  return { id: "turn_1", status: "failed", items, error: { message: "openai error (status=401)" } };
+}
+
+test("a turn failure renders the failure mark, not a quiet lifecycle line", () => {
+  render(<TurnBlock turn={turnWith([failureItem()])} />);
+  expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
+  expect(screen.queryByTestId("system-notice-line")).toBeNull();
+  expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
+});
+
+test("a turn failure carries the same urgent-anchor marker a failed tool row does", () => {
+  render(<TurnBlock turn={turnWith([failureItem()])} />);
+  expect(screen.getByTestId("system-notice-failure").getAttribute("data-attention")).toBe("error");
+});
+
+test("an ordinary system notice carries no attention marker and no failure mark", () => {
+  render(<TurnBlock turn={turnWith([item("a", { text: "model switched to gpt-5.4" })])} />);
+  expect(screen.queryByTestId("system-notice-failure")).toBeNull();
+  expect(screen.getByTestId("system-notice-line").getAttribute("data-attention")).toBeNull();
+});
+
+// The end cap beneath restates the message with its taxonomy chip, hint and
+// recovery action. The row says WHAT happened; the cap says the detail. Saying
+// the same sentence twice, ten pixels apart, is what the reloaded failure did
+// before.
+test("with the end cap present the failure row names the event instead of repeating the message", () => {
+  render(<TurnBlock turn={failedTurn([failureItem()])} />);
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Turn failed");
+  // The message itself still appears exactly once, in the end cap.
+  expect(screen.getAllByText(/openai error \(status=401\)/)).toHaveLength(1);
+});
+
+// A client or daemon that carries the item without a turn-level error has no
+// cap to lean on, so the row must carry the message itself. A failure is never
+// left unstated.
+test("with no end cap the failure row carries the message itself", () => {
+  render(<TurnBlock turn={turnWith([failureItem()])} />);
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe("openai error (status=401): incorrect API key");
+});
+
+test("a failure with neither description nor text names the event rather than filing it as a generic notice", () => {
+  render(<TurnBlock turn={failedTurn([failureItem({ text: "", description: "" })])} />);
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Turn failed");
+  expect(screen.queryByText("System event")).toBeNull();
+});
+
+test("with no end cap and no message, the row falls back to the wire's own description", () => {
+  render(<TurnBlock turn={turnWith([failureItem({ text: "", description: "Provider rejected the request" })])} />);
+  expect(screen.getByTestId("system-notice-failure").textContent).toBe("Provider rejected the request");
+});
+
+test("a failure among lifecycle notices is never folded into their collapsed group", () => {
+  const items = [item("a"), item("b"), failureItem(), item("c"), item("d")];
+  render(<TurnBlock turn={turnWith(items)} />);
+  expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
+  // Two runs of two remain either side; neither reaches the grouping threshold,
+  // so nothing collapses and no summary can describe the failure away.
+  expect(screen.queryByTestId("system-notice-group")).toBeNull();
+});
+
+test("a failure adjacent to a group that does collapse is left outside it, and uncounted", () => {
+  const items = [item("a"), item("b"), item("c"), failureItem()];
+  render(<TurnBlock turn={turnWith(items)} />);
+  expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
+  const summary = screen.getByTestId("system-notice-group").querySelector("summary");
+  expect(summary?.textContent).toBe("3 system events · notice a");
+});
+
 // The stable item_system_prompt id remains a narrow fallback for a system
 // prompt projected by an older daemon that predates the typed eventKind, so a
 // heterogeneous-version relay still collapses it correctly.
