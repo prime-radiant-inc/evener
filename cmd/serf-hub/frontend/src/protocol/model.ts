@@ -152,4 +152,13 @@ export interface ThreadModel {
   cwd: string;
   gitBranch?: string;
   projectPath?: string;
+  // When the session began and when its state was last written, as ISO
+  // strings (the model's timestamp convention) converted from the wire's
+  // top-level Thread.createdAt/updatedAt, which are Unix SECONDS - a
+  // different unit from the millisecond stamps on serf.activeTurnStartedAt
+  // and on turns (see detailsAccounting.ts's epochSecondsToISO). undefined
+  // when the source did not know the instant (Go's zero value). Snapshot-only
+  // like the fields above; the session-details panel reads them.
+  createdAt?: string;
+  updatedAt?: string;
 }

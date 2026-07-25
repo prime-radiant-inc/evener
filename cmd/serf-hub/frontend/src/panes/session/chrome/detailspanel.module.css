@@ -1,3 +1,31 @@
+/* Titled groups (Session / Usage / Location) separated by a rule, so a dozen
+ * rows read as three short lists instead of one long one. The last group needs
+ * no trailing rule - there is nothing below it to divide from. */
+.section {
+  padding-block-end: var(--space-4);
+  border-block-end: 1px solid var(--edge);
+}
+
+.section:last-child {
+  padding-block-end: 0;
+  border-block-end: none;
+}
+
+.section + .section {
+  padding-block-start: var(--space-4);
+}
+
+/* The group's own name sits above its rows, quieter than the values it covers:
+ * it is a wayfinding label, not a fact to read. */
+.sectionTitle {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  color: var(--ink-low);
+}
+
 /* One label/value row per fact, label above value so the exact figures get a
  * full line of the narrow sheet to themselves. A <div> grouping dt+dd is
  * valid inside a <dl> per the HTML5 content model (same shape settings'
@@ -45,4 +73,12 @@
  * left) recede behind the percentage a reader scans for first. */
 .dim {
   color: var(--ink-mid);
+}
+
+/* An absolute filesystem path can exceed the sheet's width at any viewport, so
+ * it wraps at a path separator rather than overflowing or being ellipsized to
+ * nothing - the whole point of showing it here is that it is copyable in full.
+ * anywhere (not break-all) keeps it breaking at natural boundaries. */
+.path {
+  overflow-wrap: anywhere;
 }

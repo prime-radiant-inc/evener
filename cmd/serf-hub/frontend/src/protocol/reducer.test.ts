@@ -2069,6 +2069,24 @@ test("hydrateThread defaults the wave 5 snapshot-only fields when thread.serf om
   expect(model.supportsReasoning).toBe(false);
 });
 
+// Thread.createdAt/updatedAt are top-level wire fields in Unix SECONDS
+// (hubcore.UnixSeconds for a past session, entry.StartedAt.Unix() for a live
+// one), converted to the model's ISO-string convention like every other
+// timestamp on ThreadModel. The session-details panel is what reads them.
+test("hydrateThread maps the thread's created/updated wire seconds to ISO instants", () => {
+  const model = testHydrate({ createdAt: 1_784_829_766, updatedAt: 1_784_872_877 });
+
+  expect(model.createdAt).toBe(new Date(1_784_829_766_000).toISOString());
+  expect(model.updatedAt).toBe(new Date(1_784_872_877_000).toISOString());
+});
+
+test("hydrateThread treats Go's zero created/updated stamps as absent rather than 1970", () => {
+  const model = testHydrate({ createdAt: 0, updatedAt: 0 });
+
+  expect(model.createdAt).toBeUndefined();
+  expect(model.updatedAt).toBeUndefined();
+});
+
 test("capabilities/goal/context*/usage/workMillis/activeTurnStartedAt survive live notifications untouched - no wire push exists for any of them", () => {
   let model = testHydrate({
     serf: {

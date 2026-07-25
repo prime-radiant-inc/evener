@@ -1,28 +1,42 @@
-// DetailsPanel: a trigger + Sheet holding the session's exact accounting
-// figures - context occupancy, work time, cumulative tokens, dollar cost.
+// DetailsPanel: a trigger + Sheet holding a session's full accounting - who it
+// is (model, state, id), what it has spent (context, work time, tokens, cost),
+// and where it runs (cwd, project, branch, when it began and was last written).
 //
-// The status row next to it is a glanceable strip: a context METER, a clock,
+// The status row beside it is a glanceable strip: a context METER, a clock,
 // arrows. This panel is where the same facts get room to be precise ("42%
-// used · 42k / 100k · 58k left" rather than a 64px gauge), so a reader
-// deciding whether to compact, or reporting what a session cost, has the
-// numbers instead of a shape.
+// used · 42k / 100k · 58k left" rather than a 64px gauge), plus the facts the
+// strip has no room for at all, so a reader deciding whether to compact, or
+// reporting what a session cost, has the numbers instead of a shape.
 //
-// Every value here comes off the live ThreadModel the status row already
-// reads - no fetch, no wire call, nothing to load, so there is no loading or
-// error state to render (unlike TasksPanel, whose rows are fetched on open).
+// Rows are grouped (Session / Usage / Location) the way the panel this replaced
+// grouped its own (cmd/serf-hub/web_workspace.go's detailsSections on the
+// legacy renderer): a dozen flat rows do not scan.
+//
+// EVERY row is omitted when its value is absent. That is the panel's central
+// rule, and the reason a session's whole usage section can vanish: the wire
+// omits what was never measured, and a zero there is Go's unset zero value,
+// not a measurement of zero. Rendering "~$0.00" or "0s" for an unmeasured
+// session would be inventing data. A section left with no rows drops its
+// heading too.
+//
+// Every value comes off the live ThreadModel the status row already reads - no
+// fetch, no wire call, nothing to load, so there is no loading or error state
+// to render (unlike TasksPanel, whose rows are fetched on open).
 //
 // Cost is SerfThread.Cost: the "~$X.XX" string appwire.EstimateCost derives
-// server-side from the thread's cumulative usage at the model's catalog
-// price. The pricing table never crosses the wire, so the string is shown
-// verbatim - never re-formatted - and an absent cost (no token data, or an
-// uncataloged model) renders NO cost row at all rather than a false "~$0.00".
+// server-side from the thread's cumulative usage at the model's catalog price.
+// The pricing table never crosses the wire, so the string is shown verbatim -
+// never re-formatted, and never derived client-side even when the token total
+// beside it was. An absent cost (no token data, or an uncataloged model) is an
+// honest unknown and renders no row at all.
 import { useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { Button, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { formatTokenCount } from "../transcript/messages/format";
+import { formatTimestamp, sessionTokens } from "./detailsAccounting";
 import styles from "./detailspanel.module.css";
-import { formatWorkDuration, totalWorkMillis } from "./statusFormat";
+import { formatWorkDuration, modelLabel, totalWorkMillis } from "./statusFormat";
 
 export interface DetailsPanelProps {
   model: ThreadModel;
@@ -32,12 +46,15 @@ export interface DetailsPanelProps {
 }
 
 const CLASS = {
+  section: requireClass(styles.section, "detailspanel.module.css", "section"),
+  sectionTitle: requireClass(styles.sectionTitle, "detailspanel.module.css", "sectionTitle"),
   list: requireClass(styles.list, "detailspanel.module.css", "list"),
   row: requireClass(styles.row, "detailspanel.module.css", "row"),
   label: requireClass(styles.label, "detailspanel.module.css", "label"),
   value: requireClass(styles.value, "detailspanel.module.css", "value"),
   meter: requireClass(styles.meter, "detailspanel.module.css", "meter"),
   dim: requireClass(styles.dim, "detailspanel.module.css", "dim"),
+  path: requireClass(styles.path, "detailspanel.module.css", "path"),
 };
 
 // contextTone escalates with pressure exactly as the status row's gauge does,
@@ -67,6 +84,21 @@ function DetailRow({ label, testId, children }: { label: string; testId: string;
   );
 }
 
+// Section renders a titled group, or nothing at all when every row inside it
+// was omitted for want of data - a heading over an empty list would advertise
+// facts the panel does not have. The caller's `value && <DetailRow/>` guards
+// arrive here as falsy children, which is what gets filtered out.
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const rows = (Array.isArray(children) ? children : [children]).filter(Boolean);
+  if (rows.length === 0) return null;
+  return (
+    <section className={CLASS.section}>
+      <h3 className={CLASS.sectionTitle}>{title}</h3>
+      <dl className={CLASS.list}>{rows}</dl>
+    </section>
+  );
+}
+
 export function DetailsPanel({ model, now }: DetailsPanelProps) {
   const [open, setOpen] = useState(false);
 
@@ -78,6 +110,18 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
   const remaining = Math.max(0, model.contextWindow - model.contextUsed);
   const percent = Math.round(model.contextPressure * 100);
 
+  const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
+  const tokens = sessionTokens(model);
+  // A derived sum over a windowed transcript covers only the turns in hand
+  // (thread/read's turnLimit), so its label says exactly that rather than
+  // passing a partial figure off as the session's total.
+  const tokensLabel = tokens?.scope === "loaded" ? "tokens (loaded turns)" : "tokens";
+  const createdAt = formatTimestamp(model.createdAt);
+  const updatedAt = formatTimestamp(model.updatedAt);
+  // A project path identical to the cwd is the common case (a session in its
+  // own project root); repeating it under a second label says nothing.
+  const projectPath = model.projectPath && model.projectPath !== model.cwd ? model.projectPath : undefined;
+
   return (
     <>
       {/* data-details-trigger lets the command palette's "Toggle session
@@ -87,7 +131,18 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
         Details
       </Button>
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
-        <dl className={CLASS.list}>
+        <Section title="Session">
+          <DetailRow label="model" testId="session-details-model">
+            {modelLabel(model.modelProvider, model.model)}
+          </DetailRow>
+          <DetailRow label="state" testId="session-details-status">
+            {model.status.type}
+          </DetailRow>
+          <DetailRow label="session id" testId="session-details-session-id">
+            {model.threadId}
+          </DetailRow>
+        </Section>
+        <Section title="Usage">
           {showContext && (
             <DetailRow label="context" testId="session-details-context">
               <span className={CLASS.meter}>
@@ -105,13 +160,15 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
               <span className={CLASS.dim}>{formatTokenCount(remaining)} left</span>
             </DetailRow>
           )}
-          <DetailRow label="work time" testId="session-details-work-time">
-            {formatWorkDuration(totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now))}
-          </DetailRow>
-          {model.usage && (
-            <DetailRow label="tokens" testId="session-details-tokens">
-              <span>↑{formatTokenCount(model.usage.inputTokens ?? 0)}</span>
-              <span>↓{formatTokenCount(model.usage.outputTokens ?? 0)}</span>
+          {workMs > 0 && (
+            <DetailRow label="work time" testId="session-details-work-time">
+              {formatWorkDuration(workMs)}
+            </DetailRow>
+          )}
+          {tokens && (
+            <DetailRow label={tokensLabel} testId="session-details-tokens">
+              <span>↑{formatTokenCount(tokens.inputTokens)}</span>
+              <span>↓{formatTokenCount(tokens.outputTokens)}</span>
             </DetailRow>
           )}
           {model.cost && (
@@ -119,7 +176,34 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
               {model.cost}
             </DetailRow>
           )}
-        </dl>
+        </Section>
+        <Section title="Location">
+          {model.cwd && (
+            <DetailRow label="working dir" testId="session-details-cwd">
+              <span className={CLASS.path}>{model.cwd}</span>
+            </DetailRow>
+          )}
+          {projectPath && (
+            <DetailRow label="project" testId="session-details-project">
+              <span className={CLASS.path}>{projectPath}</span>
+            </DetailRow>
+          )}
+          {model.gitBranch && (
+            <DetailRow label="branch" testId="session-details-branch">
+              {model.gitBranch}
+            </DetailRow>
+          )}
+          {createdAt && (
+            <DetailRow label="started" testId="session-details-created">
+              {createdAt}
+            </DetailRow>
+          )}
+          {updatedAt && (
+            <DetailRow label="last activity" testId="session-details-updated">
+              {updatedAt}
+            </DetailRow>
+          )}
+        </Section>
       </Sheet>
     </>
   );
