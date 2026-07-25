@@ -2,10 +2,10 @@
 // given one RailNode (railNodes.ts) and the TreeRowInfo the Tree widget
 // computed for it (depth/expanded/hasChildren/toggle/activate), it renders
 // a chevron (branches only), a Cadence liveness dot, a two-line text column
-// (title + a humanized activity gloss - see humanizeState), a favorite star
-// / secondary tier tag / attention Badge as applicable, a right-aligned
-// relative timestamp (session rows only, when there's no Badge to show
-// instead), and an actions Menu. Pure presentation: every mutation goes back
+// (title + a metadata gloss - see activityGloss), a favorite star /
+// attention Badge as applicable, a right-aligned relative timestamp
+// (session rows only, when there's no Badge to show instead), and an
+// actions Menu. Pure presentation: every mutation goes back
 // out through the `actions` prop, which Rail.tsx implements against
 // actions.ts + the tree store's refresh().
 //
@@ -33,7 +33,6 @@ const CLASS = {
   label: requireClass(styles.label, "Rail.module.css", "label"),
   activity: requireClass(styles.activity, "Rail.module.css", "activity"),
   time: requireClass(styles.time, "Rail.module.css", "time"),
-  meta: requireClass(styles.meta, "Rail.module.css", "meta"),
   star: requireClass(styles.star, "Rail.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "Rail.module.css", "loadingRow"),
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
@@ -78,10 +77,10 @@ export function cadenceStateFor(wireState: string): CadenceState {
   }
 }
 
-// A short, human-facing gloss for a row's second activity line (§2.3) - the
-// same wire state vocabulary cadenceStateFor reads, worded for a person
-// rather than mapped to a Cadence family. "warning" reads the same as
-// "awaiting" here (both already share Cadence's "needs-you" dot above).
+// The humanized wire state a row's second line leads with (§2.3) - the same
+// wire state vocabulary cadenceStateFor reads, worded for a person rather
+// than mapped to a Cadence family. "warning" reads the same as "awaiting"
+// here (both already share Cadence's "needs-you" dot above).
 function humanizeState(wireState: string): string {
   switch (wireState) {
     case "active":
@@ -96,6 +95,25 @@ function humanizeState(wireState: string): string {
     default: // "idle", "notLoaded", "", and any future/unknown value
       return "idle";
   }
+}
+
+// The row's whole second line: state, then whatever secondary metadata the
+// session carries, in decreasing order of how often it distinguishes one row
+// from its neighbours. Branch and tier live here rather than beside the title
+// because the title is the one thing that identifies a row: as fixed-width
+// siblings on the main line they charged their width to the title at the
+// rail's 280px, and a branch is typically identical on every row of a project
+// ("main", "main", "main"...) - near-zero information at the title's expense.
+// A "current" tier is likewise unremarkable (it's the default state of a
+// session, same exclusion the old secondary tier tag made). Exported for
+// direct testing of the join, which the rendered line can only assert on as
+// one flat string.
+export function activityGloss(session: ApiTreeNode): string {
+  const parts = [humanizeState(session.state)];
+  if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
+  if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);
+  if (session.model !== undefined && session.model !== "") parts.push(session.model);
+  return parts.join(" · ");
 }
 
 export interface RailRowActions {
@@ -241,6 +259,7 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
   const needsYouCount = needsYouDescendantCount(session);
+  const gloss = activityGloss(session);
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
@@ -258,20 +277,20 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             on the owning treeitem - can't use aria-hidden the way Chevron
             does, since this text IS the treeitem's accessible name (no
             separate aria-label on the row). */}
-        <span className={CLASS.label}>{session.title}</span>
-        <span data-testid="rail-row-activity" className={CLASS.activity}>
-          {humanizeState(session.state)}
-          {session.model !== undefined && session.model !== "" ? ` · ${session.model}` : ""}
+        {/* Both lines ellipsize, so both carry their own full text as a
+            native tooltip - nothing a narrow rail cuts off becomes
+            unreachable. */}
+        <span className={CLASS.label} title={session.title}>
+          {session.title}
+        </span>
+        <span data-testid="rail-row-activity" className={CLASS.activity} title={gloss}>
+          {gloss}
         </span>
       </span>
       {session.favorite === true && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>
-      )}
-      {session.branch !== undefined && session.branch !== "" && <span className={CLASS.meta}>{session.branch}</span>}
-      {session.tier !== undefined && session.tier !== "current" && session.tier !== "" && (
-        <span className={CLASS.meta}>{session.tier}</span>
       )}
       {/* Right slot: either the Task-7 needs-you-descendant Badge, or (when
           there's nothing to flag) a relative timestamp - never both, so the
