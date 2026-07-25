@@ -12,10 +12,17 @@
 # MODULES, WAVE1, WAVE2, or AGENT_PARALLEL when a caller needs a different local
 # schedule without changing the coverage boundary.
 #
+# The frontend gate (vitest/typecheck/lint via `make test-web`) is a third
+# stream started before wave 1 and joined at the end, so its ~40s runs across
+# the Go waves instead of being added onto them. Measured on an idle 10-core
+# box: 64s Go-only -> 70s with the frontend included, i.e. full frontend
+# coverage for ~6s rather than ~40s. Set WEB=0 to skip it.
+#
 # Usage:
 #   scripts/run-module-tests.sh <go-test-flags...>
 #     scripts/run-module-tests.sh -short -count=1
 #     scripts/run-module-tests.sh -race -short -count=1
+#     WEB=0 scripts/run-module-tests.sh -short -count=1   # Go modules only
 #
 # Output: one PASS/FAIL line per module (with wall time) as each finishes; a
 # failing module's full output is printed at the end. Exits non-zero on any
@@ -23,7 +30,24 @@
 set -uo pipefail
 
 MODULES=${MODULES:-". agent llm auth envvars invariant"}
+
+# WEB controls the concurrent frontend gate. It is skipped automatically when
+# the frontend directory is absent so this script still works in a checkout
+# without it.
+WEB=${WEB:-1}
+WEB_DIR=${WEB_DIR:-cmd/serf-hub/frontend}
+[ -d "$WEB_DIR" ] || WEB=0
+
 if [ -z "${WAVE1+x}" ] && [ -z "${WAVE2+x}" ]; then
+	# Wave 1 is the root module alone; wave 2 is everything else, concurrently.
+	#
+	# Giving root the machine to itself looks like idle capacity, but measured on
+	# an idle 10-core box it is the faster arrangement. Moving the five small
+	# modules into wave 1 (12.5s of work against root's ~21s window) slowed the
+	# *total* gate from 64s to 78s: root's timing-sensitive TUI tests stretched
+	# 21s -> 37s under the added contention, which cost more than the overlap
+	# saved. Root is latency-sensitive, not throughput-bound — do not "fill" its
+	# wave without re-measuring end to end.
 	WAVE1=""
 	WAVE2=""
 	for m in $MODULES; do
@@ -121,8 +145,25 @@ run_wave() {
 	done
 }
 
+# Start the frontend gate first so it runs across both Go waves. It is joined
+# after wave 2, so its cost is hidden unless it outlives the Go work.
+web_pid=""
+web_failed=0
+if [ "$WEB" -ne 0 ]; then
+	/usr/bin/time -p "${MAKE:-make}" test-web >"$(logpath web)" 2>&1 &
+	web_pid="$!"
+fi
+
 run_wave $WAVE1
 run_wave $WAVE2
+
+if [ -n "$web_pid" ]; then
+	if wait "$web_pid"; then
+		printf 'PASS  %-8s %s\n' "web" "$(awk '/^real /{print $2"s"}' "$(logpath web)" | tail -1)"
+	else
+		printf 'FAIL  %-8s\n' "web"; fail=1; web_failed=1
+	fi
+fi
 
 if [ "$fail" -ne 0 ]; then
 	echo
@@ -134,6 +175,11 @@ if [ "$fail" -ne 0 ]; then
 			echo "----- $m -----"; cat "$log"
 		fi
 	done
+	# The web gate's output is vitest/tsc/biome, not `go test`, so it is dumped
+	# on its own exit status rather than by matching Go failure markers.
+	if [ "$web_failed" -ne 0 ]; then
+		echo "----- web -----"; cat "$(logpath web)"
+	fi
 	echo
 	echo "full logs: $logdir"
 fi
