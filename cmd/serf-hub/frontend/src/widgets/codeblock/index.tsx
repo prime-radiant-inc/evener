@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Button } from "../button";
+import { IconButton } from "../iconbutton";
 import { requireClass } from "../internal/requireClass";
 import styles from "./codeblock.module.css";
 
@@ -8,13 +8,16 @@ export interface CodeBlockProps {
   language?: string;
   /** Shows a right-aligned line-number column ahead of each line. */
   showLineNumbers?: boolean;
+  /** The copy control's accessible name. Defaults to "Copy"; a caller whose
+   * block holds something more specific (a tool's output) should say so. */
+  copyLabel?: string;
 }
 
 const CLASS = {
   root: requireClass(styles.root, "codeblock.module.css", "root"),
   header: requireClass(styles.header, "codeblock.module.css", "header"),
   language: requireClass(styles.language, "codeblock.module.css", "language"),
-  copyWrapper: requireClass(styles.copyWrapper, "codeblock.module.css", "copyWrapper"),
+  copy: requireClass(styles.copy, "codeblock.module.css", "copy"),
   pre: requireClass(styles.pre, "codeblock.module.css", "pre"),
   code: requireClass(styles.code, "codeblock.module.css", "code"),
   line: requireClass(styles.line, "codeblock.module.css", "line"),
@@ -23,12 +26,36 @@ const CLASS = {
 
 const COPIED_RESET_MS = 2_000;
 
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <rect x="4.5" y="1.5" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M9.5 12.5H3A1.5 1.5 0 0 1 1.5 11V4.5" fill="none" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function CopiedIcon() {
+  return (
+    <svg viewBox="0 0 14 14" width="12" height="12" aria-hidden="true">
+      <path d="M2 7.5 L5.5 11 L12 3.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /**
  * A block of source/tool-output text: mono font, an optional language label
- * and line-number gutter, and a copy button. No syntax highlighting - YAGNI
- * this wave; add a highlighter only when a real consumer needs one.
+ * and line-number gutter, and a copy control inset into the block's top-right
+ * corner. No syntax highlighting - YAGNI this wave; add a highlighter only when
+ * a real consumer needs one.
+ *
+ * Long lines WRAP; the block never scrolls horizontally. Tool output is prose-
+ * shaped far more often than it is table-shaped, and a horizontal scroller hides
+ * the ends of exactly the lines a reader opened the block for. DiffBlock keeps
+ * its own scroller for the opposite reason - column alignment across lines is
+ * part of a diff's meaning, and wrapping destroys it.
  */
-export function CodeBlock({ text, language, showLineNumbers = false }: CodeBlockProps) {
+export function CodeBlock({ text, language, showLineNumbers = false, copyLabel = "Copy" }: CodeBlockProps) {
   const lines = useMemo(() => (showLineNumbers ? text.split("\n") : null), [text, showLineNumbers]);
   const [copied, setCopied] = useState(false);
 
@@ -48,12 +75,20 @@ export function CodeBlock({ text, language, showLineNumbers = false }: CodeBlock
 
   return (
     <div className={CLASS.root}>
+      {/* The copy control is inset into the block's own top-right corner rather
+          than sitting in a full-width labelled row of its own: the block's
+          content is the point, and a header band spent on one word doubles the
+          block's visual weight (A4). */}
       <div className={CLASS.header}>
         {language !== undefined && <span className={CLASS.language}>{language}</span>}
-        <span className={CLASS.copyWrapper}>
-          <Button variant="quiet" size="sm" onClick={handleCopy}>
-            {copied ? "Copied" : "Copy"}
-          </Button>
+        <span className={CLASS.copy}>
+          <IconButton
+            label={copied ? "Copied" : copyLabel}
+            icon={copied ? <CopiedIcon /> : <CopyIcon />}
+            variant="quiet"
+            size="xs"
+            onClick={handleCopy}
+          />
         </span>
       </div>
       <pre className={CLASS.pre}>

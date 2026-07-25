@@ -10,6 +10,12 @@ import { CodeBlock } from "./index";
 
 const QUIET_BUTTON_CLASS = requireClass(buttonStyles.quiet, "button.module.css", "quiet");
 
+// A stylesheet-grep assertion must not be satisfiable by a comment - this repo
+// has a precedent of exactly that passing while asserting nothing.
+function stripCssComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -118,6 +124,42 @@ test("the copy button is a real, quiet-variant Button (shares its focus-visible 
   const button = screen.getByRole("button", { name: "Copy" });
   expect(button.tagName).toBe("BUTTON");
   expect(button.classList.contains(QUIET_BUTTON_CLASS)).toBe(true);
+});
+
+// A4: the copy affordance is an ICON inset into the block, not a full-width
+// labelled row. The accessible name is the only text.
+test("the copy control is icon-only - it renders no visible label text", () => {
+  render(<CodeBlock text="x" />);
+  const button = screen.getByRole("button", { name: "Copy" });
+  expect(button.textContent).toBe("");
+  expect(button.querySelector("svg")).toBeTruthy();
+  // ...and the header holding it is absolutely positioned, so it costs the
+  // block no height of its own.
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "codeblock.module.css"), "utf8");
+  expect(stripCssComments(css)).toMatch(/\.header\s*\{[^}]*position:\s*absolute/);
+});
+
+test("a caller can name what the copy control copies", () => {
+  render(<CodeBlock text="x" copyLabel="Copy output" />);
+  expect(screen.getByRole("button", { name: "Copy output" })).toBeTruthy();
+});
+
+// A4: wrap, don't scroll. Asserted against the stylesheet with comments
+// stripped first - a stylesheet-grep test that matches its own comment prose
+// asserts nothing (this repo has that precedent).
+test("long lines wrap rather than scrolling horizontally", () => {
+  const css = stripCssComments(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "codeblock.module.css"), "utf8"),
+  );
+  expect(css).toMatch(/white-space:\s*pre-wrap/);
+  expect(css).not.toMatch(/overflow-x:\s*auto/);
+});
+
+test("code content is no larger than a transcript row (caption, not body)", () => {
+  const css = stripCssComments(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "codeblock.module.css"), "utf8"),
+  );
+  expect(css).toMatch(/\.code\s*\{[^}]*font-size:\s*var\(--font-size-caption\)/);
 });
 
 // CodeBlock's only focusable element is its Copy button, which is a real

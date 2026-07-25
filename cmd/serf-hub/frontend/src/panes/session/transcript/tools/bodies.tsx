@@ -26,7 +26,7 @@ const TAIL_MAX_CHARS = 8000;
 export function HeadClippedOutputBody({ item }: OutputBodyProps) {
   const output = item.output ?? "";
   if (output === "") return null;
-  return <CodeBlock text={clip(output, HEAD_CLIP_MAX_CHARS)} />;
+  return <CodeBlock text={clip(output, HEAD_CLIP_MAX_CHARS)} copyLabel="Copy output" />;
 }
 
 // TailFoldedOutputBody mirrors renderer-tools.js's read_file/shell-specific
@@ -40,5 +40,5 @@ export function TailFoldedOutputBody({ item, live }: OutputBodyProps) {
   const output = item.output ?? "";
   if (output === "") return null;
   const text = live ? tailSlice(output, TAIL_MAX_CHARS) : tailFold(output, TAIL_MAX_CHARS);
-  return <CodeBlock text={text} />;
+  return <CodeBlock text={text} copyLabel="Copy output" />;
 }
