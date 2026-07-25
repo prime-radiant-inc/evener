@@ -2614,3 +2614,72 @@ test('turn/completed\'s "full" replace branch composes mergeArguments and mergeO
   expect(reasoning.observedStartedAt).toBe(new Date(1005).toISOString());
   expect(reasoning.observedCompletedAt).toBe(new Date(1006).toISOString());
 });
+
+// The failure count is otherwise snapshot-only: hydrate sets it, and nothing
+// refreshes it until the next thread/read. A client that attached while the
+// session was clean would then keep showing nothing however many failures
+// followed — the watcher the count was built for (kata 12rq). Every status
+// transition is a turn boundary, so the figure rides along there.
+test("thread/status/changed carries a fresher failure count onto the model", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+  });
+  expect(model.failedToolCalls).toBe(0);
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" }, failedToolCalls: 3 },
+    },
+    2000,
+  );
+
+  expect(model.failedToolCalls).toBe(3);
+});
+
+// Absent on a NOTIFICATION means "no update", not "nobody counted". Clearing
+// the model's figure here would blank a count the hydrate legitimately gave it
+// every time an old daemon changed status — turning a measured session back
+// into an unmeasured one on the strip.
+test("thread/status/changed without a failure count leaves the hydrated one alone", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 4 },
+  });
+  expect(model.failedToolCalls).toBe(4);
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
+    },
+    2000,
+  );
+
+  expect(model.failedToolCalls).toBe(4);
+});
+
+// A measured zero must still be able to arrive by push: a session whose only
+// failure was rolled back, or simply a first status change on a clean run,
+// reports 0 and the strip falls silent. Treating 0 as "nothing to say" here
+// would make the count monotonic and unable to correct itself.
+test("thread/status/changed can push a measured zero", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 2 },
+  });
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" }, failedToolCalls: 0 },
+    },
+    2000,
+  );
+
+  expect(model.failedToolCalls).toBe(0);
+});

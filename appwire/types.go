@@ -1158,6 +1158,19 @@ type ThreadStatusChangedParams struct {
 	ThreadID string       `json:"threadId"`
 	Ref      string       `json:"ref,omitempty"`
 	Status   ThreadStatus `json:"status"`
+	// FailedToolCalls carries the session's running failure count (see
+	// SerfThread.FailedToolCalls) so a client WATCHING a session sees it move.
+	// The figure is otherwise snapshot-only, refreshed by thread/read — which
+	// means a session that was clean when the client attached and failed later
+	// would keep saying nothing, which is precisely the reader the count was
+	// built for. Every status transition is a turn boundary, so riding along
+	// here refreshes it exactly when it can have changed, with no polling.
+	//
+	// ABSENT MEANS "NO UPDATE", not "nobody counted" — an old daemon omits it,
+	// and a client that cleared its count on absence would blank a figure the
+	// hydrate legitimately gave it. Absence at HYDRATE is where "nobody
+	// counted" is expressed.
+	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 }
 
 type AgentMessageDeltaParams struct {

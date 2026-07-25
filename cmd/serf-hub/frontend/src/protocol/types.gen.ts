@@ -972,6 +972,7 @@ export interface ThreadStatusChangedParams {
   threadId: string;
   ref?: string;
   status: ThreadStatus;
+  failedToolCalls?: number;
 }
 
 export interface ThreadTranscriptListParams {
