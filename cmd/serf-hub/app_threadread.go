@@ -210,11 +210,11 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	if cfg.Roster != nil && cfg.Roster.IsSubagentActive(entry.Meta.ID) {
 		status = appwire.ThreadStatusActive
 	}
-	// cumulativeUsage is the persisted full-session token total; the cost stamp
-	// derives its "~$X.XX" from it at the session model's price (empty when
-	// there is no usage or the model is uncataloged), mirroring the per-turn
-	// cost stamp in pastEntryTurns and the live producer in server's appThread.
-	cumulativeUsage := serfUsageFromCumulative(entry.Meta.CumulativeUsage)
+	// cumulativeUsage is the full-session token total; the cost stamp derives
+	// its "~$X.XX" from it at the session model's price (empty when there is no
+	// usage or the model is uncataloged), mirroring the per-turn cost stamp in
+	// pastEntryTurns and the live producer in server's appThread.
+	cumulativeUsage := pastEntrySessionUsage(entry)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
@@ -282,6 +282,39 @@ func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadRe
 // thread/turns/list file read per page) reuses one parse instead of re-reading
 // the whole transcript each page.
 var pastTranscriptCache = apptranscript.NewTurnCache()
+
+// pastEntrySessionUsage answers "how many tokens did this session spend" for an
+// exited session, preferring the daemon's own persisted running total and
+// falling back to a sum over the session's FULL transcript.
+//
+// The fallback is the common case, not an edge: agent/fork.go's writeForkChild
+// builds the child SessionMeta field by field and stamps no CumulativeUsage at
+// all, so every fork child arrives with the field unset. Without the fallback
+// such a session reports no tokens and no cost, and the client can only sum the
+// turns it happens to hold — a partial figure it must then label "tokens
+// (loaded turns)". The transcript records per-turn usage in both cases, so
+// summing it recovers the honest full-session figure.
+//
+// A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
+// whose tokens the PARENT spent. DivergenceTurn marks where the child's own
+// history begins, and only that span is counted: copying the parent's spend into
+// the child would be fabrication.
+//
+// A read error (a legacy format_version 1 transcript, a missing file) leaves the
+// total absent. "Unknown" is the honest report, the client already renders an
+// absent total as nothing rather than "↑0 ↓0", and a missing token figure is no
+// reason to fail the whole thread projection.
+func pastEntrySessionUsage(entry hubcore.PastEntry) *appwire.SerfUsage {
+	if persisted := serfUsageFromCumulative(entry.Meta.CumulativeUsage); persisted != nil {
+		return persisted
+	}
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	total, err := pastTranscriptCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	if err != nil {
+		return nil
+	}
+	return total
+}
 
 func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")

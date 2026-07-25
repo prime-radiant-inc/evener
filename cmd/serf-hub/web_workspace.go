@@ -185,7 +185,11 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				// expose the current turn's start time, even when the parent roster
 				// projects this child as active.
 				WorkMillis: pe.Meta.WorkMillis,
-				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
+				// Same total the app-wire projection reports: the persisted
+				// running total when the meta has one, otherwise a sum over the
+				// session's own span of the full transcript (fork children carry
+				// no CumulativeUsage — see pastEntrySessionUsage).
+				Usage: pastEntrySessionUsage(pe),
 			}
 			data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
