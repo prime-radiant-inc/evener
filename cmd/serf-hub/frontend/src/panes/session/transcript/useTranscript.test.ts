@@ -132,38 +132,6 @@ test("loadingOlder is true while the request is in flight and false once it sett
   expect(result.current.loadingOlder).toBe(false);
 });
 
-// Two callers in the SAME tick, which is the shape automatic paging actually
-// produces: LoadOlderRow's IntersectionObserver sentinel and
-// useTranscriptScroll's near-top scroll trigger both fire for one scroll. A
-// guard reading loadingOlder from a state closure lets both through (observed
-// live: the same cursor requested twice); the ref-based guard does not.
-test("two loadOlder() calls in the same tick issue exactly one request", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
-  await act(async () => {
-    await threadsStore.getState().ensureThread("ref_a");
-  });
-
-  const box: { resolve: ((r: ThreadTurnsListResponse) => void) | null } = { resolve: null };
-  fake.on("thread/turns/list", () => new Promise<ThreadTurnsListResponse>((resolve) => (box.resolve = resolve)));
-
-  const { result } = renderHook(() => useTranscript("ref_a"));
-
-  let both!: Promise<unknown>;
-  act(() => {
-    // No await between them - the same synchronous tick.
-    both = Promise.all([result.current.loadOlder(), result.current.loadOlder()]);
-  });
-  await flushUntil(() => box.resolve !== null);
-
-  await act(async () => {
-    box.resolve?.({ data: [], nextCursor: undefined });
-    await both;
-  });
-
-  expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(1);
-});
-
 test("a second loadOlder() call while one is already in flight does not issue a second request", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
@@ -209,88 +177,6 @@ test("loadOlder() is a harmless no-op when the model has no olderCursor (nothing
 
   expect(fake.calls.filter((c) => c.method === "thread/turns/list")).toHaveLength(0);
   expect(result.current.loadingOlder).toBe(false);
-});
-
-// --- loadOlderReportingError / olderError --------------------------------
-// The fire-and-forget form both transcript surfaces' paging affordance calls.
-// A failure has to land SOMEWHERE the reader can see: automatic paging means
-// nobody pressed anything, so there is no call site to reject back to.
-
-test("olderError starts null", () => {
-  const { result } = renderHook(() => useTranscript("ref_a"));
-  expect(result.current.olderError).toBeNull();
-});
-
-test("loadOlderReportingError records a failed fetch's message instead of rejecting", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => ({ thread: testThread("ref_a"), olderCursor: "cursor_1" }));
-  await act(async () => {
-    await threadsStore.getState().ensureThread("ref_a");
-  });
-  fake.on("thread/turns/list", () => Promise.reject(new Error("network error")));
-
-  const { result } = renderHook(() => useTranscript("ref_a"));
-  await act(async () => {
-    result.current.loadOlderReportingError();
-    await flushUntil(() => result.current.olderError !== null);
-  });
-
-  expect(result.current.olderError).toBe("network error");
-  expect(result.current.loadingOlder).toBe(false);
-});
-
-test("a successful fetch leaves olderError null", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => ({
-    thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
-    olderCursor: "cursor_1",
-  }));
-  fake.on("thread/turns/list", () => ({
-    data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-    nextCursor: undefined,
-  }));
-  await act(async () => {
-    await threadsStore.getState().ensureThread("ref_a");
-  });
-
-  const { result } = renderHook(() => useTranscript("ref_a"));
-  await act(async () => {
-    result.current.loadOlderReportingError();
-    await flushUntil(() => result.current.model?.turns.length === 2);
-  });
-
-  expect(result.current.olderError).toBeNull();
-});
-
-test("a retry after a failure clears the previous error before re-fetching", async () => {
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => ({
-    thread: testThread("ref_a", { turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] }),
-    olderCursor: "cursor_1",
-  }));
-  await act(async () => {
-    await threadsStore.getState().ensureThread("ref_a");
-  });
-
-  fake.on("thread/turns/list", () => Promise.reject(new Error("network error")));
-  const { result } = renderHook(() => useTranscript("ref_a"));
-  await act(async () => {
-    result.current.loadOlderReportingError();
-    await flushUntil(() => result.current.olderError !== null);
-  });
-  expect(result.current.olderError).toBe("network error");
-
-  fake.on("thread/turns/list", () => ({
-    data: [{ id: "turn_1", status: "completed", itemsView: "full", items: [] }],
-    nextCursor: undefined,
-  }));
-  await act(async () => {
-    result.current.loadOlderReportingError();
-    await flushUntil(() => result.current.model?.turns.length === 2);
-  });
-
-  expect(result.current.olderError).toBeNull();
-  expect(result.current.model?.turns.map((t) => t.id)).toEqual(["turn_1", "turn_2"]);
 });
 
 // Pins the `finally` block's own behavior (useTranscript.ts's loadOlder has

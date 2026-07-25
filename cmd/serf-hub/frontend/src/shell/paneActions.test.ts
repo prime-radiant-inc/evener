@@ -65,7 +65,7 @@ function popoutApi(panel: { id: string } | undefined): { api: DockviewApi; addPo
   return { api, addPopoutGroup };
 }
 
-test("openBeside opens the pane in the secondary group, leaving the main pane in place (desktop host present)", () => {
+test("openBeside opens the pane in a split beside the currently-focused pane (desktop host present)", () => {
   registerDockviewApi(fakeApi());
   const first = workspaceStore.getState().openPane("doc", { ref: "a" });
 
@@ -73,8 +73,7 @@ test("openBeside opens the pane in the secondary group, leaving the main pane in
 
   const second = workspaceStore.getState().panes.find((p) => p.id !== first);
   expect(second).toBeDefined();
-  expect(second?.slot).toBe("secondary"); // beside the main pane, not stacked on it
-  expect(workspaceStore.getState().mainPane()?.id).toBe(first); // main pane untouched
+  expect(second?.beside).toBe(first); // split beside the pane that was focused
   expect(workspaceStore.getState().focusedPaneId).toBe(second?.id); // and focused
 });
 
@@ -89,25 +88,23 @@ test("openBeside dedups an already-open pane, focusing it instead of opening a d
   expect(workspaceStore.getState().focusedPaneId).toBe(first); // existing one focused
 });
 
-test("openBeside still opens (and focuses) with no dockview host at all (mobile StackHost)", () => {
+test("openBeside degrades to a plain open (no split) when there is no dockview host (mobile StackHost)", () => {
   registerDockviewApi(null); // StackHost registers no api - the mobile signal
   const first = workspaceStore.getState().openPane("doc", { ref: "a" });
 
   openBeside({ type: "doc", params: { ref: "b" } });
 
   const second = workspaceStore.getState().panes.find((p) => p.id !== first);
-  expect(second).toBeDefined();
-  // Mobile has no groups to split; the pane simply becomes the focused,
-  // full-screen screen the stack shows.
-  expect(workspaceStore.getState().focusedPaneId).toBe(second?.id);
+  expect(second?.beside).toBeUndefined(); // no split hint on mobile
+  expect(workspaceStore.getState().focusedPaneId).toBe(second?.id); // still becomes the focused (full-screen) pane
 });
 
-test("openBeside into an empty workspace takes the main slot - there is nothing yet to sit beside", () => {
+test("openBeside opens with no split hint when nothing is focused yet, even with a host", () => {
   registerDockviewApi(fakeApi());
 
   openBeside({ type: "doc", params: { ref: "a" } });
 
-  expect(workspaceStore.getState().panes[0]?.slot).toBe("main");
+  expect(workspaceStore.getState().panes[0]?.beside).toBeUndefined();
 });
 
 test("popOutPane promotes the named pane's panel to a dockview popout window", () => {

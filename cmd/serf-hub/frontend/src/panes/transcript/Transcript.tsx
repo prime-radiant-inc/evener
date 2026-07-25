@@ -22,7 +22,7 @@ import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
-import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { EmptyState, PaneScaffold, useToasts, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
@@ -49,8 +49,13 @@ const CLASS = {
 // dynamic-mode comment).
 const ESTIMATED_TURN_HEIGHT = 96;
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   const { ref } = params;
+  const toasts = useToasts();
 
   // ensureThread on mount / releaseThread on unmount, deferred until the one
   // client is actually ready - a deep-linked open can reach this effect before
@@ -75,10 +80,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
     };
   }, [ref]);
 
-  // Older-turn paging is automatic here too (LoadOlderRow's own sentinel), and
-  // reports a failed page inline with a Retry rather than as a toast - see
-  // Session.tsx's own comment on the same wiring.
-  const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
 
   // Open at the latest turn once, when content first arrives - the one scroll
@@ -119,7 +121,14 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
       ) : (
         <div className={CLASS.body}>
           {model.olderCursor && (
-            <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+            <LoadOlderRow
+              onClick={() =>
+                void loadOlder().catch((err) => {
+                  toasts.push("error", `Couldn't load older messages: ${errorMessage(err)}`);
+                })
+              }
+              loading={loadingOlder}
+            />
           )}
           <div className={CLASS.list}>
             <VirtualList

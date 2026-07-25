@@ -20,7 +20,7 @@ import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { Cadence, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { Cadence, EmptyState, PaneScaffold, useToasts, VirtualList, type VirtualListHandle } from "../../widgets";
 import { SessionChrome } from "./chrome/SessionChrome";
 import { Composer } from "./composer/Composer";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "./liveness";
@@ -53,15 +53,21 @@ const EMPTY_FRAME_TIMES: number[] = [];
 // widgets/virtuallist's own `dynamic` prop doc comment.
 const ESTIMATED_TURN_HEIGHT = 96;
 
-// Failure-feedback convention: a USER-INITIATED action that fails surfaces via
-// the useToasts() singleton, kind "error" - no new banner systems, no silent
-// `.catch(() => {})`. Every stream's failure handling (composer
-// send/steer/queue, queue strip promote/edit/cancel, ask answering, session
-// actions) follows that shape. Automatic older-turn paging is the deliberate
-// exception: nobody pressed anything, so its failure reports inline at the top
-// of the transcript instead (useTranscript's olderError -> LoadOlderRow).
+// Failure-feedback convention (decided this wave, T1 - see the wave plan's
+// own "Binding constraints" section): a user-initiated action that fails
+// surfaces via the existing useToasts() singleton, kind "error" - no new
+// banner systems, no silent `.catch(() => {})`. The loadOlder() catch below
+// is the reference implementation; every other stream's own failure
+// handling (composer send/steer/queue, queue strip promote/edit/cancel, ask
+// answering, session actions) should follow the same shape: catch, format
+// with errorMessage(), toasts.push("error", ...).
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export default function Session({ params }: PaneProps<SessionPaneParams>) {
   const { ref } = params;
+  const toasts = useToasts();
 
   // ensureThread on mount / releaseThread on unmount, exactly once each.
   // AppShell mounts DockHost (and therefore this pane) unconditionally,
@@ -105,13 +111,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
     };
   }, [ref]);
 
-  // Older-turn paging reports its own failures IN the transcript, not as a
-  // toast: it is automatic (nobody pressed anything, so a toast would be a
-  // notification about work the reader never asked for) and the failure belongs
-  // at the exact spot in the scroll where history stops. LoadOlderRow renders
-  // olderError with a Retry beside it - the recovery path, since Jesse ruled out
-  // a standing "load more" button and silent failure is not an option.
-  const { model, loadOlder, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
+  const { model, loadOlder, loadingOlder } = useTranscript(ref);
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
 
@@ -169,7 +169,14 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
             top={
               <>
                 {model.olderCursor && (
-                  <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
+                  <LoadOlderRow
+                    onClick={() =>
+                      void loadOlder().catch((err) => {
+                        toasts.push("error", `Couldn't load older messages: ${errorMessage(err)}`);
+                      })
+                    }
+                    loading={loadingOlder}
+                  />
                 )}
                 <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
               </>

@@ -11,7 +11,7 @@ afterEach(() => {
 });
 
 function focus(type: string, params: unknown): void {
-  workspaceStore.setState({ panes: [{ id: "p1", type: type as never, params, slot: "main" }], focusedPaneId: "p1" });
+  workspaceStore.setState({ panes: [{ id: "p1", type: type as never, params }], focusedPaneId: "p1" });
 }
 
 test("buildPaletteContext reads the focused session pane's ref and page", () => {

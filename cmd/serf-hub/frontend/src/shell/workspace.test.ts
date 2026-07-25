@@ -36,7 +36,7 @@ describe("openPane", () => {
   test("opens a new pane, adding it to panes with a fresh id", () => {
     const id = workspaceStore.getState().openPane("doc", { ref: "a", path: "x" });
     const panes = workspaceStore.getState().panes;
-    expect(panes).toEqual([{ id, type: "doc", params: { ref: "a", path: "x" }, slot: "main" }]);
+    expect(panes).toEqual([{ id, type: "doc", params: { ref: "a", path: "x" }, beside: undefined }]);
   });
 
   test("defaults params to {} when omitted", () => {
@@ -49,87 +49,10 @@ describe("openPane", () => {
     expect(workspaceStore.getState().focusedPaneId).toBe(id);
   });
 
-  test("keepExistingFocus leaves focus alone when the pane is already open", () => {
+  test("records the beside positioning hint", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
-    const second = workspaceStore.getState().openPane("doc", { ref: "b" });
-    expect(workspaceStore.getState().focusedPaneId).toBe(second);
-
-    const again = workspaceStore.getState().openPane("doc", { ref: "a" }, { keepExistingFocus: true });
-
-    expect(again).toBe(first); // still resolves to (and returns) the existing pane
-    expect(workspaceStore.getState().focusedPaneId).toBe(second); // focus untouched
-  });
-
-  test("keepExistingFocus still focuses a pane it had to create", () => {
-    workspaceStore.getState().openPane("doc", { ref: "a" });
-    const fresh = workspaceStore.getState().openPane("doc", { ref: "b" }, { keepExistingFocus: true });
-    expect(workspaceStore.getState().focusedPaneId).toBe(fresh);
-  });
-
-  test("keepExistingFocus still updates an already-open singleton's params without focusing it", () => {
-    workspaceStore.getState().openPane("settings", { section: "appearance" });
-    const other = workspaceStore.getState().openPane("doc", { ref: "a" });
-
-    const settings = workspaceStore
-      .getState()
-      .openPane("settings", { section: "credentials" }, { keepExistingFocus: true });
-
-    expect(workspaceStore.getState().panes.find((p) => p.id === settings)?.params).toEqual({ section: "credentials" });
-    expect(workspaceStore.getState().focusedPaneId).toBe(other);
-  });
-
-  // The one placement rule (openPane's own, not any caller's): the main slot
-  // holds exactly one pane; every later open stacks in the secondary group.
-  test("the first pane takes the main slot", () => {
-    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
-    expect(workspaceStore.getState().mainPane()?.id).toBe(first);
-  });
-
-  // Welcome is the main slot's empty state, not a peer: it exists to say
-  // "nothing is open here". The first real pane therefore takes the main slot
-  // FROM it rather than opening beside it - otherwise navigating from "/" to a
-  // session leaves half the workspace showing "No session open" while the
-  // session itself sits in the secondary group (observed in a real browser).
-  test("the first real pane displaces a welcome placeholder from the main slot", () => {
-    const welcome = workspaceStore.getState().openPane("welcome");
-    const session = workspaceStore.getState().openPane("doc", { ref: "a" });
-
-    expect(workspaceStore.getState().mainPane()?.id).toBe(session);
-    expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual([session]);
-    expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(welcome);
-  });
-
-  test("welcome is NOT displaced once a real pane already holds the main slot", () => {
-    const main = workspaceStore.getState().openPane("doc", { ref: "a" });
-    const welcome = workspaceStore.getState().openPane("welcome"); // secondary, oddly, but the user asked for it
-
-    expect(workspaceStore.getState().mainPane()?.id).toBe(main);
-    expect(workspaceStore.getState().panes.map((p) => p.id)).toContain(welcome);
-  });
-
-  test("every pane after the first goes to the secondary slot", () => {
-    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
-    const second = workspaceStore.getState().openPane("doc", { ref: "b" });
-    const third = workspaceStore.getState().openPane("doc", { ref: "c" });
-
-    expect(workspaceStore.getState().panes.map((p) => p.slot)).toEqual(["main", "secondary", "secondary"]);
-    expect(workspaceStore.getState().mainPane()?.id).toBe(first);
-    expect([second, third]).not.toContain(workspaceStore.getState().mainPane()?.id);
-  });
-
-  test("closing the main pane empties the main slot, and the next open refills it", () => {
-    const first = workspaceStore.getState().openPane("doc", { ref: "a" });
-    workspaceStore.getState().openPane("doc", { ref: "b" }); // secondary
-
-    workspaceStore.getState().closePane(first);
-
-    expect(workspaceStore.getState().mainPane()).toBeNull(); // no promotion from the right
-    const relaunched = workspaceStore.getState().openPane("welcome");
-    expect(workspaceStore.getState().mainPane()?.id).toBe(relaunched);
-  });
-
-  test("mainPane is null for an empty workspace", () => {
-    expect(workspaceStore.getState().mainPane()).toBeNull();
+    const second = workspaceStore.getState().openPane("doc", { ref: "b" }, { beside: first });
+    expect(workspaceStore.getState().panes.find((p) => p.id === second)?.beside).toBe(first);
   });
 
   test("two non-singleton panes with different params are both opened", () => {
