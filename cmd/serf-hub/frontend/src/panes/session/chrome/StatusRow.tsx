@@ -36,7 +36,6 @@ export interface StatusRowProps {
 const CLASS = {
   row: requireClass(styles.row, "statusrow.module.css", "row"),
   item: requireClass(styles.item, "statusrow.module.css", "item"),
-  contextNumbers: requireClass(styles.contextNumbers, "statusrow.module.css", "contextNumbers"),
   meter: requireClass(styles.meter, "statusrow.module.css", "meter"),
   srOnly: requireClass(styles.srOnly, "statusrow.module.css", "srOnly"),
 };
@@ -142,8 +141,17 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
         {formatWorkDuration(workMs)}
       </span>
       <LocationCluster model={model} />
+      {/* The gauge is the whole readout: a used/window number pair beside it
+          repeated what the fill already shows, in a row that has to stay one
+          line. The exact counts are still available - spoken from the meter's
+          own label, and on hover from this title, which follows the row's
+          "key value" tooltip convention (LocationCluster, status-row-cost). */}
       {hasContext && (
-        <span className={CLASS.item}>
+        <span
+          className={CLASS.item}
+          data-testid="status-row-context"
+          title={`context ${formatTokenCount(model.contextUsed)} / ${formatTokenCount(model.contextWindow)}`}
+        >
           <span className={CLASS.meter}>
             <Meter
               label={`Context: ${formatTokenCount(model.contextUsed)} of ${formatTokenCount(model.contextWindow)} tokens used, ${Math.round(model.contextPressure * 100)} percent`}
@@ -151,9 +159,6 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
               max={model.contextWindow}
               tone={contextTone(model.contextPressure)}
             />
-          </span>
-          <span className={CLASS.contextNumbers}>
-            {formatTokenCount(model.contextUsed)} / {formatTokenCount(model.contextWindow)}
           </span>
         </span>
       )}

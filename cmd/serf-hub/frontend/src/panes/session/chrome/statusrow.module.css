@@ -17,11 +17,6 @@
   gap: var(--space-1);
 }
 
-.contextNumbers {
-  font-family: var(--font-mono);
-  color: var(--ink-low);
-}
-
 .meter {
   width: 64px;
 }
