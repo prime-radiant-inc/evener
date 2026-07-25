@@ -1085,9 +1085,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			history = append(history, t.Message)
 			continue
 		}
-		if t.Kind == schema.TurnModelSwitch || t.Kind == schema.TurnFailure {
-			// Persisted switch/failure markers: presentational only, never
-			// sent to the model.
+		if t.Kind == schema.TurnModelSwitch || t.Kind == schema.TurnFailure || t.Kind == schema.TurnHookCompleted {
+			// Persisted switch/failure/hook markers: presentational only,
+			// never sent to the model.
 			continue
 		}
 		history = append(history, scope.projectTurnMessage(t, inFlight))

@@ -1,6 +1,8 @@
 package schema
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -38,7 +40,57 @@ const (
 	// model). Without it a failure existed only as a live event, so a reload
 	// showed the prompt and no answer and read as a hang rather than a break.
 	TurnFailure TurnKind = "TURN_FAILURE"
+	// TurnHookCompleted is a turn recording that one plugin hook finished —
+	// the detail rides Turn.Hook. Presentational only, exactly like
+	// TurnModelSwitch and TurnFailure: rendered as a systemMessage item by
+	// both projection paths and excluded from expandHistory, because a hook's
+	// own bookkeeping is not conversation. Without it a hook exit existed
+	// only as a live event, so the two Settings → Transcript hook-exit
+	// toggles had nothing to act on for any session a reader came back to
+	// (kata qm9y).
+	TurnHookCompleted TurnKind = "HOOK_COMPLETED"
 )
+
+// HookInfo is the persisted detail of one completed hook: the same fields the
+// live events.HookEndData carries, so a reloaded transcript describes the hook
+// exactly as the live session did rather than in a poorer summary of it.
+//
+// It mirrors the event payload deliberately rather than reusing it: this shape
+// is persisted transcript data and must stay stable independently of the
+// event's evolution.
+type HookInfo struct {
+	Event      string `json:"event,omitempty"`
+	HookType   string `json:"hook_type,omitempty"`
+	Matcher    string `json:"matcher,omitempty"`
+	PluginName string `json:"plugin_name,omitempty"`
+	// ExitCode is the hook process's own exit status. It is deliberately NOT
+	// omitempty: exit 0 is the single most common value and the meaningful
+	// one for "Hook exits (normal only)", so a clean hook must persist as a
+	// present zero rather than as an absent field a reader cannot distinguish
+	// from "no code was recorded".
+	ExitCode   int   `json:"exit_code"`
+	DurationMS int64 `json:"duration_ms,omitempty"`
+}
+
+// Announcement renders the one-line summary a reader sees for this hook. It
+// lives here, on the persisted shape, so the live projector and the reloaded
+// transcript build the identical sentence: a returning reader who was shown a
+// differently-worded line than the watching one saw would be a smaller
+// version of the divergence kata qm9y is about.
+func (h HookInfo) Announcement() string {
+	label := strings.TrimSpace(h.Event)
+	if label == "" {
+		label = "hook"
+	}
+	parts := []string{label + " hook"}
+	for _, field := range []string{h.PluginName, h.Matcher, h.HookType} {
+		if v := strings.TrimSpace(field); v != "" {
+			parts = append(parts, v)
+		}
+	}
+	parts = append(parts, fmt.Sprintf("exit %d", h.ExitCode))
+	return strings.Join(parts, " ")
+}
 
 // TurnFailureInfo is the persisted diagnostic of a failed turn: the same
 // message/source/title/hint/cause a live client receives on the error event,
@@ -84,6 +136,9 @@ type Turn struct {
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`
+	// Hook carries the detail of one completed plugin hook. Set only on
+	// TurnHookCompleted turns; nil everywhere else.
+	Hook *HookInfo `json:"hook,omitempty"`
 	// ResponseID is the provider's response identifier (from llm.Response.ID),
 	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID                      string `json:"response_id,omitempty"`

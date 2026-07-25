@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/diagnostic"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/invariant"
@@ -1161,19 +1162,24 @@ func pluginLoadedAnnouncement(data events.PluginLoadedData) string {
 	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
 }
 
+// hookEndAnnouncement renders a live hook completion through the same builder
+// the persisted entry uses (schema.HookInfo.Announcement), so the line a
+// watching reader sees and the line a returning one sees cannot drift apart
+// (kata qm9y).
 func hookEndAnnouncement(data events.HookEndData) string {
-	parts := []string{fallbackLabel(data.Event, "hook") + " hook"}
-	if pluginName := strings.TrimSpace(data.PluginName); pluginName != "" {
-		parts = append(parts, pluginName)
+	return hookInfoFromEvent(data).Announcement()
+}
+
+// hookInfoFromEvent projects the live hook payload onto the persisted shape.
+func hookInfoFromEvent(data events.HookEndData) schema.HookInfo {
+	return schema.HookInfo{
+		Event:      data.Event,
+		HookType:   data.HookType,
+		Matcher:    data.Matcher,
+		PluginName: data.PluginName,
+		ExitCode:   data.ExitCode,
+		DurationMS: data.DurationMS,
 	}
-	if matcher := strings.TrimSpace(data.Matcher); matcher != "" {
-		parts = append(parts, matcher)
-	}
-	if hookType := strings.TrimSpace(data.HookType); hookType != "" {
-		parts = append(parts, hookType)
-	}
-	parts = append(parts, fmt.Sprintf("exit %d", data.ExitCode))
-	return strings.Join(parts, " ")
 }
 
 func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {

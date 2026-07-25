@@ -627,6 +627,7 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 		Timestamp:      turn.Timestamp,
 		SteeringSource: turn.SteeringSource,
 		Error:          replayTurnFailureInfo(turn.Error),
+		Hook:           replayTurnHookInfo(turn.Hook),
 		Message: llm.Message{
 			Role:    llm.Role(turn.Message.Role),
 			Content: content,
@@ -656,6 +657,23 @@ func replayTurnFailureInfo(replayed *hubcore.ReplayTurnError) *schema.TurnFailur
 		}
 	}
 	return info
+}
+
+// replayTurnHookInfo restores a completed hook's persisted detail. Without it
+// a reloaded hook line would reach the client with its prose alone, losing the
+// typed exit code the two hook-exit toggles split on (kata qm9y).
+func replayTurnHookInfo(replayed *hubcore.ReplayTurnHook) *schema.HookInfo {
+	if replayed == nil {
+		return nil
+	}
+	return &schema.HookInfo{
+		Event:      replayed.Event,
+		HookType:   replayed.HookType,
+		Matcher:    replayed.Matcher,
+		PluginName: replayed.PluginName,
+		ExitCode:   replayed.ExitCode,
+		DurationMS: replayed.DurationMS,
+	}
 }
 
 func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {

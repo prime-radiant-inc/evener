@@ -300,6 +300,36 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Status:               appwire.TurnStatusFailed,
 			EventKind:            appwire.ThreadItemEventKindError,
 		}}
+	case schema.TurnHookCompleted:
+		// The reload counterpart of the live projector's hook_completed
+		// systemMessage. The typed exit code rides ThreadItem.ExitCode, which
+		// is what Settings → Transcript's two hook-exit toggles split on —
+		// without this case they governed nothing at all after a reload
+		// (kata qm9y).
+		text := strings.TrimSpace(turn.Message.Text())
+		if turn.Hook != nil && text == "" {
+			text = turn.Hook.Announcement()
+		}
+		if text == "" {
+			return nil
+		}
+		item := appwire.ThreadItem{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_hook_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          "Hook",
+			Text:                 text,
+			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindHookCompleted,
+		}
+		// Absent, never a fabricated zero: a nil ExitCode means this entry
+		// records no code, which the normal-only toggle deliberately hides.
+		if turn.Hook != nil {
+			code := int64(turn.Hook.ExitCode)
+			item.ExitCode = &code
+		}
+		return []appwire.ThreadItem{item}
 	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		images = append(images, AttachmentsFromContent(turn.Message.Content)...)

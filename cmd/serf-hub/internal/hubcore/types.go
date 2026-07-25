@@ -39,6 +39,22 @@ type ReplayTurn struct {
 	// Error is the diagnostic of a failed turn, carried through reload so a
 	// returning reader sees the failure the live client saw (kata mcgh).
 	Error *ReplayTurnError `json:"error,omitempty"`
+
+	// Hook is the detail of a completed plugin hook, carried through reload
+	// so the transcript's hook-exit toggles can split on the real exit code
+	// rather than on nothing (kata qm9y).
+	Hook *ReplayTurnHook `json:"hook,omitempty"`
+}
+
+// ReplayTurnHook mirrors schema.HookInfo. ExitCode is not omitempty for the
+// same reason it is not there: exit 0 must arrive as a present zero.
+type ReplayTurnHook struct {
+	Event      string `json:"event,omitempty"`
+	HookType   string `json:"hook_type,omitempty"`
+	Matcher    string `json:"matcher,omitempty"`
+	PluginName string `json:"plugin_name,omitempty"`
+	ExitCode   int    `json:"exit_code"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
 }
 
 // ReplayTurnError mirrors schema.TurnFailureInfo.
