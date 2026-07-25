@@ -112,6 +112,82 @@ test("settled body holds the full reasoning text (not just the preview) once exp
   expect(screen.getByText("full reasoning text here")).toBeTruthy();
 });
 
+// --- settled: markdown ------------------------------------------------------
+// Agents write their reasoning in markdown, so the settled body parses it the
+// same way AgentMessageItem parses a settled agent message.
+
+test("settled renders the reasoning through Markdown - a heading token becomes a real heading, not literal source", () => {
+  render(
+    <ThinkBlock item={item({ reasoningSummaries: [["## The plan\n\nfigure it out"]] })} turn={turn} live={false} />,
+  );
+  expect(screen.getByRole("heading", { level: 2, name: "The plan" })).toBeTruthy();
+  expect(screen.queryByText("## The plan")).toBeNull();
+});
+
+test("settled parses lists, emphasis and code spans in reasoning text", () => {
+  const { container } = render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["- check `serve.go`\n- then **commit**"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(Array.from(container.querySelectorAll("li")).map((li) => li.textContent?.trim())).toEqual([
+    "check serve.go",
+    "then commit",
+  ]);
+  expect(container.querySelector("code")?.textContent).toBe("serve.go");
+  expect(container.querySelector("strong")?.textContent).toBe("commit");
+});
+
+test("settled joins every summaryIndex into ONE markdown document, blank-line separated so each stays its own block", () => {
+  const { container } = render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["first thought"], ["# second thought"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  // Blank-line joined: the second index is parsed as its own block-level
+  // token, not swallowed into the first index's paragraph.
+  expect(container.querySelector("p")?.textContent).toBe("first thought");
+  expect(screen.getByRole("heading", { level: 1, name: "second thought" })).toBeTruthy();
+});
+
+test("settled does not re-wrap markdown output in the live path's paragraph class (Markdown owns its own block layout)", () => {
+  const { container } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["plain thought"]] })} turn={turn} live={false} />,
+  );
+  const paragraph = container.querySelector("p");
+  expect(paragraph?.textContent).toBe("plain thought");
+  expect(paragraph?.className).toBe("");
+});
+
+// --- live stays plain text: the deliberate trade-off -------------------------
+// A markdown parser needs a whole document; StreamingText's append-only DOM
+// contract needs deltas. Live wins by staying unparsed - see ThinkBlock.tsx.
+
+test("live streams markdown source as LITERAL text (no parsing per delta) - the append-only streaming contract wins while in flight", () => {
+  const { container } = render(
+    <ThinkBlock item={item({ reasoningSummaries: [["## heading and **bold**"]] })} turn={turn} live={true} />,
+  );
+  expect(screen.getByTestId("streaming-text").textContent).toBe("## heading and **bold**");
+  expect(container.querySelector("h2")).toBeNull();
+  expect(container.querySelector("strong")).toBeNull();
+});
+
+test("markdown in a thought is literal while live and parsed once it settles (same item, same text)", () => {
+  const markdown = "## Decision\n\n- ship it";
+  const liveItem = item({ reasoningSummaries: [[markdown]] });
+  const { container, rerender } = render(<ThinkBlock item={liveItem} turn={turn} live={true} />);
+  expect(container.querySelector("h2")).toBeNull();
+
+  rerender(<ThinkBlock item={liveItem} turn={{ ...turn, status: "completed" }} live={false} />);
+  expect(screen.getByRole("heading", { level: 2, name: "Decision" })).toBeTruthy();
+  expect(container.querySelector("li")?.textContent?.trim()).toBe("ship it");
+  expect(screen.queryByTestId("streaming-text")).toBeNull();
+});
+
 // yt2q: the settled think block's open/closed state lives in the shared
 // disclosureStore keyed by item.id, so expanding it survives the remount that
 // would reset a native uncontrolled <details>.
