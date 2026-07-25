@@ -86,7 +86,13 @@ func scanUsageTotal(path string, maxLineBytes int, fromEntryOrdinal int) (*appwi
 		}
 		var record usageOnlyEntry
 		if err := json.Unmarshal(raw, &record); err != nil {
-			return nil
+			// Unreachable for any line scanSemanticTranscript admits: it has
+			// already strictly decoded the whole entry into transcript.Entry,
+			// of which this is a field-for-field subset. A failure here means
+			// usageOnlyEntry has drifted from schema.Turn, and skipping the
+			// record would silently undercount — reporting a wrong total is
+			// worse than reporting none, so surface it.
+			return fmt.Errorf("decode transcript entry usage: %w", err)
 		}
 		if appwire.SerfUsageFromLLM(record.Turn.Usage) == nil {
 			return nil
