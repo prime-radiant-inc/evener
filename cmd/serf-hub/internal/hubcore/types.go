@@ -21,12 +21,35 @@ type ReplayEntry struct {
 	Turn ReplayTurn `json:"turn"`
 }
 
+// ReplayTurn is a partial mirror of schema.Turn: only the fields named here
+// survive a reload, so any schema.Turn field the client needs must be added
+// both here and in replayTurnToAgentTurn.
 type ReplayTurn struct {
 	Kind    string        `json:"kind"`
 	Message ReplayMessage `json:"message"`
 	// Timestamp is the turn's recorded time, carried through reload so
 	// replayed tool items can be stamped with real server times (issue #37).
 	Timestamp time.Time `json:"timestamp,omitempty"`
+	// Error is the diagnostic of a failed turn, carried through reload so a
+	// returning reader sees the failure the live client saw (kata mcgh).
+	Error *ReplayTurnError `json:"error,omitempty"`
+}
+
+// ReplayTurnError mirrors schema.TurnFailureInfo.
+type ReplayTurnError struct {
+	Message string                `json:"message"`
+	Source  string                `json:"source,omitempty"`
+	Title   string                `json:"title,omitempty"`
+	Hint    string                `json:"hint,omitempty"`
+	Cause   *ReplayTurnErrorCause `json:"cause,omitempty"`
+}
+
+// ReplayTurnErrorCause mirrors schema.TurnFailureCause.
+type ReplayTurnErrorCause struct {
+	Kind     string `json:"kind"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Status   int    `json:"status,omitempty"`
 }
 
 type ReplayMessage struct {

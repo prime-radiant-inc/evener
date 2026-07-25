@@ -972,12 +972,20 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // semantic transcript distinct when a tool exposes explicitly private evidence.
 func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) {
 	t := schema.NewTurn(kind, live)
-	s.mu.Lock()
-	s.history = append(s.history, t)
-	s.mu.Unlock()
 	persistedTurn := t
 	persistedTurn.Message = persisted
-	if err := s.transcript.Append(persistedTurn); err != nil {
+	s.recordTurn(t, persistedTurn)
+}
+
+// recordTurn adds a turn to the live model history and writes its persisted
+// counterpart to the durable transcript. The two differ only when a tool
+// exposes explicitly private evidence; every other caller passes the same turn
+// twice.
+func (s *Session) recordTurn(live, persisted schema.Turn) {
+	s.mu.Lock()
+	s.history = append(s.history, live)
+	s.mu.Unlock()
+	if err := s.transcript.Append(persisted); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }

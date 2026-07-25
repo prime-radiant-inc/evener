@@ -275,6 +275,7 @@ func TestTurnCacheIgnoresToolCallsOutsideAssistantTurns(t *testing.T) {
 		schema.TurnCheckpoint,
 		schema.TurnSummary,
 		schema.TurnModelSwitch,
+		schema.TurnFailure,
 	} {
 		t.Run(string(kind), func(t *testing.T) {
 			path := writeEntries(t,

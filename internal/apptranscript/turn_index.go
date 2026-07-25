@@ -913,6 +913,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 			continue
 		}
 		turn := appwire.Turn{ID: fmt.Sprintf("turn_%d", record.Index), Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+		StampTurnFailure(&turn, entry.Turn)
 		if !entry.Turn.Timestamp.IsZero() {
 			startedAt := entry.Turn.Timestamp.UnixMilli()
 			turn.StartedAt = &startedAt

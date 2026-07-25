@@ -625,11 +625,36 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]str
 	return schema.Turn{
 		Kind:      schema.TurnKind(turn.Kind),
 		Timestamp: turn.Timestamp,
+		Error:     replayTurnFailureInfo(turn.Error),
 		Message: llm.Message{
 			Role:    llm.Role(turn.Message.Role),
 			Content: content,
 		},
 	}, imageNames
+}
+
+// replayTurnFailureInfo restores a failed turn's persisted diagnostic. Without
+// it a reloaded failure would reach the client with its message alone, losing
+// the source/title/hint/cause the live error event carried (kata mcgh).
+func replayTurnFailureInfo(replayed *hubcore.ReplayTurnError) *schema.TurnFailureInfo {
+	if replayed == nil {
+		return nil
+	}
+	info := &schema.TurnFailureInfo{
+		Message: replayed.Message,
+		Source:  replayed.Source,
+		Title:   replayed.Title,
+		Hint:    replayed.Hint,
+	}
+	if replayed.Cause != nil {
+		info.Cause = &schema.TurnFailureCause{
+			Kind:     replayed.Cause.Kind,
+			Provider: replayed.Cause.Provider,
+			Model:    replayed.Cause.Model,
+			Status:   replayed.Cause.Status,
+		}
+	}
+	return info
 }
 
 func reconcileDelegateThreadItemForTest(item appwire.ThreadItem, rec agent.HistoricalJobRecord) appwire.ThreadItem {
