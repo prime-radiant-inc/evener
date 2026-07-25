@@ -56,8 +56,8 @@ describe("buildPathRows", () => {
   });
 
   // The hub resolves an empty prefix to $HOME, so the header can't print the
-  // literal "" - and printing "/" (PathPicker's old guess) would name a
-  // directory that isn't the one being listed.
+  // literal "" - and guessing "/" would name a directory that isn't the one
+  // being listed.
   test("the empty current directory renders as Home rather than a blank header", () => {
     const rows = buildPathRows({
       kind: "dir",
