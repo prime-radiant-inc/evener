@@ -72,3 +72,21 @@
 .danger:hover:not(:disabled) {
   background: var(--danger-edge);
 }
+
+/* A destructive action that is NOT the primary one on its row (the composer's
+ * Stop sits beside Send): the danger hue carries on the glyph/label instead of
+ * a filled background, so it stays recognizable without competing for
+ * attention. The tinted hover/focus surface is where the fill shows up. */
+.dangerQuiet {
+  background: transparent;
+  color: var(--danger);
+}
+
+.dangerQuiet:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger-edge);
+}
+
+.dangerQuiet:focus-visible {
+  outline: 2px solid var(--danger);
+}

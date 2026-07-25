@@ -8,6 +8,7 @@ import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { ModelSwitch } from "./ModelSwitch";
+import rawStyles from "./modelswitch.module.css";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -76,18 +77,42 @@ afterEach(() => {
   cleanup();
 });
 
-test("shows the current model as a passive chip alongside a Change-model trigger", () => {
+// The trigger is addressed by a stable testid rather than by its accessible
+// name or its inner markup: the label is plain text in the trigger (no Chip
+// box - a bordered chip inside a button that already draws its own hover box
+// reads as a double border). The accessible name is still a contract, kept in
+// the one deliberate assertion below.
+function trigger(): HTMLButtonElement {
+  return screen.getByTestId("model-switch-trigger") as HTMLButtonElement;
+}
+
+test("shows the current model label alongside a Change-model trigger", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
+  expect(trigger()).toBeTruthy();
   expect(screen.queryByRole("combobox")).toBeNull();
+});
+
+// The visible label is the model id, and the trigger's action ("change
+// model") rides along visually-hidden so the spoken name says both.
+test("the trigger's spoken name names both the current model and the action", () => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  expect(screen.getByRole("button", { name: "anthropic/claude-sonnet-4-5 — change model" })).toBe(trigger());
+});
+
+// The label carries no box of its own - that was the double border.
+test("the model label is plain text, not a bordered chip", () => {
+  render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
+  const label = screen.getByTestId("model-switch-value");
+  expect(label.className).toBe(rawStyles.value);
+  expect(label.querySelector("*")).toBeNull();
 });
 
 test("the trigger is disabled when the thread's changeModel capability is unavailable", () => {
   render(
     <ModelSwitch sessionRef="ref_a" model={testModel({ capabilities: { ...CAPABILITIES, changeModel: false } })} />,
   );
-  expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(true);
+  expect(trigger().disabled).toBe(true);
 });
 
 // Busy-gate: a model switch mid-turn is refused by the daemon, so the trigger
@@ -95,12 +120,12 @@ test("the trigger is disabled when the thread's changeModel capability is unavai
 // Stop/Steer gate uses), not only the static changeModel capability.
 test("the trigger is disabled while a turn is active, even when changeModel is capable", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel({ status: { type: "active" }, activeTurnId: "turn_1" })} />);
-  expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(true);
+  expect(trigger().disabled).toBe(true);
 });
 
 test("the trigger is enabled when idle and changeModel-capable", () => {
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  expect((screen.getByRole("button", { name: /change model/i }) as HTMLButtonElement).disabled).toBe(false);
+  expect(trigger().disabled).toBe(false);
 });
 
 test("opening the picker fetches the catalog via listModels and shows a loading state until it resolves", async () => {
@@ -110,7 +135,7 @@ test("opening the picker fetches the catalog via listModels and shows a loading 
   fake.on("model/list", () => new Promise((resolve) => (box.resolve = resolve)));
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
 
   expect(screen.getByRole("status", { name: "Loading" })).toBeTruthy();
   box.resolve?.(modelListResponse());
@@ -123,7 +148,7 @@ test("renders every catalog entry as an option immediately once loaded, with no 
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   await screen.findByRole("combobox");
 
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
@@ -135,7 +160,7 @@ test("typing filters the option list by provider/model substring", async () => {
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   const combobox = await screen.findByRole("combobox");
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);
@@ -156,7 +181,7 @@ test("picking an option calls setModel with that option's provider/model and clo
   });
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   const combobox = await screen.findByRole("combobox");
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);
@@ -184,12 +209,12 @@ test("a failed catalog fetch surfaces the error inline, keeping the field and th
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
 
   expect((await screen.findByRole("alert")).textContent).toMatch(/catalog boom/i);
   expect(screen.queryByRole("listbox")).toBeNull();
   expect(screen.getByRole("combobox")).toBeTruthy();
-  expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+  expect(trigger()).toBeTruthy();
 });
 
 // The picker is dismissable by Escape and by an outside click, not only by
@@ -200,13 +225,13 @@ test("pressing Escape closes an open picker", async () => {
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   await screen.findByRole("combobox");
   await user.keyboard("{Escape}");
 
   await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
-  // Reverts to the passive chip + trigger, unchanged.
-  expect(screen.getByRole("button", { name: /change model/i })).toBeTruthy();
+  // Reverts to the plain label + trigger, unchanged.
+  expect(trigger()).toBeTruthy();
 });
 
 // The picker's own list scrolls, and the transcript behind it can scroll too:
@@ -217,7 +242,7 @@ test("a scroll does not close the open picker", async () => {
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   await screen.findByRole("combobox");
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   window.dispatchEvent(new Event("scroll"));
@@ -234,13 +259,13 @@ test("closing returns focus to the trigger", async () => {
   fake.on("model/list", () => modelListResponse());
 
   render(<ModelSwitch sessionRef="ref_a" model={testModel()} />);
-  const trigger = screen.getByRole("button", { name: /change model/i });
-  await user.click(trigger);
+  const triggerButton = trigger();
+  await user.click(triggerButton);
   await screen.findByRole("combobox");
   await user.keyboard("{Escape}");
 
   await waitFor(() => expect(screen.queryByRole("combobox")).toBeNull());
-  expect(document.activeElement).toBe(trigger);
+  expect(document.activeElement).toBe(triggerButton);
 });
 
 test("a click outside the open picker closes it", async () => {
@@ -256,7 +281,7 @@ test("a click outside the open picker closes it", async () => {
       <ModelSwitch sessionRef="ref_a" model={testModel()} />
     </div>,
   );
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   await screen.findByRole("combobox");
   await user.click(screen.getByTestId("outside"));
 
@@ -277,7 +302,7 @@ test("a failed setModel surfaces an error toast - the picker is already closed (
       <Toast />
     </>,
   );
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(trigger());
   const combobox = await screen.findByRole("combobox");
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);

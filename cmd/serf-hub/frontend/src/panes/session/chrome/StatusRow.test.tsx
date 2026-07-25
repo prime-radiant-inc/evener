@@ -387,7 +387,7 @@ test("renders no context gauge when the thread has no context window data", () =
   expect(screen.queryByRole("meter")).toBeNull();
 });
 
-test("renders the context gauge with an accessible label and the compact used/window numbers", () => {
+test("renders the context gauge with the used/window counts in its accessible label", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -398,8 +398,24 @@ test("renders the context gauge with an accessible label and the compact used/wi
   const meter = screen.getByRole("meter");
   expect(meter.getAttribute("aria-valuenow")).toBe("12000");
   expect(meter.getAttribute("aria-valuemax")).toBe("128000");
-  expect(meter.getAttribute("aria-label")).toBeTruthy();
-  expect(screen.getByText("12k / 128k")).toBeTruthy();
+  expect(meter.getAttribute("aria-label")).toContain("12k of 128k");
+});
+
+// The gauge alone shows the pressure; a "12k / 128k" readout beside it said
+// the same thing twice in a row that has to stay one line. The exact numbers
+// are still reachable - spoken from the meter's label, and on hover from the
+// title, following the row's "key value" tooltip convention (LocationCluster,
+// status-row-cost).
+test("shows no duplicate numeric readout beside the gauge, and puts the numbers in a hover tooltip", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ contextUsed: 12_000, contextWindow: 128_000, contextPressure: 0.09 })}
+      now={1000}
+    />,
+  );
+  expect(screen.queryByText("12k / 128k")).toBeNull();
+  expect(screen.getByTestId("status-row-context").getAttribute("title")).toBe("context 12k / 128k");
 });
 
 // --- usage -------------------------------------------------------------------

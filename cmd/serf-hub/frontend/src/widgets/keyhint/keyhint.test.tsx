@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { KeyHint } from "./index";
@@ -48,4 +51,81 @@ test("renders a single key with no separator", () => {
   render(<KeyHint keys={["Enter"]} />);
   expect(document.querySelectorAll("kbd")).toHaveLength(1);
   expect(screen.queryByText("+")).toBeNull();
+});
+
+// --- compact: a bare glyph run for inside a button ----------------------
+//
+// Three bordered <kbd> boxes plus a "+" inside a Send/Steer button dominate
+// the button. Compact renders the same chord as one unadorned glyph run
+// (⇧↵, ⌘↵) - the convention the command palette's own help rows already
+// use - while keeping the SPOKEN name as words.
+
+test("compact renders one glyph run with no kbd boxes and no separator", () => {
+  render(<KeyHint keys={["Shift", "Enter"]} compact />);
+  expect(document.querySelectorAll("kbd")).toHaveLength(0);
+  expect(screen.getByText("⇧↵")).toBeTruthy();
+  expect(screen.queryByText("+")).toBeNull();
+});
+
+test("compact maps Mod to the platform glyph: Mac shows the command glyph", () => {
+  setPlatform("MacIntel");
+  render(<KeyHint keys={["Mod", "Enter"]} compact />);
+  expect(screen.getByText("⌘↵")).toBeTruthy();
+});
+
+test("compact maps Mod to the platform glyph: non-Mac shows Ctrl verbatim", () => {
+  setPlatform("Win32");
+  render(<KeyHint keys={["Mod", "Enter"]} compact />);
+  expect(screen.getByText("Ctrl↵")).toBeTruthy();
+});
+
+test("compact renders a key with no glyph mapping verbatim", () => {
+  render(<KeyHint keys={["Shift", "K"]} compact />);
+  expect(screen.getByText("⇧K")).toBeTruthy();
+});
+
+// The glyph run must never become an enclosing control's accessible name: a
+// screen reader announcing "Steer ⇧↵" is worse than useless. The glyphs are
+// aria-hidden and the words ride along in a visually-hidden span, so the
+// spoken name is identical to the non-compact form's.
+test("compact keeps the enclosing button's spoken name as words, not glyphs", () => {
+  render(
+    <button type="button">
+      Steer <KeyHint keys={["Shift", "Enter"]} compact />
+    </button>,
+  );
+  expect(screen.getByRole("button", { name: "Steer Shift+Enter" })).toBeTruthy();
+});
+
+test("compact's spoken words match the non-compact form's own accessible name", () => {
+  const { unmount } = render(
+    <button type="button">
+      Send <KeyHint keys={["Mod", "Enter"]} />
+    </button>,
+  );
+  const plainName = screen.getByRole("button").textContent;
+  unmount();
+
+  render(
+    <button type="button">
+      Send <KeyHint keys={["Mod", "Enter"]} compact />
+    </button>,
+  );
+  expect(screen.getByRole("button", { name: plainName ?? "" })).toBeTruthy();
+});
+
+// The compact form sits inside buttons of every variant, including a filled
+// primary whose own label already sits near the AA contrast floor - so it
+// stays subordinate by size and face, never by a thinner color that would go
+// illegible on that background.
+test("compact inherits the host control's own text color rather than thinning it", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "keyhint.module.css"), "utf8");
+  const rule = /\.glyphs\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("color: inherit");
+  expect(rule).toContain("font-size: var(--font-size-caption)");
+});
+
+test("compact hides the glyph run from assistive tech", () => {
+  render(<KeyHint keys={["Shift", "Enter"]} compact />);
+  expect(screen.getByText("⇧↵").getAttribute("aria-hidden")).toBe("true");
 });

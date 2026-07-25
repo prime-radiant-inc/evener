@@ -78,7 +78,7 @@ test("the closed field shows the value as plain text, and the default marker whe
 // typecheck.
 test("with no ariaLabel the trigger is named by its own value text", () => {
   render(<PathField value="/home/jesse" onChange={vi.fn()} complete={lister({})} />);
-  expect(screen.getByRole("button", { name: "/home/jesse— browse" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "/home/jesse — browse" })).toBeTruthy();
 });
 
 test("ariaLabel names the trigger by field AND value, since aria-label replaces the text content", () => {

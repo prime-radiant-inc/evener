@@ -26,9 +26,11 @@ import {
   Textarea,
   useToasts,
 } from "../../widgets";
+import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { AdvancedOptions } from "./AdvancedOptions";
@@ -463,7 +465,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             <span>Discarded last-used model {staleNotice} — no longer offered by this hub.</span>
             <IconButton
               label="Dismiss notice"
-              icon="×"
+              icon={<CloseIcon />}
               variant="quiet"
               size="sm"
               onClick={() => setStaleNotice(null)}
@@ -486,7 +488,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             <div className={CLASS.controls}>
               <IconButton
                 label="Attach image"
-                icon="+"
+                icon={<AttachIcon />}
                 variant="quiet"
                 type="button"
                 onClick={() => fileInputRef.current?.click()}

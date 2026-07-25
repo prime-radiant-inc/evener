@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -9,6 +12,9 @@ import { connectionStore } from "../../../stores/connection";
 import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
+import buttonStyles from "../../../widgets/button/button.module.css";
+import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Composer } from "./Composer";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -94,6 +100,10 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // The toast store is module state that outlives RTL's own cleanup, so a
+  // toast pushed by one test would otherwise still be in the next test's
+  // tree and make a getByText for the same message ambiguous.
+  resetToastStoreForTests();
   paletteStore.setState({ open: false, query: "" });
 });
 
@@ -106,22 +116,22 @@ function textarea(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
 }
 
+// The composer's controls are addressed by their stable data-testid, not by
+// accessible name: two different buttons in this tree start with "Steer"
+// (this component's own and QueueStrip's "Steer queue now"), and the
+// submit button's own name tracks the send/queue routing and the keyboard
+// hint. The accessible names are still a real contract - see the dedicated
+// "spoken name" tests below - they just aren't how tests navigate.
 function submitButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /^(send|queue)\b/i }) as HTMLButtonElement;
+  return screen.getByTestId("composer-submit") as HTMLButtonElement;
 }
 
-// The composer's OWN Steer control. Its accessible name carries the
-// Shift+Enter KeyHint ("Steer Shift+Enter"), so it is not exactly "Steer";
-// QueueStrip's own drain button is exactly "Steer queue now" (T3's separate
-// drain-as-steer affordance, wired into this component's tree at the wave
-// integration merge - w5-integration-wiring-report.md). Both accessible
-// names start with "Steer" - a couple of tests below hydrate with a
-// non-empty queue, rendering QueueStrip's button alongside this one - so
-// disambiguate by the one that does NOT carry the "queue" token.
 function steerButton(): HTMLButtonElement {
-  return screen.getByRole("button", {
-    name: (accessibleName) => accessibleName.startsWith("Steer") && !accessibleName.includes("queue"),
-  }) as HTMLButtonElement;
+  return screen.getByTestId("composer-steer") as HTMLButtonElement;
+}
+
+function stopButton(): HTMLButtonElement {
+  return screen.getByTestId("composer-stop") as HTMLButtonElement;
 }
 
 // --- basic surface ---------------------------------------------------------
@@ -142,6 +152,81 @@ test("typing persists the draft under this ref's storage key", async () => {
   await mountComposer("ref_a");
   await user.type(textarea(), "hi");
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hi");
+});
+
+// The textarea is seamless (no box, no ring of its own) so the card around it
+// is the composer's single visible control - and therefore has to carry the
+// focus affordance, or focusing the message field would show nothing at all.
+// Only the post-focus state is queried: jsdom's selector engine caches a
+// :focus-within result per element, so an earlier "not yet focused" call on
+// the same node would keep answering false afterwards.
+test("focusing the message field puts the input card in :focus-within, which its CSS gives the standard accent ring", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toMatch(/\.inputCard:focus-within\s*\{[^}]*outline: 2px solid var\(--accent\)/);
+});
+
+test("focusing the message field lights the input card's own focus affordance", async () => {
+  await mountComposer("ref_a");
+  textarea().focus();
+  expect(screen.getByTestId("composer-input-card").matches(":focus-within")).toBe(true);
+});
+
+// The key hints inside these buttons render as bare glyphs (⇧↵, ⌘↵), which
+// are unspeakable - so the buttons' spoken names must stay words. These two
+// tests are the ONE place that asserts an accessible name deliberately;
+// everywhere else addresses controls by testid.
+test("the Steer button's spoken name is words, not the ⇧↵ glyphs it shows", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(screen.getByRole("button", { name: "Steer Shift+Enter" })).toBe(steerButton());
+});
+
+test("the submit button's spoken name is words, not the ⌘↵ glyphs it shows", async () => {
+  await mountComposer("ref_a");
+  // KeyHint renders "Mod" as ⌘ on Apple platforms and Ctrl elsewhere, in the
+  // spoken words as well as the glyphs, so the expected primary modifier
+  // follows whichever platform this run reports.
+  const modWord = /Mac|iPhone|iPad|iPod/.test(window.navigator.platform) ? "⌘" : "Ctrl";
+  expect(screen.getByRole("button", { name: `Send ${modWord}+Enter` })).toBe(submitButton());
+  expect(submitButton().textContent).toContain("↵"); // the visible form really is the glyph run
+});
+
+// Density: the control row is the 28px (sm) size, not 32px (md) - three
+// nested gaps plus the card's padding plus a 32px row stacked up to a block
+// far taller than the input it framed.
+test("every control in the composer's button row is the sm size", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+
+  // IconButton overrides Button's own sm/md with its square sizing (see
+  // iconbutton.module.css), so the two icon controls carry that module's sm.
+  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
+    expect(control.className.split(" ")).toContain(iconButtonStyles.sm);
+  }
+  for (const control of [steerButton(), submitButton()]) {
+    expect(control.className.split(" ")).toContain(buttonStyles.sm);
+  }
+});
+
+// The two icon controls draw real SVG glyphs, not bare "+"/"■" characters,
+// which render inconsistently across fonts and read as typos at 28px. Their
+// spoken names come from IconButton's label and stay words either way.
+test("the attach and stop controls draw SVG glyphs, not literal text characters", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+
+  for (const control of [screen.getByTestId("composer-attach"), stopButton()]) {
+    expect(control.querySelector("svg")).toBeTruthy();
+    expect(control.textContent).toBe("");
+  }
+  expect(screen.getByRole("button", { name: "Attach image" })).toBe(screen.getByTestId("composer-attach"));
+  expect(screen.getByRole("button", { name: "Stop" })).toBe(stopButton());
 });
 
 // --- send / queue routing ---------------------------------------------------
@@ -381,11 +466,10 @@ test("clicking steer with a non-empty queue routes to drain-as-steer, carrying t
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "drain me" }] });
 });
 
-// The Steer BUTTON's disabled attribute blocks a mouse click during the
-// window after status flips "active" but before activeTurnId arrives (the
-// same isTurnActive gate as its own disabled condition), so a click never
-// reaches the handler in that window.
-test("steer button stays disabled during the window after status flips active but before activeTurnId arrives", async () => {
+// Steer and Stop only act on an in-flight turn, so neither is rendered
+// during the window after status flips "active" but before activeTurnId
+// arrives - the same isTurnActive gate their handlers need.
+test("neither steer nor stop renders during the window after status flips active but before activeTurnId arrives", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
     status: { type: "active" },
@@ -394,18 +478,19 @@ test("steer button stays disabled during the window after status flips active bu
   fake.on("turn/steer", () => ({}));
 
   await user.type(textarea(), "hi");
-  expect(steerButton().disabled).toBe(true);
-  await user.click(steerButton());
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
 
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
 });
 
-// Shift+Enter, unlike a button click, bypasses the disabled attribute
-// entirely - it calls the same steer handler directly off the keydown
-// event, exactly mirroring legacy's own "keyboard equivalent of clicking
-// the steer button" (the SAME function, not a separately-gated path). The
-// handler's own internal activeTurnId check is what still catches this
-// window from the keyboard, where the button's disabled attribute cannot.
+// Shift+Enter reaches the steer handler directly off the keydown event, so
+// it works whether or not the Steer BUTTON is on screen at all - exactly
+// mirroring legacy's own "keyboard equivalent of clicking the steer button"
+// (the SAME function, not a separately-gated path). The handler's own
+// internal activeTurnId check is therefore the only thing standing between
+// the keyboard and a doomed steer, and these two cases are where it earns
+// its keep: no turn is in flight, so no Steer button is rendered to gate on.
 test("Shift+Enter with no active turn id shows a 'no active turn' toast rather than attempting a doomed steer", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -415,6 +500,19 @@ test("Shift+Enter with no active turn id shows a 'no active turn' toast rather t
   fake.on("turn/steer", () => ({}));
 
   await user.type(textarea(), "hi");
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
+  expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
+});
+
+test("Shift+Enter on an idle session, where no Steer button renders at all, still reaches the handler and toasts", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", { status: { type: "idle" } });
+  fake.on("turn/steer", () => ({}));
+
+  await user.type(textarea(), "hi");
+  expect(screen.queryByTestId("composer-steer")).toBeNull(); // nothing to click; the keybinding is the only route
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   await waitFor(() => expect(screen.getByText(/no active turn/i)).toBeTruthy());
@@ -438,14 +536,62 @@ test("a queuedDrainPartial failure still clears the composer and shows a distinc
   expect(textarea().value).toBe("");
 });
 
-test("steer/interrupt are disabled when the turn is not active, even with capability true", async () => {
+// --- which controls the row shows ------------------------------------------
+//
+// Steer and Stop both act on an IN-FLIGHT turn: with nothing running there is
+// no turn to steer into and none to interrupt, so an idle composer shows only
+// attach + the submit button rather than two permanently-dead controls.
+// Capability still gates them independently for a session whose harness
+// can't steer or can't interrupt.
+
+test("an idle session renders neither steer nor stop - only attach and submit", async () => {
   await mountComposer("ref_a", { status: { type: "idle" } });
-  expect(steerButton().disabled).toBe(true);
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+  expect(screen.getByTestId("composer-attach")).toBeTruthy();
+  expect(submitButton()).toBeTruthy();
+});
+
+test("a busy session renders both steer and stop, enabled", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(steerButton().disabled).toBe(false);
+  expect(stopButton().disabled).toBe(false);
+});
+
+test("a busy session on a harness that can't interrupt renders steer but not stop", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, interrupt: false },
+      queue: {},
+      activeTurnId: "turn_1",
+    },
+  });
+  expect(steerButton()).toBeTruthy();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
+});
+
+test("a busy session on a harness that can't steer renders stop but not steer", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, steer: false },
+      queue: {},
+      activeTurnId: "turn_1",
+    },
+  });
+  expect(stopButton()).toBeTruthy();
+  expect(screen.queryByTestId("composer-steer")).toBeNull();
 });
 
 test("the stop button is absent once the session has ended", async () => {
   await mountComposer("ref_a", { status: { type: "ended" } });
-  expect(screen.queryByRole("button", { name: /^stop\b/i })).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
 });
 
 // --- interrupt ---------------------------------------------------------------
@@ -458,7 +604,7 @@ test("clicking Stop calls turn/interrupt", async () => {
   });
   fake.on("turn/interrupt", () => ({}));
 
-  await user.click(screen.getByRole("button", { name: /^stop\b/i }));
+  await user.click(stopButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
@@ -473,7 +619,7 @@ test("a failed interrupt surfaces a toast naming the action", async () => {
     throw new Error("not interruptible right now");
   });
 
-  await user.click(screen.getByRole("button", { name: /^stop\b/i }));
+  await user.click(stopButton());
 
   await waitFor(() => expect(screen.getByText(/interrupt failed/i)).toBeTruthy());
 });
@@ -735,7 +881,7 @@ test("clicking the attach button triggers the hidden file input", async () => {
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const clickSpy = vi.spyOn(input, "click");
 
-  await user.click(screen.getByRole("button", { name: /attach image/i }));
+  await user.click(screen.getByTestId("composer-attach"));
   expect(clickSpy).toHaveBeenCalledTimes(1);
 });
 

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MAX_HEIGHT_VIEWPORT_FRACTION, Textarea } from "./index";
+import rawStyles from "./textarea.module.css";
 
 afterEach(cleanup);
 
@@ -118,6 +119,40 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "textarea.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+// --- seamless: opt-in only, and only ADDS a class ------------------------
+//
+// The default appearance is what four other consumers already render
+// (panes/settings' launch fields, panes/spawn, chrome/GoalControl), so the
+// variant must be additive: same base class, one extra modifier.
+function moduleCss(): string {
+  return readFileSync(join(dirname(fileURLToPath(import.meta.url)), "textarea.module.css"), "utf8");
+}
+
+test("without seamless, only the base class is applied", () => {
+  render(<Textarea value="" onChange={() => {}} />);
+  expect(screen.getByRole("textbox").className).toBe(rawStyles.textarea);
+});
+
+test("seamless adds its modifier class alongside the unchanged base class", () => {
+  render(<Textarea value="" onChange={() => {}} seamless />);
+  const classes = screen.getByRole("textbox").className.split(" ");
+  expect(classes).toContain(rawStyles.textarea);
+  expect(classes).toContain(rawStyles.seamless);
+});
+
+test("the seamless modifier removes the field's own box and its focus ring", () => {
+  const css = moduleCss();
+  const rule = /\.seamless\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("border: none");
+  expect(rule).toContain("background: transparent");
+  expect(rule).toContain("border-radius: 0");
+  expect(rule).toContain("padding: 0");
+  // The native resize grabber has no corner to sit in on a seamless field.
+  expect(rule).toContain("resize: none");
+  // The enclosing card owns the focus affordance instead (:focus-within).
+  expect(css).toMatch(/\.seamless:focus-visible\s*\{\s*outline: none;\s*\}/);
 });
 
 // --- autoGrow: scrollHeight-based, not newline-counting -------------------

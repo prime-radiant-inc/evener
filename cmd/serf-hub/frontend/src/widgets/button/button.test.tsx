@@ -47,7 +47,22 @@ test("each variant renders a distinct class", () => {
   rerender(<Button variant="danger">Go</Button>);
   const dangerClass = screen.getByRole("button").className;
 
-  expect(new Set([primaryClass, quietClass, dangerClass]).size).toBe(3);
+  rerender(<Button variant="dangerQuiet">Go</Button>);
+  const dangerQuietClass = screen.getByRole("button").className;
+
+  expect(new Set([primaryClass, quietClass, dangerClass, dangerQuietClass]).size).toBe(4);
+});
+
+// dangerQuiet exists for a destructive action that is not the primary one on
+// its row: the danger hue lands on the label/glyph, never as a filled
+// background, so the surface stays quiet until hover.
+test("dangerQuiet colors the label rather than filling a background", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8");
+  const rule = /\.dangerQuiet\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("color: var(--danger)");
+  expect(rule).toContain("background: transparent");
+  expect(css).toMatch(/\.dangerQuiet:hover:not\(:disabled\)\s*\{[^}]*background: var\(--danger-bg\)/);
+  expect(css).toMatch(/\.dangerQuiet:focus-visible\s*\{[^}]*outline: 2px solid var\(--danger\)/);
 });
 
 test("each size renders a distinct class", () => {

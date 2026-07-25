@@ -25,6 +25,7 @@ import { Button, Chip, Dropzone, IconButton, KeyHint, Textarea, useToasts } from
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ImageGallery } from "../transcript/flow/ImageGallery";
 import { AskDock, useAskDockPending } from "./askDock";
+import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type TextEditor, useAttachments } from "./attachments/useAttachments";
 import styles from "./composer.module.css";
@@ -36,13 +37,12 @@ export interface ComposerProps {
   ref: string;
 }
 
-// Only this one class goes through requireClass (the design-system's rule
-// for any NEW class) - the file's five pre-existing classNames below are
-// bare direct module references, this file's own established convention
-// (unlike QueueStrip.tsx's full CLASS table); flagged rather than silently
-// mixed, and not "fixed" wholesale since rewriting five unrelated, already-
-// working references is outside this fix's own scope.
 const CLASS = {
+  composer: requireClass(styles.composer, "composer.module.css", "composer"),
+  chips: requireClass(styles.chips, "composer.module.css", "chips"),
+  inputCard: requireClass(styles.inputCard, "composer.module.css", "inputCard"),
+  controls: requireClass(styles.controls, "composer.module.css", "controls"),
+  controlsRight: requireClass(styles.controlsRight, "composer.module.css", "controlsRight"),
   visuallyHidden: requireClass(styles.visuallyHidden, "composer.module.css", "visuallyHidden"),
   imageTile: requireClass(styles.imageTile, "composer.module.css", "imageTile"),
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
@@ -54,6 +54,17 @@ function RemoveIcon() {
   return (
     <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
       <path d="M2 2 L10 10 M10 2 L2 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// The interrupt control's glyph: the universal stop square, drawn rather than
+// typed as "■" (whose weight and baseline shift from font to font). Filled,
+// not stroked - a hollow square at this size reads as an empty checkbox.
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" fill="currentColor" />
     </svg>
   );
 }
@@ -249,11 +260,17 @@ export function Composer({ ref }: ComposerProps) {
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments;
 
-  const showStop =
-    model.status.type !== "ended" &&
-    model.status.type !== "closed" &&
-    (model.capabilities.interrupt || model.capabilities.steer || model.capabilities.send || model.capabilities.queue);
-  const showSteer = model.capabilities.steer || model.capabilities.send || model.capabilities.queue;
+  // Stop and Steer both act on an IN-FLIGHT turn - there is no turn to
+  // interrupt and nothing to steer into otherwise, so they are rendered only
+  // while one is running (`busy`) AND the harness advertises the matching
+  // capability. `busy` also subsumes the ended/closed statuses isTurnActive
+  // can never report as active. Both routes a Steer click can take need the
+  // live turn: classic turn/steer carries expectedTurnId, and
+  // turn/drainAsSteer is refused with "no active turn to steer" when nothing
+  // is processing (server/appwire_runtime.go's handleAppTurnDrainAsSteer), so
+  // a non-empty queue does not make Steer meaningful on an idle session.
+  const showStop = busy && model.capabilities.interrupt;
+  const showSteer = busy && model.capabilities.steer;
   const submitLabel = availability.canQueue ? "Queue" : "Send";
 
   function handleTextChange(event: { target: { value: string } }): void {
@@ -528,7 +545,7 @@ export function Composer({ ref }: ComposerProps) {
   }
 
   return (
-    <div className={styles.composer}>
+    <div className={CLASS.composer}>
       {/* T4: ask dock - renders above the queue strip; onFallbackToComposer
           reuses the same restoreTextToComposer merge as QueueStrip's own
           onRestoreToComposer above (see that function's own doc comment for
@@ -562,7 +579,7 @@ export function Composer({ ref }: ComposerProps) {
         onDrainBusyChange={(draining) => setBusyAction(draining ? "drain" : null)}
       />
       {hasAttachments && (
-        <div className={styles.chips} hidden={askPending} inert={askPending}>
+        <div className={CLASS.chips} hidden={askPending} inert={askPending}>
           {attachments.items.map((item) => {
             const isImage =
               item.mediaType.startsWith("image/") &&
@@ -608,7 +625,7 @@ export function Composer({ ref }: ComposerProps) {
       )}
       <form ref={formRef} onSubmit={handleFormSubmit}>
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={styles.inputCard} hidden={askPending} inert={askPending}>
+          <div className={CLASS.inputCard} data-testid="composer-input-card" hidden={askPending} inert={askPending}>
             <Textarea
               ref={textareaRef}
               value={text}
@@ -616,44 +633,68 @@ export function Composer({ ref }: ComposerProps) {
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               autoGrow
+              // The inputCard around it draws the one border this field
+              // needs, and owns the focus ring via :focus-within.
+              seamless
               placeholder="Message the agent…"
               aria-label="Message"
             />
-            <div className={styles.controls}>
+            <div className={CLASS.controls}>
+              {/* data-testid on every control in this row: two different
+                  buttons here start with "Steer" (this one and QueueStrip's
+                  "Steer queue now"), so tests address controls by a stable
+                  hook instead of navigating by accessible name - the naming
+                  style follows StatusRow's own status-row-* testids. */}
               <IconButton
                 label="Attach image"
-                icon="+"
+                icon={<AttachIcon />}
                 variant="quiet"
+                size="sm"
                 type="button"
+                data-testid="composer-attach"
                 onClick={() => fileInputRef.current?.click()}
               />
-              <div className={styles.controlsRight}>
+              <div className={CLASS.controlsRight}>
+                {/* Stop is a secondary action beside Send, so it carries
+                    danger on the glyph rather than as a filled square
+                    competing with the primary control. */}
                 {showStop && (
                   <IconButton
                     label="Stop"
-                    icon="■"
-                    variant="danger"
+                    icon={<StopIcon />}
+                    variant="dangerQuiet"
+                    size="sm"
                     type="button"
+                    data-testid="composer-stop"
                     onClick={() => void handleInterruptClick()}
-                    disabled={!busy || !model.capabilities.interrupt || busyAction !== null}
+                    // busy + the interrupt capability are already what makes
+                    // this render at all, so only an in-flight request of our
+                    // own is left to gate on.
+                    disabled={busyAction !== null}
                   />
                 )}
                 {showSteer && (
                   <Button
                     variant="quiet"
+                    size="sm"
                     type="button"
+                    data-testid="composer-steer"
                     onClick={handleSteerClick}
-                    disabled={!busy || !model.capabilities.steer || busyAction !== null}
+                    // Same as Stop above: busy + the steer capability already
+                    // gate this control's existence.
+                    disabled={busyAction !== null}
                   >
-                    Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} />}
+                    Steer {!enterToSend && <KeyHint keys={["Shift", "Enter"]} compact />}
                   </Button>
                 )}
                 <Button
                   type="submit"
                   variant="primary"
+                  size="sm"
+                  data-testid="composer-submit"
                   disabled={busyAction !== null || !hasContent || (!availability.canSend && !availability.canQueue)}
                 >
-                  {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} />
+                  {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} compact />
                 </Button>
               </div>
             </div>

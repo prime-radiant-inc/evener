@@ -36,6 +36,7 @@ const VARIANT_CLASS: Record<ButtonVariant, string> = {
   primary: requireClass(buttonStyles.primary, "button.module.css", "primary"),
   quiet: requireClass(buttonStyles.quiet, "button.module.css", "quiet"),
   danger: requireClass(buttonStyles.danger, "button.module.css", "danger"),
+  dangerQuiet: requireClass(buttonStyles.dangerQuiet, "button.module.css", "dangerQuiet"),
 };
 
 const SIZE_CLASS: Record<ButtonSize, string> = {

@@ -66,6 +66,15 @@ test("shows the interim default marker when no model is chosen", () => {
   expect(screen.getByText("(default)")).toBeTruthy();
 });
 
+// The visible label is the model id and the trigger's action rides along
+// visually-hidden, so the spoken name is their concatenation - with a real
+// space between them, which only a separating text node can supply (the name
+// computation trims each child's own text; see this widget's own trigger).
+test("the trigger's spoken name separates the value from the action", () => {
+  renderPicker({ value: "openai/gpt-5" });
+  expect(screen.getByRole("button", { name: "openai/gpt-5 — change model" })).toBe(openTrigger());
+});
+
 test("shows the qualified provider/model when a model is set", () => {
   renderPicker({ value: "openai/gpt-5" });
   expect(screen.getByText("openai/gpt-5")).toBeTruthy();

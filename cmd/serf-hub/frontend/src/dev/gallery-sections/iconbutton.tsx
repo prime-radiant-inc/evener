@@ -3,7 +3,7 @@ import { IconButton } from "../../widgets/iconbutton";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
-const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger"];
+const VARIANTS: ButtonVariant[] = ["primary", "quiet", "danger", "dangerQuiet"];
 
 function DotIcon() {
   return (

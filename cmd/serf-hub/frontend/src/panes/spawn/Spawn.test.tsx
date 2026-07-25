@@ -160,6 +160,18 @@ test("renders the five-field launch bar", async () => {
   expect(screen.getByLabelText("Branch")).toBeTruthy();
 });
 
+// The icon controls draw real SVG glyphs rather than bare "+"/"×" characters,
+// matching the composer's own attach control. Their spoken names come from
+// IconButton's label either way.
+test("the attach control draws an SVG glyph, not a literal text character", async () => {
+  renderSpawn(readyClient());
+  await screen.findByLabelText("Harness");
+
+  const attach = screen.getByRole("button", { name: "Attach image" });
+  expect(attach.querySelector("svg")).toBeTruthy();
+  expect(attach.textContent).toBe("");
+});
+
 test("Access mode moved from the top-level bar into Advanced options (9ct0)", async () => {
   const user = userEvent.setup();
   renderSpawn(readyClient());

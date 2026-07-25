@@ -22,6 +22,9 @@ export default function KeyHintGallerySection() {
           <div className={styles.row} key={label}>
             <p className={styles.rowLabel}>{label}</p>
             <KeyHint keys={keys} />
+            {/* compact next to the bordered form, so the two are comparable at
+                a glance - this is the form a hint inside a button uses. */}
+            <KeyHint keys={keys} compact />
           </div>
         ))}
       </ThemeFlip>

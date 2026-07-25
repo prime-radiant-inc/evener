@@ -123,14 +123,13 @@ function drainButton(): HTMLButtonElement {
   return screen.getByRole("button", { name: "Steer queue now" }) as HTMLButtonElement;
 }
 
-// The composer's OWN Steer control - accessible name "Steer Shift+Enter"
-// (carries the KeyHint), never exactly "Steer". Both this and the drain
-// button start with "Steer" once a non-empty queue renders both, so
-// disambiguate by the one that does NOT carry the "queue" token.
+// The composer's OWN Steer control, addressed by its stable testid: both this
+// and the drain button above start with "Steer" once a non-empty queue renders
+// both, so an accessible-name query here would be navigating by a string that
+// two different controls share. The names themselves are asserted in
+// Composer.test.tsx's own spoken-name tests.
 function composerSteerButton(): HTMLButtonElement {
-  return screen.getByRole("button", {
-    name: (accessibleName) => accessibleName.startsWith("Steer") && !accessibleName.includes("queue"),
-  }) as HTMLButtonElement;
+  return screen.getByTestId("composer-steer") as HTMLButtonElement;
 }
 
 // --- ask_user wire fixtures (mirrors AskDock.test.tsx's own harness) -------
