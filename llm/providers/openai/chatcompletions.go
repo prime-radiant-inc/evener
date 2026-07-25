@@ -77,7 +77,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		dec.UseNumber()
 		jsonErr := dec.Decode(&raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("chat.completions(stream) failed: %v", raw)
+		msg := llm.ProviderFailureMessage("chat.completions(stream)", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		decodeErr := jsonErr
 		if readErr != nil {

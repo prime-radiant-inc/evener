@@ -66,7 +66,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	decodeErr := dec.Decode(&raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "responses.input_tokens failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("responses.input_tokens", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus("openai", resp.StatusCode, msg, raw, ra)
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr

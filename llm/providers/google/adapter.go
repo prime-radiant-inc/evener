@@ -219,7 +219,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "generateContent failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("generateContent", rawBytes)
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
@@ -308,7 +308,7 @@ func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	decodeErr := json.Unmarshal(rawBytes, &raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "countTokens failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("countTokens", rawBytes)
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		returnedErr := classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
@@ -416,7 +416,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var raw map[string]any
 		jsonErr := json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "streamGenerateContent failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("streamGenerateContent", rawBytes)
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		returnedErr := classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 		decodeErr := jsonErr

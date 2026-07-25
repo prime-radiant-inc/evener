@@ -151,8 +151,16 @@ type contextLengthError struct{ httpBaseError }
 type contentFilterError struct{ httpBaseError }
 
 // quotaExceededError reports that a quota or billing limit was exceeded,
-// detected from a "quota" or "billing" message. It is not retryable. Its category is [KindQuotaExceeded].
-type quotaExceededError struct{ httpBaseError }
+// detected from a "quota" or "billing" message, or from a usage-limit error
+// code on an HTTP 429. It is not retryable. Its category is [KindQuotaExceeded].
+//
+// usageLimitResetsAt is when the exhausted allowance returns, for the 429
+// usage-limit form that names one; it is the zero time otherwise. Read it
+// through [UsageLimitResetAt].
+type quotaExceededError struct {
+	httpBaseError
+	usageLimitResetsAt time.Time
+}
 
 // rateLimitError reports that a rate limit was hit, typically from an HTTP 429
 // status. It is retryable. Its category is [KindRateLimit].
@@ -297,6 +305,16 @@ func errorFromHTTPStatus(base httpBaseError) error {
 		base.retryable = false
 		return &contextLengthError{base}
 	case 429:
+		// A 429 covers two unrelated conditions. "Slow down" is transient and
+		// worth the full retry budget; "your allowance is spent" can be hours
+		// or days from clearing, so retrying it just burns the budget and
+		// delays the error the user needs to see.
+		now := time.Now()
+		if limit, ok := parseUsageLimit(base.rawResponse, now); ok {
+			base.retryable = false
+			base.message = usageLimitMessage(limit, now)
+			return &quotaExceededError{httpBaseError: base, usageLimitResetsAt: limit.resetsAt}
+		}
 		base.retryable = true
 		return &rateLimitError{base}
 	case 500, 502, 503, 504:
@@ -326,7 +344,7 @@ func classifyByMessage(base httpBaseError) error {
 	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
 		return &contextLengthError{base}
 	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing"):
-		return &quotaExceededError{base}
+		return &quotaExceededError{httpBaseError: base}
 	case strings.Contains(lower, "not found") || strings.Contains(lower, "does not exist"):
 		return &notFoundError{base}
 	case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "invalid key"):

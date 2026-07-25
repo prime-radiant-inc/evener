@@ -149,7 +149,7 @@ func (a *adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.In
 	decodeErr := dec.Decode(&raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := "estimate-token-count failed: " + strings.TrimSpace(string(rawBytes))
+		msg := llm.ProviderFailureMessage("estimate-token-count", rawBytes)
 		returnedErr := llm.ErrorFromHTTPStatus(providerName, resp.StatusCode, msg, raw, ra)
 		attempt.Complete(llm.APIAttemptResult{StatusCode: resp.StatusCode, ResponseBody: rawBytes, Err: returnedErr}, llm.APITimeoutNone, nil, nil)
 		return llm.InputTokenCount{}, returnedErr

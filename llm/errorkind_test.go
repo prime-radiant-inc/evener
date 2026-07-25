@@ -32,7 +32,9 @@ func TestKind_FromHTTPStatus(t *testing.T) {
 		{400, "content filter triggered", llm.KindContentFilter},
 		{400, "context length exceeded", llm.KindContextLength},
 		{400, "quota exceeded", llm.KindQuotaExceeded},
-		{429, "quota exceeded", llm.KindRateLimit}, // 429 is always rate-limit
+		// Message text never reclassifies a 429; only a usage-limit error code
+		// in the response body does (see TestUsageLimit429IsQuotaExceededAndNotRetryable).
+		{429, "quota exceeded", llm.KindRateLimit},
 	}
 	for _, tc := range cases {
 		err := llm.ErrorFromHTTPStatus("openai", tc.status, tc.message, nil, nil)

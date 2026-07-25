@@ -89,6 +89,12 @@ func Classify(err error) ErrorClass {
 		if le.Retryable() {
 			return ErrorClassRetryable
 		}
+		// An exhausted quota arrives as a 429, which the status switch below
+		// maps to Retryable. Honor the category first, or the retry chain
+		// spends its whole budget on an allowance that resets in days.
+		if Kind(err) == KindQuotaExceeded {
+			return ErrorClassPermanent
+		}
 		switch le.StatusCode() {
 		case 400, 401, 403, 404, 413, 422:
 			return ErrorClassPermanent
