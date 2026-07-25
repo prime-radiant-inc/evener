@@ -241,8 +241,12 @@ test("the same three items DO group once the hidden one is shown again", () => {
   expect(group.textContent).toContain("3 system events");
 });
 
+// Sets the pref both ways explicitly rather than leaning on its default: this
+// asserts what the toggle DOES, and must keep passing whichever way the default
+// happens to point.
 test("promptLoaded off hides the system-prompt scaffold disclosure; on shows it", () => {
   const items = [systemItem("p", { eventKind: "system_prompt", text: "You are a helpful assistant." })];
+  act(() => prefsStore.getState().setTranscriptStatus("promptLoaded", false));
   const { rerender } = render(<TurnBlock turn={turn(items)} />);
   expect(screen.queryByTestId("system-notice-scaffold")).toBeNull();
 

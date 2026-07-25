@@ -67,7 +67,7 @@ export function TranscriptSection() {
           show a system event. What every row here has in common is that it
           adds optional detail to the transcript. */}
       <p className={CLASS.intro}>
-        Optional transcript detail, all off by default. Each browser keeps its own settings.
+        Optional transcript detail. Each browser keeps its own settings.
       </p>
       {TOGGLES.map((toggle) => (
         <div key={toggle.key} className={CLASS.row}>
