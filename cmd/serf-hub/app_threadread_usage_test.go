@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/identifier"
 	"primeradiant.com/serf/llm"
 )
 
@@ -20,8 +21,14 @@ import (
 // makes it a fork child, and the entries before that ordinal are the inherited
 // parent prefix. Returns a config whose past index sees only this session, plus
 // the thread ref for it.
-func seedPastSessionWithUsage(t testing.TB, sessionID string, divergenceTurn int, usages []llm.Usage) (hubcore.WebConfig, hubcore.PastEntry) {
+//
+// The id is minted rather than passed in: PastIndex.Rebuild drops any session
+// whose id fails identifier.ValidateSessionID (a 22-char base62 UUIDv7 payload)
+// and says nothing about it, so a readable placeholder makes the seeded session
+// invisible to every reader.
+func seedPastSessionWithUsage(t testing.TB, divergenceTurn int, usages []llm.Usage) (hubcore.WebConfig, hubcore.PastEntry) {
 	t.Helper()
+	sessionID := identifier.MustNewSessionID()
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-usage-0000000000")
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
@@ -35,7 +42,7 @@ func seedPastSessionWithUsage(t testing.TB, sessionID string, divergenceTurn int
 		DivergenceTurn: divergenceTurn,
 	}
 	if divergenceTurn > 0 {
-		meta.ParentSessionID = "02wMz5TxvPARENT000000"
+		meta.ParentSessionID = identifier.MustNewSessionID()
 	}
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
@@ -82,7 +89,7 @@ func readSeededThread(t testing.TB, cfg hubcore.WebConfig, entry hubcore.PastEnt
 // only sum the turns it happened to hold. The read path now sums the session's
 // own span of the full transcript.
 func TestPastThreadRead_DerivesSessionUsageFromFullTranscriptWhenMetaHasNone(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000001", 0, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 0, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200},
 		{InputTokens: 3000, OutputTokens: 300, TotalTokens: 3300},
@@ -106,7 +113,7 @@ func TestPastThreadRead_DerivesSessionUsageFromFullTranscriptWhenMetaHasNone(t *
 // verbatim copy of the parent's prefix, so summing the whole file would charge
 // the child for spend it never made. Only the post-divergence span counts.
 func TestPastThreadRead_ForkUsageExcludesTheInheritedParentPrefix(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000002", 3, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 3, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}, // parent's, entry 1
 		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200}, // parent's, entry 2
 		{InputTokens: 4000, OutputTokens: 400, TotalTokens: 4400}, // the child's own, entry 3
@@ -128,7 +135,7 @@ func TestPastThreadRead_ForkUsageExcludesTheInheritedParentPrefix(t *testing.T) 
 // own running total, and re-deriving would risk a second, disagreeing figure.
 // Proven with a transcript whose per-turn sum deliberately differs.
 func TestPastThreadRead_PersistedCumulativeUsageWinsOverTheDerivedSum(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000003", 0, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 0, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 	})
 	entry.Meta.CumulativeUsage = schema.CumulativeUsage{InputTokens: 7777, OutputTokens: 777, TotalTokens: 8554}
@@ -150,7 +157,7 @@ func TestPastThreadRead_PersistedCumulativeUsageWinsOverTheDerivedSum(t *testing
 // It has spent nothing, and the honest report for "nothing measured" is an
 // ABSENT total — never a zero that renders as a real "↑0 ↓0" or a "~$0.00".
 func TestPastThreadRead_UnopenedForkReportsAbsentUsageNotZero(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000004", 3, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 3, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 		{InputTokens: 2000, OutputTokens: 200, TotalTokens: 2200},
 	})
@@ -171,7 +178,7 @@ func TestPastThreadRead_UnopenedForkReportsAbsentUsageNotZero(t *testing.T) {
 // the bulk of a real state dir: 1580 of 1592 transcripts on the author's
 // machine are still v1.
 func TestPastThreadRead_LegacyTranscriptLeavesUsageAbsentWithoutFailing(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000005", 0, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 0, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 	})
 	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
@@ -192,7 +199,7 @@ func TestPastThreadRead_LegacyTranscriptLeavesUsageAbsentWithoutFailing(t *testi
 // A session whose transcript is gone (the meta survives, the file does not)
 // reports absent rather than erroring the read.
 func TestPastThreadRead_MissingTranscriptLeavesUsageAbsentWithoutFailing(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000006", 0, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 0, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 	})
 	if err := os.Remove(filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")); err != nil {
@@ -215,7 +222,7 @@ func TestPastThreadRead_DerivedUsageIsIndependentOfTheTurnWindow(t *testing.T) {
 	for i := range usages {
 		usages[i] = llm.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}
 	}
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000007", 0, usages)
+	cfg, entry := seedPastSessionWithUsage(t, 0, usages)
 
 	windowed, ok := requirePastThreadReadResponse(t, cfg, appwire.ThreadReadParams{
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 10,
@@ -240,7 +247,7 @@ func TestPastThreadRead_DerivedUsageIsIndependentOfTheTurnWindow(t *testing.T) {
 // pastEntryThread is the sweep's projector, so it stays on the persisted field
 // alone, and an absent total there is the honest cost of that bound.
 func TestPastEntryThread_DoesNotDeriveUsageOnTheListSweepPath(t *testing.T) {
-	cfg, entry := seedPastSessionWithUsage(t, "02wMz5Txv6USAGE000008", 0, []llm.Usage{
+	cfg, entry := seedPastSessionWithUsage(t, 0, []llm.Usage{
 		{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100},
 	})
 
