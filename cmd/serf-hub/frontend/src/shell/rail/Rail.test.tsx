@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
@@ -439,6 +442,41 @@ describe("project expansion", () => {
     await user.click(within(oldProjectRow).getByTestId("rail-chevron"));
     await screen.findByText("Old session");
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/tree/project?key=archproj")).toBe(true);
+  });
+});
+
+// --- the rail's width is independent of its tree's content ---------------
+//
+// jsdom evaluates no real CSS layout, so these assert the declarations the
+// contract rests on, not a measured width; the browser measurement that
+// proves the layout itself is in this change's own commit message.
+//
+// The fix is `flex-shrink: 0` on .rail. The rail is a flex item beside the
+// workspace host, whose `flex: 1 1 auto` basis is its own content width; when
+// the two bases together exceed the row, the browser distributes the shortfall
+// across every shrinkable item, taking the rail below its declared 280px.
+// .body's scrolling is the necessary other half - it is what the rows too wide
+// for a non-shrinking rail spill into.
+describe("width stability across expand/collapse", () => {
+  const railCSS = (): string => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    return readFileSync(join(here, "Rail.module.css"), "utf8");
+  };
+
+  test(".rail refuses to shrink below its declared width", () => {
+    const rule = /\.rail\s*\{[^}]*\}/.exec(railCSS());
+    expect(rule).not.toBeNull();
+    expect(rule?.[0]).toContain("width: 280px");
+    expect(rule?.[0]).toContain("flex-shrink: 0");
+  });
+
+  test(".body scrolls the rows a non-shrinking rail can't widen for", () => {
+    const rule = /\.body\s*\{[^}]*\}/.exec(railCSS());
+    expect(rule).not.toBeNull();
+    // Any scrolling overflow value satisfies this: per CSS Overflow 3 an
+    // unset overflow-x computes to `auto` (not `visible`) once the other axis
+    // scrolls, so `overflow-y: auto` alone already scrolls both axes.
+    expect(rule?.[0]).toMatch(/overflow(-x|-y)?:\s*(auto|scroll)/);
   });
 });
 

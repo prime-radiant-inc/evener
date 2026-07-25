@@ -7,10 +7,23 @@
    * Rail.tsx from the persisted serf.prefs.sidebarWidth; the fallback is that
    * pref's own default, so the rail renders correctly with no property set at
    * all (the mobile drawer instance, which passes no width).
-   * `flex: none` + `min-width: 0` make this width AUTHORITATIVE as a fixed
-   * width was: the rail neither grows nor shrinks beside the workspace, and
-   * its own content cannot push it wider (a flex item's default
-   * `min-width: auto` would floor it at its content's min size). */
+   *
+   * `flex: none` + `min-width: 0` make this width AUTHORITATIVE in both
+   * directions, which a bare `width` is not:
+   *
+   * - No shrink. The rail is a flex item beside the workspace host in
+   *   AppShell's .content row, and that host's `flex: 1 1 auto` sizes its
+   *   basis from its own content. When the two bases together exceed the row,
+   *   the browser distributes the shortfall across every shrinkable item -
+   *   taking the rail with it, below the width declared here (a `width` is a
+   *   basis, not a floor). Measured before this was pinned: 268.72px with a
+   *   project collapsed, 280px expanded.
+   * - No content floor. A flex item's default `min-width: auto` floors it at
+   *   its content's minimum size, so a wide row (a long title, or a deeply
+   *   nested subagent chain) would raise that floor and widen the rail. That
+   *   is the other half of the same bug: expanding a project changed the
+   *   sidebar's width because the tree's content was setting it. Too-wide
+   *   rows now scroll inside .body instead. */
   flex: none;
   width: var(--rail-width, 280px);
   min-width: 0;
@@ -176,6 +189,14 @@
   /* min-height: 0 is required for a flex child to actually be able to
    * scroll instead of stretching its column parent to fit its content. */
   min-height: 0;
+  /* This is also the box that absorbs the tree's width: `flex: none` plus
+   * `min-width: 0` above means a row wider than the rail (a deep
+   * subagent branch, a long title beside a long branch name) has to go
+   * somewhere, and this scroll container is where. `overflow-y: auto` alone
+   * is enough for that - per CSS Overflow 3, an unset overflow-x computes to
+   * `auto` rather than `visible` once the other axis is a scrolling value, so
+   * the horizontal axis already scrolls here (verified in Chrome: computed
+   * overflow-x reads `auto` from this one declaration). */
   overflow-y: auto;
   padding: var(--space-2) 0;
 }
