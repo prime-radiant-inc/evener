@@ -1126,73 +1126,76 @@ export interface UpgradeResponse {
 export interface WarningPayload {
 }
 
-export type MethodName =
-  | "initialize"
-  | "ping"
-  | "thread/list"
-  | "thread/read"
-  | "thread/turns/list"
-  | "thread/turns/items/list"
-  | "thread/start"
-  | "thread/resume"
-  | "thread/fork"
-  | "thread/clear"
-  | "thread/model/set"
-  | "serf/thread/name/set"
-  | "thread/reasoning-effort/set"
-  | "thread/compact/start"
-  | "thread/shutdown"
-  | "turn/start"
-  | "turn/steer"
-  | "turn/interrupt"
-  | "turn/queue"
-  | "turn/drainAsSteer"
-  | "turn/promoteQueuedAsSteer"
-  | "turn/cancelQueued"
-  | "goal/set"
-  | "serf/tasks/list"
-  | "serf/thread/transcripts/list"
-  | "serf/subagentPreview"
-  | "serf/paths/complete"
-  | "serf/projects/recent"
-  | "serf/path/validate"
-  | "serf/harnesses/list"
-  | "serf/upgrade"
-  | "serf/auth/status"
-  | "serf/auth/login/start"
-  | "serf/auth/login/complete"
-  | "serf/auth/logout"
-  | "serf/auth/list"
-  | "serf/auth/apiKey/set"
-  | "serf/auth/device/start"
-  | "serf/auth/device/poll"
-  | "serf/launch/resolve"
-  | "serf/launch/schema"
-  | "serf/launch/getLayer"
-  | "serf/launch/setLayer"
-  | "serf/launch/trustRepo"
-  | "model/list"
-  | "serf/instance/list"
-  | "serf/instance/create"
-  | "serf/instance/edit"
-  | "serf/instance/remove"
-  | "serf/instance/setDefault"
-  | "serf/plugin/checkNow"
-  | "serf/marketplace/list"
-  | "serf/marketplace/add"
-  | "serf/marketplace/remove"
-  | "serf/marketplace/refresh"
-  | "serf/marketplace/browse"
-  | "serf/plugin/list"
-  | "serf/plugin/install"
-  | "serf/plugin/upgrade"
-  | "serf/plugin/remove"
-  | "serf/plugin/enable"
-  | "serf/plugin/disable"
-  | "serf/plugin/setAutoUpgrade"
-  | "serf/command/list"
-  | "serf/settings/overview"
-  | "serf/sandbox/escalation/resolve";
+export const METHOD_NAMES = [
+  "initialize",
+  "ping",
+  "thread/list",
+  "thread/read",
+  "thread/turns/list",
+  "thread/turns/items/list",
+  "thread/start",
+  "thread/resume",
+  "thread/fork",
+  "thread/clear",
+  "thread/model/set",
+  "serf/thread/name/set",
+  "thread/reasoning-effort/set",
+  "thread/compact/start",
+  "thread/shutdown",
+  "turn/start",
+  "turn/steer",
+  "turn/interrupt",
+  "turn/queue",
+  "turn/drainAsSteer",
+  "turn/promoteQueuedAsSteer",
+  "turn/cancelQueued",
+  "goal/set",
+  "serf/tasks/list",
+  "serf/thread/transcripts/list",
+  "serf/subagentPreview",
+  "serf/paths/complete",
+  "serf/projects/recent",
+  "serf/path/validate",
+  "serf/harnesses/list",
+  "serf/upgrade",
+  "serf/auth/status",
+  "serf/auth/login/start",
+  "serf/auth/login/complete",
+  "serf/auth/logout",
+  "serf/auth/list",
+  "serf/auth/apiKey/set",
+  "serf/auth/device/start",
+  "serf/auth/device/poll",
+  "serf/launch/resolve",
+  "serf/launch/schema",
+  "serf/launch/getLayer",
+  "serf/launch/setLayer",
+  "serf/launch/trustRepo",
+  "model/list",
+  "serf/instance/list",
+  "serf/instance/create",
+  "serf/instance/edit",
+  "serf/instance/remove",
+  "serf/instance/setDefault",
+  "serf/plugin/checkNow",
+  "serf/marketplace/list",
+  "serf/marketplace/add",
+  "serf/marketplace/remove",
+  "serf/marketplace/refresh",
+  "serf/marketplace/browse",
+  "serf/plugin/list",
+  "serf/plugin/install",
+  "serf/plugin/upgrade",
+  "serf/plugin/remove",
+  "serf/plugin/enable",
+  "serf/plugin/disable",
+  "serf/plugin/setAutoUpgrade",
+  "serf/command/list",
+  "serf/settings/overview",
+  "serf/sandbox/escalation/resolve",
+] as const;
+
+export type MethodName = (typeof METHOD_NAMES)[number];
 
 export type NotificationName =
   | "thread/started"

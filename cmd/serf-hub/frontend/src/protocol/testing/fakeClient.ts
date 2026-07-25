@@ -7,6 +7,26 @@
 // state-change injection. No sockets, no timers.
 import type { AppwireClient, ConnectionState } from "../client";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "../types.gen";
+import { METHOD_NAMES } from "../types.gen";
+
+// The hub's real method catalog, as data. MethodName alone is a compile-time
+// constraint, and a compile-time constraint is silent whenever it has been
+// bypassed — a cast, an `any`, a name assembled at runtime. That silence is
+// what let the serf/dirs/complete -> serf/paths/complete rename ship a broken
+// picker past a green suite: the test scripted the old name, the component
+// called the old name, and the two agreed with each other rather than with
+// the hub. Checking against this set makes a nonexistent method a loud
+// failure at the moment a test scripts or requests it.
+const KNOWN_METHODS: ReadonlySet<string> = new Set(METHOD_NAMES);
+
+function assertKnownMethod(method: string): void {
+  if (!KNOWN_METHODS.has(method)) {
+    throw new Error(
+      `FakeClient: unknown method "${method}" — not in the hub's generated method catalog (METHOD_NAMES in protocol/types.gen.ts). ` +
+        `Either the method was renamed or removed on the wire, or this is a typo; there is no production code path this name can reach.`,
+    );
+  }
+}
 
 export interface AppwireClientLike {
   connect: AppwireClient["connect"];
@@ -87,6 +107,7 @@ export class FakeClient implements AppwireClientLike {
   // request() propagates it as a rejection either way, preserving whatever
   // error value the handler threw (e.g. a WireError instance).
   on<M extends MethodName>(method: M, handler: RequestHandler<M>): void {
+    assertKnownMethod(method);
     this.handlers.set(method, handler as unknown as RequestHandler<MethodName>);
   }
 
@@ -105,6 +126,14 @@ export class FakeClient implements AppwireClientLike {
   }
 
   request<M extends MethodName>(method: M, params: MethodTypes[M]["params"]): Promise<MethodTypes[M]["result"]> {
+    // Checked before the ready-gate below: a method the hub does not serve is
+    // a bug regardless of connection state, and reporting "not ready" for it
+    // would hide the real defect behind a plausible-looking one.
+    try {
+      assertKnownMethod(method);
+    } catch (err) {
+      return Promise.reject(err);
+    }
     // Fidelity with AppwireClient.request's own ready-gate (client.ts):
     // a store (or a future test) calling request() while not ready should
     // see the same rejection shape from this fake as it would from the real

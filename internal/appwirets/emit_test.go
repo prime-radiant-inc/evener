@@ -421,6 +421,50 @@ func interfaceBody(t *testing.T, out, name string) string {
 	return out[start : start+end]
 }
 
+// METHOD_NAMES is the runtime counterpart of the MethodName type union: a
+// type-only union is invisible to a running test, so FakeClient needs a real
+// value to validate a scripted method name against. Every catalog method
+// must appear in it, in catalog order, and nothing else may.
+func TestEmitCatalogEmitsRuntimeMethodNames(t *testing.T) {
+	out := EmitCatalog()
+	start := strings.Index(out, "export const METHOD_NAMES = [\n")
+	if start == -1 {
+		t.Fatal("missing export const METHOD_NAMES")
+	}
+	end := strings.Index(out[start:], "\n] as const;\n")
+	if end == -1 {
+		t.Fatal("METHOD_NAMES has no `] as const;` terminator")
+	}
+	body := out[start+len("export const METHOD_NAMES = [\n") : start+end]
+
+	got := make([]string, 0, len(appwire.Methods))
+	for _, line := range strings.Split(body, "\n") {
+		name, ok := strings.CutPrefix(strings.TrimSpace(line), `"`)
+		if !ok {
+			t.Fatalf("METHOD_NAMES entry is not a quoted string: %q", line)
+		}
+		name, ok = strings.CutSuffix(name, `",`)
+		if !ok {
+			t.Fatalf("METHOD_NAMES entry is not comma-terminated: %q", line)
+		}
+		got = append(got, name)
+	}
+	if len(got) != len(appwire.Methods) {
+		t.Fatalf("METHOD_NAMES has %d entries, want %d", len(got), len(appwire.Methods))
+	}
+	for i, m := range appwire.Methods {
+		if got[i] != m.Name {
+			t.Errorf("METHOD_NAMES[%d] = %q, want %q", i, got[i], m.Name)
+		}
+	}
+
+	// MethodName is derived from the value rather than emitted as a second,
+	// independent literal union, so the two cannot drift apart.
+	if !strings.Contains(out, "export type MethodName = (typeof METHOD_NAMES)[number];\n") {
+		t.Error("MethodName is not derived from METHOD_NAMES")
+	}
+}
+
 // TestGeneratedFileCurrent is the drift test: types.gen.ts is committed, and
 // this fails the moment the catalog changes without a regeneration, exactly
 // like appwiredoc's docs/appwire-protocol.md is kept current by

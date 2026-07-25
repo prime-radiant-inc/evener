@@ -319,7 +319,17 @@ func EmitCatalog() string {
 	for i, m := range methods {
 		methodNames[i] = m.name
 	}
-	writeUnion(&b, "MethodName", methodNames)
+	// The method catalog is emitted as a runtime value, with MethodName
+	// derived from it, because a type-only union vanishes at runtime: test
+	// doubles (protocol/testing/fakeClient.ts) have nothing to validate a
+	// scripted method name against unless the catalog also exists as data.
+	// Deriving the type from the value keeps the two from ever disagreeing.
+	b.WriteString("export const METHOD_NAMES = [\n")
+	for _, name := range methodNames {
+		fmt.Fprintf(&b, "  %q,\n", name)
+	}
+	b.WriteString("] as const;\n\n")
+	b.WriteString("export type MethodName = (typeof METHOD_NAMES)[number];\n\n")
 
 	notificationNames := make([]string, len(notifications))
 	for i, n := range notifications {
