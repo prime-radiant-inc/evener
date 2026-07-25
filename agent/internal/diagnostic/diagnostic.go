@@ -2,6 +2,7 @@ package diagnostic
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -31,6 +32,10 @@ func Classify(message string) Info {
 		return serfConfiguration()
 	case isHubFailure(lower):
 		return hubFailure()
+	// Checked ahead of the general provider case: an exhausted allowance needs
+	// different guidance than a transient failure, and both are provider errors.
+	case isUsageLimit(lower):
+		return usageLimitFailure(message)
 	case isProviderFailure(lower):
 		return providerFailure()
 	default:
@@ -45,6 +50,11 @@ func FromError(err error) Info {
 	var cfg *llm.ConfigurationError
 	if errors.As(err, &cfg) {
 		return serfConfiguration()
+	}
+	// The typed check comes first: an exhausted allowance is recognized from the
+	// error's own category rather than from wording that may vary by provider.
+	if llm.Kind(err) == llm.KindQuotaExceeded {
+		return usageLimitFailure(err.Error())
 	}
 	var llmErr llm.Error
 	if errors.As(err, &llmErr) && (strings.TrimSpace(llmErr.Provider()) != "" || llmErr.StatusCode() != 0 || strings.TrimSpace(llmErr.ErrorCode()) != "") {
@@ -89,6 +99,9 @@ func normalizeSource(source string) Source {
 func defaultForSource(source Source, message string) Info {
 	switch source {
 	case SourceProvider:
+		if isUsageLimit(strings.ToLower(strings.TrimSpace(message))) {
+			return usageLimitFailure(message)
+		}
 		return providerFailure()
 	case SourceHub:
 		return hubFailure()
@@ -130,6 +143,55 @@ func providerFailure() Info {
 		Title:  "Provider error",
 		Hint:   "The model provider failed to complete the response. Check the selected model, credentials, account access, and rate limits. The daemon is fine — retrying the turn or switching models may help. Note: if an OpenAI model does not support the Responses API (/v1/responses), Serf automatically falls back to Chat Completions (/v1/chat/completions). If both fail, the error message names the model and both endpoints.",
 	}
+}
+
+// usageLimitTitle names the exhausted-allowance case. It is deliberately
+// distinct from "Provider error": the account is fine and the daemon is fine,
+// the allowance is simply spent.
+const usageLimitTitle = "Usage limit reached"
+
+// providerStatusPrefix matches the rendering every llm.Error carries:
+// "<provider> error (status=<code>): <detail>".
+var providerStatusPrefix = regexp.MustCompile(`\berror \(status=\d+\)`)
+
+// usageLimitFailure builds the guidance for an exhausted plan or quota. The
+// reset window is already rendered into message by the llm layer (relative and
+// absolute), so the hint repeats the message's tail rather than reformatting a
+// time it would have to re-parse.
+func usageLimitFailure(message string) Info {
+	hint := "This account's model allowance is spent. Sending the turn again will fail the same way."
+	if window := resetWindowFrom(message); window != "" {
+		hint += " The allowance resets " + window + "."
+	}
+	hint += " Wait for the reset, or switch to a different provider instance or model."
+	return Info{
+		Source: SourceProvider,
+		Title:  usageLimitTitle,
+		Hint:   hint,
+	}
+}
+
+// resetWindowFrom lifts the "resets in 3d 17h (Tue Jul 28 10:02 PDT)" clause out
+// of an already-formatted usage-limit message, returning "" when absent.
+func resetWindowFrom(message string) string {
+	_, after, found := strings.Cut(message, "resets ")
+	if !found {
+		return ""
+	}
+	// The clause ends at the close of the parenthesized absolute time.
+	if end := strings.Index(after, ")"); end >= 0 {
+		return strings.TrimSpace(after[:end+1])
+	}
+	return ""
+}
+
+// isUsageLimit matches an exhausted allowance in an already-lowercased message,
+// for the paths that only carry the rendered string (transcript projection, hub
+// relays) and cannot inspect the error's category.
+func isUsageLimit(message string) bool {
+	return strings.Contains(message, "usage limit") ||
+		strings.Contains(message, "usage_limit_reached") ||
+		strings.Contains(message, "insufficient_quota")
 }
 
 func mcpFailure() Info {
@@ -177,7 +239,13 @@ func isHubFailure(message string) bool {
 func isProviderFailure(message string) bool {
 	// Structured llm.Errors are caught earlier by FromError; this function
 	// handles keyword fallbacks for plain-string classification.
-	return strings.Contains(message, "provider unavailable") ||
+	//
+	// The status-prefix check carries the cases the keyword list cannot: an
+	// llm.Error renders as "<provider> error (status=<code>): <detail>", and
+	// the detail is now the provider's own wording, which may contain none of
+	// the keywords below.
+	return providerStatusPrefix.MatchString(message) ||
+		strings.Contains(message, "provider unavailable") ||
 		strings.Contains(message, "api key") ||
 		strings.Contains(message, "rate limit") ||
 		strings.Contains(message, "quota") ||
