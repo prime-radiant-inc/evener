@@ -87,10 +87,24 @@ function readEnvelope(item: ItemModel): Envelope | undefined {
 
 // What was read, in the reader's terms: a job's output log, an API-log record,
 // or a session conversation - and whose.
+// resolvedRef is the ref this call actually read: the caller's own argument
+// first, the envelope's echo of it as the fallback (a hydrated item whose args
+// were dropped still has the envelope).
+function resolvedRef(item: ItemModel): string {
+  const fromArgs = str(parseArgs(item.argumentsJSON), "transcript_ref")?.trim();
+  if (fromArgs !== undefined && fromArgs !== "") return fromArgs;
+  return readEnvelope(item)?.ref ?? "";
+}
+
+// A "job:<job_id>" ref reads a shell job's output LOG, not a conversation - a
+// different kind of thing, and the one case with no turns at all.
+function isJobRead(item: ItemModel): boolean {
+  return resolvedRef(item).startsWith("job:");
+}
+
 function target(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
-  const envelope = readEnvelope(item);
-  const ref = str(args, "transcript_ref")?.trim() ?? envelope?.ref ?? "";
+  const ref = resolvedRef(item);
   if (ref.startsWith("job:")) return `job log ${refId(ref)}`;
   if (str(args, "source") === "api_log") return `API log ${refId(ref)}`;
   // An absent/"current" ref means the session the agent is already in.
@@ -105,6 +119,11 @@ function extent(item: ItemModel): string | undefined {
   const envelope = readEnvelope(item);
   if (!envelope) return undefined;
   if (envelope.expandTurn !== undefined) return `turn ${envelope.expandTurn} in full`;
+  // A job log has no turns: readJobTranscript hardcodes turns_total/
+  // turns_rendered to 1 and range to "shell-log" (agent/
+  // session_tools_transcript.go), so reporting "all 1 turns" for a shell output
+  // log would be describing an artifact of the envelope, not the read.
+  if (isJobRead(item)) return undefined;
   const total = envelope.turnsTotal;
   if (total === undefined) return undefined;
   const rendered = envelope.turnsRendered;

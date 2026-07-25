@@ -485,6 +485,20 @@ function childThreadRead(params: unknown, childStatus: string) {
                   description: "step two",
                   status: "completed",
                 },
+                {
+                  // A whitespace-only description is ABSENCE, not a step - the
+                  // same rule the main transcript's tool row applies
+                  // (ToolRow.tsx's statedPurposeOf, shared by both surfaces).
+                  // A truthiness filter here would count it and the two
+                  // surfaces would disagree about whether it exists.
+                  id: "item_act_blank",
+                  turnId: "turn_c1",
+                  type: "commandExecution",
+                  toolName: "shell",
+                  callId: "ca3",
+                  description: "   ",
+                  status: "completed",
+                },
                 { id: "item_msg", turnId: "turn_c1", type: "agentMessage", text: "all done", status: "completed" },
               ],
             },
@@ -522,6 +536,9 @@ test("an expanded delegate card shows the Mandate, a live Activity feed, and the
   const activity = await screen.findByTestId("subagent-activity");
   expect(within(activity).getByText("step one")).toBeTruthy();
   expect(within(activity).getByText("step two")).toBeTruthy();
+  // The whitespace-only description contributed no step: exactly the two real
+  // ones. (See the fixture's own note - both surfaces share statedPurposeOf.)
+  expect(within(activity).getAllByRole("listitem")).toHaveLength(2);
 
   // Summary is the child's last agentMessage.
   const summary = screen.getByTestId("subagent-summary");
