@@ -187,12 +187,6 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				WorkMillis: pe.Meta.WorkMillis,
 				Usage:      serfUsageFromCumulative(pe.Meta.CumulativeUsage),
 			}
-			// One session's own workspace, so this path can afford the same
-			// full-transcript recovery the single-thread read does: a fork child's
-			// meta carries no CumulativeUsage at all (stampDerivedSessionUsage).
-			if data.Usage == nil {
-				data.Usage = derivedSessionUsage(pe)
-			}
 			data.Cost = appwire.EstimateCost(data.Model, data.Usage)
 			s.fillForkLineage(&data, pe.Meta)
 			s.fillSubagentLineage(&data, pe.Meta)

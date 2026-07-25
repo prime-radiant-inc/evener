@@ -59,7 +59,6 @@ type ReadStats struct {
 	anchorBytesRead       int64
 	journalRecords        int64
 	rebuilt               bool
-	usageScans            int64
 }
 
 var (
