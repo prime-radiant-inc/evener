@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,12 +13,32 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-// These are REAL-git integration tests for worktree SessionMeta persistence,
-// resume re-entry, and the init-inside occupancy lock (native worktree tools
-// spec §7 "Persistence and resume" + §5 table row "session init, launch cwd
-// inside a managed worktree"). They reuse wtRepo/wtGit/newWorktreeRepo from
-// session_tools_worktree_create_test.go and porcelainEntry/canonicalMain from
-// session_tools_worktree_switch_test.go.
+// These cover worktree SessionMeta persistence, resume re-entry, and the
+// init-inside occupancy lock (native worktree tools spec §7 "Persistence and
+// resume" + §5 table row "session init, launch cwd inside a managed worktree").
+//
+// This file is MIXED across the two lane harnesses; see docs/testing.md for the
+// rule. Most tests' subject is serf's own re-entry DECISION — lock, adopt, refuse
+// to the restore root, warn and co-occupy, no-op — plus the notice text and what
+// serf recorded in its own SessionMeta, so they run on the scripted git boundary
+// (scriptedLaneRepo), with the verification and lock failures the decision reacts
+// to injected at the boundary. These six stay on real git (wtRepo) because their
+// subject IS git's own behavior:
+//
+//   - TestResumeWorktreeReentry_ManagedSymlinkCanonicalizesBeforeContainment —
+//     canonicalization of a symlinked spelling against git's own canonical
+//     registry path
+//   - TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot — a
+//     corrupted .git pointer driven through ResolveMainRepoRoot's structural walk
+//     and its git-binary fallback
+//   - TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot —
+//     rewrites the real .git/worktrees/<id>/gitdir reverse pointer, so git's own
+//     registry reports the worktree at a different path
+//   - TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice — the
+//     real --porcelain shape of a reasonless `git worktree lock`
+//   - TestInitInside_ForeignBareLockUnknownOwnerWarns — same reasonless lock shape
+//   - TestInitInside_SymlinkSpelledCwdCanonicalizesStoredPathAndLockKey — the lock
+//     key must match git's canonical porcelain entry for the lane
 
 // warningMessages drains every buffered EventWarning message off sess. Safe
 // to call once sess's synchronous construction-time emits are done (they are
@@ -90,7 +111,8 @@ func (r *wtRepo) restoreWorktreeSession(t *testing.T, meta schema.SessionMeta, l
 // (spec §7 "Persistence and resume").
 func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
 	res, err := r.create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -116,8 +138,9 @@ func TestWorktreeMeta_ReflectsManagedOccupancyAfterCreate(t *testing.T) {
 // WorktreeManaged is false.
 func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
+	sr := newScriptedLaneRepo(t)
+	r := sr.wt()
+	sibling := sr.addSiblingLane(t, "sibling", "sibling")
 
 	out, err := r.switchOp(t, map[string]any{"path": sibling})
 	if err != nil {
@@ -143,31 +166,31 @@ func TestWorktreeMeta_PathEnteredNonManagedTracksPathButNotManaged(t *testing.T)
 
 func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	sr := newScriptedLaneRepo(t)
+	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
 	// Simulate the state a clean close leaves behind (spec §7: "unlocked ->
 	// ... the clean-close case — close unlocked it").
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	sr.unlockLane(t, path)
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMEMANAGEDUNLOCKED01",
 		WorktreePath:        path,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != path {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want %q (re-entered)", got, path)
 	}
-	entry := r.porcelainEntry(t, path)
+	_, locked, reason := sr.laneLocked(t, path)
 	wantMarker := worktree.FormatSessionMarker(meta.ID)
-	if !entry.Locked || entry.LockReason != wantMarker {
-		t.Errorf("lock = (%v,%q), want locked with %q", entry.Locked, entry.LockReason, wantMarker)
+	if !locked || reason != wantMarker {
+		t.Errorf("lock = (%v,%q), want locked with %q", locked, reason, wantMarker)
 	}
 	if got := sess.Meta().WorktreePath; got != path {
 		t.Errorf("resumed Meta().WorktreePath = %q, want %q", got, path)
@@ -179,58 +202,56 @@ func TestResumeWorktreeReentry_ManagedUnlocked_LocksAndRootsEnv(t *testing.T) {
 
 func TestResumeWorktreeReentry_ManagedOwnMarkerStale_Adopts(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	sr := newScriptedLaneRepo(t)
+	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	creatorID := r.s.id // create already locked path with serf:<creatorID>
+	creatorID := sr.s.id // create already locked path with serf:<creatorID>
 
 	meta := schema.SessionMeta{
 		ID:                  creatorID, // same session id resuming: the crash case
 		WorktreePath:        path,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != path {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want %q (re-entered)", got, path)
 	}
-	entry := r.porcelainEntry(t, path)
+	_, locked, reason := sr.laneLocked(t, path)
 	wantMarker := worktree.FormatSessionMarker(creatorID)
-	if !entry.Locked || entry.LockReason != wantMarker {
-		t.Errorf("lock = (%v,%q), want adopted (unchanged) lock %q", entry.Locked, entry.LockReason, wantMarker)
+	if !locked || reason != wantMarker {
+		t.Errorf("lock = (%v,%q), want adopted (unchanged) lock %q", locked, reason, wantMarker)
 	}
 }
 
 func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	sr := newScriptedLaneRepo(t)
+	res, err := sr.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
 	// Simulate another session having moved in after our clean close.
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:someone-else-session", path)
+	sr.setLaneLock(t, path, "serf:someone-else-session")
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMEMANAGEDFOREIGN001",
 		WorktreePath:        path,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
-	if got := sess.currentEnv().WorkingDirectory(); got != r.mainRoot {
-		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q (refused re-entry)", got, r.mainRoot)
+	if got := sess.currentEnv().WorkingDirectory(); got != sr.mainRoot {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q (refused re-entry)", got, sr.mainRoot)
 	}
-	entry := r.porcelainEntry(t, path)
-	if entry.LockReason != "serf:someone-else-session" {
-		t.Errorf("foreign lock must be left untouched, got %q", entry.LockReason)
+	if _, _, reason := sr.laneLocked(t, path); reason != "serf:someone-else-session" {
+		t.Errorf("foreign lock must be left untouched, got %q", reason)
 	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "someone-else-session") {
@@ -243,19 +264,19 @@ func TestResumeWorktreeReentry_ManagedForeign_RestoresRootAndNotices(t *testing.
 
 func TestResumeWorktreeReentry_ManagedRegisteredOutsideProject_RestoresRootAndNotices(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	sibling := r.addSiblingWorktree(t, "outside-managed", "outside-managed")
+	sr := newScriptedLaneRepo(t)
+	sibling := sr.addSiblingLane(t, "outside-managed", "outside-managed")
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMEMANAGEDOUTSIDE001",
 		WorktreePath:        sibling,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
-	if got := sess.currentEnv().WorkingDirectory(); got != r.mainRoot {
-		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
+	if got := sess.currentEnv().WorkingDirectory(); got != sr.mainRoot {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, sr.mainRoot)
 	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, sibling, "managed") {
@@ -266,6 +287,8 @@ func TestResumeWorktreeReentry_ManagedRegisteredOutsideProject_RestoresRootAndNo
 	}
 }
 
+// REAL git: the persisted alias must canonicalize to the SAME path git's own
+// registry records for the lane, so both sides of the comparison have to be real.
 func TestResumeWorktreeReentry_ManagedSymlinkCanonicalizesBeforeContainment(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -298,23 +321,23 @@ func TestResumeWorktreeReentry_ManagedSymlinkCanonicalizesBeforeContainment(t *t
 
 func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	sibling := r.addSiblingWorktree(t, "sibling", "sibling")
+	sr := newScriptedLaneRepo(t)
+	sibling := sr.addSiblingLane(t, "sibling", "sibling")
+	sr.unlockLane(t, sibling)
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMENONMANAGEDPATH001",
 		WorktreePath:        sibling,
 		WorktreeManaged:     false,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
 	if got := sess.currentEnv().WorkingDirectory(); got != sibling {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want %q (re-entered)", got, sibling)
 	}
-	entry := r.porcelainEntry(t, sibling)
-	if entry.Locked {
-		t.Errorf("non-managed re-entry must not take a lock, got locked (%q)", entry.LockReason)
+	if _, locked, reason := sr.laneLocked(t, sibling); locked {
+		t.Errorf("non-managed re-entry must not take a lock, got locked (%q)", reason)
 	}
 	if got := sess.Meta().WorktreePath; got != sibling {
 		t.Errorf("Meta().WorktreePath = %q, want %q", got, sibling)
@@ -326,19 +349,19 @@ func TestResumeWorktreeReentry_NonManagedPathEntered_ReentersNoLock(t *testing.T
 
 func TestResumeWorktreeReentry_WorktreeGone_RestoresRootAndNotices(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	ghost := filepath.Join(r.stateDir, "worktrees", "ghost-project", "ghost-lane")
+	sr := newScriptedLaneRepo(t)
+	ghost := filepath.Join(sr.stateDir, "worktrees", "ghost-project", "ghost-lane")
 
 	meta := schema.SessionMeta{
 		ID:                  "01RESUMEWORKTREEGONE00001",
 		WorktreePath:        ghost,
 		WorktreeManaged:     true,
-		WorktreeRestoreRoot: r.mainRoot,
+		WorktreeRestoreRoot: sr.mainRoot,
 	}
-	sess := r.restoreWorktreeSession(t, meta, r.mainRoot)
+	sess := sr.restoreSession(t, meta, sr.mainRoot)
 
-	if got := sess.currentEnv().WorkingDirectory(); got != r.mainRoot {
-		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
+	if got := sess.currentEnv().WorkingDirectory(); got != sr.mainRoot {
+		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, sr.mainRoot)
 	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, ghost, "no longer exists") {
@@ -353,22 +376,22 @@ func TestResumeWorktreeReentry_WorktreeGone_RestoresRootAndNotices(t *testing.T)
 
 func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
 	// Simulate a kept lane that lost its lock (spec §5 rev-7 finding: "a
 	// session merely launched inside a kept lane held no lock").
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	r.unlockLane(t, path)
 
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	sess := r.launchInside(t, path).s
 
-	entry := r.porcelainEntry(t, path)
+	_, locked, reason := r.laneLocked(t, path)
 	wantMarker := worktree.FormatSessionMarker(sess.id)
-	if !entry.Locked || entry.LockReason != wantMarker {
-		t.Errorf("lock = (%v,%q), want locked with %q", entry.Locked, entry.LockReason, wantMarker)
+	if !locked || reason != wantMarker {
+		t.Errorf("lock = (%v,%q), want locked with %q", locked, reason, wantMarker)
 	}
 	meta := sess.Meta()
 	if meta.WorktreePath != path {
@@ -381,20 +404,18 @@ func TestInitInside_ManagedUnlocked_LocksAtSessionStart(t *testing.T) {
 
 func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	wtGit(t, r.mainRoot, "worktree", "lock", "--reason", "serf:someone-else-session", path)
+	r.setLaneLock(t, path, "serf:someone-else-session")
 
-	sess := newSession(t, withDir(path), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	sess := r.launchInside(t, path).s
 
-	entry := r.porcelainEntry(t, path)
-	if entry.LockReason != "serf:someone-else-session" {
-		t.Errorf("foreign lock must be left untouched, got %q", entry.LockReason)
+	if _, _, reason := r.laneLocked(t, path); reason != "serf:someone-else-session" {
+		t.Errorf("foreign lock must be left untouched, got %q", reason)
 	}
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "someone-else-session", "co-occupying") {
@@ -410,8 +431,8 @@ func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
 
 func TestInitInside_NotInWorktree_NoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	sess := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	r := newScriptedLaneRepo(t)
+	sess := r.launchInside(t, r.mainRoot).s
 	if got := sess.Meta().WorktreePath; got != "" {
 		t.Errorf("Meta().WorktreePath = %q, want empty (not inside any worktree)", got)
 	}
@@ -424,7 +445,7 @@ func TestInitInside_NotInWorktree_NoOp(t *testing.T) {
 // completely untouched.
 func TestResumeWorktreeReentry_NonLocalEnvNoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
@@ -444,6 +465,9 @@ func TestResumeWorktreeReentry_NonLocalEnvNoOp(t *testing.T) {
 // persisted path's own ".git" pointer no longer resolves to a main repo root
 // (corrupted content, git unavailable for the binary fallback) — re-entry
 // notices and lands at the restore root instead of guessing.
+//
+// REAL git: the refusal comes out of ResolveMainRepoRoot, whose structural walk
+// and git-binary fallback sit below the worktree git-runner seam entirely.
 func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -476,18 +500,22 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 // unavailable) — re-entry notices and lands at the restore root.
 func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	restore := hideGitInRepo(t, r.mainRoot)
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" {
+			return "", errors.New("scripted git: worktree list unavailable")
+		}
+		return next(args...)
+	})
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
 
-	restore()
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
@@ -503,6 +531,9 @@ func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testin
 // reverse "gitdir" pointer was rewritten elsewhere) — the path is no longer
 // "registered" at the persisted location, so re-entry notices and lands at
 // the restore root.
+//
+// REAL git: the fixture rewrites the real .git/worktrees/<id>/gitdir reverse
+// pointer, and it is git itself that must then report the worktree elsewhere.
 func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -529,17 +560,20 @@ func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *test
 	}
 }
 
+// TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot: the lane is
+// genuinely unlocked, but the re-lock command itself fails — re-entry notices and
+// lands at the restore root rather than occupying an unprotected lane.
 func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	internalDir := worktreeInternalDir(t, r.canonicalMain(t), path)
-	chmodReadOnly(t, internalDir)
+	r.unlockLane(t, path)
+	fail, _ := r.failLockRunner()
+	fail.Store(true)
 
 	meta := schema.SessionMeta{WorktreePath: path, WorktreeManaged: true, WorktreeRestoreRoot: r.mainRoot}
 	r.s.resumeWorktreeReentry(meta)
@@ -557,6 +591,9 @@ func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testi
 // `git worktree lock` (no --reason) is a reasonless, unparseable lock —
 // Foreign with an empty reason — so the notice must fall back to naming "an
 // unknown owner" rather than printing an empty occupant.
+//
+// REAL git: only real git emits the reasonless `locked` porcelain line the empty
+// occupant is parsed from.
 func TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)
@@ -587,7 +624,7 @@ func TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice(t *testi
 // untracked.
 func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
+	r := newScriptedLaneRepo(t)
 	r.s.mu.Lock()
 	r.s.env = &timeoutEnv{wd: r.mainRoot}
 	r.s.mu.Unlock()
@@ -605,9 +642,9 @@ func TestInitInside_NonLocalEnvNoOp(t *testing.T) {
 // returns "" and the function must no-op rather than panic or guess.
 func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	notARepo := t.TempDir()
-	sess := newSession(t, withDir(notARepo), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	r := newScriptedLaneRepo(t)
+	notARepo := scriptedCanonicalDir(t, t.TempDir())
+	sess := r.launchInside(t, notARepo).s
 
 	sess.applyInitInsideWorktreeLock(true)
 
@@ -621,24 +658,29 @@ func TestInitInside_UnresolvableMainRootNoOp(t *testing.T) {
 // does NOT track occupancy, rather than guessing the lock state.
 func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
+	r.unlockLane(t, path)
 
-	sess := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	second := r.sessionAt(t, r.mainRoot)
+	sess := second.s
 	sess.mu.Lock()
 	local := sess.env.(*execenv.LocalExecutionEnvironment)
 	sess.env = local.WithWorkingDirectory(path)
 	sess.mu.Unlock()
-	restore := hideGitInRepo(t, r.mainRoot)
+	second.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) >= 2 && args[0] == "worktree" && args[1] == "list" {
+			return "", errors.New("scripted git: worktree list unavailable")
+		}
+		return next(args...)
+	})
 
 	sess.applyInitInsideWorktreeLock(true)
 
-	restore()
 	msgs := warningMessages(sess)
 	if !anyContainsAll(msgs, path, "could not inspect the lock") {
 		t.Errorf("no warning about the unverifiable lock state: %v", msgs)
@@ -654,21 +696,22 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 // unprotected lane.
 func TestInitInside_RelockFailsWarns(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	res, err := r.create(t, map[string]any{"name": "lane"})
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	path := res["path"].(string)
-	wtGit(t, r.mainRoot, "worktree", "unlock", path)
-	internalDir := worktreeInternalDir(t, r.canonicalMain(t), path)
-	chmodReadOnly(t, internalDir)
+	r.unlockLane(t, path)
 
-	sess := newSession(t, withDir(r.mainRoot), withConfig(SessionConfig{MaxSubagentDepth: 1, StateDir: r.stateDir}))
+	second := r.sessionAt(t, r.mainRoot)
+	sess := second.s
 	sess.mu.Lock()
 	local := sess.env.(*execenv.LocalExecutionEnvironment)
 	sess.env = local.WithWorkingDirectory(path)
 	sess.mu.Unlock()
+	fail, _ := second.failLockRunner()
+	fail.Store(true)
 
 	sess.applyInitInsideWorktreeLock(true)
 
@@ -685,6 +728,9 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 // (no --reason) is a reasonless, unparseable lock — Foreign with an empty
 // reason — so the co-occupying warning must fall back to "an unknown owner"
 // rather than naming an empty occupant.
+//
+// REAL git: only real git emits the reasonless `locked` porcelain line the empty
+// occupant is parsed from.
 func TestInitInside_ForeignBareLockUnknownOwnerWarns(t *testing.T) {
 	t.Parallel()
 	r := newWorktreeRepo(t)

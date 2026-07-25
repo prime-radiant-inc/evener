@@ -150,7 +150,7 @@ func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	id, path := r.seedIsolationLane(t)
 	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, obs := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 	r.s.armLaneResidueSweepTimer() // top-level: retry piggybacks on the P3 open timer
@@ -167,10 +167,10 @@ func TestResumeReLock_FailureWarnsAndRetriesAtOpenTimer(t *testing.T) {
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
 	waitForCondition(t, 3*time.Second, "open-timer retry re-locks the lane", func() bool {
-		_, locked, _ := r.laneLocked(t, path)
+		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
-	if _, _, reason := r.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
+	if _, _, reason := obs.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
 		t.Errorf("retry re-lock reason = %q, want own dlg marker", reason)
 	}
 }
@@ -188,7 +188,7 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 	id, path := r.seedIsolationLane(t)
 	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, obs := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 
@@ -206,10 +206,10 @@ func TestResumeReLock_SubagentCoordinatorRetryTimer(t *testing.T) {
 	fail.Store(false)
 	clk.Advance(laneSweepDelay + time.Second)
 	waitForCondition(t, 3*time.Second, "dedicated retry timer re-locks the lane", func() bool {
-		_, locked, _ := r.laneLocked(t, path)
+		_, locked, _ := obs.laneLocked(t, path)
 		return locked
 	})
-	if _, _, reason := r.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
+	if _, _, reason := obs.laneLocked(t, path); reason != worktree.FormatDelegateMarker(id, r.s.ID()) {
 		t.Errorf("retry re-lock reason = %q, want own dlg marker", reason)
 	}
 }
@@ -222,7 +222,7 @@ func TestResumeReLock_StillFailedRetryWarns(t *testing.T) {
 	id, path := r.seedIsolationLane(t)
 	r.unlockLane(t, path)
 
-	fail := r.failLockRunner()
+	fail, _ := r.failLockRunner()
 	fail.Store(true)
 	r.s.resumeReLockOwnLanes()
 	_ = drainBufferedWarnings(r.s) // discard the first-attempt warning

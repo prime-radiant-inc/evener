@@ -327,6 +327,10 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 		return g.runAtPath(args)
 	case len(args) == 3 && args[0] == "rev-parse" && args[1] == "--verify":
 		return g.resolveRef(args[2])
+	case len(args) == 2 && args[0] == "rev-parse":
+		// Bare `rev-parse <ref>`: the form used to read a branch tip whose
+		// worktree is already gone. Resolution is the same as --verify.
+		return g.resolveRef(args[1])
 	case len(args) == 3 && args[0] == "for-each-ref":
 		return "", nil
 	case len(args) == 4 && args[0] == "merge-base" && args[1] == "--is-ancestor":
