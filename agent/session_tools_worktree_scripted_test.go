@@ -306,7 +306,12 @@ func (g *scriptedWorktreeGit) run(args ...string) (string, error) {
 	case scriptedArgs(args, "version"):
 		return "git version 2.45.0\n", nil
 	case len(args) == 3 && args[0] == "check-ref-format" && args[1] == "--branch":
-		if args[2] == "HEAD" || worktree.ValidateName(args[2]) != nil {
+		// Only serf's own ValidateName is modeled here. Git's additional
+		// reserved-name rules (HEAD, "@", ".lock" suffixes, …) are NOT modeled:
+		// a test that exists to prove real git rejects such a name must use the
+		// real-git harness, or it would be asserting against this fake's
+		// hardcoding rather than against git.
+		if worktree.ValidateName(args[2]) != nil {
 			return "", fmt.Errorf("scripted git: invalid branch %q", args[2])
 		}
 		return "", nil
