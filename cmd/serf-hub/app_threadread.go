@@ -28,7 +28,12 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 		return appwire.Thread{}, false, nil
 	}
 	thread, err := pastEntryThread(cfg, entry, params.IncludeTurns)
-	return thread, true, err
+	if err != nil {
+		return thread, true, err
+	}
+	// One thread, one transcript: this path can afford the full-transcript sum
+	// the per-entry list sweeps cannot (see stampDerivedSessionUsage).
+	return stampDerivedSessionUsage(entry, thread), true, nil
 }
 
 func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -55,7 +60,7 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = reconcileAndEnrichPastThread(entry, thread)
+	thread = stampDerivedSessionUsage(entry, reconcileAndEnrichPastThread(entry, thread))
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
@@ -214,6 +219,11 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	// derives its "~$X.XX" from it at the session model's price (empty when
 	// there is no usage or the model is uncataloged), mirroring the per-turn
 	// cost stamp in pastEntryTurns and the live producer in server's appThread.
+	//
+	// A meta without it leaves both absent HERE, because this function also
+	// runs once per entry on the list and transcript-target sweeps. The
+	// single-thread read paths recover the figure from the transcript instead —
+	// see stampDerivedSessionUsage.
 	cumulativeUsage := serfUsageFromCumulative(entry.Meta.CumulativeUsage)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
@@ -282,6 +292,59 @@ func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadRe
 // thread/turns/list file read per page) reuses one parse instead of re-reading
 // the whole transcript each page.
 var pastTranscriptCache = apptranscript.NewTurnCache()
+
+// stampDerivedSessionUsage fills in a session token total the meta does not
+// carry, by summing the session's own span of its FULL transcript.
+//
+// The gap is the common case, not an edge: agent/fork.go's writeForkChild builds
+// the child SessionMeta field by field and stamps no CumulativeUsage at all, so
+// every fork child arrives with the field unset, and serf.usage and serf.cost
+// both empty. The client can then only sum the turns it happens to hold, which
+// it must honestly label "tokens (loaded turns)". The transcript records
+// per-turn usage regardless, so summing it recovers the full-session figure —
+// and because it reads the whole file rather than the loaded window, the total
+// does not shrink with thread/read's turnLimit.
+//
+// A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
+// whose tokens the PARENT spent. DivergenceTurn marks where the child's own
+// history begins, and only that span is counted: charging the parent's spend to
+// the child would be fabrication.
+//
+// A present total is left alone: it is the daemon's own running count, and
+// re-deriving would invite a second, disagreeing figure.
+//
+// Applied only on the single-thread read paths. pastEntryThread also runs once
+// per entry on the thread-list and transcript-target sweeps, where a scan per
+// session would cost a read of every transcript in the state dir.
+//
+// A read error (a legacy format_version 1 transcript, a missing file) leaves the
+// total absent. "Unknown" is the honest report, the client already renders an
+// absent total as nothing rather than "↑0 ↓0", and a missing token figure is no
+// reason to fail the whole thread projection.
+func stampDerivedSessionUsage(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+	if thread.Serf.Usage != nil {
+		return thread
+	}
+	total := derivedSessionUsage(entry)
+	if total == nil {
+		return thread
+	}
+	thread.Serf.Usage = total
+	thread.Serf.Cost = appwire.EstimateCost(entry.Meta.Model, total)
+	return thread
+}
+
+// derivedSessionUsage is stampDerivedSessionUsage's sum, for the legacy web
+// surface that assembles its own WorkspaceData rather than an appwire.Thread.
+// Returns nil for an absent total, on the same terms.
+func derivedSessionUsage(entry hubcore.PastEntry) *appwire.SerfUsage {
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	total, err := pastTranscriptCache.UsageTotalFromFile(path, transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	if err != nil {
+		return nil
+	}
+	return total
+}
 
 func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
