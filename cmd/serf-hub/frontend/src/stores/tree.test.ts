@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import { threadClosedNotification, threadStartedNotification } from "../protocol/testing/notifications";
 import { connectionStore } from "./connection";
 import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, treeStore } from "./tree";
 
@@ -238,7 +239,7 @@ describe("notification-triggered refetch", () => {
     await treeStore.getState().refresh(); // initial load; also wires notification handling
     fetchMock.mockClear();
 
-    fake.emitNotification({ method: "thread/started", params: {} });
+    fake.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(249);
     expect(fetchMock).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
@@ -252,7 +253,7 @@ describe("notification-triggered refetch", () => {
     await treeStore.getState().refresh();
     fetchMock.mockClear();
 
-    fake.emitNotification({ method: "thread/closed", params: {} });
+    fake.emitNotification(threadClosedNotification());
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -274,7 +275,10 @@ describe("notification-triggered refetch", () => {
     await treeStore.getState().refresh();
     fetchMock.mockClear();
 
-    fake.emitNotification({ method: "turn/started", params: { threadId: "t", turnId: "1" } });
+    fake.emitNotification({
+      method: "turn/started",
+      params: { threadId: "t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    });
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -285,9 +289,9 @@ describe("notification-triggered refetch", () => {
     await treeStore.getState().refresh();
     fetchMock.mockClear();
 
-    fake.emitNotification({ method: "thread/started", params: {} });
+    fake.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(100);
-    fake.emitNotification({ method: "thread/closed", params: {} });
+    fake.emitNotification(threadClosedNotification());
     await vi.advanceTimersByTimeAsync(100);
     fake.emitNotification({ method: "serf/attention/changed", params: {} });
     await vi.advanceTimersByTimeAsync(100); // 300ms elapsed total, but each notification reset the window
@@ -306,7 +310,7 @@ describe("notification-triggered refetch", () => {
     fetchMock.mockClear();
 
     const fake = connectFakeClient(); // connects later
-    fake.emitNotification({ method: "thread/started", params: {} });
+    fake.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -320,12 +324,12 @@ describe("notification-triggered refetch", () => {
     const second = new FakeClient("ready");
     connectionStore.getState().connect(second);
 
-    second.emitNotification({ method: "thread/started", params: {} });
+    second.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     fetchMock.mockClear();
-    first.emitNotification({ method: "thread/started", params: {} }); // stale client, still attached, but that's fine - not a regression to guard beyond "no crash"
+    first.emitNotification(threadStartedNotification()); // stale client, still attached, but that's fine - not a regression to guard beyond "no crash"
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

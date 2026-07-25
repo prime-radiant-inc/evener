@@ -245,10 +245,11 @@ export interface InstanceSetDefaultParams {
   name: string;
 }
 
-export interface ItemCompletedPayload {
-}
-
-export interface ItemStartedPayload {
+export interface ItemLifecycleParams {
+  threadId: string;
+  ref?: string;
+  turnId: string;
+  item: ThreadItem;
 }
 
 export interface LaunchConfigDiagnostic {
@@ -558,7 +559,9 @@ export interface SandboxEscalationResolved {
 export interface SerfAttentionChangedPayload {
 }
 
-export interface SerfAuthUpdatedPayload {
+export interface SerfAuthUpdatedParams {
+  provider?: string;
+  activeSource?: string;
 }
 
 export interface SerfDiagnostics {
@@ -569,9 +572,6 @@ export interface SerfDiagnostics {
   hooks?: Record<string, number>;
   jobs?: SerfJobInfo[];
   agents?: string[];
-}
-
-export interface SerfJobFinishedPayload {
 }
 
 export interface SerfJobInfo {
@@ -595,10 +595,15 @@ export interface SerfJobInfo {
   originItemId?: string;
 }
 
-export interface SerfJobStartedPayload {
+export interface SerfJobParams {
+  threadId: string;
+  ref?: string;
+  job: SerfJobInfo;
 }
 
-export interface SerfLaunchUpdatedPayload {
+export interface SerfLaunchUpdatedParams {
+  cwd: string;
+  layer: string;
 }
 
 export interface SerfMCPServerInfo {
@@ -606,9 +611,6 @@ export interface SerfMCPServerInfo {
   tools: string[];
   status?: string;
   error?: string;
-}
-
-export interface SerfMarketplaceUpdatedPayload {
 }
 
 export interface SerfPluginInfo {
@@ -620,15 +622,17 @@ export interface SerfPluginInfo {
   mcpCount: number;
 }
 
-export interface SerfPluginUpdatedPayload {
-}
-
 export interface SerfSkillInfo {
   name: string;
   description?: string;
 }
 
-export interface SerfSteeringInjectedPayload {
+export interface SerfSteeringInjectedParams {
+  threadId: string;
+  ref?: string;
+  text?: string;
+  images?: InputItem[];
+  source?: string;
 }
 
 export interface SerfSubagentPreviewParams {
@@ -671,9 +675,6 @@ export interface SerfThread {
 export interface SerfToolInfo {
   name: string;
   source: string;
-}
-
-export interface SerfTreeChangedPayload {
 }
 
 export interface SerfUsage {
@@ -806,7 +807,10 @@ export interface ThreadClearResponse {
   ref: string;
 }
 
-export interface ThreadClosedPayload {
+export interface ThreadClosedParams {
+  threadId: string;
+  ref?: string;
+  reason?: string;
 }
 
 export interface ThreadCompactStartParams {
@@ -960,7 +964,10 @@ export interface ThreadStartResponse {
   turn: Turn;
 }
 
-export interface ThreadStartedPayload {
+export interface ThreadStartedParams {
+  threadId: string;
+  ref?: string;
+  thread: Thread;
 }
 
 export interface ThreadStatus {
@@ -1098,7 +1105,10 @@ export interface TurnStartResponse {
   turn: Turn;
 }
 
-export interface TurnStartedPayload {
+export interface TurnStartedParams {
+  threadId: string;
+  ref?: string;
+  turn: Turn;
 }
 
 export interface TurnSteerParams {
@@ -1124,7 +1134,15 @@ export interface UpgradeResponse {
   restartMessage: string;
 }
 
-export interface WarningPayload {
+export interface WarningParams {
+  threadId: string;
+  ref?: string;
+  message?: string;
+  source?: string;
+  title?: string;
+  hint?: string;
+  warning?: unknown;
+  cause?: DiagnosticCause;
 }
 
 export const METHOD_NAMES = [
@@ -1301,34 +1319,34 @@ export interface MethodTypes {
 }
 
 export interface NotificationTypes {
-  "thread/started": ThreadStartedPayload;
-  "thread/closed": ThreadClosedPayload;
+  "thread/started": ThreadStartedParams;
+  "thread/closed": ThreadClosedParams;
   "thread/status/changed": ThreadStatusChangedParams;
   "thread/queueChanged": ThreadQueueChangedParams;
   "serf/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
-  "turn/started": TurnStartedPayload;
+  "turn/started": TurnStartedParams;
   "turn/completed": TurnCompletedParams;
-  "item/started": ItemStartedPayload;
-  "item/completed": ItemCompletedPayload;
+  "item/started": ItemLifecycleParams;
+  "item/completed": ItemLifecycleParams;
   "item/agentMessage/delta": AgentMessageDeltaParams;
   "item/agentMessage/reset": AgentMessageResetParams;
   "item/reasoning/summaryTextDelta": ReasoningSummaryDeltaParams;
   "item/toolOutput/delta": ToolOutputDeltaParams;
-  "warning": WarningPayload;
-  "serf/steering/injected": SerfSteeringInjectedPayload;
-  "serf/job/started": SerfJobStartedPayload;
-  "serf/job/finished": SerfJobFinishedPayload;
-  "serf/auth/updated": SerfAuthUpdatedPayload;
-  "serf/launch/updated": SerfLaunchUpdatedPayload;
+  "warning": WarningParams;
+  "serf/steering/injected": SerfSteeringInjectedParams;
+  "serf/job/started": SerfJobParams;
+  "serf/job/finished": SerfJobParams;
+  "serf/auth/updated": SerfAuthUpdatedParams;
+  "serf/launch/updated": SerfLaunchUpdatedParams;
   "serf/attention/changed": SerfAttentionChangedPayload;
-  "serf/marketplace/updated": SerfMarketplaceUpdatedPayload;
-  "serf/plugin/updated": SerfPluginUpdatedPayload;
+  "serf/marketplace/updated": EmptyParams;
+  "serf/plugin/updated": EmptyParams;
   "serf/task/updated": TaskUpdatedParams;
   "serf/sandbox/escalation/requested": SandboxEscalationRequested;
   "serf/sandbox/escalation/resolved": SandboxEscalationResolved;
-  "serf/tree/changed": SerfTreeChangedPayload;
+  "serf/tree/changed": EmptyParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

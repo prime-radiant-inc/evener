@@ -1898,7 +1898,7 @@ test("a cancel-shaped warning (cause present) still lands, ignoring cause", () =
         source: "user",
         title: "Cancelled",
         hint: "",
-        cause: "context canceled",
+        cause: { kind: "provider", provider: "anthropic" },
       },
     },
     1002,

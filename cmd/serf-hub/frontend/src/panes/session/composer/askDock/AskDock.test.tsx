@@ -64,7 +64,7 @@ const ONE_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ la
 function startTurn(fake: FakeClient, ref: string, turnId: string): void {
   fake.emitNotification({
     method: "turn/started",
-    params: { ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
+    params: { threadId: `thr_${ref}`, ref, turn: { id: turnId, status: "inProgress", itemsView: "" } },
   });
 }
 
@@ -77,6 +77,7 @@ function ackAskUserCall(
   questions: Array<Record<string, unknown>> = ONE_QUESTION,
 ): void {
   const base = {
+    threadId: `thr_${ref}`,
     ref,
     turnId,
     item: {

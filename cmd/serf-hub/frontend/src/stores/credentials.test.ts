@@ -1,6 +1,7 @@
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import { threadStartedNotification } from "../protocol/testing/notifications";
 import type { InstanceEntry, InstanceListResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { credentialsStore, resetCredentialsStoreForTests, useCredentialsStore } from "./credentials";
@@ -277,7 +278,7 @@ describe("notification-triggered refetch", () => {
     const listSpy = vi.fn(() => LIST_RESPONSE);
     fake.on("serf/instance/list", listSpy);
 
-    fake.emitNotification({ method: "thread/started", params: {} });
+    fake.emitNotification(threadStartedNotification());
     await vi.advanceTimersByTimeAsync(1000);
     expect(listSpy).not.toHaveBeenCalled();
   });
