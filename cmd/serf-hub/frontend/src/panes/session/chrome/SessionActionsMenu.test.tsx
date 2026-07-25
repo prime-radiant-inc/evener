@@ -10,6 +10,7 @@ import { registerPane } from "../../../shell/paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Toast } from "../../../widgets";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 
@@ -113,6 +114,10 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // Toasts are module state and outlive cleanup(); without this a toast from an
+  // earlier test in this file is still on screen, and an assertion that a
+  // message is ABSENT matches the stale one instead.
+  resetToastStoreForTests();
   resetWorkspaceStoreForTests();
 });
 

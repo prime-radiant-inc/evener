@@ -8,6 +8,7 @@ import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { Toast } from "../../../widgets";
 import { GoalControl, resetGoalOverridesForTests } from "./GoalControl";
 
@@ -92,6 +93,10 @@ async function openGoalPopover(user: ReturnType<typeof userEvent.setup>): Promis
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // Toasts are module state and outlive cleanup(); without this a toast from an
+  // earlier test in this file is still on screen, and an assertion that a
+  // message is ABSENT matches the stale one instead.
+  resetToastStoreForTests();
   resetGoalOverridesForTests();
 });
 
