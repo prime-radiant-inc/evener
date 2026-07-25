@@ -1,6 +1,7 @@
 package fspaths_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -203,6 +204,35 @@ func checkCompletePaths_TraversalReturnsNoSuggestions(t *testing.T) {
 	}
 	if len(resp.Data) != 0 {
 		t.Fatalf("traversal returned suggestions: %v", resp.Data)
+	}
+}
+
+// checkCompletePaths_EmptyResultMarshalsAsEmptyArray pins the WIRE shape of an
+// empty completion, not just its length: a nil Data slice marshals as JSON
+// `null`, and the generated TypeScript declares `data: string[]`, so a null
+// reaches the browser as a value the type system promised could not exist and
+// the first `.length` on it takes down the React tree.
+func checkCompletePaths_EmptyResultMarshalsAsEmptyArray(t *testing.T) {
+	empty := t.TempDir()
+	cases := map[string]appwire.PathsCompleteParams{
+		"unsanitizable prefix": {Prefix: "../"},
+		"unreadable dir":       {Prefix: "/nonexistent-dir-12345/xyz"},
+		"empty directory":      {Prefix: empty + "/"},
+	}
+	for name, params := range cases {
+		t.Run(name, func(t *testing.T) {
+			resp, err := fspaths.CompletePaths(params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			encoded, err := json.Marshal(resp)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(encoded) != `{"data":[]}` {
+				t.Fatalf("marshalled empty completion = %s, want {\"data\":[]}", encoded)
+			}
+		})
 	}
 }
 

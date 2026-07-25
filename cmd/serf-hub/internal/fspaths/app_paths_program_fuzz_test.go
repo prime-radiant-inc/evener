@@ -6,6 +6,7 @@ func FuzzAppPathsBehaviorProgram(f *testing.F) {
 	checks := []func(*testing.T){
 		checkCompletePaths,
 		checkCompletePaths_TraversalReturnsNoSuggestions,
+		checkCompletePaths_EmptyResultMarshalsAsEmptyArray,
 		checkValidateLaunchPath,
 	}
 	for i := range checks {

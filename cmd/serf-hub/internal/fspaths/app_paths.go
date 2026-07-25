@@ -15,6 +15,14 @@ func CompletePaths(params appwire.PathsCompleteParams) (appwire.PathsCompleteRes
 	return completePaths(params, os.ReadDir, os.Stat)
 }
 
+// noPathSuggestions is the "nothing to suggest" answer. Data is non-nil so the
+// response marshals as `{"data":[]}`: a nil slice becomes JSON null, which
+// contradicts the wire type's own non-nullable `data: string[]` and crashes any
+// client that trusts it.
+func noPathSuggestions() appwire.PathsCompleteResponse {
+	return appwire.PathsCompleteResponse{Data: []string{}}
+}
+
 func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]os.DirEntry, error), stat func(string) (os.FileInfo, error)) (appwire.PathsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
@@ -25,7 +33,7 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 	}
 	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
-		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
+		return noPathSuggestions(), nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
 	}
 	prefix = cleaned
 
@@ -42,7 +50,7 @@ func completePaths(params appwire.PathsCompleteParams, readDir func(string) ([]o
 
 	entries, err := readDir(listDir)
 	if err != nil {
-		return appwire.PathsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
+		return noPathSuggestions(), nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}
 	type match struct {
 		path  string

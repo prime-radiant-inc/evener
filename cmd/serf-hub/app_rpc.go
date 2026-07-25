@@ -664,9 +664,12 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if limit <= 0 {
 			limit = recentProjectDirsLimit
 		}
-		var dirs []string
+		// Non-nil even when there is nothing to report: a nil slice marshals as
+		// JSON null, which contradicts the wire type's own non-nullable
+		// `data: string[]` and crashes any client that trusts it.
+		dirs := []string{}
 		if cfg.Past != nil {
-			dirs = cfg.Past.RecentProjectDirs(limit)
+			dirs = append(dirs, cfg.Past.RecentProjectDirs(limit)...)
 		}
 		return appwire.ProjectsRecentResponse{Data: dirs}, nil
 	})

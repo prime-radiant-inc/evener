@@ -6767,6 +6767,37 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 	}
 }
 
+// TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray pins the WIRE shape of a
+// hub with no remembered projects. A nil Data slice marshals as JSON `null`,
+// but the wire type declares `data: string[]` (non-nullable in the generated
+// TypeScript), so a null reaches the browser as a value the type system
+// promised was impossible and the first `.length` on it crashes the pane.
+func TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray(t *testing.T) {
+	for name, cfg := range map[string]hubcore.WebConfig{
+		"no past index": {},
+		"empty past":    {Past: hubcore.NewPastIndex("")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := newHubAppServer(cfg, appsource.NewRegistry())
+			raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
+				ID:     appwire.NewIntID(1),
+				Method: appwire.MethodSerfProjectsRecent,
+				Params: json.RawMessage(`{}`),
+			})
+			if err != nil {
+				t.Fatalf("Dispatch projects/recent: %v", err)
+			}
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(encoded) != `{"data":[]}` {
+				t.Fatalf("marshalled empty recents = %s, want {\"data\":[]}", encoded)
+			}
+		})
+	}
+}
+
 func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 	source := &forkingRelaySource{
 		relayBroadcastSource: relayBroadcastSource{
