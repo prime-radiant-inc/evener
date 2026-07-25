@@ -341,10 +341,14 @@ function PathListControl({
                     complete={complete}
                     disabled={disabled}
                     // The empty-state face, standing in for the trigger's
-                    // default "(default)": an add row has no default, and this
-                    // is also the picker's accessible name (CollectionEditor
-                    // renders no label of its own in renderAddField mode).
+                    // default "(default)": an add row has no default.
                     placeholder="Add a path"
+                    // Names the trigger after the list it feeds. CollectionEditor
+                    // renders no label of its own in renderAddField mode, and all
+                    // three pathList options sit in one panel, so the placeholder
+                    // alone would name three indistinguishable buttons - the same
+                    // reason collectionFields.tsx's PathAddField passes it.
+                    ariaLabel={option.label}
                   />
                 </span>
                 <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>

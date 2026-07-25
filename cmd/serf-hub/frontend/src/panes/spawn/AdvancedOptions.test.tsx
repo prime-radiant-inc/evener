@@ -311,6 +311,25 @@ test("a pathList field also accepts a path typed into the browse panel", async (
   await waitFor(() => expect(onOverridesChange).toHaveBeenLastCalledWith({ skillsDirs: ["/elsewhere/skills"] }));
 });
 
+// All three real pathList options are perLaunch, so they render together in one
+// panel. CollectionEditor renders no label of its own in renderAddField mode, so
+// without the option's label on the picker all three add triggers are named by
+// the same text and nothing on the page tells them apart.
+test("each pathList add picker is named by its own option", async () => {
+  const user = userEvent.setup();
+  renderPanel([
+    option({ wireField: "skillsDirs", kind: "pathList", label: "Skill directories", pathKind: "dir" }),
+    option({ wireField: "pluginDirs", kind: "pathList", label: "Plugin directories", pathKind: "dir" }),
+    option({ wireField: "mcpConfigs", kind: "pathList", label: "MCP config files", pathKind: "file" }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  for (const label of ["Skill directories", "Plugin directories", "MCP config files"]) {
+    expect(screen.getByRole("button", { name: new RegExp(`^${label}:`) })).toBeTruthy();
+  }
+});
+
 test("a pathList field rejects a path already in the list", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([
