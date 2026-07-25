@@ -41,8 +41,13 @@
   color: var(--ink-low);
 }
 
+/* A settled thought renders through the Markdown widget, which sets its own
+ * body color; --markdown-ink is the widget's hook for overriding it so a
+ * thought stays quieter than the agent message below it. .paragraph's
+ * --ink-mid does the same job for the live streaming path. */
 .body {
   margin-top: var(--space-2);
   padding-left: var(--space-3);
   border-left: 2px solid var(--edge);
+  --markdown-ink: var(--ink-mid);
 }

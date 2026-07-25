@@ -124,3 +124,12 @@ test("declares a :focus-visible rule for links, using only tokens", () => {
   const css = readFileSync(join(here, "markdown.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
 });
+
+test("takes its body ink from --markdown-ink, defaulting to --ink-hi", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // Comments are stripped before matching: a doc comment in this file quotes
+  // the very declaration being asserted, and a sibling contract test once
+  // passed against a deleted implementation for exactly that reason.
+  const css = readFileSync(join(here, "markdown.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toContain("color: var(--markdown-ink, var(--ink-hi))");
+});
