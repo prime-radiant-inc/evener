@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
@@ -106,22 +109,22 @@ function textarea(): HTMLTextAreaElement {
   return screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
 }
 
+// The composer's controls are addressed by their stable data-testid, not by
+// accessible name: two different buttons in this tree start with "Steer"
+// (this component's own and QueueStrip's "Steer queue now"), and the
+// submit button's own name tracks the send/queue routing and the keyboard
+// hint. The accessible names are still a real contract - see the dedicated
+// "spoken name" tests below - they just aren't how tests navigate.
 function submitButton(): HTMLButtonElement {
-  return screen.getByRole("button", { name: /^(send|queue)\b/i }) as HTMLButtonElement;
+  return screen.getByTestId("composer-submit") as HTMLButtonElement;
 }
 
-// The composer's OWN Steer control. Its accessible name carries the
-// Shift+Enter KeyHint ("Steer Shift+Enter"), so it is not exactly "Steer";
-// QueueStrip's own drain button is exactly "Steer queue now" (T3's separate
-// drain-as-steer affordance, wired into this component's tree at the wave
-// integration merge - w5-integration-wiring-report.md). Both accessible
-// names start with "Steer" - a couple of tests below hydrate with a
-// non-empty queue, rendering QueueStrip's button alongside this one - so
-// disambiguate by the one that does NOT carry the "queue" token.
 function steerButton(): HTMLButtonElement {
-  return screen.getByRole("button", {
-    name: (accessibleName) => accessibleName.startsWith("Steer") && !accessibleName.includes("queue"),
-  }) as HTMLButtonElement;
+  return screen.getByTestId("composer-steer") as HTMLButtonElement;
+}
+
+function stopButton(): HTMLButtonElement {
+  return screen.getByTestId("composer-stop") as HTMLButtonElement;
 }
 
 // --- basic surface ---------------------------------------------------------
@@ -142,6 +145,23 @@ test("typing persists the draft under this ref's storage key", async () => {
   await mountComposer("ref_a");
   await user.type(textarea(), "hi");
   expect(localStorage.getItem("serf.composer.draft.v1.ref_a")).toBe("hi");
+});
+
+// The textarea is seamless (no box, no ring of its own) so the card around it
+// is the composer's single visible control - and therefore has to carry the
+// focus affordance, or focusing the message field would show nothing at all.
+// Only the post-focus state is queried: jsdom's selector engine caches a
+// :focus-within result per element, so an earlier "not yet focused" call on
+// the same node would keep answering false afterwards.
+test("focusing the message field puts the input card in :focus-within, which its CSS gives the standard accent ring", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "composer.module.css"), "utf8");
+  expect(css).toMatch(/\.inputCard:focus-within\s*\{[^}]*outline: 2px solid var\(--accent\)/);
+});
+
+test("focusing the message field lights the input card's own focus affordance", async () => {
+  await mountComposer("ref_a");
+  textarea().focus();
+  expect(screen.getByTestId("composer-input-card").matches(":focus-within")).toBe(true);
 });
 
 // --- send / queue routing ---------------------------------------------------
@@ -445,7 +465,7 @@ test("steer/interrupt are disabled when the turn is not active, even with capabi
 
 test("the stop button is absent once the session has ended", async () => {
   await mountComposer("ref_a", { status: { type: "ended" } });
-  expect(screen.queryByRole("button", { name: /^stop\b/i })).toBeNull();
+  expect(screen.queryByTestId("composer-stop")).toBeNull();
 });
 
 // --- interrupt ---------------------------------------------------------------
@@ -458,7 +478,7 @@ test("clicking Stop calls turn/interrupt", async () => {
   });
   fake.on("turn/interrupt", () => ({}));
 
-  await user.click(screen.getByRole("button", { name: /^stop\b/i }));
+  await user.click(stopButton());
 
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/interrupt")).toBe(true));
 });
@@ -473,7 +493,7 @@ test("a failed interrupt surfaces a toast naming the action", async () => {
     throw new Error("not interruptible right now");
   });
 
-  await user.click(screen.getByRole("button", { name: /^stop\b/i }));
+  await user.click(stopButton());
 
   await waitFor(() => expect(screen.getByText(/interrupt failed/i)).toBeTruthy());
 });
@@ -735,7 +755,7 @@ test("clicking the attach button triggers the hidden file input", async () => {
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   const clickSpy = vi.spyOn(input, "click");
 
-  await user.click(screen.getByRole("button", { name: /attach image/i }));
+  await user.click(screen.getByTestId("composer-attach"));
   expect(clickSpy).toHaveBeenCalledTimes(1);
 });
 

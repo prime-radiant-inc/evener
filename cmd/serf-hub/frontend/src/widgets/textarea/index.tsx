@@ -34,6 +34,12 @@ export interface TextareaProps {
    * composer whose only visual cue is a placeholder (which screen readers
    * must not rely on alone). */
   "aria-label"?: string;
+  /** Drop the field's own box - border, background, radius, inset padding,
+   * and focus ring - so an enclosing card that already draws one reads as a
+   * single control rather than a box inside a box (panes/session/composer's
+   * inputCard). The card must then own the focus affordance itself
+   * (:focus-within), since a seamless field has no ring of its own. */
+  seamless?: boolean;
 }
 
 const MIN_ROWS = 2;
@@ -43,6 +49,7 @@ export const MAX_HEIGHT_VIEWPORT_FRACTION = 0.5;
 
 const BASE_CLASS = {
   textarea: requireClass(styles.textarea, "textarea.module.css", "textarea"),
+  seamless: requireClass(styles.seamless, "textarea.module.css", "seamless"),
 };
 
 // resizeToFitContent mirrors the legacy composer's grow() (cmd/serf-hub/
@@ -75,6 +82,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
     onKeyDown,
     onPaste,
     "aria-label": ariaLabel,
+    seamless = false,
   },
   forwardedRef,
 ) {
@@ -96,7 +104,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       }}
       id={id}
       name={name}
-      className={BASE_CLASS.textarea}
+      className={seamless ? `${BASE_CLASS.textarea} ${BASE_CLASS.seamless}` : BASE_CLASS.textarea}
       value={value}
       onChange={onChange}
       onKeyDown={onKeyDown}

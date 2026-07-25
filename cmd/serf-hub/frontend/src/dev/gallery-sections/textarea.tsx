@@ -25,6 +25,15 @@ export default function TextareaGallerySection() {
           <p className={styles.rowLabel}>disabled</p>
           <Textarea value="Read only." onChange={() => {}} disabled />
         </div>
+        {/* seamless draws no box of its own, so it only reads correctly inside
+            a card that draws one - the wrapper here stands in for the
+            composer's inputCard. */}
+        <div className={styles.row}>
+          <p className={styles.rowLabel}>seamless (in a card)</p>
+          <div className={styles.card}>
+            <Textarea value="No box of my own." onChange={() => {}} seamless />
+          </div>
+        </div>
       </ThemeFlip>
     </section>
   );

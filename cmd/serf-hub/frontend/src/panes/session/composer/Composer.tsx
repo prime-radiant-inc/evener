@@ -608,7 +608,7 @@ export function Composer({ ref }: ComposerProps) {
       )}
       <form ref={formRef} onSubmit={handleFormSubmit}>
         <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
-          <div className={styles.inputCard} hidden={askPending} inert={askPending}>
+          <div className={styles.inputCard} data-testid="composer-input-card" hidden={askPending} inert={askPending}>
             <Textarea
               ref={textareaRef}
               value={text}
@@ -616,15 +616,24 @@ export function Composer({ ref }: ComposerProps) {
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
               autoGrow
+              // The inputCard around it draws the one border this field
+              // needs, and owns the focus ring via :focus-within.
+              seamless
               placeholder="Message the agent…"
               aria-label="Message"
             />
             <div className={styles.controls}>
+              {/* data-testid on every control in this row: two different
+                  buttons here start with "Steer" (this one and QueueStrip's
+                  "Steer queue now"), so tests address controls by a stable
+                  hook instead of navigating by accessible name - the naming
+                  style follows StatusRow's own status-row-* testids. */}
               <IconButton
                 label="Attach image"
                 icon="+"
                 variant="quiet"
                 type="button"
+                data-testid="composer-attach"
                 onClick={() => fileInputRef.current?.click()}
               />
               <div className={styles.controlsRight}>
@@ -634,6 +643,7 @@ export function Composer({ ref }: ComposerProps) {
                     icon="■"
                     variant="danger"
                     type="button"
+                    data-testid="composer-stop"
                     onClick={() => void handleInterruptClick()}
                     disabled={!busy || !model.capabilities.interrupt || busyAction !== null}
                   />
@@ -642,6 +652,7 @@ export function Composer({ ref }: ComposerProps) {
                   <Button
                     variant="quiet"
                     type="button"
+                    data-testid="composer-steer"
                     onClick={handleSteerClick}
                     disabled={!busy || !model.capabilities.steer || busyAction !== null}
                   >
@@ -651,6 +662,7 @@ export function Composer({ ref }: ComposerProps) {
                 <Button
                   type="submit"
                   variant="primary"
+                  data-testid="composer-submit"
                   disabled={busyAction !== null || !hasContent || (!availability.canSend && !availability.canQueue)}
                 >
                   {submitLabel} <KeyHint keys={enterToSend ? ["Enter"] : ["Mod", "Enter"]} />

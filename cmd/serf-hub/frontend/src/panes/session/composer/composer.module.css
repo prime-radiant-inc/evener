@@ -91,6 +91,14 @@
   background: var(--surface-1);
 }
 
+/* The card is the composer's one visible box, so it carries the focus
+ * affordance for the seamless textarea inside it (which draws no ring of its
+ * own) - the same 2px accent outline every interactive control here uses. */
+.inputCard:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .controls {
   display: flex;
   align-items: center;

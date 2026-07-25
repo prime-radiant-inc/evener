@@ -23,3 +23,19 @@
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
+
+/* Seamless: the field draws no box of its own, so a card that already draws
+ * one (panes/session/composer's inputCard) reads as a single control instead
+ * of a box inside a box. The focus ring goes with the box - the enclosing
+ * card owns the affordance via :focus-within, which is why this drops the
+ * outline too. */
+.seamless {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.seamless:focus-visible {
+  outline: none;
+}
