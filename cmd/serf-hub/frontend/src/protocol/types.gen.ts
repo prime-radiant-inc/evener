@@ -651,6 +651,7 @@ export interface SerfSteeringInjectedParams {
   text?: string;
   images?: InputItem[];
   source?: string;
+  kind?: string;
 }
 
 export interface SerfSubagentPreviewParams {
@@ -875,6 +876,7 @@ export interface ThreadItem {
   raw?: unknown;
   eventKind?: string;
   source?: string;
+  steeringKind?: string;
 }
 
 export interface ThreadListParams {

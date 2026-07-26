@@ -674,6 +674,11 @@ type ThreadItem struct {
 	// human-sent steering (rendered as a user message), empty for
 	// daemon/system steering (issue #24).
 	Source string `json:"source,omitempty"`
+	// SteeringKind names what a daemon-originated steering item was
+	// (events.SteeringKind*), set at the injection site so a client labels it
+	// from ground truth instead of guessing from Text's prose. Empty on
+	// non-steering items and on steering items the daemon didn't classify.
+	SteeringKind string `json:"steeringKind,omitempty"`
 }
 
 type OutputImage struct {
@@ -1326,6 +1331,7 @@ type SerfSteeringInjectedParams struct {
 	Text     string      `json:"text,omitempty"`
 	Images   []InputItem `json:"images,omitempty"`
 	Source   string      `json:"source,omitempty"`
+	Kind     string      `json:"kind,omitempty"`
 }
 
 // SerfJobParams is the params shape shared by the serf/job/started and
