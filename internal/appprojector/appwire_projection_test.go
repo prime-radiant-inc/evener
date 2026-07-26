@@ -567,6 +567,39 @@ func TestAppEventProjectorRestoredSessionStartCarriesAwaitingState(t *testing.T)
 	}
 }
 
+// TestAppEventProjectorSeedsTurnCounterFromRestoredTranscript (kata eptj)
+// verifies that a resumed session's SessionStart event — which carries the
+// count of entries already persisted in the transcript at resume time — seeds
+// the live turn counter above that count. Without the seed, nextTurn starts at
+// its zero value regardless of resume, so the first turn started live mints
+// "turn_1" and collides with the id internal/apptranscript's reload path
+// (numbering by entry index) already assigned to the resumed session's first
+// persisted entry.
+func TestAppEventProjectorSeedsTurnCounterFromRestoredTranscript(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
+		SessionID: "th_1",
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5", Restored: true, TranscriptEntries: 4},
+	})
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	started := notificationParamsJSON(t, out, appwire.NotifyTurnStarted)
+	var params struct {
+		Turn appwire.Turn `json:"turn"`
+	}
+	if err := json.Unmarshal(started, &params); err != nil {
+		t.Fatalf("turn/started json: %v", err)
+	}
+	switch params.Turn.ID {
+	case "turn_1", "turn_2", "turn_3", "turn_4":
+		t.Fatalf("live turn id=%q collides with a reload-path id already assigned to one of the 4 persisted entries", params.Turn.ID)
+	}
+	if params.Turn.ID != "turn_5" {
+		t.Fatalf("live turn id=%q, want turn_5 (first id above the 4 already-persisted entries)", params.Turn.ID)
+	}
+}
+
 func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})

@@ -16,6 +16,14 @@ type SessionStartData struct {
 	Turns             int    `json:"turns,omitempty"`
 	LastInputTokens   int    `json:"last_input_tokens,omitempty"`
 	ContextWindowSize int    `json:"context_window_size,omitempty"`
+	// TranscriptEntries is the number of entries already persisted in the
+	// transcript at the moment this event fires (0 for a fresh session, whose
+	// transcript is empty at SessionStart). A live-event consumer that also
+	// projects turn ids from a cold read of the same transcript (kata eptj:
+	// internal/apptranscript numbers turn_N by entry index) must seed its own
+	// turn counter at or above this value on Restored, or its first live turn
+	// mints an id the reload path already assigned to a persisted entry.
+	TranscriptEntries int `json:"transcript_entries,omitempty"`
 	// State is the session's state at the moment SessionStart fires, carried
 	// so a restored session's re-derived state (a completed, unanswered
 	// ask_user call at the transcript tail rests "awaiting"; see

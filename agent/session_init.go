@@ -276,7 +276,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			tw, twErr = transcript.NewWriter(tpath, hdr)
 		}
 		if twErr != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+			// Buffered, not emitted directly (kata et0x): SESSION_START has not
+			// fired yet at this point in construction, and every other
+			// construction-time diagnostic already waits for it.
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
@@ -741,6 +744,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		LastInputTokens:   meta.LastInputTokens,
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             string(restoredState),
+		// TranscriptEntries is the exact count OpenWriterForSession validated
+		// above, from the same transcript file and the same entry-by-entry scan
+		// internal/apptranscript's reload path counts by (kata eptj) — not
+		// s.modelResponses, which undercounts whenever a non-model-response
+		// entry (e.g. a durable steering reminder) was ever appended.
+		TranscriptEntries: len(transcriptEntries),
 	}, promptSources)
 	// Recompute the settle decision now that history, goal restore, and (unless
 	// deferred for nested delegate reconstruction) notification/watch-send side

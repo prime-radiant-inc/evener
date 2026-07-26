@@ -16,8 +16,47 @@ import (
 // Events returns the session's receive-only channel of SessionEvent values.
 func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 
+// emitSessionStartEnvelope emits EventSessionStart and then flushes every
+// buffer of construction-time diagnostics that accumulated before it. THE
+// RULING (kata et0x): SESSION_START is a genuine ordering promise, not just
+// "the first interesting event" — no consumer of Session.Events() is meant to
+// observe a diagnostic for a session it has not yet been told exists. This is
+// recorded here, in the one function that is supposed to be every
+// construction-time diagnostic's sole door onto the stream, because an
+// in-code comment on each individual buffer field was not enough to keep the
+// next one from drifting: two call sites (NewSession's transcript-create
+// warning, attachTranscript's held-turn flush warning) had already emitted
+// directly instead of buffering before this kata fixed them.
+//
+// This matters beyond tidiness: a client only creates its per-thread state in
+// response to SESSION_START's projection (see internal/appprojector's
+// EventSessionStart case and cmd/serf-hub/frontend's thread/started handling),
+// and a warning is never persisted to the transcript for a later snapshot to
+// recover (cmd/serf-hub/frontend/src/protocol/reducer.ts's "warning" case
+// comment: "warnings are not transcript-persisted at all ... the next
+// snapshot would not carry it either"). A diagnostic that reaches the stream
+// before SESSION_START therefore has no tracked thread to land on and is lost
+// for good, not just reordered.
+//
+// Every future construction-time diagnostic MUST follow this same buffer-then-
+// flush shape (add a pendingXWarnings-style field, append to it during
+// construction, drain it in the loop below) rather than calling s.emit or
+// s.emitDiagnosticWarning directly from inside initSessionState/NewSession/
+// RestoreSessionFromMetaWithConfig. et0x fixed the two known offenders but did
+// not audit every call site reachable before this function runs (e.g.
+// resumeWorktreeReentry, which runs before initSessionState on every resume —
+// see the filed follow-up kata for that one specifically).
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
 	s.emit(events.EventSessionStart, start)
+	// Collected transcript-health failures (NewSession's transcript create, and
+	// attachTranscript's held-turn flush) are genuine, model-facing warnings —
+	// unlike the diagnostic buffers below, they run through emit (not
+	// emitDiagnosticWarning), so they still fire the Notification hook exactly
+	// as they did before kata et0x moved them off the direct-emit path.
+	for _, w := range s.pendingTranscriptWarnings {
+		s.emit(events.EventWarning, w)
+	}
+	s.pendingTranscriptWarnings = nil
 	for _, data := range s.pendingPluginEvents {
 		s.emit(events.EventPluginLoaded, data)
 	}
