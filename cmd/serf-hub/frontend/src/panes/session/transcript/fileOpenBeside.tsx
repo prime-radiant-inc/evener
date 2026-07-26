@@ -22,8 +22,31 @@
 import type { MouseEvent } from "react";
 import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
-import { Button } from "../../../widgets";
+import { IconButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
+
+// The app's 16x16 stroke grammar (see PopoutHeaderAction.tsx's PopoutIcon,
+// UserMessageItem.tsx's ForkGlyph): a document splitting into a second one
+// beside it - two panels with an arrow crossing from the first into the
+// second, currentColor so it inherits IconButton's variant colour exactly as
+// the text label it replaces did (kata 3qnd - the surrounding pane chrome,
+// Pop out/Fork from here, is all icons; this was the one text label left).
+function OpenBesideIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <rect x="1.5" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
+      <rect x="9.5" y="3" width="5" height="10" rx="1" stroke="currentColor" strokeWidth="1.3" fill="none" />
+      <path
+        d="M7 8H9.3M8 6.3L9.7 8L8 9.7"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
 
 // cwdRelative expresses filePath relative to cwd, or undefined when it is not
 // inside the cwd (so the affordance is withheld). Handles both shapes execenv's
@@ -77,9 +100,10 @@ export function FileOpenBesideButton({ absPath, sessionRef }: { absPath: string;
     e.stopPropagation();
     paneActions.openBeside({ type: "doc", params: docParams });
   }
-  return (
-    <Button variant="quiet" size="sm" onClick={open} title={`Open ${docParams.path} beside`}>
-      Open beside
-    </Button>
-  );
+  // "Open beside" stays a literal, contiguous prefix (not "Open <path>
+  // beside") so every existing /open beside/i query - ToolCallItem.test.tsx's
+  // own affordance tests among them - still finds this control unchanged;
+  // the path is appended for the same specificity the old dynamic title had.
+  const name = `Open beside: ${docParams.path}`;
+  return <IconButton label={name} title={name} icon={<OpenBesideIcon />} variant="quiet" size="sm" onClick={open} />;
 }

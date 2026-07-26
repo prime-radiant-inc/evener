@@ -147,14 +147,14 @@ function ensureMainPane(): void {
   if (ws.mainPane() === null) ws.openPane("welcome");
 }
 
-// A group shows tabs only when it holds more than one pane: a lone pane's tab
-// is a label for something already unambiguous, and the main group holds
-// exactly one pane by rule, so it never shows one at all (Jesse: "I despise
-// having the tab bar on the 'main' section of the screen"). dockview supports
-// this natively - each group's `header.hidden` is its own documented flag, and
-// it round-trips through toJSON/fromJSON as `hideHeader` - so this needs no
-// CSS of its own. Identity is not lost with the tab gone: every pane draws its
-// own PaneScaffold header, carrying the same title the tab would have.
+// The MAIN group's header never shows (Jesse: "I despise having the tab bar
+// on the 'main' section of the screen") - it holds exactly one pane by rule,
+// so a tab there would only ever label something already unambiguous. Every
+// OTHER group's header always shows, whatever its pane count. dockview
+// supports this natively - each group's `header.hidden` is its own documented
+// flag, and it round-trips through toJSON/fromJSON as `hideHeader` - so this
+// needs no CSS of its own. Identity is not lost with the main tab gone: every
+// pane draws its own PaneScaffold header, carrying the same title a tab would.
 //
 // THE MAIN PANE IS REPLACEABLE, NOT CLOSEABLE - deliberate (Jesse, round 3).
 // Every per-group header affordance dockview offers (the native tab (x), the
@@ -166,9 +166,24 @@ function ensureMainPane(): void {
 // here, and do not un-hide this header to get one back.
 // DockHost.test.tsx pins both halves ("the main pane offers no way to close
 // it") so this can't be quietly undone as a "missing button" bug fix.
+//
+// The rule used to be "hidden whenever a group holds <=1 panes" - symmetric,
+// but wrong: it hid the SECONDARY group's header too the moment it held
+// exactly one pane, taking the native tab (x) - the only close affordance
+// that group's lone pane ever had - down with it. Nothing else closes it: no
+// pane's own PaneScaffold draws a close action, and the main-group rule above
+// bars adding one there by design (that leaves the secondary group as the one
+// place a close control could live). The result was a one-way door (kata
+// 65zj): open a file "beside", or a subagent's transcript, and there was no
+// way back short of a reload or dragging the splitter to zero. The rule below
+// is keyed on GROUP IDENTITY (is this the main group) instead of a pane
+// count, which is the only thing that was ever supposed to determine it -
+// the main group's one-pane-ness is a permanent invariant of its slot, not a
+// transient count secondary happens to share sometimes.
 function syncGroupHeaders(api: DockviewApi): void {
+  const mainPaneId = workspaceStore.getState().mainPane()?.id;
   for (const group of api.groups) {
-    const hidden = group.panels.length <= 1;
+    const hidden = group.panels.some((p) => p.id === mainPaneId);
     if (group.model.header.hidden !== hidden) group.model.header.hidden = hidden;
   }
 }

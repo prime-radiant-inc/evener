@@ -84,10 +84,24 @@ test("renders an accessible Open beside button that opens a doc pane beside with
   seedThreadCwd("ref_a", "/home/proj");
   const spy = vi.spyOn(paneActions, "openBeside").mockImplementation(() => {});
   render(<FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />);
-  const button = screen.getByRole("button", { name: /open beside/i });
+  const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
   fireEvent.click(button);
   expect(spy).toHaveBeenCalledWith({ type: "doc", params: { session: "ref_a", path: "src/a.ts", kind: "file" } });
   spy.mockRestore();
+});
+
+// kata 3qnd: an icon-only control (surrounding pane chrome - Pop out, Fork
+// from here - is all icons; this was the one text label among them). The
+// accessible name and native tooltip carry what the visible text used to
+// (including the path, the way the old title already did) now that there is
+// no visible text to read it from - not the drawn glyph, which is
+// decorative (aria-hidden, per ForkGlyph's own precedent).
+test("Open beside is icon-only: no visible text label, but keeps its accessible name and a title tooltip", () => {
+  seedThreadCwd("ref_a", "/home/proj");
+  render(<FileOpenBesideButton absPath="/home/proj/src/a.ts" sessionRef="ref_a" />);
+  const button = screen.getByRole("button", { name: "Open beside: src/a.ts" });
+  expect(button.textContent).toBe(""); // icon only - the SVG carries no text, aria-hidden
+  expect(button.getAttribute("title")).toBe("Open beside: src/a.ts");
 });
 
 test("renders nothing for an out-of-cwd path (no affordance)", () => {
