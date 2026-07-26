@@ -1,0 +1,15 @@
+/* The "Back to <parent>" header action's label (kata 0pzz / kata 9br8):
+ * PaneScaffold's .actions is flex:none, so an unbounded parent name would
+ * push the whole header wider instead of yielding to the (already-
+ * truncating) title next to it. Capped and ellipsized so a long session
+ * name degrades the same way the pane's own title already does, never the
+ * header's layout. Shared by every drill-down pane with a "Back to parent"
+ * action (panes/transcript/Transcript.tsx, panes/doc/DocPane.tsx). */
+.backLabel {
+  display: inline-block;
+  max-width: 22ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
