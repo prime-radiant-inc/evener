@@ -464,6 +464,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			ArgumentsJSON: argsJSON,
 			Output:        data.Output,
 			Error:         data.Error,
+			PrevalOnly:    data.PrevalOnly,
 			OutputImages:  projectOutputImages(data.OutputImages),
 			Status:        apptranscript.SettledToolStatus(data.Error != ""),
 			Raw:           raw,

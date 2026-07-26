@@ -247,6 +247,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				Name:           r.ToolName,
 				Content:        r.Output,
 				IsError:        r.IsError,
+				PrevalOnly:     r.PrevalOnly,
 				DurationMS:     r.DurationMS,
 				ToolState:      r.ToolState,
 				ImageData:      r.ImageData,

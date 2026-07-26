@@ -1069,6 +1069,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 								Name:           p.ToolResult.Name,
 								Content:        p.ToolResult.Content,
 								IsError:        p.ToolResult.IsError,
+								PrevalOnly:     p.ToolResult.PrevalOnly,
 								DurationMS:     p.ToolResult.DurationMS,
 								ToolState:      p.ToolResult.ToolState,
 								ImageData:      p.ToolResult.ImageData,

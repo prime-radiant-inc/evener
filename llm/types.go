@@ -187,10 +187,16 @@ func (tc *ToolCallData) Parse() error {
 
 // ToolResultData describes the result of a tool call, linked back to it by ToolCallID.
 type ToolResultData struct {
-	ToolCallID string          `json:"tool_call_id"`
-	Name       string          `json:"name,omitempty"`
-	Content    any             `json:"content"`
-	IsError    bool            `json:"is_error"`
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name,omitempty"`
+	Content    any    `json:"content"`
+	IsError    bool   `json:"is_error"`
+	// PrevalOnly is true when IsError came from a pre-dispatch rejection (an
+	// unknown tool name, or arguments that still failed schema validation
+	// after repair) rather than the tool's own execution never having run at
+	// all. Persisted so a reload sees the same distinction a live session
+	// did. Meaningless when IsError is false.
+	PrevalOnly bool            `json:"preval_only,omitempty"`
 	DurationMS int64           `json:"duration_ms,omitempty"`
 	ToolState  json.RawMessage `json:"tool_state,omitempty"`
 

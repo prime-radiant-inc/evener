@@ -132,6 +132,15 @@ type ToolCallEndData struct {
 	Output        string        `json:"output,omitempty"`
 	Error         string        `json:"error,omitempty"`
 	OutputImages  []OutputImage `json:"output_images,omitempty"`
+	// PrevalOnly is true when Error came from prepareToolCall's pre-dispatch
+	// repair step (an unknown tool name, or arguments that still fail schema
+	// validation after repair) and the tool's own ExecuteCall never ran (kata
+	// hgm1). It is the wire-level fact a client needs to tell "the model's
+	// call itself was malformed, and nothing downstream of the model - a
+	// human answering ask_user, a command touching the filesystem - ever
+	// ran" apart from "the tool ran and its own work failed or was denied":
+	// same Error-is-non-empty shape, very different meaning to a reader.
+	PrevalOnly bool `json:"preval_only,omitempty"`
 
 	// ToolState is an optional JSON snapshot produced by the tool
 	// executor. Dashboards and other consumers render from this directly

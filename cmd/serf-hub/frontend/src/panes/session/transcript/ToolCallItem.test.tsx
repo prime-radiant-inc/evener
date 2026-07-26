@@ -363,6 +363,154 @@ test("an empty-string error is not a failure (the wire only stamps failed when e
   expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
 });
 
+// --- kata hgm1: a self-corrected preval-only failure (never reached real
+// execution) collapses once the model's next call to the same tool
+// succeeds, but is still marked failed and reachable - "only failure earns
+// the eye" is untouched for every real execution failure/denial. ----------
+
+function threadWith(items: ItemModel[]): ThreadModel {
+  return { turns: [{ id: "t1", status: "completed", items }] } as unknown as ThreadModel;
+}
+
+test("a preval-only failure superseded by a later same-tool success starts collapsed", () => {
+  registerToolRenderer({ match: "tci_preval_ok", summary: () => "s" });
+  const failedItem = item({
+    id: "item_bad",
+    toolName: "tci_preval_ok",
+    error: "missing required field",
+    prevalOnly: true,
+  });
+  const okItem: ItemModel = {
+    id: "item_ok",
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    toolName: "tci_preval_ok",
+  };
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
+
+  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  // Still attributable: the failure marker never goes away.
+  expect(details.getAttribute("data-failed")).toBe("true");
+  expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+  // But no longer forced open, since the very next attempt succeeded.
+  expect(details.open).toBe(false);
+});
+
+test("a preval-only failure with NO later success stays forced open (nothing corrected it)", () => {
+  registerToolRenderer({ match: "tci_preval_unfixed", summary: () => "s" });
+  const failedItem = item({
+    id: "item_bad",
+    toolName: "tci_preval_unfixed",
+    error: "missing required field",
+    prevalOnly: true,
+  });
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
+
+  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+});
+
+test("a preval-only failure followed by ANOTHER preval-only failure stays forced open (recurring, not yet corrected)", () => {
+  registerToolRenderer({ match: "tci_preval_recur", summary: () => "s" });
+  const failed1 = item({
+    id: "item_bad1",
+    toolName: "tci_preval_recur",
+    error: "missing required field",
+    prevalOnly: true,
+  });
+  const failed2: ItemModel = {
+    id: "item_bad2",
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    toolName: "tci_preval_recur",
+    error: "still missing required field",
+    prevalOnly: true,
+  };
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failed1, failed2])]]) });
+
+  render(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
+
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+});
+
+test("a REAL execution failure stays forced open even when the next same-tool call succeeds (shared contract untouched)", () => {
+  registerToolRenderer({ match: "tci_real_fail_then_ok", summary: () => "s" });
+  const failedItem = item({
+    id: "item_bad",
+    toolName: "tci_real_fail_then_ok",
+    error: "permission denied",
+  });
+  const okItem: ItemModel = {
+    id: "item_ok",
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    toolName: "tci_real_fail_then_ok",
+  };
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
+
+  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+});
+
+test("supersession is reactive: a row already settled and rendered collapses once the correcting call lands", () => {
+  registerToolRenderer({ match: "tci_preval_reactive", summary: () => "s" });
+  const failedItem = item({
+    id: "item_bad",
+    toolName: "tci_preval_reactive",
+    error: "missing required field",
+    prevalOnly: true,
+  });
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
+
+  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+
+  const okItem: ItemModel = {
+    id: "item_ok",
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    toolName: "tci_preval_reactive",
+  };
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
+  });
+
+  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+});
+
+test("a reader who manually reopened a superseded row keeps it open (explicit toggle still wins)", () => {
+  registerToolRenderer({ match: "tci_preval_manual_reopen", summary: () => "s" });
+  const failedItem = item({
+    id: "item_bad",
+    toolName: "tci_preval_manual_reopen",
+    error: "missing required field",
+    prevalOnly: true,
+  });
+  const okItem: ItemModel = {
+    id: "item_ok",
+    turnId: "t1",
+    type: "commandExecution",
+    text: "",
+    toolName: "tci_preval_manual_reopen",
+  };
+  threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
+
+  render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
+  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  expect(details.open).toBe(false);
+
+  fireEvent.click(screen.getByTestId("tool-row"));
+  expect(details.open).toBe(true);
+});
+
 test("a manual collapse of an errored row sticks (the reader's own choice wins over force-expand)", () => {
   registerToolRenderer({ match: "tci_err_toggle", summary: () => "s", body: () => <div>body text</div> });
   render(<ToolCallItem item={item({ toolName: "tci_err_toggle", error: "boom" })} turn={turn} live={false} />);

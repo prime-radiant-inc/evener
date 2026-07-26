@@ -1663,6 +1663,11 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	if d.Output != "" {
 		t.Fatalf("TOOL_CALL_END for error should not have output, got %q", d.Output)
 	}
+	// A real execution failure (the tool ran and read_file itself failed) is
+	// not a preval-only bounce (kata hgm1) - ExecuteCall genuinely ran here.
+	if d.PrevalOnly {
+		t.Fatal("a real execution failure must not carry preval_only")
+	}
 	// The wire JSON should not carry legacy keys "full_output" or "is_error".
 	dm := marshalToMap(t, found.Data)
 	if _, ok := dm["full_output"]; ok {
@@ -1670,6 +1675,84 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	}
 	if _, ok := dm["is_error"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'is_error' key")
+	}
+}
+
+// TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool covers kata hgm1's wire-level
+// distinction: a call the daemon rejects before ExecuteCall ever runs (here,
+// a tool name nothing registered) carries PrevalOnly - the fact a client
+// needs to tell "this bounced on the model's own malformed request, nothing
+// downstream ever ran" apart from a real, executed failure or denial.
+func TestSession_ToolCallEnd_PrevalOnlyOnUnknownTool(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	call := llm.ToolCallData{
+		ID:        "c1",
+		Name:      "definitely_not_a_registered_tool",
+		Arguments: json.RawMessage(`{}`),
+		Type:      "function",
+	}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("done")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var evs []events.SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			evs = append(evs, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "call the bogus tool", nil); err != nil {
+		t.Fatal(err)
+	}
+	sess.Close()
+	<-done
+
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd {
+			found = &evs[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no TOOL_CALL_END event found")
+	}
+	d, ok := found.Data.(events.ToolCallEndData)
+	if !ok {
+		t.Fatalf("expected ToolCallEndData, got %T", found.Data)
+	}
+	if d.Error == "" {
+		t.Fatal("expected non-empty error for an unknown tool call")
+	}
+	if !d.PrevalOnly {
+		t.Fatal("an unknown-tool bounce (never reached ExecuteCall) must carry preval_only")
 	}
 }
 

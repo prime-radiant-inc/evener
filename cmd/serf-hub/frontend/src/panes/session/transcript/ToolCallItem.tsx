@@ -15,6 +15,7 @@ import { ToolRow } from "./ToolRow";
 import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
 import { toolRendererFor } from "./toolRenderers";
+import { supersededBySuccess } from "./toolSupersession";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
@@ -113,7 +114,23 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     // never re-run this and re-fight a manual toggle.
   }, [live]);
 
-  const expanded = isDisclosureOpen(item.id, autoDefault);
+  // kata hgm1: "only failure earns the eye" stays the rule for every real
+  // execution failure/denial, unchanged. The one carve-out is a preval-only
+  // bounce (item.prevalOnly - never reached the tool's real execution)
+  // whose very next same-tool call went on to succeed: the model corrected
+  // itself, so the failure that force-opens by default demotes to the same
+  // fallback a clean call gets. It stays fully attributable (failed/
+  // data-failed/the error text itself are untouched, see below) - only the
+  // default OPEN state changes. Read reactively off the live thread model
+  // (like summarySuffix above) rather than folded into autoDefault's own
+  // edge-triggered effect, so a row that settled BEFORE its correction
+  // landed still collapses the moment it does - autoDefault itself is only
+  // ever a fallback, so recomputing what it feeds into here never re-fights
+  // an explicit reader toggle (disclosureStore's own contract).
+  const superseded = useThreadsStore((s) =>
+    supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
+  );
+  const expanded = isDisclosureOpen(item.id, autoDefault && !superseded);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -164,7 +181,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // toggleDisclosure writes an explicit store entry against this id, so
         // the user's own choice wins over autoDefault (the fallback) from here
         // on AND survives a remount (yt2q).
-        onToggle={() => toggleDisclosure(item.id, autoDefault)}
+        onToggle={() => toggleDisclosure(item.id, autoDefault && !superseded)}
         trailing={openBesideButton}
         title={detail}
         duration={duration}

@@ -491,6 +491,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			}
 			if part.ToolResult.IsError {
 				item.Error = StringifyToolContent(part.ToolResult.Content)
+				item.PrevalOnly = part.ToolResult.PrevalOnly
 			} else {
 				item.Output = StringifyToolContent(part.ToolResult.Content)
 			}

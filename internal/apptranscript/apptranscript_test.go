@@ -257,6 +257,60 @@ func TestProjectTurnKeepsCompletedStatusOnSuccessfulToolResult(t *testing.T) {
 	}
 }
 
+// TestProjectTurnCarriesPrevalOnlyOnReload (kata hgm1) pins the reload path
+// alongside the live one (TestAppEventProjectorToolCallEndCarriesPrevalOnly,
+// internal/appprojector): a persisted tool result whose IsError came from a
+// pre-dispatch rejection must still say so after a page reload.
+func TestProjectTurnCarriesPrevalOnlyOnReload(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_bad",
+				Name:       "ask_user",
+				Content:    "missing required field: header",
+				IsError:    true,
+				PrevalOnly: true,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 {
+		t.Fatalf("items=%+v, want 1", done)
+	}
+	if !done[0].PrevalOnly {
+		t.Fatal("expected PrevalOnly to survive reload")
+	}
+}
+
+// TestProjectTurnOmitsPrevalOnlyOnRealFailureReload pins the other direction:
+// a real execution failure's persisted result carries no PrevalOnly, and
+// reload must not default it true.
+func TestProjectTurnOmitsPrevalOnlyOnRealFailureReload(t *testing.T) {
+	toolNames := map[string]string{}
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_fail",
+				Name:       "shell",
+				Content:    "boom",
+				IsError:    true,
+			},
+		}}},
+	}, toolNames, nil, nil)
+
+	if len(done) != 1 {
+		t.Fatalf("items=%+v, want 1", done)
+	}
+	if done[0].PrevalOnly {
+		t.Fatal("a real execution failure must not carry PrevalOnly after reload")
+	}
+}
+
 // TestProjectTurnMapsToolResultExitCode (wire-honesty spec Part A): reload
 // promotes a shell tool's exit code from the persisted ToolState the same way
 // the live projector does.
