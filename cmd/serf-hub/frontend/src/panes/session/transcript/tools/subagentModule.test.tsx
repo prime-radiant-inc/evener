@@ -6,7 +6,7 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
-import { resetSubagentModuleStoreForTests, updateSubagentRowIfExists } from "./subagentModuleStore";
+import { resetSubagentModuleStoreForTests, turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
@@ -153,6 +153,47 @@ test("a delegate item in a DIFFERENT turn gets its own, separate module", () => 
     </>,
   );
   expect(screen.getAllByTestId("subagent-module")).toHaveLength(2);
+});
+
+// kata 8525: turn ids are minted per-session (they restart at "turn_1" for
+// every fresh thread - internal/appprojector's own nextTurn counter), so the
+// SAME turn_N string is not unique across sessions. Two delegate items from
+// two DIFFERENT sessions that happen to land on the same turnId must still
+// get their own, separate module/rows - the module store's key must include
+// sessionRef, not turnId alone. Reproduced live (see kata) as an unrelated,
+// already-abandoned session's rows bleeding into a brand-new session's own
+// delegate block.
+test("kata 8525: two sessions sharing the SAME turnId never bleed into each other's module", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const sessionA = delegateItem({
+    id: "d_sess_a",
+    turnId: "turn_21",
+    callId: "call_sess_a",
+    argumentsJSON: JSON.stringify({ task: "session A's own task" }),
+    output: JSON.stringify({ job_id: "job_sess_a", status: "running" }),
+  });
+  const sessionB = delegateItem({
+    id: "d_sess_b",
+    turnId: "turn_21",
+    callId: "call_sess_b",
+    argumentsJSON: JSON.stringify({ task: "session B's own task" }),
+    output: JSON.stringify({ job_id: "job_sess_b", status: "running" }),
+  });
+  render(
+    <>
+      <Body item={sessionA} live={false} sessionRef="session_a_ref" />
+      <Body item={sessionB} live={false} sessionRef="session_b_ref" />
+    </>,
+  );
+  // Two unrelated sessions, each with its own module - never one merged
+  // "2 running" block.
+  expect(screen.getAllByTestId("subagent-module")).toHaveLength(2);
+  const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
+  expect(within(moduleA!).getAllByTestId("subagent-row")).toHaveLength(1);
+  expect(within(moduleB!).getAllByTestId("subagent-row")).toHaveLength(1);
+  expect(screen.getByText("session A's own task")).toBeTruthy();
+  expect(screen.getByText("session B's own task")).toBeTruthy();
 });
 
 // claimLeader/releaseLeader must stay symmetric across StrictMode's dev-only
@@ -603,7 +644,9 @@ test("dr7e: the collapsed preview prefers a job-notification liveReason over the
     output: JSON.stringify({ job_id: "job_lr", status: "running", reason: "frozen reason" }),
   });
   render(<Body item={running} live={false} />);
-  act(() => updateSubagentRowIfExists("turn_1", "job:job_lr", { liveReason: "exhausted budget" }));
+  act(() =>
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "job:job_lr", { liveReason: "exhausted budget" }),
+  );
 
   const row = screen.getByTestId("subagent-row");
   expect(within(row).getByText("exhausted budget")).toBeTruthy();
@@ -621,7 +664,7 @@ test("dr7e: an expanded card shows exhaustion budget/limit and resumable once a 
   });
   render(<Body item={settled} live={false} />);
   act(() =>
-    updateSubagentRowIfExists("turn_1", "job:job_ex", {
+    updateSubagentRowIfExists(turnScopeKey(undefined, "turn_1"), "job:job_ex", {
       resumable: true,
       exhaustionBudget: "30m",
       exhaustionLimit: 60,

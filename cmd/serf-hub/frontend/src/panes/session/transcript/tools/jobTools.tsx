@@ -23,7 +23,7 @@ import { registerToolRenderer } from "../toolRenderers";
 import { HeadClippedOutputBody } from "./bodies";
 import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "./helpers";
 import { classifyJobStatus, resolveRowKey, statusWordFromText } from "./subagentModule";
-import { updateSubagentRowIfExists } from "./subagentModuleStore";
+import { turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 
 const ID_CLIP = 26;
 
@@ -35,6 +35,7 @@ const ID_CLIP = 26;
 // per-tool row-key/kind/preview derivation).
 function CorrelatingBody({
   item,
+  sessionRef,
   resolveKey,
   resolveKind,
   resolvePreview,
@@ -46,7 +47,7 @@ function CorrelatingBody({
   useLayoutEffect(() => {
     const kind = resolveKind(item);
     if (kind === undefined) return; // nothing settled to report yet
-    updateSubagentRowIfExists(item.turnId, resolveKey(item), {
+    updateSubagentRowIfExists(turnScopeKey(sessionRef, item.turnId), resolveKey(item), {
       kind,
       resultPreview: resolvePreview(item),
       completedAt: item.completedAt,

@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   resetSubagentModuleStoreForTests,
+  turnScopeKey,
   updateSubagentRowIfExists,
   upsertSubagentRow,
   useSubagentRows,
@@ -1481,7 +1482,8 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
-    upsertSubagentRow("turn_1", { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
 
     fake.emitNotification({
       method: "serf/job/finished",
@@ -1503,7 +1505,7 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    const { result } = renderHook(() => useSubagentRows(scope));
     expect(result.current[0]).toMatchObject({
       liveKind: "failed",
       liveReason: "ran out of turns",
@@ -1517,8 +1519,9 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
-    upsertSubagentRow("turn_1", { rowKey: "dlg:dlg_1", kind: "done", task: "t", resultPreview: "" });
-    updateSubagentRowIfExists("turn_1", "dlg:dlg_1", { liveKind: "failed", liveReason: "boom" });
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "done", task: "t", resultPreview: "" });
+    updateSubagentRowIfExists(scope, "dlg:dlg_1", { liveKind: "failed", liveReason: "boom" });
 
     fake.emitNotification({
       method: "serf/job/started",
@@ -1536,7 +1539,7 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    const { result } = renderHook(() => useSubagentRows(scope));
     expect(result.current[0]).toMatchObject({ liveKind: "running", liveReason: undefined });
   });
 
@@ -1544,7 +1547,8 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
-    upsertSubagentRow("turn_1", { rowKey: "job:job_3", kind: "running", task: "t", resultPreview: "" });
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "job:job_3", kind: "running", task: "t", resultPreview: "" });
 
     fake.emitNotification({
       method: "serf/job/finished",
@@ -1555,7 +1559,37 @@ describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", ()
       },
     });
 
-    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    const { result } = renderHook(() => useSubagentRows(scope));
+    expect(result.current[0]?.liveKind).toBeUndefined();
+  });
+
+  // kata 8525: a notification for a DIFFERENT session must never patch a row
+  // planted under the same bare turnId in another session - this is exactly
+  // the collision the fix closes (turn ids restart at 0 per session).
+  test("a serf/job/finished notification for a different session's ref never touches this session's row", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    const scope = turnScopeKey("ref_a", "turn_1");
+    upsertSubagentRow(scope, { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
+
+    fake.emitNotification({
+      method: "serf/job/finished",
+      params: {
+        threadId: "thr_ref_b",
+        ref: "ref_b",
+        job: {
+          jobId: "job_1",
+          jobType: "delegate",
+          status: "completed",
+          outputBytes: 0,
+          delegateId: "dlg_1",
+          originTurnId: "turn_1",
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useSubagentRows(scope));
     expect(result.current[0]?.liveKind).toBeUndefined();
   });
 });

@@ -84,6 +84,25 @@ const moduleStore = createStore<ModuleStoreState>(() => ({
 
 const EMPTY_ROWS: SubagentRow[] = [];
 
+// turnScopeKey composes the string every function below actually keys its
+// Maps on. Turn ids are minted per-session (internal/appprojector's own
+// nextTurn counter restarts at 0 for every fresh thread), so a bare turnId
+// is NOT globally unique - two unrelated sessions routinely land their first
+// real turn on the identical "turn_N" string (same fixed preamble length).
+// This store is a page-lifetime singleton (see the file header), so without
+// sessionRef in the key, two sessions sharing a turnId collide into the SAME
+// Map entry and each renders the other's rows (kata 8525 - reproduced live:
+// a brand-new session's delegate block showed two orphaned rows verbatim
+// from an unrelated, already-abandoned earlier session). sessionRef is
+// omitted (never sent as undefined) from ToolRenderProps only for a
+// hypothetical future caller (see its own doc comment) - the "" fallback
+// keeps that path working, merely un-isolated, exactly like before this fix.
+// The NUL separator can't appear in either a sessionRef or a turn id, so two
+// distinct (sessionRef, turnId) pairs can never concatenate to the same key.
+export function turnScopeKey(sessionRef: string | undefined, turnId: string): string {
+  return `${sessionRef ?? ""}\0${turnId}`;
+}
+
 function sortedRows(rows: Map<string, SubagentRow>): SubagentRow[] {
   return Array.from(rows.values()).sort((a, b) => a.spawnIndex - b.spawnIndex);
 }
@@ -93,13 +112,14 @@ function sortedRows(rows: Map<string, SubagentRow>): SubagentRow[] {
 // first-seen order per parity §12's "fixed by spawn order" rule) or
 // updates it in place on every later call - used by `delegate` itself
 // (subagentModule.tsx), the one tool in this family allowed to spawn a
-// fresh row.
-export function upsertSubagentRow(turnId: string, row: SubagentRowInput): void {
+// fresh row. `scopeKey` is a turnScopeKey(sessionRef, turnId) - see that
+// function's own doc comment for why a bare turnId is not enough.
+export function upsertSubagentRow(scopeKey: string, row: SubagentRowInput): void {
   moduleStore.setState((s) => {
-    const existingForTurn = s.turnRowsByKey.get(turnId);
+    const existingForTurn = s.turnRowsByKey.get(scopeKey);
     const rows = new Map(existingForTurn ?? []);
     const existingRow = rows.get(row.rowKey);
-    const nextIndexBefore = s.turnNextSpawnIndex.get(turnId) ?? 0;
+    const nextIndexBefore = s.turnNextSpawnIndex.get(scopeKey) ?? 0;
     const spawnIndex = existingRow?.spawnIndex ?? nextIndexBefore;
     // Preserve every overlay field: DelegateBody re-upserts the frozen tool
     // output on every incidental render and must never wipe the live status
@@ -119,11 +139,11 @@ export function upsertSubagentRow(turnId: string, row: SubagentRowInput): void {
     });
 
     const turnRowsByKey = new Map(s.turnRowsByKey);
-    turnRowsByKey.set(turnId, rows);
+    turnRowsByKey.set(scopeKey, rows);
     const turnRowsSorted = new Map(s.turnRowsSorted);
-    turnRowsSorted.set(turnId, sortedRows(rows));
+    turnRowsSorted.set(scopeKey, sortedRows(rows));
     const turnNextSpawnIndex = new Map(s.turnNextSpawnIndex);
-    turnNextSpawnIndex.set(turnId, existingRow ? nextIndexBefore : nextIndexBefore + 1);
+    turnNextSpawnIndex.set(scopeKey, existingRow ? nextIndexBefore : nextIndexBefore + 1);
     return { turnRowsByKey, turnRowsSorted, turnNextSpawnIndex };
   });
 }
@@ -134,18 +154,18 @@ export function upsertSubagentRow(turnId: string, row: SubagentRowInput): void {
 // legacy reconcileSubagent's own rule: "only ever updates an existing row
 // - it never spawns a new one from a read/list/message call"). A rowKey
 // with no existing row (no `delegate` call seen yet this turn, or none at
-// all) is a silent no-op.
-export function updateSubagentRowIfExists(turnId: string, rowKey: string, patch: Partial<SubagentRowInput>): void {
+// all) is a silent no-op. `scopeKey` - see upsertSubagentRow's own comment.
+export function updateSubagentRowIfExists(scopeKey: string, rowKey: string, patch: Partial<SubagentRowInput>): void {
   moduleStore.setState((s) => {
-    const existingForTurn = s.turnRowsByKey.get(turnId);
+    const existingForTurn = s.turnRowsByKey.get(scopeKey);
     const existingRow = existingForTurn?.get(rowKey);
     if (!existingForTurn || !existingRow) return s;
     const rows = new Map(existingForTurn);
     rows.set(rowKey, { ...existingRow, ...patch });
     const turnRowsByKey = new Map(s.turnRowsByKey);
-    turnRowsByKey.set(turnId, rows);
+    turnRowsByKey.set(scopeKey, rows);
     const turnRowsSorted = new Map(s.turnRowsSorted);
-    turnRowsSorted.set(turnId, sortedRows(rows));
+    turnRowsSorted.set(scopeKey, sortedRows(rows));
     return { turnRowsByKey, turnRowsSorted };
   });
 }
@@ -190,12 +210,12 @@ const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "failed", 
 // resurrect the spinner. A terminal reading from the watch (the child
 // socket itself closing, say) still applies normally - only a "running"
 // write is ever suppressed, and only when the row is already terminal.
-export function setWatchedLiveKind(turnId: string, rowKey: string, liveKind: SubagentRowKind): void {
+export function setWatchedLiveKind(scopeKey: string, rowKey: string, liveKind: SubagentRowKind): void {
   if (liveKind === "running") {
-    const existingRow = moduleStore.getState().turnRowsByKey.get(turnId)?.get(rowKey);
+    const existingRow = moduleStore.getState().turnRowsByKey.get(scopeKey)?.get(rowKey);
     if (existingRow && TERMINAL_KINDS.has(existingRow.liveKind ?? existingRow.kind)) return;
   }
-  updateSubagentRowIfExists(turnId, rowKey, { liveKind });
+  updateSubagentRowIfExists(scopeKey, rowKey, { liveKind });
 }
 
 // applySerfJobStarted / applySerfJobFinished are the "Signal merging" step
@@ -217,14 +237,20 @@ export function setWatchedLiveKind(turnId: string, rowKey: string, liveKind: Sub
 // thread status never does) - but it is exactly two discrete events (start,
 // finish), never a continuous stream, so it cannot drive the running row's
 // live Cadence animation. That still needs watchThread's frameTimes.
-export function applySerfJobStarted(job: SerfJobInfo): void {
+//
+// sessionRef (kata 8525) is the notification's own `ref` field (SerfJobParams -
+// the hub always sets it, appwire_projection.go's own EventJobStarted/
+// EventJobFinished cases), threaded through turnScopeKey exactly like every
+// other route into this store: originTurnId alone is per-session, not
+// globally unique, and this store is a page-lifetime singleton.
+export function applySerfJobStarted(job: SerfJobInfo, sessionRef: string | undefined): void {
   if (!job.originTurnId) return;
   const rowKey = resolveRowKey(job.delegateId, job.jobId, job.originToolCallId ?? job.originItemId ?? job.jobId);
   // A fresh start - including a delegate_send resume reusing the SAME
   // delegateId/rowKey - must un-terminal the row and drop the PREVIOUS job's
   // reason/resumable/exhaustion detail; that detail must never linger under
   // a new running job.
-  updateSubagentRowIfExists(job.originTurnId, rowKey, {
+  updateSubagentRowIfExists(turnScopeKey(sessionRef, job.originTurnId), rowKey, {
     liveKind: "running",
     liveReason: undefined,
     resumable: undefined,
@@ -233,10 +259,10 @@ export function applySerfJobStarted(job: SerfJobInfo): void {
   });
 }
 
-export function applySerfJobFinished(job: SerfJobInfo): void {
+export function applySerfJobFinished(job: SerfJobInfo, sessionRef: string | undefined): void {
   if (!job.originTurnId) return;
   const rowKey = resolveRowKey(job.delegateId, job.jobId, job.originToolCallId ?? job.originItemId ?? job.jobId);
-  updateSubagentRowIfExists(job.originTurnId, rowKey, {
+  updateSubagentRowIfExists(turnScopeKey(sessionRef, job.originTurnId), rowKey, {
     liveKind: classifyJobStatus(job.status),
     liveReason: job.reason,
     resumable: job.resumable,
@@ -245,27 +271,27 @@ export function applySerfJobFinished(job: SerfJobInfo): void {
   });
 }
 
-// useSubagentRows reactively selects every row tracked for `turnId`,
+// useSubagentRows reactively selects every row tracked for `scopeKey`,
 // ordered by spawn index (never by update recency - a row that just
 // changed status must not visually jump to a different position). Reads
 // the precomputed array directly - see turnRowsSorted's own doc comment
 // for why this must not re-derive/re-sort inline.
-export function useSubagentRows(turnId: string): SubagentRow[] {
-  return useStore(moduleStore, (s) => s.turnRowsSorted.get(turnId) ?? EMPTY_ROWS);
+export function useSubagentRows(scopeKey: string): SubagentRow[] {
+  return useStore(moduleStore, (s) => s.turnRowsSorted.get(scopeKey) ?? EMPTY_ROWS);
 }
 
 // claimLeader is a plain (non-reactive) function, meant to be called from
 // a component's lazy useState initializer - it runs once per mount,
 // before paint, and the result never changes for that component instance's
 // lifetime. Returns true for whichever item id claims (or already holds)
-// leadership for `turnId`; false for every other item. Idempotent: the
+// leadership for `scopeKey`; false for every other item. Idempotent: the
 // current leader re-claiming its own slot stays true.
-export function claimLeader(turnId: string, itemId: string): boolean {
-  const current = moduleStore.getState().turnLeader.get(turnId);
+export function claimLeader(scopeKey: string, itemId: string): boolean {
+  const current = moduleStore.getState().turnLeader.get(scopeKey);
   if (current === undefined) {
     moduleStore.setState((s) => {
       const turnLeader = new Map(s.turnLeader);
-      turnLeader.set(turnId, itemId);
+      turnLeader.set(scopeKey, itemId);
       return { turnLeader };
     });
     return true;
@@ -279,12 +305,12 @@ export function claimLeader(turnId: string, itemId: string): boolean {
 // cleanup effect so a remount (VirtualList windowing a turn back into
 // view) can re-elect cleanly instead of leaving a permanently-stale claim
 // for an item id that no longer exists.
-export function releaseLeader(turnId: string, itemId: string): void {
+export function releaseLeader(scopeKey: string, itemId: string): void {
   const state = moduleStore.getState();
-  if (state.turnLeader.get(turnId) !== itemId) return;
+  if (state.turnLeader.get(scopeKey) !== itemId) return;
   moduleStore.setState((s) => {
     const turnLeader = new Map(s.turnLeader);
-    turnLeader.delete(turnId);
+    turnLeader.delete(scopeKey);
     return { turnLeader };
   });
 }

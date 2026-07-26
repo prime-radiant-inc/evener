@@ -94,7 +94,7 @@ test("calls watchThread with the given ref on mount, using the leaner includeTur
     return readResponse("child_ref_1");
   });
 
-  render(<WatchedChildIndicator ref="child_ref_1" turnId="turn_1" rowKey="dlg:child_ref_1" />);
+  render(<WatchedChildIndicator ref="child_ref_1" scopeKey="turn_1" rowKey="dlg:child_ref_1" />);
   await flushUntil(() => sawParams !== undefined);
 
   expect(sawParams).toEqual({
@@ -109,7 +109,7 @@ test("calls watchThread with the given ref on mount, using the leaner includeTur
 
 test("renders nothing before the watched model has hydrated", () => {
   connectFakeClient().on("thread/read", () => new Promise(() => {})); // never resolves
-  const { container } = render(<WatchedChildIndicator ref="child_ref_2" turnId="turn_1" rowKey="dlg:child_ref_2" />);
+  const { container } = render(<WatchedChildIndicator ref="child_ref_2" scopeKey="turn_1" rowKey="dlg:child_ref_2" />);
   expect(container.textContent).toBe("");
 });
 
@@ -117,7 +117,7 @@ test("renders a Cadence indicator once the watched model hydrates", async () => 
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_3"));
 
-  render(<WatchedChildIndicator ref="child_ref_3" turnId="turn_1" rowKey="dlg:child_ref_3" />);
+  render(<WatchedChildIndicator ref="child_ref_3" scopeKey="turn_1" rowKey="dlg:child_ref_3" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_3"));
   await act(async () => {});
 
@@ -128,7 +128,7 @@ test("releaseWatchedThread fires on unmount", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_4"));
 
-  const { unmount } = render(<WatchedChildIndicator ref="child_ref_4" turnId="turn_1" rowKey="dlg:child_ref_4" />);
+  const { unmount } = render(<WatchedChildIndicator ref="child_ref_4" scopeKey="turn_1" rowKey="dlg:child_ref_4" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_4"));
 
   unmount();
@@ -139,7 +139,7 @@ test("a live notification updates the rendered Cadence's underlying frameTimes w
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("child_ref_5"));
 
-  render(<WatchedChildIndicator ref="child_ref_5" turnId="turn_1" rowKey="dlg:child_ref_5" />);
+  render(<WatchedChildIndicator ref="child_ref_5" scopeKey="turn_1" rowKey="dlg:child_ref_5" />);
   await flushUntil(() => threadsStore.getState().watchedThreads.has("child_ref_5"));
 
   await act(async () => {
@@ -165,7 +165,7 @@ test("writes back liveKind 'failed' when the watched child reports a systemError
 
   render(
     <>
-      <WatchedChildIndicator ref="child_wb_1" turnId="turn_wb" rowKey="dlg:child_wb_1" />
+      <WatchedChildIndicator ref="child_wb_1" scopeKey="turn_wb" rowKey="dlg:child_wb_1" />
       <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_1" />
     </>,
   );
@@ -182,7 +182,7 @@ test("writes back liveKind 'done' when the watched child status is closed (wire 
 
   render(
     <>
-      <WatchedChildIndicator ref="child_wb_2" turnId="turn_wb" rowKey="dlg:child_wb_2" />
+      <WatchedChildIndicator ref="child_wb_2" scopeKey="turn_wb" rowKey="dlg:child_wb_2" />
       <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_2" />
     </>,
   );
@@ -199,7 +199,7 @@ test("a live status/changed notification updates the written-back liveKind witho
 
   render(
     <>
-      <WatchedChildIndicator ref="child_wb_3" turnId="turn_wb" rowKey="dlg:child_wb_3" />
+      <WatchedChildIndicator ref="child_wb_3" scopeKey="turn_wb" rowKey="dlg:child_wb_3" />
       <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_3" />
     </>,
   );
