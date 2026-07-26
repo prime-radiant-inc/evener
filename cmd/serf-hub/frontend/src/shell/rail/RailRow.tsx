@@ -92,13 +92,26 @@ export function cadenceStateFor(wireState: string): CadenceState {
 
 // The humanized wire state a row's second line leads with (§2.3) - the same
 // wire state vocabulary cadenceStateFor reads, worded for a person rather
-// than mapped to a Cadence family. "warning" reads the same as "awaiting"
-// here (both already share Cadence's "needs-you" dot above).
-function humanizeState(wireState: string): string {
+// than mapped to a Cadence family. "warning" reads the same as a plain
+// "awaiting" here (both already share Cadence's "needs-you" dot above).
+//
+// "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
+// attention.go, Track A §2 ask-tiering) already draws this same line for the
+// TUI and the older web surface - "Question waiting" when the agent is
+// genuinely blocked on an answer, "Your move" when a turn simply ended with
+// nothing further queued - because those are different urgencies wearing the
+// identical amber dot. This rail's own row never read askPending before,
+// so every "awaiting" row rendered as the same generic "waiting on you" -
+// a person scanning the list for the one session that's actually blocked on
+// them had to open every amber row to find out which. Lowercased to match
+// this line's existing casing ("working"/"failed"/"idle"), not the Go
+// vocabulary's sentence case verbatim.
+function humanizeState(wireState: string, askPending: boolean): string {
   switch (wireState) {
     case "active":
       return "working";
     case "awaiting":
+      return askPending ? "question waiting" : "your move";
     case "warning":
       return "waiting on you";
     case "errored":
@@ -166,7 +179,7 @@ function Signal({ wireState }: { wireState: string }) {
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
 export function activityGloss(session: ApiTreeNode): string {
-  const parts = [humanizeState(session.state)];
+  const parts = [humanizeState(session.state, session.ask_pending === true)];
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
   return parts.join(" · ");
 }
@@ -334,7 +347,7 @@ function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: b
   // instead: "idle" is true of it but tells the reader nothing they don't
   // already believe, and it is the very confusion this line exists to end.
   if (saysNotStarted) parts.push("not started");
-  else if (!showsGloss) parts.push(humanizeState(session.state));
+  else if (!showsGloss) parts.push(humanizeState(session.state, session.ask_pending === true));
   // "current" is the unremarkable default state of a session - the same
   // exclusion the visible line used to make.
   if (session.tier !== undefined && session.tier !== "" && session.tier !== "current") parts.push(session.tier);

@@ -135,7 +135,19 @@ describe("activityGloss", () => {
   });
 
   test("joins state and branch, in that order", () => {
-    expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("waiting on you · main");
+    expect(activityGloss(apiNode({ state: "awaiting", branch: "main" }))).toBe("your move · main");
+  });
+
+  // A plain "your move" (turn ended, nothing further queued) and a real
+  // blocked ask_user question both wire up as state "awaiting" - the ONLY
+  // wire signal telling them apart is ask_pending. Reusing hubapi.StateWord's
+  // own vocabulary (Track A §2 ask-tiering: "Question waiting" vs "Your
+  // move") here is what lets a person scanning the rail tell "the agent is
+  // blocked on my answer" from "the agent finished, read it when you like"
+  // without opening every amber row - see k9-navigation's persona panel,
+  // where every persona hit this exact wall.
+  test("an ask_pending awaiting session glosses as a question, not a generic move", () => {
+    expect(activityGloss(apiNode({ state: "awaiting", ask_pending: true }))).toBe("question waiting");
   });
 
   test("omits an empty branch", () => {
@@ -278,12 +290,26 @@ describe("session row", () => {
 
   test.each([
     ["active", /working/i],
-    ["awaiting", /waiting on you/i],
+    ["awaiting", /your move/i],
     ["warning", /waiting on you/i],
     ["errored", /failed/i],
   ] as const)("a signal row (%s) keeps a gloss line leading with the state", (state, expected) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
+  });
+
+  // The one state where the SAME wire state ("awaiting") means two different
+  // things depending on ask_pending - see the activityGloss describe block
+  // above for why this distinction exists.
+  test("an ask_pending awaiting row glosses as a blocked question, not a generic move", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).toMatch(/question waiting/i);
   });
 
   test.each(["idle", "ended", "notLoaded", ""] as const)(
