@@ -37,6 +37,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { FailureGlyph, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
@@ -197,7 +198,18 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
 // `separator` is the ended strip's own "·" punctuation, which the live strip
 // does not use - passed in rather than inferred, so this component never has to
 // know which row it is on.
-function FailureCount({ count, separator }: { count: number | undefined; separator?: boolean }) {
+//
+// `acute` gates the --danger glyph (UX round, k9-transcript persona panel):
+// this count is a LIFETIME tally (see the doc comment above) and stays
+// findable regardless, but the glyph - the app's one "look now" hue - is
+// reserved for a session whose own current status really is the failed one
+// (cadenceStateForStatus's "systemError"). A settled session with an
+// already-resolved failure, or a session still working normally after an
+// earlier hiccup, is a fact worth knowing, not an active alarm; four
+// independent readers in the panel each misread the always-red glyph as
+// "broken right now" even when a summary two lines away said otherwise. Text
+// never changes - only whether the glyph spends the hue.
+function FailureCount({ count, separator, acute }: { count: number | undefined; separator?: boolean; acute: boolean }) {
   if (count === undefined || count <= 0) return null;
   const spoken = `${count} failed tool ${count === 1 ? "call" : "calls"}`;
   return (
@@ -207,9 +219,11 @@ function FailureCount({ count, separator }: { count: number | undefined; separat
           ·
         </span>
       )}
-      <span aria-hidden="true">
-        <FailureGlyph />
-      </span>
+      {acute && (
+        <span aria-hidden="true">
+          <FailureGlyph />
+        </span>
+      )}
       <span className={CLASS.mono} aria-hidden="true">
         {`${count} failed`}
       </span>
@@ -245,8 +259,11 @@ function EndedSummary({ sessionRef, model, workMs }: { sessionRef: string; model
       <ModelSwitch sessionRef={sessionRef} model={model} />
       {/* Ahead of the settled figures: work time and cost are an epitaph, and
           what went wrong is the one thing on this strip that could still change
-          what the reader does next. */}
-      <FailureCount count={model.failedToolCalls} separator />
+          what the reader does next. Never acute here - an ended session's own
+          status is never the "systemError" one cadenceStateForStatus calls
+          failed, so its tally is always settled history (see FailureCount's
+          own comment). */}
+      <FailureCount count={model.failedToolCalls} separator acute={false} />
       {settled.map((fact) => (
         <span key={fact.key} className={CLASS.item}>
           <span className={CLASS.separator} aria-hidden="true">
@@ -283,8 +300,13 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           path. The daemon counts its own failures as it writes them to the
           transcript, so the figure a live session carries is whole-session,
           not the stale floor a re-read of a file still being appended to
-          would give. */}
-      <FailureCount count={model.failedToolCalls} />
+          would give. Acute only when the session's OWN status is the failed
+          one - a session still working normally after an earlier tool
+          failure is not a current alarm. */}
+      <FailureCount
+        count={model.failedToolCalls}
+        acute={cadenceStateForStatus(model.status.type) === "failed"}
+      />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       {/* The gauge is the whole readout: a used/window number pair beside it
           repeated what the fill already shows, in a row that has to stay one

@@ -682,6 +682,17 @@ test("an ended session with no cost shows the facts it has and nothing it doesn'
 // without scrolling all of it - two panel participants independently reported
 // stopping early and concluding a run was clean. The strip is the one surface
 // always on screen, and it now says so.
+//
+// UX ROUND (k9-transcript persona panel, 2026-07-25): the count itself must
+// never disappear (hw2n stays fixed), but a SETTLED session's lifetime tally
+// is a historical fact, not a current alarm - four independent readers
+// (correctness auditor, long-run monitor, failure debugger, mobile
+// check-in) each separately misread the danger-red glyph as "this is broken
+// right now", even reading a summary two lines above that said the tests
+// pass. An ended session is never itself the acute "systemError" state
+// (cadenceStateForStatus), so its failure count renders WITHOUT the glyph -
+// still findable (first item on the strip, the word "failed" is not hidden),
+// just not spending the one hue reserved for "look now".
 test("an ended session with failures says how many, on the strip that is always on screen", () => {
   render(
     <StatusRow
@@ -691,9 +702,35 @@ test("an ended session with failures says how many, on the strip that is always 
     />,
   );
   expect(screen.getByTestId("status-row-failures").textContent).toContain("6 failed");
-  // The whole point is that it is findable without looking for it: --danger
-  // lives only in the allowlisted glyph widget, so its presence IS the colour.
+  // An ended session's tally is settled history, not a live alarm - it does
+  // not spend --danger (see the comment above this test).
+  expect(screen.queryByTestId("failure-glyph")).toBeNull();
+});
+
+// The glyph - and --danger - are reserved for a session that is ITSELF
+// currently in the failed state (cadenceStateForStatus's "systemError" ->
+// "failed" mapping, the same signal the pane's own Cadence dot uses). That is
+// the one case where "look now" is actually true.
+test("a session whose own status is currently failed shows the failure glyph", () => {
+  render(
+    <StatusRow
+      sessionRef="ref_a"
+      model={testModel({ status: { type: "systemError" }, failedToolCalls: 2 })}
+      now={1_000_000}
+    />,
+  );
+  expect(screen.getByTestId("status-row-failures").textContent).toContain("2 failed");
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
+});
+
+// A session that is currently WORKING (not crashed) but logged a failure
+// earlier in its run is the long-run-monitor's case: still findable, still
+// never suppressed, but not styled as an acute, current problem either - the
+// run is progressing normally.
+test("a working session with a past failure shows the count without the acute glyph", () => {
+  render(<StatusRow sessionRef="ref_a" model={runningModel({ failedToolCalls: 1 })} now={1_060_000} />);
+  expect(screen.getByTestId("status-row-failures").textContent).toContain("1 failed");
+  expect(screen.queryByTestId("failure-glyph")).toBeNull();
 });
 
 // A clean session is not news. Zero renders NOTHING - no "0 failed", no empty

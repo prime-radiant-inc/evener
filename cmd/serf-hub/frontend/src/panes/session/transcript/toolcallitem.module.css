@@ -89,11 +89,18 @@ summary.row:hover .demoted {
   color: var(--ink-mid);
 }
 
-/* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure. */
+/* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure.
+ * --ink-mid, not --ink-low: this is the row's one visible cue that there is
+ * more to see, not a placeholder/disabled/timestamp (--ink-low's actual
+ * job, tokens.css) - and --ink-low measures under AA against --surface-1
+ * (2.97:1 dark / 3.64:1 light, design-system.md's own measured figures).
+ * UX round (k9-transcript persona panel): a reviewer auditing a session's
+ * correctness specifically flagged this chevron as easy to miss when
+ * deciding whether a collapsed edit had more to inspect. */
 .chevron {
   flex: none;
   display: inline-flex;
-  color: var(--ink-low);
+  color: var(--ink-mid);
   font-size: var(--font-size-caption);
 }
 
