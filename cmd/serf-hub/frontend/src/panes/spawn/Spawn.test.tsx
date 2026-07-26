@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -603,10 +603,15 @@ test("offers to create a missing directory, then creates it and spawns", async (
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 });
 
-test("aborts with the validator message for a non-fixable working dir", async () => {
+test("aborts with the validator message for a non-fixable working dir, then a corrected retry actually spawns", async () => {
   const user = userEvent.setup();
+  let dirIsValid = false;
   const fake = readyClient((f) => {
-    f.on("serf/path/validate", () => ({ path: "/etc/hosts", valid: false, error: "path is not a directory" }));
+    f.on("serf/path/validate", () =>
+      dirIsValid
+        ? { path: "/tmp/project", valid: true }
+        : { path: "/etc/hosts", valid: false, error: "path is not a directory" },
+    );
   });
   renderSpawn(fake);
   await settled();
@@ -620,6 +625,14 @@ test("aborts with the validator message for a non-fixable working dir", async ()
   // Failure paths already reset busy (verified, unchanged by this fix) - the
   // button must stay usable so the user can correct the path and retry.
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  // kata 61v2 corollary: the VISUAL state resetting is not proof the guard of
+  // record (busyRef) released too - only an actual second spawn proves that.
+  dirIsValid = true;
+  await setWorkingDir(user, "/tmp/project");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
 });
 
 // --- kata xgk8: Model's "(default)" must not claim an answer the daemon --
@@ -884,4 +897,57 @@ test("re-enables the Start button after a successful start (post-success state h
   const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
   expect(button.textContent).toBe("Start");
   expect(button.disabled).toBe(false);
+});
+
+// kata 61v2: three fast clicks on Start spawned three separate live daemons
+// running the same prompt. `disabled={busy}` alone is not a re-entrancy guard
+// - `busy` is React state, and its read inside handleSpawn's closure only
+// reflects whatever was committed as of the LAST render. Three clicks fired
+// in the same tick (fireEvent is synchronous, unlike userEvent.click, which
+// awaits between pointer events and lets React flush a render in between)
+// all read the SAME stale `busy === false` before the first click's
+// setBusy(true) ever commits, so all three pass `if (busy) return` and all
+// three call thread/start. Live-verified over raw CDP: three real
+// dispatchEvent("click") calls with zero delay produced three daemons and
+// three sessions running the identical prompt (a real button.click() call on
+// an actually-disabled DOM button is a browser-level no-op, so a genuinely
+// laggy render is what turns an ordinary double-click into this).
+test("kata 61v2: three clicks in the same tick still spawn only one session", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  act(() => {
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+  });
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+
+  expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1);
+});
+
+test("kata 61v2 corollary: a successful spawn releases the guard for the next one", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "first session");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(1));
+
+  // The Spawn pane is a dockview singleton that can stay mounted behind the
+  // session pane doSpawn navigates to (see doSpawn's own comment on the
+  // sticky-defaults reset) - a second Start on the SAME mounted instance must
+  // not be permanently blocked by the first success's guard release.
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "second session");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(fake.calls.filter((c) => c.method === "thread/start")).toHaveLength(2));
 });
