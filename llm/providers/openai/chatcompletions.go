@@ -335,9 +335,7 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if opts, ok := req.ProviderOptions["openai"].(map[string]any); ok {
-		for k, v := range opts {
-			body[k] = v
-		}
+		maps.Copy(body, opts)
 	}
 	return body, nil
 }

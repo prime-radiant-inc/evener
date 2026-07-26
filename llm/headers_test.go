@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"maps"
 	"reflect"
 	"testing"
 
@@ -51,9 +52,7 @@ func captureHeadersFactory(t *testing.T, captured map[string]capturedProviderHea
 	t.Helper()
 	instanceFactoriesMu.Lock()
 	saved := make(map[instanceFactoryKey]InstanceAdapterFactory, len(instanceFactories))
-	for k, v := range instanceFactories {
-		saved[k] = v
-	}
+	maps.Copy(saved, instanceFactories)
 	factory := func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 		captured[inst.Name] = capturedProviderHeaders{
 			ordinary:   inst.Headers,

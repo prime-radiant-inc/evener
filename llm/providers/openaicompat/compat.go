@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"maps"
 	"strings"
 
 	"primeradiant.com/serf/llm"
@@ -125,9 +126,7 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 		// Non-nil includes the explicitly-empty table, which clears the
 		// inherited kwargs (wholesale replacement, like FinishReasonMap).
 		q.ChatTemplateKwargs = make(map[string]any, len(c.ChatTemplateKwargs))
-		for k, v := range c.ChatTemplateKwargs {
-			q.ChatTemplateKwargs[k] = v
-		}
+		maps.Copy(q.ChatTemplateKwargs, c.ChatTemplateKwargs)
 	}
 	if c.LockTemperature != nil {
 		q.LockTemperature = *c.LockTemperature
@@ -157,9 +156,7 @@ func ApplyCompatConfig(base ProviderQuirks, c *providercfg.CompatConfig) Provide
 		// Non-nil includes the explicitly-empty table, which clears the
 		// inherited map (wholesale replacement).
 		q.FinishReasonMap = make(map[string]string, len(c.FinishReasonMap))
-		for k, v := range c.FinishReasonMap {
-			q.FinishReasonMap[k] = v
-		}
+		maps.Copy(q.FinishReasonMap, c.FinishReasonMap)
 	}
 	if c.TranslateMaxToXHigh != nil {
 		q.TranslateMaxToXHigh = *c.TranslateMaxToXHigh
@@ -183,9 +180,7 @@ func resolveModelCompat(instanceQuirks ProviderQuirks, models map[string]provide
 		}
 		if len(mc.ThinkingLevels) > 0 {
 			entry.ThinkingLevels = make(map[string]string, len(mc.ThinkingLevels))
-			for k, v := range mc.ThinkingLevels {
-				entry.ThinkingLevels[k] = v
-			}
+			maps.Copy(entry.ThinkingLevels, mc.ThinkingLevels)
 		}
 		out[id] = entry
 	}

@@ -3,6 +3,7 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sync"
 
@@ -67,9 +68,7 @@ func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOpti
 
 	instanceFactoriesMu.Lock()
 	factories := make(map[instanceFactoryKey]InstanceAdapterFactory, len(instanceFactories))
-	for k, v := range instanceFactories {
-		factories[k] = v
-	}
+	maps.Copy(factories, instanceFactories)
 	instanceFactoriesMu.Unlock()
 
 	c := NewClient()

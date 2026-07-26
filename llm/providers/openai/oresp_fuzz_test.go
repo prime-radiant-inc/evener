@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -550,9 +551,7 @@ func oresp_assertFirstResponsesRequest(t *testing.T, rt *oresp_fakeTransport, a 
 		t.Fatalf("first request URL = %q, want %q", rt.urls[0], a.responsesURL())
 	}
 	streamBody := make(map[string]any, len(wantBody)+1)
-	for k, v := range wantBody {
-		streamBody[k] = v
-	}
+	maps.Copy(streamBody, wantBody)
 	streamBody["stream"] = true
 	wantBytes, err := json.Marshal(streamBody)
 	if err != nil {

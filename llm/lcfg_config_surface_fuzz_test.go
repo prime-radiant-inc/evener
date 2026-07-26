@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -74,9 +76,7 @@ func lcfgInstallInstanceFactories(t *testing.T) func() {
 	t.Helper()
 	instanceFactoriesMu.Lock()
 	saved := make(map[instanceFactoryKey]InstanceAdapterFactory, len(instanceFactories))
-	for k, v := range instanceFactories {
-		saved[k] = v
-	}
+	maps.Copy(saved, instanceFactories)
 	instanceFactories = map[instanceFactoryKey]InstanceAdapterFactory{
 		{typ: "lcfg_ok"}: func(inst providercfg.InstanceConfig, stateHome string) (ProviderAdapter, error) {
 			_ = stateHome
@@ -265,10 +265,8 @@ func lcfgAssertPriceProvenance(t *testing.T, cat *ModelCatalog, modelID string, 
 		if m.ID == id || strings.HasPrefix(id, m.ID) {
 			return
 		}
-		for _, a := range m.Aliases {
-			if a == id {
-				return
-			}
+		if slices.Contains(m.Aliases, id) {
+			return
 		}
 	}
 	t.Fatalf("GetPrice(%q) returned %+v with no matching catalog entry", modelID, got)
