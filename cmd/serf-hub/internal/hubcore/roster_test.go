@@ -120,6 +120,12 @@ func fuzzScenarioRosterListDedupesSessionIDPreferringAppWireEntry(t *testing.T) 
 	}
 }
 
+// fuzzScenarioRoster_PrunesUnreachableDeadProcess covers a dead process whose
+// rendezvous file never resolved a session id (no probe ever succeeded before
+// it died) - there is nothing to attribute a crash marker to, so it is still
+// dropped entirely. Contrast with fuzzScenarioRoster_SurfacesCrashedProcessAsErrored
+// below, where a resolved session id turns the same "dead process, stale file"
+// situation into a retained "errored" entry instead of a silent drop.
 func fuzzScenarioRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{
@@ -130,7 +136,85 @@ func fuzzScenarioRoster_PrunesUnreachableDeadProcess(t *testing.T) {
 	r.procAlive = func(int) bool { return false } // process is gone → stale file
 	r.Refresh()
 	if got := r.List(); len(got) != 0 {
-		t.Fatalf("expected a dead daemon's stale rendezvous entry to be pruned, got %d", len(got))
+		t.Fatalf("expected a dead daemon's stale rendezvous entry with no session id to be pruned, got %d", len(got))
+	}
+}
+
+// fuzzScenarioRoster_SurfacesCrashedProcessAsErrored is the regression test for
+// kata zm6s: a session that was genuinely live (probe succeeded, session id
+// resolved) and then had its process SIGKILLed must not silently disappear
+// from the roster the same way a gracefully-finished session does - rendezvous
+// files are only removed on graceful shutdown (rendezvous package doc comment;
+// rvreg.Registration.Remove), so a stale file with a confirmed-dead PID means a
+// crash, not a normal exit. The entry is retained with Status forced to
+// "errored" (hubcore.NormalizeState already treats that string as a first-class
+// error lane) rather than dropped, so BuildTree's stateFor finds it and reports
+// "errored" instead of falling back to the generic "ended" every normally-
+// completed session also reports.
+func fuzzScenarioRoster_SurfacesCrashedProcessAsErrored(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1001,
+		Address:   "127.0.0.1:50001",
+		SessionID: "01CRASHED",
+	})
+
+	prober := &flakyProber{sessionID: "01CRASHED"}
+	r := NewRoster(dir, prober)
+	r.procAlive = func(int) bool { return true } // process starts out alive
+	r.Refresh()
+	if _, ok := r.Find("01CRASHED"); !ok {
+		t.Fatal("entry should be present after a successful probe")
+	}
+
+	// kill -9: the probe now fails AND the process is confirmed gone.
+	prober.fail = true
+	r.procAlive = func(int) bool { return false }
+	r.Refresh()
+
+	got, ok := r.Find("01CRASHED")
+	if !ok {
+		t.Fatal("a crashed session must remain in the roster, marked errored - not silently dropped")
+	}
+	if got.Status != "errored" {
+		t.Fatalf("crashed session status = %q, want %q", got.Status, "errored")
+	}
+
+	// Stable across subsequent refreshes: it must not flip back to something
+	// else, nor eventually get pruned, once marked as crashed.
+	r.Refresh()
+	got, ok = r.Find("01CRASHED")
+	if !ok || got.Status != "errored" {
+		t.Fatalf("crashed marker did not persist across a later refresh: ok=%v status=%q", ok, got.Status)
+	}
+}
+
+// fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster proves the crash marker
+// does not depend on the roster's own in-memory history: a BRAND NEW Roster
+// (as after a hub restart) that discovers an already-stale rendezvous file -
+// dead PID, resolved session id, first refresh ever - must surface it as
+// "errored" too, not just a roster that watched the crash happen live. The
+// durable signal is the file itself (still on disk because the daemon never
+// got to run its graceful-shutdown Remove()), not anything the roster
+// remembered from a previous Refresh.
+func fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID:       1002,
+		Address:   "127.0.0.1:50002",
+		SessionID: "01ALREADYDEAD",
+	})
+
+	r := NewRoster(dir, fakeProber{shouldFail: true})
+	r.procAlive = func(int) bool { return false } // never seen alive by THIS roster
+	r.Refresh()
+
+	got, ok := r.Find("01ALREADYDEAD")
+	if !ok {
+		t.Fatal("a stale rendezvous file for a resolved session id must surface as errored even on a fresh roster")
+	}
+	if got.Status != "errored" {
+		t.Fatalf("status = %q, want %q", got.Status, "errored")
 	}
 }
 
@@ -183,11 +267,17 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 		}
 	}
 
-	// When the process actually dies, the next failed probe prunes it.
+	// When the process actually dies, the next failed probe retains it,
+	// marked "errored" (kata zm6s) rather than pruning it - a crash must
+	// read differently from a session that simply finished.
 	r.procAlive = func(int) bool { return false }
 	r.Refresh()
-	if got := r.List(); len(got) != 0 {
-		t.Fatalf("a dead daemon should be pruned, got %d entries", len(got))
+	got := r.List()
+	if len(got) != 1 {
+		t.Fatalf("a crashed daemon should be retained as errored, not pruned, got %d entries", len(got))
+	}
+	if got[0].Status != "errored" {
+		t.Fatalf("crashed daemon status = %q, want %q", got[0].Status, "errored")
 	}
 }
 
