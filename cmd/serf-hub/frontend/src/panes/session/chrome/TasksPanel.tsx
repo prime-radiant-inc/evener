@@ -28,13 +28,19 @@
 // went wrong at the transport level. A thread with no live local daemon
 // behind it (a one-shot CLI session that already exited, or one never
 // resumed) rejects ListTasks the same way its ref lookup fails: "thread not
-// found" (isThreadNotFound, below) - that folds into the SAME empty list a
-// real `[]` response renders, since the frontend has no way to distinguish
-// "never had tasks" from "can't currently ask", and the former is the
-// common case. Any other rejection - including the SAME sessionUnavailable
-// code for a daemon that's merely unreachable this instant - is a genuine
-// failure: toast (the wave's failure-feedback convention) AND an inline
-// report.
+// found" (isThreadNotFound, below). Whether that folds into an empty list or
+// a distinct terminal state depends on model.tasks: null means the frontend
+// truly has no way to distinguish "never had tasks" from "can't currently
+// ask", so it renders the same "No tasks yet" a real `[]` response would.
+// But once model.tasks is non-null, the trigger beside this panel is
+// ALREADY on screen claiming tasks exist (serf/task/updated only fires when
+// the agent has actually edited its list - see the re-fetch paragraph
+// below) - "No tasks yet" would contradict it, so that case gets its own
+// terminal copy instead (renderBody's daemonGone branch), and never wipes
+// whatever rows are already retained. Any other rejection - including the
+// SAME sessionUnavailable code for a daemon that's merely unreachable this
+// instant - is a genuine failure: toast (the wave's failure-feedback
+// convention) AND an inline report.
 //
 // That inline report takes one of two forms, because a re-fetch has
 // something a first fetch does not: the previous page, still in hand. A
@@ -54,6 +60,13 @@
 // itself on the next edit; one that has gone quiet emits nothing more, and
 // without Try again its panel stays broken until the reader guesses that
 // closing and re-opening refetches.
+//
+// The daemonGone terminal state (isThreadNotFound with model.tasks non-null)
+// is the one exception, and deliberately carries no Try again: see
+// isThreadNotFound's own comment for why that specific rejection means
+// neither a live daemon nor a past-index record exists for the thread, so
+// nothing - not Try again, not closing and re-opening, not reloading the
+// whole app - can make the next attempt succeed.
 import { useEffect, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
@@ -161,6 +174,16 @@ function isActionUnavailable(err: unknown): boolean {
 // (local_daemon.go:438-501, codex_source.go:522-591) - that must still
 // surface as a real error, so this checks the message prefix too, not just
 // the serfErrorInfo code.
+//
+// This is also why the daemonGone terminal state below never offers Try
+// again: the hub's own serf/tasks/list handler (app_tasks.go's hubTasksList)
+// already falls back to a persisted past-index read before this error ever
+// reaches the wire, so a rejection actually shaped like this means the hub
+// found NEITHER a live daemon NOR a past-index record for the thread. That
+// is also exactly the condition withSessionResume's hubKnowsRef gate checks
+// before attempting any resume (app_session_resume.go) - so nothing on
+// either end of the wire can bring this session back. Retrying would fail
+// identically forever.
 function isThreadNotFound(err: unknown): boolean {
   return (
     err instanceof WireError &&
@@ -184,6 +207,12 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [error, setError] = useState<LoadFailure | null>(null);
+  // Set instead of setRows([]) when isThreadNotFound fires with model.tasks
+  // already non-null - see isThreadNotFound's own comment for why this is
+  // terminal rather than a blip. rows is left exactly as it was (whatever
+  // the last successful fetch put there, including nothing at all), so this
+  // can never wipe a retained list the way setRows([]) would.
+  const [daemonGone, setDaemonGone] = useState(false);
   // Bumped by Try again. The only fetch trigger a reader controls: the other
   // two are opening the panel and a push arriving, and neither is available
   // to someone looking at a failed fetch in an open panel on a quiet session.
@@ -202,6 +231,7 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
     let cancelled = false;
     setError(null);
     setUnsupported(false);
+    setDaemonGone(false);
     threadsStore
       .getState()
       .listTasks(sessionRef)
@@ -223,7 +253,16 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
           return;
         }
         if (isThreadNotFound(err)) {
-          setRows([]);
+          if (model.tasks === null) {
+            // Never had a live aggregate pushed - genuinely "no tasks", not
+            // merely "can't ask any more" (see the header comment above).
+            setRows([]);
+          } else {
+            // The trigger is already on screen claiming tasks exist; rows
+            // is left untouched so a retained list survives this rejection
+            // instead of being replaced by "No tasks yet".
+            setDaemonGone(true);
+          }
           return;
         }
         // `rows` is deliberately left alone: whatever the last fetch that
@@ -265,12 +304,32 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
         <EmptyState title="Task list isn't available" hint="This session's source doesn't support the task list." />
       );
     }
+    if (daemonGone && (rows === null || rows.length === 0)) {
+      // Nothing to show either way - a panel that never fetched
+      // successfully in this session and a confirmed-empty retained list
+      // both have zero rows, so the same terminal message covers both
+      // rather than inventing a distinction the reader can't observe. No
+      // Try again: see isThreadNotFound's comment for why asking again
+      // cannot succeed.
+      return (
+        <EmptyState
+          title="This session has ended"
+          hint="Its daemon has exited, and there's no record of its task list to fall back on."
+        />
+      );
+    }
     if (rows === null) {
       if (error) return <EmptyState title={error.headline} hint={error.detail} action={retry} />;
       return <p className={CLASS.state}>Loading tasks…</p>;
     }
     return (
       <>
+        {daemonGone && (
+          <div className={CLASS.stale} data-testid="tasks-daemon-gone">
+            <p className={CLASS.staleMessage}>This session's daemon has exited.</p>
+            <p className={CLASS.staleHint}>Showing the last list that loaded. It won't update again.</p>
+          </div>
+        )}
         {error && (
           <div className={CLASS.stale} data-testid="tasks-stale">
             {/* role=alert: the refresh failed on its own, with the reader
