@@ -20,9 +20,10 @@
 // flow-overlay/new-content-pill machinery, which is a live-session affordance.
 import { useEffect, useRef } from "react";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
-import { threadsStore } from "../../stores/threads";
-import { EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
+import { threadsStore, useThreadsStore } from "../../stores/threads";
+import { Button, EmptyState, PaneScaffold, VirtualList, type VirtualListHandle } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TurnBlock } from "../session/transcript/TurnBlock";
@@ -37,12 +38,68 @@ import styles from "./transcript.module.css";
 
 export interface TranscriptParams {
   ref: string;
+  // kata 0pzz: the enclosing session's ref, when this pane was opened from a
+  // subagent row (subagentModule.tsx's openTranscript - the only producer
+  // today). Carried in the pane's OWN params - not passed around as a
+  // one-off argument - so it survives a layout restore/reload and so the
+  // pane can answer "whose child am I" and offer a way back entirely on its
+  // own, regardless of where dockview/StackHost happened to place it.
+  // Undefined for a hypothetical future producer with no enclosing session.
+  parentRef?: string;
 }
 
 const CLASS = {
   body: requireClass(styles.body, "transcript.module.css", "body"),
   list: requireClass(styles.list, "transcript.module.css", "list"),
+  backLabel: requireClass(styles.backLabel, "transcript.module.css", "backLabel"),
 };
+
+// The app's 16x16 stroke grammar (see fileOpenBeside.tsx's OpenBesideIcon,
+// mobile/StackHost.tsx's own BackIcon for the same chevron - this is a
+// pane-header-scoped twin of that one, not an import: StackHost's is
+// component-local and mobile-specific, this one is desktop/dockview-header
+// specific, and duplicating one small path is cheaper than threading a
+// shared icon module across a mobile/desktop boundary for a single glyph).
+function BackIcon() {
+  return (
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+      <path
+        d="M10 3 L5 8 L10 13"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
+// BackToParentAction is the pane's whole answer to kata 0pzz's "no way
+// back": a single header action that is BOTH the identity marker (its own
+// visible label names the parent, so a reader lands already knowing whose
+// child this is - no hover, no memory) and the return path (one click
+// re-focuses that session, or reopens it if the reader closed it meanwhile
+// - workspaceStore.openPane's own dedup makes "already open" vs. "reopen
+// fresh" the same call). The parent's live name is read reactively (a
+// rename while this pane is open stays current); a parent whose name
+// hasn't hydrated yet (or was evicted after its own pane closed - threads
+// are refcounted, see stores/threads.ts) falls back to the raw ref, the
+// same fallback every other pane title in this app already uses.
+function BackToParentAction({ parentRef }: { parentRef: string }) {
+  const name = useThreadsStore((s) => s.threads.get(parentRef)?.name);
+  const label = name || parentRef;
+  return (
+    <Button
+      variant="quiet"
+      size="sm"
+      icon={<BackIcon />}
+      onClick={() => workspaceStore.getState().openPane("session", { ref: parentRef })}
+    >
+      <span className={CLASS.backLabel}>Back to {label}</span>
+    </Button>
+  );
+}
 
 // Same average-turn guess SessionPane feeds VirtualList's `dynamic` mode - real
 // heights are measured post-mount per turn (see the VirtualList widget's own
@@ -50,7 +107,8 @@ const CLASS = {
 const ESTIMATED_TURN_HEIGHT = 96;
 
 export default function Transcript({ params }: PaneProps<TranscriptParams>) {
-  const { ref } = params;
+  const { ref, parentRef } = params;
+  const backAction = parentRef !== undefined ? <BackToParentAction parentRef={parentRef} /> : undefined;
 
   // ensureThread on mount / releaseThread on unmount, deferred until the one
   // client is actually ready - a deep-linked open can reach this effect before
@@ -96,7 +154,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
 
   if (!model) {
     return (
-      <PaneScaffold title={ref}>
+      <PaneScaffold title={ref} actions={backAction}>
         <EmptyState title="Loading transcript…" />
       </PaneScaffold>
     );
@@ -113,7 +171,7 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   };
 
   return (
-    <PaneScaffold title={model.name || ref}>
+    <PaneScaffold title={model.name || ref} actions={backAction}>
       {model.turns.length === 0 ? (
         <EmptyState title="No turns yet" hint="This thread hasn't sent or received anything yet." />
       ) : (

@@ -73,6 +73,38 @@ test("passes live through to the descriptor's body component", () => {
   expect(screen.getByTestId("live-echo").textContent).toBe("true");
 });
 
+// kata 0pzz: a descriptor's body needs the enclosing session's ref to build
+// a durable "return to parent" link (the subagent-transcript body is the
+// first consumer - see subagentModule.tsx's openTranscript). Mirrors the
+// live-echo test above: ToolCallItem must forward its own sessionRef prop
+// straight through to Body, exactly like it already does for `item`/`live`.
+test("passes sessionRef through to the descriptor's body component", () => {
+  function SessionRefEcho({ sessionRef }: ToolRenderProps) {
+    return <span data-testid="session-ref-echo">{sessionRef ?? "(none)"}</span>;
+  }
+  registerToolRenderer({ match: "tci_session_ref_echo", summary: () => "s", body: SessionRefEcho });
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_session_ref_echo" })}
+      turn={turn}
+      live={false}
+      sessionRef="ref_parent_1"
+    />,
+  );
+  expandRow();
+  expect(screen.getByTestId("session-ref-echo").textContent).toBe("ref_parent_1");
+});
+
+test("sessionRef is undefined at the descriptor's body when ToolCallItem itself has none", () => {
+  function SessionRefEcho({ sessionRef }: ToolRenderProps) {
+    return <span data-testid="session-ref-echo-2">{sessionRef ?? "(none)"}</span>;
+  }
+  registerToolRenderer({ match: "tci_session_ref_echo_2", summary: () => "s", body: SessionRefEcho });
+  render(<ToolCallItem item={item({ toolName: "tci_session_ref_echo_2" })} turn={turn} live={false} />);
+  expandRow();
+  expect(screen.getByTestId("session-ref-echo-2").textContent).toBe("(none)");
+});
+
 test("tags the root with the tool name for styling/testing hooks", () => {
   const { container } = render(<ToolCallItem item={item({ toolName: "tci_tag_test" })} turn={turn} live={false} />);
   expect(container.querySelector('[data-tool-name="tci_tag_test"]')).toBeTruthy();
