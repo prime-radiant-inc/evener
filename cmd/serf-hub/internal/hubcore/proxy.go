@@ -75,9 +75,9 @@ func splitLivePath(path string) (sessionID, rest string, ok bool) {
 		return "", "", false
 	}
 	tail := path[len(prefix):]
-	slash := strings.Index(tail, "/")
-	if slash < 0 {
+	before, after, found := strings.Cut(tail, "/")
+	if !found {
 		return tail, "", true
 	}
-	return tail[:slash], tail[slash+1:], true
+	return before, after, true
 }

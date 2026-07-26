@@ -34,7 +34,7 @@ func TestPastIndex_RecentProjectDirs_CapsAtLimit(t *testing.T) {
 	idx := NewPastIndex("")
 	now := time.Now().UTC()
 	metas := make([]schema.SessionMeta, 0, 20)
-	for n := 0; n < 20; n++ {
+	for n := range 20 {
 		metas = append(metas, schema.SessionMeta{
 			ID:        fmt.Sprintf("02wMz5Txv1C3Hut0M8GC%02d", n),
 			UpdatedAt: now.Add(-time.Duration(n) * time.Minute),

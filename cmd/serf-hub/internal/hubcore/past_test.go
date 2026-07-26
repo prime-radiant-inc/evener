@@ -364,7 +364,7 @@ func fuzzScenarioPastIndex_Pagination(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "project-x-0123456789")
 	_ = os.MkdirAll(proj, 0o755)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		writeMeta(t, proj, schema.SessionMeta{
 			ID:        []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv2enqVTitaig6F", "02wMz5Txv47YP64RR3B9YJ", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv733WHFsVy66SR"}[i],
 			UpdatedAt: time.Now().Add(time.Duration(i) * time.Minute),
@@ -669,13 +669,13 @@ func fuzzScenarioUpdateMetaConcurrentWithRebuildIsRaceFree(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for n := 0; n < iterations; n++ {
+		for range iterations {
 			_, _ = idx.Rebuild()
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for n := 0; n < iterations; n++ {
+		for n := range iterations {
 			meta := schema.SessionMeta{
 				ID:        "02wMz5Txv1C3Hut0M8GCeB",
 				Name:      "renamed-title",
