@@ -1,4 +1,25 @@
-# index-sidebar-lists-projects: hub home page sidebar enumerates projects + sessions
+# Manual dev-box checklist
+
+Checks in this file run against **your own real dev hub and real
+`~/.serf` / `~/.local/state/serf` session history** — not an isolated,
+agent-runnable checkout the way every card under `test/scenarios/` is.
+An agent asked to "run the scenario sweep" should skip this file
+entirely: its Pre-state cannot be satisfied in a fresh, isolated `$HOME`
+by design, because the whole point is proving the UI against a real,
+long-lived project history that only exists on a dev box that's been
+used for a while. See `test/scenarios/README.md` for the isolated-card
+convention this file deliberately does not follow.
+
+Moved here from `test/scenarios/index-sidebar-lists-projects.md` (kata
+`e0ee`): it read like an automated sweep card living in the wrong
+directory, hardcoded to Jesse's real `/home/jesse` path with no
+isolation marker, which is exactly the hazard
+`scenariohome_audit_test.go` (kata `93f5`) flags for cards actually
+under `test/scenarios/`. It never spawns a session or writes anything,
+so it was never the OAuth-footgun class of hazard (kata `keyb`) — just
+filed in the wrong place.
+
+## index-sidebar-lists-projects: hub home page sidebar enumerates projects + sessions
 
 **What this covers**: regression baseline for the hub index view.
 Validates that:

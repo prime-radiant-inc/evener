@@ -39,12 +39,6 @@ var scenarioHomeApprovedFiles = map[string]string{
 		"rather than repeating its own export — safe as long as that card's " +
 		"isolated $HOME export (fixed under kata 93f5) is still the one live " +
 		"in the same shell when this card's `~/.serf/run/*.json` glob runs.",
-	"test/scenarios/index-sidebar-lists-projects.md": "a read-only regression " +
-		"baseline explicitly written to run against Jesse's own real dev hub " +
-		"(\"On this dev box there's plenty\", a hardcoded /home/jesse path) — " +
-		"never spawns a session or writes anything. Filed under kata 93f5 as " +
-		"a candidate to reconsider (should this even live under test/scenarios/ " +
-		"as an agent-runnable card, versus a manual dev checklist?), not fixed.",
 	"test/scenarios/model-picker-fresh-install-no-recent.md": "Pre-state already " +
 		"isolates $HOME/XDG_STATE_HOME (\"Hermetic $HOME/$XDG_STATE_HOME scratch " +
 		"dirs\") — the ~/.serf mention is a one-time READ, copying real " +
