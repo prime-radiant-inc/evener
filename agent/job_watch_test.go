@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,7 +255,7 @@ func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {
 		t.Fatalf("read jobs.jsonl: %v", err)
 	}
 	var events []jobstore.Event
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -307,10 +308,10 @@ func seedWatchSendDelegateTarget(t *testing.T, jm *jobManager, target string) {
 	t.Helper()
 	delegateID := target
 	jobID := target
-	if strings.HasPrefix(target, "job_") {
-		delegateID = "dlg_" + strings.TrimPrefix(target, "job_")
-	} else if strings.HasPrefix(target, "dlg_") {
-		jobID = "job_" + strings.TrimPrefix(target, "dlg_")
+	if rest, ok := strings.CutPrefix(target, "job_"); ok {
+		delegateID = "dlg_" + rest
+	} else if rest, ok := strings.CutPrefix(target, "dlg_"); ok {
+		jobID = "job_" + rest
 	}
 	childID := "child_" + jobID
 	delegates, err := jm.store.LoadDelegates()
@@ -434,12 +435,7 @@ func hardWatchSendResult(err error) sendMessageResult {
 }
 
 func containsEventKind(kinds []jobstore.EventKind, want jobstore.EventKind) bool {
-	for _, kind := range kinds {
-		if kind == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(kinds, want)
 }
 
 func eventKindOrder(kinds []jobstore.EventKind, before, after jobstore.EventKind) bool {

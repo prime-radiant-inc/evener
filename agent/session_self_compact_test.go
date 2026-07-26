@@ -126,7 +126,7 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 func seedSessionHistory(t *testing.T, s *Session, n int) {
 	t.Helper()
 	s.mu.Lock()
-	for i := 0; i < n; i++ {
+	for range n {
 		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User("turn")))
 	}
 	s.mu.Unlock()

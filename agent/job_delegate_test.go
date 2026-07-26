@@ -356,7 +356,7 @@ func loadSessionJobStoreEvents(t *testing.T, stateDir, sessionID string) []jobst
 		t.Fatalf("read session jobs.jsonl: %v", err)
 	}
 	var events []jobstore.Event
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -509,7 +509,7 @@ func countFileLines(t *testing.T, path string) int {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	count := 0
-	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if strings.TrimSpace(line) != "" {
 			count++
 		}

@@ -206,10 +206,9 @@ func detectBuildSystem(root string) string {
 
 	// go.mod.
 	if b, err := os.ReadFile(filepath.Join(root, "go.mod")); err == nil {
-		lines := strings.Split(string(b), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "module ") {
-				parts = append(parts, "Go module (go.mod): "+strings.TrimPrefix(line, "module "))
+		for line := range strings.SplitSeq(string(b), "\n") {
+			if mod, ok := strings.CutPrefix(line, "module "); ok {
+				parts = append(parts, "Go module (go.mod): "+mod)
 				break
 			}
 		}
@@ -290,7 +289,7 @@ func parseMakefileTargets(path string) []string {
 			}
 
 			// May have multiple targets: "a b c: deps"
-			for _, t := range strings.Fields(targetPart) {
+			for t := range strings.FieldsSeq(targetPart) {
 				t = strings.TrimSpace(t)
 				if t != "" && !seen[t] {
 					targets = append(targets, t)

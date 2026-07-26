@@ -151,13 +151,11 @@ func TestLoadOrCreateInstallationID_ConcurrentCallersShareSingleton(t *testing.T
 	start := make(chan struct{})
 	results := make(chan string, callers)
 	var wg sync.WaitGroup
-	for i := 0; i < callers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range callers {
+		wg.Go(func() {
 			<-start
 			results <- LoadOrCreateInstallationIDWithFS(fs, dir)
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

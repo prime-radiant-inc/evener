@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -74,9 +76,7 @@ func FuzzRepairArgs(f *testing.F) {
 			"unknown_" + extra: extra,
 		}
 		before := make(map[string]any, len(args))
-		for key, value := range args {
-			before[key] = value
-		}
+		maps.Copy(before, args)
 
 		out, _ := RepairArgs(params, args)
 		if !reflect.DeepEqual(args, before) {
@@ -125,9 +125,7 @@ func FuzzRepairArgs(f *testing.F) {
 			},
 		} {
 			beforeCase := make(map[string]any, len(tc.args))
-			for key, value := range tc.args {
-				beforeCase[key] = value
-			}
+			maps.Copy(beforeCase, tc.args)
 			outCase, _ := RepairArgs(tc.params, tc.args)
 			if _, err := json.Marshal(outCase); err != nil {
 				t.Fatalf("extra RepairArgs case was not serializable: %v", err)
@@ -251,7 +249,7 @@ func FuzzRepairSuggestions(f *testing.F) {
 func repairFuzzAvailable(joined string, longList bool) []string {
 	var available []string
 	if joined != "" {
-		for _, name := range strings.Split(joined, ",") {
+		for name := range strings.SplitSeq(joined, ",") {
 			if len(available) == 8 {
 				break
 			}
@@ -262,7 +260,7 @@ func repairFuzzAvailable(joined string, longList bool) []string {
 		}
 	}
 	if longList {
-		for i := 0; i < maxAvailableListed+2; i++ {
+		for i := range maxAvailableListed + 2 {
 			available = append(available, fmt.Sprintf("tool_%02d", i))
 		}
 	}
@@ -270,10 +268,5 @@ func repairFuzzAvailable(joined string, longList bool) []string {
 }
 
 func repairFuzzContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }

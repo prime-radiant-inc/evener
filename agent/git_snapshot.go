@@ -73,7 +73,7 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 	}
 
 	if st, err := run("git status --porcelain"); err == nil && st.ExitCode == 0 {
-		for _, line := range strings.Split(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.ReplaceAll(st.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue
@@ -88,7 +88,7 @@ func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, bra
 
 	// Use %x20 for a literal space so the shell doesn't split the format across args.
 	if lg, err := run("git log -n 5 --pretty=format:%h%x20%s"); err == nil && lg.ExitCode == 0 {
-		for _, line := range strings.Split(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.ReplaceAll(lg.Stdout, "\r\n", "\n"), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
 				continue

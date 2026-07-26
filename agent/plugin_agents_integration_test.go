@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -478,13 +479,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 	if sub.sess.reg.Get("shell") == nil {
 		t.Fatalf("granted provider-visible exec_command should map to shell; tools=%v", sub.sess.reg.Names())
 	}
-	hasExecCommand := false
-	for _, name := range subagentToolNames {
-		if name == "exec_command" {
-			hasExecCommand = true
-			break
-		}
-	}
+	hasExecCommand := slices.Contains(subagentToolNames, "exec_command")
 	if !hasExecCommand {
 		t.Fatalf("subagent request should include provider-visible exec_command, got %v", subagentToolNames)
 	}
