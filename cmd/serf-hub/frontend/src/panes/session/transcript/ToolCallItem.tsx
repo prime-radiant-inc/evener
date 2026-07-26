@@ -17,7 +17,6 @@ import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./type
 const CLASS = {
   call: requireClass(styles.call, "toolcallitem.module.css", "call"),
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
-  detail: requireClass(styles.detail, "toolcallitem.module.css", "detail"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
 
@@ -151,17 +150,16 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
         <div className={CLASS.body} data-testid="tool-call-body">
-          {/* The descriptor's detail (a shell call's exit code and untruncated
-              command) ALSO rides the collapsed row's hover title, but a title is
-              mouse-only in practice - no keyboard path, uneven screen-reader
-              support. Repeating it here as real text is what actually makes it
-              reachable, which is the whole point of A2 keeping it reachable
-              rather than just moving it off the headline. */}
-          {detail !== undefined && (
-            <div className={CLASS.detail} data-testid="tool-call-detail">
-              {detail}
-            </div>
-          )}
+          {/* descriptor.detail() (currently only shell's exit code) rides the
+              collapsed row's hover title ONLY (see `title={detail}` above) - it
+              is not echoed here as a second copy. A title alone is mouse-only,
+              but for shell that is not a reachability gap: the daemon bakes the
+              same "[exit N]" fact into the captured output itself
+              (agent/session_tools_shell.go's formatShellResult - the model
+              reads that same text as its tool result), so it is already real,
+              keyboard/screen-reader-reachable text at the tail of the body
+              below. Echoing detail() here too duplicated that fact on screen
+              (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
           {Body && <Body item={item} live={live} />}
           <ImageGallery images={item.outputImages} />
