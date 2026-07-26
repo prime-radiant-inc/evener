@@ -319,6 +319,61 @@ test("Send's tooltip says it sends now when nothing is running", async () => {
   expect((await screen.findByRole("tooltip")).textContent).toMatch(/send now/i);
 });
 
+// cezn: Send and Steer sit side by side while a turn runs, and Send's own
+// label never changes whether it fires now or queues - only the tooltip
+// above disambiguates, and it needs a 300ms hover nobody mid-flow gives it.
+// This caption says the same thing the tooltip does, WITHOUT a hover -
+// always on screen the instant the control row itself is, non-color
+// (plain caption text), and it never touches the Send/Steer labels
+// themselves (additive only, per Composer.tsx's own top-of-file reasoning
+// for keeping one label).
+test("an always-visible caption states Send's timing while a turn runs - no hover required", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+  });
+  expect(screen.getByText(/send queues until the agent stops/i)).toBeTruthy();
+});
+
+// Idle Send is unambiguous (there's no Steer beside it, and no timing
+// question to answer), so the caption would be noise there - it only earns
+// its place while the ambiguity it resolves actually exists.
+test("the timing caption is absent when nothing is running", async () => {
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
+// A turn can be busy (Stop/Steer showing) while the source has explicitly
+// advertised no queue capability - deriveSendQueueAvailability's own
+// both-false branch. Send is disabled there (canCompose is false), so a
+// caption claiming it queues would be a lie; this pins the caption to
+// availability.canQueue, not to `busy` alone.
+// status can read "active" before turn/started has populated activeTurnId
+// (isTurnActive's own doc comment on that race window) - Stop/Steer stay
+// hidden there since neither is meaningful without a real turn to act on,
+// and the caption follows the same rule: nothing to explain the timing of
+// until Send/Steer's own ambiguity actually exists.
+test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
+test("the timing caption is absent when busy but the source advertises no queue capability", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, queue: false },
+      queue: {},
+      activeTurnId: "turn_1",
+    },
+  });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
 // --- send / queue routing ---------------------------------------------------
 
 test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {

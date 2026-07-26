@@ -67,6 +67,7 @@ const CLASS = {
   imageThumbnail: requireClass(styles.imageThumbnail, "composer.module.css", "imageThumbnail"),
   dimensionsOverlay: requireClass(styles.dimensionsOverlay, "composer.module.css", "dimensionsOverlay"),
   removeImageButton: requireClass(styles.removeImageButton, "composer.module.css", "removeImageButton"),
+  sendTiming: requireClass(styles.sendTiming, "composer.module.css", "sendTiming"),
 };
 
 function RemoveIcon() {
@@ -299,6 +300,16 @@ export function Composer({ ref }: ComposerProps) {
   const submitTooltip = availability.canQueue
     ? `Queue until the agent stops · ${chordLabel(submitChord)}`
     : `Send now · ${chordLabel(submitChord)}`;
+  // cezn: three independently-briefed personas all missed Send's timing
+  // mid-flow because only the tooltip above says it, and a 300ms hover is
+  // more than anyone gives a button they're about to click. This caption
+  // says the same thing WITHOUT a hover - additive only, next to the
+  // control row, never touching Send/Steer's own labels. Idle Send is
+  // unambiguous (no Steer beside it, no timing question to answer), so it
+  // only earns its place while that ambiguity actually exists; hidden
+  // alongside the rest of the input row while an ask_user question is
+  // pending, same as the row itself (askPending's own doc comment above).
+  const showSendTiming = busy && availability.canQueue && !askPending;
   const ended = ENDED_STATUSES.has(model.status.type);
   // A finished session can still be sent to when the source says so: the hub
   // advertises Send for an exited serf thread and auto-resumes it on the first
@@ -817,6 +828,10 @@ export function Composer({ ref }: ComposerProps) {
           <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={handleFilePickerChange} />
         </form>
       )}
+      {/* cezn: Send's timing, always visible - see showSendTiming's own doc
+          comment above for why this exists and what it deliberately doesn't
+          touch. */}
+      {showSendTiming && <p className={CLASS.sendTiming}>Send queues until the agent stops</p>}
     </div>
   );
 }
