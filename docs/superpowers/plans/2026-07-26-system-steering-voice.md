@@ -18,7 +18,9 @@
 - `--ink-mid` for the whole steering row, glyph and chevron included. Not `--ink-low` (2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor).
 - No chromatic literals outside `tokens.css` (`src/styles/token-contract.test.ts` enforces). The steering glyph uses `currentColor` and needs no allowlist entry.
 - ※ (U+203B) is outside the IBM Plex latin1 subset (`global.css:23-24`). It MUST be inline SVG, never a text character.
-- Gates, all by exit code: `go test ./...` and `make lint` from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/serf-hub/frontend`. Use the npm scripts, NOT `npx tsc` — `npx tsc` from the repo root resolves to a decoy `tsc@2.0.4` package and silently does not typecheck.
+- Gates, all by exit code: **`make test` and `make lint`** from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/serf-hub/frontend`.
+- **`go test ./...` from the repo root is NOT a gate.** It resolves per-module and says nothing about `agent` or `llm` — where most of this work lives (`docs/conventions/go-workspace.md:9-20`). `make test` and `make lint` loop the modules explicitly; a green `./...` is not evidence the workspace builds. If you want a fast inner-loop check while iterating, `(cd agent && go test ./...)` covers the agent module, but the gate you report is `make test`.
+- Use the frontend npm scripts, NOT `npx tsc` — `npx tsc` from the repo root resolves to a decoy `tsc@2.0.4` package and silently does not typecheck.
 - `make generate` regenerates BOTH `cmd/serf-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md`. Commit both, or `make lint-generated` fails.
 - Never `git stash`, never `git checkout <file>` to undo, never `npm ci`, never `git add` a directory containing the `node_modules` symlink.
 
