@@ -12,7 +12,8 @@
 
 ## Global Constraints
 
-- No backward compatibility. Absent `Kind` renders `※ System steered ▸` with no kind and no colon. Do not add a prose fallback.
+- No backward compatibility for the *kind*. Absent `Kind` renders `※ System steered ▸` with no kind and no colon. Do not add a prose fallback.
+- This does NOT extend to notification cards. Their trigger is `<job-notification>` markup — structured data that cannot false-positive — so card routing stays content-driven and a pre-`Kind` transcript still renders its cards. Reading markup is parsing; inferring a kind from prose is guessing. Only the guessing is being removed. (Task 6 has a test pinning this; it is intended behaviour, not a violation of the line above.)
 - Sentence case for all UI copy. A colon promises a value — omit it when there is no kind.
 - `--ink-mid` for the whole steering row, glyph and chevron included. Not `--ink-low` (2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor).
 - No chromatic literals outside `tokens.css` (`src/styles/token-contract.test.ts` enforces). The steering glyph uses `currentColor` and needs no allowlist entry.
