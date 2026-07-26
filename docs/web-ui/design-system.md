@@ -190,6 +190,15 @@ four independent checks:
 Every mechanism above is poison-tested against hand-written snippets proving both what it
 catches and what it must not flag (see the test file itself) — not just asserted to work.
 
+**Ruling (Jesse, 2026-07-26): diffs may use the semantic colours.** `diffblock`'s add/del tints
+are `--alive-bg`/`--danger-bg` and stay that way. This settles a live contradiction: the 2026-06
+mockup set carried an explicit, capitalised "CRITICAL CONSTRAINT" that diff add/remove "must NOT
+use the semantic colors", on the theory that diffs are common enough to drain the meaning out of
+the three attention hues. That constraint is **retired**. The rule above wins — chroma is scarce,
+and the answer to "this needs green and red" is to reuse the two we have, not to mint a fourth
+and fifth. Recorded here rather than beside `diffblock` so nobody re-opens it from the mockup
+side; `docs/web-ui/decisions.md` topic 19 has the full history.
+
 ---
 
 ## 5. Motion budget

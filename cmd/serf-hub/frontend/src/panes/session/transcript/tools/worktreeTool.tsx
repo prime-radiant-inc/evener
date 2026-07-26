@@ -34,6 +34,23 @@ import { clip, parseArgs, parseJSONObject, str } from "./helpers";
 // direction.
 const DISCARD_NOTE = " · discarded uncommitted changes";
 
+// Parsed core of a manage_worktree call's arguments: which operation it
+// requested, and whether force_dirty was set. This is deliberately narrower
+// than the full args object worktreeSummary below needs (it also reads
+// name/path/base_ref for display text) - it's exactly the "read-vs-mutate"
+// shape a caller that only cares about consequence, not display, needs.
+// Exported so consequenceRank.ts (kata bc16) reuses this instead of
+// re-deriving the same two fields from item.argumentsJSON itself.
+export interface WorktreeCallArgs {
+  operation: string;
+  forceDirty: boolean;
+}
+
+export function parseWorktreeCallArgs(argumentsJSON: string | undefined): WorktreeCallArgs {
+  const args = parseArgs(argumentsJSON);
+  return { operation: str(args, "operation") ?? "", forceDirty: args.force_dirty === true };
+}
+
 function countOf(result: Record<string, unknown> | undefined, key: string): number | undefined {
   const value = result?.[key];
   return Array.isArray(value) ? value.length : undefined;
@@ -41,13 +58,13 @@ function countOf(result: Record<string, unknown> | undefined, key: string): numb
 
 function worktreeSummary(item: { argumentsJSON?: string; output?: string }): string {
   const args = parseArgs(item.argumentsJSON);
-  const operation = str(args, "operation") ?? "";
+  const { operation, forceDirty } = parseWorktreeCallArgs(item.argumentsJSON);
   const result = parseJSONObject(item.output);
   const status = result ? str(result, "status") : undefined;
   // `name` is the handle for create/remove/switch; `path` is switch's other
   // accepted form (the schema takes exactly one of the two).
   const target = str(args, "name") ?? str(args, "path") ?? "";
-  const dirty = args.force_dirty === true ? DISCARD_NOTE : "";
+  const dirty = forceDirty ? DISCARD_NOTE : "";
 
   switch (operation) {
     case "create": {

@@ -74,7 +74,14 @@ const snapshot: ThreadReadResponse = {
         durationMs: 27000,
         items: [
           { type: "userMessage", id: "i1", turnId: "turn_1", text: "Can you test out delegation?" },
-          { type: "thinking", id: "i2", turnId: "turn_1", text: "Testing delegation" },
+          // "reasoning", not "thinking" — the registered item types are
+          // agentMessage / reasoning / steering / systemMessage / userMessage /
+          // warning (grep registerItemRenderer). An unregistered type silently
+          // falls through to RawItemView, the debug fallback, which renders the
+          // type name in uppercase mono and exercises none of the real
+          // component. A harness that measures the fallback is measuring
+          // nothing the app ships.
+          { type: "reasoning", id: "i2", turnId: "turn_1", text: "Testing delegation" },
           {
             type: "commandExecution",
             id: "i3",
@@ -92,12 +99,11 @@ const snapshot: ThreadReadResponse = {
             text: "Delegation test started. I asked a delegate to inspect the current directory and report back without changing files.",
           },
           {
-            type: "notification",
+            type: "systemMessage",
             id: "i5",
             turnId: "turn_1",
             text: "Directory: /Users/jesse/prime-radiant/toil-suite/serf Three notable entries: README.md, go.mod, agent/",
-            eventKind: "job_finished",
-            raw: { jobId: "job_1", delegateId: "dlg_1", status: "completed" },
+            eventKind: "compaction",
           },
         ],
       },
@@ -145,10 +151,21 @@ interface Scroller {
 // so each one also names the deepest descendants whose right edge is past its
 // content edge - those, not the container, are what has to be fixed.
 //
-// `ignored` carries the one exclusion, rather than dropping it silently: the
-// standard visually-hidden recipe (`width: 1px; overflow: hidden`) is a scroll
-// container by that arithmetic on every page that has one, and it is not a
-// pane anyone can see or scroll. Anything with a real width is a finding.
+// Two exclusions, both reported rather than dropped silently.
+//
+// `overflow-x: hidden` / `clip` is the big one, and getting it wrong inverts
+// this guard's meaning. `scrollWidth > clientWidth` is true for ANY element
+// whose content exceeds its box, including one deliberately clipping with
+// `text-overflow: ellipsis` — which is the recommended FIX for overflow, not
+// an instance of it. Only `auto` and `scroll` put a scrollbar under the
+// reader's finger, so only they are findings. (This is also exactly why the
+// bug that prompted this harness was possible: `overflow-y: auto` with no
+// overflow-x declared computes overflow-x to `auto`, not `visible`, so those
+// containers ARE scrollable and do get measured.)
+//
+// The second: the standard visually-hidden recipe (`width: 1px; overflow:
+// hidden`) is a 1px box on every page that has one, and is not a pane anyone
+// can see or scroll.
 function measure(): { width: number; scrollers: Scroller[]; ignored: string[] } {
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
@@ -159,7 +176,14 @@ function measure(): { width: number; scrollers: Scroller[]; ignored: string[] } 
     const overflowPx = el.scrollWidth - el.clientWidth;
     if (overflowPx <= 1) continue;
     if (el.clientWidth <= 1) {
-      ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""}`);
+      ignored.push(`${el.tagName.toLowerCase()}.${el.className || ""} (1px clip box)`);
+      continue;
+    }
+    const overflowX = getComputedStyle(el).overflowX;
+    if (overflowX === "hidden" || overflowX === "clip") {
+      ignored.push(
+        `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
+      );
       continue;
     }
 

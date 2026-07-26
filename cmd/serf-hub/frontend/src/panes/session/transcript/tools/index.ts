@@ -16,7 +16,9 @@
 // imports directly), sandboxEscalation.tsx (thread-level, no
 // registerToolRenderer integration point exists for it at all - see its
 // own file header for why, and the wave-4 task-3 report for the
-// integration handoff this instead needs).
+// integration handoff this instead needs), consequenceRank.ts (kata bc16 -
+// a tool call's read-only/mutating/destructive rank for the clustering d6fp
+// still has to build; a pure judgment table, no rendering of its own).
 import "./fsTools";
 import "./shellTool";
 import "./editTools";

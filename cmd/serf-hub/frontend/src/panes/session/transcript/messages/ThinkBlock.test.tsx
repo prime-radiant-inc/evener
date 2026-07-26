@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
@@ -351,4 +354,20 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   expect(container.querySelector('[data-testid="think-block"]')).toBeTruthy();
   rerender(<ThinkBlock item={item({ reasoningSummaries: [["x"]] })} turn={turn} live={false} />);
   expect(container.querySelector('[data-testid="think-block"]')).toBeTruthy();
+});
+
+// A closed <details> hides its non-summary children through the UA's own
+// skipped-contents mechanism, which any `display` set on the <details> element
+// REPLACES. So the gutter layout must be scoped to [open]: unscoped, a
+// collapsed thought leaks a sliver of its body text beside the label. jsdom
+// evaluates no cascade, so this asserts the declaration rather than the pixels
+// - the same stylesheet-source idiom toolRowGrammar.test.tsx uses, comments
+// stripped first so the rule cannot match its own prose.
+test("the settled gutter layout is scoped to [open], so a collapsed thought cannot leak its body", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "thinkblock.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(css).toMatch(/\.details\[open\]\s*\{[^}]*display:\s*flex/);
+  expect(css).not.toMatch(/\.details\s*\{[^}]*display:\s*flex/);
 });

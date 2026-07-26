@@ -25,6 +25,7 @@ const CLASS = {
   concerns: requireClass(styles.concerns, "notificationcard.module.css", "concerns"),
   excerpt: requireClass(styles.excerpt, "notificationcard.module.css", "excerpt"),
   raw: requireClass(styles.raw, "notificationcard.module.css", "raw"),
+  summary: requireClass(styles.summary, "notificationcard.module.css", "summary"),
   rawBody: requireClass(styles.rawBody, "notificationcard.module.css", "rawBody"),
 };
 
@@ -65,7 +66,7 @@ function Excerpt({ text }: { text: string }) {
     <>
       <div className={CLASS.excerpt}>{`${decoded.slice(0, EXCERPT_PREVIEW)}…`}</div>
       <details className={CLASS.raw}>
-        <summary>Full excerpt</summary>
+        <summary className={CLASS.summary}>Full excerpt</summary>
         <pre className={CLASS.rawBody}>{decoded}</pre>
       </details>
     </>
@@ -90,7 +91,7 @@ export function NotificationCard({ notification }: { notification: ParsedNotific
         <div className={CLASS.concerns}>Concerns: {notification.concerns.join("; ")}</div>
       )}
       <details className={CLASS.raw}>
-        <summary>Raw notification</summary>
+        <summary className={CLASS.summary}>Raw notification</summary>
         <pre className={CLASS.rawBody} data-testid="notification-raw">
           {notification.rawText}
         </pre>

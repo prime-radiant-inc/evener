@@ -57,6 +57,9 @@ import { WatchedChildIndicator } from "./watchedChild";
 
 const TASK_CLIP = 80;
 const DONE_VISIBLE_CAP = 6;
+// mhcf: "the ~5 most recent tool-call rationales" (product ask) - see
+// ChildActivityBody's own comment for the cap+ordering reasoning.
+const RECENT_ACTIVITY_CAP = 5;
 
 const CLASS = {
   module: requireClass(styles.module, "subagentmodule.module.css", "module"),
@@ -196,12 +199,32 @@ function openTranscript(ref: string, parentRef: string | undefined): void {
 
 // ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
 // §4.1/§4.2): Mandate (the delegation task), a live Activity feed (the child's
-// tool-call purpose/description fields, latest emphasized while the child is
-// still running), and Summary (the child's last agentMessage). It opens its
-// OWN rich watch (Task 9's { includeTurns: true } upgrade) so the Activity feed
-// has the child's turn history, and reads that turn content back out of
+// tool-call purpose/description fields, capped and ordered per mhcf below),
+// and Summary (the child's last agentMessage). It opens its OWN rich watch
+// (Task 9's { includeTurns: true } upgrade) so the Activity feed has the
+// child's turn history, and reads that turn content back out of
 // watchedThreads. Mounted only while the card is expanded, so the row-dot's
-// lean watch stays lean for the common never-expanded case (§4.2).
+// lean watch stays lean for the common never-expanded case (§4.2). "Always-
+// current" is satisfied by that same rich read: it carries subscribe:true, so
+// the feed is current the instant the card opens and stays live afterward -
+// no further watch work needed (mhcf: this is expanded-only by design, not an
+// oversight - a collapsed row's status pill/preview is a different, cheaper
+// surface entirely).
+//
+// mhcf: the feed used to render EVERY purpose-bearing item since the child's
+// first turn, oldest-first, unbounded - a long-running child produces dozens
+// or hundreds of lines, and the live-step emphasis (idx === length-1) sat at
+// the BOTTOM of that list: the right idea, at the least reachable position in
+// it. Fixed two ways: (1) capped to RECENT_ACTIVITY_CAP, since a reader doesn't
+// need the full inline history when "Open transcript" already exists for
+// exactly that (7f7c's same reasoning for the Mandate's full task text vs. the
+// row's clipped one); (2) rendered newest-first within that window, so the
+// live step is reachable with zero scrolling regardless of section height -
+// oldest-first would still land it at the visual bottom, just of a shorter
+// list. Each <li>'s `value` is its TRUE 1-based ordinal into the full history,
+// not its position in the truncated/reversed window, so list-style:decimal
+// reads e.g. "43." rather than relabeling the 43rd step "1." merely because it
+// renders first - which would understate how much the child has actually done.
 // JobDetailSection surfaces the exhaustion/resumable detail a
 // serf/job/finished notification carries that no other UI shows (dr7e) -
 // reason is already visible in the collapsed one-liner via row.resultPreview/
@@ -246,6 +269,16 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
     const purpose = statedPurposeOf(it);
     return purpose === undefined ? [] : [{ id: it.id, purpose }];
   });
+  // The RECENT_ACTIVITY_CAP most recent items, newest-first, each keeping its
+  // TRUE 1-based ordinal into the full (oldest-first) `activity` array - see
+  // this function's own header comment for why both the cap and the reversal
+  // exist, and why the ordinal travels with the item rather than being
+  // re-derived from its position in this windowed/reversed copy.
+  const windowStart = Math.max(0, activity.length - RECENT_ACTIVITY_CAP);
+  const recentActivity = activity
+    .slice(windowStart)
+    .map((it, i) => ({ ...it, ordinal: windowStart + i + 1 }))
+    .reverse();
   const summaryText = items.filter((it) => it.type === "agentMessage").at(-1)?.text;
   const childRunning = model ? rowKindFromChildStatus(model.status.type) === "running" : false;
 
@@ -260,11 +293,15 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
         <section className={CLASS.section} data-testid="subagent-activity">
           <div className={CLASS.sectionLabel}>Activity</div>
           <ol className={CLASS.activity}>
-            {activity.map((it, idx) => {
-              const latest = childRunning && idx === activity.length - 1;
+            {recentActivity.map((it) => {
+              // "latest" is the chronologically LAST item (ordinal ===
+              // activity.length), independent of where it renders within the
+              // newest-first window above.
+              const latest = childRunning && it.ordinal === activity.length;
               return (
                 <li
                   key={it.id}
+                  value={it.ordinal}
                   className={latest ? `${CLASS.activityItem} ${CLASS.activityLatest}` : CLASS.activityItem}
                 >
                   {it.purpose}

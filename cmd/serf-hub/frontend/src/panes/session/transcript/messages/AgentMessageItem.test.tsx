@@ -6,6 +6,7 @@ import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { ignoringTurn, itemRendererFor } from "../types";
 import { AgentMessageItem } from "./AgentMessageItem";
+import rawStyles from "./agentmessageitem.module.css";
 
 afterEach(cleanup);
 
@@ -116,24 +117,40 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
 });
 
-// --- speaker mark (1fwc) -----------------------------------------------
+// --- speaker mark (1fwc, revised by kata 8v4n) -------------------------
 // A short agent reply and a short user message must not read as one
-// undifferentiated voice: UserMessageItem carries a "You" tag, so the
-// agent side needs its own quiet identity mark rather than relying on the
-// reader to notice its ABSENCE.
+// undifferentiated voice - but the golden reference identifies the agent's
+// prose by giving it NO visible label at all (`grep -c "Agent"` over
+// docs/web-ui/history/examples/01-golden-live-session.html returns 0): the
+// hero is the thing that needs no introduction. A screen reader still
+// needs a way to tell the two speakers apart, so "Agent" survives as text
+// in the DOM - carried by the same visually-hidden recipe used elsewhere in
+// this codebase (ModelSwitch/StatusRow/RailRow/etc.), present for a screen
+// reader's linear reading order and absent from the screen.
 
-test('settled carries a quiet "Agent" tag as a sibling of the text, not mixed into it', () => {
+test('settled carries "Agent" for assistive tech only, via the visually-hidden recipe, not a visible tag', () => {
   render(<AgentMessageItem item={item({ text: "You're welcome." })} turn={turn} live={false} />);
-  expect(screen.getByText("Agent")).toBeTruthy();
+  const label = screen.getByText("Agent");
+  expect(label.className).toBe(rawStyles.srOnly);
   // Two separate nodes, not one merged string - proven the same way
   // UserMessageItem.test.tsx proves its own "You" tag is a sibling.
   expect(screen.getByText("You're welcome.")).toBeTruthy();
 });
 
-test('live carries the same "Agent" tag while streaming - the mark does not wait for settle', () => {
+test('live carries the same visually-hidden "Agent" mark while streaming - it does not wait for settle', () => {
   render(<AgentMessageItem item={item({ pendingText: ["strea", "ming"] })} turn={turn} live={true} />);
-  expect(screen.getByText("Agent")).toBeTruthy();
+  expect(screen.getByText("Agent").className).toBe(rawStyles.srOnly);
   expect(screen.getByTestId("streaming-text").textContent).toBe("streaming");
+});
+
+// jsdom evaluates no cascade (this file's own --prose-font-size tests below
+// rely on the same fact), so proving the mark is actually invisible - not
+// merely differently classed - means reading the stylesheet's own source,
+// the same technique used there.
+test("the srOnly class actually applies the visually-hidden recipe, not just a differently-named visible one", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
+  expect(css).toContain("clip: rect(0, 0, 0, 0)");
 });
 
 // --- agent prose is the transcript's hero (kata 7pa0) -----------------------

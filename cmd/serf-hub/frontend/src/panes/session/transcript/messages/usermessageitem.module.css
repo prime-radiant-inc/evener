@@ -1,11 +1,19 @@
 /* Quiet, demoted treatment (design-system.md mockup #3: "the user knows
  * what they said" - the prompt never out-shouts the agent's own prose that
  * follows it). No bubble, no right-alignment: a small "You" tag, then the
- * text at reduced contrast (ink-mid, not ink-hi). */
+ * text at reduced contrast (ink-mid, not ink-hi).
+ *
+ * The tag is a fixed-width LEFT COLUMN, baseline-aligned with the first line
+ * of the message beside it - not a line of its own above the text (kata
+ * 8v4n, matching the golden reference's own `.you`/`.tag` row: docs/web-ui/
+ * history/examples/01-golden-live-session.html). Every labelled row in the
+ * transcript reads down this same gutter shape instead of stacking as
+ * label/content pairs whose vertical rhythm would otherwise carry no
+ * information. */
 .message {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  align-items: baseline;
+  gap: var(--space-3);
   padding: var(--space-2) 0;
 }
 
@@ -38,11 +46,18 @@
   margin-top: var(--space-6);
 }
 
-.header {
+/* The gallery and text share the gutter's content column - the same column
+ * for both, so the tag's baseline lines up with whichever comes first.
+ * min-width: 0 overrides a flex item's default auto minimum, which would
+ * otherwise floor this column at its longest unbreakable run and push the
+ * row wider than its container - exactly the failure overflowguard exists
+ * to catch at a narrow pane width (kata 8v4n). */
+.body {
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
 }
 
 /* Hover/focus-revealed (webui-ux-transcript C3): invisible until the
@@ -52,8 +67,16 @@
  * the tab order at all times, and there's no transition - tokens.css's own
  * motion budget reserves animation for attention-onset and the 120ms
  * overlay fade alone, so this is an instant state swap like any other
- * :hover rule, not a fourth motion. */
+ * :hover rule, not a fourth motion.
+ *
+ * flex: none, and a sibling of the tag/body row rather than a child of
+ * either: the body's flex-grow already claims the row's leftover width, so
+ * this reserves its own slot at the row's trailing edge (RailRow's leading
+ * gutters reserve their width the same unconditional way - Rail.module.css) -
+ * a corner action near the message's first line, without a header row of
+ * its own above the text. */
 .actions {
+  flex: none;
   display: flex;
   gap: var(--space-1);
   opacity: 0;
@@ -83,10 +106,19 @@
  *
  * The inversion is deliberate: a reader scans for the label and already wrote
  * the message. Known side effect - the user's own sentence now renders dimmer
- * than both the word "You" above it and the agent's tool titles below it. That
+ * than both the word "You" beside it and the agent's tool titles below it. That
  * falls out of the pre-existing --ink-mid body decision (see the file header),
  * but this rule is what makes it visible. */
 .tag {
+  /* flex: none holds this column at exactly one width regardless of how
+   * much room .body's content wants; --space-7 is the app's own 4px scale
+   * standing in for the golden's hand-measured 34px (kata 8v4n) - "You" sits
+   * comfortably inside it with room to spare, which matters because this is
+   * also the width Steering's own "You steered" tag will need to share once
+   * that gutter lands (docs/web-ui/decisions.md topic 03; SteeringItem is a
+   * different worktree's file, not touched here). */
+  flex: none;
+  width: var(--space-7);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   font-weight: var(--font-weight-medium);

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { requireClass } from "../../../../widgets/internal/requireClass";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey, rowKindFromChildStatus } from "./subagentModule";
@@ -18,6 +19,7 @@ import { registerPane } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { connectionStore } from "../../../../stores/connection";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
+import rawCssModule from "./subagentmodule.module.css";
 
 // A minimal, test-only "session" pane registration - real registerPane/
 // paneFor/openPane machinery, just without pulling in the actual
@@ -66,6 +68,14 @@ function moduleCss(): string {
   const path = join(dirname(fileURLToPath(import.meta.url)), "subagentmodule.module.css");
   return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 }
+
+// jsdom evaluates no cascade, but a CSS Modules class NAME is real (a hashed
+// string Vite's transform produces, not layout) - same idiom as chip.test.tsx's
+// own rawStyles import, used below to prove the "latest" emphasis lands on the
+// right <li> rather than just eyeballing a snapshot.
+const styles = {
+  activityLatest: requireClass(rawCssModule.activityLatest, "subagentmodule.module.css", "activityLatest"),
+};
 
 // --- classifyJobStatus / resolveRowKey (pure, unit-level) -----------------
 
@@ -716,6 +726,104 @@ test("an expanded delegate card shows the Mandate, a live Activity feed, and the
   // Summary is the child's last agentMessage.
   const summary = screen.getByTestId("subagent-summary");
   expect(within(summary).getByText("all done")).toBeTruthy();
+});
+
+// mhcf: a child thread/read fixture with MANY purpose-bearing steps.
+// childThreadRead above hard-codes exactly two real steps - useful for the
+// Mandate/Activity/Summary shape, but far too few to exercise a cap. `status`
+// is fixed "active" (childRunning: true) so the same fixture also exercises
+// the live-step emphasis.
+function manyStepsThreadRead(params: unknown, stepCount: number) {
+  const includeTurns = (params as { includeTurns: boolean }).includeTurns;
+  const items = [];
+  for (let n = 1; n <= stepCount; n++) {
+    items.push({
+      id: `item_step_${n}`,
+      turnId: "turn_c1",
+      type: "commandExecution",
+      toolName: "shell",
+      callId: `ca${n}`,
+      description: `step ${n}`,
+      status: "completed",
+    });
+  }
+  return {
+    thread: {
+      id: "thr_child",
+      sessionId: "sess_child",
+      preview: "",
+      ephemeral: false,
+      modelProvider: "anthropic/claude-sonnet-4-5",
+      createdAt: 1000,
+      updatedAt: 1000,
+      status: { type: "active" },
+      cwd: "/tmp",
+      cliVersion: "1.0.0",
+      source: "serf",
+      serf: { ref: (params as { ref: string }).ref, capabilities: {} as never, queue: {} },
+      turns: includeTurns ? [{ id: "turn_c1", status: "completed", itemsView: "full", items }] : [],
+    },
+  };
+}
+
+test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => manyStepsThreadRead(params, 20));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_cap",
+    callId: "call_cap",
+    argumentsJSON: JSON.stringify({ task: "long running audit" }),
+    output: JSON.stringify({ job_id: "job_cap", status: "running", transcript_ref: "ref_cap_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText("long running audit"));
+
+  const activity = await screen.findByTestId("subagent-activity");
+  expect(within(activity).getAllByRole("listitem")).toHaveLength(5);
+  // WHICH five: the most recent (16-20), never the first five.
+  for (const n of [16, 17, 18, 19, 20]) expect(within(activity).getByText(`step ${n}`)).toBeTruthy();
+  for (const n of [1, 2, 14, 15]) expect(within(activity).queryByText(`step ${n}`)).toBeNull();
+});
+
+test("mhcf: the capped window renders newest-first, the live step is still (correctly) emphasized, and each <li> keeps its true ordinal", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => manyStepsThreadRead(params, 20));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_order",
+    callId: "call_order",
+    argumentsJSON: JSON.stringify({ task: "order audit" }),
+    output: JSON.stringify({ job_id: "job_order", status: "running", transcript_ref: "ref_order_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText("order audit"));
+
+  const activity = await screen.findByTestId("subagent-activity");
+  const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
+
+  // Newest-first: step 20 (the true latest) leads, counting down to step 16 -
+  // "reachable without scrolling" regardless of section height (mhcf).
+  expect(items.map((li) => li.textContent)).toEqual(["step 20", "step 19", "step 18", "step 17", "step 16"]);
+
+  // The live-step emphasis must land on the true latest step (step 20) by
+  // CONTENT, not merely on whichever <li> a stale idx===length-1 formula
+  // (written against the old oldest-first, uncapped array) would still hit.
+  expect(items[0]!.classList.contains(styles.activityLatest)).toBe(true);
+  for (const li of items.slice(1)) expect(li.classList.contains(styles.activityLatest)).toBe(false);
+
+  // list-style:decimal must read the TRUE step numbers (20 down to 16), not
+  // "1." through "5." just because these are the first five <li>s rendered -
+  // that would understate how much the child has actually done.
+  expect(items.map((li) => li.value)).toEqual([20, 19, 18, 17, 16]);
 });
 
 test("the collapsed pill reads the LIVE watched status, not the frozen tool-output value", async () => {

@@ -15,23 +15,30 @@
  * breathing room tuned for 14px body text reads as a rounding error next
  * to a 16px hero. */
 .message {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
   padding: var(--space-2) 0;
   --prose-font-size: var(--font-size-pane-title);
 }
 
-/* The agent's own speaker mark (1fwc): a short reply and a short user
- * message must not read as one voice, and the reader should not have to
- * notice an ABSENCE to tell them apart. --ink-mid, not --ink-hi like
- * UserMessageItem's "You" tag - that tag has to fight the user's own
- * DIMMED body text for attention; the agent's body already renders at
- * --ink-hi (markdown.module.css's default), so this mark only needs to
- * name the voice, not compete with it. */
-.tag {
-  font-family: var(--font-sans);
-  font-size: var(--font-size-caption);
-  font-weight: var(--font-weight-medium);
-  color: var(--ink-mid);
+/* The agent's own speaker mark (1fwc), for assistive tech only (kata 8v4n).
+ * A short reply and a short user message must not read as one voice, and a
+ * screen-reader user should not have to notice an ABSENCE to tell them
+ * apart - but the golden reference identifies the agent's prose by giving
+ * it NO visible label at all (`grep -c "Agent"` over docs/web-ui/history/
+ * examples/01-golden-live-session.html returns 0: unlabelled, full-width
+ * prose is the whole "assistant hero" idea - the hero is the thing that
+ * needs no introduction). So "Agent" survives as text in the DOM, carried
+ * by the same visually-hidden recipe StatusRow/ModelSwitch/RailRow/etc.
+ * already use elsewhere in this codebase (see e.g. statusrow.module.css's
+ * own copy) rather than a fourth transcription of it: present for a screen
+ * reader's linear reading order, absent from the screen. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }

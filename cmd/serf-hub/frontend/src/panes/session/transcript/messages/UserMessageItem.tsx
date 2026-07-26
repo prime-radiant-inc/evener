@@ -19,7 +19,7 @@ import styles from "./usermessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "usermessageitem.module.css", "message"),
-  header: requireClass(styles.header, "usermessageitem.module.css", "header"),
+  body: requireClass(styles.body, "usermessageitem.module.css", "body"),
   actions: requireClass(styles.actions, "usermessageitem.module.css", "actions"),
   tag: requireClass(styles.tag, "usermessageitem.module.css", "tag"),
   text: requireClass(styles.text, "usermessageitem.module.css", "text"),
@@ -123,12 +123,12 @@ export function UserMessageView({
       data-testid="user-message-item"
       data-opens-exchange={opensExchange ? "true" : undefined}
     >
-      <div className={CLASS.header}>
-        <span className={CLASS.tag}>You</span>
-        {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
+      <span className={CLASS.tag}>You</span>
+      <div className={CLASS.body}>
+        <ImageGallery images={item.images} />
+        <div className={CLASS.text}>{item.text}</div>
       </div>
-      <ImageGallery images={item.images} />
-      <div className={CLASS.text}>{item.text}</div>
+      {actions !== undefined && <div className={CLASS.actions}>{actions}</div>}
     </div>
   );
 }

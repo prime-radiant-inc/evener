@@ -56,7 +56,9 @@ import styles from "./thinkblock.module.css";
 
 const CLASS = {
   block: requireClass(styles.block, "thinkblock.module.css", "block"),
+  live: requireClass(styles.live, "thinkblock.module.css", "live"),
   label: requireClass(styles.label, "thinkblock.module.css", "label"),
+  liveBody: requireClass(styles.liveBody, "thinkblock.module.css", "liveBody"),
   paragraph: requireClass(styles.paragraph, "thinkblock.module.css", "paragraph"),
   details: requireClass(styles.details, "thinkblock.module.css", "details"),
   summary: requireClass(styles.summary, "thinkblock.module.css", "summary"),
@@ -87,24 +89,28 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
   if (live) {
     return (
       <div className={CLASS.block} data-testid="think-block" data-live="true">
-        <span className={CLASS.label}>Thinking…</span>
-        {(item.reasoningSummaries ?? []).map((chunks, i) =>
-          // A zero-chunk index (a later summaryIndex has started streaming
-          // before this earlier one has) renders nothing rather than an
-          // empty <p> - .paragraph carries its own margin, so an empty one
-          // would still show as a visible gap. It appears in position the
-          // instant its first chunk arrives.
-          //
-          // index-as-key is deliberate: i IS the stable identity here
-          // (summaryIndex, per this file's top comment - "each index's
-          // chunks only ever grow by appending", positions never reorder).
-          chunks.length === 0 ? null : (
-            // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
-            <p key={i} className={CLASS.paragraph}>
-              <StreamingText chunks={chunks} />
-            </p>
-          ),
-        )}
+        <div className={CLASS.live}>
+          <span className={CLASS.label}>Thinking…</span>
+          <div className={CLASS.liveBody}>
+            {(item.reasoningSummaries ?? []).map((chunks, i) =>
+              // A zero-chunk index (a later summaryIndex has started streaming
+              // before this earlier one has) renders nothing rather than an
+              // empty <p> - .paragraph carries its own margin, so an empty one
+              // would still show as a visible gap. It appears in position the
+              // instant its first chunk arrives.
+              //
+              // index-as-key is deliberate: i IS the stable identity here
+              // (summaryIndex, per this file's top comment - "each index's
+              // chunks only ever grow by appending", positions never reorder).
+              chunks.length === 0 ? null : (
+                // biome-ignore lint/suspicious/noArrayIndexKey: i is the stable summaryIndex, see above
+                <p key={i} className={CLASS.paragraph}>
+                  <StreamingText chunks={chunks} />
+                </p>
+              ),
+            )}
+          </div>
+        </div>
       </div>
     );
   }

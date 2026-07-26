@@ -114,12 +114,8 @@ stripped out. The evidence is uneven, so take it in order of strength:
 
 What the golden *dropped* from direction A is exactly the plan's own bullet
 list: A's subagent-purple, green and cyan are gone, collapsing the palette to
-four meanings.
-
-What the golden dropped from direction A is exactly the plan's own bullet
-list: direction A's subagent-purple, its green and its cyan are gone,
-collapsing the palette to four meanings. Recorded here as inference from the
-artifacts, not as a decision anyone wrote down.
+four meanings. Recorded here as inference from the artifacts, not as a decision
+anyone wrote down.
 
 ## Decision inventory
 
@@ -162,12 +158,31 @@ for all-caps mono labels: *"the amateur tell."*
 **03 · User message & steering** — chose A (quiet left `You` tag, no bubble).
 Shipped `43069bfa1`, `7098d3fae`, `36989fbdc`.
 
-Verdict **CHANGED, by design.** The bubble is gone and nothing is
-right-aligned, as decided. The tag/message contrast is deliberately inverted
-from the mockup — `.tag` is `--ink-hi` and `.text` is `--ink-mid`, because a
-dim tag on a dim message gave zero separation, with the ratios recorded in
-`usermessageitem.module.css`. Steering rendering is being worked separately
-and is out of scope here.
+Verdict **CHANGED, by design, on colour — LIVE on geometry (kata 8v4n).** The
+bubble is gone and nothing is right-aligned, as decided. The tag/message
+contrast is deliberately inverted from the mockup — `.tag` is `--ink-hi` and
+`.text` is `--ink-mid`, because a dim tag on a dim message gave zero
+separation, with the ratios recorded in `usermessageitem.module.css`.
+
+That is only the colour half of Alt A, and it is all this entry originally
+checked. It never audited Alt A's GEOMETRY: `.a-you{display:flex;gap:var(--s3);
+align-items:baseline}` with `.tag{flex:none;width:40px}` (mockup 03's own CSS)
+puts the tag in a fixed-width column baseline-aligned with the first line of
+the message beside it — matching the golden reference's identical `.you`/`.tag`
+row. What shipped instead stacked the tag in a `.header` row above the text,
+a shape none of mockup 03's four alternatives actually draws (B and C read as
+demotion-by-position with no stacked label at all; D's own `.d-you` is the
+same flex row as A). Unaudited, not merely unmentioned — the earlier verdict's
+"by design" covered the contrast inversion, not this.
+
+`usermessageitem.module.css:.message` is now the same flex row as the
+mockup's `.a-you` (kata 8v4n): `.tag` carries `flex: none; width:
+var(--space-7)` (the app's space scale standing in for the mockup's
+hand-measured 34/40px), and `.body` holds the gallery/text/fork-action column
+beside it. Steering rendering is being worked separately and is out of scope
+here, but `steeringitem.module.css`'s divider still stacks its own summary
+above its body the same pre-fix way — it will need the identical column when
+that work lands.
 
 **04 · Assistant hero & reading hierarchy** — chose A (size + space) + D
 (contrast), explicitly **not** C (first-sentence lede). Shipped `36989fbdc`.
