@@ -544,6 +544,19 @@ type Turn struct {
 	Cost  string     `json:"cost,omitempty"`
 }
 
+// SystemPreludeTurnID is the synthetic turn id for content that belongs
+// before the session's first real turn rather than to any turn a user or
+// agent produced: apptranscript.PreludeTurn's system-prompt scaffold (the
+// persisted-transcript path), and appprojector's own bundling of every
+// SESSION_START-time announcement — plugin loads, prompt-loaded notices,
+// hook/MCP warnings — that arrives live before turn_1 ever starts (the
+// notification path). Both paths reuse the SAME id deliberately: a client
+// that sees only this one turn, from either path, is looking at a session
+// that has never had a real turn (kata bz2z) — genuinely "dormant" — which
+// is the signal the empty-transcript invitation keys on. Real turns always
+// use "turn_N" (N >= 1), so this can never collide with one.
+const SystemPreludeTurnID = "turn_system"
+
 type TurnError struct {
 	Message           string           `json:"message"`
 	AdditionalDetails string           `json:"additionalDetails,omitempty"`

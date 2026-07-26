@@ -25,6 +25,17 @@ import type { ItemModel } from "../../../protocol/model";
 // component so importing it never triggers a renderer registration.
 export const SYSTEM_PROMPT_ITEM_ID = "item_system_prompt";
 
+// SYSTEM_PRELUDE_TURN_ID is the synthetic turn id for content that belongs
+// before the session's first real turn - appwire.SystemPreludeTurnID on the
+// wire. apptranscript.PreludeTurn's system-prompt scaffold and
+// appprojector's bundled SESSION_START-time announcements (plugin loads,
+// prompt-loaded notices) both use it, so a transcript whose only turn is
+// this one has never had a real turn: the session is dormant (kata bz2z).
+// Session.tsx reads it from here, alongside SYSTEM_PROMPT_ITEM_ID above, for
+// the same reason: a side-effect-free home neither pane needs to import a
+// renderer to reach.
+export const SYSTEM_PRELUDE_TURN_ID = "turn_system";
+
 // A hook's own process exit status arrives as ThreadItem.exitCode on the
 // hook_completed item (populated by internal/appprojector from
 // events.HookEndData.ExitCode). Absent - not zero - when the projecting

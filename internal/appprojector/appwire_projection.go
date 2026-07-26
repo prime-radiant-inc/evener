@@ -985,8 +985,7 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text 
 	}
 	turnID := p.activeTurnID
 	if turnID == "" {
-		p.nextTurn++
-		turnID = fmt.Sprintf("turn_%d", p.nextTurn)
+		turnID = p.preTurnAnnouncementTurnID()
 	}
 	item := appwire.ThreadItem{
 		Type:        "systemMessage",
@@ -1247,6 +1246,30 @@ func (p *AppEventProjector) startTurn() string {
 	// non-empty after this returns.
 	invariant.Hold(p.activeTurnID != "", "appprojector: startTurn left activeTurnID empty")
 	return p.activeTurnID
+}
+
+// preTurnAnnouncementTurnID returns the turn id a systemMessage announcement
+// gets when it arrives with no active turn. Before the session's first real
+// turn (nextTurn == 0), every such announcement — SESSION_START's plugin
+// loads, prompt-loaded notices, hook/MCP warnings — shares the one synthetic
+// appwire.SystemPreludeTurnID, so the client's existing consecutive-run
+// grouping (SystemNoticeItem) has one turn's worth of items to fold into a
+// single collapsed disclosure instead of rendering a wall of one-line turns
+// (kata bz2z). It is the SAME id apptranscript.PreludeTurn uses for the
+// persisted-transcript system prompt, deliberately: both mean "before any
+// real turn," so a dormant session's live and replayed views agree.
+//
+// Once a real turn has started (nextTurn > 0), a no-active-turn announcement
+// goes back to minting its own fresh turn_N, unchanged from before this
+// existed: it happened AFTER turn 1, not before it, and the prelude turn has
+// already rendered at the top of the transcript — folding a later event into
+// it would show that event out of chronological order.
+func (p *AppEventProjector) preTurnAnnouncementTurnID() string {
+	if p.nextTurn == 0 {
+		return appwire.SystemPreludeTurnID
+	}
+	p.nextTurn++
+	return fmt.Sprintf("turn_%d", p.nextTurn)
 }
 
 func (p *AppEventProjector) ReserveTurnID() string {

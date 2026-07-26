@@ -1482,6 +1482,66 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 	}
 }
 
+// Before a session's first real turn, SESSION_START-time announcements
+// (plugin loads, prompt-loaded notices, ...) each arrive with no active
+// turn. Left ungrouped, a dormant spawn's prompt-loading burst renders as one
+// standalone line per event instead of the single collapsed disclosure
+// SystemNoticeItem's consecutive-run grouping already exists to produce
+// (kata bz2z: "a wall of prompt-loading lines"). They must share ONE
+// synthetic turn id - appwire.SystemPreludeTurnID, the same id
+// apptranscript.PreludeTurn uses for the persisted-transcript system prompt -
+// so the client's existing grouping actually has one turn's worth of items
+// to fold, and so a dormant session's live and replayed views agree on what
+// "no real turn yet" looks like.
+func TestAppEventProjectorFoldsPreFirstTurnAnnouncementsIntoOnePreludeTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+
+	first := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1",
+		Data: events.PluginLoadedData{Name: "superpowers", SkillCount: 5},
+	}), appwire.NotifyTurnCompleted)
+
+	second := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPromptLoaded, SessionID: "th_1",
+		Data: events.PromptLoadedData{Label: "identity.md", Size: 2212},
+	}), appwire.NotifyTurnCompleted)
+
+	third := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPromptLoaded, SessionID: "th_1",
+		Data: events.PromptLoadedData{Label: "capabilities.md", Size: 276},
+	}), appwire.NotifyTurnCompleted)
+
+	if first != appwire.SystemPreludeTurnID || second != appwire.SystemPreludeTurnID || third != appwire.SystemPreludeTurnID {
+		t.Fatalf("pre-first-turn announcement ids = %q, %q, %q; want all %q",
+			first, second, third, appwire.SystemPreludeTurnID)
+	}
+
+	// Once a real turn starts, the prelude is over: a SESSION_START-only event
+	// occurring later (e.g. a hook that fires between two real turns) must NOT
+	// fold into the prelude bucket - it happened after turn_1, not before it,
+	// and the prelude turn already rendered at the top of the transcript.
+	realTurnID := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"},
+	}), appwire.NotifyTurnStarted)
+	if realTurnID == "" || realTurnID == appwire.SystemPreludeTurnID {
+		t.Fatalf("real turn id = %q, want a genuine turn_N distinct from the prelude", realTurnID)
+	}
+
+	// Close turn 1 (as a failure, for convenience - any of the four completion
+	// sites clears activeTurnID the same way) so the next announcement arrives
+	// in the gap between turns, exactly like the between-turns case above.
+	projector.Project(events.SessionEvent{Kind: events.EventError, SessionID: "th_1", Data: events.ErrorData{Error: "boom"}})
+
+	afterFirstTurn := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1",
+		Data: events.PluginLoadedData{Name: "late-loader"},
+	}), appwire.NotifyTurnCompleted)
+	if afterFirstTurn == appwire.SystemPreludeTurnID || afterFirstTurn == realTurnID {
+		t.Fatalf("post-first-turn announcement id = %q, want a fresh turn distinct from both the prelude (%q) and turn 1 (%q)",
+			afterFirstTurn, appwire.SystemPreludeTurnID, realTurnID)
+	}
+}
+
 // A hook-completed announcement must carry the hook's exit code as a typed
 // field, not only inside its prose ("... exit 1"). The web's Settings ->
 // Transcript "Hook exits (normal only)" toggle has to split exit-0 from
