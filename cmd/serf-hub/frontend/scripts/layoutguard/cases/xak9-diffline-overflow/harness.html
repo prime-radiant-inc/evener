@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>xak9 layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  /* Kata xak9's own measured box: DiffBlock's real .root width at a 390px
+     mobile viewport, inside PaneScaffold's padding + border (widgets/
+     panescaffold/panescaffold.module.css) - the exact figure the kata
+     measured on the real DOM (390 - 2*pane padding - borders = 322). */
+  .frame {
+    width: 322px;
+    box-sizing: border-box;
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+<!-- Reproduces DiffBlock's index.tsx markup verbatim for one added line,
+     against the REAL class names from diffblock.module.css - not a redrawn
+     approximation. Content is the exact sentence the kata's screenshot
+     showed getting cut off mid-word ("Keep each issue focused on one
+     topi[c...]"). -->
+  <div class="root">
+    <div class="line add" id="long-line">
+      <span class="marker" aria-hidden="true">+</span>
+      <span class="content" id="long-content">Keep each issue focused on one topic and use clear titles so future readers can act without re-deriving context from the diff alone.</span>
+    </div>
+  </div>
+</div>
+<script>
+window.measure = () => {
+  const root = document.querySelector(".root").getBoundingClientRect();
+  const line = document.getElementById("long-line").getBoundingClientRect();
+  const content = document.getElementById("long-content").getBoundingClientRect();
+  const contentStyle = getComputedStyle(document.getElementById("long-content"));
+  return {
+    root: { left: root.left, right: root.right, width: root.width },
+    line: { left: line.left, right: line.right, width: line.width },
+    content: { left: content.left, right: content.right, width: content.width },
+    // Positive = the content span's rendered box has spilled out past its
+    // own .root container's right edge with no visual signal - the exact
+    // mechanism kata xak9 measured (scrollWidth 550-961px inside a 322px
+    // box). The width-independent invariant text-overflow:ellipsis + the
+    // necessary flex/min-width plumbing on .line/.content exists to
+    // guarantee.
+    contentOverflowsRoot: content.right - root.right,
+    lineOverflowsRoot: line.right - root.right,
+    textOverflow: contentStyle.textOverflow,
+    overflow: contentStyle.overflow,
+  };
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "rdry-toolrow-contrast",
+  "description": "a purpose-bearing tool row's demoted result line (e.g. \"Wrote fizzbuzz.py\") must clear WCAG AA (4.5:1) against its pane background, in both themes (kata rdry)",
+  "cssFiles": [
+    "styles/tokens.css",
+    "panes/session/transcript/toolcallitem.module.css"
+  ]
+}

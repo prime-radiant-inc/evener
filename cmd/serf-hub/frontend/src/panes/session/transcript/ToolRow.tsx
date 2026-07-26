@@ -96,11 +96,10 @@ export function ToolRow({
       )}
       <span className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary} data-testid="tool-row-summary">
         {summary}
-        {/* Nested rather than appended to `summary` itself: when a purpose is
-            present the parent span is ALSO .demoted (--ink-low, below AA per
-            design-system.md's own measured figures) - the duration needs its
-            own color override so it never inherits that failing contrast just
-            because it happens to share the summary's demoted line. */}
+        {/* Nested rather than appended to `summary` itself: a stable hook to
+            query the duration apart from the demoted summary text (both
+            .demoted and .duration render --ink-mid; kata rdry moved .demoted
+            off the sub-AA --ink-low it used to inherit). */}
         {duration && (
           <span className={CLASS.duration} data-testid="tool-row-duration">
             {" · "}
