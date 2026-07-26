@@ -10,6 +10,16 @@ import { RawToolOutput } from "./RawToolOutput";
 export interface ToolRenderProps {
   item: ItemModel;
   live: boolean;
+  // The enclosing session's ref (ToolCallItem's own sessionRef prop,
+  // threaded straight through) - undefined for the same reasons ItemRenderProps'
+  // own sessionRef is (Session.tsx not yet in the render path, e.g. a future
+  // caller that never sets it). The subagent-transcript body is the one
+  // consumer today (subagentModule.tsx's openTranscript): a delegate row's
+  // "Open transcript" link needs it to record which session to return to
+  // (kata 0pzz - a subagent transcript is a child of a specific parent
+  // session, and the pane it opens must be able to say so and offer a way
+  // back, not just leave the reader to remember it).
+  sessionRef?: string;
 }
 
 export interface ToolRendererDescriptor {

@@ -161,7 +161,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
               below. Echoing detail() here too duplicated that fact on screen
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-          {Body && <Body item={item} live={live} />}
+          {Body && <Body item={item} live={live} sessionRef={sessionRef} />}
           <ImageGallery images={item.outputImages} />
         </div>
       )}

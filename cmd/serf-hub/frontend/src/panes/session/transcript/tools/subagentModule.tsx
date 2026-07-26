@@ -145,15 +145,26 @@ function durationLabel(row: SubagentRow): string | undefined {
   return ms >= 0 ? formatToolDuration(ms) : undefined;
 }
 
-function openTranscript(ref: string): void {
+function openTranscript(ref: string, parentRef: string | undefined): void {
   // The read-only "transcript" pane is the DISTINCT contextual surface for
   // viewing another thread beside the current one (plan §Ambiguities #1 / PIN-A:
   // reachable via openBeside, never a URL) - not the live SESSION pane (which is
   // the /thread/{ref} single-pane target). openBeside splits it beside the
   // focused pane on desktop and degrades to a plain full-screen open on the
   // mobile StackHost (openBeside's own no-dockview path); re-opening the same
-  // child ref just focuses the existing pane (the store's same-params dedup).
-  openBeside({ type: "transcript", params: { ref } });
+  // child ref (from the SAME parent) just focuses the existing pane (the
+  // store's same-params dedup).
+  //
+  // parentRef (kata 0pzz) is the enclosing session's ref, carried in the
+  // transcript pane's own params so it survives a layout restore/reload, not
+  // just passed as a one-off argument: a subagent transcript is a child of a
+  // specific parent session, and the pane it opens must be able to say so and
+  // offer a way back on its own (Transcript.tsx's "Back to …" action) rather
+  // than leaving the reader to reconstruct where they came from. Omitted
+  // entirely (not sent as `undefined`) when no enclosing session ref is
+  // available, so params stays the plain `{ref}` shape existing callers/tests
+  // already expect in that case.
+  openBeside({ type: "transcript", params: parentRef === undefined ? { ref } : { ref, parentRef } });
 }
 
 // ChildActivityBody is the expanded card's three-layer body (qb8e, tv5k,
@@ -246,7 +257,15 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
   );
 }
 
-function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) {
+function SubagentRowView({
+  row,
+  turnId,
+  sessionRef,
+}: {
+  row: SubagentRow;
+  turnId: string;
+  sessionRef: string | undefined;
+}) {
   const duration = durationLabel(row);
   // Captured once so the onClick closure below references this narrowed
   // local, not row.transcriptRef re-read through a closure TS can't narrow.
@@ -288,7 +307,7 @@ function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) 
           size="sm"
           onClick={(e) => {
             e.stopPropagation();
-            openTranscript(transcriptRef);
+            openTranscript(transcriptRef, sessionRef);
           }}
         >
           Open transcript
@@ -333,7 +352,7 @@ function tally(rows: SubagentRow[]): string {
 // "+N more" toggle - running/failed/unknown rows are ALWAYS visible
 // regardless of fold state (a live or broken child must never be hidden
 // by count, parity §12).
-function SubagentModule({ turnId }: { turnId: string }) {
+function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: string | undefined }) {
   const rows = useSubagentRows(turnId);
   const [expanded, setExpanded] = useState(false);
   const hasFailure = rows.some((r) => r.kind === "failed");
@@ -350,7 +369,7 @@ function SubagentModule({ turnId }: { turnId: string }) {
       <div className={CLASS.header}>{tally(rows)}</div>
       <div className={CLASS.rows}>
         {visibleRows.map((row) => (
-          <SubagentRowView key={row.rowKey} row={row} turnId={turnId} />
+          <SubagentRowView key={row.rowKey} row={row} turnId={turnId} sessionRef={sessionRef} />
         ))}
       </div>
       {foldedCount > 0 && (
@@ -396,7 +415,7 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
   };
 }
 
-function DelegateBody({ item }: ToolRenderProps) {
+function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   const [isLeader, setIsLeader] = useState(false);
 
   useLayoutEffect(() => {
@@ -424,7 +443,7 @@ function DelegateBody({ item }: ToolRenderProps) {
     return () => releaseLeader(item.turnId, item.id);
   }, [item.turnId, item.id]);
 
-  return isLeader ? <SubagentModule turnId={item.turnId} /> : null;
+  return isLeader ? <SubagentModule turnId={item.turnId} sessionRef={sessionRef} /> : null;
 }
 
 registerToolRenderer({

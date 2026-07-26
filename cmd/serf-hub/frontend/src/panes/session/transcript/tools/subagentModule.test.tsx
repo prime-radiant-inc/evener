@@ -410,6 +410,26 @@ test("open transcript opens the transcript pane in the secondary group, not the 
   expect(opened?.slot).toBe("secondary");
 });
 
+test("kata 0pzz: open transcript carries the enclosing session ref as parentRef, so the reader can return", async () => {
+  registerDockviewApi(fakeApi());
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} sessionRef="ref_parent_session" />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "ref_child_open", parentRef: "ref_parent_session" });
+});
+
+test("kata 0pzz: with no enclosing session ref available, parentRef is simply absent (no crash, still opens)", async () => {
+  registerDockviewApi(fakeApi());
+  const user = userEvent.setup();
+  const Body = toolRendererFor("delegate").body!;
+  render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
+  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const opened = workspaceStore.getState().panes.find((p) => p.type === "transcript");
+  expect(opened?.params).toEqual({ ref: "ref_child_open" });
+});
+
 test("no open-transcript button when the row has no transcriptRef yet", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
