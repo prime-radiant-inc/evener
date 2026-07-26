@@ -180,6 +180,27 @@ func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
 	}
 }
 
+// TestProjectTurnSteeringCarriesDirectAppendKindOnReload (system steering
+// voice, review round 2): the kinds above all reach schema.Turn through the
+// SteerKind/consumeSteeringMessage queue-drain path. Review round 2 found
+// seven sites that append a steering turn directly instead (loop detection,
+// task reminders, hook context, the interrupt marker, job notifications, and
+// the three pre-compact sources) and fixed them to set SteeringKind the same
+// way. ProjectTurn itself needs no round-2 change — it only ever reads
+// turn.SteeringKind, never how the turn reached history — but this pins that
+// a direct-append kind (interrupted) projects identically to a queue-path one.
+func TestProjectTurnSteeringCarriesDirectAppendKindOnReload(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("<SYSTEM-REMINDER>The user interrupted the previous turn before it completed.</SYSTEM-REMINDER>"))
+	turn.SteeringKind = events.SteeringKindInterrupted
+	items := ProjectTurn("turn_0", 0, turn, map[string]string{}, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].SteeringKind != events.SteeringKindInterrupted {
+		t.Errorf("SteeringKind = %q, want %q", items[0].SteeringKind, events.SteeringKindInterrupted)
+	}
+}
+
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := map[string]string{}
 	start := ProjectTurn("turn_1", 1, schema.Turn{

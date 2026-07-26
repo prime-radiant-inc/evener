@@ -674,6 +674,26 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	}
 }
 
+// TestDeliverSessionStartHookResultForUserTurn_PersistsHookContextKind
+// verifies a SessionStart hook's ModelContext output carries SteeringKind on
+// the appended schema.Turn, not only on the live SteeringInjectedData event,
+// so a reload labels it the same way the live transcript did (review round 2:
+// this direct-append site bypasses the SteerKind/consumeSteeringMessage queue
+// path that already persisted its kind).
+func TestDeliverSessionStartHookResultForUserTurn_PersistsHookContextKind(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.deliverSessionStartHookResultForUserTurn(hooks.RunResult{ModelContext: []string{"context from hook"}})
+
+	last := s.history[len(s.history)-1]
+	if last.Kind != schema.TurnSteering {
+		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
+	}
+	if last.SteeringKind != events.SteeringKindHookContext {
+		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindHookContext)
+	}
+}
+
 func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

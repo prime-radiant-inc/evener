@@ -163,6 +163,35 @@ func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
 	}
 }
 
+// TestRunPreCompactHook_PersistsKindOnTheTurn verifies runPreCompactHook sets
+// schema.Turn.SteeringKind on the turns it appends directly to hist — not
+// only on the steeringTurnRecord.kind round 1 added for the live emit — so a
+// reload labels a pre-compact steering turn the same way the live transcript
+// did (review round 2: this direct-append site bypasses the
+// SteerKind/consumeSteeringMessage queue path that already persisted its
+// kind).
+func TestRunPreCompactHook_PersistsKindOnTheTurn(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.setPinnedNote("REMEMBER: do X")
+	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
+
+	hist := makeSteeringSeed(4)
+	s.runPreCompactHook(context.Background(), &hist)
+
+	noteIdx := indexOfSteering(hist, noteHandoffPrefix)
+	goalIdx := indexOfSteering(hist, "Ship the feature")
+	if noteIdx < 0 || goalIdx < 0 {
+		t.Fatal("expected both note and goal steering turns in history")
+	}
+	if got := hist[noteIdx].SteeringKind; got != events.SteeringKindNoteHandoff {
+		t.Errorf("note turn SteeringKind = %q, want %q", got, events.SteeringKindNoteHandoff)
+	}
+	if got := hist[goalIdx].SteeringKind; got != events.SteeringKindGoalObjective {
+		t.Errorf("goal turn SteeringKind = %q, want %q", got, events.SteeringKindGoalObjective)
+	}
+}
+
 // TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind verifies
 // the one source of the three that legitimately keeps the precompact-hook
 // kind: a plugin PreCompact hook's ModelContext output.

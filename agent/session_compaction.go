@@ -179,6 +179,7 @@ func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []preCompa
 			continue
 		}
 		turn := schema.NewTurn(schema.TurnSteering, llm.User(msg.text))
+		turn.SteeringKind = msg.kind
 		*history = append(*history, turn)
 		records = append(records, steeringTurnRecord{turn: turn, text: msg.text, kind: msg.kind})
 	}

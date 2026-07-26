@@ -85,18 +85,26 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	// Spec: loop detection warning is recorded as a SteeringTurn in history.
+	// Spec: loop detection warning is recorded as a SteeringTurn in history, and
+	// (review round 2) carries SteeringKind on the turn itself — not only on
+	// the live SteeringInjectedData event — so a reload labels it the same way
+	// the live transcript did.
 	sess.mu.Lock()
 	turns := append([]schema.Turn{}, sess.history...)
 	sess.mu.Unlock()
 	foundSteering := false
+	var steeringKind string
 	for _, tr := range turns {
 		if tr.Kind == schema.TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "stuck") {
 			foundSteering = true
+			steeringKind = tr.SteeringKind
 		}
 	}
 	if !foundSteering {
 		t.Fatalf("expected loop detection steering turn in history; got %+v", turns)
+	}
+	if steeringKind != events.SteeringKindLoopDetected {
+		t.Errorf("loop detection turn SteeringKind = %q, want %q", steeringKind, events.SteeringKindLoopDetected)
 	}
 	sess.Close()
 

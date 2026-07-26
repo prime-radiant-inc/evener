@@ -688,6 +688,39 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 }
 
+// appendSteeringTurn records a daemon steering turn and announces it,
+// keeping the persisted turn's kind and the emitted event's kind in step: a
+// reader reloading the session sees the same label the live transcript
+// showed. For the sites that reach history directly — loop detection, task
+// reminders, hook context, the interrupt marker — rather than through the
+// steering queue's SteerKind/consumeSteeringMessage path, which already
+// persists its own kind.
+func (s *Session) appendSteeringTurn(text, kind string) {
+	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
+	t.SteeringKind = kind
+	s.recordTurn(t, t)
+	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: text, Kind: kind})
+}
+
+// appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
+// the one direct-append site that must fsync before continuing: job
+// notifications, where the durable write is what lets a crash mid-delivery
+// re-token the notification instead of dropping it (spec §4.3). Returns the
+// write error, mirroring appendTurnDurably, so the caller can requeue rather
+// than emit SteeringInjectedData for a turn that never made it to disk.
+func (s *Session) appendSteeringTurnDurably(text, kind string) error {
+	t := schema.NewTurn(schema.TurnSteering, llm.User(text))
+	t.SteeringKind = kind
+	if err := s.writeTranscriptDurable(t); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return err
+	}
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	return nil
+}
+
 func (s *Session) hasPendingSteering() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

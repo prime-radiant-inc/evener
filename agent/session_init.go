@@ -1291,9 +1291,7 @@ func (s *Session) pendingSessionStartForUserTurn(ctx context.Context) (hooks.Run
 
 func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResult) {
 	for _, m := range result.ModelContext {
-		wrapped := wrapHookContext(m)
-		s.appendTurn(schema.TurnSteering, llm.User(wrapped))
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: wrapped, Kind: events.SteeringKindHookContext})
+		s.appendSteeringTurn(wrapHookContext(m), events.SteeringKindHookContext)
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)
