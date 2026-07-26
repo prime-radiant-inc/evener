@@ -303,10 +303,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
           would give. Acute only when the session's OWN status is the failed
           one - a session still working normally after an earlier tool
           failure is not a current alarm. */}
-      <FailureCount
-        count={model.failedToolCalls}
-        acute={cadenceStateForStatus(model.status.type) === "failed"}
-      />
+      <FailureCount count={model.failedToolCalls} acute={cadenceStateForStatus(model.status.type) === "failed"} />
       <ReasoningEffortControl sessionRef={sessionRef} model={model} />
       {/* The gauge is the whole readout: a used/window number pair beside it
           repeated what the fill already shows, in a row that has to stay one
