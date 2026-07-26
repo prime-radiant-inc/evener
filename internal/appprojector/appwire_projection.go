@@ -41,11 +41,18 @@ type AppEventProjector struct {
 	nextItem       int
 	reservedTurnID string
 	activeTurnID   string
-	assistantItem  string
-	assistantText  string
-	reasoningItem  string
-	toolItemsByKey map[string]string
-	toolArgsByKey  map[string]string
+	// midSessionAnnouncementTurnID is the shared synthetic turn id for the
+	// CURRENT gap between two real turns (nextTurn > 0, activeTurnID == "").
+	// See preTurnAnnouncementTurnID's doc comment (kata 9ekv): it is minted
+	// once per gap on that gap's first no-active-turn announcement, reused by
+	// every announcement in the same gap, and cleared by startTurn so the
+	// next gap gets its own fresh id.
+	midSessionAnnouncementTurnID string
+	assistantItem                string
+	assistantText                string
+	reasoningItem                string
+	toolItemsByKey               map[string]string
+	toolArgsByKey                map[string]string
 	// toolStartByKey records each open tool call's server-side start time (the
 	// EventToolCallStart event's own timestamp) so EventToolCallEnd can stamp
 	// the completed item with the call's real StartedAt/DurationMS (issue
@@ -1261,6 +1268,10 @@ func (p *AppEventProjector) startTurn() string {
 		p.nextTurn++
 		p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
 	}
+	// A real turn just started, ending whatever mid-session announcement gap
+	// preceded it — the next no-active-turn announcement belongs to a new
+	// gap and must mint its own fresh id (kata 9ekv).
+	p.midSessionAnnouncementTurnID = ""
 	p.assistantItem = ""
 	p.assistantText = ""
 	p.activeTurnUsage = llm.Usage{}
@@ -1284,16 +1295,26 @@ func (p *AppEventProjector) startTurn() string {
 // real turn," so a dormant session's live and replayed views agree.
 //
 // Once a real turn has started (nextTurn > 0), a no-active-turn announcement
-// goes back to minting its own fresh turn_N, unchanged from before this
-// existed: it happened AFTER turn 1, not before it, and the prelude turn has
-// already rendered at the top of the transcript — folding a later event into
-// it would show that event out of chronological order.
+// falls into the GAP after whichever real turn just ended. Announcements
+// landing back-to-back in the same gap (no real turn started in between)
+// share ONE turn id — same grouping rationale as the prelude, so a burst of
+// hook completions between two turns folds into one disclosure instead of a
+// wall of one-line turns (kata 9ekv) — but each gap mints its OWN fresh id
+// rather than reusing the prelude's or an earlier gap's: it happened AFTER
+// its preceding real turn, not before it, and folding two different gaps
+// into one bucket would misrepresent when each happened relative to the real
+// turns between them. startTurn clears midSessionAnnouncementTurnID whenever
+// a real turn starts, so the next gap always gets a fresh id.
 func (p *AppEventProjector) preTurnAnnouncementTurnID() string {
 	if p.nextTurn == 0 {
 		return appwire.SystemPreludeTurnID
 	}
+	if p.midSessionAnnouncementTurnID != "" {
+		return p.midSessionAnnouncementTurnID
+	}
 	p.nextTurn++
-	return fmt.Sprintf("turn_%d", p.nextTurn)
+	p.midSessionAnnouncementTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
+	return p.midSessionAnnouncementTurnID
 }
 
 func (p *AppEventProjector) ReserveTurnID() string {

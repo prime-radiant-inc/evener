@@ -1575,6 +1575,65 @@ func TestAppEventProjectorFoldsPreFirstTurnAnnouncementsIntoOnePreludeTurn(t *te
 	}
 }
 
+// A burst of no-active-turn announcements landing BETWEEN two real turns
+// (nextTurn > 0, activeTurnID == "") must share one turn id with each other —
+// same rationale as the pre-first-turn prelude (kata bz2z): otherwise
+// SystemNoticeItem's consecutive-run grouping never gets 3+ same-turn items to
+// fold and a back-to-back run of hook completions renders as a wall of
+// one-line turns, just like the dormant-session case bz2z fixed.
+//
+// This must NOT reuse bz2z's single global SystemPreludeTurnID: two different
+// gaps (between turn 1/2, and between turn 2/3) each get their OWN shared id,
+// because folding both gaps' events into one bucket would misrepresent when
+// they happened relative to the real turns between them (kata 9ekv).
+func TestAppEventProjectorFoldsMidSessionAnnouncementBurstsIntoOneTurnPerGap(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+
+	turn1 := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hi"},
+	}), appwire.NotifyTurnStarted)
+	projector.Project(events.SessionEvent{Kind: events.EventError, SessionID: "th_1", Data: events.ErrorData{Error: "boom"}})
+
+	// Three system announcements land back-to-back in the gap after turn 1,
+	// before turn 2 starts.
+	gap1First := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{Name: "hook-a"},
+	}), appwire.NotifyTurnCompleted)
+	gap1Second := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{Name: "hook-b"},
+	}), appwire.NotifyTurnCompleted)
+	gap1Third := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{Name: "hook-c"},
+	}), appwire.NotifyTurnCompleted)
+
+	if gap1First != gap1Second || gap1Second != gap1Third {
+		t.Fatalf("gap-1 announcement ids = %q, %q, %q; want all equal", gap1First, gap1Second, gap1Third)
+	}
+	if gap1First == turn1 || gap1First == appwire.SystemPreludeTurnID {
+		t.Fatalf("gap-1 announcement id = %q, want distinct from turn 1 (%q) and the prelude id (%q)",
+			gap1First, turn1, appwire.SystemPreludeTurnID)
+	}
+
+	turn2 := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "again"},
+	}), appwire.NotifyTurnStarted)
+	if turn2 == gap1First || turn2 == turn1 {
+		t.Fatalf("turn 2 id = %q, want distinct from gap 1 (%q) and turn 1 (%q)", turn2, gap1First, turn1)
+	}
+	projector.Project(events.SessionEvent{Kind: events.EventError, SessionID: "th_1", Data: events.ErrorData{Error: "boom again"}})
+
+	// A single announcement lands in the gap after turn 2. It must get a
+	// FRESH id, not gap 1's id — reuse across a real turn boundary would
+	// misplace it chronologically.
+	gap2First := notificationTurnID(t, projector.Project(events.SessionEvent{
+		Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{Name: "hook-d"},
+	}), appwire.NotifyTurnCompleted)
+	if gap2First == gap1First || gap2First == turn1 || gap2First == turn2 {
+		t.Fatalf("gap-2 announcement id = %q, want fresh (distinct from gap 1 %q, turn 1 %q, turn 2 %q)",
+			gap2First, gap1First, turn1, turn2)
+	}
+}
+
 // A hook-completed announcement must carry the hook's exit code as a typed
 // field, not only inside its prose ("... exit 1"). The web's Settings ->
 // Transcript "Hook exits (normal only)" toggle has to split exit-0 from
