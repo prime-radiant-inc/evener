@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import { Tree, type TreeRowInfo } from "../../widgets";
+import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
 
@@ -313,6 +314,25 @@ describe("session row", () => {
   ] as const)("a signal row (%s) keeps a gloss line leading with the state", (state, expected) => {
     render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
+  });
+
+  // kata zq7g: the rail's only "waiting on you" signal used to be a 6px dot
+  // plus uniformly grey (--ink-low) gloss text, identical for working/
+  // needs-you/failed rows - a person had to already know to look at the dot
+  // to tell them apart. The gloss text now carries the same family color as
+  // its Cadence dot (cadenceStateFor), so a failed or needs-you row reads
+  // distinctly even at a glance, no dot inspection required. Idle/ended never
+  // render a gloss line at all (SIGNAL_STATES), so they need no family class.
+  test.each([
+    ["active", railStyles.activityAlive, "activityAlive"],
+    ["awaiting", railStyles.activityAttention, "activityAttention"],
+    ["warning", railStyles.activityAttention, "activityAttention"],
+    ["errored", railStyles.activityDanger, "activityDanger"],
+  ] as const)("a signal row (%s) tints its gloss text with the matching family color", (state, familyClass, name) => {
+    if (familyClass === undefined) throw new Error(`Rail.module.css is missing the "${name}" class`);
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
+    const activity = screen.getByTestId("rail-row-activity");
+    expect(activity.className.split(" ")).toContain(familyClass);
   });
 
   // The one state where the SAME wire state ("awaiting") means two different

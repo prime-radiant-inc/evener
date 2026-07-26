@@ -411,14 +411,34 @@ const SEMANTIC_VAR_RE = /var\(\s*--(?:attention|alive|danger)\b/;
 // be called button.module.css) can't ride along on a real widget's entry.
 const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 
+// kata zq7g: shell/rail/Rail.module.css tints a signal row's gloss text with
+// its own state family (working/needs-you/failed - see RailRow.tsx's
+// ACTIVITY_FAMILY_CLASS) so the rail's "waiting on you" signal is no longer
+// carried by a 6px dot alone. Rail.module.css is a shell stylesheet, not a
+// widget (it lives under shell/rail/, not widgets/<name>/), so it can never
+// match WIDGET_STYLESHEET_RE no matter how SEMANTIC_USE_ALLOWLIST is
+// extended - this is a deliberate, exact-path exception, the same shape as
+// the dockview-theme.css naming exception above, scoped to this one file so
+// a same-named stylesheet elsewhere can't ride along on it.
+const SEMANTIC_PATH_EXCEPTIONS = new Set(["shell/rail/Rail.module.css"]);
+
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
     if (!SEMANTIC_VAR_RE.test(text)) return;
+    if (SEMANTIC_PATH_EXCEPTIONS.has(path)) return;
     const widgetMatch = WIDGET_STYLESHEET_RE.exec(path);
     expect(widgetMatch).not.toBeNull();
     expect(SEMANTIC_USE_ALLOWLIST).toContain(widgetMatch![1]);
   });
 }
+
+test("the Rail.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("shell/rail/Rail.module.css")).toBe(true);
+  // A same-named decoy anywhere else must still go through the normal
+  // widget-allowlist check, exactly like the dockview-theme.css precedent.
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/Rail.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/Rail.module.css")).toBe(false);
+});
 
 // --- (c) dark and light blocks declare the same color tokens -----------
 //

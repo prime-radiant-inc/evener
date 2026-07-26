@@ -157,6 +157,8 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged,
 		fuzzScenarioRoster_PrunesUnreachableDeadProcess,
 		fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump,
+		fuzzScenarioRoster_SurfacesCrashedProcessAsErrored,
+		fuzzScenarioRoster_SurfacesStaleCrashOnFreshRoster,
 		fuzzScenarioRoster_Watch_PicksUpNewFile,
 		fuzzScenarioShortID,
 		fuzzScenarioSplitLivePath,

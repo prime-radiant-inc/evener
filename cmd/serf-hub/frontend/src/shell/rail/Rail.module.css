@@ -428,6 +428,34 @@
   font-size: var(--font-size-caption);
 }
 
+/* kata zq7g: a signal row's gloss text is tinted to match its own Cadence
+ * dot family (RailRow's local STATE_FAMILY, mirroring cadence/index.tsx's
+ * private mapping - see that widget's own doc comment on why the mapping is
+ * duplicated per surface rather than shared). Before this, EVERY signal
+ * state (working/needs-you/failed) shared the same --ink-low grey text, so
+ * the 6px dot was the only place the state's urgency actually showed - a
+ * person had to already know to look there. Text carries the color instead
+ * of adding new chrome (a banner, a pill) - "the design system has a
+ * deliberate four-colour budget; prefer text" - so budget is never spent
+ * twice for the same fact.
+ *
+ * Rail.module.css is not a `widgets/<name>/<name>.module.css` path, so this
+ * needs its own exact-path entry on token-contract.test.ts's semantic-var
+ * allowlist (mirroring the dockview-theme.css naming exception) rather than
+ * qualifying automatically under WIDGET_STYLESHEET_RE.
+ */
+.activityAlive {
+  color: var(--alive);
+}
+
+.activityAttention {
+  color: var(--attention);
+}
+
+.activityDanger {
+  color: var(--danger);
+}
+
 /* Right-aligned relative timestamp - the row's OTHER right-slot occupant
  * (the Task-7 needs-you Badge) renders in this same position; RailRow.tsx
  * shows at most one of the two, never both. */

@@ -46,6 +46,9 @@ const CLASS = {
   textCol: requireClass(styles.textCol, "Rail.module.css", "textCol"),
   label: requireClass(styles.label, "Rail.module.css", "label"),
   activity: requireClass(styles.activity, "Rail.module.css", "activity"),
+  activityAlive: requireClass(styles.activityAlive, "Rail.module.css", "activityAlive"),
+  activityAttention: requireClass(styles.activityAttention, "Rail.module.css", "activityAttention"),
+  activityDanger: requireClass(styles.activityDanger, "Rail.module.css", "activityDanger"),
   time: requireClass(styles.time, "Rail.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "Rail.module.css", "notStarted"),
   star: requireClass(styles.star, "Rail.module.css", "star"),
@@ -144,6 +147,20 @@ function humanizeState(wireState: string, askPending: boolean): string {
 // SessionRow): the dot and the second line answer the same question, so they
 // appear and disappear together.
 const SIGNAL_STATES: ReadonlySet<CadenceState> = new Set<CadenceState>(["working", "needs-you", "failed"]);
+
+// kata zq7g: the gloss line's own text color, one family per SIGNAL_STATES
+// member - mirrors Cadence's private STATE_FAMILY table (cadence/index.tsx)
+// exactly, duplicated locally rather than shared, matching the precedent
+// StatusDot's own copy already set (that widget's doc comment explains why
+// Cadence's mapping stays unexported: its directory is out of scope for
+// callers that want the same state->family judgment elsewhere). idle/ended
+// never reach this - they never render a gloss line at all (see
+// SessionRow's showsGloss) - so there is no "neutral" entry to carry.
+const ACTIVITY_FAMILY_CLASS: Partial<Record<CadenceState, string>> = {
+  working: CLASS.activityAlive,
+  "needs-you": CLASS.activityAttention,
+  failed: CLASS.activityDanger,
+};
 
 // RowGutter is a leading fixed-width slot on a row: ALWAYS rendered, empty
 // whenever this row has nothing to put in it. Both of the row's leading slots
@@ -417,6 +434,12 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   const notStarted = saysNotStarted(session, showsGloss);
   const gloss = secondLine(session, showsGloss, showsProject);
   const showsSecondLine = showsGloss || showsProject;
+  // Only a genuine signal row (showsGloss) carries a state to tint - the
+  // depth-0-only "just the project name" line (showsProject with no signal)
+  // has no state family to color, so it stays the plain --ink-low default.
+  const activityClass = showsGloss
+    ? `${CLASS.activity} ${ACTIVITY_FAMILY_CLASS[cadenceStateFor(session.state)] ?? ""}`.trim()
+    : CLASS.activity;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
@@ -443,7 +466,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           {session.title}
         </span>
         {showsSecondLine && (
-          <span data-testid="rail-row-activity" className={CLASS.activity} title={gloss}>
+          <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
             {gloss}
           </span>
         )}

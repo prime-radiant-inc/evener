@@ -266,13 +266,42 @@ func (r *Roster) Refresh() {
 		if !res.OK {
 			// The rendezvous file plus a live PID are the authoritative "this
 			// session exists" signal; keep the previously-seen entry while its
-			// process is alive, and prune only when the process is gone.
+			// process is alive (a transient probe miss).
 			if prev, had := prevByPID[e.PID]; had && r.procAlive(e.PID) {
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
 					bySess[prev.SessionID] = prev
 				}
+				continue
 			}
+			if r.procAlive(e.PID) {
+				continue // never confirmed live before, and still can't reach it
+			}
+			// The process is confirmed GONE, yet its rendezvous file is still
+			// on disk. The rendezvous package writes that file on startup and
+			// removes it only on graceful shutdown (rvreg.Registration.Remove);
+			// a file surviving its own PID's death means the daemon never got
+			// to run that cleanup - a crash, not a normal exit (kata zm6s: a
+			// SIGKILLed session read identically to one that finished its
+			// task). Surface it as "errored" instead of silently dropping it,
+			// using whichever session id the file itself carries - it was
+			// written before the daemon could die, so this needs no in-memory
+			// history and survives a hub restart discovering an
+			// already-stale file just as well as watching the crash live.
+			sessionID := strutil.FirstNonEmpty(e.SessionID, e.ThreadID)
+			if sessionID == "" {
+				continue // never resolved an id; nothing to attribute the crash to
+			}
+			crashed := LiveEntry{Entry: e, SessionID: sessionID}
+			if prev, had := prevByPID[e.PID]; had {
+				// Prefer the roster's own richer last-seen snapshot (ask/
+				// subagent state) when available; a crash always overrides
+				// whatever status the daemon last reported before dying.
+				crashed = prev
+			}
+			crashed.Status = "errored"
+			byPID[e.PID] = crashed
+			bySess[sessionID] = crashed
 			continue
 		}
 		live := LiveEntry{
