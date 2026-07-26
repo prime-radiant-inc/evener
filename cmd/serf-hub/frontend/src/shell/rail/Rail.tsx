@@ -328,6 +328,23 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // normally and lands in main when main is free.
   function openSession(session: ApiTreeNode) {
     if (isTopLevelSession(session)) {
+      const workspace = workspaceStore.getState();
+      const existing = workspace.panes.find((pane) => {
+        return pane.type === "session" && (pane.params as { ref?: string }).ref === session.ref;
+      });
+
+      // Clicking the session already in MAIN is an idempotent focus-only action.
+      // If the same session is already secondary, close it first and then replace
+      // the current main slot so it can own that logical session.
+      if (!existing || existing.slot === "secondary") {
+        if (existing) workspace.closePane(existing.id);
+
+        const main = workspace.mainPane();
+        if (main !== null && (main.type !== "session" || (main.params as { ref?: string }).ref !== session.ref)) {
+          workspace.closePane(main.id);
+        }
+      }
+
       workspaceStore.getState().openPane("session", { ref: session.ref });
       return;
     }

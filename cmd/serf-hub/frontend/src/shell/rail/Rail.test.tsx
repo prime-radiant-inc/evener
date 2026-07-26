@@ -517,6 +517,30 @@ describe("row activation", () => {
     expect(panes[0]).toMatchObject({ type: "session", params: { ref: "local:live1" } });
   });
 
+  test("activating a different top-level session replaces the current main session", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText("Live session"));
+    await user.click(screen.getByText("Pinned session"));
+
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:pin1" });
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
+  test("a top-level session already open in secondary is moved into main when activated", async () => {
+    workspaceStore.getState().openPane("session", { ref: "local:live1" });
+    workspaceStore.getState().openPane("session", { ref: "local:pin1" });
+
+    renderRail();
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByText("Pinned session"));
+
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:pin1" });
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
   test("Enter on a focused row activates it the same as a click", async () => {
     renderRail();
     await screen.findByText("Live session");
