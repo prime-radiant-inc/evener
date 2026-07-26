@@ -70,6 +70,12 @@ func (d detailsDrawer) View() string {
 			formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens)),
 			formatTokens(int(u.CacheReadTokens)), formatTokens(int(u.TotalTokens)))))
 	}
+	// Failed answers "did anything go wrong" (kata md4g), mirroring the web
+	// status strip's FailureCount: a measured zero and an uncounted session
+	// both render nothing, since neither is news the reader needs to act on.
+	if detail.FailedToolCalls != nil && *detail.FailedToolCalls > 0 {
+		fmt.Fprintf(&b, "Failed:   %s\n", ghostText(strconv.Itoa(*detail.FailedToolCalls)))
+	}
 	if d.HubURL != "" && detail.Ref != "" {
 		base := strings.TrimRight(d.HubURL, "/")
 		escaped := url.PathEscape(detail.Ref)

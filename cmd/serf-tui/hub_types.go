@@ -106,6 +106,10 @@ type hubSessionDetail struct {
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
 	SupportsReasoning     bool
+	// FailedToolCalls mirrors thread.Serf.FailedToolCalls (kata md4g): nil
+	// means nobody counted (an unreadable transcript, or a source that never
+	// derives the figure), and must render as nothing, not a fabricated zero.
+	FailedToolCalls *int
 }
 
 type hubRefResponse struct {
@@ -279,6 +283,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		ReasoningEffort:       thread.Serf.ReasoningEffort,
 		ReasoningEffortLevels: thread.Serf.ReasoningEffortLevels,
 		SupportsReasoning:     thread.Serf.SupportsReasoning,
+		FailedToolCalls:       thread.Serf.FailedToolCalls,
 	}
 }
 

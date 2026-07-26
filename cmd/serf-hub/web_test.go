@@ -201,6 +201,42 @@ func TestActiveTurnIDFromAppwireThreadPrefersSerfActiveTurn(t *testing.T) {
 	}
 }
 
+// TestHubDetailFromAppThreadCarriesFailedToolCalls asserts thread.Serf.
+// FailedToolCalls flows through to hubapi.SessionDetail verbatim, including
+// the pointer's absent/zero distinction (kata md4g) — the legacy
+// /api/sessions/<ref> surface carried work_millis and usage but no failure
+// count at all, unlike the appwire status strip.
+func TestHubDetailFromAppThreadCarriesFailedToolCalls(t *testing.T) {
+	count := 3
+	detail := hubDetailFromAppThread(appwire.Thread{
+		ID:        "th_failed",
+		SessionID: "th_failed",
+		Status:    appwire.ThreadStatus{Type: "idle"},
+		Source:    "local",
+		Serf: appwire.SerfThread{
+			Ref:             "local:th_failed",
+			FailedToolCalls: &count,
+		},
+	})
+	if detail.FailedToolCalls == nil {
+		t.Fatal("FailedToolCalls = nil, want a populated pointer")
+	}
+	if got := *detail.FailedToolCalls; got != 3 {
+		t.Fatalf("FailedToolCalls = %d, want 3", got)
+	}
+
+	noCount := hubDetailFromAppThread(appwire.Thread{
+		ID:        "th_nocount",
+		SessionID: "th_nocount",
+		Status:    appwire.ThreadStatus{Type: "idle"},
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_nocount"},
+	})
+	if noCount.FailedToolCalls != nil {
+		t.Fatalf("FailedToolCalls = %+v, want nil when the source never counted", noCount.FailedToolCalls)
+	}
+}
+
 // TestHubDetailFromAppThreadCarriesGoal asserts the thread's Serf.Goal status
 // and turn count flow into SessionDetail's flattened goal fields, which feed
 // the live input-strip goal pill.

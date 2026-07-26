@@ -137,6 +137,14 @@ type SessionDetail struct {
 	// the current in-flight turn began, 0 when idle/ended (WS2).
 	WorkMillis          int64  `json:"work_millis,omitempty"`
 	ActiveTurnStartedAt int64  `json:"active_turn_started_at,omitempty"`
+	// FailedToolCalls mirrors appwire.SerfThread.FailedToolCalls: how many of
+	// this session's tool calls failed, or absent when nothing counted them
+	// (an unreadable transcript, or a source that never derives the figure).
+	// Kept as a pointer, not a plain int, so a measured zero and "nobody
+	// counted" stay distinguishable on the wire — collapsing them would let a
+	// producer that forgets to populate the field silently read as a clean
+	// session instead of an uncounted one.
+	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
 	ParentSessionID     string `json:"parent_session_id,omitempty"`
 	DivergenceTurn      int    `json:"divergence_turn,omitempty"`
 	ForkLabel           string `json:"fork_label,omitempty"`

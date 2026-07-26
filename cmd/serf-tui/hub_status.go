@@ -36,6 +36,12 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth 
 			formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens)),
 			formatTokens(int(u.CacheReadTokens)), formatTokens(int(u.TotalTokens)))
 	}
+	// Failed answers "did anything go wrong" (kata md4g), mirroring the web
+	// status strip's FailureCount: a measured zero and an uncounted session
+	// both render nothing, since neither is news the reader needs to act on.
+	if detail.FailedToolCalls != nil && *detail.FailedToolCalls > 0 {
+		fmt.Fprintf(&b, "Failed:   %d\n", *detail.FailedToolCalls)
+	}
 	if taskErr != nil {
 		fmt.Fprintf(&b, "Tasks:    unavailable: %s\n", taskErr)
 	} else {
