@@ -681,7 +681,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventRoundTimings:
 		p.clearSkillCandidate()
 		data := eventData[events.RoundTimings](event.Data)
-		return p.systemAnnouncement(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data))
+		return p.systemAnnouncementWithRaw(appwire.ThreadItemEventKindRoundTimings, "Round timings", roundTimingsAnnouncement(data), roundTimingsRaw(data))
 	case events.EventQueueChanged:
 		p.clearSkillCandidate()
 		data := eventData[events.QueueChangedData](event.Data)
@@ -1214,6 +1214,18 @@ func promptLoadedAnnouncement(data events.PromptLoadedData) string {
 		return fmt.Sprintf("Loaded prompt %s (%d B)", label, data.Size)
 	}
 	return "Loaded prompt " + label
+}
+
+// roundTimingsRaw marshals the structured per-phase durations under a
+// "roundTimings" key on the system item's Raw field. The web reads these to
+// draw a rounded, prioritized summary (kata 7zkv) instead of re-parsing the
+// nanosecond-precision prose roundTimingsAnnouncement produces.
+func roundTimingsRaw(data events.RoundTimings) json.RawMessage {
+	raw, err := json.Marshal(map[string]any{"roundTimings": data})
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 func roundTimingsAnnouncement(data events.RoundTimings) string {

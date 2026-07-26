@@ -30,7 +30,8 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
 import { type ItemRenderProps, registerItemRenderer } from "../types";
-import { firstLine, formatCharCount } from "./format";
+import { firstLine, formatCharCount, formatDurationMs } from "./format";
+import { roundTimingsSummary } from "./roundTimingsView";
 import { isTurnFailureItem, type SystemRun, shouldGroup, systemRunFor } from "./systemGrouping";
 import styles from "./systemnoticeitem.module.css";
 
@@ -44,6 +45,10 @@ const CLASS = {
   scaffold: requireClass(styles.scaffold, "systemnoticeitem.module.css", "scaffold"),
   scaffoldSummary: requireClass(styles.scaffoldSummary, "systemnoticeitem.module.css", "scaffoldSummary"),
   scaffoldBody: requireClass(styles.scaffoldBody, "systemnoticeitem.module.css", "scaffoldBody"),
+  timings: requireClass(styles.timings, "systemnoticeitem.module.css", "timings"),
+  timingsSummary: requireClass(styles.timingsSummary, "systemnoticeitem.module.css", "timingsSummary"),
+  timingsBody: requireClass(styles.timingsBody, "systemnoticeitem.module.css", "timingsBody"),
+  timingsPhase: requireClass(styles.timingsPhase, "systemnoticeitem.module.css", "timingsPhase"),
 };
 
 // SYSTEM_PROMPT_ITEM_ID (imported above) is the narrow fallback signal for a
@@ -118,6 +123,84 @@ function ScaffoldDisclosure({ item }: { item: ItemModel }) {
   );
 }
 
+// ROUND_TIMINGS_EVENT_KIND matches transcriptVisibility.ts's own constant of
+// the same name/value (the visibility gate and this render-time
+// classification read the same typed field independently, same pattern as
+// SCAFFOLD_EVENT_KINDS above).
+const ROUND_TIMINGS_EVENT_KIND = "round_timings";
+
+function isRoundTimingsItem(item: ItemModel): boolean {
+  return item.eventKind === ROUND_TIMINGS_EVENT_KIND;
+}
+
+// pctLabel renders a phase's share of the round: whole percents plain,
+// "<1%" for a real nonzero share too small to round to 1 - "0%" would read
+// as "took no time", which a phase that reached the >=1ms floor never did.
+function pctLabel(pct: number): string {
+  return pct > 0 ? `${pct}%` : "<1%";
+}
+
+// RoundTimingsLine is the round_timings systemMessage item's redesigned
+// display (kata 7zkv): the raw dump ("Round 0 total=6.411312958s
+// llm=4.935822084s context=8.625µs ...") answered "where did this round go"
+// only if a reader did the arithmetic themselves. This reads the real
+// per-phase numbers (roundTimingsSummary, from item.raw) and leads with the
+// one phase that actually explains the round's length, at a precision a
+// reader can act on (whole ms, not ns) - full per-phase detail stays one
+// click away for anyone who wants it, negligible (<1ms) phases dropped
+// rather than rounded into a false "1ms".
+//
+// Falls back to the plain prose line when raw is absent or malformed - a
+// heterogeneous-version relay from a daemon predating this field still shows
+// something rather than nothing.
+function RoundTimingsLine({ item }: { item: ItemModel }) {
+  const summary = roundTimingsSummary(item.raw);
+  if (!summary) {
+    return (
+      <div className={CLASS.line} data-testid="system-notice-line">
+        {noticeText(item)}
+      </div>
+    );
+  }
+  const total = formatDurationMs(summary.totalMs);
+  if (!summary.dominant) {
+    // Every tracked phase rounded under 1ms - nothing to break down further.
+    return (
+      <div className={CLASS.line} data-testid="system-notice-line">
+        Round {summary.round} · {total}
+      </div>
+    );
+  }
+  const open = isDisclosureOpen(item.id, false);
+  const headline = `Round ${summary.round} · ${total} — ${summary.dominant.label} ${formatDurationMs(summary.dominant.ms)} (${pctLabel(summary.dominant.pct)})`;
+  return (
+    <details className={CLASS.timings} data-testid="system-notice-timings" open={open}>
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; controlled to keep the store the single source of truth (see ToolCallItem.tsx) */}
+      <summary
+        className={CLASS.timingsSummary}
+        onClick={(e) => {
+          e.preventDefault();
+          toggleDisclosure(item.id, false);
+        }}
+      >
+        {headline}
+      </summary>
+      <div className={CLASS.timingsBody}>
+        {summary.phases.map((phase) => (
+          <div key={phase.label} className={CLASS.timingsPhase}>
+            {phase.label} {formatDurationMs(phase.ms)} ({pctLabel(phase.pct)})
+          </div>
+        ))}
+        {summary.omittedCount > 0 && (
+          <div className={CLASS.timingsPhase}>
+            + {summary.omittedCount} phase{summary.omittedCount === 1 ? "" : "s"} under 1ms
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
 // FAILURE_FALLBACK_LABEL names a failure the wire described with neither a
 // message nor a description. It is the same category-label-over-invisible-row
 // rule FALLBACK_LABEL follows, worded for the one event where the generic
@@ -157,6 +240,7 @@ function FailureLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
 function SystemLine({ item, turn }: { item: ItemModel; turn: TurnModel }) {
   if (isTurnFailureItem(item)) return <FailureLine item={item} turn={turn} />;
   if (isScaffoldItem(item)) return <ScaffoldDisclosure item={item} />;
+  if (isRoundTimingsItem(item)) return <RoundTimingsLine item={item} />;
   return (
     <div className={CLASS.line} data-testid="system-notice-line">
       {noticeText(item)}

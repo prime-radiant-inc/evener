@@ -1361,6 +1361,37 @@ test("wireItemToModel carries the wire eventKind (scaffold/system discriminator)
   expect(itemAt(turnAt(model, 0), 0).eventKind).toBe("system_prompt");
 });
 
+// A system item can attach structured detail behind its prose text, e.g. a
+// round_timings item's per-phase durations (ThreadItem.raw; kata 7zkv) or a
+// compaction item's before/after counts. wireItemToModel historically dropped
+// it, forcing a renderer to re-parse numbers out of human-readable text. The
+// model must carry it so a renderer can read the real numbers instead.
+test("wireItemToModel carries the wire raw (structured system-item detail) onto the item", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_timings",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_round_timings_1",
+            type: "systemMessage",
+            text: "Round 0 total=1.5s llm=1.2s",
+            eventKind: "round_timings",
+            raw: { roundTimings: { round: 0, total_round_ns: 1_500_000_000, llm_call_ns: 1_200_000_000 } },
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).raw).toEqual({
+    roundTimings: { round: 0, total_round_ns: 1_500_000_000, llm_call_ns: 1_200_000_000 },
+  });
+});
+
 // On reload, apptranscript.TurnsFromFile mints one wire turn per transcript
 // entry, so a tool CALL (assistant entry) and its RESULT (tool-results entry)
 // arrive as two items sharing a callId, with different ids, in separate turns.

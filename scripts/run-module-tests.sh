@@ -137,7 +137,7 @@ run_module() {
 			[ "$pkg" = "primeradiant.com/serf/agent" ] || subpkgs+=("$pkg")
 		done < <(go list ./...)
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
-			/usr/bin/time -p go test $flags -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
+			/usr/bin/time -p go test $flags $extra -run '^(Test|Example)' -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
 		return "$shardStatus"
 	fi

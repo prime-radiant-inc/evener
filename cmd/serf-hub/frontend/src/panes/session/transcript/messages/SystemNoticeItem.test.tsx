@@ -279,3 +279,93 @@ test("the item_system_prompt id still classifies as scaffold when the wire carri
     "System prompt · 13 chars",
   );
 });
+
+// --- round timings redesign (kata 7zkv) --------------------------------------
+// A round_timings item's raw dump ("Round 0 total=6.411312958s
+// llm=4.935822084s context=8.625µs ...") answered "where did this round go"
+// only if a reader did the arithmetic themselves. It now renders a rounded
+// summary leading with the dominant phase, with the full per-phase breakdown
+// one click away - built from item.raw's structured numbers, not by
+// re-parsing that prose.
+
+function showRoundTimings() {
+  prefsStore.getState().setTranscriptStatus("roundTimings", true);
+}
+
+function roundTimingsItem(id: string, fields: Record<string, number> = {}): ItemModel {
+  return item(id, {
+    eventKind: "round_timings",
+    text: "Round 0 total=6.411312958s llm=4.935822084s context=8.625µs tools=1.462408667s prompt=83ns history=12.5µs tool_defs=0s persistence=8.742792ms after_action=500ns overhead=4.317707ms",
+    raw: {
+      roundTimings: {
+        round: 0,
+        total_round_ns: 6_411_312_958,
+        llm_call_ns: 4_935_822_084,
+        context_mgmt_ns: 8_625,
+        tool_exec_ns: 1_462_408_667,
+        system_prompt_ns: 83,
+        history_expand_ns: 12_500,
+        tool_defs_ns: 0,
+        persistence_ns: 8_742_792,
+        after_action_ns: 500,
+        loop_overhead_ns: 4_317_707,
+        ...fields,
+      },
+    },
+  });
+}
+
+test("a round_timings item with structured raw renders a collapsed summary naming the dominant phase, not the raw dump", () => {
+  showRoundTimings();
+  render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
+  const timings = screen.getByTestId("system-notice-timings") as HTMLDetailsElement;
+  expect(timings.tagName).toBe("DETAILS");
+  expect(timings.open).toBe(false);
+  expect(timings.querySelector("summary")?.textContent).toBe("Round 0 · 6.4s — LLM 4.9s (77%)");
+  expect(screen.queryByText(/total=6\.411312958s/)).toBeNull();
+});
+
+test("expanding a round_timings item's summary reveals the full phase breakdown, sub-1ms phases folded into an omitted count", () => {
+  showRoundTimings();
+  render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
+  fireEvent.click(screen.getByTestId("system-notice-timings").querySelector("summary")!);
+  const body = screen.getByTestId("system-notice-timings").textContent ?? "";
+  expect(body).toContain("LLM 4.9s (77%)");
+  expect(body).toContain("Tools 1.5s (23%)");
+  expect(body).toContain("Persistence 9ms (<1%)");
+  expect(body).toContain("Overhead 4ms (<1%)");
+  // context (8.625µs), prompt (83ns), history (12.5µs), after_action (500ns)
+  // all round under 1ms; folded into a count, not shown as false "1ms" rows.
+  expect(body).toContain("+ 4 phases under 1ms");
+  expect(body).not.toContain("Context");
+  expect(body).not.toContain("Prompt");
+});
+
+test("an expanded round_timings disclosure stays open across an unmount+remount (store-backed by the item id)", () => {
+  showRoundTimings();
+  const { unmount } = render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
+  fireEvent.click(screen.getByTestId("system-notice-timings").querySelector("summary")!);
+  expect((screen.getByTestId("system-notice-timings") as HTMLDetailsElement).open).toBe(true);
+  unmount();
+  render(<TurnBlock turn={turnWith([roundTimingsItem("rt")])} />);
+  expect((screen.getByTestId("system-notice-timings") as HTMLDetailsElement).open).toBe(true);
+});
+
+test("a round_timings item with no raw (older daemon) falls back to the plain prose line", () => {
+  showRoundTimings();
+  const oldItem = item("rt", { eventKind: "round_timings", text: "Round 0 total=1.5s llm=1.2s" });
+  render(<TurnBlock turn={turnWith([oldItem])} />);
+  expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 total=1.5s llm=1.2s");
+  expect(screen.queryByTestId("system-notice-timings")).toBeNull();
+});
+
+test("a round_timings item whose raw fails to narrow (malformed) falls back to the plain prose line", () => {
+  showRoundTimings();
+  const badItem = item("rt", {
+    eventKind: "round_timings",
+    text: "Round 0 total=1.5s",
+    raw: { roundTimings: "garbage" },
+  });
+  render(<TurnBlock turn={turnWith([badItem])} />);
+  expect(screen.getByTestId("system-notice-line").textContent).toBe("Round 0 total=1.5s");
+});
