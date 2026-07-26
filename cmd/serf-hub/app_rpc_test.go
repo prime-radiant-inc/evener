@@ -1637,6 +1637,225 @@ func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
 	retryClock.expectWait(t, 100*time.Millisecond)
 }
 
+// relayTurnStartedNotification builds the turn/started notification the relay
+// forwards from a real source, used to seed the relay's activeTurnID tracking
+// the same way a live daemon would.
+func relayTurnStartedNotification(t *testing.T, threadID, turnID string) appwire.Notification {
+	t.Helper()
+	return appwire.Notification{
+		Method: appwire.NotifyTurnStarted,
+		Params: testRawJSON(t, appwire.TurnStartedParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			Turn:     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+		}),
+	}
+}
+
+// expectRelaySynthesizedTurnFailure asserts the next notification is the
+// hub-authored turn/completed(failed) kata 3h02 synthesizes once a mid-turn
+// daemon stops answering: the same shape TurnFailureEndCap already renders
+// for a real daemon failure (connection-class, so its "Reconnect & retry"
+// button appears).
+func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantTurnID, wantMessageContains string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyTurnCompleted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnCompleted)
+		}
+		var params appwire.TurnCompletedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal turn/completed: %v", err)
+		}
+		if params.Turn.ID != wantTurnID {
+			t.Fatalf("turn.id=%q, want %q", params.Turn.ID, wantTurnID)
+		}
+		if params.Turn.Status != appwire.TurnStatusFailed {
+			t.Fatalf("turn.status=%q, want %q", params.Turn.Status, appwire.TurnStatusFailed)
+		}
+		if params.Turn.Error == nil {
+			t.Fatal("turn.error is nil, want a connection-class TurnError")
+		}
+		if params.Turn.Error.Source != "hub" {
+			t.Fatalf("turn.error.source=%q, want %q", params.Turn.Error.Source, "hub")
+		}
+		if !strings.Contains(params.Turn.Error.Message, wantMessageContains) {
+			t.Fatalf("turn.error.message=%q, want it to contain %q", params.Turn.Error.Message, wantMessageContains)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the synthesized turn failure")
+	}
+}
+
+// TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures
+// covers kata 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop
+// re-dialing a socket nothing answers, forever, with no diagnostic. After
+// relayGiveUpAfterFailures consecutive re-dial failures while a turn is
+// in-progress, the relay must synthesize a failed turn/completed for that
+// turn (source "hub") instead of retrying in total silence - and must fire
+// it exactly once per stall, not on every subsequent retry.
+func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures(t *testing.T) {
+	const threadID = "th_dead_mid_turn"
+	const turnID = "turn_dead"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The turn opens; the reader is now watching a spinner. Then the daemon
+	// is gone (kill -9): its notification channel closes with no error and
+	// no persisted TurnFailure, exactly like a SIGKILLed process.
+	notifications <- relayTurnStartedNotification(t, threadID, turnID)
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyTurnStarted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnStarted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for turn/started")
+	}
+	close(notifications)
+
+	// Two re-dial failures is a blip: no diagnostic yet, no button - the
+	// spinner is exactly as legible (or illegible) as it always was.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (1)")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (2)")}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	// The third consecutive failure crosses relayGiveUpAfterFailures: the
+	// relay must stop retrying in silence and tell the reader the turn died.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
+	expectRelaySynthesizedTurnFailure(t, client.Notifications(), turnID, "connection refused (3)")
+	retryClock.releaseWait(t, 400*time.Millisecond)
+
+	// The loop keeps retrying afterward (recovery is still worth having if
+	// the reader clicks "Reconnect & retry" and a fresh relay never
+	// replaces this one before it retires) but must not re-broadcast the
+	// same failure it already reported.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (4)")}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("unexpected second notification after give-up: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	retryClock.expectWait(t, 800*time.Millisecond)
+}
+
+// TestHubRelayNoSyntheticFailureWithoutActiveTurn covers the scoping half of
+// kata 3h02's fix: a daemon that dies BETWEEN turns (no spinner on screen,
+// nothing for the reader to be confused by) must not manufacture a failed
+// turn out of nothing. The relay keeps retrying in silence exactly as
+// before - there is no turn id to attach a failure to, and no ambiguity for
+// the reader to resolve.
+func TestHubRelayNoSyntheticFailureWithoutActiveTurn(t *testing.T) {
+	const threadID = "th_dead_between_turns"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		relayLifecycleSource: relayLifecycleSource{thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Serf:      appwire.SerfThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		}},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+	close(notifications)
+
+	for i, delay := range []time.Duration{
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+	} {
+		awaitRelaySubscribeCall(t, subscribeCalls)
+		results <- relaySubscribeResult{err: fmt.Errorf("local daemon unavailable: connection refused (%d)", i+1)}
+		retryClock.releaseWait(t, delay)
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("unexpected notification with no active turn: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNotification(t *testing.T) {
 	const threadID = "th_retry_unusable"
 	results := make(chan relaySubscribeResult)
