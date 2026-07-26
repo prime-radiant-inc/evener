@@ -1157,20 +1157,92 @@ describe("archive action", () => {
     expect(within(archivedSection).getByText("Session one")).toBeTruthy();
   });
 
-  test("toggling archive on a project POSTs /api/archive with working_dir and refetches on success", async () => {
+  test("archiving a project POSTs /api/archive with canonical id/working_dir, moves it into archived_projects, and reveals it under Archived sessions", async () => {
+    const projectKey = "01ALPAbcdefghijklmnpqr";
+    const projectDir = "/home/user/prime-radiant";
+    const projectName = "prime-radiant";
+    const session = {
+      ...PROJECT_SESSION,
+      key: projectKey,
+      working_dir: projectDir,
+      session_id: "s1",
+      ref: "local:s1",
+      title: "Session one",
+    };
+    const liveTree = {
+      ...SAMPLE_WIRE_TREE,
+      archived_projects: [],
+      projects: [wireProject({ ...PROJECT, key: projectKey, working_dir: projectDir, sessions: [session] })],
+    };
+    const archivedTree = {
+      ...SAMPLE_WIRE_TREE,
+      projects: [],
+      archived_projects: [
+        {
+          key: projectKey,
+          name: projectName,
+          working_dir: projectDir,
+          is_archived: true,
+          session_count: 1,
+          sessions: [],
+        },
+      ],
+    };
+    const archivedProjectDetail = {
+      key: projectKey,
+      name: projectName,
+      working_dir: projectDir,
+      is_archived: true,
+      sessions: [{ ...PROJECT_SESSION, key: projectKey, session_id: "s1", ref: "local:s1", tier: "archived" }],
+    };
+    treeResponseBody = liveTree;
+    projectDetailResponses[projectKey] = archivedProjectDetail;
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST" && url === "/api/archive") {
+        const body = JSON.parse(init?.body as string) as {
+          kind: string;
+          id: string;
+          working_dir?: string;
+          archived: boolean;
+        };
+        postCalls.push({ path: url, body });
+        if (
+          body.kind === "project" &&
+          body.id === projectKey &&
+          body.archived === true &&
+          body.working_dir === projectDir
+        ) {
+          treeResponseBody = archivedTree;
+        }
+        return jsonResponse({ ok: true });
+      }
+      return prior?.(url, init) as Promise<Response>;
+    });
+
     renderRail();
-    await screen.findByText("prime-radiant");
+    await screen.findByText(projectName);
 
     const user = userEvent.setup();
-    const row = rowFor("prime-radiant");
+    const row = rowFor(projectName);
     await user.click(within(row).getByRole("button", { name: /actions for prime-radiant/i }));
     await user.click(screen.getByRole("menuitem", { name: "Archive project" }));
 
     expect(postCalls).toContainEqual({
       path: "/api/archive",
-      body: { kind: "project", id: "proj1", archived: true, working_dir: "/home/user/prime-radiant" },
+      body: { kind: "project", id: projectKey, archived: true, working_dir: projectDir },
     });
+    await vi.waitFor(() => expect(screen.queryByText(projectName)).toBeNull());
     await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    const disclosure = await screen.findByRole("button", { name: /archived sessions/i });
+    expect(disclosure).toBeTruthy();
+    await user.click(disclosure);
+    const archivedSection = disclosure.closest("section");
+    if (!archivedSection) throw new Error("archived disclosure has no owning section");
+    const archivedProjectRow = within(archivedSection).getByRole("treeitem", { name: new RegExp(projectName) });
+    await user.click(within(archivedProjectRow).getByTestId("rail-chevron"));
+    expect(await within(archivedSection).findByText("Session one")).toBeTruthy();
   });
 });
 
