@@ -534,7 +534,10 @@ test("summarySuffix is omitted (bare summary) when the descriptor doesn't define
 
 // --- per-tool-call duration (P1, ux-plan-2026-07.md): opt-in via the same
 // "Round timings" preference TurnSeparator already reads for the turn-level
-// figure - not a separate toggle, and off by default like that one. --------
+// figure - not a separate toggle. That preference now ships ON by default
+// (prefs.ts, ux-plan-2026-07.md); the gating tests below set it explicitly
+// in each direction so they keep proving the gate works rather than riding
+// on whichever way the default happens to point. --------
 
 const timedItem = (overrides: Partial<ItemModel> = {}) =>
   item({
@@ -544,13 +547,14 @@ const timedItem = (overrides: Partial<ItemModel> = {}) =>
     ...overrides,
   });
 
-test("Round timings off (the default): no duration renders even though the item carries real start/end", () => {
+test("Round timings off: no duration renders even though the item carries real start/end", () => {
+  prefsStore.getState().setTranscriptStatus("roundTimings", false);
   registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
   render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
   expect(screen.queryByTestId("tool-row-duration")).toBe(null);
 });
 
-test("Round timings on: a settled call with startedAt/completedAt shows its duration", () => {
+test("Round timings on (the default): a settled call with startedAt/completedAt shows its duration", () => {
   prefsStore.getState().setTranscriptStatus("roundTimings", true);
   registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
   render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
@@ -565,6 +569,7 @@ test("Round timings on but no startedAt/completedAt (e.g. a call still in flight
 });
 
 test("the duration segment does not disturb the summary text an unrelated test asserted byte-for-byte", () => {
+  prefsStore.getState().setTranscriptStatus("roundTimings", false);
   registerToolRenderer({ match: "tci_timed", summary: () => "did a thing" });
   render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
