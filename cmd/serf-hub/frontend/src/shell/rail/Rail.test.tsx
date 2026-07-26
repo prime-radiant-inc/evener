@@ -603,9 +603,9 @@ describe("opening a nested session", () => {
     ).toHaveLength(1);
   });
 
-  // Replacing whatever you were reading would be worse than the bug being
-  // fixed: the parent is opened only into an EMPTY main slot.
-  test("an unrelated session already in main is left alone", async () => {
+  // The invariant now: nested sessions always sit beside their top-level owner.
+  // If that means replacing an unrelated main pane, we do so.
+  test("an unrelated session already in main is replaced with the nested owner", async () => {
     treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
     renderRail();
     await screen.findByText("Live session");
@@ -615,9 +615,9 @@ describe("opening a nested session", () => {
     await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
     await user.click(screen.getByText("Finished helper"));
 
-    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:live1" });
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
     expect(paneFor("local:sub1")?.slot).toBe("secondary");
-    expect(paneFor("local:s1")).toBeUndefined(); // parent not force-opened over your work
+    expect(paneFor("local:s1")?.slot).toBe("main");
   });
 
   // A layout saved before this fix can have a subagent stamped slot:"main"

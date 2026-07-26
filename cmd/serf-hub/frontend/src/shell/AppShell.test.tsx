@@ -5,6 +5,7 @@ import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
+import { resetTreeStoreForTests } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
@@ -28,6 +29,63 @@ const ALL_FEATURES_OFF = {
   directoryComplete: false,
   auth: false,
 };
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    json: () => (body === undefined ? Promise.reject(new Error("no body")) : Promise.resolve(body)),
+  } as Response;
+}
+
+const TREE_SESSION = {
+  row_id: "project:proj1:local:s1",
+  ref: "local:s1",
+  host_id: "local",
+  session_id: "s1",
+  title: "Session one",
+  project: "prime-radiant",
+  state: "idle",
+  kind: "session",
+  live: true,
+  children: [
+    {
+      row_id: "project:proj1:local:sub1",
+      ref: "local:sub1",
+      host_id: "local",
+      session_id: "sub1",
+      title: "Finished helper",
+      project: "prime-radiant",
+      state: "ended",
+      kind: "subagent",
+      live: false,
+      children: [],
+    },
+  ],
+};
+const TREE_RESPONSE_WITH_NESTED_SESSION = {
+  generated_at: "2026-01-01T00:00:00Z",
+  sources: [],
+  live: [],
+  needs_you: [],
+  favorites: [],
+  projects: [
+    {
+      key: "proj1",
+      name: "prime-radiant",
+      working_dir: "/home/user/prime-radiant",
+      default_expanded: true,
+      sessions: [TREE_SESSION],
+    },
+  ],
+  archived_projects: [],
+  test_runs: [],
+  attentionSummary: { needsYou: 0, error: 0, working: 0 },
+};
+
+const paneFor = (ref: string) =>
+  workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
 // auto-resizing) and, separately, Node 26's own global `localStorage`
@@ -115,6 +173,7 @@ beforeAll(async () => {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
+  resetTreeStoreForTests();
   localStorage.clear();
 });
 
@@ -124,6 +183,7 @@ afterEach(() => {
   // The command palette store is a module singleton; reset it so one test's
   // open palette never leaks into the next.
   paletteStore.setState({ open: false, query: "" });
+  vi.unstubAllGlobals();
 });
 
 test("mounts and renders the welcome pane", async () => {
@@ -379,6 +439,48 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   expect(workspaceStore.getState().panes.map((p) => p.type)).toEqual(["session"]);
   expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:ref_new_session" });
   expect(screen.queryByText("No session open")).toBeNull();
+});
+
+test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
+  let resolveTree!: (value: Response) => void;
+  const treePromise = new Promise<Response>((resolve) => {
+    resolveTree = resolve;
+  });
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/tree") return treePromise;
+    return jsonResponse({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  window.history.pushState({}, "", "/s/local:sub1");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(paneFor("local:sub1")).toBeUndefined();
+  expect(paneFor("local:s1")).toBeUndefined();
+
+  resolveTree(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
+  });
+  await waitFor(() => {
+    expect(paneFor("local:sub1")?.slot).toBe("secondary");
+  });
+});
+
+test("deep-linking to /settings replaces any existing main pane", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:main_session" });
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    return jsonResponse({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  window.history.pushState({}, "", "/settings");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "session")).toHaveLength(0);
 });
 
 // --- single-pane mode (/thread/{ref} share link, wave 8 T1) -----------

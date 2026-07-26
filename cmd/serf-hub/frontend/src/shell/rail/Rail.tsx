@@ -266,7 +266,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   // Puts a nested session in the secondary slot, beside the top-level session
-  // that owns its task tree.
+  // that owns its task tree, replacing whatever unrelated session is currently
+  // in main.
   //
   // Closing first is what makes this work on a pane that is ALREADY in main -
   // slot is assign-once and persisted, so a layout saved before this rule (or
@@ -280,12 +281,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     );
     if (stuckInMain) workspace.closePane(stuckInMain.id);
 
-    // Give the subagent something to sit beside, but only when the main slot
-    // is genuinely empty: replacing whatever you were already reading would be
-    // worse than the misplacement this fixes. mainPane() reads live state -
-    // the close above may just have emptied it.
+    // Nested sessions are never allowed in main. If a different session is
+    // already open there, replace it with the parent so the subagent ends up
+    // beside its top-level owner and not beside unrelated work.
     const main = workspaceStore.getState().mainPane();
-    if ((main === null || main.type === "welcome") && ancestor !== null && ancestor !== ref) {
+    if (ancestor !== null && ancestor !== ref) {
+      if (main && (main.type !== "session" || (main.params as { ref?: string }).ref !== ancestor)) {
+        workspace.closePane(main.id);
+      }
       // keepExistingFocus: the subagent is what you asked for, so the pane
       // opened on your behalf must not steal focus from it.
       workspaceStore.getState().openPane("session", { ref: ancestor }, { keepExistingFocus: true });
