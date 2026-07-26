@@ -22,7 +22,7 @@
 
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { answeredAskUserSuffix, type AskUserQuestion, parseAskUserQuestions } from "../../askShared";
+import { type AskUserQuestion, answeredAskUserSuffix, parseAskUserQuestions } from "../../askShared";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
