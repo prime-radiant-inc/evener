@@ -23,8 +23,12 @@ var scenarioPortAllowedMentions = map[string][]string{
 	"docs/agentic-testing.md": {
 		"Never Jesse's real hub, never his port `9180`",
 		"the doc's old literal `9180` would frequently fail to bind",
-		"Pick a free port — never 9180",
-		"never bind port `9180`",
+		// The two entries that used to sit here named a hand-picked free
+		// port. 68fm replaced that whole recipe: a hub now binds
+		// 127.0.0.1:0 and reports back the port the kernel gave it, so
+		// there is no port for a human to pick or to collide on. These
+		// are the warnings that survived that rewrite.
+		"never port `9180`, as usual",
 		"checklist, never Jesse's real `9180`",
 	},
 	"test/scenarios/spawn-empty-prompt-starts-dormant.md": {
