@@ -65,6 +65,53 @@ Two corollaries:
   `json.Unmarshal` and it cannot fail. Keeping it leaves a comment
   claiming coverage that no longer exists.
 
+## The Two Browser Guards, and Why There Are Two
+
+jsdom evaluates no cascade and reports zero for every box, so an entire class
+of frontend defect is structurally invisible to `vitest`. Two checks in
+`cmd/serf-hub/frontend` cover it, and the split matters:
+
+- **`npm run layoutguard`** measures HAND-AUTHORED markup against the real
+  `tokens.css` and component stylesheets, in headless Chrome. Cheap — static
+  files, no build. Right for "does this CSS rule still hold its box".
+- **`npm run overflowguard`** renders the REAL Session pane through the REAL
+  reducer and asserts nothing inside it scrolls sideways, at four widths.
+
+The second exists because the first could not have caught the bug that
+prompted it. Hand-authored markup freezes whatever was current when the case
+was written, so restoring the old glyph would have left the guard green while
+the app broke. Both are manual pre-merge checks, not wired into `make lint`.
+
+Three traps, each of which produced a false-green here. They are listed in the
+order they were found, because each was hiding the next.
+
+**A fixture must use REGISTERED types.** The overflow harness seeded item types
+`"thinking"` and `"notification"`. Neither is registered — the set is
+`agentMessage / reasoning / steering / systemMessage / userMessage / warning`
+(`grep registerItemRenderer`) — so both fell through to `RawItemView`, the
+debug fallback. The guard measured a debug renderer for two of five items and
+reported PASS. **An unregistered type does not throw; it silently renders
+something else.**
+
+**`scrollWidth > clientWidth` is not "scrollable".** It is true for any element
+whose content exceeds its box, *including* one deliberately clipping with
+`text-overflow: ellipsis` — the recommended fix for overflow, flagged as an
+instance of it. Only computed `overflow-x: auto|scroll` puts a scrollbar under
+a reader's finger. Which is also the CSS fact behind the original bug worth
+knowing on its own: **`overflow-y: auto` with no `overflow-x` declared computes
+`overflow-x` to `auto`, not `visible`** — so every such element is silently a
+horizontal scroll container too.
+
+**`display` on a `<details>` replaces the UA's skipped-contents mechanism.**
+`display: flex` on a `<details>` keeps its non-summary children laid out while
+COLLAPSED — a collapsed disclosure leaks a sliver of its body. Scope such rules
+to `.details[open]`.
+
+Fixing trap one immediately exposed trap two, which was hiding trap three, a
+real regression in code committed minutes earlier. A guard is only worth its
+run time once it has been mutation-tested: break the thing on purpose and
+confirm it fails, naming the right element.
+
 ## A Test That Never Runs
 
 A test that does not execute is worse than a missing test: it reports the

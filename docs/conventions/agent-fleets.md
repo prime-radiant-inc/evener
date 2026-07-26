@@ -185,3 +185,40 @@ options, which produced a different and better answer.
 
 When an agent corrects a kata's premise, record the correction on the
 kata. That is the most valuable thing it produces.
+
+**Verify any mechanism you name.** A kata that says "add an entry to X"
+sends the agent at X. Two katas in one night told fixers to add a
+`SEMANTIC_USE_ALLOWLIST` entry so a stylesheet could use an attention
+hue; that allowlist only matches paths shaped
+`widgets/<name>/<name>.module.css`, so both entries would have been inert
+and both tests would still have failed. The right mechanism was
+`SEMANTIC_PATH_EXCEPTIONS`. Both agents traced the regex and worked
+around the instruction — but only because they were told to push back.
+Naming a wrong mechanism is worse than naming none, because a named one
+stops the agent looking.
+
+## Auditing a decision record
+
+Reconstructing why a UI is the way it is, from mockups and commit
+subjects, has its own failure modes. Two produced wrong entries in
+`docs/web-ui/decisions.md` before adversarial review caught them:
+
+**Check the shared block before crediting an alternative.** Mockups often
+declare rules *held constant across all four* options — a "Held constant"
+paragraph, or a rule stated once in the shared CSS above the A/B/C/D
+overrides. Three such rules were filed as alternative D's contribution.
+That reads exactly backwards: a held-constant rule is the *strongest*
+kind of decision in the set, because every alternative agreed on it.
+
+**"Not addressed at all" is a claim about history, and history is
+checkable.** One entry said a feature was never built, two sentences
+after citing the commit whose subject says it shipped. It had shipped,
+into the pre-rewrite hub, and was lost when that hub was deleted —
+a materially different story, and stronger evidence for the audit's own
+thesis than what was written. `git log --oneline --all -- <path>` and
+`git log -1 --format=%B <sha>` settle these in seconds.
+
+Run the audit past two independent adversarial reviewers before trusting
+it. Twelve findings came back on a document whose research was otherwise
+sound; the two most valuable were places it contradicted its own cited
+evidence.
