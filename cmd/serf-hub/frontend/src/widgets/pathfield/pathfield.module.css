@@ -100,6 +100,25 @@
   text-transform: uppercase;
 }
 
+/* 94yg: a directory click both picks the value and descends into it (spec
+ * 3.4 - no commit button), and this header is the only thing that visibly
+ * changes at that moment. data-just-picked marks it for a beat right after
+ * a pick, wrapped in a background wash so the header registers as "this
+ * just happened" rather than only "this is where I am now" (which it says
+ * unconditionally, and quietly, the rest of the time). The wash decays back
+ * to transparent by itself; nothing else about the row's layout or content
+ * changes. */
+.groupPath[data-just-picked="true"] {
+  background: var(--accent-bg);
+  border-radius: var(--radius-control);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .groupPath {
+    transition: background-color var(--motion-duration-attention) var(--motion-easing-standard);
+  }
+}
+
 .row {
   display: flex;
   align-items: baseline;

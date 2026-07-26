@@ -230,6 +230,39 @@ test("clicking a directory row writes it into the value AND lists its children, 
   expect(await screen.findByRole("option", { name: /serf/ })).toBeTruthy();
 });
 
+// 94yg: a directory click both picks the value and descends into it - by
+// design (spec 3.4, no commit button, no Cancel) - but the ONLY thing that
+// changes at the moment of the click is the quiet "you are here" header
+// text, easy to miss. This is the in-the-moment confirmation the kata asked
+// for, without adding a second control: the header itself briefly marks
+// that a pick just registered, then settles back to its normal quiet state.
+test("a directory pick briefly marks the you-are-here header as just-confirmed, then settles", async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  renderField({
+    value: "/home/jesse",
+    complete: lister({
+      "/home/jesse/": ["/home/jesse/src"],
+      "/home/jesse/src/": [],
+    }),
+  });
+
+  await open(user);
+  await waitFor(() => expect(screen.getByRole("option", { name: /src/ })).toBeTruthy());
+  const header = screen.getByRole("listbox").firstElementChild as HTMLElement;
+  expect(header.getAttribute("data-just-picked")).toBe(null);
+
+  await user.click(screen.getByRole("option", { name: /src/ }));
+
+  await waitFor(() => expect(header.textContent).toBe("/home/jesse/src"));
+  expect(header.getAttribute("data-just-picked")).toBe("true");
+
+  await act(async () => {
+    vi.advanceTimersByTime(1000);
+  });
+  expect(header.getAttribute("data-just-picked")).toBe(null);
+});
+
 test("clicking the ../ row browses to the parent, panel open", async () => {
   const user = userEvent.setup();
   const { onChange, complete } = renderField({
