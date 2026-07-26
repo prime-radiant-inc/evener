@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
-import { resetTreeStoreForTests } from "../../stores/tree";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { Rail } from "./Rail";
@@ -614,6 +614,60 @@ describe("opening a nested session", () => {
 
     expect(paneFor("local:sub1")?.slot).toBe("secondary");
     expect(workspaceStore.getState().mainPane()?.params).not.toMatchObject({ ref: "local:sub1" });
+  });
+});
+
+// A deep link (/s/<subagent-ref>) opens through AppShell's route merge, not
+// the rail, and the tree has not been fetched when that route resolves - so
+// nothing on that path can know the ref is nested and it lands in main. The
+// rail owns the tree, so it corrects the placement as soon as the tree
+// arrives, without waiting for a click. This also repairs a layout saved
+// before any of this existed.
+describe("a nested session already sitting in main when the tree loads", () => {
+  const paneFor = (ref: string) =>
+    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === ref);
+
+  test("is moved into the secondary slot", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    workspaceStore.getState().openPane("session", { ref: "local:sub1" }); // as a deep link would
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:sub1" });
+
+    renderRail();
+    await screen.findByText("Session one");
+    await vi.waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("secondary"));
+  });
+
+  test("its parent is pulled into the main slot it vacated", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
+    renderRail();
+    await screen.findByText("Session one");
+    await vi.waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
+  });
+
+  test("a TOP-LEVEL session in main is left exactly where it is", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    const main = workspaceStore.getState().openPane("session", { ref: "local:s1" });
+    renderRail();
+    await screen.findByText("Session one");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(workspaceStore.getState().mainPane()?.id).toBe(main);
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+  });
+
+  // The correction must not fight the tree store's own refetching: it runs on
+  // every tree change, so it has to be a no-op once there is nothing to fix.
+  test("settles - a second tree load changes nothing further", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
+    renderRail();
+    await screen.findByText("Session one");
+    await vi.waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("secondary"));
+
+    const before = JSON.stringify(workspaceStore.getState().panes);
+    await treeStore.getState().refresh();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(JSON.stringify(workspaceStore.getState().panes)).toBe(before);
   });
 });
 

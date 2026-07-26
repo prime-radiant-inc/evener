@@ -93,28 +93,50 @@ does in `handleActivate`.
   a deeply nested subagent. Only the top-level ancestor is opened; the
   chain between is reachable from the rail.
 
-## Two gaps found while verifying, deliberately not fixed here
+## E. A deep link to a nested session corrects itself
 
-Both were found in a real browser after the change, and both are
-reported rather than silently absorbed.
+`/s/<subagent-ref>` opens through `AppShell`'s route merge, which
+resolves before any tree has been fetched — so nothing on that path can
+tell the ref is nested, and it lands in main.
 
-**A deep link straight to a subagent still lands it in main.**
-`/s/<subagent-ref>` opens through `AppShell`'s route merge, not the
-rail, so nothing on that path knows the ref is nested — the tree has not
-been fetched when the route resolves. Fixing it properly means
-re-placing a pane after the tree arrives, which is exactly the
-"move an open pane between slots" capability listed as out of scope
-above. It self-heals: the next rail click on that row applies §C.
+The rail owns the tree, so it corrects the placement as soon as the tree
+arrives, using the same relocation a click performs (§B/§C). No click
+needed, and a stale saved layout is repaired on load rather than on next
+use.
 
-**The same session can occupy two panes under two ref forms.**
-`/s/{ref}` round-trips whatever string it is given. The rail opens the
-fully-qualified wire ref (`local:<id>`), while a bare id (`<id>`) is the
-htmx UI's canonical route form and is still what `notifications.js`
-navigates to. `sameParams` compares the two as different panes, so
-deep-linking a bare id and then clicking that session in the rail opens
-it twice, side by side. Pre-existing and not specific to subagents — a
-top-level session does the same — so it belongs with routing/ref
-normalization rather than this change.
+The effect is keyed on both the tree and the main pane's ref, because
+either can arrive second: the route may resolve before the first
+`/api/tree` lands, or a pane may open while the tree is already loaded.
+It settles on its own — after relocating, main holds the top-level
+ancestor, for which `topLevelAncestorRef` returns the ref itself.
+
+This turned up a bug in that lookup: it reported a CLUSTER row as a
+member's ancestor. Cluster members are ordinary top-level sessions that
+happen to share a title, and a cluster's ref is synthetic, so the effect
+was "restoring" the very bogus pane §D removes. The lookup now descends
+through cluster rows and treats their members as the top-level rows they
+are.
+
+## F. One canonical ref form
+
+`hubapi.ParseRef` (hubapi/refs.go) has always required
+`<hostID>:<sessionID>`; a bare session id is not a ref. The frontend
+accepted one anyway, and that was a real bug rather than laxness: the
+rail opens a session as `local:<id>` while a bare-id deep link opens it
+as `<id>`, `sameParams` reads the two as different panes, and the same
+session ends up open twice side by side. Observed in a browser.
+
+- `urlToPane` now matches `/s/{ref}` and `/thread/{ref}` only for a
+  qualified ref. A bare-id URL renders Not Found.
+- `CommandPalette` drops its `item.result.ref || item.result.id`
+  fallback. The hub's own `searchResult` doc comment
+  (cmd/serf-hub/web_types.go) already states that "SPA clients open
+  sessions only by qualified ref ... so the bare ID field alone cannot
+  be used to open a hit", and `ref` ships without `omitempty` — the
+  fallback contradicted the documented contract.
+
+Old bare-id links (the htmx UI's canonical route form) are deliberately
+not carried forward, at Jesse's direction: no back-compat.
 
 ## Testing
 

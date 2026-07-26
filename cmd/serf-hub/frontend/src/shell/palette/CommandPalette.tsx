@@ -389,10 +389,14 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     }
     if (item.kind === "live" || item.kind === "past") {
       closePalette();
-      // Open by the qualified ref when the hub provides one; fall back to the
-      // bare id for old hubs that don't (I3). The session route resolves a
-      // ref, not a bare session id.
-      const url = `/s/${encodeURIComponent(item.result.ref || item.result.id)}`;
+      // By the qualified ref, and only that: the hub's own searchResult doc
+      // comment (cmd/serf-hub/web_types.go) states that a bare id cannot be
+      // used to open a hit, and `ref` ships on every row. A bare-id URL no
+      // longer routes (shell/routing.ts's isRef), and naming a session
+      // differently from the rail is what used to open it twice in two panes.
+      const ref = item.result.ref;
+      if (!ref) return;
+      const url = `/s/${encodeURIComponent(ref)}`;
       if (newTab) window.open(url, "_blank");
       else navigate(url);
     }

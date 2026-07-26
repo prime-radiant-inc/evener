@@ -33,7 +33,7 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
-import { workspaceStore } from "../workspace";
+import { useWorkspaceStore, workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
@@ -169,6 +169,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // these projected on (railPending), so a click shows before its round trip
   // resolves; runAction adds and removes them.
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
+  // The ref currently in the main slot, subscribed rather than read, so the
+  // relocation effect below re-runs when a pane the rail did not open (a deep
+  // link, a restored layout) takes that slot.
+  const mainPaneRef = useWorkspaceStore((s) => {
+    const main = s.panes.find((p) => p.slot === "main");
+    return main?.type === "session" ? ((main.params as { ref?: string }).ref ?? null) : null;
+  });
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
 
@@ -251,41 +258,80 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     }
   }
 
-  // Opens the session a row stands for. A NESTED session (a subagent, or a
-  // fork's snapshotted original) opens beside the top-level session that owns
-  // its task tree rather than as the main pane - see docs/web-ui/specs/
-  // 2026-07-26-subagent-opens-beside-main.md. A top-level session opens
-  // normally and lands in main when main is free.
-  function openSession(session: ApiTreeNode) {
+  // The top-level session `ref` belongs under, or null when the tree does not
+  // place it (not loaded yet, or a ref from an un-hydrated archived stub).
+  function ancestorRefOf(ref: string): string | null {
+    if (!tree) return null;
+    return topLevelAncestorRef([...tree.projects, ...tree.test_runs], ref);
+  }
+
+  // Puts a nested session in the secondary slot, beside the top-level session
+  // that owns its task tree.
+  //
+  // Closing first is what makes this work on a pane that is ALREADY in main -
+  // slot is assign-once and persisted, so a layout saved before this rule (or
+  // a deep link, which resolves before any tree exists to consult) leaves a
+  // subagent stamped slot:"main" permanently. Reopening is the only way to
+  // re-place it, and it costs one transcript reload.
+  const openNestedBesideAncestor = useCallback((ref: string, ancestor: string | null) => {
     const workspace = workspaceStore.getState();
-    if (isTopLevelSession(session)) {
-      workspace.openPane("session", { ref: session.ref });
-      return;
-    }
-    // A layout saved before this rule existed can have this very pane stamped
-    // slot:"main" permanently (slot is assign-once and persisted). Closing it
-    // first is what lets the reopen below place it correctly, so an existing
-    // workspace repairs itself on use instead of every saved layout being
-    // discarded to fix the few that are wrong.
     const stuckInMain = workspace.panes.find(
-      (p) => p.slot === "main" && p.type === "session" && (p.params as { ref?: string }).ref === session.ref,
+      (p) => p.slot === "main" && p.type === "session" && (p.params as { ref?: string }).ref === ref,
     );
     if (stuckInMain) workspace.closePane(stuckInMain.id);
 
     // Give the subagent something to sit beside, but only when the main slot
     // is genuinely empty: replacing whatever you were already reading would be
     // worse than the misplacement this fixes. mainPane() reads live state -
-    // closePane above may just have emptied it.
+    // the close above may just have emptied it.
     const main = workspaceStore.getState().mainPane();
-    if (main === null || main.type === "welcome") {
-      const ancestor = tree ? topLevelAncestorRef([...tree.projects, ...tree.test_runs], session.ref) : null;
-      // keepExistingFocus: the row you clicked is the subagent, so the pane
+    if ((main === null || main.type === "welcome") && ancestor !== null && ancestor !== ref) {
+      // keepExistingFocus: the subagent is what you asked for, so the pane
       // opened on your behalf must not steal focus from it.
-      if (ancestor !== null && ancestor !== session.ref) {
-        workspaceStore.getState().openPane("session", { ref: ancestor }, { keepExistingFocus: true });
-      }
+      workspaceStore.getState().openPane("session", { ref: ancestor }, { keepExistingFocus: true });
     }
-    workspaceStore.getState().openPane("session", { ref: session.ref }, { slot: "secondary" });
+    workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
+    // Stable: it reads the workspace store imperatively and closes over
+    // nothing else - both the ref and its ancestor arrive as arguments.
+  }, []);
+
+  // A deep link to a subagent (/s/<ref>) opens through AppShell's route merge,
+  // which resolves before any tree has been fetched - so nothing on that path
+  // can tell the ref is nested, and it lands in main. The rail owns the tree,
+  // so it corrects the placement the moment the tree arrives rather than
+  // waiting for a click. Repairs a stale saved layout on load for the same
+  // reason.
+  //
+  // Settles on its own: once the nested pane has moved, the main slot holds
+  // its top-level ancestor, for which topLevelAncestorRef returns the ref
+  // itself and this returns early.
+  //
+  // Keyed on BOTH the tree and the main pane, because either can arrive
+  // second: a deep link may resolve before the first /api/tree lands, or a
+  // pane may open while the tree is already loaded. Subscribing to mainPane
+  // (rather than reading it imperatively) is what makes the second case
+  // re-run this at all - the rail does not otherwise re-render for a pane it
+  // did not open.
+  useEffect(() => {
+    if (!tree || mainPaneRef === null) return;
+    const ancestor = topLevelAncestorRef([...tree.projects, ...tree.test_runs], mainPaneRef);
+    // null: the tree does not place this ref, so there is nothing better to
+    // do with it. Equal: it IS the top-level row, exactly where it belongs.
+    if (ancestor === null || ancestor === mainPaneRef) return;
+    openNestedBesideAncestor(mainPaneRef, ancestor);
+  }, [tree, mainPaneRef, openNestedBesideAncestor]);
+
+  // Opens the session a row stands for. A NESTED session (a subagent, or a
+  // fork's snapshotted original) opens beside the top-level session that owns
+  // its task tree rather than as the main pane - see docs/web-ui/specs/
+  // 2026-07-26-subagent-opens-beside-main.md. A top-level session opens
+  // normally and lands in main when main is free.
+  function openSession(session: ApiTreeNode) {
+    if (isTopLevelSession(session)) {
+      workspaceStore.getState().openPane("session", { ref: session.ref });
+      return;
+    }
+    openNestedBesideAncestor(session.ref, ancestorRefOf(session.ref));
   }
 
   function handleActivate(node: RailNode) {

@@ -583,3 +583,40 @@ describe("topLevelAncestorRef", () => {
     expect(topLevelAncestorRef([a, b], "local:kid2")).toBe("local:top2");
   });
 });
+
+// A cluster is a repeated-title GROUPING, not the owner of a task tree: its
+// members are ordinary top-level sessions that happen to share a title, and
+// its own ref is synthetic and names no session. Reporting it as a member's
+// ancestor made the rail try to open it as the "parent" pane - the exact
+// bogus pane clicking a cluster row used to create.
+describe("topLevelAncestorRef and cluster rows", () => {
+  const clustered = () =>
+    project({
+      sessions: [
+        node({
+          row_id: "cl",
+          ref: "cluster:abc12345",
+          kind: "cluster",
+          children: [node({ row_id: "m1", ref: "local:m1" }), node({ row_id: "m2", ref: "local:m2" })],
+        }),
+      ],
+    });
+
+  test("a cluster member is its own ancestor, never the cluster", () => {
+    expect(topLevelAncestorRef([clustered()], "local:m1")).toBe("local:m1");
+  });
+
+  test("a subagent UNDER a cluster member still resolves to that member", () => {
+    const p = project({
+      sessions: [
+        node({
+          row_id: "cl",
+          ref: "cluster:abc12345",
+          kind: "cluster",
+          children: [node({ row_id: "m1", ref: "local:m1", children: [node({ row_id: "s", ref: "local:sub" })] })],
+        }),
+      ],
+    });
+    expect(topLevelAncestorRef([p], "local:sub")).toBe("local:m1");
+  });
+});

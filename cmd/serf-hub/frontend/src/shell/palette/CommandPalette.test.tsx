@@ -348,10 +348,18 @@ test("a search result carrying a qualified ref is opened by that ref (new hubs)"
   expect(decodeURIComponent(window.location.pathname)).toBe("/s/local:qualified");
 });
 
-test("a search result with no ref falls back to the bare-id URL (old hubs)", async () => {
+// There is one ref form. The hub's own searchResult doc comment says it
+// outright - "SPA clients open sessions only by qualified ref
+// (appwire.ParseRef rejects bare ids), so the bare ID field alone cannot be
+// used to open a hit" - and `ref` has no omitempty, so it always ships. The
+// old bare-id fallback built a URL that no longer routes, and (worse) a URL
+// that named the same session differently from the rail, which opened it a
+// SECOND time in its own pane. Absent a ref there is nothing to open.
+test("a search result with no ref navigates nowhere rather than inventing a bare-id URL", async () => {
   const user = userEvent.setup();
+  const before = window.location.pathname;
   await searchAndClick(user, { id: "bareonly", title: "norefs", project: "p", state: "ended", age: "2h" }, "norefs");
-  expect(window.location.pathname).toBe("/s/bareonly");
+  expect(window.location.pathname).toBe(before);
 });
 
 // --- keyboard navigation ---
