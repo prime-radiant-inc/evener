@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // FakeClient's own contract tests. The behavior under test here is the one
 // that keeps the rest of the suite honest: a scripted or requested method
 // name, and an injected notification's method, must exist in the hub's real

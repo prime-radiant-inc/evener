@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, TreeResponse } from "../../stores/tree";
 import { applyPending, type PendingOp } from "./railPending";

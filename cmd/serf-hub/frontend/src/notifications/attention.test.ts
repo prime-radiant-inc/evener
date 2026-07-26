@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import type { TreeNode, TreeResponse } from "../stores/tree";
 import { type AttentionEntry, detectFires, levelFromState, snapshotFromTree } from "./attention";

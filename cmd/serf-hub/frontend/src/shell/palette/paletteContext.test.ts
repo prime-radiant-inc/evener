@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";

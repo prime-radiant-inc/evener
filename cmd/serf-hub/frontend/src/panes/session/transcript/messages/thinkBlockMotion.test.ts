@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // A6's motion check for the thinking block's own disclosure. It lives in its
 // own file rather than in ThinkBlock.test.tsx because that file (and
 // ThinkBlock.tsx) belong to a concurrent stream; this task's change is confined

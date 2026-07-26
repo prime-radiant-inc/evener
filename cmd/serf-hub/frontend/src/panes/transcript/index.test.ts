@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import { paneFor } from "../../shell/paneRegistry";
 import "./index"; // registers the "transcript" pane type as a side effect

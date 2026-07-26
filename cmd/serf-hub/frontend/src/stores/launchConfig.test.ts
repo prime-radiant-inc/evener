@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "../protocol/types.gen";

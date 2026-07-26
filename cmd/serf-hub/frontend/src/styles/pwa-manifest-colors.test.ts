@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 // Regression net for the PWA manifest's brand colors (floor
 // parity-m8-periphery.md §4.4: background_color/theme_color are "kept in
 // sync by hand across two files, not derived from one source... needs to

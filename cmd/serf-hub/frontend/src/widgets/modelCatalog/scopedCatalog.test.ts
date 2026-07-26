@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
 import type { ModelCatalog } from "./index";

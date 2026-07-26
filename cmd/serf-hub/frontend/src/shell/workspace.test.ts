@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import type { DockviewApi } from "dockview-core";
 import { lazy } from "react";
 import { beforeAll, beforeEach, describe, expect, test } from "vitest";

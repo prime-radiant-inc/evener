@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { type AnyNotification, AppwireClient, type ConnectionState, RECONNECT_BASE_MS } from "./client";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";

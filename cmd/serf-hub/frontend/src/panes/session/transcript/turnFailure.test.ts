@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { expect, test } from "vitest";
 import type { TurnError } from "../../../protocol/types.gen";
 import { asTurnError, classifyTurnError } from "./turnFailure";

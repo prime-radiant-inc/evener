@@ -50,6 +50,7 @@ export default defineConfig({
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],
+    pool: "threads",
     setupFiles: [],
     // A handful of shell suites must import the real pane modules from inside
     // beforeAll rather than statically: those modules transitively pull in
