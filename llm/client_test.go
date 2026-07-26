@@ -440,7 +440,7 @@ func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
 	// out is buffered at 128. Sending 129 events to the unbuffered inner channel
 	// fills the buffer and parks the pump on the 129th forward-to-out; when the
 	// 129th send returns, the pump is deterministically blocked mid-forward.
-	for i := 0; i < 129; i++ {
+	for range 129 {
 		inner.events <- StreamEvent{Type: StreamEventTextDelta, Delta: "x"}
 	}
 

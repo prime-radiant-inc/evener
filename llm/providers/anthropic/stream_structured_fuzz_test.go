@@ -244,7 +244,7 @@ func structuredAnthropicSSE(raw []byte) []byte {
 
 	sawTool := false
 	nBlocks := g.intn(5)
-	for idx := 0; idx < nBlocks; idx++ {
+	for idx := range nBlocks {
 		switch blockKinds[g.intn(len(blockKinds))] {
 		case "text":
 			g.emitTextBlock(idx)
@@ -354,7 +354,7 @@ func TestStructuredAnthropicReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

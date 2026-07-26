@@ -119,7 +119,7 @@ func structuredResponsesSSE(raw []byte) []byte {
 
 	// Reasoning: 0..2 summary parts, each with 0..2 (sometimes empty) deltas.
 	nParts := g.intn(3)
-	for p := 0; p < nParts; p++ {
+	for range nParts {
 		g.frame(map[string]any{"type": "response.reasoning_summary_part.added"})
 		for d := g.intn(3); d > 0; d-- {
 			g.frame(map[string]any{"type": "response.reasoning_summary_text.delta", "delta": g.text(5)})
@@ -129,7 +129,7 @@ func structuredResponsesSSE(raw []byte) []byte {
 	// Text: 0..3 deltas via "delta", "text", or an empty frame (early-return guard).
 	var textBuf strings.Builder
 	nText := g.intn(4)
-	for d := 0; d < nText; d++ {
+	for range nText {
 		delta := g.text(5)
 		switch g.intn(3) {
 		case 0:
@@ -146,7 +146,7 @@ func structuredResponsesSSE(raw []byte) []byte {
 	// Tools: 0..3 calls, each exercising a different id-addressing mode.
 	var tools []genTool
 	nTools := g.intn(4)
-	for t := 0; t < nTools; t++ {
+	for t := range nTools {
 		tc := genTool{
 			callID: fmt.Sprintf("call_%d", t),
 			itemID: fmt.Sprintf("fc_%d", t),
@@ -327,7 +327,7 @@ func TestStructuredResponsesReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

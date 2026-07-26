@@ -184,7 +184,7 @@ func structuredChatSSE(raw []byte) []byte {
 	// its deterministic end-of-stream sort are exercised.
 	nTools := g.intn(4)
 	var tools []genTool
-	for t := 0; t < nTools; t++ {
+	for t := range nTools {
 		g.frame(deltaChunk(model, map[string]any{
 			"tool_calls": []any{map[string]any{
 				"index":    t,
@@ -306,7 +306,7 @@ func TestStructuredOpenAICompatReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

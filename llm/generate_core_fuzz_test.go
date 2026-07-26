@@ -202,11 +202,11 @@ func decodeScript(scriptBytes, argsJSON []byte) []scriptStep {
 	c := &cursor{b: scriptBytes}
 	nSteps := 1 + int(c.u8()%4) // 1..4
 	steps := make([]scriptStep, 0, nSteps)
-	for s := 0; s < nSteps; s++ {
+	for s := range nSteps {
 		flags := c.u8()
 		nCalls := int(c.u8() % 4) // 0..3
 		var calls []ToolCallData
-		for k := 0; k < nCalls; k++ {
+		for k := range nCalls {
 			name := fuzzToolNames[int(c.u8())%len(fuzzToolNames)]
 			calls = append(calls, ToolCallData{
 				ID:        "call-" + string(rune('a'+s)) + string(rune('0'+k)),
@@ -219,7 +219,7 @@ func decodeScript(scriptBytes, argsJSON []byte) []scriptStep {
 		if flags&1 != 0 {
 			n := int(c.u8()) % 64
 			buf := make([]byte, 0, n)
-			for i := 0; i < n; i++ {
+			for range n {
 				buf = append(buf, c.u8())
 			}
 			text = string(buf)

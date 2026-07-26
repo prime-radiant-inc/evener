@@ -12,7 +12,7 @@ import (
 )
 
 func FuzzCanonicalAPILoggerAppendPrograms(f *testing.F) {
-	for mode := uint8(0); mode < 4; mode++ {
+	for mode := range uint8(4) {
 		f.Add(mode, []byte("session"))
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, data []byte) {
