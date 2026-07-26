@@ -260,7 +260,7 @@ function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) 
       {row.kind === "running" && transcriptRef && (
         <WatchedChildIndicator ref={transcriptRef} turnId={turnId} rowKey={row.rowKey} />
       )}
-      <span className={CLASS.task}>{row.task}</span>
+      <span className={CLASS.task}>{clip(row.task, TASK_CLIP)}</span>
       {(duration ?? row.resultPreview) && (
         <span className={CLASS.meta}>
           {duration}
@@ -354,7 +354,12 @@ function SubagentModule({ turnId }: { turnId: string }) {
 
 function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<SubagentRow, "spawnIndex" | "rowKey"> } {
   const args = parseArgs(item.argumentsJSON);
-  const task = clip(str(args, "task") ?? "", TASK_CLIP);
+  // Full, unclipped task text - it is the entire specification of what the
+  // delegate was asked to do (7f7c). Callers that need a one-line preview
+  // (SubagentRowView's collapsed summary) clip at their own render site;
+  // clipping here would also clip the Mandate section, the one place a
+  // reader can go to read the rest.
+  const task = str(args, "task") ?? "";
   const parsed = parseJSONObject(item.output);
   const status = parsed ? str(parsed, "status") : undefined;
   const jobId = parsed ? str(parsed, "job_id") : undefined;
@@ -414,4 +419,14 @@ registerToolRenderer({
     return `Delegated: ${clip(str(args, "task") ?? "", TASK_CLIP)}`;
   },
   body: DelegateBody,
+  // A delegate call is a status card, not a fold-to-open tool row - the same
+  // reasoning as task_list's own `autoExpand: () => true`. Left collapsed by
+  // default, the module (and the live watch that drives it) never mounts at
+  // all: a delegate that announces itself and ends its turn would show a
+  // bare one-line "Delegated: ..." summary with no visible way to tell
+  // whether it is running, done, or failed (evch). Opening it at settle
+  // makes the tally/status/live-cadence/result visible without a click; a
+  // manual collapse afterward still sticks (ToolCallItem's own autoDefault
+  // vs. store-backed toggle).
+  autoExpand: () => true,
 });
