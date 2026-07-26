@@ -31,7 +31,7 @@ func seedTranscriptServer(t *testing.T, pairs int) *Server {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	for i := 0; i < pairs; i++ {
+	for range pairs {
 		if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
@@ -330,7 +330,7 @@ func appendTranscriptTurns(t *testing.T, path string, count int) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	for i := 0; i < count; i++ {
+	for i := range count {
 		line, err := json.Marshal(transcript.Entry{Kind: "entry", Seq: 100 + i, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("appended"))})
 		if err != nil {
 			t.Fatal(err)
@@ -343,7 +343,7 @@ func appendTranscriptTurns(t *testing.T, path string, count int) {
 
 func recordNotificationTurns(t *testing.T, srv *Server, count int) {
 	t.Helper()
-	for i := 0; i < count; i++ {
+	for range count {
 		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "notification"}})
 		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "reply"}})
 		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
@@ -461,13 +461,13 @@ func TestAppTurnSnapshotIsDeepDefensiveCopy(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			_ = snapshot.Snapshot()
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			delta, err := json.Marshal(appwire.AgentMessageDeltaParams{TurnID: "turn_1", ItemID: "item_delta", Delta: "x"})
 			if err != nil {
 				panic(err)
@@ -648,7 +648,7 @@ func TestServerAppWireOldIdentityRejectsCallbackBackingSwitchBeforeIdentity(t *t
 		if err != nil {
 			t.Fatal(err)
 		}
-		for i := 0; i < turns; i++ {
+		for range turns {
 			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(sessionID))); err != nil {
 				t.Fatal(err)
 			}
@@ -685,7 +685,7 @@ func TestValidatedTranscriptPathReadsOnlyLeadingHeader(t *testing.T) {
 		// building the 2000-entry file does not pay 2000 per-Append fsyncs.
 		// Close still flushes, so the file read back is byte-identical.
 		writer.SyncInterval = time.Hour
-		for i := 0; i < entries; i++ {
+		for range entries {
 			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
 				t.Fatal(err)
 			}
