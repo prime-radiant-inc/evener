@@ -20,17 +20,19 @@ Driver: superpowers-chrome:browsing.
 
 ## Pre-state
 
-- Hub running on `0.0.0.0:9180` with `--serf` resolvable.
+- Hub running on an isolated `$HOME` and free port (never `9180`,
+  Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`) with `--serf` resolvable.
 - Anthropic OAuth or API key configured.
-- `~/.serf/auth-token` readable.
+- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
 - Chrome session authenticated against the hub.
 
 ## Steps
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-steer-ok-XXXXX)
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Drop a pacing AGENTS.md** into the workspace so the turn
@@ -70,7 +72,7 @@ HUB=http://localhost:9180
 
 3. **Authenticate the browser** and open the workspace:
    ```
-   navigate http://127.0.0.1:9180/auth?token=<TOKEN>&next=/s/<SID>
+   navigate $HUB/auth?token=<TOKEN>&next=/s/<SID>
    await_element [data-steer-trigger]
    ```
    Confirm the button is enabled (live stream has hydrated the

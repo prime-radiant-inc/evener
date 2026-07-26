@@ -19,8 +19,10 @@ palette as soon as the turn starts.
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token` (`./serf-hub` launches it; web-only auth).
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token` (`./serf-hub` launches it; web-only auth).
 - `./serf-tui` and `./serf-hub` built and present in the repo root
   (`go build -o serf-tui ./cmd/serf-tui && go build -o serf-hub
   ./cmd/serf-hub`).
@@ -35,8 +37,8 @@ palette as soon as the turn starts.
 Shared setup:
 
 ```bash
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 tmpdir=$(mktemp -d -t serf-e2e-9sck-XXXXX)
 tmux kill-session -t serf-interrupt-test 2>/dev/null
 ```
@@ -62,13 +64,13 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 2. **Launch serf-tui in tmux**:
    ```bash
    tmux new-session -d -s serf-interrupt-test -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t serf-interrupt-test -p | head -5
    ```
-   Header line should read `serf live ... http://127.0.0.1:9180 · N
-   live` and the project for `$tmpdir` should be visible in the
-   tree.
+   Header line should read `serf live ... $HUB · N live` — the
+   isolated hub address from step 1, never Jesse's real `9180` — and
+   the project for `$tmpdir` should be visible in the tree.
 
 3. **Navigate to the session leaf**. The cursor starts on the first
    project header. Send `Down` until `>` is on the leaf row whose
@@ -164,7 +166,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 9. **Verify the transcript preserved the mid-turn state plus the
    interrupt marker**:
    ```bash
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    tail -4 "$TFILE" | python3 -c "
    import json, sys
    for line in sys.stdin:
@@ -362,9 +364,9 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
 ```bash
 tmux kill-session -t serf-interrupt-test 2>/dev/null
 rm -rf "$tmpdir"
-# meta + transcript files under ~/.local/state/serf/projects linger
+# meta + transcript files under $HOME/.local/state/serf/projects linger
 # (harmless). Optional:
-# find ~/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

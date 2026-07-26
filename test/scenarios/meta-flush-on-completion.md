@@ -11,8 +11,10 @@ error (`3tgv`), a deferred flush + panic recovery at the top of
 
 ## Pre-state
 
-- Hub running.
-- Path to write a transcript: `~/.local/state/serf/projects/`.
+- Hub running on an isolated `$HOME` and a free port (never `9180`,
+  Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`).
+- Path to write a transcript: `$HOME/.local/state/serf/projects/`.
 
 ## Steps
 
@@ -21,14 +23,14 @@ error (`3tgv`), a deferred flush + panic recovery at the top of
 1. Spawn a session with a single completable prompt. e.g.:
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat ~/.serf/auth-token)" \
+        -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
         -d '{"prompt":"Reply with literal OK.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"serf","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
-        http://localhost:9180/api/spawn
+        $HUB/api/spawn
    ```
 2. Wait for idle (~10s).
 3. Read `meta.json`:
    ```bash
-   find ~/.local/state/serf/projects -name "<session_id>.meta.json" \
+   find "$HOME/.local/state/serf/projects" -name "<session_id>.meta.json" \
      -exec cat {} \; | python3 -c "import sys, json; \
      d=json.load(sys.stdin); print('turn_count:', d['turn_count'])"
    ```

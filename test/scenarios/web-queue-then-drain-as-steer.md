@@ -18,15 +18,17 @@ text is lost — see `web-steer-live-turn.md` for that path.
 ## Pre-state
 
 Same as `web-queue-then-completes.md`. Long-running first turn via
-an AGENTS.md pacing nudge; hub on `0.0.0.0:9180`; OpenAI OAuth;
+an AGENTS.md pacing nudge; an isolated hub (never `9180`, Jesse's
+  real one — see the Setup checklist in `docs/agentic-testing.md`);
+  OpenAI OAuth;
 browser authenticated against the hub.
 
 ## Steps
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-drain-XXXXX)
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Same pacing AGENTS.md** as in `web-queue-then-completes.md`
@@ -106,7 +108,7 @@ HUB=http://localhost:9180
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    steerings = []

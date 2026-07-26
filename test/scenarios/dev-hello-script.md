@@ -11,7 +11,9 @@ shell.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable (sibling or PATH).
+- Hub running with `--serf` resolvable (sibling or PATH), on an
+  isolated `$HOME` and a free port (never Jesse's port `9180` — see
+  the Setup checklist in `docs/agentic-testing.md`).
 - OpenAI OAuth signed in (`./serf openai status` shows `source=oauth`),
   with quota available.
 - `python3` on PATH so the agent can run the script.
@@ -27,11 +29,11 @@ shell.
    `working_dir=$tmpdir`, a one-paragraph prompt that asks for a
    single small artifact:
    ```bash
-   TOKEN=$(cat ~/.serf/auth-token)
+   TOKEN=$(cat "$HOME/.serf/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
         -d "{\"prompt\":\"Create a file named hello.py in the current directory that prints exactly 'hello world' when run. Then run it with python3 to confirm the output. Report what you did.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
-        http://localhost:9180/api/spawn
+        $HUB/api/spawn
    ```
 3. Capture `session_id` from the response.
 4. Wait until either `$tmpdir/hello.py` exists OR the daemon has
@@ -54,7 +56,7 @@ shell.
   outputs exactly `hello world`.
 - Running `python3 $tmpdir/hello.py` prints `hello world` on
   stdout, exit 0.
-- Transcript (`find ~/.local/state/serf/projects -name "<id>.transcript.jsonl"`)
+- Transcript (`find $HOME/.local/state/serf/projects -name "<id>.transcript.jsonl"`)
   has the expected turn shape:
   - 1 USER_INPUT (the prompt)
   - 1+ ASSISTANT turns containing `write_file` (with
@@ -73,8 +75,8 @@ shell.
 rm -rf "$tmpdir"
 ```
 
-Session metadata under `~/.local/state/serf/projects/...` lingers
-but is harmless. Optional: `find ~/.local/state/serf/projects
+Session metadata under `$HOME/.local/state/serf/projects/...` lingers
+but is harmless. Optional: `find $HOME/.local/state/serf/projects
 -name "<session_id>*" -delete`.
 
 ## Sharp edges

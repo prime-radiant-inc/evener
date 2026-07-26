@@ -11,7 +11,7 @@ watch turns do not need a harmless tool call.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
 - `tmpdir=$(mktemp -d -t serf-e2e-passive-observer-XXXXX)`.
 - Create the successful read target before spawning:

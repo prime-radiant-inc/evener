@@ -14,7 +14,7 @@ once per delivery boundary (never one frame per fire) — render-by-key
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md`). Serve mode through the hub is REQUIRED:
   idle wake rides the server-wired notify func; a one-shot library/CLI
   run only delivers at natural boundaries and cannot exercise run 1.

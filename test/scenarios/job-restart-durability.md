@@ -18,9 +18,10 @@ reported as supervision loss, never as command failure (line 1001).
   hub is REQUIRED, with the hub's `-serf` flag set so it can respawn
   daemons: the restart leg rides the hub's auto-resume
   (`reconnect-auto-resume.md` is the plumbing-side card for that
-  path). Hub on `127.0.0.1:9180` (`docs/agentic-testing.md`).
+  path). An isolated hub, per the Setup checklist in
+  `docs/agentic-testing.md` (never Jesse's real hub on `9180`).
 - Credentialed model; `tmpdir=$(mktemp -d -t serf-e2e-jrestart-XXXXX)`;
-  `TOKEN=$(cat ~/.serf/auth-token)`; `HUB=http://127.0.0.1:9180`.
+  `TOKEN=$(cat "$HOME/.serf/auth-token")`; `HUB=http://127.0.0.1:$PORT`.
 
 ## Steps
 
@@ -33,13 +34,13 @@ reported as supervision loss, never as command failure (line 1001).
    > wait on it.
 2. Capture `JOB` from the transcript; poll `/api/sessions/local:$SID`
    until `state` is `idle`. Locate the durable substrate now:
-   `JOBS=$(find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl")`
+   `JOBS=$(find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl")`
    and the output log `sessions/$SID/jobs/$JOB.log` next to it.
 3. OPERATOR-STEP (the crash): at ~20s after the job started, find the
    session's daemon PID and SIGKILL it —
 
    ```bash
-   PID=$(for f in ~/.serf/run/*.json; do python3 -c "
+   PID=$(for f in $HOME/.serf/run/*.json; do python3 -c "
    import json,sys; d=json.load(open('$f'))
    print(d['pid']) if d.get('session_id')=='$SID' else None" 2>/dev/null; done | head -1)
    kill -9 "$PID"
@@ -128,14 +129,14 @@ reported as supervision loss, never as command failure (line 1001).
   daemon dies (SIGPIPE); verify with `pgrep -f TICK_` and `pkill` if
   anything lingers.
 - Shut down the resumed session (`POST /s/$SID/shutdown`); remove the
-  stale rendezvous files of the killed PIDs under `~/.serf/run/` if
+  stale rendezvous files of the killed PIDs under `$HOME/.serf/run/` if
   present; `rm -rf "$tmpdir" /tmp/jobs-before-restart.jsonl`.
 
 ## Sharp edges
 
 - One daemon per session: the hub spawns a dedicated `serf serve`
   process per spawn/resume, and the rendezvous file
-  `~/.serf/run/<pid>.json` carries `session_id` — that is the
+  `$HOME/.serf/run/<pid>.json` carries `session_id` — that is the
   authoritative PID lookup. `kill -9` leaves the stale file behind;
   match on session_id AND a live pid.
 - The crash must land while the job is mid-run and the session idle:

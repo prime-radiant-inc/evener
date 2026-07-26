@@ -16,7 +16,7 @@ Phase 5.2.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md`); credentialed model.
 - `tmpdir=$(mktemp -d -t serf-e2e-catchup-XXXXX)`.
 

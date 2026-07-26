@@ -16,7 +16,9 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
 ## Pre-state
 
-- `serf-hub` running on `0.0.0.0:9180`. Token at `~/.serf/auth-token`.
+- `serf-hub` running on an isolated `$HOME` and free port
+  (never `9180`, Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
 - `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5` reachable
   through configured credentials. Both accept image inputs (verified
   2026-05-18 against the live hub).
@@ -31,7 +33,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 1. **Open the spawn form** in the browser:
    ```
    action: navigate
-   payload: http://localhost:9180/auth?token=<TOKEN>&next=/new
+   payload: $HUB/auth?token=<TOKEN>&next=/new
    ```
    Confirm wiring:
    ```

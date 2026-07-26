@@ -20,7 +20,7 @@ Terminal-notification cardinality/format is job-notification-semantics.md.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model.
 - `tmpdir=$(mktemp -d -t serf-e2e-shlife-XXXXX)`.
 

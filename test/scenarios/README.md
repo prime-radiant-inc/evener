@@ -34,8 +34,12 @@ Don't pad.
 ## How to run
 
 Most scenarios assume:
-- a running `serf-hub` (default `0.0.0.0:9180`)
-- the auth token at `~/.serf/auth-token`
+- a `serf-hub` you built and started yourself, on an isolated `$HOME`
+  and a free port. Never Jesse's real hub or his port `9180`. See
+  "Setup checklist" in `docs/agentic-testing.md` for the exact recipe —
+  a card that says nothing about the hub inherits that default.
+- the auth token at `$HOME/.serf/auth-token` (that isolated `$HOME`,
+  never Jesse's real one)
 - the `superpowers-chrome:browsing` skill available for browser steps
 - `tmux` and the Bash tool available for CLI steps
 - `~/go/bin/kata` for issue lookups

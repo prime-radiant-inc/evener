@@ -26,8 +26,10 @@ Driver: tmux send-keys / capture-pane.
 ## Pre-state
 
 - `tmux` installed.
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` built fresh from this branch.
 - Anthropic OAuth or API key configured for
   `anthropic/claude-haiku-4-5-20251001`.
@@ -51,7 +53,7 @@ Driver: tmux send-keys / capture-pane.
 2. **Launch the TUI in tmux**:
    ```
    tmux new-session -d -s serf-steer-ok-test -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 
@@ -107,7 +109,7 @@ Driver: tmux send-keys / capture-pane.
   ```
   SID=$(tmux capture-pane -t serf-steer-ok-test -p | \
     grep -oE '01[0-9A-Z]{24}' | head -1)
-  TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+  TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
   grep -c '"kind":"STEERING"' "$TS"  # 1
   ```
 - Session settles to `idle` with the model honoring the steer

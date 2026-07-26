@@ -28,8 +28,8 @@ below.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test (`job-control-spec`); hub
-  on `127.0.0.1:9180` (`docs/agentic-testing.md` setup checklist);
+- Fresh binaries from the branch under test (`job-control-spec`); an isolated hub, per the Setup checklist
+  (`docs/agentic-testing.md`; never Jesse's real hub on `9180`);
   credentialed model that can drive a multi-step delegation plan
   (the orchestrator picks the spawn model at run time, e.g.
   `openai/gpt-5.5`).
@@ -109,7 +109,7 @@ below.
    >    fields.
    > 6. End your turn.
 6. Read the durable logs and the transcripts:
-   - root: `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
+   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
    - the coordinator's transcript via its `transcript_ref` (from the
      turn-1 / job_read_output result) and the descendant `jobs.jsonl`
      under each child session dir.

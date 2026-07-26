@@ -16,9 +16,10 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 ## Pre-state
 
 - Binaries built fresh from the watch-mailbox branch under test (the
-  setup checklist in `docs/agentic-testing.md`): hub on
-  `127.0.0.1:9180` spawning the freshly built `serf`.
-- Auth token at `~/.serf/auth-token`; a credentialed model that follows
+  setup checklist in `docs/agentic-testing.md`): an isolated hub
+  (never Jesse's real hub on `9180`) spawning the freshly built `serf`.
+- Auth token at `$HOME/.serf/auth-token` (the isolated `$HOME`); a
+  credentialed model that follows
   multi-step procedural tool instructions (the Phase 5.2 recipe uses
   `oai-work/<model>`; any enumerated live model works).
 - Hermetic workdir: `tmpdir=$(mktemp -d -t serf-e2e-wedge-XXXXX)`.
@@ -57,7 +58,7 @@ executed by plan Phase 5.2 (`docs/superpowers/plans/2026-06-11-watch-mailbox.md`
 3. Poll `/api/sessions/local:$SID` until `state` returns `idle`
    (bound: 240s; note the elapsed time).
 4. Find the transcript
-   (`find ~/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
+   (`find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl"`)
    and check the turn shape and tool results.
 
 ## Expected
