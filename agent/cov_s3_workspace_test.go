@@ -43,6 +43,27 @@ func TestS3Cov_ParseMakefileTargets(t *testing.T) {
 	}
 }
 
+// TestS3Cov_ParseMakefileTargets_ScanError verifies that a scan failure
+// (here, a line exceeding bufio.Scanner's 64KB token limit) is not
+// indistinguishable from a clean, complete parse. Before this line is
+// checked, the scanner silently stops after "build:" and the partial
+// result is returned as if it were the whole file.
+func TestS3Cov_ParseMakefileTargets_ScanError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tooLong := strings.Repeat("x", 70000)
+	s3cov_write(t, dir, "Makefile", strings.Join([]string{
+		"build: deps",
+		tooLong,
+		"test: build",
+		"",
+	}, "\n"))
+	got := parseMakefileTargets(filepath.Join(dir, "Makefile"))
+	if got != nil {
+		t.Fatalf("expected nil targets on scan error, got %v", got)
+	}
+}
+
 func TestS3Cov_ParsePackageJsonScripts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

@@ -49,15 +49,18 @@ const (
 
 // trender_scanLines splits transcript bytes into lines the same way
 // rawLinesForRange's bufio.Scanner does (same buffer sizing, same \r handling),
-// so the subsequence oracle compares like against like.
-func trender_scanLines(content []byte) []string {
+// so the subsequence oracle compares like against like. It reports ok=false
+// if the scan stopped on an error rather than a clean EOF (Scan() returns
+// false for both, so only Err() tells them apart) - the caller must not
+// treat a truncated reference line set as if it were complete, since that
+// would silently weaken the subsequence oracle instead of failing loudly.
+func trender_scanLines(content []byte) (lines []string, ok bool) {
 	scanner := bufio.NewScanner(bytes.NewReader(content))
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
-	return lines
+	return lines, scanner.Err() == nil
 }
 
 // trender_isSubsequence reports whether want is a subsequence of have (same
@@ -71,6 +74,18 @@ func trender_isSubsequence(want, have []string) bool {
 		}
 	}
 	return i == len(want)
+}
+
+// TestTrenderScanLines_ScanError verifies that trender_scanLines reports
+// ok=false (rather than silently returning a truncated line list) when a
+// single line exceeds transcriptJSONLMaxLineBytes.
+func TestTrenderScanLines_ScanError(t *testing.T) {
+	tooLong := bytes.Repeat([]byte("x"), transcriptJSONLMaxLineBytes+10)
+	content := append([]byte("short line\n"), tooLong...)
+	lines, ok := trender_scanLines(content)
+	if ok {
+		t.Fatalf("expected ok=false on an over-length line, got ok=true lines=%v", lines)
+	}
 }
 
 // FuzzRawLinesForRange drives rawLinesForRange over fuzzed transcript content and
@@ -124,7 +139,10 @@ not json
 			t.Fatalf("negative count: lines=%d skipped=%d", lines, skipped)
 		}
 
-		fileLines := trender_scanLines(content)
+		fileLines, ok := trender_scanLines(content)
+		if !ok {
+			t.Fatalf("oracle scan of fuzzed content failed unexpectedly (result was err == nil, so rawLinesForRange scanned it cleanly)")
+		}
 		// Recover the lines rawLinesForRange actually WROTE by splitting on "\n"
 		// (it emits each scanned line verbatim followed by "\n"). Re-scanning the
 		// result with a bufio.Scanner would wrongly strip a second trailing "\r"

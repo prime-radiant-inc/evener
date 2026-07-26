@@ -300,6 +300,15 @@ func parseMakefileTargets(path string) []string {
 		}
 	}
 
+	// A scan error (I/O failure or a line over the 64KB token limit) looks
+	// identical to a clean EOF unless we check Err(): Scan() returns false
+	// for both. Treat a scan error the same as a file we couldn't open at
+	// all, rather than silently returning a partial, misleadingly-"complete"
+	// target list.
+	if err := scanner.Err(); err != nil {
+		return nil
+	}
+
 	return targets
 }
 

@@ -2508,7 +2508,10 @@ func delegateTerminalResult(s *Session, jm *jobManager, run *runningJob) delegat
 	structuredValid := rec.StructuredResultValid
 	if structured == nil && structuredValid == nil {
 		structured = run.structured
-		if structured != nil && structuredValid == nil {
+		// structuredValid is unconditionally nil here (the outer guard just
+		// established that, and nothing between it and here reassigns it),
+		// so re-testing it added nothing but a nilness-analyzer finding.
+		if structured != nil {
 			valid := true
 			structuredValid = &valid
 		}
