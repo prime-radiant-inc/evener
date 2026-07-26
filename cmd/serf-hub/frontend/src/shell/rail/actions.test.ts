@@ -83,6 +83,13 @@ describe("renameSession", () => {
 });
 
 describe("setArchived", () => {
+  test("POSTs /api/archive for a session using the provided canonical session ID", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await setArchived("session", "s1", true);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ kind: "session", id: "s1", archived: true });
+  });
+
   test("POSTs /api/archive for a session with no working_dir field at all", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     await setArchived("session", "local:abc", true);
