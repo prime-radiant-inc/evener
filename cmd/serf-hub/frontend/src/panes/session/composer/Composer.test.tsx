@@ -13,6 +13,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer } from "./Composer";
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
@@ -93,11 +94,65 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
   return fake;
 }
 
+// --- ask-pending fixture ----------------------------------------------------
+//
+// askPending (Composer.tsx's own doc comment on the field) is NOT read off
+// the thread directly - it comes from useAskDockPending(ref), which reads
+// askDockStore, which reconciles itself off liveAskQuestions(model)
+// (deriveAskQuestions.ts): a scan of the hydrated thread's OWN turns for a
+// completed, unanswered ask_user commandExecution item after the last plain
+// user message. There was no way to reach that state from this file before -
+// nothing here ever gave a thread any turns at all - so every gate keyed on
+// askPending (the timing caption's own !askPending clause, the input row's
+// hidden/inert) went untested in both directions (kata yh13). Mirrors
+// askDockStore.test.ts's own ONE_QUESTION/askArgs fixture, the file that
+// already proves this exact turns shape reconciles into a pending batch.
+const ONE_ASK_QUESTION = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
+
+function askUserArgs(questions: Array<Record<string, unknown>> = ONE_ASK_QUESTION): string {
+  return JSON.stringify({ questions });
+}
+
+// pendingAskTurns is a Partial<Thread> overrides fragment - spread it into
+// mountComposer's own `overrides` (alongside a "status"/"serf" override, if
+// the test also needs the session busy) rather than calling it standalone,
+// since a real ask-pending thread is still just a thread with turns, not a
+// different shape.
+function pendingAskTurns(): Pick<Thread, "turns"> {
+  return {
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "commandExecution",
+            id: "item_ask_1",
+            turnId: "turn_1",
+            toolName: "ask_user",
+            callId: "call_ask_1",
+            status: "completed",
+            argumentsJson: askUserArgs(),
+          },
+        ],
+      },
+    ],
+  };
+}
+
 beforeEach(() => {
   localStorage.clear();
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  // askDockStore reconciles reactively off threadsStore (registered once at
+  // module load - askDockStore.ts's own header comment), so its byRef map
+  // outlives resetThreadsStoreForTests() the same way the toast store
+  // outlives RTL's cleanup below: without this, a pending-ask batch minted
+  // for "ref_a" in one test would still be sitting there for the next
+  // test's own "ref_a" mount.
+  resetAskDockStoreForTests();
   // The toast store is module state that outlives RTL's own cleanup, so a
   // toast pushed by one test would otherwise still be in the next test's
   // tree and make a getByText for the same message ambiguous.
@@ -370,6 +425,25 @@ test("the timing caption is absent when busy but the source advertises no queue 
       queue: {},
       activeTurnId: "turn_1",
     },
+  });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
+// kata yh13: the caption's own showSendTiming gate is
+// `busy && availability.canQueue && !askPending` (Composer.tsx), but until
+// pendingAskTurns() existed nothing in this file could ever make askPending
+// true, so the !askPending clause was untested in both directions - deleting
+// it from the gate survived mutation. This is otherwise the exact same
+// busy+canQueue shape as "an always-visible caption states Send's timing
+// while a turn runs" above, plus pendingAskTurns() layered on top: if the
+// clause is gone, this is the one case that still shows a caption over a
+// hidden, inert input row - a timing hint for a control the reader cannot
+// currently reach.
+test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {}, activeTurnId: "turn_1" },
+    ...pendingAskTurns(),
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
 });
