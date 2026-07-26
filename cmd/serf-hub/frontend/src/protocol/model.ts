@@ -46,6 +46,15 @@ export interface ItemModel {
   // item/completed and the snapshot/reload paths (both fold through
   // reducer's wireItemToModel).
   error?: string;
+  // Wire ThreadItem.prevalOnly (kata hgm1): true when `error` came from the
+  // daemon rejecting the call before it ever reached the tool's real
+  // execution (an unknown tool name, or arguments still failing schema
+  // validation after repair) - a malformed request the model made, not a
+  // real tool run that failed or was denied. Meaningless when `error` is
+  // undefined. Renderers use this, together with whether a later call to
+  // the same tool succeeded, to tell a self-corrected bounce apart from a
+  // genuine failure worth staying open forever.
+  prevalOnly?: boolean;
   // A shell tool call's process exit code, promoted onto the settled item as a
   // typed wire field (ThreadItem.exitCode, wire-honesty spec Part A). undefined
   // for a still-running/backgrounded call, for any non-shell tool, and for an

@@ -39,6 +39,10 @@ const CLASS = {
 };
 
 const COMPLETE_DEBOUNCE_MS = 150;
+// How long the "you are here" header stays marked just-picked after a
+// directory click (94yg) - long enough to register as a beat of feedback,
+// short enough that it reads as a pulse rather than a persistent state.
+const JUST_PICKED_MS = 700;
 
 /** What the field names, which decides both whether files are listed and what
  * a row click means. `outputFile` behaves exactly like `file`: the file may
@@ -227,6 +231,15 @@ export function PathFieldPanel({
   // depend on more than the directory - see handleType.
   const requestedFilterRef = useRef("");
   const listboxId = useId();
+  // 94yg: a directory click both picks the value and descends into it (spec
+  // 3.4 - no commit button, no Cancel), and the only thing that visibly
+  // changes is this quiet "you are here" header - easy to miss, which is
+  // exactly what the kata's two participants both hit. justPicked marks the
+  // header for a beat right after a click registers the pick, then clears
+  // itself - an in-the-moment confirmation, not a second control, so the
+  // no-commit-button decision stands unchanged.
+  const [justPicked, setJustPicked] = useState(false);
+  const justPickedTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const text = typed ?? value;
   const filter = typed === null ? "" : typedFilter(typed);
@@ -292,7 +305,10 @@ export function PathFieldPanel({
       (result) => setRecents(result),
       () => setRecents([]),
     );
-    return () => clearTimeout(debounceRef.current);
+    return () => {
+      clearTimeout(debounceRef.current);
+      clearTimeout(justPickedTimeoutRef.current);
+    };
   }, []);
 
   // SEED the highlight onto the current FILE's row when a listing arrives (a
@@ -325,6 +341,11 @@ export function PathFieldPanel({
     resetHighlight();
     clearTimeout(debounceRef.current);
     runCompletion(childrenPrefix(dir));
+    // Mark the header just-picked for a beat (94yg) - the pick already
+    // registered via onChange above; this only makes that moment visible.
+    setJustPicked(true);
+    clearTimeout(justPickedTimeoutRef.current);
+    justPickedTimeoutRef.current = setTimeout(() => setJustPicked(false), JUST_PICKED_MS);
   }
 
   function pickRow(row: PathPickableRow): void {
@@ -448,11 +469,15 @@ export function PathFieldPanel({
             // The current-directory header is a path, the Recent head is a
             // section title; they get different faces for that reason.
             const isPath = row.label.startsWith("/");
+            // The just-picked pulse only ever applies to the current-directory
+            // header (isPath), the row a browseInto click actually changed -
+            // never the Recent group's own static "Recent projects" title.
             return (
               <li
                 key={row.key}
                 role="presentation"
                 className={`${CLASS.groupRow} ${isPath ? CLASS.groupPath : CLASS.groupLabel}`}
+                data-just-picked={isPath && justPicked ? "true" : undefined}
               >
                 {row.label}
               </li>

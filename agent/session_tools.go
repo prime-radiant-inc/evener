@@ -433,6 +433,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 			Output:     prep.PrevalErr,
 			FullOutput: prep.PrevalErr,
 			IsError:    true,
+			PrevalOnly: true,
 		}
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
@@ -486,6 +487,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 	if res.IsError {
 		endData.Error = res.FullOutput
+		endData.PrevalOnly = res.PrevalOnly
 	} else {
 		endData.Output = res.FullOutput
 	}
@@ -617,6 +619,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				Name:           res.ToolName,
 				Content:        res.Output,
 				IsError:        res.IsError,
+				PrevalOnly:     res.PrevalOnly,
 				DurationMS:     res.DurationMS,
 				ToolState:      res.ToolState,
 				ImageData:      res.ImageData,

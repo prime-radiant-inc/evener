@@ -135,6 +135,12 @@ type ExecResult struct {
 
 	IsError bool
 
+	// PrevalOnly is true when this result came from execTool's pre-dispatch
+	// repair step rejecting the call (kata hgm1) rather than from actually
+	// running the tool - ExecuteCall below never saw this call at all.
+	// Meaningless when IsError is false.
+	PrevalOnly bool
+
 	// DurationMS is the wall-clock duration of the tool execution in milliseconds.
 	DurationMS int64
 

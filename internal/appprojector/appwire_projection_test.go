@@ -2457,6 +2457,44 @@ func TestAppEventProjectorToolCallEndCarriesExitCode(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorToolCallEndCarriesPrevalOnly (kata hgm1) pins that the
+// projector copies events.ToolCallEndData.PrevalOnly onto the settled item's
+// wire field verbatim - the client-side signal that this failure never
+// reached the tool's real execution.
+func TestAppEventProjectorToolCallEndCarriesPrevalOnly(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "ask_user", CallID: "call_bad"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName:   "ask_user",
+		CallID:     "call_bad",
+		Error:      "missing required field: header",
+		PrevalOnly: true,
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if !item.PrevalOnly {
+		t.Fatal("expected PrevalOnly to carry through onto the settled item")
+	}
+}
+
+// TestAppEventProjectorToolCallEndOmitsPrevalOnlyOnRealFailure pins the other
+// direction: a real execution failure (no PrevalOnly on the wire event) must
+// not somehow default true on the settled item.
+func TestAppEventProjectorToolCallEndOmitsPrevalOnlyOnRealFailure(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{ToolName: "shell", CallID: "call_fail"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
+		ToolName: "shell",
+		CallID:   "call_fail",
+		Error:    "command not found",
+	}})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.PrevalOnly {
+		t.Fatal("a real execution failure must not carry PrevalOnly")
+	}
+}
+
 // TestAppEventProjectorToolCallEndCarriesZeroExitCode (wire-honesty spec Part
 // A, review Minor) pins the boundary that makes the pointer field honest: a
 // successful shell run's ToolState literally contains "exit_code":0, which

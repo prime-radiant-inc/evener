@@ -632,6 +632,15 @@ type ThreadItem struct {
 	Error                string        `json:"error,omitempty"`
 	OutputImages         []OutputImage `json:"outputImages,omitempty"`
 	Status               string        `json:"status,omitempty"`
+	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
+	// unknown tool name, or arguments that failed schema validation even
+	// after repair) rather than the tool's own execution - the call never
+	// reached ExecuteCall (kata hgm1). A client uses this to tell a
+	// self-corrected malformed-call bounce apart from a real execution
+	// failure or denial: same non-empty Error, different meaning. False (the
+	// default) for a real execution failure, and meaningless when Error is
+	// empty.
+	PrevalOnly bool `json:"prevalOnly,omitempty"`
 	// StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil when unset),
 	// matching DurationMS's scale and the web reducer's epoch-ms read; stamped
 	// by the appprojector/apptranscript producers via time.Time.UnixMilli.

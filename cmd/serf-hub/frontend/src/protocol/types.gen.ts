@@ -867,6 +867,7 @@ export interface ThreadItem {
   error?: string;
   outputImages?: OutputImage[];
   status?: string;
+  prevalOnly?: boolean;
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
