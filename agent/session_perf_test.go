@@ -653,12 +653,9 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 	// The prompt used in processOneInput should match the reference.
 	if capturedSysPrompt != referencePrompt {
 		// Find first difference for debugging.
-		minLen := len(capturedSysPrompt)
-		if len(referencePrompt) < minLen {
-			minLen = len(referencePrompt)
-		}
+		minLen := min(len(referencePrompt), len(capturedSysPrompt))
 		diffIdx := minLen
-		for i := 0; i < minLen; i++ {
+		for i := range minLen {
 			if capturedSysPrompt[i] != referencePrompt[i] {
 				diffIdx = i
 				break

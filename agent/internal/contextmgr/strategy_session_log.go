@@ -232,14 +232,11 @@ func extractOriginalPrompt(history []schema.Turn) string {
 }
 
 func extractOriginalPromptLine(text, prefix string) string {
-	idx := strings.Index(text, prefix)
-	if idx < 0 {
+	_, rest, found := strings.Cut(text, prefix)
+	if !found {
 		return ""
 	}
-	rest := text[idx+len(prefix):]
-	if nl := strings.Index(rest, "\n"); nl >= 0 {
-		return rest[:nl]
-	}
+	rest, _, _ = strings.Cut(rest, "\n")
 	return rest
 }
 

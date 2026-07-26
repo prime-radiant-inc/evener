@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -253,12 +254,8 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
-		for name, meta := range p.Skills {
-			allSkills[name] = meta
-		}
-		for name, agent := range p.Agents {
-			allAgents[name] = agent
-		}
+		maps.Copy(allSkills, p.Skills)
+		maps.Copy(allAgents, p.Agents)
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
 		}

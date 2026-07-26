@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -843,13 +844,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.skills = make(map[string]skill.SkillMeta)
 	s.pluginCommands = make(map[string]plugin.Command)
 	if embedded, err := skill.EmbeddedSkills(); err == nil {
-		for name, meta := range embedded {
-			s.skills[name] = meta
-		}
+		maps.Copy(s.skills, embedded)
 	}
-	for name, meta := range skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...) {
-		s.skills[name] = meta // filesystem shadows embedded
-	}
+	// filesystem shadows embedded
+	maps.Copy(s.skills, skill.DiscoverSkills(s.currentEnv(), s.cfg.SkillsDirs...))
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
 	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
@@ -1049,15 +1047,11 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
-		for name, meta := range p.Skills {
-			s.skills[name] = meta
-		}
+		maps.Copy(s.skills, p.Skills)
 		for rawKey, agent := range p.Agents {
 			allAgents[exposedAgentCatalogKey(p, rawKey, agent)] = agent
 		}
-		for name, cmd := range p.Commands {
-			s.pluginCommands[name] = cmd
-		}
+		maps.Copy(s.pluginCommands, p.Commands)
 		s.pendingHookWarnings = append(s.pendingHookWarnings, commandUnenforcedFieldWarnings(p)...)
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
@@ -1158,9 +1152,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 	})
 	s.hookRunner = runner
 	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).
-	for name, agent := range allAgents {
-		s.pluginAgents[name] = agent
-	}
+	maps.Copy(s.pluginAgents, allAgents)
 
 	if sessionStartKind == plugin.SessionStartKindResume {
 		s.deferSessionStartHooks(sessionStartKind)

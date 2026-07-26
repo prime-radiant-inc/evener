@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -344,9 +345,7 @@ func (r *wtRepo) create(t *testing.T, args map[string]any) (map[string]any, erro
 		t.Fatal("registry is missing manage_worktree")
 	}
 	full := map[string]any{"operation": "create"}
-	for k, v := range args {
-		full[k] = v
-	}
+	maps.Copy(full, args)
 	out, err := rt.Exec(t.Context(), r.s.currentEnv(), full)
 	if err != nil {
 		return nil, err
