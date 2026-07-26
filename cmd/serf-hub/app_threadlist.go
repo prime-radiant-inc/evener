@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"strings"
 
@@ -137,21 +138,11 @@ func sourceAllowedForList(sourceID string, params appwire.ThreadListParams) bool
 	if len(params.SourceIDs) == 0 {
 		return true
 	}
-	for _, want := range params.SourceIDs {
-		if want == sourceID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(params.SourceIDs, sourceID)
 }
 
 func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadListParams) bool {
-	for _, requested := range params.SourceIDs {
-		if requested == sourceID {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(params.SourceIDs, sourceID)
 }
 
 func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
@@ -232,17 +223,8 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 			return false
 		}
 	}
-	if len(params.SourceIDs) > 0 {
-		found := false
-		for _, sourceID := range params.SourceIDs {
-			if sourceID == thread.Source {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
+	if len(params.SourceIDs) > 0 && !slices.Contains(params.SourceIDs, thread.Source) {
+		return false
 	}
 	q := strings.ToLower(strings.TrimSpace(params.SearchTerm))
 	if q == "" {
