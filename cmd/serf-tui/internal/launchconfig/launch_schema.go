@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,12 +45,7 @@ func launchSchemaRows(schema []appwire.LaunchOption, layer appwire.LaunchConfigL
 }
 
 func launchOptionDefaultableInLayer(opt appwire.LaunchOption, layerName string) bool {
-	for _, layer := range opt.DefaultableLayers {
-		if layer == layerName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(opt.DefaultableLayers, layerName)
 }
 
 func layerRowForOption(opt appwire.LaunchOption, layer appwire.LaunchConfigLayer) layerRow {
