@@ -44,7 +44,7 @@ local after ./after.webp
 
 func TestShellOutputImageCandidatesCapsResults(t *testing.T) {
 	var out strings.Builder
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		out.WriteString("img")
 		out.WriteString(strconv.Itoa(i))
 		out.WriteString(".png\n")
@@ -279,7 +279,7 @@ func TestOutputImagesForToolCallCapsRenderedShellImages(t *testing.T) {
 	cwd := t.TempDir()
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
 	var output strings.Builder
-	for i := 0; i < outputImageMaxRendered+3; i++ {
+	for i := range outputImageMaxRendered + 3 {
 		name := "plot" + strconv.Itoa(i) + ".png"
 		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
 			t.Fatal(err)

@@ -176,7 +176,7 @@ func fuzzScenarioRoster_KeepsAliveDaemonThroughProbeFailures(t *testing.T) {
 	// Now the daemon goes unresponsive for several consecutive refreshes. It
 	// must remain in the roster the entire time (the bug pruned it after two).
 	prober.fail = true
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r.Refresh()
 		if got := r.List(); len(got) != 1 {
 			t.Fatalf("refresh %d: live daemon dropped on probe failure (flash), got %d entries", i, len(got))

@@ -216,7 +216,7 @@ func assertJobstoreTimestampsDecode(t *testing.T, dir string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+		for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
 			arg, ok := strings.CutPrefix(line, "[]byte(")
 			if !ok {
 				continue

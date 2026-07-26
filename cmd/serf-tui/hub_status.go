@@ -85,10 +85,7 @@ func formatContextFragment(detail hubSessionDetail) string {
 	if used > 0 && window > 0 {
 		pct := float64(used) / float64(window) * 100
 		compactAt := int(float64(window) * compactThreshold)
-		remaining := compactAt - used
-		if remaining < 0 {
-			remaining = 0
-		}
+		remaining := max(compactAt-used, 0)
 		return fmt.Sprintf("%s/%s (%.0f%%, %s to compact)",
 			formatTokens(used), formatTokens(window), pct, formatTokens(remaining))
 	}
@@ -115,10 +112,7 @@ func compactDuration(d time.Duration) string {
 		d = 0
 	}
 	if d < time.Minute {
-		seconds := int(d.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
+		seconds := max(int(d.Seconds()), 1)
 		return fmt.Sprintf("%ds", seconds)
 	}
 	if d < time.Hour {

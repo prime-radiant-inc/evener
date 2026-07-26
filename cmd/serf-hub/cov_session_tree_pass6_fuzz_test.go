@@ -59,7 +59,7 @@ func pass6SessionWeb(thread appwire.Thread, actionErr error) *WebServer {
 // FuzzSessionTreePass6 closes residual handler, detail, action, and tree
 // projection branches using only process-local sources and stores.
 func FuzzSessionTreePass6(f *testing.F) {
-	for op := uint8(0); op < 9; op++ {
+	for op := range uint8(9) {
 		f.Add(op, "pass6")
 	}
 	f.Fuzz(func(t *testing.T, op uint8, title string) {

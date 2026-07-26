@@ -808,7 +808,7 @@ func fuzzScenarioCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySub
 			case appwire.MethodThreadStart:
 				_ = transport.Send(context.Background(), appwire.ResponseMessage(req.ID, map[string]any{"thread": codexThreadMap("th_codex")}))
 			case appwire.MethodTurnStart:
-				for i := 0; i < 160; i++ {
+				for range 160 {
 					_ = transport.Send(context.Background(), appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 						ThreadID: "th_codex",
 						Delta:    "initial backlog",
@@ -878,12 +878,12 @@ func fuzzScenarioCodexLiveThreadClosesSlowSubscriberInsteadOfDropping(t *testing
 	defer cancel()
 	notifications := live.subscribe(ctx)
 
-	for i := 0; i < codexLiveSubscriberBuffer; i++ {
+	for range codexLiveSubscriberBuffer {
 		live.publish(deltaNotification("buffered"))
 	}
 	live.publish(deltaNotification("would have dropped"))
 
-	for i := 0; i < codexLiveSubscriberBuffer; i++ {
+	for i := range codexLiveSubscriberBuffer {
 		if _, ok := <-notifications; !ok {
 			t.Fatalf("subscriber closed before draining buffered notification %d", i)
 		}

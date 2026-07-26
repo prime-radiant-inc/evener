@@ -124,10 +124,7 @@ func FuzzProject(f *testing.F) {
 			}
 			n := int(script[i])
 			i++
-			end := i + n
-			if end > len(script) {
-				end = len(script)
-			}
+			end := min(i+n, len(script))
 			payload := script[i:end]
 			i = end
 			applyEvent(t, p, kindIdx, payload, records)

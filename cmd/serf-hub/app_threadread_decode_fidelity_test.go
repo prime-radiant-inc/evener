@@ -96,12 +96,12 @@ func fillForJSON(t *testing.T, v reflect.Value, depth int) {
 		t.Fatalf("fillForJSON: schema.Turn nests deeper than expected at %s; the fixture builder needs revisiting", v.Type())
 	}
 	switch v.Type() {
-	case reflect.TypeOf(time.Time{}):
+	case reflect.TypeFor[time.Time]():
 		// Whole seconds in UTC: the transcript's RFC 3339 encoding is exact for
 		// these, so the fixture cannot fail on formatting precision.
 		v.Set(reflect.ValueOf(time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)))
 		return
-	case reflect.TypeOf(json.RawMessage{}):
+	case reflect.TypeFor[json.RawMessage]():
 		v.Set(reflect.ValueOf(json.RawMessage(`{"fixture":"raw"}`)))
 		return
 	}

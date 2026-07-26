@@ -256,7 +256,7 @@ func commandAPIAttempt(index int, outcome apilog.AttemptOutcomeClass, latency in
 func requireAPILogTableRow(t *testing.T, output, wantAttemptID, wantMarker string) {
 	t.Helper()
 	var rows []string
-	for _, line := range strings.Split(output, "\n") {
+	for line := range strings.SplitSeq(output, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) > 0 && identifier.ValidateAPIAttemptID(fields[0]) == nil {
 			rows = append(rows, line)
@@ -294,7 +294,7 @@ func requireAPILogTableColumn(t *testing.T, output, attemptID, column, want stri
 		t.Fatalf("API-log table has no %q column:\n%s", column, output)
 	}
 	end := len(row)
-	for _, field := range strings.Fields(header) {
+	for field := range strings.FieldsSeq(header) {
 		position := strings.Index(header, field)
 		if position > start && position < end {
 			end = position

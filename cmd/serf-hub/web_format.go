@@ -81,10 +81,7 @@ func compactDuration(d time.Duration) string {
 		d = 0
 	}
 	if d < time.Minute {
-		seconds := int(d.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
+		seconds := max(int(d.Seconds()), 1)
 		return fmt.Sprintf("%ds", seconds)
 	}
 	if d < time.Hour {

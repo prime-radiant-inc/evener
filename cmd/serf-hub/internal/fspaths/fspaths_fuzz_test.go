@@ -34,7 +34,7 @@ func FuzzSanitizeDirPrefix(f *testing.F) {
 		}
 		// A traversal element never survives sanitization: it is either
 		// normalized away or rejected.
-		for _, seg := range strings.Split(got, string(filepath.Separator)) {
+		for seg := range strings.SplitSeq(got, string(filepath.Separator)) {
 			if seg == ".." {
 				t.Fatalf("traversal survived sanitization: %q", got)
 			}

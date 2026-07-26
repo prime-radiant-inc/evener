@@ -21,7 +21,7 @@ import (
 // are otherwise difficult for the broad route fuzzers to reach. All sources
 // and filesystem roots are process-local and deterministic.
 func FuzzSessionTreePass3(f *testing.F) {
-	for op := uint8(0); op < 16; op++ {
+	for op := range uint8(16) {
 		f.Add(op, "alpha\r\nbeta", int64(90_000))
 	}
 	f.Fuzz(func(t *testing.T, op uint8, text string, number int64) {

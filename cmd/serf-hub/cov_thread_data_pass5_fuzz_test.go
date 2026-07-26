@@ -57,7 +57,7 @@ func pass5Past(t *testing.T) (*hubcore.PastIndex, string, string) {
 }
 
 func FuzzThreadDataPass5(f *testing.F) {
-	for i := uint8(0); i < 6; i++ {
+	for i := range uint8(6) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {

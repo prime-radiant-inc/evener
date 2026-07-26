@@ -44,7 +44,7 @@ func TestHubModelBrowseKJMovesSelectionAndReachesFork(t *testing.T) {
 	}
 
 	// k walks the cursor up to the first user turn.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		updated, _ = m.Update(key("k"))
 		m = updated.(hubModel)
 	}
@@ -107,7 +107,7 @@ func TestHubModelBrowseSelectionScrollsIntoView(t *testing.T) {
 	// Walk the cursor up several turns; the selection must move and the viewport
 	// must scroll up to follow it.
 	start := m.browseSelected
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		updated, _ := m.Update(key("k"))
 		m = updated.(hubModel)
 	}

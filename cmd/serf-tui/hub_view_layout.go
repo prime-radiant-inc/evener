@@ -13,7 +13,7 @@ func joinDashboardColumns(left, right string, leftWidth, rightWidth, totalWidth 
 	rightLines := strings.Split(strings.TrimRight(right, "\n"), "\n")
 	lineCount := max(len(leftLines), len(rightLines))
 	var b strings.Builder
-	for i := 0; i < lineCount; i++ {
+	for i := range lineCount {
 		leftLine := ""
 		if i < len(leftLines) {
 			leftLine = tuitext.TruncateText(leftLines[i], leftWidth)

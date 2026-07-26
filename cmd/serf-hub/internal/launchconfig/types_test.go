@@ -9,7 +9,7 @@ import (
 )
 
 func TestLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {
-	if _, ok := reflect.TypeOf(Layer{}).FieldByName("RawHTTPLogging"); ok {
+	if _, ok := reflect.TypeFor[Layer]().FieldByName("RawHTTPLogging"); ok {
 		t.Fatal("launch layer still exposes the obsolete raw HTTP logging control")
 	}
 }

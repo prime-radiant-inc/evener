@@ -40,11 +40,11 @@ func ParseJobNotificationHeadline(text string) (jobID, headline string, isError,
 // communicateHeadline parses the communicate envelope that rides after an
 // "excerpt:" marker in a job-notification body into a compact headline.
 func communicateHeadline(body string) string {
-	idx := strings.Index(body, "excerpt:")
-	if idx == -1 {
+	_, after, ok := strings.Cut(body, "excerpt:")
+	if !ok {
 		return ""
 	}
-	excerpt := strings.TrimSpace(body[idx+len("excerpt:"):])
+	excerpt := strings.TrimSpace(after)
 	var env struct {
 		Data struct {
 			Status       string   `json:"status"`

@@ -39,7 +39,7 @@ func captureSkipReport(t *testing.T, fn func()) string {
 	}
 
 	var report strings.Builder
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		if strings.HasPrefix(line, "[hub] past index: ") {
 			report.WriteString(line)
 			report.WriteString("\n")

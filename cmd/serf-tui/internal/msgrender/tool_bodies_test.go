@@ -28,7 +28,7 @@ func TestDiffBodyTintsAddLines(t *testing.T) {
 
 	// Locate the rendered lines by their visible text content.
 	var addedLine, contextLine string
-	for _, l := range strings.Split(got, "\n") {
+	for l := range strings.SplitSeq(got, "\n") {
 		if strings.Contains(l, "+added") {
 			addedLine = l
 		}

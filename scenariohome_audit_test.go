@@ -101,10 +101,7 @@ func scenarioMentionsIsolatedHome(content string) bool {
 			return false
 		}
 		idx += start
-		windowEnd := idx + scenarioIsolatedHomeWindow
-		if windowEnd > len(lower) {
-			windowEnd = len(lower)
-		}
+		windowEnd := min(idx+scenarioIsolatedHomeWindow, len(lower))
 		if strings.Contains(lower[idx:windowEnd], "home") {
 			return true
 		}

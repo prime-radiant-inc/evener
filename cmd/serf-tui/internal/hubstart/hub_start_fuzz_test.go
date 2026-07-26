@@ -76,7 +76,7 @@ func FuzzParseStartup(f *testing.F) {
 // package tests through the native fuzz entry point. Keeping one scenario per
 // selector also makes active fuzzing bounded.
 func FuzzHubStartupCoverage(f *testing.F) {
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		f.Add(uint8(i))
 	}
 	f.Fuzz(func(t *testing.T, selector uint8) {

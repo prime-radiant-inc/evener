@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func FuzzLLMCallCoverage(f *testing.F) {
-	for scenario := uint8(0); scenario < 4; scenario++ {
+	for scenario := range uint8(4) {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {
