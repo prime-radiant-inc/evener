@@ -1136,6 +1136,14 @@ renderer on both the live and reload paths. A steer with no kind renders
 `System steered` with no colon: a colon promises a value, and the UI does not
 guess at one.
 
+**The two sides cannot drift.** `make generate` emits the Go enum into
+`types.gen.ts` as `STEERING_KINDS` plus the union `SteeringKind`, and
+`SteeringItem.tsx` types its label map as `Record<LabelledKind, string>` over that
+union. Adding a kind in Go and regenerating fails `tsc` with a missing-key error
+naming the kind, until it is given a label, suppressed, or routed to a card. This
+is the only mechanism enforcing that — deliberately, since a second one covering
+the same property would be worse than either alone.
+
 This replaced a prose classifier that pattern-matched steering text to infer a
 kind. It knew 8 patterns against 15 injection sites, and one of its rules
 matched `/reading without writing/` — a string the daemon has never sent. That
