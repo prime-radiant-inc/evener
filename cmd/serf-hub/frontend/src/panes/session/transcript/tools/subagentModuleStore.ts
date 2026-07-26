@@ -18,7 +18,9 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { ItemModel } from "../../../../protocol/model";
 import type { SerfJobInfo } from "../../../../protocol/types.gen";
+import { parseArgs, parseJSONObject, str } from "./helpers";
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
 
@@ -101,6 +103,17 @@ const EMPTY_ROWS: SubagentRow[] = [];
 // distinct (sessionRef, turnId) pairs can never concatenate to the same key.
 export function turnScopeKey(sessionRef: string | undefined, turnId: string): string {
   return `${sessionRef ?? ""}\0${turnId}`;
+}
+
+// rowKeyForDelegateItem mirrors subagentModule.tsx's rowFromDelegateItem keying
+// logic so the top-level tool-row status can always target the same row that
+// powers the module.
+export function rowKeyForDelegateItem(item: ItemModel): string {
+  const args = parseArgs(item.argumentsJSON);
+  const parsed = parseJSONObject(item.output);
+  const delegateId = str(parsed ?? args, "delegate_id");
+  const jobId = str(parsed ?? args, "job_id");
+  return resolveRowKey(delegateId, jobId, item.callId ?? item.id);
 }
 
 // effectiveRowKind is the kind a row actually DISPLAYS: subagentModule.tsx's

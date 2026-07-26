@@ -5,8 +5,10 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
+import type { ItemModel } from "../../../protocol/model";
 import { usePrefsStore } from "../../../stores/prefs";
 import { useThreadsStore } from "../../../stores/threads";
+import { type CadenceState, StatusDot } from "../../../widgets";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
@@ -16,6 +18,15 @@ import styles from "./toolcallitem.module.css";
 import { toolCallDuration } from "./toolMeta";
 import { toolRendererFor } from "./toolRenderers";
 import { supersededBySuccess } from "./toolSupersession";
+import { parseJSONObject, str } from "./tools/helpers";
+import {
+  classifyJobStatus,
+  effectiveRowKind,
+  rowKeyForDelegateItem,
+  type SubagentRow,
+  turnScopeKey,
+  useSubagentRows,
+} from "./tools/subagentModuleStore";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./types";
 
 const CLASS = {
@@ -23,6 +34,32 @@ const CLASS = {
   body: requireClass(styles.body, "toolcallitem.module.css", "body"),
   error: requireClass(styles.error, "toolcallitem.module.css", "error"),
 };
+
+type DelegateStatusKey = "running" | "done" | "stopped" | "failed" | "unknown";
+
+const DELEGATE_INDICATOR_STATE: Record<DelegateStatusKey, CadenceState> = {
+  running: "working",
+  done: "ended",
+  stopped: "ended",
+  failed: "failed",
+  unknown: "needs-you",
+};
+
+function delegateStatusFromItem(item: ItemModel): DelegateStatusKey {
+  const parsed = parseJSONObject(item.output);
+  return classifyJobStatus(parsed === undefined ? undefined : str(parsed, "status"));
+}
+
+function delegateStatusForItem(
+  item: ItemModel,
+  delegateRow: SubagentRow | undefined,
+  live: boolean,
+): DelegateStatusKey {
+  const parsedOutput = parseJSONObject(item.output);
+  const hasSettledOutputStatus = parsedOutput !== undefined && str(parsedOutput, "status") !== undefined;
+  if (live && !hasSettledOutputStatus) return "running";
+  return delegateRow ? effectiveRowKind(delegateRow) : delegateStatusFromItem(item);
+}
 
 // A tool call failed or was denied when its ItemModel carries error text. That
 // PRESENCE is the primary signal (the reducer maps ThreadItem.error straight
@@ -44,6 +81,12 @@ function toolFailed(item: ItemRenderProps["item"]): boolean {
 export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef }: ItemRenderProps) {
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
+  const isDelegate = item.toolName === "delegate";
+  const delegateRows = useSubagentRows(isDelegate ? turnScopeKey(sessionRef, item.turnId) : "");
+  const delegateRow = isDelegate ? delegateRows.find((row) => row.rowKey === rowKeyForDelegateItem(item)) : undefined;
+  const delegateKind = delegateStatusForItem(item, delegateRow, live);
+  const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
+
   // A file-referencing tool (read_file/edit_file/write_file) exposes the file it
   // touches via descriptor.openBesidePath; ToolCallItem turns that into an "open
   // beside" control in the row's summary (floor §3.7). The control itself gates
@@ -146,9 +189,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
-          summary={summary}
+          summary={isDelegate ? "" : summary}
           purpose={item.description}
           failed={false}
+          status={delegateStatus}
           expandable={false}
           expanded={false}
           trailing={openBesideButton}
@@ -173,9 +217,10 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       open={expanded}
     >
       <ToolRow
-        summary={summary}
+        summary={isDelegate ? "" : summary}
         purpose={item.description}
         failed={failed}
+        status={delegateStatus}
         expandable
         expanded={expanded}
         // toggleDisclosure writes an explicit store entry against this id, so

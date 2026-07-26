@@ -141,17 +141,21 @@ test("g5kf: rowKindFromChildStatus reads notLoaded as unknown, never running for
 
 // --- delegate descriptor: summary ----------------------------------------
 
-test("delegate: summary leads with the clipped task", () => {
+test("delegate: summary is the human description", () => {
   const d = toolRendererFor("delegate");
   const args = JSON.stringify({ task: "Run the full test suite and report back" });
-  expect(d.summary(delegateItem({ argumentsJSON: args }))).toBe("Delegated: Run the full test suite and report back");
+  expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
+    "Testing delegation",
+  );
 });
 
-test("delegate: a long task is clipped to 80 chars", () => {
+test("delegate: delegated task text is not used for the row summary", () => {
   const d = toolRendererFor("delegate");
   const longTask = "x".repeat(100);
   const args = JSON.stringify({ task: longTask });
-  expect(d.summary(delegateItem({ argumentsJSON: args }))).toBe(`Delegated: ${"x".repeat(80)}…`);
+  expect(d.summary(delegateItem({ description: "Testing delegation", argumentsJSON: args }))).toBe(
+    "Testing delegation",
+  );
 });
 
 // --- leader election: only the FIRST delegate item in a turn renders the
@@ -261,7 +265,7 @@ test("kata 8525: two sessions sharing the SAME turnId never bleed into each othe
 // the identical fallback rowKey call:item_1 under the identical turnId -
 // exactly the "a call that errors before minting any handle" scenario the
 // kata describes. Only sessionRef tells the two rows apart.
-test("78nj: expanding one session's row does not open another session's row sharing the same turnId/fallback rowKey", async () => {
+test("78nj: one session's delegate row body never renders another session's mandate", async () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const sessionA = delegateItem({ argumentsJSON: JSON.stringify({ task: "session A's task" }), output: "" });
@@ -274,11 +278,10 @@ test("78nj: expanding one session's row does not open another session's row shar
   );
 
   const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
-  const user = userEvent.setup();
-  await user.click(within(moduleA!).getByText("session A's task"));
-
   expect(within(moduleA!).getByTestId("subagent-mandate")).toBeTruthy();
-  expect(within(moduleB!).queryByTestId("subagent-mandate")).toBeNull();
+  expect(within(moduleB!).getByTestId("subagent-mandate")).toBeTruthy();
+  expect(within(moduleA!).getByText("session A's task")).toBeTruthy();
+  expect(within(moduleB!).getByText("session B's task")).toBeTruthy();
 });
 
 // claimLeader/releaseLeader must stay symmetric across StrictMode's dev-only
@@ -335,7 +338,7 @@ test("StrictMode's mount-cleanup-remount double-invoke keeps leadership with the
 
 // --- row content ----------------------------------------------------------
 
-test("a running row shows the task and a running status", () => {
+test("a running row in a multi-row aggregate shows the task and running kind", () => {
   const d = toolRendererFor("delegate");
   const Body = d.body!;
   const running = delegateItem({
@@ -344,9 +347,19 @@ test("a running row shows the task and a running status", () => {
     argumentsJSON: JSON.stringify({ task: "still working" }),
     output: JSON.stringify({ job_id: "job_r", status: "running", transcript_ref: "ref_r" }),
   });
-  render(<Body item={running} live={false} />);
-  const row = screen.getByTestId("subagent-row");
-  expect(within(row).getByText("still working")).toBeTruthy();
+  const done = delegateItem({
+    id: "d_done_task_row",
+    callId: "call_done_task_row",
+    argumentsJSON: JSON.stringify({ task: "other task" }),
+    output: JSON.stringify({ job_id: "job_d_row", status: "completed", transcript_ref: "ref_done" }),
+  });
+  render(
+    <>
+      <Body item={running} live={false} />
+      <Body item={done} live={false} />
+    </>,
+  );
+  const row = screen.getByText("still working").closest('[data-testid="subagent-row"]') as HTMLElement;
   expect(row.dataset.kind).toBe("running");
 });
 
@@ -374,7 +387,7 @@ test("a settled delegate row renders an honest ms-scale duration", () => {
   expect(within(row).getByText("12s")).toBeTruthy();
 });
 
-test("a running row with a transcriptRef watches the child and shows a live Cadence indicator", async () => {
+test("a running row with a transcriptRef watches the child and updates live status from thread state", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => ({
     thread: {
@@ -385,7 +398,7 @@ test("a running row with a transcriptRef watches the child and shows a live Cade
       modelProvider: "anthropic/claude-sonnet-4-5",
       createdAt: 1000,
       updatedAt: 1000,
-      status: { type: "active" },
+      status: { type: "systemError" },
       cwd: "/tmp",
       cliVersion: "1.0.0",
       source: "serf",
@@ -404,7 +417,9 @@ test("a running row with a transcriptRef watches the child and shows a live Cade
   });
   render(<Body item={running} live={false} />);
 
-  await screen.findByTestId("cadence-dot");
+  const row = screen.getByTestId("subagent-row");
+  await waitFor(() => expect(row.dataset.kind).toBe("failed"));
+  expect(screen.getByTestId("subagent-module").querySelector('[data-kind="failed"]')).toBeTruthy();
 });
 
 test("a failed row is flagged at module level via data-has-failure, not averaged away", () => {
@@ -450,9 +465,9 @@ test("3zf8: a cancelled/stopped child gets its own distinct kind - never rendere
   const module = screen.getByTestId("subagent-module");
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("stopped");
-  expect(within(row).getByText("stopped")).toBeTruthy();
-  expect(within(module).getByText(/1 stopped/)).toBeTruthy();
+  expect(within(module).queryByText(/1 stopped/)).toBeNull();
   expect(within(module).queryByText(/done/)).toBeNull();
+  expect(screen.getAllByText("misbehaving, killed")).toHaveLength(1);
 });
 
 // --- fold beyond ~6 done rows (running/failed/unknown always visible) ----
@@ -541,7 +556,11 @@ test("open transcript opens the read-only transcript pane (mobile / no dockview 
   const user = userEvent.setup();
   const Body = toolRendererFor("delegate").body!;
   render(<Body item={delegateWithTranscriptRef("ref_child_open")} live={false} />);
-  await user.click(screen.getByRole("button", { name: /open transcript/i }));
+  const button = screen.getByRole("button", { name: "Open transcript" });
+  expect(button.textContent).toContain("open");
+  expect(button.querySelector("svg")).toBeTruthy();
+  expect(button.getAttribute("aria-label")).toBe("Open transcript");
+  await user.click(button);
   const panes = workspaceStore.getState().panes;
   // The DISTINCT read-only "transcript" pane (plan §Ambiguities #1 / PIN-A:
   // reachable via openBeside, never a URL) - opened against the child's own ref.
@@ -691,7 +710,7 @@ function childThreadRead(params: unknown, childStatus: string) {
   };
 }
 
-test("an expanded delegate card shows the Mandate, a live Activity feed, and the Summary", async () => {
+test("a delegate card body shows the Mandate, a live Activity feed, and the Summary", async () => {
   const fake = new FakeClient("ready");
   fake.on("thread/read", (params) => childThreadRead(params, "active"));
   connectionStore.getState().connect(fake);
@@ -704,12 +723,6 @@ test("an expanded delegate card shows the Mandate, a live Activity feed, and the
     output: JSON.stringify({ job_id: "job_e", status: "running", transcript_ref: "ref_expand_child" }),
   });
   render(<Body item={running} live={false} />);
-
-  // Collapsed: no expanded body yet.
-  expect(screen.queryByTestId("subagent-activity")).toBeNull();
-
-  const user = userEvent.setup();
-  await user.click(screen.getByText("audit the reducer")); // click the summary to expand
 
   // Mandate is the delegation task.
   const mandate = await screen.findByTestId("subagent-mandate");
@@ -780,9 +793,6 @@ test("mhcf: the Activity feed caps to the 5 most recent steps, not the first 5",
   });
   render(<Body item={running} live={false} />);
 
-  const user = userEvent.setup();
-  await user.click(screen.getByText("long running audit"));
-
   const activity = await screen.findByTestId("subagent-activity");
   expect(within(activity).getAllByRole("listitem")).toHaveLength(5);
   // WHICH five: the most recent (16-20), never the first five.
@@ -803,9 +813,6 @@ test("mhcf: the capped window renders newest-first, the live step is still (corr
     output: JSON.stringify({ job_id: "job_order", status: "running", transcript_ref: "ref_order_child" }),
   });
   render(<Body item={running} live={false} />);
-
-  const user = userEvent.setup();
-  await user.click(screen.getByText("order audit"));
 
   const activity = await screen.findByTestId("subagent-activity");
   const items = within(activity).getAllByRole("listitem") as HTMLLIElement[];
@@ -844,7 +851,7 @@ test("the collapsed pill reads the LIVE watched status, not the frozen tool-outp
 
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
-  expect(within(row).getByText("failed")).toBeTruthy();
+  expect(row.dataset.kind).toBe("failed");
 });
 
 // g5kf: the honest-clock bug. A foreground_timeout freezes the delegate's own
@@ -869,7 +876,7 @@ test("g5kf: a child that leaves the live roster (notLoaded) demotes off running 
 
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("unknown"));
-  expect(within(row).getByText("unknown")).toBeTruthy();
+  expect(within(row).queryByText("unknown")).toBeNull();
   expect(within(row).queryByText("running")).toBeNull();
 });
 
@@ -912,9 +919,6 @@ test("dr7e: an expanded card shows exhaustion budget/limit and resumable once a 
     }),
   );
 
-  const user = userEvent.setup();
-  await user.click(screen.getByText("long running task"));
-
   const detail = await screen.findByTestId("subagent-job-detail");
   expect(within(detail).getByText("Exhaustion budget: 30m of 60")).toBeTruthy();
   expect(within(detail).getByText("Resumable")).toBeTruthy();
@@ -931,35 +935,134 @@ test("dr7e: no Job detail section renders when neither resumable nor exhaustion 
   });
   render(<Body item={settled} live={false} />);
 
-  const user = userEvent.setup();
-  await user.click(screen.getByText("quick task"));
-
   await screen.findByTestId("subagent-mandate");
   expect(screen.queryByTestId("subagent-job-detail")).toBeNull();
 });
 
 // --- evch: the module must be visible without a click ----------------------
 //
-// A tool-call row with a body starts collapsed by default (ToolCallItem.tsx),
-// and the subagent module's live watch (WatchedChildIndicator) only mounts
-// once the body is actually in the DOM. Left at that default, a delegate call
-// that announces itself and ends its turn shows nothing at all until a reader
-// happens to notice and click the row's chevron - evch's exact complaint.
+// A tool-call row with a body starts collapsed by default (ToolCallItem.tsx).
+// A delegate call announces itself with a module row regardless of a click,
+// and the child watch that drives live status in that row is not gated behind
+// any explicit disclosure toggle - evch's exact complaint.
 // Mirrors task_list's own `autoExpand: () => true` (a status card, not a
 // fold-to-open row): a delegate is always worth seeing without a click.
-test("evch: a fresh delegate tool call's subagent module is visible with no click (ToolCallItem auto-expands it)", () => {
+test("a single delegate has one top-level disclosure, one status rail, and one visible task", () => {
   const turn: TurnModel = { id: "turn_evch", status: "completed", items: [] };
   const started = delegateItem({
     id: "d_evch",
     turnId: "turn_evch",
     callId: "call_evch",
-    argumentsJSON: JSON.stringify({ task: "inspect the current directory" }),
+    description: "Single delegation",
+    argumentsJSON: JSON.stringify({ task: "Inspect one row, one task" }),
     output: JSON.stringify({ job_id: "job_evch", status: "running" }),
   });
   render(<ToolCallItem item={started} turn={turn} live={false} />);
+  const tool = screen.getByTestId("tool-call-item");
   const module = screen.getByTestId("subagent-module");
-  expect(within(module).getByText("running")).toBeTruthy(); // the tally header
-  expect(within(module).getByText("inspect the current directory")).toBeTruthy();
+  expect(screen.getAllByRole("img", { name: "Working" })).toHaveLength(1);
+  expect(within(module).queryByText(/1 running/)).toBeNull(); // single-row mode omits the tally header
+  expect(screen.getAllByText("Inspect one row, one task")).toHaveLength(1);
+  expect(module.querySelectorAll("details > summary")).toHaveLength(0);
+  expect(tool.querySelectorAll("details > summary")).toHaveLength(1);
+  const statusRail = screen.getByTestId("tool-row-status");
+  expect(statusRail.children).toHaveLength(1);
+  expect(statusRail.firstElementChild?.getAttribute("role")).toBe("img");
+});
+
+test("a multi-row aggregate shows task text in row summary and suppresses duplicate mandate sections", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+
+  render(
+    <>
+      <Body
+        item={delegateItem({
+          id: "d_multi_running",
+          turnId: "turn_multi",
+          callId: "call_multi_running",
+          description: "running purpose",
+          argumentsJSON: JSON.stringify({ task: "Running mandate text" }),
+          output: JSON.stringify({ job_id: "job_multi_running", status: "running", transcript_ref: "ref_multi_run" }),
+        })}
+        live={false}
+      />
+      <Body
+        item={delegateItem({
+          id: "d_multi_done",
+          turnId: "turn_multi",
+          callId: "call_multi_done",
+          description: "done purpose",
+          argumentsJSON: JSON.stringify({ task: "Done mandate text" }),
+          output: JSON.stringify({ job_id: "job_multi_done", status: "completed", transcript_ref: "ref_multi_done" }),
+        })}
+        live={false}
+      />
+    </>,
+  );
+
+  const rows = screen.getAllByTestId("subagent-row");
+  expect(rows).toHaveLength(2);
+
+  const runningRow = rows.find((row) => row.getAttribute("data-kind") === "running");
+  const doneRow = rows.find((row) => row.getAttribute("data-kind") === "done");
+  expect(runningRow).toBeTruthy();
+  expect(doneRow).toBeTruthy();
+
+  expect(within(runningRow!).queryByText("Running mandate text")).toBeTruthy();
+  expect(within(runningRow!).queryByTestId("subagent-mandate")).toBeNull();
+  expect(within(doneRow!).queryByText("Done mandate text")).toBeTruthy();
+  expect(within(doneRow!).queryByTestId("subagent-mandate")).toBeNull();
+});
+
+test("a multi-row aggregate updates its tally from the watched live kind", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => {
+    const ref = (params as { ref: string }).ref;
+    return childThreadRead(params, ref === "ref_multi_live_failed" ? "systemError" : "closed");
+  });
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  render(
+    <>
+      <Body
+        item={delegateItem({
+          id: "d_multi_live_failed",
+          turnId: "turn_multi_live",
+          callId: "call_multi_live_failed",
+          argumentsJSON: JSON.stringify({ task: "live failure" }),
+          output: JSON.stringify({
+            job_id: "job_multi_live_failed",
+            status: "running",
+            transcript_ref: "ref_multi_live_failed",
+          }),
+        })}
+        live={false}
+      />
+      <Body
+        item={delegateItem({
+          id: "d_multi_live_done",
+          turnId: "turn_multi_live",
+          callId: "call_multi_live_done",
+          argumentsJSON: JSON.stringify({ task: "live completion" }),
+          output: JSON.stringify({
+            job_id: "job_multi_live_done",
+            status: "running",
+            transcript_ref: "ref_multi_live_done",
+          }),
+        })}
+        live={false}
+      />
+    </>,
+  );
+
+  const module = screen.getByTestId("subagent-module");
+  await waitFor(() => expect(within(module).getByText("1 failed · 1 done")).toBeTruthy());
+  const failedRow = within(module)
+    .getAllByTestId("subagent-row")
+    .find((row) => row.getAttribute("data-kind") === "failed");
+  expect(failedRow).toBeTruthy();
 });
 
 // --- 7f7c: the Mandate must not be clipped ----------------------------------
@@ -981,11 +1084,6 @@ test("7f7c: the Mandate section shows the full, unclipped task text past the 80-
     output: JSON.stringify({ job_id: "job_fm", status: "running" }),
   });
   render(<Body item={running} live={false} />);
-
-  const row = screen.getByTestId("subagent-row");
-  const user = userEvent.setup();
-  await user.click(row.querySelector("summary")!);
-
-  const mandate = screen.getByTestId("subagent-mandate");
+  const mandate = await screen.findByTestId("subagent-mandate");
   expect(within(mandate).getByText(longTask)).toBeTruthy();
 });

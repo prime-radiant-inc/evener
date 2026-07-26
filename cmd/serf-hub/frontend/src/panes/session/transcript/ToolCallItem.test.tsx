@@ -732,3 +732,51 @@ test("the duration segment does not disturb the summary text an unrelated test a
   render(<ToolCallItem item={timedItem()} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
+
+test("delegate tool rows keep the human description as purpose and suppress the technical delegate summary", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "delegate",
+        description: "Testing delegation",
+        argumentsJSON: JSON.stringify({ task: "Run the linter" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Testing delegation");
+  expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+});
+
+test("delegate tool rows use a single top-level details/summary disclosure owned by ToolCallItem", () => {
+  const { container } = render(
+    <ToolCallItem
+      item={item({
+        toolName: "delegate",
+        description: "Testing disclosure boundaries",
+        argumentsJSON: JSON.stringify({ task: "Run tests" }),
+      })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summaries = container.querySelectorAll("details > summary");
+  expect(summaries).toHaveLength(1);
+});
+
+test("a live, unsettled delegate call renders a running/working status dot (never unknown)", () => {
+  render(
+    <ToolCallItem
+      item={item({
+        toolName: "delegate",
+        description: "Delegated task is still live",
+        argumentsJSON: JSON.stringify({ task: "Keep going" }),
+      })}
+      turn={turn}
+      live={true}
+    />,
+  );
+  expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+  expect(screen.queryByText("unknown")).toBeNull();
+});

@@ -75,6 +75,13 @@ summary.row:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
 /* With a purpose above it the summary is a glanceable detail, not the story:
  * it takes the whole next line, dimmer and clipped to one line rather than
  * wrapping and out-shouting the purpose. flex-basis 100% is what forces the
