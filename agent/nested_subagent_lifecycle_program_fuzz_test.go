@@ -673,7 +673,7 @@ func nslpWatchCallbackProgram(t *testing.T, program nslpProgram) {
 		attempts int
 	)
 	callbackSession.cfg.spawn.parentJobID = "nslp-callback-job"
-	callbackSession.cfg.spawn.parentSteerDelivered = func(message string, _ *provenance.Causal) bool {
+	callbackSession.cfg.spawn.parentSteerDelivered = func(message string, _ *provenance.Causal, _ string) bool {
 		mu.Lock()
 		defer mu.Unlock()
 		attempts++

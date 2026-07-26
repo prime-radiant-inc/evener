@@ -53,7 +53,7 @@ func TestW3Dlg_CreateDelegateTrackLaunchClosingSession(t *testing.T) {
 func TestW3Dlg_SendCallerMarksWatchCallbackDelivered(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)
-	sess.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal) bool { return true }
+	sess.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return true }
 	sess.setActiveEntryKind(EntryWatchDelivery)
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{

@@ -187,7 +187,7 @@ func TestDelegateSendToolMainAliasFailsInvalidRequestWithoutSideEffects(t *testi
 	t.Parallel()
 	s := newTestSession(t)
 	called := false
-	s.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
+	s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) { called = true }
 
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "send",

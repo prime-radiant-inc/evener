@@ -349,10 +349,11 @@ func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	child := sub.sess
 
 	var steered []steeringMessage
-	child.cfg.spawn.parentSteerDelivered = func(msg string, p *provenance.Causal) bool {
+	child.cfg.spawn.parentSteerDelivered = func(msg string, p *provenance.Causal, kind string) bool {
 		steered = append(steered, steeringMessage{
 			Text:       msg,
 			Provenance: provenance.Clone(p),
+			Kind:       kind,
 		})
 		return true
 	}
@@ -384,6 +385,9 @@ func TestWatchOriginCommunicateEndTurnResumesParentOnce(t *testing.T) {
 	}
 	if !provenance.ContainsWatch(steered[0].Provenance, "watch_parent", "wg_1") {
 		t.Fatalf("callback provenance = %+v, want watch provenance", steered[0].Provenance)
+	}
+	if steered[0].Kind != events.SteeringKindNotification {
+		t.Fatalf("callback kind = %q, want %q", steered[0].Kind, events.SteeringKindNotification)
 	}
 
 	if err := parent.finalizeDelegate(parentRun.rec.JobID, child.ID(), sub); err != nil {

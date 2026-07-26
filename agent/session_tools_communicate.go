@@ -131,7 +131,12 @@ func (s *Session) deliverWatchCommunicateCallback(message string) {
 	if steer == nil {
 		return
 	}
-	if !steer(message, s.activeCausalProvenance()) {
+	// The same kind session_lifecycle.go uses for job-notification reminders
+	// (acceptNotificationInput): both are the content that renders as a
+	// NotificationCard (contracts §17 - <job-notification> markup or this
+	// callback's fixed "Observer callback:\n" header), so both carry the same
+	// events.SteeringKind*.
+	if !steer(message, s.activeCausalProvenance(), events.SteeringKindNotification) {
 		return
 	}
 	if mark := s.cfg.spawn.parentMarkCallerCallbackDelivered; mark != nil {

@@ -115,7 +115,7 @@ func FuzzJobDelegateSendSeed100Edges(f *testing.F) {
 			requireSendSeed100Error(t, res, "target_not_resumable:")
 		case 10:
 			s := &Session{}
-			s.cfg.spawn.parentSteer = func(string, *provenance.Causal) {}
+			s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) {}
 			delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
 			t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
 			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "seed"})

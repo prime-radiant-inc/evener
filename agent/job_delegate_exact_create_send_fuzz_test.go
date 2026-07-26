@@ -67,7 +67,7 @@ func FuzzJobDelegateExactCreateSend(f *testing.F) {
 			}
 		case 6:
 			s := &Session{}
-			s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal) bool { return true }
+			s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return true }
 			s.setActiveEntryKind(EntryWatchDelivery)
 			res := s.sendDelegateMessage(nil, sendMessageArgs{Target: runtimeMessageAliasCaller, Message: "callback"})
 			if res.Err != nil || !res.Delivered {

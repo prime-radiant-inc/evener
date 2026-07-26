@@ -148,7 +148,7 @@ func TestSystemSteeringPaths_KeepEmptySource(t *testing.T) {
 	t.Parallel()
 	s := &Session{}
 	s.Steer("system nudge")
-	s.SteerWithProvenance("watch nudge", nil)
+	s.SteerWithProvenance("watch nudge", nil, "")
 	got := s.drainSteeringForTurn()
 	if len(got) != 2 {
 		t.Fatalf("drained = %d, want 2", len(got))

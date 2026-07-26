@@ -370,13 +370,16 @@ type spawnConfig struct {
 
 	// parentSteer routes runtime alias messages from a live sub-agent to its
 	// caller, carrying the message's causal watch provenance so the caller's
-	// injection is attributable to the watch delivery that produced it.
-	parentSteer func(string, *provenance.Causal)
+	// injection is attributable to the watch delivery that produced it, and the
+	// events.SteeringKind* naming what was sent so the caller's transcript
+	// labels it from ground truth.
+	parentSteer func(string, *provenance.Causal, string)
 
 	// parentSteerDelivered reports whether a runtime alias message was accepted
 	// by the caller. It is used where durable watch-send state depends on
-	// delivery, and carries the message's causal watch provenance.
-	parentSteerDelivered func(string, *provenance.Causal) bool
+	// delivery, and carries the message's causal watch provenance and its
+	// events.SteeringKind*.
+	parentSteerDelivered func(string, *provenance.Causal, string) bool
 
 	// parentMarkCallerCallbackDelivered records that the current parent delegate
 	// job has already delivered a caller callback. Watch-origin delegate jobs use

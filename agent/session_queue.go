@@ -92,8 +92,10 @@ func (s *Session) trySteer(msg string) bool {
 
 // SteerWithProvenance queues a text-only steering message carrying the causal
 // watch provenance that produced it (nil for human/system-authored steering).
-func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal) {
-	_ = s.trySteerWithProvenance(msg, p)
+// kind names what was injected (events.SteeringKind*), "" when the caller did
+// not say.
+func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal, kind string) {
+	_ = s.trySteerWithProvenance(msg, p, kind)
 }
 
 // SteerWithImages queues a steering message that carries optional image
@@ -119,23 +121,23 @@ func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) 
 }
 
 func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
-	return s.trySteerWithImagesAndProvenance(msg, images, nil)
+	return s.trySteerWithImagesAndProvenance(msg, images, nil, "")
 }
 
-func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal) bool {
-	return s.trySteerWithImagesAndProvenance(msg, nil, p)
+func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal, kind string) bool {
+	return s.trySteerWithImagesAndProvenance(msg, nil, p, kind)
 }
 
-func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Causal) bool {
-	if !s.trySteerWithProvenance(msg, p) {
+func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Causal, kind string) bool {
+	if !s.trySteerWithProvenance(msg, p, kind) {
 		return false
 	}
 	s.notify()
 	return true
 }
 
-func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal) bool {
-	return s.trySteerEnqueue(msg, images, p, "", "")
+func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal, kind string) bool {
+	return s.trySteerEnqueue(msg, images, p, "", kind)
 }
 
 // trySteerEnqueue is the steering-queue append primitive. source carries the
