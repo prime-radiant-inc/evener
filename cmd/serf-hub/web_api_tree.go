@@ -228,19 +228,19 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 // treeCache.Get); callers that also need live/favs must fetch those
 // themselves, since memoTree's return shape only carries what treeCache
 // stores.
-func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary) {
+func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary) {
 	tree, summary, _ := s.memoTreeWithLive(ctx)
 	return tree, summary
 }
 
-func (s *WebServer) memoTreeWithLive(ctx context.Context) (hubcore.Tree, hubcore.AttentionSummary, []hubcore.LiveEntry) {
+func (s *WebServer) memoTreeWithLive(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary, []hubcore.LiveEntry) {
 	metas, live, projects := hubNavigationInputs(s, ctx)
 	decisions := s.archiveDecisions()
 	var version uint64
 	if s.cfg.Inputs != nil {
 		version = s.cfg.Inputs.Load()
 	}
-	tree, summary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, hubcore.AttentionSummary) {
+	tree, summary := s.treeCache.Get(version, time.Now(), func() (hubcore.Tree, appwire.AttentionSummary) {
 		t := hubBuildNavigationTree(metas, live, decisions, projects)
 		_, sum := hubDeriveNavigationAttention(metas, live, decisions)
 		return t, sum
@@ -448,7 +448,7 @@ func appThreadTreeLive(thread appwire.Thread) bool {
 
 // hubAttentionSummaryFromCore maps hubcore's internal attention summary to
 // hubapi's public wire type (hubapi cannot import the hub's internal package).
-func hubAttentionSummaryFromCore(sum hubcore.AttentionSummary) hubapi.AttentionSummary {
+func hubAttentionSummaryFromCore(sum appwire.AttentionSummary) hubapi.AttentionSummary {
 	return hubapi.AttentionSummary{NeedsYou: sum.NeedsYou, Error: sum.Error, Working: sum.Working}
 }
 

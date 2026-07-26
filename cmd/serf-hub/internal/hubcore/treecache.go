@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"primeradiant.com/serf/appwire"
 )
 
 // treeBucketSeconds is the wall-clock granularity at which a fresh tree is
@@ -28,12 +30,12 @@ type TreeCache struct {
 	version uint64
 	bucket  int64
 	tree    Tree
-	summary AttentionSummary
+	summary appwire.AttentionSummary
 }
 
 // Get returns the memoized value, recomputing via compute only when the inputs
 // version or the 30s time bucket has changed.
-func (c *TreeCache) Get(version uint64, now time.Time, compute func() (Tree, AttentionSummary)) (Tree, AttentionSummary) {
+func (c *TreeCache) Get(version uint64, now time.Time, compute func() (Tree, appwire.AttentionSummary)) (Tree, appwire.AttentionSummary) {
 	bucket := now.Unix() / treeBucketSeconds
 	c.mu.Lock()
 	defer c.mu.Unlock()

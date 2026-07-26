@@ -56,9 +56,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	var cmd tea.Cmd
 	switch notification.Method {
 	case appwire.NotifyTurnStarted:
-		var params struct {
-			Turn appwire.Turn `json:"turn"`
-		}
+		var params appwire.TurnStartedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.setActiveTurnID(params.Turn.ID)
 		}
@@ -79,16 +77,12 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			}
 		}
 	case appwire.NotifyItemStarted:
-		var params struct {
-			Item appwire.ThreadItem `json:"item"`
-		}
+		var params appwire.ItemLifecycleParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.applyThreadItem(params.Item, false)
 		}
 	case appwire.NotifyItemCompleted:
-		var params struct {
-			Item appwire.ThreadItem `json:"item"`
-		}
+		var params appwire.ItemLifecycleParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.applyThreadItem(params.Item, true)
 		}
@@ -117,9 +111,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySessionTranscriptReducer(reducer)
 		}
 	case appwire.NotifySerfJobStarted, appwire.NotifySerfJobFinished:
-		var params struct {
-			Job appwire.SerfJobInfo `json:"job"`
-		}
+		var params appwire.SerfJobParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
 			reducer.ApplySerfJob(params.Job)
@@ -174,10 +166,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applyQueueState(ref, params.Queue)
 		}
 	case appwire.NotifySerfSteeringInjected:
-		var params struct {
-			Text   string              `json:"text"`
-			Images []appwire.InputItem `json:"images"`
-		}
+		var params appwire.SerfSteeringInjectedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			text := strings.TrimSpace(params.Text)
 			if text == "" {
@@ -261,18 +250,14 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 	ref := notificationPendingRef(n)
 	switch n.Method {
 	case appwire.NotifySerfSteeringInjected:
-		var p struct {
-			Text string `json:"text"`
-		}
+		var p appwire.SerfSteeringInjectedParams
 		_ = json.Unmarshal(n.Params, &p)
 		pending.TryReconcile(appwire.MethodTurnSteer, p.Text, ref)
 		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
 	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
 		// userMessage item carries the user's text. Match against
 		// any turn/start pending entry.
-		var p struct {
-			Item appwire.ThreadItem `json:"item"`
-		}
+		var p appwire.ItemLifecycleParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
@@ -284,9 +269,7 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
 	case appwire.NotifyTurnCompleted:
-		var p struct {
-			Turn appwire.Turn `json:"turn"`
-		}
+		var p appwire.TurnCompletedParams
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
@@ -438,9 +421,7 @@ func (m *hubModel) handleChildActivityFrame(notification appwire.Notification) (
 	if childRef == "" || !m.watchedChildRefs[childRef] {
 		return nil, false
 	}
-	var params struct {
-		Item appwire.ThreadItem `json:"item"`
-	}
+	var params appwire.ItemLifecycleParams
 	if json.Unmarshal(notification.Params, &params) != nil {
 		return nil, true
 	}

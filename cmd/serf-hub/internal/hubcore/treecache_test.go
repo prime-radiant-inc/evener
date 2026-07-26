@@ -3,13 +3,15 @@ package hubcore
 import (
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/appwire"
 )
 
 func fuzzScenarioTreeCacheMemoizesByVersionAndBucket(t *testing.T) {
 	cache := &TreeCache{}
 	now := time.Unix(1_700_000_000, 0)
 	calls := 0
-	compute := func() (Tree, AttentionSummary) { calls++; return Tree{}, AttentionSummary{} }
+	compute := func() (Tree, appwire.AttentionSummary) { calls++; return Tree{}, appwire.AttentionSummary{} }
 
 	cache.Get(1, now, compute)
 	cache.Get(1, now.Add(5*time.Second), compute) // same version, same 30s bucket

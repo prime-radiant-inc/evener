@@ -153,13 +153,13 @@ var Methods = []MethodSpec{
 
 // Notifications is the AppWire server→client notification catalog. A nil
 // Payload marks a notification whose shape is not described by a Go type;
-// today only serf/attention/changed is in that state, because its payload
-// type lives in cmd/serf-hub/internal/hubcore, which this package cannot
-// import. Notifications that carry no fields at all declare EmptyParams, so
-// "no payload" and "payload undescribed" read differently. The constant
-// NotifySerfContextPressure is intentionally absent — it is defined but
-// emitted by nothing (context pressure rides on the Thread snapshot
-// instead).
+// none are, today — every notification declares a real payload type (kata
+// 4j2t retired the last holdout, serf/attention/changed, by relocating its
+// payload type from hubcore into this package). Notifications that carry no
+// fields at all declare EmptyParams, so "no payload" and "payload
+// undescribed" read differently. The constant NotifySerfContextPressure is
+// intentionally absent — it is defined but emitted by nothing (context
+// pressure rides on the Thread snapshot instead).
 var Notifications = []NotificationSpec{
 	{NotifyThreadStarted, ThreadStartedParams{}, "Session started; carries the initial Thread snapshot."},
 	{NotifyThreadClosed, ThreadClosedParams{}, "Session ended."},
@@ -182,7 +182,7 @@ var Notifications = []NotificationSpec{
 	{NotifySerfJobFinished, SerfJobParams{}, "A background job finished; the job carries status/reason/exitCode/output."},
 	{NotifySerfAuthUpdated, SerfAuthUpdatedParams{}, "Broadcast after a successful auth mutation. Clients refresh auth state."},
 	{NotifySerfLaunchUpdated, SerfLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
-	{NotifySerfAttentionChanged, nil, "Hub-derived attention transitions for live sessions plus authoritative badge summary (hubcore.AttentionChangedPayload, which this package cannot import). Hub-originated; never sent by daemons."},
+	{NotifySerfAttentionChanged, AttentionChangedPayload{}, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
 	{NotifySerfMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list."},
 	{NotifySerfPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
 	{NotifySerfTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},

@@ -133,7 +133,7 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = projectSessions(p)
 			_ = web.apiTreeProject("project", map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "live"}: true}, p)
 			_ = web.rowRenameable("live")
-			_ = hubAttentionSummaryFromCore(hubcore.AttentionSummary{NeedsYou: 1})
+			_ = hubAttentionSummaryFromCore(appwire.AttentionSummary{NeedsYou: 1})
 			_ = web.apiTreeSources()
 		case 11:
 			web := NewWebServer(hubcore.WebConfig{})

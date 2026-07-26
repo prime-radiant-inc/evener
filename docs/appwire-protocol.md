@@ -180,7 +180,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `serf/job/finished` | `SerfJobParams` | A background job finished; the job carries status/reason/exitCode/output. |
 | `serf/auth/updated` | `SerfAuthUpdatedParams` | Broadcast after a successful auth mutation. Clients refresh auth state. |
 | `serf/launch/updated` | `SerfLaunchUpdatedParams` | Broadcast after a launch layer/trust mutation. Clients refresh launch config. |
-| `serf/attention/changed` | `(inline)` | Hub-derived attention transitions for live sessions plus authoritative badge summary (hubcore.AttentionChangedPayload, which this package cannot import). Hub-originated; never sent by daemons. |
+| `serf/attention/changed` | `AttentionChangedPayload` | Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons. |
 | `serf/marketplace/updated` | `EmptyParams` | Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list. |
 | `serf/plugin/updated` | `EmptyParams` | Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list. |
 | `serf/task/updated` | `TaskUpdatedParams` | The session's task-list progress (total/done) changed. |
@@ -213,6 +213,14 @@ An embedded type contributes its own fields inline.
 | `ref` | `string` | yes |  |
 | `turnId` | `string` |  |  |
 | `itemId` | `string` |  |  |
+
+
+### `AttentionChangedPayload`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `changed` | `[]appwire.AttentionChanged` |  |  |
+| `summary` | `appwire.AttentionSummary` |  |  |
 
 
 ### `AuthApiKeySetParams`
