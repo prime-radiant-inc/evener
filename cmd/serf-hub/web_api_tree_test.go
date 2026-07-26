@@ -77,6 +77,54 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	}
 }
 
+func TestArchiveDecisionsFlowIntoTreeForSession(t *testing.T) {
+	// A decision on a session ID should affect that session's tier while leaving
+	// the containing project active when another non-archived session exists.
+	now := time.Unix(1_700_000_001, 0)
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "alpha")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metas := []schema.SessionMeta{
+		{
+			ID:        "01ALP1",
+			CreatedAt: now.Add(-time.Hour),
+			UpdatedAt: now.Add(-time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		},
+		{
+			ID:        "01ALP2",
+			CreatedAt: now.Add(-2 * time.Hour),
+			UpdatedAt: now.Add(-2 * time.Hour),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
+		},
+	}
+	decisions := map[hubcore.ArchiveKey]bool{
+		{Kind: "session", ID: "01ALP1"}: true,
+	}
+	tree := hubcore.BuildTreeAt(metas, nil, decisions, now)
+	if len(tree.Projects) != 1 {
+		t.Fatalf("len(projects)=%d, want 1", len(tree.Projects))
+	}
+	if tree.Projects[0].Key != project.ID {
+		t.Fatalf("unexpected project key = %q, want %q", tree.Projects[0].Key, project.ID)
+	}
+	if len(tree.Projects[0].Current) != 1 || tree.Projects[0].Current[0].ID != "01ALP2" {
+		t.Fatalf("active session tier mismatch: current=%v", tree.Projects[0].Current)
+	}
+	if len(tree.Projects[0].Archived) != 1 || tree.Projects[0].Archived[0].ID != "01ALP1" {
+		t.Fatalf("archived session tier mismatch: archived=%v", tree.Projects[0].Archived)
+	}
+	if len(tree.ArchivedProjects) != 0 {
+		t.Fatalf("archived project should stay active with a live companion: archivedProjects=%v", tree.ArchivedProjects)
+	}
+}
+
 func TestArchiveDecisionsHelperNilSafe(t *testing.T) {
 	// A WebServer whose cfg.Archive is nil must return an empty map, never panic.
 	s := &WebServer{cfg: hubcore.WebConfig{}}

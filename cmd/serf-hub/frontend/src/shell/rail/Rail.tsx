@@ -407,7 +407,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     onToggleArchiveSession: (session) => {
       const archiving = session.tier !== "archived";
       void runAction(
-        () => setArchived("session", session.ref, archiving),
+        () => setArchived("session", session.session_id, archiving),
         "Couldn't update archive state",
         // Only the archiving direction hides anything: unarchiving lands the
         // row in whichever tier the server classifies it into, which this
