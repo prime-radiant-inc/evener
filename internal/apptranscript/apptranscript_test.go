@@ -1020,6 +1020,9 @@ func TestProjectTurnRendersModelSwitchMarker(t *testing.T) {
 	if item.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("Status = %q, want completed", item.Status)
 	}
+	if item.EventKind != appwire.ThreadItemEventKindModelSwitch {
+		t.Fatalf("item eventKind=%q, want %q", item.EventKind, appwire.ThreadItemEventKindModelSwitch)
+	}
 }
 
 // TestProjectTurnModelSwitchMarkerEmptyTextOmitted mirrors the
