@@ -31,6 +31,12 @@ export interface ItemModel {
   // from the item's char count (kata ckgw). Empty/undefined for non-system
   // items and for a system item projected by a daemon predating a given kind.
   eventKind?: string;
+  // The wire's steering kind (events.SteeringKind* on the Go side): what the
+  // daemon injected, named at the injection site. The transcript labels a
+  // steer from this rather than pattern-matching its prose. Undefined for
+  // non-steering items, for user-sourced steering, and for a steer projected
+  // by a daemon predating the field — in which case the UI shows no kind.
+  steeringKind?: string;
   // Structured detail behind a system item's prose text (wire ThreadItem.raw),
   // e.g. `{roundTimings: {...}}` for a round_timings item - lets a renderer
   // read real numbers instead of re-parsing the human-readable text.

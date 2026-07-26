@@ -75,6 +75,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     outputImages: outputImagesToStrings(item.outputImages),
     status: item.status,
     source: item.source,
+    steeringKind: item.steeringKind,
     startedAt: epochMsToISO(item.startedAt),
     completedAt: epochMsToISO(item.completedAt),
   };
@@ -777,6 +778,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
             images: imagesToStrings(params.images),
             status: "completed",
             source: params.source,
+            steeringKind: params.kind,
           };
           return { ...turn, items: [...turn.items, item] };
         }),

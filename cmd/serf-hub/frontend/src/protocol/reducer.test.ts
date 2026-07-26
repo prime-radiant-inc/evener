@@ -1189,6 +1189,60 @@ test("serf/steering/injected images populate display-ready strings via the same 
   expect(item.images).toEqual(["screenshot.png"]);
 });
 
+// Task 1-3 carried a typed kind (events.SteeringKind* on the Go side) onto
+// the wire at each injection site, through to SerfSteeringInjectedParams.kind
+// on the live notification. The model must carry it the last hop onto the
+// item so the transcript can label a steer from the wire kind instead of
+// pattern-matching its prose (a later task's job — this one only carries the
+// string).
+test("a live steer carries its wire kind onto the item", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "You have completed all tasks", kind: "tasks-done" },
+    },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.type).toBe("steering");
+  expect(item.steeringKind).toBe("tasks-done");
+});
+
+test("a live steer with no wire kind leaves steeringKind undefined", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "serf/steering/injected",
+      params: { threadId: "thr_t", ref: "ref_t", text: "something unclassified" },
+    },
+    1002,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).steeringKind).toBeUndefined();
+});
+
 test("prependOlderTurns keeps order and advances olderCursor", () => {
   const thread = testThread({ turns: [{ id: "turn_2", status: "completed", itemsView: "full", items: [] }] });
   const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.serf.ref, 1000);
@@ -1504,6 +1558,34 @@ test("wireItemToModel carries the wire raw (structured system-item detail) onto 
   expect(itemAt(turnAt(model, 0), 0).raw).toEqual({
     roundTimings: { round: 0, total_round_ns: 1_500_000_000, llm_call_ns: 1_200_000_000 },
   });
+});
+
+// A reloaded transcript must label a steer the same way the live one did.
+// internal/apptranscript persists ThreadItem.steeringKind alongside the
+// steering item (Task 2); wireItemToModel must carry it through on the
+// snapshot path exactly as it does for description/eventKind/raw above, or
+// the label would work live and vanish on refresh.
+test("a reloaded steering item carries steeringKind from the snapshot", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_0",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "item_steering_0",
+            type: "steering",
+            text: "done",
+            steeringKind: "tasks-done",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).steeringKind).toBe("tasks-done");
 });
 
 // On reload, apptranscript.TurnsFromFile mints one wire turn per transcript
