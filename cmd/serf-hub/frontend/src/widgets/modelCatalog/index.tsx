@@ -81,6 +81,13 @@ export interface ModelCatalogProps {
   value: string;
   onChange: (qualified: string) => void;
   loadCatalog: () => Promise<ModelCatalog>;
+  /** The closed trigger's text when `value` is "" - "(default)" unless a
+   * caller overrides it. Every field with a real fallback (Advanced options,
+   * Settings) keeps the default; the spawn form's top-level Model field
+   * overrides it when the daemon has no default to fall back to (kata
+   * xgk8) - "(default)" there would claim an already-answered field that a
+   * submit is about to refuse. */
+  emptyLabel?: string;
 }
 
 export interface ModelCatalogPanelProps {
@@ -313,7 +320,12 @@ export function ModelCatalogPanel({ loading, error, catalog, value, onPick }: Mo
  * (spawn's ModelField, Settings' launchShared modelPicker field) inherit
  * one combobox interaction from this shared widget.
  */
-export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps): JSX.Element {
+export function ModelCatalog({
+  value,
+  onChange,
+  loadCatalog,
+  emptyLabel = "(default)",
+}: ModelCatalogProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -374,7 +386,7 @@ export function ModelCatalog({ value, onChange, loadCatalog }: ModelCatalogProps
               own border, and a bordered chip inside it read as a double
               border. */}
           <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>
-            {value === "" ? "(default)" : value}
+            {value === "" ? emptyLabel : value}
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
             ▾

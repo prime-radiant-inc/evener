@@ -84,6 +84,15 @@
   font-weight: var(--font-weight-medium);
 }
 
+/* kata xgk8: the inline note under Model when the hub has confirmed there is
+ * no default to fall back to. Ink-neutral like advancedOptions.module.css's
+ * own .error/.modelHelp - the ✗-free wording carries the meaning, not color. */
+.modelNote {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
 .notice {
   display: flex;
   align-items: center;

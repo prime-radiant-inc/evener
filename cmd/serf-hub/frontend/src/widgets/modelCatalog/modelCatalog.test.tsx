@@ -66,6 +66,26 @@ test("shows the interim default marker when no model is chosen", () => {
   expect(screen.getByText("(default)")).toBeTruthy();
 });
 
+// kata xgk8: a caller whose harness genuinely has no resolvable default
+// (the spawn form's top-level Model field, when the daemon's own launch
+// config resolves to no model at all) must be able to say so instead of
+// "(default)" - which looks exactly like Effort's own working default and
+// invites a submit that the daemon will refuse. emptyLabel overrides the
+// empty-value text; every other caller (Advanced options, Settings) keeps
+// the "(default)" default, since their fields always have a real fallback.
+test("emptyLabel overrides the empty-value trigger text (kata xgk8)", () => {
+  render(
+    <ModelCatalog
+      value=""
+      onChange={vi.fn()}
+      loadCatalog={vi.fn().mockResolvedValue(CATALOG)}
+      emptyLabel="Choose a model"
+    />,
+  );
+  expect(screen.getByText("Choose a model")).toBeTruthy();
+  expect(screen.queryByText("(default)")).toBeNull();
+});
+
 // The visible label is the model id and the trigger's action rides along
 // visually-hidden, so the spoken name is their concatenation - with a real
 // space between them, which only a separating text node can supply (the name
