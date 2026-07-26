@@ -120,7 +120,7 @@ func APILogCredentialMaterialForRequest(req *http.Request, configured APILogCred
 	appendCredentialHeaders(req.Header)
 	appendCredentialHeaders(req.Trailer)
 	if req.URL != nil {
-		for _, part := range strings.Split(req.URL.RawQuery, "&") {
+		for part := range strings.SplitSeq(req.URL.RawQuery, "&") {
 			rawName, rawValue, _ := strings.Cut(part, "=")
 			name := unescapeQueryComponent(rawName)
 			if !credentialQueryName(name, configured) {
@@ -153,7 +153,7 @@ func structuredCredentialHeaderValues(name, value string) []string {
 		}
 	case "Cookie":
 		var values []string
-		for _, pair := range strings.Split(value, ";") {
+		for pair := range strings.SplitSeq(value, ";") {
 			_, rawValue, ok := strings.Cut(pair, "=")
 			if !ok {
 				continue
