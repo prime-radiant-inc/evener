@@ -134,8 +134,8 @@ func checkObject(obj types.Object, into map[string]bool) {
 		// The defined type's own exported surface: its underlying composite
 		// (struct fields / interface methods) and its exported methods.
 		walkType(named.Underlying(), into, seen)
-		for i := 0; i < named.NumMethods(); i++ {
-			if m := named.Method(i); m.Exported() {
+		for m := range named.Methods() {
+			if m.Exported() {
 				walkType(m.Type(), into, seen)
 			}
 		}
@@ -162,8 +162,8 @@ func walkType(t types.Type, into map[string]bool, seen map[types.Type]bool) {
 			return
 		}
 		if ta := u.TypeArgs(); ta != nil {
-			for i := 0; i < ta.Len(); i++ {
-				walkType(ta.At(i), into, seen)
+			for t := range ta.Types() {
+				walkType(t, into, seen)
 			}
 		}
 	case *types.Pointer:
@@ -181,14 +181,14 @@ func walkType(t types.Type, into map[string]bool, seen map[types.Type]bool) {
 		walkTuple(u.Params(), into, seen)
 		walkTuple(u.Results(), into, seen)
 	case *types.Struct:
-		for i := 0; i < u.NumFields(); i++ {
-			if f := u.Field(i); f.Exported() {
+		for f := range u.Fields() {
+			if f.Exported() {
 				walkType(f.Type(), into, seen)
 			}
 		}
 	case *types.Interface:
-		for i := 0; i < u.NumMethods(); i++ {
-			if m := u.Method(i); m.Exported() {
+		for m := range u.Methods() {
+			if m.Exported() {
 				walkType(m.Type(), into, seen)
 			}
 		}
@@ -196,8 +196,8 @@ func walkType(t types.Type, into map[string]bool, seen map[types.Type]bool) {
 }
 
 func walkTuple(tup *types.Tuple, into map[string]bool, seen map[types.Type]bool) {
-	for i := 0; i < tup.Len(); i++ {
-		walkType(tup.At(i).Type(), into, seen)
+	for v := range tup.Variables() {
+		walkType(v.Type(), into, seen)
 	}
 }
 
