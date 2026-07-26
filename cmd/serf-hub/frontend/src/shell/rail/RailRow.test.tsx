@@ -8,7 +8,13 @@ import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../
 import { Tree, type TreeRowInfo } from "../../widgets";
 import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
-import type { InactiveFoldRailNode, LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
+import type {
+  InactiveFoldRailNode,
+  LoadingRailNode,
+  OverflowRailNode,
+  ProjectRailNode,
+  SessionRailNode,
+} from "./railNodes";
 
 afterEach(cleanup);
 
@@ -42,6 +48,10 @@ function projectRailNode(project: ApiTreeProject, children: ProjectRailNode["chi
 
 function loadingRailNode(): LoadingRailNode {
   return { id: "loading-1", kind: "loading" };
+}
+
+function overflowRailNode(count: number): OverflowRailNode {
+  return { id: "projectnode:p1:overflow", kind: "overflow", count };
 }
 
 function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
@@ -191,6 +201,20 @@ describe("loading row", () => {
   test("announces itself via role=status, like the top-level Skeleton", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
     expect(screen.getByRole("status").textContent).toMatch(/loading/i);
+  });
+});
+
+describe("overflow row", () => {
+  test("says how many rows the server capped away", () => {
+    render(<RailRow node={overflowRailNode(12)} info={info()} actions={actions()} />);
+    expect(screen.getByText("+12 older")).toBeTruthy();
+  });
+
+  // Nothing to open and nothing to act on: the rows it counts were never sent
+  // to the client, so a chevron or a menu would both be lies.
+  test("offers nothing to click", () => {
+    render(<RailRow node={overflowRailNode(3)} info={info({ hasChildren: false })} actions={actions()} />);
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });
 
@@ -712,19 +736,53 @@ describe("session row", () => {
   for (const kind of ["subagent", "fork", "cluster"]) {
     test(`menu omits Archive on a ${kind} row - only top-level sessions are archivable`, async () => {
       render(<RailRow node={sessionRailNode(apiNode({ kind, tier: "current" }))} info={info()} actions={actions()} />);
-      await openMenu(/actions for/i);
+      // Such a row may now have no menu trigger at all (nothing left to put in
+      // it); either way, what matters is that neither verb is reachable.
+      const trigger = screen.queryByRole("button", { name: /actions for/i });
+      if (trigger) await openMenu(/actions for/i);
       expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
       expect(screen.queryByRole("menuitem", { name: "Unarchive" })).toBeNull();
     });
   }
 
-  test("a subagent row keeps its other actions - only Archive is scoped away", async () => {
+  // Favorite is scoped for the same reason as Archive, and the server proves
+  // it: POST /api/favorite accepts a subagent id and writes the decision, but
+  // the Pinned tier is drawn only from a project's top-level Current+Recent
+  // sessions (web_api_tree.go), so the row never appears there and never comes
+  // back favorite:true - a menu item that silently does nothing. On a cluster
+  // it is worse: the id is a synthetic SHA-derived "cluster:<hex>" naming no
+  // session at all, so it writes a decision row nothing will ever clean up.
+  // Both verified against a live hub.
+  for (const kind of ["subagent", "fork", "cluster"]) {
+    test(`menu omits the pin action on a ${kind} row - it cannot reach the Pinned tier`, async () => {
+      render(<RailRow node={sessionRailNode(apiNode({ kind }))} info={info()} actions={actions()} />);
+      const trigger = screen.queryByRole("button", { name: /actions for/i });
+      if (trigger) {
+        await openMenu(/actions for/i);
+        expect(screen.queryByRole("menuitem", { name: "Add to pinned" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Remove from pinned" })).toBeNull();
+      }
+    });
+  }
+
+  // With favorite, rename (already withheld server-side - `rename` is absent on
+  // every nested/synthetic node) and archive all gone, there is nothing left to
+  // put in a subagent's menu, and ActionsMenu renders no trigger for an empty
+  // item list. The row stays clickable to open the session; it just carries no
+  // "..." button.
+  test("a subagent row offers no actions menu at all", () => {
+    render(<RailRow node={sessionRailNode(apiNode({ kind: "subagent" }))} info={info()} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
+  });
+
+  test("a top-level session still offers all three actions", async () => {
     render(
-      <RailRow node={sessionRailNode(apiNode({ kind: "subagent", rename: true }))} info={info()} actions={actions()} />,
+      <RailRow node={sessionRailNode(apiNode({ kind: "session", rename: true }))} info={info()} actions={actions()} />,
     );
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Add to pinned" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Archive" })).toBeTruthy();
   });
 
   // Title-first row (rail truncation round): the branch is secondary metadata
@@ -1080,4 +1138,29 @@ describe("row actions overlay (Rail.module.css)", () => {
     expect(actionsBlock).toMatch(/opacity:\s*1/);
     expect(actionsBlock).toMatch(/background:\s*none/);
   });
+});
+
+// A row that cannot be pinned must not display as pinned. The wire can still
+// carry favorite:true on a nested or synthetic node - from a decision written
+// before pinning was scoped, or by a direct API call - and rendering the star
+// there is a dead end: the menu offers no way to take it off. Suppressing it
+// keeps "only top-level sessions can be pinned" true in both directions.
+describe("favorite star follows the same scoping as the pin action", () => {
+  test("a top-level session shows its star", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ kind: "session", favorite: true }))}
+        info={info()}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("favorite-star")).toBeTruthy();
+  });
+
+  for (const kind of ["subagent", "fork", "cluster"]) {
+    test(`a ${kind} row shows no star even when the wire says favorite`, () => {
+      render(<RailRow node={sessionRailNode(apiNode({ kind, favorite: true }))} info={info()} actions={actions()} />);
+      expect(screen.queryByTestId("favorite-star")).toBeNull();
+    });
+  }
 });

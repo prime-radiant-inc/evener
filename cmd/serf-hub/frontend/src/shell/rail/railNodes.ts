@@ -44,7 +44,30 @@ export interface InactiveFoldRailNode extends WidgetTreeNode {
   children: SessionRailNode[];
 }
 
-export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode;
+/** A quiet "+N older" note standing for the rows the server capped away
+ * (hubcore's maxSidebarSessionsPerTier, 50 per tier). A leaf, not a
+ * disclosure: the rows it counts were never sent, so there is nothing behind
+ * it to open - it exists so a capped list stops silently claiming to be the
+ * whole list. */
+export interface OverflowRailNode extends WidgetTreeNode {
+  kind: "overflow";
+  count: number;
+}
+
+export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode | OverflowRailNode;
+
+// The rows a given list has hidden. Each caller passes the tiers it actually
+// renders: an active project's inline list shows Current+Recent (the archived
+// tier is diverted out of it), the archived sub-branch shows only Archived,
+// and a hydrated archived project shows all three.
+function overflowNode(id: string, count: number): OverflowRailNode[] {
+  return count > 0 ? [{ id: `${id}:overflow`, kind: "overflow", count }] : [];
+}
+
+function tierOverflow(p: ApiTreeProject, tiers: ("current" | "recent" | "archived")[]): number {
+  const field = { current: p.more_current, recent: p.more_recent, archived: p.more_archived };
+  return tiers.reduce((sum, t) => sum + (field[t] ?? 0), 0);
+}
 
 // Resolves one node's expanded state: an explicit user toggle (tracked by
 // Rail.tsx, keyed by rail node id) wins; anything not yet toggled falls
@@ -190,10 +213,13 @@ export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded)
       kind: "project",
       project: p,
       expanded: isExpanded(id, p.default_expanded ?? false),
-      children: p.sessions
-        .filter((n) => !isArchivedTier(n))
-        .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
-        .map((n) => toSessionNode(n, isExpanded)),
+      children: [
+        ...p.sessions
+          .filter((n) => !isArchivedTier(n))
+          .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
+          .map((n) => toSessionNode(n, isExpanded)),
+        ...overflowNode(id, tierOverflow(p, ["current", "recent"])),
+      ],
     };
   });
 }
@@ -232,7 +258,10 @@ export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: Is
       kind: "project",
       project: p,
       expanded: isExpanded(id, false),
-      children: archived.map((n) => toSessionNode(n, isExpanded)),
+      children: [
+        ...archived.map((n) => toSessionNode(n, isExpanded)),
+        ...overflowNode(id, tierOverflow(p, ["archived"])),
+      ],
     });
   }
   return groups;
@@ -270,7 +299,12 @@ export function archivedProjectNodes(
     const detail = projectDetails.get(p.key);
     let children: RailNode[];
     if (detail) {
-      children = detail.sessions.map((n) => toSessionNode(n, isExpanded));
+      // The hydrated detail is the authority on both the rows and what was
+      // capped away from them - the stub carried neither.
+      children = [
+        ...detail.sessions.map((n) => toSessionNode(n, isExpanded)),
+        ...overflowNode(id, tierOverflow(detail, ["current", "recent", "archived"])),
+      ];
     } else if ((p.session_count ?? 0) > 0) {
       children = [{ id: `${id}:loading`, kind: "loading" }];
     } else {

@@ -708,6 +708,114 @@ describe("hide affordance (onHide)", () => {
   });
 });
 
+// parity §6/§7/§8/§15: the row reflects your click before the round trip
+// resolves. Rail refetches after every successful mutation, so the window is
+// short - but on a loaded hub it is long enough to look like nothing happened,
+// which is what makes people click twice.
+describe("optimistic feedback", () => {
+  // Hold the POST open so the assertion lands squarely inside the in-flight
+  // window rather than racing the refetch.
+  function heldPost(path: string): { release: () => void } {
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = () => r();
+    });
+    const original = postResponses[path];
+    postResponses[path] = { status: 200, body: { ok: true } };
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST" && url === path) await held;
+      return prior?.(url, init) as Promise<Response>;
+    });
+    void original;
+    return { release };
+  }
+
+  test("archiving a session hides its row immediately, before the request resolves", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    const { release } = heldPost("/api/archive");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    await vi.waitFor(() => expect(screen.queryByText("Session one")).toBeNull());
+    release();
+  });
+
+  test("pinning a session shows its star immediately", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeNull();
+    const { release } = heldPost("/api/favorite");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+
+    await vi.waitFor(() => expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeTruthy());
+    release();
+  });
+
+  test("renaming a session shows the new title immediately", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    const { release } = heldPost("/api/sessions/local%3As1/rename");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox");
+    await user.clear(input);
+    await user.type(input, "Brand new name");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    await vi.waitFor(() => expect(screen.getByText("Brand new name")).toBeTruthy());
+    release();
+  });
+
+  // The overlay is a guess about what the server will do. When the server
+  // says no, the guess has to come off - otherwise a row the user still owns
+  // stays invisible until they reload.
+  test("a rejected archive puts the row back", async () => {
+    postResponses["/api/archive"] = { status: 500, body: { error: "archive store error: boom" } };
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    await screen.findByText(/archive store error: boom/i);
+    expect(screen.getByText("Session one")).toBeTruthy();
+  });
+
+  // Unarchive has no optimistic form on purpose: which tier the row lands in
+  // is a server-side classification this layer cannot predict, so guessing
+  // would mean showing it in the wrong place. Matches the htmx behavior.
+  test("unarchiving does not optimistically move anything", async () => {
+    treeResponseBody = WIRE_TREE_WITH_ARCHIVED_SESSION;
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived sessions/i }));
+    const sec = screen.getByRole("button", { name: /archived sessions/i }).closest("section");
+    if (!sec) throw new Error("no archived section");
+    const { release } = heldPost("/api/archive");
+    const sub = within(sec).getByRole("treeitem", { name: /prime-radiant/ });
+    await user.click(within(sub).getByTestId("rail-chevron"));
+    const archivedRow = within(sec).getByText("Old archived session").closest('[role="treeitem"]');
+    if (!(archivedRow instanceof HTMLElement)) throw new Error("no archived row");
+    await user.click(within(archivedRow).getByRole("button", { name: /actions for/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Unarchive" }));
+
+    expect(within(sec).getByText("Old archived session")).toBeTruthy();
+    release();
+  });
+});
+
 describe("favorite action", () => {
   test("toggling favorite on a session POSTs /api/favorite with the exact body and refetches the tree on success", async () => {
     renderRail();

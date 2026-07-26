@@ -476,3 +476,64 @@ describe("cluster rows are not subject to the subagent fold", () => {
     expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
   });
 });
+
+// parity §1/§2.3: the server caps each tier at 50 rows
+// (maxSidebarSessionsPerTier) and ships the remainder as more_current /
+// more_recent / more_archived. Nothing read those fields, so on a project with
+// more than 50 sessions in a tier the extras simply were not there and nothing
+// said so. hubcore's own doc comment describes the intended affordance: "the
+// sidebar shows '+N older' for the rest".
+describe("per-tier overflow", () => {
+  test("projectNodes appends an overflow row summing the two tiers it renders", () => {
+    const [rail] = projectNodes([project({ sessions: [node()], more_current: 7, more_recent: 5 })], NEVER_EXPANDED);
+    const last = rail?.children.at(-1);
+    expect(last?.kind).toBe("overflow");
+    expect(last && "count" in last && last.count).toBe(12);
+  });
+
+  test("the overflow row sits last, after every session", () => {
+    const [rail] = projectNodes(
+      [project({ sessions: [node({ row_id: "a" }), node({ row_id: "b", ref: "rb" })], more_current: 1 })],
+      NEVER_EXPANDED,
+    );
+    expect(rail?.children.map((c) => c.kind)).toEqual(["session", "session", "overflow"]);
+  });
+
+  test("no overflow row when nothing was capped", () => {
+    const [rail] = projectNodes([project({ sessions: [node()] })], NEVER_EXPANDED);
+    expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
+  });
+
+  test("more_archived does not leak into the project's inline list - that tier is not rendered there", () => {
+    const [rail] = projectNodes([project({ sessions: [node()], more_archived: 9 })], NEVER_EXPANDED);
+    expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
+  });
+
+  test("the archived sub-branch reports its own tier's overflow", () => {
+    const [group] = archivedSessionGroups(
+      [project({ sessions: [node({ tier: "archived" })], more_archived: 4, more_current: 99 })],
+      NEVER_EXPANDED,
+    );
+    const last = group?.children.at(-1);
+    expect(last?.kind).toBe("overflow");
+    expect(last && "count" in last && last.count).toBe(4);
+  });
+
+  test("a hydrated archived project reports every tier's overflow, since it renders them all", () => {
+    const stub = project({ key: "p1", session_count: 3, sessions: [] });
+    const detail = project({ key: "p1", sessions: [node()], more_current: 1, more_recent: 2, more_archived: 3 });
+    const [rail] = archivedProjectNodes([stub], new Map([["p1", detail]]), NEVER_EXPANDED);
+    const last = rail?.children.at(-1);
+    expect(last?.kind).toBe("overflow");
+    expect(last && "count" in last && last.count).toBe(6);
+  });
+
+  test("an un-hydrated archived stub shows its loading row, not an overflow row", () => {
+    const [rail] = archivedProjectNodes(
+      [project({ key: "p1", session_count: 3, sessions: [], more_current: 5 })],
+      new Map(),
+      NEVER_EXPANDED,
+    );
+    expect(rail?.children.map((c) => c.kind)).toEqual(["loading"]);
+  });
+});

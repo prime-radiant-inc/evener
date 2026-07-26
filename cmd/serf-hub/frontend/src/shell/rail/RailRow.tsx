@@ -47,6 +47,7 @@ import styles from "./Rail.module.css";
 import {
   type InactiveFoldRailNode,
   needsYouDescendantCount,
+  type OverflowRailNode,
   type ProjectRailNode,
   type RailNode,
   type SessionRailNode,
@@ -68,6 +69,7 @@ const CLASS = {
   notStarted: requireClass(styles.notStarted, "Rail.module.css", "notStarted"),
   star: requireClass(styles.star, "Rail.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "Rail.module.css", "loadingRow"),
+  overflow: requireClass(styles.overflow, "Rail.module.css", "overflow"),
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
@@ -332,13 +334,23 @@ function isTopLevelSession(session: ApiTreeNode): boolean {
 }
 
 function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuItem[] {
-  const items: MenuItem[] = [
-    {
+  const items: MenuItem[] = [];
+  // Pinning, like archiving, is a decision about a top-level row. The Pinned
+  // tier is built only from a project's top-level Current+Recent sessions
+  // (web_api_tree.go), so pinning a nested row writes a decision that never
+  // surfaces anywhere; pinning a synthetic cluster row writes one keyed to an
+  // id that names no session at all. Both confirmed against a live hub.
+  //
+  // Rename needs no check here: the server already withholds its `rename`
+  // flag from every nested and synthetic node, and the item below is gated on
+  // it - the request 404s for those ids, and the menu never offers it.
+  if (isTopLevelSession(session)) {
+    items.push({
       id: "favorite",
       label: session.favorite ? "Remove from pinned" : "Add to pinned",
       onSelect: () => actions.onToggleFavorite(session),
-    },
-  ];
+    });
+  }
   if (session.rename) {
     items.push({ id: "rename", label: "Rename", onSelect: () => actions.onRenameRequest(session) });
   }
@@ -503,7 +515,11 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
           </span>
         )}
       </span>
-      {session.favorite === true && (
+      {/* Gated on the same rule as the pin action: the wire can still carry
+          favorite:true on a nested or synthetic node (a decision written
+          before pinning was scoped, or a direct API call), and a star on a row
+          whose menu offers no way to remove it is a dead end. */}
+      {session.favorite === true && isTopLevelSession(session) && (
         <span data-testid="favorite-star" aria-hidden="true" className={CLASS.star}>
           {"★"}
         </span>
@@ -605,6 +621,22 @@ function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: Tre
   );
 }
 
+// The "+N older" note for rows the server capped away (hubcore's
+// maxSidebarSessionsPerTier). Sits in the chevron/signal gutters like every
+// other row so it lines up with the list it belongs to, but carries no
+// controls: the rows it counts were never sent, so there is nothing to expand
+// and nothing to act on. It exists so a capped list stops quietly presenting
+// itself as complete.
+function OverflowRow({ node }: { node: OverflowRailNode }) {
+  return (
+    <span className={CLASS.row}>
+      <RowGutter className={CLASS.chevron} testId="rail-row-chevron-gutter" />
+      <RowGutter className={CLASS.signal} testId="rail-row-signal" />
+      <span data-testid="rail-row-overflow" className={CLASS.overflow}>{`+${node.count} older`}</span>
+    </span>
+  );
+}
+
 function LoadingRow(): ReactNode {
   // role="status" so this is announced the same way the top-level Skeleton
   // (widgets/skeleton) is - the visible "Loading…" text is its own
@@ -622,6 +654,8 @@ export function RailRow({ node, info, actions }: RailRowProps) {
       return LoadingRow();
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
+    case "overflow":
+      return <OverflowRow node={node} />;
     case "project":
       return <ProjectRow node={node} info={info} actions={actions} />;
     case "session":

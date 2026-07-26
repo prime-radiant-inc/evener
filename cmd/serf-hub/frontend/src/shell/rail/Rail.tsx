@@ -6,8 +6,8 @@
 // inside StackHost's mobile TreeDrawer sheet (which passes it as children).
 // Rail owns per-branch expand state, the reveal (railController /project),
 // and the rename/delete-project confirmation dialogs. Every mutation goes
-// through actions.ts, refetching the tree on success and toasting on failure
-// (no optimistic UI - out of this task's scope).
+// through actions.ts, showing optimistically (railPending) while the request
+// is in flight, refetching the tree on success and toasting on failure.
 import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
@@ -49,6 +49,7 @@ import {
   type RailNode,
   sessionNodes,
 } from "./railNodes";
+import { applyPending, type PendingOp } from "./railPending";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -146,7 +147,7 @@ export interface RailProps {
 }
 
 export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
-  const tree = useTreeStore((s) => s.tree);
+  const fetchedTree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
   const projectDetails = useTreeStore((s) => s.projectDetails);
@@ -163,8 +164,16 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
+  // Mutations currently in flight. Everything below renders from the tree with
+  // these projected on (railPending), so a click shows before its round trip
+  // resolves; runAction adds and removes them.
+  const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+
+  // applyPending returns the same object when nothing is pending, so the
+  // common case allocates nothing and every downstream memo stays stable.
+  const tree = fetchedTree === null ? null : applyPending(fetchedTree, pending);
 
   useEffect(() => {
     void treeStore.getState().refresh();
@@ -250,23 +259,47 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     handleToggle(node); // a project row has nowhere to "open" - Enter/click toggles it, same as its chevron
   }
 
-  async function runAction(fn: () => Promise<unknown>, failureMessage: string): Promise<void> {
+  // runAction is the one path every rail mutation takes. `optimistic` is what
+  // the row should look like while the request is in flight; it is projected
+  // onto the rendered tree (railPending) from before the POST until the
+  // follow-up refresh has settled, then dropped. On failure it is dropped too,
+  // so a rejected mutation restores exactly what was on screen before - the
+  // overlay is a guess, and a refused guess must not outlive its request.
+  //
+  // The refresh is AWAITED (it never rejects - see stores/tree.ts) rather than
+  // fired and forgotten, because its completion is precisely the moment the
+  // real tree carries the change and the overlay stops being needed. Dropping
+  // the op any earlier would flash the pre-mutation row back for one render.
+  async function runAction(fn: () => Promise<unknown>, failureMessage: string, optimistic?: PendingOp): Promise<void> {
+    if (optimistic) setPending((ops) => [...ops, optimistic]);
     try {
       await fn();
-      void treeStore.getState().refresh();
+      await treeStore.getState().refresh();
     } catch (err) {
       toasts.push("error", `${failureMessage}: ${errorText(err)}`);
+    } finally {
+      if (optimistic) setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
 
   const rowActions: RailRowActions = {
     onToggleFavorite: (session) => {
-      void runAction(() => setFavorite("session", session.ref, !session.favorite), "Couldn't update favorite");
+      const value = !session.favorite;
+      void runAction(() => setFavorite("session", session.ref, value), "Couldn't update favorite", {
+        kind: "sessionFavorite",
+        ref: session.ref,
+        value,
+      });
     },
     onToggleArchiveSession: (session) => {
+      const archiving = session.tier !== "archived";
       void runAction(
-        () => setArchived("session", session.ref, session.tier !== "archived"),
+        () => setArchived("session", session.ref, archiving),
         "Couldn't update archive state",
+        // Only the archiving direction hides anything: unarchiving lands the
+        // row in whichever tier the server classifies it into, which this
+        // layer cannot predict (railPending's own comment).
+        archiving ? { kind: "hideSession", ref: session.ref } : undefined,
       );
     },
     onRenameRequest: (session) => {
@@ -274,12 +307,19 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       setRenameValue(session.title);
     },
     onToggleFavoriteProject: (project) => {
-      void runAction(() => setFavorite("project", project.key, !project.favorite), "Couldn't update favorite");
+      const value = !project.favorite;
+      void runAction(() => setFavorite("project", project.key, value), "Couldn't update favorite", {
+        kind: "projectFavorite",
+        key: project.key,
+        value,
+      });
     },
     onToggleArchiveProject: (project) => {
+      const archiving = !(project.is_archived ?? false);
       void runAction(
-        () => setArchived("project", project.key, !(project.is_archived ?? false), project.working_dir),
+        () => setArchived("project", project.key, archiving, project.working_dir),
         "Couldn't update archive state",
+        archiving ? { kind: "hideProject", key: project.key } : undefined,
       );
     },
     onDeleteProjectRequest: (project) => {
@@ -297,7 +337,11 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     const name = renameValue.trim();
     if (!target || !name) return;
     closeRenameDialog();
-    await runAction(() => renameSession(target.ref, name), "Couldn't rename session");
+    await runAction(() => renameSession(target.ref, name), "Couldn't rename session", {
+      kind: "sessionTitle",
+      ref: target.ref,
+      title: name,
+    });
   }
 
   function closeDeleteDialog() {
