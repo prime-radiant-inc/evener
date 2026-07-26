@@ -29,7 +29,7 @@
 // never re-formatted, and never derived client-side even when the token total
 // beside it was. An absent cost (no token data, or an uncataloged model) is an
 // honest unknown and renders no row at all.
-import { useState } from "react";
+import { forwardRef, useImperativeHandle, useState } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import { Button, Meter, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -43,6 +43,21 @@ export interface DetailsPanelProps {
   /** Current wall-clock ms, so the work-time figure keeps counting during an
    * in-flight turn (owned by SessionChrome's useNowTick, same as StatusRow). */
   now: number;
+  // True once SessionChrome's own row has measured too narrow to show this
+  // panel's own inline trigger beside Tasks and the "..." menu without
+  // wrapping to a second row (kata vybn) - SessionChrome renders a "Details"
+  // item in that menu instead, opening this SAME Sheet through the
+  // imperative handle below. Omitted (the default) is every existing
+  // caller/test, which never suppresses this trigger.
+  hideTrigger?: boolean;
+}
+
+/** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
+ * without lifting `open` out of this component (which would touch every
+ * existing render site in DetailsPanel.test.tsx for no behavioral gain -
+ * see this task's report). */
+export interface DetailsPanelHandle {
+  open: () => void;
 }
 
 const CLASS = {
@@ -91,8 +106,12 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-export function DetailsPanel({ model, now }: DetailsPanelProps) {
+export const DetailsPanel = forwardRef<DetailsPanelHandle, DetailsPanelProps>(function DetailsPanel(
+  { model, now, hideTrigger = false },
+  ref,
+) {
   const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
 
   const showContext = model.contextWindow > 0 && !isEndedStatus(model.status.type);
   // Remaining is the context window minus what is used, floored at zero - the
@@ -118,10 +137,18 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
     <>
       {/* data-details-trigger lets the command palette's "Toggle session
           details" (/status) synthesize a click here (shell/palette/commands.ts)
-          - without it that command is inert. Button forwards data-* through. */}
-      <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-details-trigger="">
-        Details
-      </Button>
+          - without it that command is inert. Button forwards data-* through.
+          Omitted while hideTrigger is set (the row collapsed this into the
+          "..." menu instead - see SessionChrome): clickTrigger is already
+          documented no-op-safe when its selector finds nothing, so /status
+          goes quiet rather than throwing while collapsed (kata vybn's report
+          - a follow-up kata tracks reaching this trigger through the menu
+          too). */}
+      {!hideTrigger && (
+        <Button variant="quiet" size="sm" onClick={() => setOpen(true)} data-details-trigger="">
+          Details
+        </Button>
+      )}
       <Sheet open={open} onClose={() => setOpen(false)} title="Session details">
         <Section title="Session">
           <DetailRow label="model" testId="session-details-model">
@@ -199,4 +226,4 @@ export function DetailsPanel({ model, now }: DetailsPanelProps) {
       </Sheet>
     </>
   );
-}
+});

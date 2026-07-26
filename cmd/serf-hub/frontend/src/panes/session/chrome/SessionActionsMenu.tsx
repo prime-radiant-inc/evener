@@ -29,6 +29,13 @@ export interface SessionActionsMenuProps {
   // render this menu; SessionChrome, the real caller, always passes it (see
   // GoalControlProps.dialogOpen's own doc comment - same reasoning).
   onSetGoal?: () => void;
+  // Items SessionChrome prepends when its own row has collapsed Details/
+  // Tasks into this menu for want of width (kata vybn) - the row's own
+  // "..." is the one overflow mechanism this chrome already owns, so a
+  // narrow pane grows this list rather than a second row of chrome.
+  // Absent/empty (the default) leaves this menu exactly as every other
+  // caller already sees it.
+  extraItems?: MenuItem[];
 }
 
 const CLASS = {
@@ -47,7 +54,12 @@ function openChildPane(childRef: string): void {
   workspaceStore.getState().openPane("session", { ref: childRef });
 }
 
-export function SessionActionsMenu({ sessionRef, model, onSetGoal = () => undefined }: SessionActionsMenuProps) {
+export function SessionActionsMenu({
+  sessionRef,
+  model,
+  onSetGoal = () => undefined,
+  extraItems = [],
+}: SessionActionsMenuProps) {
   const toasts = useToasts();
   const [busy, setBusy] = useState(false);
 
@@ -115,7 +127,11 @@ export function SessionActionsMenu({ sessionRef, model, onSetGoal = () => undefi
     }, "Couldn't rename session");
   }
 
+  // extraItems lead the list: Details/Tasks sat to this menu's LEFT on the
+  // row before the row ran out of width to show them, so putting them first
+  // here keeps the same left-to-right reading order they had inline.
   const items: MenuItem[] = [
+    ...extraItems,
     { id: "set-goal", label: "Set goal…", disabled: !model.capabilities.goal, onSelect: onSetGoal },
     { id: "aside", label: "Aside", disabled: !model.capabilities.forkFromTurn, onSelect: handleAside },
     { id: "compact", label: "Compact", disabled: !model.capabilities.compact, onSelect: handleCompact },

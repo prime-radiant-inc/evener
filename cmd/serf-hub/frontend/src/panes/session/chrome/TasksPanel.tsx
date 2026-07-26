@@ -67,7 +67,7 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
-import { useEffect, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { errorText, sessionActionError, sessionActionHeadline, WireError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
@@ -79,6 +79,21 @@ import styles from "./taskspanel.module.css";
 export interface TasksPanelProps {
   sessionRef: string;
   model: ThreadModel;
+  // True once SessionChrome's own row has measured too narrow to show this
+  // panel's own inline trigger beside Details and the "..." menu without
+  // wrapping to a second row (kata vybn) - SessionChrome renders a "Tasks"
+  // item in that menu instead, opening this SAME Sheet through the
+  // imperative handle below. Omitted (the default) is every existing
+  // caller/test, which never suppresses this trigger.
+  hideTrigger?: boolean;
+}
+
+/** Lets SessionChrome open this panel's Sheet from a collapsed menu item,
+ * without lifting `open` out of this component (which would touch every
+ * existing render site in TasksPanel.test.tsx for no behavioral gain - see
+ * DetailsPanelHandle's identical rationale). */
+export interface TasksPanelHandle {
+  open: () => void;
 }
 
 const CLASS = {
@@ -201,9 +216,13 @@ function TaskRowView({ task }: { task: TaskRow }) {
   );
 }
 
-export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
+export const TasksPanel = forwardRef<TasksPanelHandle, TasksPanelProps>(function TasksPanel(
+  { sessionRef, model, hideTrigger = false },
+  ref,
+) {
   const toasts = useToasts();
   const [open, setOpen] = useState(false);
+  useImperativeHandle(ref, () => ({ open: () => setOpen(true) }), []);
   const [rows, setRows] = useState<TaskRow[] | null>(null);
   const [unsupported, setUnsupported] = useState(false);
   const [error, setError] = useState<LoadFailure | null>(null);
@@ -358,13 +377,18 @@ export function TasksPanel({ sessionRef, model }: TasksPanelProps) {
     <>
       {/* data-tasks-trigger lets the command palette's "Toggle tasks panel"
           (/tasks) synthesize a click here (shell/palette/commands.ts) - without
-          it that command is inert. Button forwards data-* to the real <button>. */}
-      <Button variant="quiet" size="sm" onClick={openPanel} data-tasks-trigger="">
-        {triggerLabel(model.tasks)}
-      </Button>
+          it that command is inert. Button forwards data-* to the real <button>.
+          Omitted while hideTrigger is set - see DetailsPanel's identical
+          hideTrigger comment for why /tasks going quiet while collapsed is
+          the accepted trade-off here (kata vybn's report). */}
+      {!hideTrigger && (
+        <Button variant="quiet" size="sm" onClick={openPanel} data-tasks-trigger="">
+          {triggerLabel(model.tasks)}
+        </Button>
+      )}
       <Sheet open={open} onClose={closePanel} title="Tasks">
         {renderBody()}
       </Sheet>
     </>
   );
-}
+});

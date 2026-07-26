@@ -418,6 +418,36 @@ test("a failed rename surfaces an error toast and leaves the dialog open", async
   expect(screen.getByRole("dialog")).toBeTruthy();
 });
 
+// --- extraItems (kata vybn: SessionChrome's own collapsed Details/Tasks) ---
+
+test("extraItems lead the menu, ahead of every built-in action", async () => {
+  const user = userEvent.setup();
+  render(
+    <SessionActionsMenu
+      sessionRef="ref_a"
+      model={testModel()}
+      extraItems={[
+        { id: "details", label: "Details", onSelect: () => {} },
+        { id: "tasks", label: "Tasks", onSelect: () => {} },
+      ]}
+    />,
+  );
+  await openMenu(user);
+
+  const labels = screen.getAllByRole("menuitem").map((el) => el.textContent);
+  expect(labels.slice(0, 2)).toEqual(["Details", "Tasks"]);
+  expect(labels).toContain("Set goal…");
+});
+
+test("omitting extraItems leaves the menu exactly as every other caller sees it", async () => {
+  const user = userEvent.setup();
+  render(<SessionActionsMenu sessionRef="ref_a" model={testModel()} />);
+  await openMenu(user);
+
+  expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+  expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
+});
+
 // Fork is intentionally NOT in this menu (see "opens to show every session
 // action" above): it moved to the per-user-message ForkFromHereButton
 // affordance, whose behavior is covered by UserMessageItem.test.tsx's own
