@@ -185,7 +185,7 @@ func (s *Session) deliverHookContext(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	s.Steer(wrapHookContext(text))
+	s.SteerKind(wrapHookContext(text), events.SteeringKindHookContext)
 }
 
 // deliverHookUserMessage surfaces a hook's user-visible message via the

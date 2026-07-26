@@ -289,7 +289,7 @@ func (s *Session) handleCompactionTurn(t schema.Turn) {
 	// After compaction, inject full task list if tasks exist.
 	if s.taskStore != nil {
 		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			s.Steer(reminder)
+			s.SteerKind(reminder, events.SteeringKindTaskList)
 		}
 	}
 }

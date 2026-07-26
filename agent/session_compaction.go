@@ -75,7 +75,7 @@ func (s *Session) steerCompactionTranscriptReminder() {
 		return
 	}
 	ref := encodeRef("", s.id)
-	s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
+	s.SteerKind("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \""+ref+"\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>", events.SteeringKindTranscriptPointer)
 }
 
 func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), func()) {
@@ -178,7 +178,7 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 		if err := appendTurn(record.turn); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: events.SteeringKindPrecompactHook})
 	}
 }
 

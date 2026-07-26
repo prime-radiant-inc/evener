@@ -238,7 +238,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 					if current.ReasoningEffort != "" {
 						s.cfg.ReasoningEffort = current.ReasoningEffort
 					}
-					s.Steer(formatCurrentTaskSteering(current))
+					s.SteerKind(formatCurrentTaskSteering(current), events.SteeringKindCurrentTask)
 				}
 			}
 		}
@@ -1293,7 +1293,7 @@ func (s *Session) deliverSessionStartHookResultForUserTurn(result hooks.RunResul
 	for _, m := range result.ModelContext {
 		wrapped := wrapHookContext(m)
 		s.appendTurn(schema.TurnSteering, llm.User(wrapped))
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: wrapped})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: wrapped, Kind: events.SteeringKindHookContext})
 	}
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessage(m)

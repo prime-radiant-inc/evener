@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -203,20 +204,23 @@ func TestMaybeInjectTaskReminder_NudgeAfter10Rounds(t *testing.T) {
 
 	// 9 rounds — no nudge yet.
 	sess.totalRounds = 9
-	if msg := sess.maybeInjectTaskReminder(); msg != "" {
+	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
 		t.Fatalf("expected no nudge at 9 rounds, got: %s", msg)
 	}
 
 	// At 10 rounds — nudge fires.
 	sess.totalRounds = 10
-	msg := sess.maybeInjectTaskReminder()
+	msg, kind := sess.maybeInjectTaskReminder()
 	if msg == "" || !strings.Contains(msg, "task_list") {
 		t.Fatalf("expected nudge at 10 rounds, got: %q", msg)
+	}
+	if kind != events.SteeringKindTaskNudge {
+		t.Errorf("kind = %q, want %q", kind, events.SteeringKindTaskNudge)
 	}
 
 	// Second call — nudge should not fire again.
 	sess.totalRounds = 15
-	if msg := sess.maybeInjectTaskReminder(); msg != "" {
+	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
 		t.Fatalf("nudge should fire only once, got: %s", msg)
 	}
 }
@@ -246,15 +250,18 @@ func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
 
 	// At 24 rounds — no reminder.
 	sess.totalRounds = 24
-	if msg := sess.maybeInjectTaskReminder(); msg != "" {
+	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
 		t.Fatalf("expected no reminder at 24 rounds, got: %s", msg)
 	}
 
 	// At 25 rounds — reminder fires.
 	sess.totalRounds = 25
-	msg := sess.maybeInjectTaskReminder()
+	msg, kind := sess.maybeInjectTaskReminder()
 	if msg == "" {
 		t.Fatal("expected inactivity reminder at 25 rounds")
+	}
+	if kind != events.SteeringKindTaskInactive {
+		t.Errorf("kind = %q, want %q", kind, events.SteeringKindTaskInactive)
 	}
 }
 
@@ -274,7 +281,7 @@ func TestMaybeInjectTaskReminder_NoNudgeIfEverUsed(t *testing.T) {
 	sess.totalRounds = 15
 
 	// No tasks exist, tool was used before — no nudge, no inactivity reminder.
-	if msg := sess.maybeInjectTaskReminder(); msg != "" {
+	if msg, _ := sess.maybeInjectTaskReminder(); msg != "" {
 		t.Fatalf("expected no reminder when tool was used but no tasks: %s", msg)
 	}
 }

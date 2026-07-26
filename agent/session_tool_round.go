@@ -33,7 +33,7 @@ func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool,
 	if dec.Retry {
 		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
 		s.appendTurn(schema.TurnSteering, llm.User(dec.SteeringText))
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: dec.SteeringText})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: dec.SteeringText, Kind: events.SteeringKindNoToolCalls})
 		return true, nil
 	}
 	switch dec.TerminalKind {
@@ -277,7 +277,8 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					}
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
+					s.SteerKind(label+": "+desc+"\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>",
+						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
 				}
@@ -337,7 +338,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			if abortErr := s.withResponseSideEffects(ctx, func() {
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendTurn(schema.TurnSteering, llm.User(warning))
-				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning})
+				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning, Kind: events.SteeringKindLoopDetected})
 			}); abortErr != nil {
 				return false, abortErr
 			}
@@ -368,9 +369,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Task reminder injection.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+		if reminder, kind := s.maybeInjectTaskReminder(); reminder != "" {
 			s.appendTurn(schema.TurnSteering, llm.User(reminder))
-			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
+			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: kind})
 		}
 	}); abortErr != nil {
 		return false, abortErr

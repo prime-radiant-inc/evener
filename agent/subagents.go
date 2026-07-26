@@ -693,7 +693,7 @@ func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDi
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
-			subSess.Steer(formatCurrentTaskSteering(current))
+			subSess.SteerKind(formatCurrentTaskSteering(current), events.SteeringKindCurrentTask)
 		}
 	}
 
@@ -882,7 +882,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 		// (sub.driving) is in flight just like a running one: the drive turn absorbs
 		// the steered input at its tool-round boundary (spec §3, A7 steer-into-drive)
 		// rather than launching a second concurrent run.
-		subSess.Steer(input)
+		subSess.SteerKind(input, events.SteeringKindAgentMessage)
 		return false, nil
 	}
 

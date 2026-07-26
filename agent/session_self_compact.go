@@ -113,7 +113,7 @@ func (s *Session) maybeNudgeSelfCompact(sysPromptChars int) bool {
 	s.mu.Lock()
 	s.nudgedSinceCompact = true
 	s.mu.Unlock()
-	s.Steer(selfCompactNudge)
+	s.SteerKind(selfCompactNudge, events.SteeringKindCompactNudge)
 	return true
 }
 

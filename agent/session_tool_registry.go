@@ -29,7 +29,7 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer           func(msg string)
+	steer           func(msg, kind string)
 	drainSteering   func() []steeringMessage
 	prependSteering func(entries []steeringMessage)
 
@@ -168,7 +168,7 @@ func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
 		registerTool:    s.cfg.testOnly.registerTool,
 		emit:            s.emit,
-		steer:           s.Steer,
+		steer:           s.SteerKind,
 		drainSteering:   s.drainSteeringForTurn,
 		prependSteering: s.prependSteering,
 		abort:           s.abortIfClosing,

@@ -285,7 +285,7 @@ func stceRegistryAndHelpers(t *testing.T) {
 	s.taskToolLastRound = 0
 	s.totalRounds = 25
 	s.mu.Unlock()
-	if got := s.maybeInjectTaskReminder(); got == "" {
+	if got, _ := s.maybeInjectTaskReminder(); got == "" {
 		t.Fatalf("task inactivity reminder missing: tasks=%#v storeSame=%v", shared.View(), s.getOrCreateTaskStore() == shared)
 	}
 }
