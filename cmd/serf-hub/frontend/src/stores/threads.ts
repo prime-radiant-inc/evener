@@ -403,9 +403,15 @@ function applyToMap(
 // unconditionally on every notification, same as applyToMap below; both
 // functions already no-op silently when the job carries no originTurnId or
 // matches no tracked row, so no pre-filtering is needed here.
+//
+// n.params.ref (kata 8525) is passed straight through as the owning
+// session's ref: originTurnId alone is per-session, not globally unique, so
+// applySerfJobStarted/Finished need it to scope the write correctly in this
+// page-lifetime singleton store (same reasoning as every other call site -
+// see subagentModuleStore.ts's own turnScopeKey comment).
 function applySubagentJobSignal(n: AnyNotification): void {
-  if (n.method === "serf/job/started") applySerfJobStarted(n.params.job);
-  else if (n.method === "serf/job/finished") applySerfJobFinished(n.params.job);
+  if (n.method === "serf/job/started") applySerfJobStarted(n.params.job, n.params.ref);
+  else if (n.method === "serf/job/finished") applySerfJobFinished(n.params.job, n.params.ref);
 }
 
 function handleNotification(n: AnyNotification): void {

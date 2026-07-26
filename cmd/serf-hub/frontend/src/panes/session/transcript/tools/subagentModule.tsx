@@ -47,6 +47,7 @@ import {
   resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
+  turnScopeKey,
   upsertSubagentRow,
   useSubagentRows,
 } from "./subagentModuleStore";
@@ -291,7 +292,7 @@ function SubagentRowView({
           done/failed/unknown row has nothing live left to show. It also
           writes the live child status back onto the row as liveKind. */}
       {row.kind === "running" && transcriptRef && (
-        <WatchedChildIndicator ref={transcriptRef} turnId={turnId} rowKey={row.rowKey} />
+        <WatchedChildIndicator ref={transcriptRef} scopeKey={turnScopeKey(sessionRef, turnId)} rowKey={row.rowKey} />
       )}
       <span className={CLASS.task}>{clip(row.task, TASK_CLIP)}</span>
       {(duration ?? preview) && (
@@ -353,7 +354,7 @@ function tally(rows: SubagentRow[]): string {
 // regardless of fold state (a live or broken child must never be hidden
 // by count, parity §12).
 function SubagentModule({ turnId, sessionRef }: { turnId: string; sessionRef: string | undefined }) {
-  const rows = useSubagentRows(turnId);
+  const rows = useSubagentRows(turnScopeKey(sessionRef, turnId));
   const [expanded, setExpanded] = useState(false);
   const hasFailure = rows.some((r) => r.kind === "failed");
 
@@ -417,10 +418,11 @@ function rowFromDelegateItem(item: ItemModel): { rowKey: string; row: Omit<Subag
 
 function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   const [isLeader, setIsLeader] = useState(false);
+  const scopeKey = turnScopeKey(sessionRef, item.turnId);
 
   useLayoutEffect(() => {
     const { rowKey, row } = rowFromDelegateItem(item);
-    upsertSubagentRow(item.turnId, { rowKey, ...row });
+    upsertSubagentRow(scopeKey, { rowKey, ...row });
   });
 
   // Claim AND release inside the SAME effect - never a useState lazy
@@ -437,11 +439,11 @@ function DelegateBody({ item, sessionRef }: ToolRenderProps) {
   // re-claims before anything else gets a chance to. See this file's own
   // StrictMode test for the failure mode this fixes.
   useLayoutEffect(() => {
-    const leader = claimLeader(item.turnId, item.id);
+    const leader = claimLeader(scopeKey, item.id);
     setIsLeader(leader);
     if (!leader) return;
-    return () => releaseLeader(item.turnId, item.id);
-  }, [item.turnId, item.id]);
+    return () => releaseLeader(scopeKey, item.id);
+  }, [scopeKey, item.id]);
 
   return isLeader ? <SubagentModule turnId={item.turnId} sessionRef={sessionRef} /> : null;
 }

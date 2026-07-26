@@ -10,6 +10,7 @@ import {
   resetSubagentModuleStoreForTests,
   resolveRowKey,
   setWatchedLiveKind,
+  turnScopeKey,
   updateSubagentRowIfExists,
   upsertSubagentRow,
   useSubagentRows,
@@ -146,21 +147,29 @@ function job(overrides: Partial<SerfJobInfo> = {}): SerfJobInfo {
   return { jobId: "job_1", jobType: "delegate", status: "running", outputBytes: 0, ...overrides };
 }
 
+// A fixed test sessionRef - every scope-key-building call below routes
+// through turnScopeKey exactly as production call sites do (kata 8525),
+// so a test that only touched a bare turnId string before this fix would
+// silently stop matching the row applySerfJobStarted/Finished actually
+// patch (they always scope by sessionRef now).
+const SESS = "sess_x";
+
 test("applySerfJobStarted: no-op when the job carries no originTurnId (never fabricates a row)", () => {
-  applySerfJobStarted(job());
-  const { result } = renderHook(() => useSubagentRows("turn_never_seen"));
+  applySerfJobStarted(job(), SESS);
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_never_seen")));
   expect(result.current).toEqual([]);
 });
 
 test("applySerfJobStarted: no-op when no row exists for the resolved rowKey (only patches an EXISTING row)", () => {
-  applySerfJobStarted(job({ originTurnId: "turn_js1", delegateId: "dlg_1" }));
-  const { result } = renderHook(() => useSubagentRows("turn_js1"));
+  applySerfJobStarted(job({ originTurnId: "turn_js1", delegateId: "dlg_1" }), SESS);
+  const { result } = renderHook(() => useSubagentRows(turnScopeKey(SESS, "turn_js1")));
   expect(result.current).toEqual([]);
 });
 
 test("applySerfJobStarted: resets liveKind to running and clears prior terminal detail (delegate_send resume)", () => {
-  upsertSubagentRow("turn_js2", { rowKey: "dlg:dlg_2", kind: "done", task: "t", resultPreview: "" });
-  updateSubagentRowIfExists("turn_js2", "dlg:dlg_2", {
+  const scope = turnScopeKey(SESS, "turn_js2");
+  upsertSubagentRow(scope, { rowKey: "dlg:dlg_2", kind: "done", task: "t", resultPreview: "" });
+  updateSubagentRowIfExists(scope, "dlg:dlg_2", {
     liveKind: "failed",
     liveReason: "exhausted",
     resumable: true,
@@ -168,9 +177,9 @@ test("applySerfJobStarted: resets liveKind to running and clears prior terminal 
     exhaustionLimit: 5,
   });
 
-  applySerfJobStarted(job({ originTurnId: "turn_js2", delegateId: "dlg_2", jobId: "job_2" }));
+  applySerfJobStarted(job({ originTurnId: "turn_js2", delegateId: "dlg_2", jobId: "job_2" }), SESS);
 
-  const { result } = renderHook(() => useSubagentRows("turn_js2"));
+  const { result } = renderHook(() => useSubagentRows(scope));
   expect(result.current[0]).toMatchObject({
     liveKind: "running",
     liveReason: undefined,
@@ -181,7 +190,8 @@ test("applySerfJobStarted: resets liveKind to running and clears prior terminal 
 });
 
 test("applySerfJobFinished: patches liveKind/liveReason/resumable/exhaustion from the notification", () => {
-  upsertSubagentRow("turn_jf1", { rowKey: "dlg:dlg_3", kind: "running", task: "t", resultPreview: "" });
+  const scope = turnScopeKey(SESS, "turn_jf1");
+  upsertSubagentRow(scope, { rowKey: "dlg:dlg_3", kind: "running", task: "t", resultPreview: "" });
 
   applySerfJobFinished(
     job({
@@ -193,9 +203,10 @@ test("applySerfJobFinished: patches liveKind/liveReason/resumable/exhaustion fro
       exhaustionBudget: "30m",
       exhaustionLimit: 60,
     }),
+    SESS,
   );
 
-  const { result } = renderHook(() => useSubagentRows("turn_jf1"));
+  const { result } = renderHook(() => useSubagentRows(scope));
   expect(result.current[0]).toMatchObject({
     liveKind: "failed",
     liveReason: "ran out of turns",
@@ -206,10 +217,36 @@ test("applySerfJobFinished: patches liveKind/liveReason/resumable/exhaustion fro
 });
 
 test("applySerfJobFinished: rowKey resolution matches resolveRowKey (delegateId over jobId over originToolCallId)", () => {
-  upsertSubagentRow("turn_jf2", { rowKey: "job:job_4", kind: "running", task: "t", resultPreview: "" });
-  applySerfJobFinished(job({ originTurnId: "turn_jf2", jobId: "job_4", status: "completed" }));
-  const { result } = renderHook(() => useSubagentRows("turn_jf2"));
+  const scope = turnScopeKey(SESS, "turn_jf2");
+  upsertSubagentRow(scope, { rowKey: "job:job_4", kind: "running", task: "t", resultPreview: "" });
+  applySerfJobFinished(job({ originTurnId: "turn_jf2", jobId: "job_4", status: "completed" }), SESS);
+  const { result } = renderHook(() => useSubagentRows(scope));
   expect(result.current[0]?.liveKind).toBe("done");
+});
+
+// --- kata 8525: cross-session isolation ------------------------------------
+
+test("turnScopeKey: two different sessionRefs with the SAME turnId never produce the same key", () => {
+  expect(turnScopeKey("session_a", "turn_1")).not.toBe(turnScopeKey("session_b", "turn_1"));
+});
+
+test("applySerfJobFinished: a job from one session never patches an existing row planted under the same turnId in a different session", () => {
+  // Both sessions' first real turn lands on the identical "turn_1" string
+  // (turn ids restart at 0 per session - internal/appprojector's own
+  // nextTurn counter) - exactly the collision kata 8525 was reproduced with.
+  const scopeA = turnScopeKey("session_a", "turn_1");
+  const scopeB = turnScopeKey("session_b", "turn_1");
+  upsertSubagentRow(scopeA, { rowKey: "dlg:dlg_a", kind: "running", task: "session A's own task", resultPreview: "" });
+  upsertSubagentRow(scopeB, { rowKey: "dlg:dlg_b", kind: "running", task: "session B's own task", resultPreview: "" });
+
+  applySerfJobFinished(job({ originTurnId: "turn_1", delegateId: "dlg_b", status: "completed" }), "session_b");
+
+  const { result: rowsA } = renderHook(() => useSubagentRows(scopeA));
+  const { result: rowsB } = renderHook(() => useSubagentRows(scopeB));
+  expect(rowsA.current).toHaveLength(1);
+  expect(rowsA.current[0]?.liveKind).toBeUndefined(); // session A's row untouched
+  expect(rowsB.current).toHaveLength(1);
+  expect(rowsB.current[0]?.liveKind).toBe("done");
 });
 
 // --- setWatchedLiveKind: the guard that keeps a lagging watch from --------

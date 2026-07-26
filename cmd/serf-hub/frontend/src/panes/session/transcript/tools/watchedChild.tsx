@@ -16,13 +16,16 @@ import { setWatchedLiveKind } from "./subagentModuleStore";
 
 export interface WatchedChildIndicatorProps {
   ref: string;
-  turnId: string;
+  // scopeKey is a turnScopeKey(sessionRef, turnId) - see subagentModuleStore.ts's
+  // own doc comment (kata 8525): a bare turnId is not unique across sessions,
+  // and setWatchedLiveKind below writes into that same page-lifetime store.
+  scopeKey: string;
   rowKey: string;
 }
 
 const EMPTY_FRAME_TIMES: number[] = [];
 
-export function WatchedChildIndicator({ ref: childRef, turnId, rowKey }: WatchedChildIndicatorProps) {
+export function WatchedChildIndicator({ ref: childRef, scopeKey, rowKey }: WatchedChildIndicatorProps) {
   useEffect(() => {
     // Best-effort: a failed watch leaves this indicator rendering nothing
     // rather than crashing the whole subagent module over a live-status
@@ -49,8 +52,8 @@ export function WatchedChildIndicator({ ref: childRef, turnId, rowKey }: Watched
   // every call).
   const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
   useEffect(() => {
-    if (liveKind) setWatchedLiveKind(turnId, rowKey, liveKind);
-  }, [turnId, rowKey, liveKind]);
+    if (liveKind) setWatchedLiveKind(scopeKey, rowKey, liveKind);
+  }, [scopeKey, rowKey, liveKind]);
 
   if (!model) return null;
   return <Cadence state={cadenceStateForStatus(model.status.type)} frameTimes={frameTimes} now={now} />;
