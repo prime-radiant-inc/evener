@@ -92,9 +92,37 @@ someone else's tab. Worse, `switch_tab` can land on a *backgrounded* tab
 where `requestAnimationFrame` and `ResizeObserver` never fire — which
 yields a confident wrong answer rather than an error. Assert
 `location.port` inside **every** eval. That converts corruption into
-failure, which is the right trade and is not a fix; call `set_profile`
-with the worktree name as the first browser action, since it refuses once
-Chrome is running.
+failure, which is the right trade and is not a fix.
+
+**`set_profile` does NOT give you a private browser — do not call it.**
+It was previously documented here as the fix ("call `set_profile` with
+your worktree name as the first browser action"). That guidance was
+wrong and is actively harmful: `set_profile` is a single sticky value on
+the shared MCP *server process*, not per-agent. Measured live (kata
+8ecz): a controller that never called `set_profile` at all read back
+profile `k7-turnvoice-verify` — one agent's worktree name, set hours
+earlier — while 38 tabs from unrelated agents piled up inside that one
+"isolated" profile and the true default profile held 2. Every agent that
+follows the old advice silently redirects every *other* agent onto its
+own profile in turn. It is worse than no isolation, because it looks like
+isolation: each agent believes it is alone in a private browser while
+sharing one with a dozen others. Real per-agent isolation needs a
+per-call profile argument or one MCP server per agent — neither exists
+today.
+
+Until it does, the honest options are: serialise browser verification to
+one agent at a time, or skip the browser and build a static-file harness
+for the specific thing you need to check (one agent did this
+successfully after losing four measurements to tab theft). The
+`location.port` assertion above remains correct and is the only thing
+that has been catching wrong-hub measurements.
+
+**State whether you actually verified in a browser.** An agent that
+cannot reliably hold a tab still reports its change as done, and
+browser-verified work looks identical to unverified work in the ledger
+unless the agent says so. End every completion report that touches a
+user-facing surface with an explicit `Browser-verified: yes` or
+`Browser-verified: no (reason)` line.
 
 **Ports and scratch paths must derive from something unique.** Handing
 out ports in prose put two agents on the same one, and a hub answering on
