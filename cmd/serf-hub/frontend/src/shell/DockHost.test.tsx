@@ -8,7 +8,7 @@ import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
-import { type PaneProps, registerPane } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -194,6 +194,38 @@ test("renders the content of a pane opened via workspace.openPane", async () => 
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
+});
+
+// kata fmtz: a pane's own component is React.lazy() (paneRegistry.ts's
+// PaneDescriptor.component), and PaneHost wraps it in a Suspense boundary -
+// live-verified (real browser, real click, first open of a not-yet-loaded
+// pane type in the page's lifetime) to sometimes paint the pane's content
+// area completely blank for a beat, even though the surrounding dockview
+// chrome (tab/group) is already in the DOM: the boundary's fallback was
+// `null`, so there was nothing FOR it to show while the dynamic import was
+// still pending. This fixture pane holds its own dynamic import open on a
+// manually-resolved promise to make that window deterministic instead of a
+// timing race, and swaps the real "doc" fixture back in when it's done so
+// later tests are unaffected.
+test("shows a loading placeholder instead of a blank pane while a newly-opened pane's own content chunk is still loading", async () => {
+  const originalDoc = paneFor("doc") as PaneDescriptor<{ ref: string }>;
+  let resolveChunk!: () => void;
+  const pendingChunk = new Promise<{ default: typeof DocFixture }>((resolve) => {
+    resolveChunk = () => resolve({ default: DocFixture });
+  });
+  registerPane({ ...originalDoc, component: lazy(() => pendingChunk) });
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_slow" });
+  render(<DockHost />);
+
+  // Before the chunk resolves: a loading placeholder, not silence.
+  expect(await screen.findByTestId("empty-state")).toBeTruthy();
+  expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
+
+  resolveChunk();
+  expect(await screen.findByText(/doc pane: ref_slow \(focused=true\)/)).toBeTruthy();
+
+  registerPane(originalDoc); // restore the fast fixture for every later test
 });
 
 // --- the two-slot layout: one main pane, everything else to its right ----

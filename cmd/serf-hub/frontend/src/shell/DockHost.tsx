@@ -12,6 +12,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import "dockview-react/dist/styles/dockview.css";
 import "./dockview-theme.css";
 import { threadsStore, useThreadsStore } from "../stores/threads";
+import { EmptyState } from "../widgets/emptystate";
 import styles from "./DockHost.module.css";
 import { PopoutHeaderAction } from "./PopoutHeaderAction";
 import { type PaneTitleCtx, paneFor } from "./paneRegistry";
@@ -64,9 +65,19 @@ function PaneHost({ api, params }: IDockviewPanelProps<PanePanelParams>) {
     return () => disposable.dispose();
   }, [api]);
 
+  // kata fmtz: fallback={null} used to mean a newly-opened pane's content
+  // area painted completely blank - not just briefly, but for however long
+  // its component's dynamic import took to resolve - while the surrounding
+  // dockview chrome (tab, group) was already live, since THAT is drawn by
+  // dockview itself, outside this Suspense boundary. Live-verified (real
+  // browser, a genuine click, first open of a pane type not yet loaded this
+  // page load) on both the spawn form and Settings. A loading placeholder
+  // costs nothing on the already-fast path (every pane this app ships is
+  // resolved well within a render most users never perceive as two steps),
+  // and replaces a silent gap with visible progress on the slow one.
   const Component = paneFor(params.paneType).component;
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<EmptyState title="Loading…" />}>
       <Component params={params.paneParams} paneId={api.id} focused={focused} />
     </Suspense>
   );
