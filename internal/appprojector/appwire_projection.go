@@ -131,10 +131,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			status = appwire.ThreadStatusIdle
 		}
 		return []AppNotification{
-			p.notification(appwire.NotifyThreadStarted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"thread": appwire.Thread{
+			p.notification(appwire.NotifyThreadStarted, appwire.ThreadStartedParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				Thread: appwire.Thread{
 					ID:            p.threadID,
 					SessionID:     p.threadID,
 					Source:        "local",
@@ -163,6 +163,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
 			p.stampTurnUsage(&turn)
+			// Deliberately still map[string]any, not appwire.TurnCompletedParams
+			// (kcb5): the declared type is {turnId,turn} but every producer here
+			// sends {threadId,ref,turn} with no turnId at all - the type doesn't
+			// describe what's actually on the wire. Converting to the CURRENT
+			// declaration would silently drop threadId/ref from every
+			// turn/completed frame (a real, if likely-harmless, wire change - no
+			// consumer reads them, per reducer.test.ts/hub_notifications.go);
+			// fixing the declaration to match reality is a coupled Go+TS+test
+			// change of its own, left to a separate decision.
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -181,16 +190,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status:               "completed",
 		}
 		out = append(out,
-			p.notification(appwire.NotifyTurnStarted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     startedTurn(turnID, event.Timestamp),
+			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				Turn:     startedTurn(turnID, event.Timestamp),
 			}),
-			p.notification(appwire.NotifyItemCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turnId":   turnID,
-				"item":     item,
+			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   turnID,
+				Item:     item,
 			}),
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
@@ -215,6 +224,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
 			p.applyPendingTiming(turnID, &turn)
 			p.stampTurnUsage(&turn)
+			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -232,16 +242,16 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status:      appwire.TurnStatusCompleted,
 		}
 		out = append(out,
-			p.notification(appwire.NotifyTurnStarted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn":     startedTurn(turnID, event.Timestamp),
+			p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				Turn:     startedTurn(turnID, event.Timestamp),
 			}),
-			p.notification(appwire.NotifyItemCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turnId":   turnID,
-				"item":     item,
+			p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   turnID,
+				Item:     item,
 			}),
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
@@ -252,11 +262,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.assistantItem = p.nextItemID("assistant")
 		p.assistantText = ""
 		p.reasoningItem = ""
-		return []AppNotification{p.notification(appwire.NotifyItemStarted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   p.activeTurnID,
-			"item": appwire.ThreadItem{
+		return []AppNotification{p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   p.activeTurnID,
+			Item: appwire.ThreadItem{
 				Type:   "agentMessage",
 				ID:     p.assistantItem,
 				TurnID: p.activeTurnID,
@@ -279,11 +289,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		created := p.ensureReasoningItem()
 		var out []AppNotification
 		if created {
-			out = append(out, p.notification(appwire.NotifyItemStarted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turnId":   p.activeTurnID,
-				"item": appwire.ThreadItem{
+			out = append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   p.activeTurnID,
+				Item: appwire.ThreadItem{
 					Type:   "reasoning",
 					ID:     p.reasoningItem,
 					TurnID: p.activeTurnID,
@@ -323,11 +333,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.recordAssistantMessage(turnID, text)
 		p.assistantItem = ""
 		p.assistantText = ""
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   turnID,
-			"item":     item,
+		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   turnID,
+			Item:     item,
 		})}
 	case events.EventAssistantTextReset:
 		// A retry after partial output: discard the in-progress assistant item
@@ -365,11 +375,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Status: appwire.TurnStatusCompleted,
 		}
 		p.recordAssistantMessage(p.activeTurnID, text)
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   p.activeTurnID,
-			"item":     item,
+		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   p.activeTurnID,
+			Item:     item,
 		})}
 	case events.EventToolCallStart:
 		p.ensureTurn()
@@ -412,24 +422,24 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				valid:  skill != "",
 			}
 		}
-		return []AppNotification{p.notification(appwire.NotifyItemStarted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   p.activeTurnID,
-			"item":     startedItem,
+		return []AppNotification{p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   p.activeTurnID,
+			Item:     startedItem,
 		})}
 	case events.EventToolCallOutputDelta:
 		data := eventData[events.ToolCallOutputDeltaData](event.Data)
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			return nil
 		}
-		return []AppNotification{p.notification(appwire.NotifyToolOutputDelta, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   p.activeTurnID,
-			"itemId":   p.toolItemID(data.CallID),
-			"callId":   data.CallID,
-			"delta":    data.Delta,
+		return []AppNotification{p.notification(appwire.NotifyToolOutputDelta, appwire.ToolOutputDeltaParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   p.activeTurnID,
+			ItemID:   p.toolItemID(data.CallID),
+			CallID:   data.CallID,
+			Delta:    data.Delta,
 		})}
 	case events.EventToolCallEnd:
 		data := eventData[events.ToolCallEndData](event.Data)
@@ -503,11 +513,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		delete(p.toolItemsByKey, data.CallID)
 		delete(p.toolArgsByKey, data.CallID)
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   p.activeTurnID,
-			"item":     item,
+		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			TurnID:   p.activeTurnID,
+			Item:     item,
 		})}
 	case events.EventToolCallRepaired:
 		// This fires before EventToolCallStart creates the CallID-keyed tool
@@ -522,6 +532,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.clearSkillCandidate()
 		data := eventData[events.WarningData](event.Data)
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
+		// Still map[string]any, not appwire.WarningParams (kcb5): info.Title/
+		// info.Hint/info.Source are frequently "" for a diagnostic.Classify fallback
+		// that recognized no known source or keyword - this map always emits those
+		// keys regardless, but WarningParams tags them all `omitempty`, so a typed
+		// literal would silently drop title/hint/source whenever they're blank. Not
+		// provably byte-identical; left as a map.
 		return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -545,6 +561,8 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// let the interrupted SessionEnd own the turn's terminal state (do NOT
 		// complete the turn as failed here).
 		if isContextCanceledError(message) {
+			// Still map[string]any, not WarningParams - same omitempty-vs-blank-
+			// field risk as EventWarning's own comment above (kcb5).
 			return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -591,6 +609,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		p.applyPendingTiming(turnID, &turn)
 		p.stampTurnUsage(&turn)
 		return []AppNotification{
+			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -605,6 +624,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if strings.TrimSpace(text) == "" {
 			text = apptranscript.ImagePlaceholder(len(images))
 		}
+		// Still map[string]any, not appwire.SerfSteeringInjectedParams (kcb5):
+		// images is nil whenever a steer carries no images (the common case) -
+		// this map always emits "images" anyway (as null), but Images is tagged
+		// `omitempty` on the struct, so a typed literal would drop the key
+		// entirely instead. Not provably byte-identical; left as a map.
 		params := map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -653,11 +677,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 				Status:   "completed",
 				Raw:      skillActivationRaw(name),
 			}
-			return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turnId":   candidate.turnID,
-				"item":     item,
+			return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID,
+				Ref:      p.ref,
+				TurnID:   candidate.turnID,
+				Item:     item,
 			})}
 		}
 		p.skillCandidate = skillActivationCandidate{}
@@ -786,10 +810,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobStarted:
 		p.clearSkillCandidate()
 		data := eventData[events.JobStartedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"job": appwire.SerfJobInfo{
+		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, appwire.SerfJobParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Job: appwire.SerfJobInfo{
 				JobID:            data.JobID,
 				JobType:          data.JobType,
 				Status:           data.Status,
@@ -807,10 +831,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventJobFinished:
 		p.clearSkillCandidate()
 		data := eventData[events.JobFinishedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"job": appwire.SerfJobInfo{
+		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, appwire.SerfJobParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Job: appwire.SerfJobInfo{
 				JobID:            data.JobID,
 				JobType:          data.JobType,
 				Status:           data.Status,
@@ -870,6 +894,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			turn := appwire.Turn{ID: turnID, Status: turnStatus}
 			p.applyPendingTiming(turnID, &turn)
 			p.stampTurnUsage(&turn)
+			// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -878,6 +903,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		out = append(out, p.threadStatus(state))
 		if state == appwire.ThreadStatusClosed {
+			// Still map[string]any, not appwire.ThreadClosedParams (kcb5):
+			// data.Reason is empty whenever the source reported none (the type's
+			// own doc comment), but this map always emits "reason" anyway;
+			// Reason is tagged `omitempty` on the struct, so a typed literal
+			// would drop the key when blank. Not provably byte-identical; left
+			// as a map.
 			out = append(out, p.notification(appwire.NotifyThreadClosed, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -1018,6 +1049,7 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text 
 		ExitCode:    exitCode,
 	}
 	if p.activeTurnID == "" {
+		// Still map[string]any, not TurnCompletedParams - see EventUserInput's own comment above (kcb5).
 		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
@@ -1029,11 +1061,11 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text 
 			},
 		})}
 	}
-	return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-		"threadId": p.threadID,
-		"ref":      p.ref,
-		"turnId":   turnID,
-		"item":     item,
+	return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: p.threadID,
+		Ref:      p.ref,
+		TurnID:   turnID,
+		Item:     item,
 	})}
 }
 

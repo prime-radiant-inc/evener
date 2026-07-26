@@ -42,7 +42,9 @@ import { registerToolRenderer } from "../toolRenderers";
 import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./helpers";
 import {
   claimLeader,
+  classifyJobStatus,
   releaseLeader,
+  resolveRowKey,
   type SubagentRow,
   type SubagentRowKind,
   upsertSubagentRow,
@@ -73,19 +75,15 @@ const CLASS = {
   summaryText: requireClass(styles.summaryText, "subagentmodule.module.css", "summaryText"),
 };
 
-// classifyJobStatus mirrors renderer.js's classifyJobStatus (parity §12):
-// note cancelled/stopped land in "done", not "failed". Any status this
-// codebase hasn't seen yet (including an absent one, e.g. the delegate
-// call settled but the child hasn't reported a status field at all)
-// degrades to "running" rather than a confusing/alarming "unknown" - an
-// honest "still don't know anything bad happened" default.
-export function classifyJobStatus(status: string | undefined): SubagentRowKind {
-  if (status === undefined) return "running";
-  if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
-  if (["completed", "done", "cancelled", "stopped", "succeeded"].includes(status)) return "done";
-  if (status === "unknown") return "unknown";
-  return "running";
-}
+// classifyJobStatus and resolveRowKey now live in subagentModuleStore.ts (dr7e):
+// applySerfJobStarted/applySerfJobFinished there need the exact same
+// classification/keying a delegate item's own frozen tool output uses, and
+// subagentModuleStore.ts is the layer stores/threads.ts is allowed to import
+// (a plain data store, no React/UI deps) - subagentModule.tsx itself pulls in
+// Button/Chip/Disclosure/CSS modules a core store must never transitively
+// bundle. Re-exported here unchanged so every existing import site (this
+// file's own uses below, subagentModule.test.tsx) keeps working.
+export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
 
 // rowKindFromChildStatus maps the child's LIVE thread status onto a row kind
 // for the status pill (yd16). model.status.type is the WIRE thread-status
@@ -127,19 +125,6 @@ export function statusWordFromText(text: string): string | undefined {
   return undefined;
 }
 
-// resolveRowKey prefers delegateId (stable across a delegate's whole
-// lifetime, including across several jobs it may run in sequence), then
-// jobId (a shell job has no delegateId at all), then a fallback (the
-// originating call's own id) so every call still gets SOME row even
-// before any id is known. Prefixed per kind so a delegate id can never
-// collide with an unrelated job id that happens to share the same raw
-// string.
-export function resolveRowKey(delegateId: string | undefined, jobId: string | undefined, fallback: string): string {
-  if (delegateId) return `dlg:${delegateId}`;
-  if (jobId) return `job:${jobId}`;
-  return `call:${fallback}`;
-}
-
 const KIND_TONE: Record<SubagentRowKind, ChipTone> = {
   running: "alive",
   done: "neutral",
@@ -179,6 +164,30 @@ function openTranscript(ref: string): void {
 // has the child's turn history, and reads that turn content back out of
 // watchedThreads. Mounted only while the card is expanded, so the row-dot's
 // lean watch stays lean for the common never-expanded case (§4.2).
+// JobDetailSection surfaces the exhaustion/resumable detail a
+// serf/job/finished notification carries that no other UI shows (dr7e) -
+// reason is already visible in the collapsed one-liner via row.resultPreview/
+// liveReason, so it isn't repeated here. Renders nothing once neither field
+// is present (most rows: shell jobs and any delegate that finished cleanly).
+function JobDetailSection({ row }: { row: SubagentRow }) {
+  if (row.resumable === undefined && row.exhaustionBudget === undefined && row.exhaustionLimit === undefined) {
+    return null;
+  }
+  const exhaustion =
+    row.exhaustionBudget !== undefined || row.exhaustionLimit !== undefined
+      ? `${row.exhaustionBudget ?? "?"} of ${row.exhaustionLimit ?? "?"}`
+      : undefined;
+  return (
+    <section className={CLASS.section} data-testid="subagent-job-detail">
+      <div className={CLASS.sectionLabel}>Job</div>
+      <div className={CLASS.mandate}>
+        {exhaustion && <div>Exhaustion budget: {exhaustion}</div>}
+        {row.resumable !== undefined && <div>{row.resumable ? "Resumable" : "Not resumable"}</div>}
+      </div>
+    </section>
+  );
+}
+
 function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcriptRef: string }) {
   useEffect(() => {
     threadsStore
@@ -208,6 +217,7 @@ function ChildActivityBody({ row, transcriptRef }: { row: SubagentRow; transcrip
         <div className={CLASS.sectionLabel}>Mandate</div>
         <div className={CLASS.mandate}>{row.task}</div>
       </section>
+      <JobDetailSection row={row} />
       {activity.length > 0 && (
         <section className={CLASS.section} data-testid="subagent-activity">
           <div className={CLASS.sectionLabel}>Activity</div>
@@ -245,6 +255,10 @@ function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) 
   // (yd16) over the frozen tool-output kind; falls back to the frozen kind
   // before any live status has arrived.
   const displayKind = row.liveKind ?? row.kind;
+  // Prefers the serf/job/finished notification's own reason (dr7e) - richer
+  // and arrives independent of the delegate item's frozen tool output - over
+  // the frozen output's own reason.
+  const preview = row.liveReason ?? row.resultPreview;
 
   // Collapsed one-liner: status pill + (live cadence while running) + task +
   // duration/preview + the always-available "Open transcript" link. Clicking
@@ -261,11 +275,11 @@ function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) 
         <WatchedChildIndicator ref={transcriptRef} turnId={turnId} rowKey={row.rowKey} />
       )}
       <span className={CLASS.task}>{clip(row.task, TASK_CLIP)}</span>
-      {(duration ?? row.resultPreview) && (
+      {(duration ?? preview) && (
         <span className={CLASS.meta}>
           {duration}
-          {duration && row.resultPreview ? " · " : ""}
-          {row.resultPreview && <span className={CLASS.preview}>{row.resultPreview}</span>}
+          {duration && preview ? " · " : ""}
+          {preview && <span className={CLASS.preview}>{preview}</span>}
         </span>
       )}
       {transcriptRef && (
@@ -296,6 +310,7 @@ function SubagentRowView({ row, turnId }: { row: SubagentRow; turnId: string }) 
               <div className={CLASS.sectionLabel}>Mandate</div>
               <div className={CLASS.mandate}>{row.task}</div>
             </section>
+            <JobDetailSection row={row} />
           </div>
         )}
       </Disclosure>

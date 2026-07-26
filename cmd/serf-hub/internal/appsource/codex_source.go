@@ -772,6 +772,13 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
 			params.ThreadID = firstNonEmpty(params.ThreadID, threadID)
+			// Still map[string]any, not appwire.ToolOutputDeltaParams (kcb5):
+			// params.TurnID comes straight off this relayed Codex app-server
+			// notification, not this codebase's own turn tracking, so unlike
+			// appwire_projection.go's own outputDelta site it can't be proven
+			// non-empty; ToolOutputDeltaParams.TurnID is tagged `omitempty`, so a
+			// typed literal would drop the key whenever the upstream left it
+			// blank. Not provably byte-identical; left as a map.
 			return notificationMessage(appwire.NotifyToolOutputDelta, map[string]any{
 				"threadId": params.ThreadID,
 				"ref":      appwire.Ref{SourceID: s.sourceID, ThreadID: params.ThreadID}.String(),
@@ -815,11 +822,11 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
 			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
-			return notificationMessage(notification.Method, map[string]any{
-				"threadId": mappedThreadID,
-				"ref":      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
-				"turnId":   params.TurnID,
-				"item":     mapCodexItem(params.TurnID, params.Item),
+			return notificationMessage(notification.Method, appwire.ItemLifecycleParams{
+				ThreadID: mappedThreadID,
+				Ref:      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),
+				TurnID:   params.TurnID,
+				Item:     mapCodexItem(params.TurnID, params.Item),
 			})
 		}
 	case appwire.NotifyTurnCompleted:
@@ -829,6 +836,9 @@ func (s *CodexSource) mapNotification(threadID string, notification appwire.Noti
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
 			mappedThreadID := firstNonEmpty(params.ThreadID, threadID)
+			// Still map[string]any, not TurnCompletedParams - same declared-type-
+			// doesn't-match-the-wire reason as appwire_projection.go's own
+			// turn/completed sites (kcb5).
 			return notificationMessage(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": mappedThreadID,
 				"ref":      appwire.Ref{SourceID: s.sourceID, ThreadID: mappedThreadID}.String(),

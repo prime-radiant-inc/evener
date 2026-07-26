@@ -951,14 +951,14 @@ func TestAppEventProjectorIncludesCallIDOnToolOutputDelta(t *testing.T) {
 	if len(out) != 1 || out[0].Method != appwire.NotifyToolOutputDelta {
 		t.Fatalf("notifications=%+v", out)
 	}
-	params, ok := out[0].Params.(map[string]any)
+	params, ok := out[0].Params.(appwire.ToolOutputDeltaParams)
 	if !ok {
 		t.Fatalf("params=%T", out[0].Params)
 	}
-	if params["callId"] != "call_1" {
-		t.Fatalf("callId=%q, want call_1 (params=%+v)", params["callId"], params)
+	if params.CallID != "call_1" {
+		t.Fatalf("callId=%q, want call_1 (params=%+v)", params.CallID, params)
 	}
-	if params["itemId"] == "" || params["itemId"] == params["callId"] {
+	if params.ItemID == "" || params.ItemID == params.CallID {
 		t.Fatalf("itemId should preserve projected item identity separately from callId: %+v", params)
 	}
 }
@@ -984,21 +984,15 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
 		t.Fatalf("started=%+v", started)
 	}
-	startedParams, ok := started[0].Params.(map[string]any)
+	startedParams, ok := started[0].Params.(appwire.SerfJobParams)
 	if !ok {
 		t.Fatalf("started params=%T", started[0].Params)
 	}
-	startedJob, ok := startedParams["job"].(appwire.SerfJobInfo)
-	if !ok {
-		t.Fatalf("started job=%T in %+v", startedParams["job"], startedParams)
-	}
+	startedJob := startedParams.Job
 	if startedJob.JobID != "job_1" || startedJob.JobType != "delegate" || startedJob.Status != "running" || !startedJob.FromWatch ||
 		startedJob.DelegateID != "dlg_1" || startedJob.Task != "inspect invoices" || startedJob.TranscriptRef != "local:child-start" ||
 		startedJob.OriginTurnID != "turn_parent" || startedJob.OriginToolCallID != "call_delegate" || startedJob.OriginItemID != "item_delegate" {
 		t.Fatalf("started job=%+v", startedJob)
-	}
-	if _, ok := startedParams["subagent"]; ok {
-		t.Fatalf("started params should not carry legacy subagent key: %+v", startedParams)
 	}
 
 	exitCode := 137
@@ -1023,14 +1017,11 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished=%+v", finished)
 	}
-	finishedParams, ok := finished[0].Params.(map[string]any)
+	finishedParams, ok := finished[0].Params.(appwire.SerfJobParams)
 	if !ok {
 		t.Fatalf("finished params=%T", finished[0].Params)
 	}
-	finishedJob, ok := finishedParams["job"].(appwire.SerfJobInfo)
-	if !ok {
-		t.Fatalf("finished job=%T in %+v", finishedParams["job"], finishedParams)
-	}
+	finishedJob := finishedParams.Job
 	if finishedJob.JobID != "job_1" || finishedJob.JobType != "delegate" || finishedJob.Status != "failed" ||
 		finishedJob.Reason != "signal" || finishedJob.ExitCode == nil || *finishedJob.ExitCode != exitCode ||
 		finishedJob.OutputBytes != 0 || finishedJob.TranscriptRef != "local:child" ||
@@ -1063,14 +1054,11 @@ func TestProjectJobFinished_ExhaustionMetadata(t *testing.T) {
 	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
 		t.Fatalf("finished = %+v", finished)
 	}
-	params, ok := finished[0].Params.(map[string]any)
+	params, ok := finished[0].Params.(appwire.SerfJobParams)
 	if !ok {
 		t.Fatalf("finished params = %T", finished[0].Params)
 	}
-	job, ok := params["job"].(appwire.SerfJobInfo)
-	if !ok {
-		t.Fatalf("finished job = %T in %+v", params["job"], params)
-	}
+	job := params.Job
 	if job.Status != "exhausted" || job.Reason != "tool_round_budget_exhausted" ||
 		job.ExhaustionBudget != "max_tool_rounds_per_input" || job.ExhaustionLimit != 1 ||
 		job.Resumable == nil || !*job.Resumable {
@@ -2093,10 +2081,8 @@ func TestProjector_AssistantTextResetDiscardsInProgressItem(t *testing.T) {
 	startedItem := ""
 	for _, n := range startOut {
 		if n.Method == appwire.NotifyItemStarted {
-			if params, ok := n.Params.(map[string]any); ok {
-				if item, ok := params["item"].(appwire.ThreadItem); ok {
-					startedItem = item.ID
-				}
+			if params, ok := n.Params.(appwire.ItemLifecycleParams); ok {
+				startedItem = params.Item.ID
 			}
 		}
 	}
@@ -2235,11 +2221,19 @@ func TestAppEventProjectorToolCallEndCarriesPurposeDescription(t *testing.T) {
 	}
 }
 
+// notificationTurn reads the "turn" payload off either shape a producer might
+// use: appwire.TurnStartedParams (turn/started, converted - kcb5) or a bare
+// map[string]any (turn/completed, deliberately left unconverted - kcb5's own
+// TurnCompletedParams declaration doesn't match what producers send, see
+// appwire_projection.go's own comment on its turn/completed sites).
 func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
 	t.Helper()
 	for _, item := range items {
 		if item.Method != method {
 			continue
+		}
+		if p, ok := item.Params.(appwire.TurnStartedParams); ok {
+			return p.Turn
 		}
 		params, ok := item.Params.(map[string]any)
 		if !ok {
@@ -2260,41 +2254,38 @@ func notificationItemTurnID(t *testing.T, items []AppNotification, method string
 	return notificationThreadItem(t, items, method).TurnID
 }
 
+// notificationThreadItem reads the "item" payload off an item/started or
+// item/completed notification, both of which now send appwire.ItemLifecycleParams
+// (kcb5).
 func notificationThreadItem(t *testing.T, items []AppNotification, method string) appwire.ThreadItem {
 	t.Helper()
 	for _, item := range items {
 		if item.Method != method {
 			continue
 		}
-		params, ok := item.Params.(map[string]any)
+		p, ok := item.Params.(appwire.ItemLifecycleParams)
 		if !ok {
 			t.Fatalf("params=%T", item.Params)
 		}
-		threadItem, ok := params["item"].(appwire.ThreadItem)
-		if !ok {
-			t.Fatalf("item param=%T in %+v", params["item"], params)
-		}
-		return threadItem
+		return p.Item
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
 	return appwire.ThreadItem{}
 }
 
+// notificationThread reads the "thread" payload off a thread/started
+// notification, which now sends appwire.ThreadStartedParams (kcb5).
 func notificationThread(t *testing.T, items []AppNotification, method string) appwire.Thread {
 	t.Helper()
 	for _, item := range items {
 		if item.Method != method {
 			continue
 		}
-		params, ok := item.Params.(map[string]any)
+		p, ok := item.Params.(appwire.ThreadStartedParams)
 		if !ok {
 			t.Fatalf("params=%T", item.Params)
 		}
-		thread, ok := params["thread"].(appwire.Thread)
-		if !ok {
-			t.Fatalf("thread param=%T in %+v", params["thread"], params)
-		}
-		return thread
+		return p.Thread
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
 	return appwire.Thread{}

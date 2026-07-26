@@ -250,10 +250,10 @@ func foldLiveItems(notes []appprojector.AppNotification) []appwire.ThreadItem {
 	for _, n := range notes {
 		switch n.Method {
 		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-			if m, ok := n.Params.(map[string]any); ok {
-				if it, ok := m["item"].(appwire.ThreadItem); ok {
-					put(it)
-				}
+			// appwire_projection.go's own item/started|completed sites now send
+			// appwire.ItemLifecycleParams (kcb5), not map[string]any.
+			if p, ok := n.Params.(appwire.ItemLifecycleParams); ok {
+				put(p.Item)
 			}
 		case appwire.NotifyReasoningSummaryDelta:
 			if p, ok := n.Params.(appwire.ReasoningSummaryDeltaParams); ok {
