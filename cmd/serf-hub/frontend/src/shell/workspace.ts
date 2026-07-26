@@ -55,7 +55,12 @@ export interface WorkspaceStoreState {
   // takes the main slot, every later one goes secondary. Putting the policy
   // here rather than at the ~21 call sites is what makes it one rule instead
   // of twenty-one (see PaneSlot above for the rule itself).
-  openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean }): string;
+  // slot: "secondary" means "place this beside the main pane, never as it" -
+  // for a caller that knows its pane is not a primary one (the rail, opening
+  // a subagent). Omitted, placement follows the default rule above. It only
+  // affects a pane being CREATED: slot is assign-once, so reopening an
+  // already-open pane resolves to that pane wherever it already sits.
+  openPane(type: PaneTypeId, params?: unknown, opts?: { keepExistingFocus?: boolean; slot?: PaneSlot }): string;
   closePane(paneId: string): void;
   // The pane occupying the main slot, or null when it is empty (the state
   // DockHost relaunches welcome into). Exposed because "is the main slot
@@ -223,10 +228,19 @@ export const workspaceStore = createStore<WorkspaceStoreState>((set, get) => ({
     // telling the user nothing was open (seen in a real browser, not a
     // fixture). Only the main slot's welcome is displaced, and only by a pane
     // that is not itself welcome.
+    //
+    // opts.slot === "secondary" is the single exception, for a caller that
+    // knows its pane must never be the primary one: a subagent opens BESIDE
+    // the session that spawned it, never as it. This store sees only a type
+    // and a {ref} and so cannot tell those apart itself - the rail can, and
+    // says so (see this file's PaneSlot comment and docs/web-ui/specs/
+    // 2026-07-26-subagent-opens-beside-main.md §A). Such a pane displaces
+    // nothing: it never wanted the slot welcome is holding.
     const id = nextPaneId(type);
     const main = state.panes.find((p) => p.slot === "main");
-    const displaced = type !== "welcome" && main?.type === "welcome" ? main : undefined;
-    const slot: PaneSlot = main === undefined || displaced !== undefined ? "main" : "secondary";
+    const refusesMain = opts?.slot === "secondary";
+    const displaced = !refusesMain && type !== "welcome" && main?.type === "welcome" ? main : undefined;
+    const slot: PaneSlot = !refusesMain && (main === undefined || displaced !== undefined) ? "main" : "secondary";
     const kept = displaced ? state.panes.filter((p) => p.id !== displaced.id) : state.panes;
     set({ panes: [...kept, { id, type, params, slot }], focusedPaneId: id });
     return id;

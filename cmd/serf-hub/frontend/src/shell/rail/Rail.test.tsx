@@ -527,6 +527,155 @@ describe("row activation", () => {
   });
 });
 
+// A subagent opens BESIDE the session that spawned it, never as the main pane.
+// See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md - placement
+// used to be decided purely by "is main free?", so a subagent took main
+// whenever it happened to be, and (slot being assign-once and persisted) then
+// stayed there forever with its own parent opening to its right.
+describe("opening a nested session", () => {
+  async function openSubagent() {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
+    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
+    await user.click(screen.getByText("Finished helper"));
+    return user;
+  }
+
+  const paneFor = (ref: string) =>
+    workspaceStore.getState().panes.find((p) => (p.params as { ref: string }).ref === ref);
+
+  test("the subagent lands in the secondary slot, not main", async () => {
+    await openSubagent();
+    expect(paneFor("local:sub1")?.slot).toBe("secondary");
+  });
+
+  test("its top-level parent is opened into the empty main slot", async () => {
+    await openSubagent();
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
+  });
+
+  test("the subagent takes focus - it is what you clicked", async () => {
+    await openSubagent();
+    expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:sub1")?.id);
+  });
+
+  test("a parent already in main is reused, not opened twice", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(screen.getByText("Session one")); // parent -> main
+    const mainId = workspaceStore.getState().mainPane()?.id;
+    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
+    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
+    await user.click(screen.getByText("Finished helper"));
+
+    expect(workspaceStore.getState().mainPane()?.id).toBe(mainId);
+    expect(
+      workspaceStore.getState().panes.filter((p) => (p.params as { ref: string }).ref === "local:s1"),
+    ).toHaveLength(1);
+  });
+
+  // Replacing whatever you were reading would be worse than the bug being
+  // fixed: the parent is opened only into an EMPTY main slot.
+  test("an unrelated session already in main is left alone", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    renderRail();
+    await screen.findByText("Live session");
+    const user = userEvent.setup();
+    await user.click(screen.getByText("Live session")); // unrelated -> main
+    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
+    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
+    await user.click(screen.getByText("Finished helper"));
+
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:live1" });
+    expect(paneFor("local:sub1")?.slot).toBe("secondary");
+    expect(paneFor("local:s1")).toBeUndefined(); // parent not force-opened over your work
+  });
+
+  // A layout saved before this fix can have a subagent stamped slot:"main"
+  // permanently - slot is assign-once and persisted. Activating it repairs it
+  // rather than requiring every saved arrangement to be discarded.
+  test("a subagent already stuck in the main slot is moved out of it", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    // Simulate the stale layout: the subagent holds main before the rail mounts.
+    workspaceStore.getState().openPane("session", { ref: "local:sub1" });
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:sub1" });
+
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
+    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
+    await user.click(screen.getByText("Finished helper"));
+
+    expect(paneFor("local:sub1")?.slot).toBe("secondary");
+    expect(workspaceStore.getState().mainPane()?.params).not.toMatchObject({ ref: "local:sub1" });
+  });
+});
+
+// A cluster row is a repeated-title FOLD, not a session: its ref is a
+// synthetic "cluster:<hex>" (a SHA of project + title, hubcore/tree.go) that
+// names no session, so opening a pane for it loads a transcript that never
+// arrives. Confirmed in a real browser before this fix.
+describe("activating a cluster row", () => {
+  const CLUSTER_REF = "cluster:abc12345";
+  const WIRE_TREE_WITH_CLUSTER = {
+    ...SAMPLE_WIRE_TREE,
+    projects: [
+      wireProject({
+        ...PROJECT,
+        sessions: [
+          wireNode({
+            row_id: "project:proj1:cluster:abc12345",
+            ref: CLUSTER_REF,
+            title: "Repeated title",
+            kind: "cluster",
+            cluster_count: 3,
+            state: "ended",
+            children: [
+              wireNode({ row_id: "m1", ref: "local:m1", title: "Member one", state: "ended" }),
+              wireNode({ row_id: "m2", ref: "local:m2", title: "Member two", state: "ended" }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  };
+
+  test("opens no pane at all", async () => {
+    treeResponseBody = WIRE_TREE_WITH_CLUSTER;
+    renderRail();
+    await screen.findByText("Repeated title");
+    await userEvent.setup().click(screen.getByText("Repeated title"));
+    expect(workspaceStore.getState().panes).toHaveLength(0);
+  });
+
+  test("toggles the fold open, the way its own chevron does", async () => {
+    treeResponseBody = WIRE_TREE_WITH_CLUSTER;
+    renderRail();
+    await screen.findByText("Repeated title");
+    expect(screen.queryByText("Member one")).toBeNull();
+    await userEvent.setup().click(screen.getByText("Repeated title"));
+    expect(await screen.findByText("Member one")).toBeTruthy();
+  });
+
+  // Its members are ordinary top-level sessions and still open normally.
+  test("a cluster member still opens its own pane", async () => {
+    treeResponseBody = WIRE_TREE_WITH_CLUSTER;
+    renderRail();
+    await screen.findByText("Repeated title");
+    const user = userEvent.setup();
+    await user.click(screen.getByText("Repeated title"));
+    await user.click(await screen.findByText("Member one"));
+    expect(workspaceStore.getState().panes).toHaveLength(1);
+    expect(workspaceStore.getState().panes[0]).toMatchObject({ params: { ref: "local:m1" } });
+  });
+});
+
 describe("keyboard roving through renderRow", () => {
   // Proves the Tree widget's own roving-tabindex/arrow-key mechanism still
   // works correctly with RailRow's content inside each row - a stray

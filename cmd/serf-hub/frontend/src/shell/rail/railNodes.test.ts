@@ -9,6 +9,7 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   sessionNodes,
+  topLevelAncestorRef,
 } from "./railNodes";
 
 function node(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
@@ -535,5 +536,50 @@ describe("per-tier overflow", () => {
       NEVER_EXPANDED,
     );
     expect(rail?.children.map((c) => c.kind)).toEqual(["loading"]);
+  });
+});
+
+// A nested session opens BESIDE the top-level session that spawned it, so the
+// rail has to answer "which top-level row does this ref belong under?". The
+// wire tree is already nested, so this is a walk rather than a new index.
+describe("topLevelAncestorRef", () => {
+  const tiers = (projects: ApiTreeProject[]) => projects;
+
+  test("a direct child resolves to its parent", () => {
+    const p = project({
+      sessions: [node({ ref: "local:parent", children: [node({ row_id: "c", ref: "local:kid" })] })],
+    });
+    expect(topLevelAncestorRef(tiers([p]), "local:kid")).toBe("local:parent");
+  });
+
+  test("a deeply nested child resolves to the TOP-level row, not its immediate parent", () => {
+    const p = project({
+      sessions: [
+        node({
+          ref: "local:top",
+          children: [node({ row_id: "m", ref: "local:mid", children: [node({ row_id: "l", ref: "local:leaf" })] })],
+        }),
+      ],
+    });
+    expect(topLevelAncestorRef(tiers([p]), "local:leaf")).toBe("local:top");
+  });
+
+  test("a top-level session is its own ancestor", () => {
+    const p = project({ sessions: [node({ ref: "local:solo" })] });
+    expect(topLevelAncestorRef(tiers([p]), "local:solo")).toBe("local:solo");
+  });
+
+  test("a ref that is nowhere in the given projects resolves to null", () => {
+    const p = project({ sessions: [node({ ref: "local:a" })] });
+    expect(topLevelAncestorRef(tiers([p]), "local:missing")).toBeNull();
+  });
+
+  test("searches across every project it is given", () => {
+    const a = project({ key: "p1", sessions: [node({ ref: "local:a" })] });
+    const b = project({
+      key: "p2",
+      sessions: [node({ row_id: "t2", ref: "local:top2", children: [node({ row_id: "k2", ref: "local:kid2" })] })],
+    });
+    expect(topLevelAncestorRef([a, b], "local:kid2")).toBe("local:top2");
   });
 });

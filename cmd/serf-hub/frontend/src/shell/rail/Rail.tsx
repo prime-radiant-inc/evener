@@ -37,7 +37,7 @@ import { workspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
-import { RailRow, type RailRowActions } from "./RailRow";
+import { isTopLevelSession, RailRow, type RailRowActions } from "./RailRow";
 import { loadExpansion, saveExpansion } from "./railExpansion";
 import {
   archivedCount,
@@ -48,6 +48,7 @@ import {
   projectNodes,
   type RailNode,
   sessionNodes,
+  topLevelAncestorRef,
 } from "./railNodes";
 import { applyPending, type PendingOp } from "./railPending";
 
@@ -250,10 +251,59 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     }
   }
 
+  // Opens the session a row stands for. A NESTED session (a subagent, or a
+  // fork's snapshotted original) opens beside the top-level session that owns
+  // its task tree rather than as the main pane - see docs/web-ui/specs/
+  // 2026-07-26-subagent-opens-beside-main.md. A top-level session opens
+  // normally and lands in main when main is free.
+  function openSession(session: ApiTreeNode) {
+    const workspace = workspaceStore.getState();
+    if (isTopLevelSession(session)) {
+      workspace.openPane("session", { ref: session.ref });
+      return;
+    }
+    // A layout saved before this rule existed can have this very pane stamped
+    // slot:"main" permanently (slot is assign-once and persisted). Closing it
+    // first is what lets the reopen below place it correctly, so an existing
+    // workspace repairs itself on use instead of every saved layout being
+    // discarded to fix the few that are wrong.
+    const stuckInMain = workspace.panes.find(
+      (p) => p.slot === "main" && p.type === "session" && (p.params as { ref?: string }).ref === session.ref,
+    );
+    if (stuckInMain) workspace.closePane(stuckInMain.id);
+
+    // Give the subagent something to sit beside, but only when the main slot
+    // is genuinely empty: replacing whatever you were already reading would be
+    // worse than the misplacement this fixes. mainPane() reads live state -
+    // closePane above may just have emptied it.
+    const main = workspaceStore.getState().mainPane();
+    if (main === null || main.type === "welcome") {
+      const ancestor = tree ? topLevelAncestorRef([...tree.projects, ...tree.test_runs], session.ref) : null;
+      // keepExistingFocus: the row you clicked is the subagent, so the pane
+      // opened on your behalf must not steal focus from it.
+      if (ancestor !== null && ancestor !== session.ref) {
+        workspaceStore.getState().openPane("session", { ref: ancestor }, { keepExistingFocus: true });
+      }
+    }
+    workspaceStore.getState().openPane("session", { ref: session.ref }, { slot: "secondary" });
+  }
+
   function handleActivate(node: RailNode) {
-    if (node.kind === "loading") return;
+    if (node.kind === "loading" || node.kind === "overflow") return;
     if (node.kind === "session") {
-      workspaceStore.getState().openPane("session", { ref: node.session.ref });
+      // A cluster row is a repeated-title FOLD, not a session: its ref is a
+      // synthetic "cluster:<hex>" naming no session, so opening a pane for it
+      // loads a transcript that never arrives. It toggles, like every other
+      // disclosure in the rail.
+      if (node.session.kind === "cluster") {
+        handleToggle(node);
+        return;
+      }
+      openSession(node.session);
+      return;
+    }
+    if (node.kind === "inactiveFold") {
+      handleToggle(node);
       return;
     }
     handleToggle(node); // a project row has nowhere to "open" - Enter/click toggles it, same as its chevron

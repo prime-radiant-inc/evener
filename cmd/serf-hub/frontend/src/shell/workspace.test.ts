@@ -122,6 +122,52 @@ describe("openPane", () => {
     expect([second, third]).not.toContain(workspaceStore.getState().mainPane()?.id);
   });
 
+  // The one exception to "main takes whatever comes first": a caller that
+  // knows its pane must never be the primary one. The store sees only a type
+  // and a {ref}, so it cannot tell a subagent from a top-level session - the
+  // rail can, and says so here. See docs/web-ui/specs/
+  // 2026-07-26-subagent-opens-beside-main.md §A.
+  describe("slot: 'secondary' preference", () => {
+    test("keeps a pane out of the main slot even when main is empty", () => {
+      const beside = workspaceStore.getState().openPane("doc", { ref: "a" }, { slot: "secondary" });
+      expect(workspaceStore.getState().mainPane()).toBeNull();
+      expect(workspaceStore.getState().panes.find((p) => p.id === beside)?.slot).toBe("secondary");
+    });
+
+    // Welcome is displaced by a pane that TAKES main. A pane that refuses main
+    // has nothing to displace, so the placeholder must survive - otherwise the
+    // workspace is left with a secondary pane and an empty left half.
+    test("does not displace a welcome placeholder", () => {
+      const welcome = workspaceStore.getState().openPane("welcome");
+      workspaceStore.getState().openPane("doc", { ref: "a" }, { slot: "secondary" });
+      expect(workspaceStore.getState().mainPane()?.id).toBe(welcome);
+    });
+
+    test("still goes secondary when main is already occupied", () => {
+      const main = workspaceStore.getState().openPane("doc", { ref: "a" });
+      const beside = workspaceStore.getState().openPane("doc", { ref: "b" }, { slot: "secondary" });
+      expect(workspaceStore.getState().mainPane()?.id).toBe(main);
+      expect(workspaceStore.getState().panes.find((p) => p.id === beside)?.slot).toBe("secondary");
+    });
+
+    test("omitting it leaves the default placement exactly as it was", () => {
+      const first = workspaceStore.getState().openPane("doc", { ref: "a" });
+      const second = workspaceStore.getState().openPane("doc", { ref: "b" });
+      expect(workspaceStore.getState().panes.map((p) => p.slot)).toEqual(["main", "secondary"]);
+      expect(workspaceStore.getState().mainPane()?.id).toBe(first);
+      expect(second).not.toBe(first);
+    });
+
+    // Reopening an already-open pane resolves to that pane; the preference is
+    // a placement rule for a pane being CREATED, and slot is assign-once.
+    test("does not move a pane that is already open", () => {
+      const main = workspaceStore.getState().openPane("doc", { ref: "a" });
+      const again = workspaceStore.getState().openPane("doc", { ref: "a" }, { slot: "secondary" });
+      expect(again).toBe(main);
+      expect(workspaceStore.getState().mainPane()?.id).toBe(main);
+    });
+  });
+
   test("closing the main pane empties the main slot, and the next open refills it", () => {
     const first = workspaceStore.getState().openPane("doc", { ref: "a" });
     workspaceStore.getState().openPane("doc", { ref: "b" }); // secondary
