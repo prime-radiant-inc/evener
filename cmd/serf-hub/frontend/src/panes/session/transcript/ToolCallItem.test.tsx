@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "./ToolCallItem";
@@ -468,4 +468,35 @@ test("a read_file card on an image file opens beside as an image (DECISION C: ki
     params: { session: "ref_a", path: "assets/logo.png", kind: "image" },
   });
   spy.mockRestore();
+});
+
+// --- summarySuffix (kata h70z): a descriptor may append text to the
+// collapsed row's summary computed from the FULL thread model (ask_user's
+// "— answered: ..." recap is the one real consumer, covered in
+// tools/askUser.test.tsx; these tests exercise the generic plumbing here
+// with a synthetic descriptor so ToolCallItem's own contract is verified
+// independently of ask_user's parsing). ---------------------------------
+
+test("appends descriptor.summarySuffix to the row's summary, reactively, off the live thread model", () => {
+  resetThreadsStoreForTests();
+  registerToolRenderer({
+    match: "tci_suffix",
+    summary: () => "base summary",
+    summarySuffix: (_item, model) => (model?.name === "answered" ? " — answered" : undefined),
+  });
+  threadsStore.setState({ threads: new Map([["ref_a", { name: "" } as unknown as ThreadModel]]) });
+  render(<ToolCallItem item={item({ toolName: "tci_suffix" })} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("base summary");
+
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_a", { name: "answered" } as unknown as ThreadModel]]) });
+  });
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("base summary — answered");
+});
+
+test("summarySuffix is omitted (bare summary) when the descriptor doesn't define one", () => {
+  resetThreadsStoreForTests();
+  registerToolRenderer({ match: "tci_no_suffix", summary: () => "plain summary" });
+  render(<ToolCallItem item={item({ toolName: "tci_no_suffix" })} turn={turn} live={false} sessionRef="ref_a" />);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("plain summary");
 });

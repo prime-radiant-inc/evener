@@ -4,7 +4,7 @@
 // registers the real per-tool descriptors (read/grep/ls/glob/shell/diff/
 // patch/web fetch+search/delegate/job_*/ask_user/sandbox escalation).
 import type { ComponentType } from "react";
-import type { ItemModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { RawToolOutput } from "./RawToolOutput";
 
 export interface ToolRenderProps {
@@ -54,6 +54,15 @@ export interface ToolRendererDescriptor {
   // ToolCallItem turns a non-undefined path into an "open beside" affordance
   // (relativized against the session cwd, out-of-cwd gated - fileOpenBeside.tsx).
   openBesidePath?(item: ItemModel): string | undefined;
+  // summarySuffix appends extra text to the collapsed row's summary, computed
+  // from the FULL thread model rather than just this item - the one case
+  // today is ask_user's "— answered: ..." recap (kata h70z), which lives in
+  // a LATER, separate userMessage item this item alone can't see. Undefined
+  // (every other tool) means no suffix. ToolCallItem re-derives this
+  // reactively off a live model subscription, so a settled row's summary
+  // updates the moment the answer arrives without item itself needing a new
+  // identity.
+  summarySuffix?(item: ItemModel, model: ThreadModel | undefined): string | undefined;
 }
 
 const registry: ToolRendererDescriptor[] = [];

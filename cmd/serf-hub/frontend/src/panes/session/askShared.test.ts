@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import type { ItemModel } from "../../protocol/model";
-import { parseAskUserQuestions } from "./askShared";
+import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
+import { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 
 // Direct unit coverage for the shared ask_user parsing helper (extracted
 // from transcript/tools/askUser.tsx per the wave-5 T4 manifest so the
@@ -93,4 +93,93 @@ test("filters out an individual malformed option but keeps the well-formed ones 
   ];
   const result = parseAskUserQuestions(item({ argumentsJSON: askUserArgs(questions) }));
   expect(result).toEqual([expect.objectContaining({ options: [{ label: "Good", detail: "ok", recommended: false }] })]);
+});
+
+// answeredAskUserSuffix (kata h70z): the collapsed row's "— answered: ..."
+// recap, read back from a LATER [answers] userMessage this item alone
+// can't see.
+
+function userMessage(overrides: Partial<ItemModel> = {}): ItemModel {
+  return { id: "reply_1", turnId: "turn_2", type: "userMessage", text: "", ...overrides };
+}
+
+function threadModel(items: ItemModel[]): ThreadModel {
+  const turns: TurnModel[] = [{ id: "turn_1", status: "completed", items }];
+  return { turns } as unknown as ThreadModel;
+}
+
+test("answeredAskUserSuffix reads the answer back from a later [answers] reply", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) }); // header "Deploy?"
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+});
+
+test("answeredAskUserSuffix strips a trailing note from the recap", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes" — note: "ship it now"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+});
+
+test("answeredAskUserSuffix labels each answer by header when a call carries multiple questions", () => {
+  const deployQuestion = ONE_QUESTION[0];
+  if (deployQuestion === undefined) throw new Error("ONE_QUESTION[0] must exist");
+  const twoQuestions = [
+    deployQuestion,
+    { header: "Rollback?", question: "If it breaks?", options: deployQuestion.options },
+  ];
+  const ask = item({ argumentsJSON: askUserArgs(twoQuestions) });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Rollback?] → "No"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: Deploy?: "Yes", Rollback?: "No"');
+});
+
+test("answeredAskUserSuffix returns undefined when no [answers] reply exists yet (still pending)", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  expect(answeredAskUserSuffix(threadModel([ask]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix returns undefined for an errored call", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), error: "denied" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix returns undefined when the call carries no parseable questions", () => {
+  const ask = item({ argumentsJSON: "{}" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix ignores a same-shaped [answers] line carried by a non-userMessage item (type check, not just prefix)", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const notAReply: ItemModel = {
+    id: "sys_1",
+    turnId: "turn_2",
+    type: "systemMessage",
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+  };
+  expect(answeredAskUserSuffix(threadModel([ask, notAReply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix ignores a plain user message that isn't a composed [answers] reply", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
+  const reply = userMessage({ text: "sure, go with Yes" });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix ignores an unrelated [answers] reply that doesn't mention this call's header", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) }); // header "Deploy?"
+  const reply = userMessage({ text: '[answers]\n1. [Other] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBeUndefined();
+});
+
+test("answeredAskUserSuffix finds the reply across multiple turns", () => {
+  const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION), turnId: "turn_1" });
+  const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes"', turnId: "turn_2" });
+  const model: ThreadModel = {
+    turns: [
+      { id: "turn_1", status: "completed", items: [ask] },
+      { id: "turn_2", status: "completed", items: [reply] },
+    ],
+  } as unknown as ThreadModel;
+  expect(answeredAskUserSuffix(model, ask)).toBe(' — answered: "Yes"');
 });
