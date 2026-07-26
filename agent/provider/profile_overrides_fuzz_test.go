@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"primeradiant.com/serf/fuzz/edgeseeds"
@@ -227,12 +228,7 @@ func splitLines(s string) []string {
 }
 
 func contains(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ss, want)
 }
 
 func mustMarshal(t *testing.T, v any) []byte {

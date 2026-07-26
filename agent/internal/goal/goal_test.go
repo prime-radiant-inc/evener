@@ -31,7 +31,7 @@ func TestStoreSetGetClear(t *testing.T) {
 func TestRecordContinuationNoProgressGrace(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
-	for i := 0; i < NeverProgressedLimit-1; i++ {
+	for i := range NeverProgressedLimit - 1 {
 		s.RecordContinuation(false /*progressed*/, clock())
 		snap, _ := s.Snapshot()
 		if snap.Status != StatusActive {
@@ -57,7 +57,7 @@ func TestRecordContinuationNoProgressGrace(t *testing.T) {
 	}
 	// G4: pin the exact turn at which blocking occurs — must be precisely
 	// NoProgressLimit consecutive no-progress turns after the reset.
-	for i := 0; i < NoProgressLimit; i++ {
+	for i := range NoProgressLimit {
 		snap, active := s.RecordContinuation(false, clock())
 		wantActive := i < NoProgressLimit-1
 		if active != wantActive {
@@ -78,7 +78,7 @@ func TestRecordContinuationNoProgressGrace(t *testing.T) {
 func TestNeverProgressedBlocks(t *testing.T) {
 	s := NewStore()
 	s.Set("summarize the architecture", clock())
-	for i := 0; i < NeverProgressedLimit-1; i++ {
+	for i := range NeverProgressedLimit - 1 {
 		if _, active := s.RecordContinuation(false, clock()); !active {
 			t.Fatalf("turn %d: never-progressed goal blocked too early", i)
 		}
@@ -147,7 +147,7 @@ func TestPersistSnapshotRestoreRoundTrip(t *testing.T) {
 	s2 := NewStore()
 	s2.Restore(obj, status, stopReason, iters, streak, madeProg, created, updated)
 
-	for i := 0; i < NoProgressLimit-1; i++ {
+	for i := range NoProgressLimit - 1 {
 		if _, active := s2.RecordContinuation(false, clock()); !active {
 			t.Fatalf("restored goal: no-progress turn %d blocked too early (want NoProgressLimit=%d)", i, NoProgressLimit)
 		}

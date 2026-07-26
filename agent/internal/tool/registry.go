@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -191,11 +192,11 @@ func ParseImageResult(path, readFileOutput string) *ImageResult {
 	if !strings.HasPrefix(readFileOutput, "[image:") {
 		return nil
 	}
-	idx := strings.Index(readFileOutput, "\n")
-	if idx < 0 {
+	text, rest, found := strings.Cut(readFileOutput, "\n")
+	if !found {
 		return nil
 	}
-	b64 := strings.TrimSpace(readFileOutput[idx+1:])
+	b64 := strings.TrimSpace(rest)
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return nil
@@ -205,7 +206,7 @@ func ParseImageResult(path, readFileOutput string) *ImageResult {
 		mt = "image/png"
 	}
 	return &ImageResult{
-		Text:      readFileOutput[:idx],
+		Text:      text,
 		Data:      data,
 		MediaType: mt,
 	}
@@ -218,11 +219,11 @@ func ParseDocumentResult(path, readFileOutput string) *ImageResult {
 	if !strings.HasPrefix(readFileOutput, "[document:") {
 		return nil
 	}
-	idx := strings.Index(readFileOutput, "\n")
-	if idx < 0 {
+	text, rest, found := strings.Cut(readFileOutput, "\n")
+	if !found {
 		return nil
 	}
-	b64 := strings.TrimSpace(readFileOutput[idx+1:])
+	b64 := strings.TrimSpace(rest)
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		return nil
@@ -232,7 +233,7 @@ func ParseDocumentResult(path, readFileOutput string) *ImageResult {
 		mt = "application/pdf"
 	}
 	return &ImageResult{
-		Text:      readFileOutput[:idx],
+		Text:      text,
 		Data:      data,
 		MediaType: mt,
 	}
@@ -280,9 +281,7 @@ func (r *Registry) Clone() *Registry {
 	defer r.mu.RUnlock()
 	if len(r.tools) > 0 {
 		out.tools = make(map[string]RegisteredTool, len(r.tools))
-		for name, rt := range r.tools {
-			out.tools[name] = rt
-		}
+		maps.Copy(out.tools, r.tools)
 	}
 	out.middleware = append([]toolMiddleware(nil), r.middleware...)
 	return out

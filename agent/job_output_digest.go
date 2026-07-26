@@ -43,10 +43,7 @@ func trimLeadingPartialRune(b []byte) []byte {
 // unreliable (the head/tail sample is biased toward short lines, so a guess can
 // exceed the true total).
 func assembleOutputDigest(head, tail []byte, total, dropped int64) string {
-	elidedBytes := total - int64(len(head)) - int64(len(tail))
-	if elidedBytes < 0 {
-		elidedBytes = 0
-	}
+	elidedBytes := max(total-int64(len(head))-int64(len(tail)), 0)
 	var b strings.Builder
 	b.Write(head)
 	if len(head) > 0 && head[len(head)-1] != '\n' {

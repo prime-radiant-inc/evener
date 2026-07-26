@@ -498,7 +498,7 @@ func assertNoGitCherry(t *testing.T, logPath string) {
 		t.Fatalf("git call log %s missing; the git shim intercepted no calls, so the no-cherry assertion is vacuous: %v", logPath, err)
 	}
 	sawCall := false
-	for _, line := range strings.Split(string(b), "\n") {
+	for line := range strings.SplitSeq(string(b), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}

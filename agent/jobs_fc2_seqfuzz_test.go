@@ -42,7 +42,7 @@ func TestJobsFc2DescendantMergeSeqFuzz(t *testing.T) {
 		jobPool := []string{"job_a", "job_b", "job_c", "job_d"}
 
 		presented := make([]present, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			presented = append(presented, present{
 				jobID:   rapid.SampledFrom(jobPool).Draw(rt, "jobID"),
 				isOwner: rapid.Bool().Draw(rt, "isOwner"),

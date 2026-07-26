@@ -24,7 +24,7 @@ import (
 // It lives here (untagged) so the plain `go test` unit gate keeps compiling
 // after the fuzz harnesses moved behind the serffuzz build tag.
 type schemaValidator interface {
-	Validate(v interface{}) error
+	Validate(v any) error
 }
 
 // TestToolArgsSchemaFuzz is Phase-1 target #5: schema-AWARE tool-argument
@@ -359,8 +359,8 @@ func modeName(m schemagen.Mode) string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if line, _, ok := strings.Cut(s, "\n"); ok {
+		return line
 	}
 	return s
 }

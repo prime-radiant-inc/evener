@@ -59,7 +59,7 @@ func (r *ctxmgr_reader) str(limit int) string {
 		return ""
 	}
 	out := make([]byte, 0, n)
-	for j := 0; j < n; j++ {
+	for range n {
 		out = append(out, r.byte())
 	}
 	return string(out)
@@ -285,7 +285,7 @@ func FuzzCtxmgrCheckpointData(f *testing.F) {
 		}
 
 		var skills []string
-		for _, s := range strings.Split(skillsRaw, "\n") {
+		for s := range strings.SplitSeq(skillsRaw, "\n") {
 			if s = strings.TrimSpace(s); s != "" {
 				skills = append(skills, s)
 			}

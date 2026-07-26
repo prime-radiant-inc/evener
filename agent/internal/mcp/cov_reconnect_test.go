@@ -616,7 +616,7 @@ func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
 	oks := make([]bool, goroutines)
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		go func(i int) {
 			defer wg.Done()
 			<-start
@@ -636,7 +636,7 @@ func TestReconnect_ConcurrentSameConn_NoClobberedSession(t *testing.T) {
 	}()
 
 	successes := 0
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		if !oks[i] {
 			continue
 		}

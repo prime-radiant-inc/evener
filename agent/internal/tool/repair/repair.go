@@ -5,6 +5,7 @@
 package repair
 
 import (
+	"maps"
 	"strconv"
 	"strings"
 )
@@ -45,9 +46,7 @@ var aliasTable = map[string]string{
 // It never mutates its input; it returns a fresh map plus the changes made.
 func RepairArgs(params, args map[string]any) (map[string]any, []Change) {
 	out := make(map[string]any, len(args))
-	for k, v := range args {
-		out[k] = v
-	}
+	maps.Copy(out, args)
 	var changes []Change
 	changes = append(changes, applyAliases(params, out)...)
 	changes = append(changes, applyCoercions(params, out)...)

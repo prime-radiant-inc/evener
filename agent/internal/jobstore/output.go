@@ -708,10 +708,7 @@ func grepReaderLimit(r *bufio.Reader, re *regexp.Regexp, limitBytes int, maxMatc
 	if maxLineBytes <= 0 || maxLineBytes > limitBytes {
 		maxLineBytes = limitBytes
 	}
-	lineCap := maxLineBytes
-	if lineCap > 4096 {
-		lineCap = 4096
-	}
+	lineCap := min(maxLineBytes, 4096)
 	var (
 		matches  []Match
 		offset   int64
