@@ -40,8 +40,7 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	done := make(chan struct {
@@ -107,8 +106,7 @@ func TestClientGoalSetRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	done := make(chan struct {
@@ -163,8 +161,7 @@ func TestClientUpgradeRoundTrip(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	done := make(chan struct {
@@ -233,8 +230,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 	}
 	client := NewClient(transport)
 
-	startCtx, stop := context.WithCancel(context.Background())
-	defer stop()
+	startCtx := t.Context()
 	client.Start(startCtx)
 
 	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 2*time.Second)
@@ -258,7 +254,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 		t.Fatal("request was not written")
 	}
 	// The whole burst arrives before anyone consumes Notifications().
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		transport.reads <- NotificationMessage(NotifyAgentMessageDelta, map[string]int{"seq": i})
 	}
 	transport.reads <- ResponseMessage(written.Request.ID, ThreadListResponse{Data: []Thread{{ID: "th_burst", Source: "serf"}}})
@@ -272,7 +268,7 @@ func TestClientBuffersBurstLargerThanLegacyCapWithoutOverflow(t *testing.T) {
 		t.Fatal("response was not routed during the burst")
 	}
 	// Every burst notification is still deliverable to a late consumer.
-	for i := 0; i < burst; i++ {
+	for i := range burst {
 		select {
 		case <-client.Notifications():
 		case <-time.After(time.Second):
@@ -288,8 +284,7 @@ func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	}
 	client := NewClient(transport)
 
-	startCtx, stop := context.WithCancel(context.Background())
-	defer stop()
+	startCtx := t.Context()
 	client.Start(startCtx)
 
 	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 250*time.Millisecond)

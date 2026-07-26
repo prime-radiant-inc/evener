@@ -330,8 +330,7 @@ func TestClientInitializeCachesFeatures(t *testing.T) {
 	}
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	done := make(chan InitializeResponse, 1)
@@ -397,8 +396,7 @@ func TestClientNotify(t *testing.T) {
 func TestClientRequestSurfacesWireError(t *testing.T) {
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	errCh := make(chan error, 1)
@@ -588,8 +586,7 @@ func TestNewFrameRecorderRejectsBadPath(t *testing.T) {
 func TestClientRequestSendErrorClearsPending(t *testing.T) {
 	transport := &sendErrTransport{memoryTransport: newMemoryTransport(), err: errors.New("send failed")}
 	client := NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	_, err := client.ThreadRead(ctx, ThreadReadParams{Ref: "local:th"})

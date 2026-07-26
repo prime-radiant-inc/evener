@@ -53,8 +53,7 @@ func TestClientKeepaliveTearsDownOnPingFailure(t *testing.T) {
 	transport := newPingingTransport()
 	client := NewClient(transport)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.startWithKeepalive(ctx, time.Millisecond, 50*time.Millisecond)
 
 	transport.pingFails.Store(true)
@@ -89,8 +88,7 @@ func TestClientKeepaliveTearsDownOnPongTimeout(t *testing.T) {
 	transport := &blockingPingerTransport{base}
 	client := NewClient(transport)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	// 1 ms interval, 5 ms pong timeout: the blocking Ping will always exceed the
 	// timeout, so runClientKeepalive must close the transport. The outer 1 s
 	// deadline provides ample headroom under scheduler pressure.
@@ -113,8 +111,7 @@ func TestClientWithoutPingerHasNoKeepalive(t *testing.T) {
 	// memoryTransport is not a Pinger; Start must not spuriously close it.
 	transport := newMemoryTransport()
 	client := NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	select {

@@ -41,10 +41,7 @@ func PageTurns(all []Turn, cursor string, limit int) ThreadTurnsListResponse {
 	if hi < 0 {
 		hi = 0
 	}
-	lo := hi - limit
-	if lo < 0 {
-		lo = 0
-	}
+	lo := max(hi-limit, 0)
 	next := ""
 	if lo > 0 {
 		next = strconv.Itoa(lo)

@@ -1,7 +1,6 @@
 package appwiretest_test
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -16,8 +15,7 @@ func TestScriptedTransport_ResponseAndNotification(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	go func() {
@@ -62,8 +60,7 @@ func TestScriptedTransport_DeliverError(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	go func() {
@@ -95,8 +92,7 @@ func TestScriptedTransport_Close(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	// Double-close must be a no-op (idempotency guard).
