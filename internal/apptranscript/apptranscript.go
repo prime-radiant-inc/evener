@@ -15,15 +15,19 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// EntryProjector converts one transcript entry JSON object into AppWire items.
-type EntryProjector func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem
+// EntryProjector converts one already-decoded transcript turn into AppWire
+// items. The caller (TurnsFromFile, the turn index's scan/range readers) has
+// already decoded the entry's raw JSON once — for its own Usage/Timestamp/
+// failure stamping — so the projector receives that same schema.Turn directly
+// rather than decoding the entry a second time (kata j13r).
+type EntryProjector func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem
 
-// BoundedEntryProjector converts one transcript entry JSON object into AppWire
-// items. The supported bounded-reader contract is a named adapter that decodes
-// the entry and calls ProjectTurn. Its toolNames argument is mutable, ephemeral
-// state for that record only; callers must not inspect unrelated history.
+// BoundedEntryProjector converts one already-decoded transcript turn into
+// AppWire items. The supported bounded-reader contract is a named adapter that
+// calls ProjectTurn. Its toolNames argument is mutable, ephemeral state for
+// that record only; callers must not inspect unrelated history.
 // EntryProjector remains the full-read contract for existing callers.
-type BoundedEntryProjector func(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
+type BoundedEntryProjector func(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem
 
 // ImageProjector converts transcript image content into an AppWire image item.
 type ImageProjector func(image llm.ImageData) appwire.InputItem
@@ -645,18 +649,22 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) ([]app
 		emitPrelude()
 		entryIndex++
 		turnID := fmt.Sprintf("turn_%d", entryIndex)
+		// A malformed entry decodes to neither a projection nor a stamp: skip it
+		// (matching the pre-fix behavior, where a projector's own internal decode
+		// of the same malformed bytes would likewise fail and yield no items)
+		// rather than aborting the whole read over one bad line.
+		entry, decodeErr := transcript.DecodeEntry(raw)
+		if decodeErr != nil {
+			return nil //nolint:nilerr // skip a malformed entry rather than aborting the whole read over one bad line
+		}
 		var items []appwire.ThreadItem
 		if project != nil {
-			items = project(raw, turnID, entryIndex)
+			items = project(entry.Turn, turnID, entryIndex)
 		}
 		if len(items) == 0 {
 			return nil
 		}
 		turn := appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		entry, err := transcript.DecodeEntry(raw)
-		if err != nil {
-			return err
-		}
 		StampTurnFailure(&turn, entry.Turn)
 		if !entry.Turn.Timestamp.IsZero() {
 			startedAt := entry.Turn.Timestamp.UnixMilli()

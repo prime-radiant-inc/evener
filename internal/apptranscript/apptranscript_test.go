@@ -60,12 +60,8 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
-		var entry transcript.Entry
-		if err := json.Unmarshal(raw, &entry); err != nil {
-			return nil
-		}
-		return ProjectTurn(turnID, turnIndex, entry.Turn, map[string]string{}, nil, nil)
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
 	}
 	turns, err := TurnsFromFile(path, 128<<20, project)
 	if err != nil {
@@ -83,6 +79,56 @@ func TestTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 	}
 	if turn.DurationMS != nil {
 		t.Fatalf("turn.DurationMS=%v, want nil (message records cannot span a duration)", *turn.DurationMS)
+	}
+}
+
+// TestTurnsFromFileProjectorReceivesDecodedTurn holds the fix for kata j13r
+// (apptranscript decoded every transcript line twice per read: once for its
+// own Usage/Timestamp/failure stamping, once again inside the caller's
+// EntryProjector, which re-unmarshalled the identical bytes). The projector
+// now receives the already-decoded schema.Turn directly — no json.RawMessage,
+// no decode of its own — so a projector that never imports encoding/json can
+// still read every field TurnsFromFile itself read to stamp Usage/Timestamp.
+func TestTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	ts := time.Unix(1_700_000_000, 0).UTC()
+	if err := w.Append(schema.Turn{
+		Kind:      schema.TurnUserInput,
+		Message:   llm.User("hello decoded once"),
+		Timestamp: ts,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	var gotTurn schema.Turn
+	calls := 0
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		calls++
+		gotTurn = turn
+		return ProjectTurn(turnID, turnIndex, turn, map[string]string{}, nil, nil)
+	}
+	turns, err := TurnsFromFile(path, 128<<20, project)
+	if err != nil {
+		t.Fatalf("TurnsFromFile: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("projector called %d times, want 1", calls)
+	}
+	if gotTurn.Kind != schema.TurnUserInput || !gotTurn.Timestamp.Equal(ts) {
+		t.Fatalf("projector's turn = %+v, want the written entry's own Kind/Timestamp", gotTurn)
+	}
+	if len(gotTurn.Message.Content) == 0 {
+		t.Fatalf("projector's turn carries no message content: %+v", gotTurn)
+	}
+	if len(turns) != 1 || turns[0].StartedAt == nil || *turns[0].StartedAt != ts.UnixMilli() {
+		t.Fatalf("turns=%+v, want 1 turn stamped with the same timestamp the projector saw", turns)
 	}
 }
 
@@ -748,7 +794,7 @@ func TestTurnsFromFile(t *testing.T) {
 	}
 
 	// With a projector that returns items.
-	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "userMessage", Text: "hello"}}
 	}
 	turns, err = TurnsFromFile(path, 1<<20, project)
@@ -785,7 +831,7 @@ func TestTurnsFromFile_StampsUsageFromEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	project := func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", Text: "hi"}}
 	}
 	turns, err := TurnsFromFile(path, 1<<20, project)

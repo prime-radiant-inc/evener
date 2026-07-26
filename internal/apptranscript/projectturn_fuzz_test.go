@@ -72,10 +72,10 @@ func exerciseTranscriptSurface(t testing.TB) {
 		t.Fatal(err)
 	}
 	ScanPrelude(path, 1<<20)
-	TurnsFromFile(path, 1<<20, func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+	TurnsFromFile(path, 1<<20, func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return []appwire.ThreadItem{{Type: "agentMessage", ID: "item", TurnID: turnID}}
 	})
-	TurnsFromFile(path, 1<<20, func(json.RawMessage, string, int) []appwire.ThreadItem { return nil })
+	TurnsFromFile(path, 1<<20, func(schema.Turn, string, int) []appwire.ThreadItem { return nil })
 
 	PreludeTurn(transcript.Header{})
 	_ = CompactionDescription("checkpoint")
