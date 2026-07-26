@@ -244,7 +244,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `state` | `string` |  |  |
-| `status` | `appwire.AuthStatusResponse` | yes |  |
+| `status` | `*appwire.AuthStatusResponse` | yes |  |
 
 
 ### `AuthDeviceStartParams`

@@ -42,7 +42,7 @@ type APIAttemptResponse struct {
 	Body          EncodedBody `json:"body"`
 	Model         string      `json:"model,omitempty"`
 	FinishReason  string      `json:"finish_reason,omitempty"`
-	Usage         Usage       `json:"usage,omitempty"`
+	Usage         Usage       `json:"usage"`
 	TextLength    *int        `json:"text_length,omitempty"`
 	ToolCallCount *int        `json:"tool_call_count,omitempty"`
 }

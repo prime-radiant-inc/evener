@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -172,5 +173,32 @@ func TestCatalogPlugin_ManifestFieldsOmittedWhenAbsent(t *testing.T) {
 	p := cat.Plugins[0]
 	if p.Strict != nil || p.Commands != nil || p.Agents != nil || p.Hooks != nil || p.MCPServers != nil || p.Skills != nil {
 		t.Errorf("expected all manifest-fallback fields nil/absent, got %+v", p)
+	}
+}
+
+// TestCatalog_OwnerAndMetadataAlwaysShipOnWire locks in that Catalog.Owner,
+// Catalog.Metadata, and CatalogPlugin.Author have no "omitempty" tag:
+// encoding/json can never omit a struct value regardless of the tag, so an
+// "owner"/"metadata"/"author" key always ships as {} even when the source
+// marketplace.json has no such section. The tag was already a no-op lie.
+func TestCatalog_OwnerAndMetadataAlwaysShipOnWire(t *testing.T) {
+	data, err := json.Marshal(Catalog{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"owner":{`) {
+		t.Errorf("expected owner key present even when absent from source, got %s", got)
+	}
+	if !strings.Contains(got, `"metadata":{`) {
+		t.Errorf("expected metadata key present even when absent from source, got %s", got)
+	}
+
+	pdata, err := json.Marshal(CatalogPlugin{Name: "widget", Source: Source{Kind: SourceDirectory}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pdata), `"author":{`) {
+		t.Errorf("expected author key present even when absent from source, got %s", pdata)
 	}
 }

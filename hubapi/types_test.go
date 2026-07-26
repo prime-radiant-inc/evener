@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpawnRequestMarshalUsesPromptField(t *testing.T) {
@@ -55,5 +56,27 @@ func TestTreeNode_AskPendingRoundTrips(t *testing.T) {
 	}
 	if !got.AskPending {
 		t.Fatal("round-trip must preserve AskPending")
+	}
+}
+
+// TestTreeNode_UpdatedAtAlwaysShipsOnWire locks in that UpdatedAt has no
+// "omitempty" tag: encoding/json can never omit a struct value regardless of
+// the tag, so the tag was already a no-op lie. The key ships even for the
+// zero time.Time.
+func TestTreeNode_UpdatedAtAlwaysShipsOnWire(t *testing.T) {
+	data, err := json.Marshal(TreeNode{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"updated_at":`) {
+		t.Fatalf("expected updated_at key present even for zero time.Time, got %s", data)
+	}
+
+	data, err = json.Marshal(TreeNode{UpdatedAt: time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"updated_at":"2026-07-25T12:00:00Z"`) {
+		t.Fatalf("expected populated updated_at, got %s", data)
 	}
 }
