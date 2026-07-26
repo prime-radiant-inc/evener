@@ -1,10 +1,12 @@
-// Steering classification, ported from the legacy renderer-format.js:269-494
-// (classifySteering + its notification helpers) and driven the same way
-// renderer.js:4706-4756 drove it. This is a PURE, CONTENT-pattern-based
-// decision off the steering text alone - the legacy classifier never read a
-// wire "kind" field, so nothing here needs one and nothing escalates to the
-// reducer. SteeringItem.tsx routes each kind to one of three treatments
-// (suppress / divider / notification card) via steeringTreatment below.
+// Structured steering-notification parsing: <job-notification …> blocks and
+// the fixed "Observer callback:\n" header a daemon tool result emits
+// (agent/session_tools_communicate.go) are markup, not prose, so reading them
+// is parsing rather than guessing. SteeringItem.tsx routes daemon steering on
+// ItemModel.steeringKind (the wire's events.SteeringKind*, named at the
+// injection site) instead of inferring one from wording, so nothing here
+// decides a "kind" any more - this file only extracts notification cards,
+// which stay content-driven because structured markup can't false-positive
+// the way a prose pattern could (see parseSteeringNotifications below).
 
 export type NotificationTone = "success" | "warning" | "error" | "neutral";
 
@@ -19,42 +21,7 @@ export interface ParsedNotification {
   rawText: string; // the verbatim block, always kept inspectable
 }
 
-export type SteeringKind =
-  | "current-task"
-  | "full-list"
-  | "task-nudge"
-  | "tasks-done"
-  | "loop"
-  | "read-only"
-  | "transcript"
-  | "notification"
-  | "unknown";
-
-export interface SteeringClass {
-  kind: SteeringKind;
-  label: string;
-  detail: string;
-  // The SYSTEM-REMINDER-stripped text, shown verbatim in the divider body
-  // (parity-m4 §8: the divider body is the classified text, not re-rendered).
-  cleanText: string;
-  notifications?: ParsedNotification[];
-  leftover?: string;
-}
-
-export type SteeringTreatment = "suppress" | "divider" | "card";
-
-// current-task / full-list / task-nudge are task bookkeeping the tasks panel
-// (and the task-update card) already own, so they render nothing inline
-// (parity-m4 §8:209-217). notification renders one card per block. Everything
-// else keeps the collapsible steering divider, now with its own classified
-// label instead of a single generic "Steering injected".
-export function steeringTreatment(kind: SteeringKind): SteeringTreatment {
-  if (kind === "current-task" || kind === "full-list" || kind === "task-nudge") return "suppress";
-  if (kind === "notification") return "card";
-  return "divider";
-}
-
-function stripSystemReminder(text: string): string {
+export function stripSystemReminder(text: string): string {
   return text
     .replace(/^\s*<SYSTEM-REMINDER>\s*/i, "")
     .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
@@ -228,48 +195,20 @@ function parseObserverCallback(stripped: string): ParsedNotification | null {
   };
 }
 
-export function classifySteering(text: string): SteeringClass {
+// Notification blocks are STRUCTURED markup (<job-notification …>) and a fixed
+// "Observer callback:\n" header, so reading them is parsing, not guessing: they
+// cannot false-positive the way a prose pattern like /completed all tasks/ can.
+// This is why the card's trigger stayed content-driven while the kind moved to
+// the wire, and why a pre-Kind transcript still renders its cards.
+export function parseSteeringNotifications(text: string): {
+  notifications: ParsedNotification[];
+  leftover: string;
+} {
   const stripped = stripSystemReminder(text);
-  return { ...classifyStripped(stripped), cleanText: stripped };
-}
-
-function classifyStripped(stripped: string): Omit<SteeringClass, "cleanText"> {
-  const taskMatch = stripped.match(/<CURRENT-TASK\s+id="(\d+)">([\s\S]*?)<\/CURRENT-TASK>/);
-  if (taskMatch) {
-    const title = (taskMatch[2] ?? "").match(/<TITLE>([\s\S]*?)<\/TITLE>/)?.[1]?.trim() ?? "";
-    return { kind: "current-task", label: "current task", detail: `#${taskMatch[1]} ${title}`.trim() };
-  }
-  if (/^Task list:/m.test(stripped)) {
-    return { kind: "full-list", label: "task list", detail: "" };
-  }
-  if (/completed all tasks/.test(stripped)) {
-    return { kind: "tasks-done", label: "tasks done", detail: "" };
-  }
-  if (/task_list tool available/.test(stripped)) {
-    return { kind: "task-nudge", label: "task_list nudge", detail: "" };
-  }
-  if (/stuck in a loop|still stuck|stuck for a long time/.test(stripped)) {
-    return { kind: "loop", label: "loop detection", detail: "" };
-  }
-  if (/reading without writing|reading for \d+ turns/.test(stripped)) {
-    return { kind: "read-only", label: "read-only nudge", detail: "" };
-  }
-  if (/pre-compaction transcript/.test(stripped)) {
-    return { kind: "transcript", label: "transcript pointer", detail: "" };
-  }
-
   const { blocks, leftover } = splitJobNotificationBlocks(stripped);
-  if (blocks.length > 0) {
-    const notifications = blocks.map(parseJobNotification).filter((n): n is ParsedNotification => n !== null);
-    const [first] = notifications;
-    if (first) {
-      return { kind: "notification", label: first.title, detail: "", notifications, leftover };
-    }
-  }
+  const notifications = blocks.map(parseJobNotification).filter((n): n is ParsedNotification => n !== null);
+  if (notifications.length > 0) return { notifications, leftover };
   const observer = parseObserverCallback(stripped);
-  if (observer) {
-    return { kind: "notification", label: observer.title, detail: "", notifications: [observer], leftover: "" };
-  }
-
-  return { kind: "unknown", label: "steering injected", detail: "" };
+  if (observer) return { notifications: [observer], leftover: "" };
+  return { notifications: [], leftover: stripped };
 }
