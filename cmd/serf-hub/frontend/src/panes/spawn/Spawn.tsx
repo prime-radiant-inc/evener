@@ -126,6 +126,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cursorRef = useRef<number | null>(null);
+  // kata 61v2: `busy` state alone is not a re-entrancy guard. Three clicks
+  // dispatched before React commits the first one's setBusy(true) all read
+  // the SAME stale `busy === false` from their own render's closure, so all
+  // three pass `if (busy) return` and all three spawn a session. A plain ref
+  // is mutated synchronously, in the SAME tick as the click that set it, so a
+  // second click arriving before the next render commits still sees it set.
+  // `busy` state stays: it still drives the disabled attribute/"Starting…"
+  // label, which is the honest UI reflection of `busyRef` once React catches
+  // up - this ref is only the guard of record.
+  const busyRef = useRef(false);
 
   function updatePrompt(next: string): void {
     textRef.current = next;
@@ -400,13 +410,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Spawning…"
     // forever on a pane that can outlive the navigation below.
+    busyRef.current = false;
     setBusy(false);
     const url = paneToURL("session", { ref });
     if (url) navigate(url);
   }
 
   async function handleSpawn(): Promise<void> {
-    if (busy) return;
+    // kata 61v2: busyRef, not `busy` state - see its declaration for why.
+    if (busyRef.current) return;
     // kata xgk8: the Start button is already disabled in this state, but the
     // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
     // - a submit that CANNOT succeed must never fire regardless of path in.
@@ -421,35 +433,42 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // item, and hubThreadStart starts a turn only for a non-empty input
     // (cmd/serf-hub/app_threadlifecycle.go), so the session is created and
     // simply waits for its first prompt in the session composer.
+    busyRef.current = true;
     setBusy(true);
     try {
       const outcome = await preflightDir(client, cwd);
       if (outcome.kind === "abort") {
         toasts.push("error", outcome.message);
+        busyRef.current = false;
         setBusy(false);
         return;
       }
       if (outcome.kind === "offer-create") {
         setCreateDialogPath(outcome.path);
+        busyRef.current = false;
         setBusy(false);
         return;
       }
       await doSpawn();
     } catch (err) {
       toasts.push("error", `Spawn failed: ${errorText(err)}`);
+      busyRef.current = false;
       setBusy(false);
     }
   }
 
   async function handleCreateConfirm(): Promise<void> {
+    if (busyRef.current) return; // same re-entrancy guard as handleSpawn (kata 61v2)
     const path = createDialogPath;
     if (path === null) return;
+    busyRef.current = true;
     setBusy(true);
     try {
       await createDir(path);
       await doSpawn();
     } catch (err) {
       toasts.push("error", `Spawn failed: ${errorText(err)}`);
+      busyRef.current = false;
       setBusy(false);
     } finally {
       setCreateDialogPath(null);
