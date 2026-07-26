@@ -232,7 +232,72 @@ sentences, or anything longer than ~2 words.
 
 ---
 
-## 7. Known gaps (documented, not fixed — wave-close adjudication)
+## 8. The system voice
+
+Three voices appear in a transcript: the human, the agent, and the system
+steering the agent. The first two are marked. This section marks the third.
+
+**The rule: a glyph in the gutter means the agent's instructions changed. An
+empty gutter means it is a passive fact.**
+
+The transcript already has a 12px glyph gutter — `toolcallitem`'s `.row` and
+`systemnoticeitem`'s `.failure` share one `display: flex; align-items: baseline;
+gap: var(--space-2)` grammar. This section assigns that column.
+
+| gutter | member | treatment |
+|---|---|---|
+| `◇` | **steering** | `SteeringGlyph`, `--ink-mid` for the whole row, kind from the wire, chevron trailing |
+| `✗` | **failure** | `FailureGlyph` in `--danger`, text in `--ink-hi` |
+| *(empty)* | **lifecycle fact** | `--ink-low` one-liner; a run of 3+ collapses into one disclosure |
+| `▸` box | **scaffolding** | hairline-bordered box: the system prompt, compaction summaries, round timings |
+
+Notification cards sit outside the rule — a card is not a row and has no gutter.
+
+**Steering labels come from the wire, never from the text.** `SteeringInjectedData.Kind`
+(`agent/events/payloads.go`) is set at each injection site and reaches the
+renderer on both the live and reload paths. A steer with no kind renders
+`System steered` with no colon: a colon promises a value, and the UI does not
+guess at one.
+
+**The two sides cannot drift.** `make generate` emits the Go enum into
+`types.gen.ts` as `STEERING_KINDS` plus the union `SteeringKind`, and
+`SteeringItem.tsx` types its label map as `Record<LabelledKind, string>` over that
+union. Adding a kind in Go and regenerating fails `tsc` with a missing-key error
+naming the kind, until it is given a label, suppressed, or routed to a card. This
+is the only mechanism enforcing that — deliberately, since a second one covering
+the same property would be worse than either alone.
+
+Pattern-matching is the alternative this forecloses. `steeringClassify.ts`
+inferred a kind from 8 text patterns, against the seventeen kinds the daemon
+actually names today — one pattern matched `/reading without writing/`, a string
+that appears nowhere in the Go source, and nothing failed when it went stale.
+The file's own header now explains why it stopped inferring one; that silent
+gap, a renderer's idea of what the daemon says drifting from what it actually
+says, is the failure mode this rule exists to prevent.
+
+**Why `--ink-mid` and not `--ink-low`.** Every other quiet system row uses
+`--ink-low`. Measured against `--surface-1` it is 2.97:1 in dark and 3.64:1 in
+light — under the 4.5:1 AA floor, as `usermessageitem.module.css` and
+`toolcallitem.module.css` both already record. A reader scanning steering is
+auditing which kind fired, so the kind is the payload rather than furniture, and
+it sits one ink step up at 6.86:1 / 6.56:1. That step also separates a steer
+from the lifecycle line beneath it by weight as well as by glyph.
+
+**The glyph is a hollow diamond, drawn as SVG rather than set as a character.**
+It was first tried as the reference mark ※, but at the row's actual 10px ship
+size a faithful ※ collapses into a shape indistinguishable in monochrome from
+`FailureGlyph`'s ✗ — a mark that can appear in the very same gutter column, the
+two meanings then separated only by hue. A diamond has no such collision at any
+size. SVG rather than the character ◇ (U+25C7) because `global.css`'s
+`unicode-range` (`global.css:23-24`) subsets IBM Plex Sans to a range with no
+U+25xx block at all, so a literal ◇ would be the one glyph in the app rendering
+from a system fallback font. `SteeringGlyph` draws it, inherits `currentColor`,
+and — unlike `FailureGlyph` — carries no accessible name, because the row's own
+text already says "System steered: <kind>".
+
+---
+
+## 9. Known gaps (documented, not fixed — wave-close adjudication)
 
 Two items reviewed at wave-close and deliberately left as documented gaps rather than quick
 fixes, because the "quick fix" in both cases risked being wrong in a way that's worse than the
