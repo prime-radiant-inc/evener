@@ -33,7 +33,8 @@ import {
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
-import { useWorkspaceStore, workspaceStore } from "../workspace";
+import { openNestedSessionWithOwner, openTopLevelSession } from "../sessionPlacement";
+import { useWorkspaceStore } from "../workspace";
 import { deleteProject, renameSession, setArchived, setFavorite } from "./actions";
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
@@ -274,30 +275,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // a deep link, which resolves before any tree exists to consult) leaves a
   // subagent stamped slot:"main" permanently. Reopening is the only way to
   // re-place it, and it costs one transcript reload.
-  const openNestedBesideAncestor = useCallback((ref: string, ancestor: string | null) => {
-    const workspace = workspaceStore.getState();
-    const stuckInMain = workspace.panes.find(
-      (p) => p.slot === "main" && p.type === "session" && (p.params as { ref?: string }).ref === ref,
-    );
-    if (stuckInMain) workspace.closePane(stuckInMain.id);
-
-    // Nested sessions are never allowed in main. If a different session is
-    // already open there, replace it with the parent so the subagent ends up
-    // beside its top-level owner and not beside unrelated work.
-    const main = workspaceStore.getState().mainPane();
-    if (ancestor !== null && ancestor !== ref) {
-      if (main && (main.type !== "session" || (main.params as { ref?: string }).ref !== ancestor)) {
-        workspace.closePane(main.id);
-      }
-      // keepExistingFocus: the subagent is what you asked for, so the pane
-      // opened on your behalf must not steal focus from it.
-      workspaceStore.getState().openPane("session", { ref: ancestor }, { keepExistingFocus: true });
-    }
-    workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
-    // Stable: it reads the workspace store imperatively and closes over
-    // nothing else - both the ref and its ancestor arrive as arguments.
-  }, []);
-
   // A deep link to a subagent (/s/<ref>) opens through AppShell's route merge,
   // which resolves before any tree has been fetched - so nothing on that path
   // can tell the ref is nested, and it lands in main. The rail owns the tree,
@@ -321,8 +298,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     // null: the tree does not place this ref, so there is nothing better to
     // do with it. Equal: it IS the top-level row, exactly where it belongs.
     if (ancestor === null || ancestor === mainPaneRef) return;
-    openNestedBesideAncestor(mainPaneRef, ancestor);
-  }, [tree, mainPaneRef, openNestedBesideAncestor]);
+    openNestedSessionWithOwner(mainPaneRef, ancestor);
+  }, [tree, mainPaneRef]);
 
   // Opens the session a row stands for. A NESTED session (a subagent, or a
   // fork's snapshotted original) opens beside the top-level session that owns
@@ -331,27 +308,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // normally and lands in main when main is free.
   function openSession(session: ApiTreeNode) {
     if (isTopLevelSession(session)) {
-      const workspace = workspaceStore.getState();
-      const existing = workspace.panes.find((pane) => {
-        return pane.type === "session" && (pane.params as { ref?: string }).ref === session.ref;
-      });
-
-      // Clicking the session already in MAIN is an idempotent focus-only action.
-      // If the same session is already secondary, close it first and then replace
-      // the current main slot so it can own that logical session.
-      if (!existing || existing.slot === "secondary") {
-        if (existing) workspace.closePane(existing.id);
-
-        const main = workspace.mainPane();
-        if (main !== null && (main.type !== "session" || (main.params as { ref?: string }).ref !== session.ref)) {
-          workspace.closePane(main.id);
-        }
-      }
-
-      workspaceStore.getState().openPane("session", { ref: session.ref });
+      openTopLevelSession(session.ref);
       return;
     }
-    openNestedBesideAncestor(session.ref, ancestorRefOf(session.ref));
+    openNestedSessionWithOwner(session.ref, ancestorRefOf(session.ref));
   }
 
   function handleActivate(node: RailNode) {

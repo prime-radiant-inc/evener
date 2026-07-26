@@ -5,7 +5,7 @@ import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
-import { resetTreeStoreForTests } from "../stores/tree";
+import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { paletteStore } from "./palette/paletteController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
@@ -152,6 +152,12 @@ beforeAll(async () => {
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") {
+      return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
@@ -175,6 +181,12 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetTreeStoreForTests();
   localStorage.clear();
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/tree") {
+      return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
 });
 
 afterEach(() => {
@@ -339,6 +351,26 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
+test("opening /s/{ref} replaces unrelated main session instead of opening a secondary", async () => {
+  workspaceStore.getState().openPane("session", { ref: "local:existing" });
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    return jsonResponse({});
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  window.history.pushState({}, "", "/s/local:new_session");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:new_session" });
+  });
+  const sessionPanes = workspaceStore.getState().panes.filter((pane) => pane.type === "session");
+  expect(sessionPanes).toHaveLength(1);
+  expect(sessionPanes[0]!.slot).toBe("main");
+  expect(sessionPanes[0]!.params).toMatchObject({ ref: "local:new_session" });
+});
+
 test("an unknown path renders NotFound instead of the workspace", async () => {
   window.history.pushState({}, "", "/not/a/real/route");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -370,10 +402,10 @@ test("navigating from one session deep link to another, post-mount, opens the ne
   });
 
   await screen.findAllByText("local:ref_second");
-  // Both panes stay open as separate tabs - navigating to a second deep
-  // link doesn't close the first one, it opens (and focuses) another.
+  // Main-pane semantics replace the existing main session on deep-link navigation.
+  // The second deep link takes focus and closes the previous top-level session.
   const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_first", "local:ref_second"]);
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_second"]);
 });
 
 test("navigating from a 404 straight to a session deep link opens only that pane, no spurious welcome tab", async () => {
@@ -467,8 +499,35 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
   });
 });
 
+test("nested deep-link waits for successful tree refresh on same pathname after an initial fetch failure", async () => {
+  let calls = 0;
+  const fetchMock = vi.fn((url: string) => {
+    if (url !== "/api/tree") return jsonResponse({});
+    calls += 1;
+    if (calls === 1) return Promise.resolve(jsonResponse({}, 500));
+    return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  window.history.pushState({}, "", "/s/local:sub1");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(workspaceStore.getState().panes.find((pane) => pane.type === "session")).toBeUndefined();
+
+  await act(async () => {
+    await treeStore.getState().refresh();
+  });
+
+  await waitFor(() => {
+    expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
+  });
+  expect(paneFor("local:sub1")?.slot).toBe("secondary");
+  expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+});
+
 test("deep-linking to /settings replaces any existing main pane", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:main_session" });
+  workspaceStore.getState().openPane("settings", { section: "stale_credentials" }, { slot: "secondary" });
   const fetchMock = vi.fn((url: string) => {
     if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
     return jsonResponse({});
@@ -480,7 +539,10 @@ test("deep-linking to /settings replaces any existing main pane", async () => {
 
   expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
   expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "session")).toHaveLength(0);
+  const workspace = workspaceStore.getState();
+  expect(workspace.panes.filter((pane) => pane.type === "session")).toHaveLength(0);
+  expect(workspace.panes.filter((pane) => pane.type === "settings")).toHaveLength(1);
+  expect(workspace.panes.find((pane) => pane.slot === "secondary" && pane.type === "settings")).toBeUndefined();
 });
 
 // --- single-pane mode (/thread/{ref} share link, wave 8 T1) -----------
@@ -522,6 +584,41 @@ test("deep-linking to /settings/{section} opens the settings pane showing that s
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Theme"]);
 });
 
+test("navigating to /settings/{section} replaces main settings and removes secondary settings", async () => {
+  workspaceStore.setState({
+    panes: [
+      {
+        id: "settings-main",
+        type: "settings",
+        params: { section: "general" },
+        slot: "main",
+      },
+      {
+        id: "settings-secondary",
+        type: "settings",
+        params: { section: "credentials" },
+        slot: "secondary",
+      },
+    ],
+    focusedPaneId: "settings-secondary",
+  });
+
+  window.history.pushState({}, "", "/settings/theme");
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  expect(await screen.findByRole("navigation", { name: "Settings sections" })).toBeTruthy();
+  const mainSettingsPane = workspaceStore.getState().mainPane();
+  expect(mainSettingsPane).not.toBeNull();
+  expect(mainSettingsPane!.id).toBe("settings-main");
+  const settingsPanes = workspaceStore.getState().panes.filter((pane) => pane.type === "settings");
+  expect(settingsPanes).toHaveLength(1);
+  expect(settingsPanes[0]!.slot).toBe("main");
+  expect(settingsPanes[0]!.params).toMatchObject({ section: "theme" });
+  expect(mainSettingsPane!.params).toMatchObject({ section: "theme" });
+  expect(mainSettingsPane!.slot).toBe("main");
+  expect(workspaceStore.getState().focusedPaneId).toBe("settings-main");
+});
+
 test("deep-linking to bare /settings opens the settings pane on its default (General) section", async () => {
   window.history.pushState({}, "", "/settings");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -547,12 +644,14 @@ test("navigating from one settings section to another, post-mount, updates the S
   window.history.pushState({}, "", "/settings/general");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByRole("navigation", { name: "Settings sections" });
+  const initialPaneId = workspaceStore.getState().mainPane()?.id;
 
   await user.click(screen.getByRole("button", { name: "Storage" }));
 
   expect(screen.getByRole("button", { name: "Storage" }).getAttribute("aria-current")).toBe("page");
   const tabs = document.querySelectorAll(".dv-tab");
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Storage"]);
+  expect(workspaceStore.getState().mainPane()?.id).toBe(initialPaneId);
 });
 
 // --- kata 11ee: spawn singleton refocus must still apply a fresh ?dir= ----

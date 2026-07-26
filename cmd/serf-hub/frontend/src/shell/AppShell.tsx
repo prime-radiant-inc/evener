@@ -19,6 +19,7 @@ import { openPalette } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { topLevelAncestorRef } from "./rail/railNodes";
 import { urlToPane } from "./routing";
+import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
@@ -110,49 +111,18 @@ function sessionRefFromRouteParams(params: unknown): string | null {
   return typeof ref === "string" && ref.length > 0 ? ref : null;
 }
 
-function openTopLevelSession(ref: string): void {
+function openSettingsInMain(params: unknown): void {
   const workspace = workspaceStore.getState();
-  const existing = workspace.panes.find(
-    (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === ref,
-  );
-  if (existing && existing.slot === "secondary") workspace.closePane(existing.id);
-  workspace.openPane("session", { ref });
-}
-
-function openNestedSessionWithOwner(ref: string, ancestorRef: string | null): void {
-  const workspace = workspaceStore.getState();
-
-  const stuckInMain = workspace.panes.find(
-    (pane) => pane.type === "session" && (pane.params as { ref?: string }).ref === ref && pane.slot === "main",
-  );
-  if (stuckInMain) workspace.closePane(stuckInMain.id);
-
-  if (ancestorRef === null || ancestorRef === ref) {
-    workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
-    return;
+  for (const pane of workspace.panes.filter((item) => item.type === "settings" && item.slot === "secondary")) {
+    workspace.closePane(pane.id);
   }
 
   const main = workspace.mainPane();
-  if (main && (main.type !== "session" || (main.params as { ref?: string }).ref !== ancestorRef)) {
-    workspace.closePane(main.id);
-  }
-  // keepExistingFocus: the subagent is what you clicked to trigger this path.
-  workspaceStore.getState().openPane("session", { ref: ancestorRef }, { keepExistingFocus: true });
-  workspaceStore.getState().openPane("session", { ref }, { slot: "secondary" });
-}
-
-function openSettingsInMain(params: unknown): void {
-  const workspace = workspaceStore.getState();
-  const settingsMain = workspace.panes.find((pane) => pane.type === "settings" && pane.slot === "main");
-  if (settingsMain) {
+  if (main?.type === "settings") {
     workspace.openPane("settings", params);
     return;
   }
 
-  const existingSettings = workspace.panes.find((pane) => pane.type === "settings");
-  if (existingSettings) workspace.closePane(existingSettings.id);
-
-  const main = workspace.mainPane();
   if (main) workspace.closePane(main.id);
   workspace.openPane("settings", params);
 }
@@ -168,7 +138,7 @@ function openSettingsInMain(params: unknown): void {
 function openRouteAsPane(
   pathname: string,
   tree: TreeResponse | null,
-  treeError: string | null,
+  _treeError: string | null,
   pendingSessionRef: { current: string | null },
 ): void {
   const route = urlToPane(pathname);
@@ -182,10 +152,7 @@ function openRouteAsPane(
     if (ref === null) return;
 
     if (tree === null) {
-      pendingSessionRef.current = treeError === null ? ref : null;
-      if (treeError !== null) {
-        openTopLevelSession(ref);
-      }
+      pendingSessionRef.current = ref;
       return;
     }
 
