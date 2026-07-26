@@ -33,6 +33,38 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Serf, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Serf side effects.
 
+## Proving a Type Survives a Round Trip
+
+When two code paths must agree about a struct — a decoder and a
+projector, a live path and a reload path — a hand-written fixture proves
+only that today's fields survive. A field added next month passes,
+because nothing in the test knows it exists.
+
+Build the fixture by walking the **type** with reflection instead. Fill
+every field with a distinguishable value, decode the same bytes through
+both paths, and report divergent fields by name.
+
+`cmd/serf-hub/app_threadread_decode_fidelity_test.go` is the worked
+example. It catches a field added tomorrow with no test edit and no new
+fuzz seed — verified by adding a synthetic field and watching the test
+name it unprompted.
+
+The gotchas in the fixture builder are all in the leaves: `time.Time`
+needs whole seconds, `json.RawMessage` must contain valid JSON, floats
+must be integral to survive widening through `any`, and an unhandled
+`reflect.Kind` must fail loudly rather than skip — a builder that
+silently skips a kind is a test that silently stops covering it.
+
+Two corollaries:
+
+- **Always prove it by mutation.** Route one path through a struct that
+  omits a field and confirm the test names that field. A drift test that
+  has never failed is a decoration.
+- **Delete the round-trip test when the second path dies.** Once a
+  mirror type is gone, both sides of its round-trip test are the same
+  `json.Unmarshal` and it cannot fail. Keeping it leaves a comment
+  claiming coverage that no longer exists.
+
 ## A Test That Never Runs
 
 A test that does not execute is worse than a missing test: it reports the
