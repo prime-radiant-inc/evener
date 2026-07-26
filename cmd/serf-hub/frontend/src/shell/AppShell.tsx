@@ -8,6 +8,7 @@ import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
 import { connectionStore, useConnectionStore } from "../stores/connection";
+import { type TreeResponse, useTreeStore } from "../stores/tree";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
@@ -16,7 +17,9 @@ import { NotFound } from "./NotFound";
 import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette } from "./palette/paletteController";
 import { RailHost } from "./rail";
+import { topLevelAncestorRef } from "./rail/railNodes";
 import { urlToPane } from "./routing";
+import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
 import { useIsMobile } from "./useIsMobile";
 import { workspaceStore } from "./workspace";
@@ -102,23 +105,70 @@ function usePathname(): string {
   return pathname;
 }
 
-// Opens (or focuses) the pane a pathname resolves to. "session" (including the
-// /thread/{ref} single-pane share link, which routes to the session pane),
-// "settings", and "spawn" map directly (their params pass straight through to
-// their own registered pane type); "welcome" and any other resolved type fall
-// back to the plain welcome singleton (the "doc"/"transcript" panes are opened
-// via openBeside, never routed here). A null route (genuinely unknown path)
-// opens nothing - NotFound renders in DockHost's place instead, see the
-// component's return below.
-function openRouteAsPane(pathname: string): void {
-  const route = urlToPane(pathname);
-  if (route === null) return;
-  if (route.type === "session") {
-    workspaceStore.getState().openPane("session", route.params);
+function sessionRefFromRouteParams(params: unknown): string | null {
+  if (typeof params !== "object" || params === null) return null;
+  const ref = (params as { ref?: unknown }).ref;
+  return typeof ref === "string" && ref.length > 0 ? ref : null;
+}
+
+function openSettingsInMain(params: unknown): void {
+  const workspace = workspaceStore.getState();
+  for (const pane of workspace.panes.filter((item) => item.type === "settings" && item.slot === "secondary")) {
+    workspace.closePane(pane.id);
+  }
+
+  const main = workspace.mainPane();
+  if (main?.type === "settings") {
+    workspace.openPane("settings", params);
     return;
   }
+
+  if (main) workspace.closePane(main.id);
+  workspace.openPane("settings", params);
+}
+
+// Opens (or focuses) the pane a pathname resolves to, while enforcing two
+// invariants:
+// - nested session routes always open their top-level owner in main and the nested
+//   session beside it (never a subagent in main beside an unrelated root).
+// - global settings always uses the main slot.
+// session deep-links defer opening until /api/tree arrives; otherwise we cannot tell
+// whether a ref is nested and would open it in main before fixing, causing a full
+// close/reopen cycle later. Deferred open preserves the same mount semantics.
+function openRouteAsPane(
+  pathname: string,
+  tree: TreeResponse | null,
+  _treeError: string | null,
+  pendingSessionRef: { current: string | null },
+): void {
+  const route = urlToPane(pathname);
+  if (route === null) {
+    pendingSessionRef.current = null;
+    return;
+  }
+
+  if (route.type === "session") {
+    const ref = sessionRefFromRouteParams(route.params);
+    if (ref === null) return;
+
+    if (tree === null) {
+      pendingSessionRef.current = ref;
+      return;
+    }
+
+    pendingSessionRef.current = null;
+    const ancestorRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], ref);
+    if (ancestorRef === null || ancestorRef === ref) {
+      openTopLevelSession(ref);
+      return;
+    }
+    openNestedSessionWithOwner(ref, ancestorRef);
+    return;
+  }
+
+  pendingSessionRef.current = null;
   if (route.type === "settings") {
-    workspaceStore.getState().openPane("settings", route.params);
+    openSettingsInMain(route.params);
     return;
   }
   if (route.type === "spawn") {
@@ -191,7 +241,10 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
   const route = urlToPane(pathname);
+  const tree = useTreeStore((state) => state.tree);
+  const treeError = useTreeStore((state) => state.error);
   const isMobile = useIsMobile();
+  const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
   // chrome - the rail (which carries the search/settings entry points, floor
   // §2.3) is suppressed below, and the root is marked so wave-8 T6 can finish
@@ -226,15 +279,15 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const openedForPathnameRef = useRef<string | null>(null);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname);
+    openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
   useEffect(() => {
-    if (openedForPathnameRef.current === pathname) return; // already opened above, this render
+    if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname);
-  }, [pathname]);
+    openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
+  }, [pathname, tree, treeError]);
 
   return (
     <ClientProvider client={client}>
