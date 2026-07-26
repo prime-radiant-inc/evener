@@ -256,12 +256,12 @@ func registerThreadHandlers(
 			return appwire.ThreadStartResponse{}, err
 		}
 		if err := startRelayForThread(ctx, resp.Thread); err != nil {
-			appserver.Notify(ctx, appwire.NotifyWarning, map[string]any{
-				"threadId": resp.Thread.ID,
-				"ref":      resp.Thread.Serf.Ref,
-				"source":   "hub",
-				"title":    "Live updates unavailable",
-				"message":  "thread started, but Hub could not attach live updates: " + err.Error(),
+			appserver.Notify(ctx, appwire.NotifyWarning, appwire.WarningParams{
+				ThreadID: resp.Thread.ID,
+				Ref:      resp.Thread.Serf.Ref,
+				Source:   "hub",
+				Title:    "Live updates unavailable",
+				Message:  "thread started, but Hub could not attach live updates: " + err.Error(),
 			})
 		}
 		return resp, nil
@@ -735,6 +735,11 @@ func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) 
 
 // notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.
 func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) {
+	// Still map[string]string, not appwire.SerfAuthUpdatedParams (kcb5):
+	// provider/activeSource (from AuthStatus) are legitimately empty when no
+	// provider is active, but this map always emits both keys anyway; both
+	// fields are tagged `omitempty` on the struct, so a typed literal would
+	// drop them whenever blank. Not provably byte-identical; left as a map.
 	server.BroadcastAll(appwire.NotifySerfAuthUpdated, map[string]string{
 		"provider":     provider,
 		"activeSource": activeSource,
@@ -753,13 +758,13 @@ func notifyAuthUpdated(server *appserver.Server, provider, activeSource string) 
 // reason: there is no single provider/activeSource pair that honestly
 // summarizes "the instance list changed."
 func notifyInstanceUpdated(server *appserver.Server) {
-	server.BroadcastAll(appwire.NotifySerfAuthUpdated, map[string]string{})
+	server.BroadcastAll(appwire.NotifySerfAuthUpdated, appwire.SerfAuthUpdatedParams{})
 }
 
 // notifyLaunchUpdated broadcasts a serf/launch/updated notification to all connected clients.
 func notifyLaunchUpdated(server *appserver.Server, cwd, layer string) {
-	server.BroadcastAll(appwire.NotifySerfLaunchUpdated, map[string]string{
-		"cwd":   cwd,
-		"layer": layer,
+	server.BroadcastAll(appwire.NotifySerfLaunchUpdated, appwire.SerfLaunchUpdatedParams{
+		CWD:   cwd,
+		Layer: layer,
 	})
 }
