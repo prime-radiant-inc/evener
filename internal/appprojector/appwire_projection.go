@@ -1051,7 +1051,7 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text 
 		Text:        text,
 		Status:      appwire.TurnStatusCompleted,
 		Raw:         raw,
-		EventKind:   strings.TrimSpace(eventKind),
+		EventKind:   appwire.ThreadItemEventKind(strings.TrimSpace(eventKind)),
 		ExitCode:    exitCode,
 	}
 	if p.activeTurnID == "" {

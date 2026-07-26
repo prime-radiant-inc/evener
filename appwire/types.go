@@ -591,30 +591,51 @@ type DiagnosticCause struct {
 
 // Stable semantic event kinds for systemMessage transcript items. These values
 // identify what happened; display titles and summaries may change independently.
+type ThreadItemEventKind string
+
 const (
 	// ThreadItemEventKindSystemPrompt marks the session's system prompt, the
 	// long scaffolding block PreludeTurn projects at the head of the
 	// transcript. It is the typed discriminator a client renders as a
 	// collapsed-by-default disclosure rather than a quiet one-liner, replacing
 	// what the web SPA formerly guessed from the item's own char count.
-	ThreadItemEventKindSystemPrompt      = "system_prompt"
-	ThreadItemEventKindPluginLoaded      = "plugin_loaded"
-	ThreadItemEventKindSkillActivated    = "skill_activated"
-	ThreadItemEventKindHookCompleted     = "hook_completed"
-	ThreadItemEventKindPromptLoaded      = "prompt_loaded"
-	ThreadItemEventKindContextCompaction = "context_compaction"
-	ThreadItemEventKindCompaction        = "compaction"
-	ThreadItemEventKindTurnLimit         = "turn_limit"
-	ThreadItemEventKindLoopDetection     = "loop_detection"
-	ThreadItemEventKindGoalEnded         = "goal_ended"
-	ThreadItemEventKindForkSummary       = "fork_summary"
-	ThreadItemEventKindRoundTimings      = "round_timings"
-	ThreadItemEventKindToolRepair        = "tool_repair"
+	ThreadItemEventKindSystemPrompt      ThreadItemEventKind = "system_prompt"
+	ThreadItemEventKindPluginLoaded      ThreadItemEventKind = "plugin_loaded"
+	ThreadItemEventKindSkillActivated    ThreadItemEventKind = "skill_activated"
+	ThreadItemEventKindHookCompleted     ThreadItemEventKind = "hook_completed"
+	ThreadItemEventKindPromptLoaded      ThreadItemEventKind = "prompt_loaded"
+	ThreadItemEventKindContextCompaction ThreadItemEventKind = "context_compaction"
+	ThreadItemEventKindCompaction        ThreadItemEventKind = "compaction"
+	ThreadItemEventKindTurnLimit         ThreadItemEventKind = "turn_limit"
+	ThreadItemEventKindLoopDetection     ThreadItemEventKind = "loop_detection"
+	ThreadItemEventKindGoalEnded         ThreadItemEventKind = "goal_ended"
+	ThreadItemEventKindForkSummary       ThreadItemEventKind = "fork_summary"
+	ThreadItemEventKindRoundTimings      ThreadItemEventKind = "round_timings"
+	ThreadItemEventKindToolRepair        ThreadItemEventKind = "tool_repair"
 	// ThreadItemEventKindError marks the systemMessage item a reloaded
 	// transcript renders for a turn that failed terminally. It lets clients
 	// find the failure by type rather than by reading the item's prose.
-	ThreadItemEventKindError = "error"
+	ThreadItemEventKindError ThreadItemEventKind = "error"
 )
+
+// AllThreadItemEventKinds is every ThreadItem.EventKind value emitted for
+// systemMessage items, including those used for lifecycle scaffolding.
+var AllThreadItemEventKinds = []string{
+	string(ThreadItemEventKindSystemPrompt),
+	string(ThreadItemEventKindPluginLoaded),
+	string(ThreadItemEventKindSkillActivated),
+	string(ThreadItemEventKindHookCompleted),
+	string(ThreadItemEventKindPromptLoaded),
+	string(ThreadItemEventKindContextCompaction),
+	string(ThreadItemEventKindCompaction),
+	string(ThreadItemEventKindTurnLimit),
+	string(ThreadItemEventKindLoopDetection),
+	string(ThreadItemEventKindGoalEnded),
+	string(ThreadItemEventKindForkSummary),
+	string(ThreadItemEventKindRoundTimings),
+	string(ThreadItemEventKindToolRepair),
+	string(ThreadItemEventKindError),
+}
 
 type ThreadItem struct {
 	Type                 string        `json:"type"`
@@ -667,9 +688,9 @@ type ThreadItem struct {
 	//
 	// Nil on every other item, and on any of the above whose source carries
 	// no exit code — never fabricated as zero.
-	ExitCode  *int64          `json:"exitCode,omitempty"`
-	Raw       json.RawMessage `json:"raw,omitempty"`
-	EventKind string          `json:"eventKind,omitempty"`
+	ExitCode  *int64              `json:"exitCode,omitempty"`
+	Raw       json.RawMessage     `json:"raw,omitempty"`
+	EventKind ThreadItemEventKind `json:"eventKind,omitempty"`
 	// Source carries item provenance for steering items: "user" for
 	// human-sent steering (rendered as a user message), empty for
 	// daemon/system steering (issue #24).

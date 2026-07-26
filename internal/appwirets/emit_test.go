@@ -513,6 +513,29 @@ func TestGeneratedFileCurrent(t *testing.T) {
 	}
 }
 
+// TestEmitsThreadItemEventKindCatalog is the drift guard for the systemMessage
+// item discriminator introduced with g60y. It enforces a runtime catalog and
+// derived union on the generated wire shape so additions, removals, and renames
+// of Go ThreadItemEventKind* constants cannot silently become frontend
+// regressions.
+func TestEmitsThreadItemEventKindCatalog(t *testing.T) {
+	out := EmitCatalog()
+	if !strings.Contains(out, "export const THREAD_ITEM_EVENT_KINDS = [") {
+		t.Error("generated output has no THREAD_ITEM_EVENT_KINDS catalog")
+	}
+	if !strings.Contains(out, "export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];") {
+		t.Error("generated output has no ThreadItemEventKind union")
+	}
+	if !strings.Contains(out, "eventKind?: ThreadItemEventKind;") {
+		t.Error("ThreadItem.eventKind is not generated from ThreadItemEventKind union")
+	}
+	for _, kind := range appwire.AllThreadItemEventKinds {
+		if !strings.Contains(out, fmt.Sprintf("%q", kind)) {
+			t.Errorf("kind %q missing from generated output", kind)
+		}
+	}
+}
+
 // TestEmitsSteeringKindCatalog pins the STEERING_KINDS/SteeringKind catalog
 // generated from events.AllSteeringKinds, the same writeNameCatalog shape
 // already used for METHOD_NAMES/NOTIFICATION_NAMES. This is what turns a new

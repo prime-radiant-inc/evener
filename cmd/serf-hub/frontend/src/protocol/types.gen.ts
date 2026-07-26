@@ -874,7 +874,7 @@ export interface ThreadItem {
   durationMs?: number;
   exitCode?: number;
   raw?: unknown;
-  eventKind?: string;
+  eventKind?: ThreadItemEventKind;
   source?: string;
   steeringKind?: string;
 }
@@ -1292,6 +1292,25 @@ export const STEERING_KINDS = [
 ] as const;
 
 export type SteeringKind = (typeof STEERING_KINDS)[number];
+
+export const THREAD_ITEM_EVENT_KINDS = [
+  "system_prompt",
+  "plugin_loaded",
+  "skill_activated",
+  "hook_completed",
+  "prompt_loaded",
+  "context_compaction",
+  "compaction",
+  "turn_limit",
+  "loop_detection",
+  "goal_ended",
+  "fork_summary",
+  "round_timings",
+  "tool_repair",
+  "error",
+] as const;
+
+export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];
 
 export interface MethodTypes {
   "initialize": { params: InitializeParams; result: InitializeResponse };
