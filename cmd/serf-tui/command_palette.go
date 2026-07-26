@@ -103,10 +103,7 @@ func (p commandPalette) ViewWithMaxHeight(maxHeight int) string {
 	}
 	itemRows := 0
 	if maxHeight > 0 {
-		itemRows = maxHeight - paletteOverlayChrome
-		if itemRows < 1 {
-			itemRows = 1
-		}
+		itemRows = max(maxHeight-paletteOverlayChrome, 1)
 	}
 	body := filterLine + "\n\n" + p.renderItemsWindow(itemRows)
 	width := p.panel.Width()
@@ -133,10 +130,7 @@ func paletteItemWindow(count, cursor, maxRows int) (int, int) {
 	if cursor >= count {
 		cursor = count - 1
 	}
-	start := cursor - maxRows/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(cursor-maxRows/2, 0)
 	if start+maxRows > count {
 		start = count - maxRows
 	}

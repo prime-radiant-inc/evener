@@ -330,10 +330,7 @@ func renderQueuePreview(preview []string, width int) string {
 	}
 	b.WriteString(sectionStyle.Render(header))
 	b.WriteString("\n")
-	maxLine := width - 6
-	if maxLine < 20 {
-		maxLine = 20
-	}
+	maxLine := max(width-6, 20)
 	for i, entry := range preview {
 		first := strings.TrimRight(strings.SplitN(entry, "\n", 2)[0], "\r")
 		if runes := []rune(first); len(runes) > maxLine {
