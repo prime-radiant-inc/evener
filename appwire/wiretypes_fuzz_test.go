@@ -247,12 +247,7 @@ func TestWireTypeRegistryCoverage(t *testing.T) {
 	// (kata qrj4: turn/started carried a turnId that is not a field, and a
 	// DiagnosticCause object was declared as a string).
 	//
-	// serf/attention/changed is exempt because its params type lives in a
-	// package that imports appwire, so declaring it here is an import cycle -
-	// probed, not assumed.
-	payloadExempt := map[string]string{
-		"serf/attention/changed": "params type would form an import cycle with appwire",
-	}
+	payloadExempt := map[string]string{}
 	for _, n := range Notifications {
 		if n.Payload == nil {
 			if _, ok := payloadExempt[n.Name]; !ok {

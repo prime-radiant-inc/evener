@@ -41,11 +41,12 @@ type TreeResponse struct {
 // decision suppresses; age never decays attention). Notification clients
 // (notifications.js) drive the tab title and favicon badge from this on
 // baseline load. It mirrors
-// hubcore.AttentionSummary's shape as a parallel wire type — hubapi cannot
-// import the hub's internal package — including its camelCase tags: this is
-// the same "summary" object serf/attention/changed pushes incrementally
-// (hubcore.AttentionChangedPayload.Summary), so the JS layer applies one
-// field-access path to either the REST baseline or the live notification.
+// appwire.AttentionSummary's shape as a parallel wire type — hubapi is the
+// REST client surface and deliberately does not import appwire — including
+// its camelCase tags: this is the same "summary" object serf/attention/changed
+// pushes incrementally (appwire.AttentionChangedPayload.Summary), so the JS
+// layer applies one field-access path to either the REST baseline or the live
+// notification.
 type AttentionSummary struct {
 	// serf:naming-ignore
 	NeedsYou int `json:"needsYou"`

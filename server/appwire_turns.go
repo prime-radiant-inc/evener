@@ -181,9 +181,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 	for _, record := range apply {
 		switch record.Notification.Method {
 		case appwire.NotifyTurnStarted:
-			var params struct {
-				Turn appwire.Turn `json:"turn"`
-			}
+			var params appwire.TurnStartedParams
 			if json.Unmarshal(record.Notification.Params, &params) != nil || params.Turn.ID == "" {
 				continue
 			}
@@ -201,10 +199,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 				turn.StartedAt = params.Turn.StartedAt
 			}
 		case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-			var params struct {
-				TurnID string             `json:"turnId"`
-				Item   appwire.ThreadItem `json:"item"`
-			}
+			var params appwire.ItemLifecycleParams
 			if json.Unmarshal(record.Notification.Params, &params) == nil {
 				upsertItem(params.TurnID, params.Item)
 			}
@@ -223,12 +218,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 				}
 			}
 		case appwire.NotifyToolOutputDelta:
-			var params struct {
-				TurnID string `json:"turnId"`
-				ItemID string `json:"itemId"`
-				CallID string `json:"callId"`
-				Delta  string `json:"delta"`
-			}
+			var params appwire.ToolOutputDeltaParams
 			if json.Unmarshal(record.Notification.Params, &params) != nil {
 				continue
 			}
@@ -243,9 +233,7 @@ func (s *appTurnSnapshot) applyLocked(records []appserver.SequencedNotification)
 				item.Output += params.Delta
 			}
 		case appwire.NotifyTurnCompleted:
-			var params struct {
-				Turn appwire.Turn `json:"turn"`
-			}
+			var params appwire.TurnCompletedParams
 			if json.Unmarshal(record.Notification.Params, &params) != nil || params.Turn.ID == "" {
 				continue
 			}

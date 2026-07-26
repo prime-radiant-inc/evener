@@ -15,6 +15,26 @@ export interface AgentMessageResetParams {
   itemId: string;
 }
 
+export interface AttentionChanged {
+  threadId: string;
+  title: string;
+  project: string;
+  level: string;
+  askPending?: boolean;
+  prevLevel: string;
+}
+
+export interface AttentionChangedPayload {
+  changed: AttentionChanged[];
+  summary: AttentionSummary;
+}
+
+export interface AttentionSummary {
+  needsYou: number;
+  error: number;
+  working: number;
+}
+
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
@@ -554,9 +574,6 @@ export interface SandboxEscalationResolved {
   threadId?: string;
   ref?: string;
   escalationId: string;
-}
-
-export interface SerfAttentionChangedPayload {
 }
 
 export interface SerfAuthUpdatedParams {
@@ -1341,7 +1358,7 @@ export interface NotificationTypes {
   "serf/job/finished": SerfJobParams;
   "serf/auth/updated": SerfAuthUpdatedParams;
   "serf/launch/updated": SerfLaunchUpdatedParams;
-  "serf/attention/changed": SerfAttentionChangedPayload;
+  "serf/attention/changed": AttentionChangedPayload;
   "serf/marketplace/updated": EmptyParams;
   "serf/plugin/updated": EmptyParams;
   "serf/task/updated": TaskUpdatedParams;

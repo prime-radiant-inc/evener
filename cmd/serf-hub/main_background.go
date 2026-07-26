@@ -44,7 +44,7 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 	if ctx.Err() != nil {
 		return
 	}
-	w := hubcore.NewAttentionWatcher(func(p hubcore.AttentionChangedPayload) {
+	w := hubcore.NewAttentionWatcher(func(p appwire.AttentionChangedPayload) {
 		web.appRPC.BroadcastAll(appwire.NotifySerfAttentionChanged, p)
 	})
 	ticks, stop := hubTicker(5 * time.Second)

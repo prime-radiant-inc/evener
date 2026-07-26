@@ -74,25 +74,25 @@ func fuzzScenarioDeriveAttention_StaleUnarchivedNeverDecays(t *testing.T) {
 }
 
 func fuzzScenarioAttentionWatcher_DiffEmitsOncePerChangeAndSeedsSilently(t *testing.T) {
-	var emitted []AttentionChangedPayload
-	w := NewAttentionWatcher(func(p AttentionChangedPayload) { emitted = append(emitted, p) })
-	first := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you"}}
-	w.Tick(first, AttentionSummary{NeedsYou: 1})
+	var emitted []appwire.AttentionChangedPayload
+	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { emitted = append(emitted, p) })
+	first := map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you"}}
+	w.Tick(first, appwire.AttentionSummary{NeedsYou: 1})
 	if len(emitted) != 0 {
 		t.Fatalf("first tick must seed silently, emitted %d", len(emitted))
 	}
-	w.Tick(first, AttentionSummary{NeedsYou: 1})
+	w.Tick(first, appwire.AttentionSummary{NeedsYou: 1})
 	if len(emitted) != 0 {
 		t.Fatal("no change, no emit")
 	}
-	second := map[string]AttentionEntry{"01A": {ID: "01A", Level: "working"}}
-	w.Tick(second, AttentionSummary{Working: 1})
+	second := map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "working"}}
+	w.Tick(second, appwire.AttentionSummary{Working: 1})
 	if len(emitted) != 1 || len(emitted[0].Changed) != 1 ||
 		emitted[0].Changed[0].Level != "working" || emitted[0].Changed[0].PrevLevel != "needs_you" {
 		t.Fatalf("emitted = %+v", emitted)
 	}
 	// A session disappearing (daemon gone) transitions to idle-family: emit with prevLevel.
-	w.Tick(map[string]AttentionEntry{}, AttentionSummary{})
+	w.Tick(map[string]appwire.AttentionEntry{}, appwire.AttentionSummary{})
 	if len(emitted) != 2 || emitted[1].Changed[0].Level != "idle" {
 		t.Fatalf("disappearance emit = %+v", emitted)
 	}
@@ -139,13 +139,13 @@ func fuzzScenarioDeriveAttention_PendingEscalationNeverDowngradesError(t *testin
 }
 
 func fuzzScenarioAttentionWatcher_TicksOnAskOnlyFlip(t *testing.T) {
-	var got []AttentionChangedPayload
-	w := NewAttentionWatcher(func(p AttentionChangedPayload) { got = append(got, p) })
-	base := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: false}}
-	w.Tick(base, AttentionSummary{}) // seed, silent
+	var got []appwire.AttentionChangedPayload
+	w := NewAttentionWatcher(func(p appwire.AttentionChangedPayload) { got = append(got, p) })
+	base := map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: false}}
+	w.Tick(base, appwire.AttentionSummary{}) // seed, silent
 
-	flipped := map[string]AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true}}
-	w.Tick(flipped, AttentionSummary{})
+	flipped := map[string]appwire.AttentionEntry{"01A": {ID: "01A", Level: "needs_you", AskPending: true}}
+	w.Tick(flipped, appwire.AttentionSummary{})
 	if len(got) != 1 {
 		t.Fatalf("expected one emitted payload for an ask-only flip (Level unchanged), got %d", len(got))
 	}

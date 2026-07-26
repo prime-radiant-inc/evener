@@ -2,57 +2,8 @@ package hubcore
 
 import (
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/appwire"
 )
-
-// AttentionEntry is one live session's derived attention level plus the
-// labels notification clients need. Levels: "working" | "needs_you" |
-// "error" | "idle" (spec v5 semantics table). This struct (and
-// AttentionSummary/AttentionChanged/AttentionChangedPayload below) rides the
-// AppWire notification wire — serf/attention/changed is broadcast via
-// appserver.Server.BroadcastAll, the same JSON-RPC channel every other
-// camelCase appwire.Notifications payload uses — so its fields are camelCase
-// like the rest of that protocol even though the type must live in hubcore,
-// not appwire: DeriveAttention needs hub-internal inputs (ArchiveKey,
-// LiveEntry) appwire must not depend on.
-type AttentionEntry struct {
-	// serf:naming-ignore
-	ID      string `json:"threadId"`
-	Title   string `json:"title"`
-	Project string `json:"project"`
-	Level   string `json:"level"`
-	// serf:naming-ignore
-	AskPending bool `json:"askPending,omitempty"`
-}
-
-// AttentionSummary is the authoritative badge count set, computed over the
-// tier-eligible population — top-level, not manually archived, decided by
-// the same tierEligible call BuildTree's needs-you tier (tree.go) uses for
-// its own inclusion check — with each eligible session's needs-you/error
-// membership decided by the same promotedAttentionLevel call. Two shared
-// functions, not two independently-maintained copies of "who's eligible"
-// and "what counts": the same definition as the NeedsYou tier by
-// construction, not just in intent — NeedsYou+Error is exactly
-// len(needs_you) for identical inputs. camelCase: see AttentionEntry.
-type AttentionSummary struct {
-	// serf:naming-ignore
-	NeedsYou int `json:"needsYou"`
-	Error    int `json:"error"`
-	Working  int `json:"working"`
-}
-
-// AttentionChanged is one session's level transition. camelCase: see
-// AttentionEntry.
-type AttentionChanged struct {
-	AttentionEntry
-	// serf:naming-ignore
-	PrevLevel string `json:"prevLevel"`
-}
-
-// AttentionChangedPayload is the serf/attention/changed notification body.
-type AttentionChangedPayload struct {
-	Changed []AttentionChanged `json:"changed"`
-	Summary AttentionSummary   `json:"summary"`
-}
 
 // attentionLevel maps a normalized UI state to an attention level.
 func attentionLevel(normalized string) string {
@@ -121,14 +72,14 @@ func tierEligible(sessionID string, meta *schema.SessionMeta, nested map[string]
 // just as it stays in the tier. Cheap by construction — in-memory inputs
 // only, no disk, no BuildTree (spec v5 watcher section); nestedSessionIDs is
 // itself a pure, in-memory pass over metas.
-func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) (map[string]AttentionEntry, AttentionSummary) {
+func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool) (map[string]appwire.AttentionEntry, appwire.AttentionSummary) {
 	metaByID := make(map[string]*schema.SessionMeta, len(metas))
 	for i := range metas {
 		metaByID[metas[i].ID] = &metas[i]
 	}
 	nested, _ := nestedSessionIDs(metas)
-	out := make(map[string]AttentionEntry, len(live))
-	var sum AttentionSummary
+	out := make(map[string]appwire.AttentionEntry, len(live))
+	var sum appwire.AttentionSummary
 	for _, le := range live {
 		if le.SessionID == "" {
 			continue
@@ -138,7 +89,7 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 			continue
 		}
 		level := promotedAttentionLevel(NormalizeState(le.Status), le.PendingEscalation)
-		e := AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
+		e := appwire.AttentionEntry{ID: le.SessionID, Level: level, AskPending: le.PendingAsk}
 		if meta != nil {
 			e.Title = nodeTitle(*meta, nodeKind(*meta))
 			e.Project = projectName(*meta)
@@ -162,26 +113,26 @@ func DeriveAttention(metas []schema.SessionMeta, live []LiveEntry, decisions map
 // changed set. The first tick seeds silently (hub restart must not re-notify —
 // spec v5). Not safe for concurrent Tick calls; the caller owns a single loop.
 type AttentionWatcher struct {
-	prev   map[string]AttentionEntry
+	prev   map[string]appwire.AttentionEntry
 	seeded bool
-	emit   func(AttentionChangedPayload)
+	emit   func(appwire.AttentionChangedPayload)
 }
 
 // NewAttentionWatcher wires the emit callback (BroadcastAll in production,
 // a recorder in tests).
-func NewAttentionWatcher(emit func(AttentionChangedPayload)) *AttentionWatcher {
+func NewAttentionWatcher(emit func(appwire.AttentionChangedPayload)) *AttentionWatcher {
 	return &AttentionWatcher{emit: emit}
 }
 
 // Tick diffs cur against the previous map and emits transitions, including
 // disappearances (session gone ⇒ level "idle").
-func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSummary) {
+func (w *AttentionWatcher) Tick(cur map[string]appwire.AttentionEntry, sum appwire.AttentionSummary) {
 	if !w.seeded {
 		w.prev = cur
 		w.seeded = true
 		return
 	}
-	var changed []AttentionChanged
+	var changed []appwire.AttentionChanged
 	for id, e := range cur {
 		prev, had := w.prev[id]
 		if !had || prev.Level != e.Level || prev.AskPending != e.AskPending {
@@ -189,7 +140,7 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 			if had {
 				pl = prev.Level
 			}
-			changed = append(changed, AttentionChanged{AttentionEntry: e, PrevLevel: pl})
+			changed = append(changed, appwire.AttentionChanged{AttentionEntry: e, PrevLevel: pl})
 		}
 	}
 	for id, prev := range w.prev {
@@ -197,12 +148,12 @@ func (w *AttentionWatcher) Tick(cur map[string]AttentionEntry, sum AttentionSumm
 			gone := prev
 			gone.Level = "idle"
 			gone.AskPending = false
-			changed = append(changed, AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
+			changed = append(changed, appwire.AttentionChanged{AttentionEntry: gone, PrevLevel: prev.Level})
 		}
 	}
 	w.prev = cur
 	if len(changed) == 0 {
 		return
 	}
-	w.emit(AttentionChangedPayload{Changed: changed, Summary: sum})
+	w.emit(appwire.AttentionChangedPayload{Changed: changed, Summary: sum})
 }
