@@ -15,7 +15,10 @@ export interface SessionRailNode extends WidgetTreeNode {
   // the Tree widget exactly the same way `undefined` would (see its own
   // hasChildrenOf), so there's no reason to carry two representations of
   // the same "nothing to expand" case.
-  children: SessionRailNode[];
+  //
+  // Its current subagents, followed by at most one InactiveFoldRailNode
+  // holding the finished ones (see splitChildren).
+  children: (SessionRailNode | InactiveFoldRailNode)[];
 }
 
 export interface ProjectRailNode extends WidgetTreeNode {
@@ -31,7 +34,17 @@ export interface LoadingRailNode extends WidgetTreeNode {
   kind: "loading";
 }
 
-export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode;
+/** The "Inactive subagents (N)" disclosure one parent gets for its own
+ * finished children (parity-m3-sidebar-tree.md §3). A synthetic branch: it
+ * has no session of its own, only the count it hides and the rows behind
+ * it. */
+export interface InactiveFoldRailNode extends WidgetTreeNode {
+  kind: "inactiveFold";
+  count: number;
+  children: SessionRailNode[];
+}
+
+export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode;
 
 // Resolves one node's expanded state: an explicit user toggle (tracked by
 // Rail.tsx, keyed by rail node id) wins; anything not yet toggled falls
@@ -49,13 +62,59 @@ export function overrideLookup(overrides: ReadonlyMap<string, boolean>): IsExpan
   return (id, defaultExpanded) => overrides.get(id) ?? defaultExpanded;
 }
 
+// The states that make a subagent CURRENT - something you might still be
+// supervising. Everything else (ended, closed, errored, and any future
+// terminal state) is finished and folds away. Written as the positive list
+// because that is the side worth being conservative about: an unrecognized
+// state folding is a row one click away, while an unrecognized state
+// rendering inline forever is the clutter this exists to remove.
+//
+// "errored" folds with the rest, deliberately, even though the rail treats
+// `failed` as a signal state elsewhere: terminal is terminal, matching the
+// htmx UI this replaced (parity-m3-sidebar-tree.md §3).
+const CURRENT_SUBAGENT_STATES: ReadonlySet<string> = new Set(["active", "awaiting", "idle", "warning", "notLoaded"]);
+
+// Namespaced the same way projectNodeId is, and off the PARENT's row_id, so
+// every parent's fold is its own key at every nesting depth - expanding one
+// never opens another's.
+function inactiveFoldId(parentRowID: string): string {
+  return `inactive:${parentRowID}`;
+}
+
+// Splits one parent's children into the rows that render inline and the
+// single fold node carrying the rest. Both sides keep their incoming order,
+// and the fold always lands last, so a parent's live work stays at the top of
+// its own subtree.
+//
+// A CLUSTER row is exempt. hubcore's repeated-title clustering (tree.go's
+// clusterable) only ever folds idle/ended sessions, so every member of a
+// cluster is terminal by construction - splitting on state here would put
+// every cluster's entire membership behind a second fold inside it, labelled
+// "Inactive subagents" for rows that are neither inactive-in-that-sense nor
+// subagents. A cluster is already a disclosure; its members are ordinary
+// top-level sessions (parity-m3-sidebar-tree.md §3).
+function splitChildren(parent: ApiTreeNode, isExpanded: IsExpanded): (SessionRailNode | InactiveFoldRailNode)[] {
+  const current: SessionRailNode[] = [];
+  const inactive: SessionRailNode[] = [];
+  if (parent.kind === "cluster") return parent.children.map((c) => toSessionNode(c, isExpanded));
+  for (const child of parent.children) {
+    (CURRENT_SUBAGENT_STATES.has(child.state) ? current : inactive).push(toSessionNode(child, isExpanded));
+  }
+  if (inactive.length === 0) return current;
+  const id = inactiveFoldId(parent.row_id);
+  return [
+    ...current,
+    { id, kind: "inactiveFold", count: inactive.length, expanded: isExpanded(id, false), children: inactive },
+  ];
+}
+
 function toSessionNode(n: ApiTreeNode, isExpanded: IsExpanded): SessionRailNode {
   return {
     id: n.row_id,
     kind: "session",
     session: n,
     expanded: isExpanded(n.row_id, false),
-    children: n.children.map((c) => toSessionNode(c, isExpanded)),
+    children: splitChildren(n, isExpanded),
   };
 }
 
@@ -131,11 +190,62 @@ export function projectNodes(projects: ApiTreeProject[], isExpanded: IsExpanded)
       kind: "project",
       project: p,
       expanded: isExpanded(id, p.default_expanded ?? false),
-      children: [...p.sessions]
+      children: p.sessions
+        .filter((n) => !isArchivedTier(n))
         .sort((a, b) => Number(sessionWantsYou(b)) - Number(sessionWantsYou(a)))
         .map((n) => toSessionNode(n, isExpanded)),
     };
   });
+}
+
+// A session the server put in the archived tier. `tier` is the only archived
+// signal on a session (see RailRow's own note: there is no boolean), and it is
+// decision-driven, not merely age-driven, when an explicit archive decision
+// exists - see hubcore.classifySession.
+function isArchivedTier(n: ApiTreeNode): boolean {
+  return n.tier === "archived";
+}
+
+// Namespaced apart from projectNodeId on purpose: the SAME project renders
+// twice when it has both live and archived sessions - once in Projects, once
+// as a sub-branch here - and two Tree branches sharing an id would share
+// expand state.
+function archivedGroupId(key: string): string {
+  return `archivedgroup:${key}`;
+}
+
+/** For each project (active or test-run) holding archived-tier sessions, one
+ * branch under the project's own name revealing just those. They already ride
+ * the main /api/tree snapshot - unlike whole archived projects, which ship as
+ * stubs (archivedProjectNodes) - so nothing here lazy-loads.
+ *
+ * Carries the REAL project object, so the row's menu acts on the project
+ * itself rather than on a synthetic stand-in. */
+export function archivedSessionGroups(projects: ApiTreeProject[], isExpanded: IsExpanded): ProjectRailNode[] {
+  const groups: ProjectRailNode[] = [];
+  for (const p of projects) {
+    const archived = p.sessions.filter(isArchivedTier);
+    if (archived.length === 0) continue;
+    const id = archivedGroupId(p.key);
+    groups.push({
+      id,
+      kind: "project",
+      project: p,
+      expanded: isExpanded(id, false),
+      children: archived.map((n) => toSessionNode(n, isExpanded)),
+    });
+  }
+  return groups;
+}
+
+/** How many sessions the "Archived sessions" section stands for: every whole
+ * archived project's own rows, plus the archived-tier sessions still living
+ * inside active projects. An archived project ships as a stub until first
+ * expand, so its count comes from session_count; once hydrated, its real
+ * sessions are the better answer. */
+export function archivedCount(archivedProjects: ApiTreeProject[], otherProjects: ApiTreeProject[]): number {
+  const whole = archivedProjects.reduce((sum, p) => sum + (p.sessions.length || (p.session_count ?? 0)), 0);
+  return otherProjects.reduce((sum, p) => sum + p.sessions.filter(isArchivedTier).length, whole);
 }
 
 /** Builds rail nodes for the Archived tier. An archived project's sessions

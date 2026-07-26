@@ -44,7 +44,13 @@ import {
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import styles from "./Rail.module.css";
-import { needsYouDescendantCount, type ProjectRailNode, type RailNode, type SessionRailNode } from "./railNodes";
+import {
+  type InactiveFoldRailNode,
+  needsYouDescendantCount,
+  type ProjectRailNode,
+  type RailNode,
+  type SessionRailNode,
+} from "./railNodes";
 
 const CLASS = {
   row: requireClass(styles.row, "Rail.module.css", "row"),
@@ -310,6 +316,21 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   );
 }
 
+// Archive is a decision about a TOP-LEVEL row, so only a top-level row
+// offers it. hubcore's nodeKind (internal/hubcore/tree.go) names the kinds
+// that are never top-level: "subagent" (nested under its parent) and "fork"
+// (a snapshotted original nested under the branch that superseded it) - the
+// same two nestedSessionIDs computes - plus the synthetic "cluster" fold row,
+// which stands for a group of sessions rather than being one. Everything else
+// is a real top-level session. Written as an exclusion list rather than
+// `=== "session"` so an unrecognized future kind still gets the action rather
+// than silently losing it.
+const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork", "cluster"]);
+
+function isTopLevelSession(session: ApiTreeNode): boolean {
+  return !NESTED_KINDS.has(session.kind);
+}
+
 function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuItem[] {
   const items: MenuItem[] = [
     {
@@ -321,14 +342,16 @@ function sessionMenuItems(session: ApiTreeNode, actions: RailRowActions): MenuIt
   if (session.rename) {
     items.push({ id: "rename", label: "Rename", onSelect: () => actions.onRenameRequest(session) });
   }
-  items.push({
-    id: "archive",
-    // The wire has no direct "is this session archived" boolean - tier is
-    // the closest available signal, and is itself decision-driven when an
-    // explicit archive decision exists (see hubcore.classifySession).
-    label: session.tier === "archived" ? "Unarchive" : "Archive",
-    onSelect: () => actions.onToggleArchiveSession(session),
-  });
+  if (isTopLevelSession(session)) {
+    items.push({
+      id: "archive",
+      // The wire has no direct "is this session archived" boolean - tier is
+      // the closest available signal, and is itself decision-driven when an
+      // explicit archive decision exists (see hubcore.classifySession).
+      label: session.tier === "archived" ? "Unarchive" : "Archive",
+      onSelect: () => actions.onToggleArchiveSession(session),
+    });
+  }
   return items;
 }
 
@@ -557,6 +580,31 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
   );
 }
 
+// The "Inactive subagents (N)" disclosure (parity-m3-sidebar-tree.md §3).
+// Built from the same gutters every other row uses, so its title sits on the
+// one x-position the whole list shares - but both gutters are empty of
+// content: the chevron comes from ChevronGutter as usual, and the signal slot
+// stays blank because a group of finished sessions has no state to report.
+// No actions menu either: it stands for rows rather than being one, and the
+// rows it hides carry their own.
+function InactiveFoldRow({ node, info }: { node: InactiveFoldRailNode; info: TreeRowInfo }) {
+  const label = `${node.count === 1 ? "Inactive subagent" : "Inactive subagents"} (${node.count})`;
+  return (
+    <span className={CLASS.row}>
+      <ChevronGutter info={info} />
+      <RowGutter className={CLASS.signal} testId="rail-row-signal" />
+      {/* Same mouse-only shortcut for the toggle the chevron already offers,
+          and the same a11y reasoning as SessionRow's own label: this text is
+          the treeitem's accessible name, so it can't be aria-hidden. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: redundant with the row's own Enter handling, see SessionRow */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents: redundant with the row's own Enter handling, see SessionRow */}
+      <span className={CLASS.label} onClick={info.toggle}>
+        {label}
+      </span>
+    </span>
+  );
+}
+
 function LoadingRow(): ReactNode {
   // role="status" so this is announced the same way the top-level Skeleton
   // (widgets/skeleton) is - the visible "Loading…" text is its own
@@ -572,6 +620,8 @@ export function RailRow({ node, info, actions }: RailRowProps) {
   switch (node.kind) {
     case "loading":
       return LoadingRow();
+    case "inactiveFold":
+      return <InactiveFoldRow node={node} info={info} />;
     case "project":
       return <ProjectRow node={node} info={info} actions={actions} />;
     case "session":

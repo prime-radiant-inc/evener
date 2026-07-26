@@ -8,7 +8,7 @@
 // and the rename/delete-project confirmation dialogs. Every mutation goes
 // through actions.ts, refetching the tree on success and toasting on failure
 // (no optimistic UI - out of this task's scope).
-import { type ChangeEvent, type CSSProperties, useEffect, useRef, useState } from "react";
+import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
 import {
@@ -38,8 +38,11 @@ import { deleteProject, renameSession, setArchived, setFavorite } from "./action
 import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
+import { loadExpansion, saveExpansion } from "./railExpansion";
 import {
+  archivedCount,
   archivedProjectNodes,
+  archivedSessionGroups,
   overrideLookup,
   projectNodeIdForSessionRef,
   projectNodes,
@@ -62,6 +65,12 @@ const CLASS = {
   dialogField: requireClass(styles.dialogField, "Rail.module.css", "dialogField"),
   dialogActions: requireClass(styles.dialogActions, "Rail.module.css", "dialogActions"),
 };
+
+// The Archived section's key in the same expand-override map every row uses.
+// Namespaced apart from the id schemes railNodes assigns (row_ids, and its
+// own "projectnode:"/"archivedgroup:"/"inactive:" prefixes) so it can never
+// collide with a real row.
+const ARCHIVED_SECTION_KEY = "section:archived";
 
 function isEmptyTree(tree: TreeResponse): boolean {
   return (
@@ -97,15 +106,21 @@ function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectio
 }
 
 interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
+  count: number;
   open: boolean;
   onToggleOpen: () => void;
 }
 
-function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, actions }: ArchivedSectionProps) {
+// The one bottom disclosure holding everything archived hub-wide
+// (parity-m3-sidebar-tree.md §8): whole archived projects, plus a sub-branch
+// per active/test-run project for the archived sessions diverted out of it.
+// Collapsed by default - it is the least likely thing you opened the rail for,
+// which is also why it sits last.
+function ArchivedSection({ count, open, onToggleOpen, nodes, onToggle, onActivate, actions }: ArchivedSectionProps) {
   return (
     <section className={CLASS.section}>
       <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-        <Chevron direction={open ? "down" : "right"} /> Archived
+        <Chevron direction={open ? "down" : "right"} /> {`Archived sessions (${count})`}
       </button>
       {open && <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRailRow(actions)} />}
     </section>
@@ -141,8 +156,10 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const serverInfo = useConnectionStore((s) => s.serverInfo);
   const toasts = useToasts();
 
-  const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const [archivedOpen, setArchivedOpen] = useState(false);
+  // Seeded from localStorage on first render (railExpansion), so a rail you
+  // arranged comes back arranged. The lazy initializer means the read happens
+  // once per mount, not on every render.
+  const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
   const [renameTarget, setRenameTarget] = useState<ApiTreeNode | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
@@ -152,6 +169,28 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   useEffect(() => {
     void treeStore.getState().refresh();
   }, []);
+
+  // Every disclosure in the rail funnels through here - project rows, subagent
+  // folds, the Archived section - so persisting on this one path covers all of
+  // them, row by row. The new map is built OUTSIDE the state updater: a
+  // setState updater must stay pure (React runs it twice under StrictMode),
+  // and a localStorage write is not. Reading expandedOverrides from the
+  // closure is safe because every caller is a discrete user action - one
+  // toggle per tick.
+  //
+  // useCallback, and declared above the reveal effect below, because that
+  // effect calls it and so must list it as a dependency: it changes identity
+  // exactly when expandedOverrides does, which that effect already depends on,
+  // so this adds no extra runs of its own.
+  const setExpanded = useCallback(
+    (id: string, value: boolean) => {
+      const next = new Map(expandedOverrides);
+      next.set(id, value);
+      setExpandedOverrides(next);
+      saveExpansion(next);
+    },
+    [expandedOverrides],
+  );
 
   // Reveal a session's row for the palette's /project command (railController).
   // If the row is already rendered, scroll it into view (block:"center"). If
@@ -175,23 +214,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     if (!tree) return; // tree still loading - wait for it (tree is in deps), don't give up early
     const projectId = projectNodeIdForSessionRef([...tree.projects, ...tree.test_runs], revealTarget);
     if (projectId && expandedOverrides.get(projectId) !== true) {
-      setExpandedOverrides((prev) => {
-        const next = new Map(prev);
-        next.set(projectId, true);
-        return next;
-      });
+      // Through setExpanded, so a project the reveal opened is remembered the
+      // same way one you opened by hand is - it is the same expand state.
+      setExpanded(projectId, true);
       return;
     }
     onRevealConsumed?.();
-  }, [revealTarget, tree, expandedOverrides, onRevealConsumed]);
-
-  function setExpanded(id: string, value: boolean) {
-    setExpandedOverrides((prev) => {
-      const next = new Map(prev);
-      next.set(id, value);
-      return next;
-    });
-  }
+  }, [revealTarget, tree, expandedOverrides, onRevealConsumed, setExpanded]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
@@ -294,6 +323,24 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   }
 
   const isExpanded = overrideLookup(expandedOverrides);
+  // The Archived section is a disclosure like any other, so it lives in the
+  // same override map rather than in a useState of its own - one expand
+  // mechanism for the whole rail, and it persists for free.
+  const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
+
+  // Everything the bottom Archived-sessions disclosure holds: whole archived
+  // projects (stubs until their own first expand), then one sub-branch per
+  // still-active project for the archived sessions projectNodes diverted out
+  // of it. Test runs are treated like any other project here - the htmx UI
+  // special-cased them out of this divert, and one rule for every project
+  // beats carrying that split forward.
+  const unarchivedProjects = tree ? [...tree.projects, ...tree.test_runs] : [];
+  const archivedNodes = tree
+    ? [
+        ...archivedProjectNodes(tree.archived_projects, projectDetails, isExpanded),
+        ...archivedSessionGroups(unarchivedProjects, isExpanded),
+      ]
+    : [];
 
   return (
     // --rail-width is what Rail.module.css's own `.rail` width resolves; the
@@ -399,16 +446,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
               onActivate={handleActivate}
               actions={rowActions}
             />
-            {tree.archived_projects.length > 0 && (
-              <ArchivedSection
-                open={archivedOpen}
-                onToggleOpen={() => setArchivedOpen((v) => !v)}
-                nodes={archivedProjectNodes(tree.archived_projects, projectDetails, isExpanded)}
-                onToggle={handleToggle}
-                onActivate={handleActivate}
-                actions={rowActions}
-              />
-            )}
             <RailSection
               title="Test runs"
               nodes={projectNodes(tree.test_runs, isExpanded)}
@@ -416,6 +453,17 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
               onActivate={handleActivate}
               actions={rowActions}
             />
+            {archivedNodes.length > 0 && (
+              <ArchivedSection
+                count={archivedCount(tree.archived_projects, unarchivedProjects)}
+                open={archivedOpen}
+                onToggleOpen={() => setExpanded(ARCHIVED_SECTION_KEY, !archivedOpen)}
+                nodes={archivedNodes}
+                onToggle={handleToggle}
+                onActivate={handleActivate}
+                actions={rowActions}
+              />
+            )}
           </>
         )}
       </div>

@@ -8,7 +8,7 @@ import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../
 import { Tree, type TreeRowInfo } from "../../widgets";
 import railStyles from "./Rail.module.css";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
-import type { LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
+import type { InactiveFoldRailNode, LoadingRailNode, ProjectRailNode, SessionRailNode } from "./railNodes";
 
 afterEach(cleanup);
 
@@ -42,6 +42,10 @@ function projectRailNode(project: ApiTreeProject, children: ProjectRailNode["chi
 
 function loadingRailNode(): LoadingRailNode {
   return { id: "loading-1", kind: "loading" };
+}
+
+function inactiveFoldRailNode(count: number): InactiveFoldRailNode {
+  return { id: "inactive:parent", kind: "inactiveFold", count, expanded: false, children: [] };
 }
 
 function info(overrides: Partial<TreeRowInfo> = {}): TreeRowInfo {
@@ -187,6 +191,37 @@ describe("loading row", () => {
   test("announces itself via role=status, like the top-level Skeleton", () => {
     render(<RailRow node={loadingRailNode()} info={info()} actions={actions()} />);
     expect(screen.getByRole("status").textContent).toMatch(/loading/i);
+  });
+});
+
+describe("inactive-subagent fold row", () => {
+  test("names what it hides and how many", () => {
+    render(<RailRow node={inactiveFoldRailNode(3)} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByText("Inactive subagents (3)")).toBeTruthy();
+  });
+
+  test("counts one in the singular", () => {
+    render(<RailRow node={inactiveFoldRailNode(1)} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByText("Inactive subagent (1)")).toBeTruthy();
+  });
+
+  // It stands for finished work, so it has no state to signal and nothing to
+  // act on - the two things every session row spends its right edge on.
+  test("carries no actions menu", () => {
+    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.queryByRole("button", { name: /actions for/i })).toBeNull();
+  });
+
+  test("carries no cadence dot", () => {
+    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true })} actions={actions()} />);
+    expect(screen.getByTestId("rail-row-signal").textContent).toBe("");
+  });
+
+  test("toggles on click, the way its chevron does", async () => {
+    const toggle = vi.fn();
+    render(<RailRow node={inactiveFoldRailNode(2)} info={info({ hasChildren: true, toggle })} actions={actions()} />);
+    await userEvent.setup().click(screen.getByText("Inactive subagents (2)"));
+    expect(toggle).toHaveBeenCalled();
   });
 });
 
@@ -664,6 +699,32 @@ describe("session row", () => {
     render(<RailRow node={sessionRailNode(apiNode({ tier: "archived" }))} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Unarchive" })).toBeTruthy();
+  });
+
+  // Archive is a decision about a TOP-LEVEL row, and only a top-level row can
+  // act on it: the server stores one archive decision per session id, and a
+  // nested row has no independent existence in the tree its parent isn't
+  // already deciding for. hubcore's nodeKind (internal/hubcore/tree.go) names
+  // the three kinds that are never top-level - "subagent" (nested under its
+  // parent), "fork" (a snapshotted original nested under the branch that
+  // superseded it), and the synthetic "cluster" fold row - so `kind` is the
+  // whole test, at any depth.
+  for (const kind of ["subagent", "fork", "cluster"]) {
+    test(`menu omits Archive on a ${kind} row - only top-level sessions are archivable`, async () => {
+      render(<RailRow node={sessionRailNode(apiNode({ kind, tier: "current" }))} info={info()} actions={actions()} />);
+      await openMenu(/actions for/i);
+      expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Unarchive" })).toBeNull();
+    });
+  }
+
+  test("a subagent row keeps its other actions - only Archive is scoped away", async () => {
+    render(
+      <RailRow node={sessionRailNode(apiNode({ kind: "subagent", rename: true }))} info={info()} actions={actions()} />,
+    );
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Add to pinned" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Rename" })).toBeTruthy();
   });
 
   // Title-first row (rail truncation round): the branch is secondary metadata

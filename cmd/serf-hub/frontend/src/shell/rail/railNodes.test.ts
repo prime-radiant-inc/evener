@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
 import {
+  archivedCount,
   archivedProjectNodes,
+  archivedSessionGroups,
   needsYouDescendantCount,
   overrideLookup,
   projectNodeIdForSessionRef,
@@ -72,6 +74,122 @@ describe("sessionNodes", () => {
   });
 });
 
+// parity-m3-sidebar-tree.md §3: a subagent that has finished is not a thing
+// you are supervising, and a parent that spawned twenty of them buried its own
+// live children under the wreckage. Current children stay inline; terminal ones
+// fold behind the parent's own disclosure, collapsed until asked for.
+describe("inactive-subagent fold", () => {
+  const CURRENT_STATES = ["active", "awaiting", "idle", "warning", "notLoaded"];
+  const INACTIVE_STATES = ["ended", "closed", "errored"];
+
+  function parentWith(...childStates: string[]) {
+    return node({
+      row_id: "parent",
+      children: childStates.map((state, i) => node({ row_id: `child${i}`, ref: `ref${i}`, state })),
+    });
+  }
+
+  for (const state of CURRENT_STATES) {
+    test(`a "${state}" subagent renders inline as a session row`, () => {
+      const [rail] = sessionNodes([parentWith(state)], NEVER_EXPANDED);
+      expect(rail?.children.map((c) => c.kind)).toEqual(["session"]);
+    });
+  }
+
+  for (const state of INACTIVE_STATES) {
+    test(`a "${state}" subagent renders only inside the fold, never inline`, () => {
+      const [rail] = sessionNodes([parentWith(state)], NEVER_EXPANDED);
+      expect(rail?.children).toHaveLength(1);
+      const [fold] = rail?.children ?? [];
+      expect(fold?.kind).toBe("inactiveFold");
+      expect(fold?.children?.map((c) => c.id)).toEqual(["child0"]);
+    });
+  }
+
+  test("the fold sits after every inline child, so live work stays at the top", () => {
+    const [rail] = sessionNodes([parentWith("ended", "active", "ended")], NEVER_EXPANDED);
+    expect(rail?.children.map((c) => c.kind)).toEqual(["session", "inactiveFold"]);
+  });
+
+  test("inline children keep their incoming order", () => {
+    const [rail] = sessionNodes([parentWith("active", "ended", "awaiting")], NEVER_EXPANDED);
+    const inline = rail?.children.filter((c) => c.kind === "session") ?? [];
+    expect(inline.map((c) => c.id)).toEqual(["child0", "child2"]);
+  });
+
+  test("folded children keep their incoming order", () => {
+    const [rail] = sessionNodes([parentWith("ended", "active", "closed")], NEVER_EXPANDED);
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold?.children?.map((c) => c.id)).toEqual(["child0", "child2"]);
+  });
+
+  // Contrast with clustering's clusterMin=3 (hubcore/tree.go), an unrelated
+  // mechanism - and with design-system.md's "past ~3" language, which describes
+  // neither. One finished subagent folds.
+  test("a single inactive subagent still folds - there is no minimum count", () => {
+    const [rail] = sessionNodes([parentWith("ended")], NEVER_EXPANDED);
+    expect(rail?.children.map((c) => c.kind)).toEqual(["inactiveFold"]);
+  });
+
+  test("a parent whose children are all current gets no fold node at all", () => {
+    const [rail] = sessionNodes([parentWith("active", "idle")], NEVER_EXPANDED);
+    expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
+  });
+
+  test("the fold carries how many it hides, so the row can say so without expanding", () => {
+    const [rail] = sessionNodes([parentWith("ended", "closed", "errored", "active")], NEVER_EXPANDED);
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold && "count" in fold && fold.count).toBe(3);
+  });
+
+  test("the fold starts collapsed", () => {
+    const [rail] = sessionNodes([parentWith("ended")], NEVER_EXPANDED);
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold?.expanded).toBe(false);
+  });
+
+  test("the fold opens when the caller's lookup says its key is expanded", () => {
+    const [rail] = sessionNodes([parentWith("ended")], overrideLookup(new Map([["inactive:parent", true]])));
+    const fold = rail?.children.find((c) => c.kind === "inactiveFold");
+    expect(fold?.expanded).toBe(true);
+  });
+
+  test("the fold's id is derived from its parent's row_id, so each parent's fold is its own", () => {
+    const rails = sessionNodes(
+      [
+        node({ row_id: "p1", children: [node({ row_id: "a", ref: "ra", state: "ended" })] }),
+        node({ row_id: "p2", children: [node({ row_id: "b", ref: "rb", state: "ended" })] }),
+      ],
+      overrideLookup(new Map([["inactive:p1", true]])),
+    );
+    expect(rails[0]?.children[0]?.expanded).toBe(true);
+    expect(rails[1]?.children[0]?.expanded).toBe(false);
+  });
+
+  test("a nested subagent's own inactive children fold independently of its parent's", () => {
+    const [rail] = sessionNodes(
+      [
+        node({
+          row_id: "top",
+          children: [
+            node({
+              row_id: "mid",
+              ref: "rmid",
+              state: "active",
+              children: [node({ row_id: "leaf", ref: "rleaf", state: "ended" })],
+            }),
+            node({ row_id: "sib", ref: "rsib", state: "ended" }),
+          ],
+        }),
+      ],
+      NEVER_EXPANDED,
+    );
+    const mid = rail?.children.find((c) => c.id === "mid");
+    expect(mid?.children?.map((c) => c.id)).toEqual(["inactive:mid"]);
+    expect(rail?.children.find((c) => c.kind === "inactiveFold")?.id).toBe("inactive:top");
+  });
+});
+
 describe("needsYouDescendantCount", () => {
   test("counts needs-you nodes in the subtree, not the node itself", () => {
     const root = node({
@@ -93,6 +211,102 @@ describe("needsYouDescendantCount", () => {
 
   test("a leaf node (no children) counts zero", () => {
     expect(needsYouDescendantCount(node({ row_id: "leaf", state: "awaiting" }))).toBe(0);
+  });
+});
+
+// parity-m3-sidebar-tree.md §2.3, §8: the wire hands an active project every
+// tier at once (web_api_tree.go's projectSessions concatenates Current +
+// Recent + Archived), and a live project's header must never list the archived
+// ones. They surface only through the bottom "Archived sessions" section.
+describe("archived-tier sessions divert out of their project's inline list", () => {
+  test("projectNodes drops a session whose tier is archived", () => {
+    const [rail] = projectNodes(
+      [
+        project({
+          sessions: [node({ row_id: "keep", tier: "current" }), node({ row_id: "drop", ref: "rd", tier: "archived" })],
+        }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(rail?.children.map((c) => c.id)).toEqual(["keep"]);
+  });
+
+  test("projectNodes keeps every other tier, including an absent one", () => {
+    const [rail] = projectNodes(
+      [
+        project({
+          sessions: [
+            node({ row_id: "cur", tier: "current" }),
+            node({ row_id: "rec", ref: "r2", tier: "recent" }),
+            node({ row_id: "none", ref: "r3" }),
+          ],
+        }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(rail?.children.map((c) => c.id)).toEqual(["cur", "rec", "none"]);
+  });
+
+  test("a project whose sessions are all archived still renders, as an empty branch", () => {
+    const [rail] = projectNodes([project({ sessions: [node({ tier: "archived" })] })], NEVER_EXPANDED);
+    expect(rail?.children).toEqual([]);
+  });
+});
+
+describe("archivedSessionGroups", () => {
+  test("gives each project with archived sessions a group holding only those", () => {
+    const groups = archivedSessionGroups(
+      [
+        project({
+          key: "p1",
+          sessions: [node({ row_id: "live", tier: "current" }), node({ row_id: "old", ref: "ro", tier: "archived" })],
+        }),
+      ],
+      NEVER_EXPANDED,
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.children.map((c) => c.id)).toEqual(["old"]);
+  });
+
+  test("skips a project with nothing archived", () => {
+    expect(archivedSessionGroups([project({ sessions: [node({ tier: "current" })] })], NEVER_EXPANDED)).toEqual([]);
+  });
+
+  test("the group's id differs from the same project's own node id, so both can render at once", () => {
+    const [group] = archivedSessionGroups(
+      [project({ key: "p1", sessions: [node({ tier: "archived" })] })],
+      NEVER_EXPANDED,
+    );
+    const [inline] = projectNodes([project({ key: "p1" })], NEVER_EXPANDED);
+    expect(group?.id).not.toBe(inline?.id);
+  });
+
+  test("carries the real project, so the row's menu acts on it rather than a synthetic stand-in", () => {
+    const p = project({ key: "p1", name: "Proj", working_dir: "/w", sessions: [node({ tier: "archived" })] });
+    const [group] = archivedSessionGroups([p], NEVER_EXPANDED);
+    expect(group?.project).toBe(p);
+  });
+
+  test("starts collapsed, and opens when the caller's lookup says so", () => {
+    const p = project({ key: "p1", sessions: [node({ tier: "archived" })] });
+    expect(archivedSessionGroups([p], NEVER_EXPANDED)[0]?.expanded).toBe(false);
+    const [open] = archivedSessionGroups([p], overrideLookup(new Map([["archivedgroup:p1", true]])));
+    expect(open?.expanded).toBe(true);
+  });
+});
+
+describe("archivedCount", () => {
+  test("counts a stub archived project by its session_count, which is all the wire sends", () => {
+    expect(archivedCount([project({ session_count: 7, sessions: [] })], [])).toBe(7);
+  });
+
+  test("counts a hydrated archived project by its real sessions", () => {
+    expect(archivedCount([project({ sessions: [node(), node({ ref: "r2" })] })], [])).toBe(2);
+  });
+
+  test("adds the archived-tier sessions living inside active projects", () => {
+    const active = project({ sessions: [node({ tier: "current" }), node({ ref: "r2", tier: "archived" })] });
+    expect(archivedCount([], [active])).toBe(1);
   });
 });
 
@@ -239,5 +453,26 @@ describe("projectNodeIdForSessionRef", () => {
       project({ key: "p2", sessions: [node({ ref: "local:b" })] }),
     ];
     expect(projectNodeIdForSessionRef(projects, "local:b")).toBe("projectnode:p2");
+  });
+});
+
+// A cluster row (hubcore/tree.go's repeated-title fold, Kind "cluster") is
+// ALREADY a disclosure, and its members are ordinary top-level sessions -
+// never subagents. Clustering only ever folds idle/ended sessions
+// (tree.go's clusterable), so every member is terminal by construction: a
+// state-based split applied here would put EVERY cluster's members behind a
+// second, wrongly-named "Inactive subagents" fold inside it. Caught on real
+// hub data, where every cluster looked empty until you expanded twice.
+describe("cluster rows are not subject to the subagent fold", () => {
+  test("an ended cluster member renders directly under its cluster", () => {
+    const cluster = node({
+      row_id: "cluster:abc",
+      kind: "cluster",
+      cluster_count: 3,
+      children: [node({ row_id: "m1", ref: "r1", state: "ended" }), node({ row_id: "m2", ref: "r2", state: "ended" })],
+    });
+    const [rail] = sessionNodes([cluster], NEVER_EXPANDED);
+    expect(rail?.children.map((c) => c.id)).toEqual(["m1", "m2"]);
+    expect(rail?.children.every((c) => c.kind === "session")).toBe(true);
   });
 });
