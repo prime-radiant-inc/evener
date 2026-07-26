@@ -28,6 +28,7 @@ const CLASS = {
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   demoted: requireClass(styles.demoted, "toolcallitem.module.css", "demoted"),
+  duration: requireClass(styles.duration, "toolcallitem.module.css", "duration"),
   chevron: requireClass(styles.chevron, "toolcallitem.module.css", "chevron"),
 };
 
@@ -46,6 +47,13 @@ export interface ToolRowProps {
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
   title?: string;
+  /** The call's wall-clock duration (toolMeta.ts's toolCallDuration, already
+   * formatted, e.g. "38ms"/"1.2s") — opt-in via Settings -> Transcript's
+   * "Round timings" (ToolCallItem gates it), the same preference
+   * TurnSeparator reads for the turn-level figure. Absent whenever the pref
+   * is off, the call hasn't settled yet, or the wire never stamped a
+   * start/end pair. */
+  duration?: string;
 }
 
 /** The one rule for reading a tool call's stated purpose (ItemModel.description):
@@ -59,7 +67,17 @@ export function statedPurposeOf(item: { description?: string }): string | undefi
   return trimmed === undefined || trimmed === "" ? undefined : trimmed;
 }
 
-export function ToolRow({ summary, purpose, failed, expandable, expanded, onToggle, trailing, title }: ToolRowProps) {
+export function ToolRow({
+  summary,
+  purpose,
+  failed,
+  expandable,
+  expanded,
+  onToggle,
+  trailing,
+  title,
+  duration,
+}: ToolRowProps) {
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const content = (
@@ -78,6 +96,17 @@ export function ToolRow({ summary, purpose, failed, expandable, expanded, onTogg
       )}
       <span className={hasPurpose ? `${CLASS.summary} ${CLASS.demoted}` : CLASS.summary} data-testid="tool-row-summary">
         {summary}
+        {/* Nested rather than appended to `summary` itself: when a purpose is
+            present the parent span is ALSO .demoted (--ink-low, below AA per
+            design-system.md's own measured figures) - the duration needs its
+            own color override so it never inherits that failing contrast just
+            because it happens to share the summary's demoted line. */}
+        {duration && (
+          <span className={CLASS.duration} data-testid="tool-row-duration">
+            {" · "}
+            {duration}
+          </span>
+        )}
       </span>
       {trailing}
       {expandable && (

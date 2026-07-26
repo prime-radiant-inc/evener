@@ -17,7 +17,11 @@ interface ToggleSpec {
 }
 
 const TOGGLES: ToggleSpec[] = [
-  { key: "roundTimings", label: "Round timings", help: "Show how long each round took, under the round." },
+  {
+    key: "roundTimings",
+    label: "Round timings",
+    help: "Show how long each round took, under the round, and how long each tool call inside it took.",
+  },
   {
     key: "tokenCounts",
     label: "Token counts",

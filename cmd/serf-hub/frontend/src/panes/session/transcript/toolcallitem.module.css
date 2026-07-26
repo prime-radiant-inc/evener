@@ -89,6 +89,14 @@ summary.row:hover .demoted {
   color: var(--ink-mid);
 }
 
+/* The call's duration (Round timings, opt-in): always --ink-mid, even nested
+ * inside .demoted - .demoted's own --ink-low measures below AA
+ * (design-system.md), fine for a summary line the reader is meant to skim
+ * past but not for timing text someone specifically turned on to read. */
+.duration {
+  color: var(--ink-mid);
+}
+
 /* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure.
  * --ink-mid, not --ink-low: this is the row's one visible cue that there is
  * more to see, not a placeholder/disabled/timestamp (--ink-low's actual
