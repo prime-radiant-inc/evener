@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -62,6 +63,22 @@ type hubHTTPServer interface {
 	Shutdown(context.Context) error
 }
 
+// listenerHTTPServer adapts an *http.Server plus an already-bound
+// net.Listener to the hubHTTPServer interface. serveHub (and its tests) only
+// know about ListenAndServe/Shutdown; this keeps that surface unchanged while
+// letting runMain claim the listener up front (see the "-addr 127.0.0.1:0"
+// comment in runMain) instead of handing http.Server a bare address string
+// and letting it bind lazily inside ListenAndServe, by which point the real
+// port can no longer be reported anywhere upstream.
+type listenerHTTPServer struct {
+	*http.Server
+	ln net.Listener
+}
+
+func (s *listenerHTTPServer) ListenAndServe() error {
+	return s.Serve(s.ln)
+}
+
 type hubShutdowner interface {
 	Shutdown(context.Context) error
 }
@@ -82,6 +99,7 @@ type mainDeps struct {
 	loadProviderConfig func(string) (providercfg.Config, bool, error)
 	materializeConfig  func(string, ...llm.EnvOption) (providercfg.Config, error)
 	notifyContext      func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+	listen             func(context.Context, string, string) (net.Listener, error)
 	serve              func(context.Context, hubHTTPServer, hubShutdowner) error
 	afterWeb           func(*WebServer)
 }
@@ -97,7 +115,11 @@ func defaultMainDeps() mainDeps {
 		loadProviderConfig: providercfg.LoadFile,
 		materializeConfig:  cmdutil.MaterializeProvidersConfig,
 		notifyContext:      signal.NotifyContext,
-		serve:              serveHub,
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
+		},
+		serve: serveHub,
 	}
 }
 
@@ -284,6 +306,21 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// performing a synchronous network walk per request.
 	remoteCache := &hubcore.RemoteThreadCache{}
 
+	// Bind the listener before anything downstream (WebConfig.HubAddr, the
+	// startup log line, the advertised auth URL) reads cfg.Addr, and
+	// overwrite cfg.Addr with what actually got bound. This is what makes
+	// "-addr 127.0.0.1:0" a real ephemeral-port request instead of a literal
+	// ":0" that never resolves to anything callable: the OS hands back a
+	// free port that cannot collide with another hub, sidestepping the
+	// TOCTOU race in "probe a free port, then hope nothing else grabs it
+	// before we bind" (see docs/agentic-testing.md).
+	hubListener, err := deps.listen(context.Background(), "tcp", cfg.Addr)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] listen %s: %v\n", cfg.Addr, err)
+		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
+	}
+	cfg.Addr = hubListener.Addr().String()
+
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
@@ -400,9 +437,12 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
 
-	srv := &http.Server{
-		Addr:    cfg.Addr,
-		Handler: web.Handler(),
+	srv := &listenerHTTPServer{
+		Server: &http.Server{
+			Addr:    cfg.Addr,
+			Handler: web.Handler(),
+		},
+		ln: hubListener,
 	}
 
 	_, _ = fmt.Fprintf(os.Stderr, "[hub] serf-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)

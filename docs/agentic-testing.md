@@ -18,45 +18,73 @@ and `~/.local/state/serf`. A test hub started with a bare `$HOME` and
 the doc's old literal `9180` would frequently fail to bind at all
 (the flock is exclusive) — but if the check below can't tell *whose*
 hub answered, an agent that doesn't notice the failure goes on to spawn
-real sessions, with a real token, against Jesse's live hub. Every
-scenario's hub is built and started fresh, on its own `$HOME` and its
-own free port, every time:
+real sessions, with a real token, against Jesse's live hub.
+
+Every artifact below — binaries, `$HOME`, the hub's port — is named from
+a single `mktemp`-generated run directory, never from a fixed string or a
+port a human assigned in a dispatch prompt. Two agents running this
+recipe at the same time, even for the same kata, get disjoint paths and
+disjoint ports by construction; there is no shared prefix to collide on
+and no convention to remember:
 
 ```bash
-# 1. Build fresh binaries from the branch under test.
-go build -o /tmp/serf-hub-test ./cmd/serf-hub
-go build -o /tmp/serf-test ./cmd/serf
-go build -o /tmp/serf-tui-test ./cmd/serf-tui
+# 1. One unique run directory. Everything this recipe creates lives
+#    under it, so nothing here can collide with another concurrent run
+#    (a second scenario, another agent, or Jesse's real hub).
+run=$(mktemp -d -t serf-e2e-XXXXXX)
 
-# 2. Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
+# 2. Build fresh binaries from the branch under test, into the run dir —
+#    not a fixed /tmp/serf-hub-test that a second concurrent build would
+#    overwrite mid-run (kata k2rx: this is exactly the shared-tmp-path
+#    collision that clobbered another agent's binaries and providers.toml).
+go build -o "$run/serf-hub" ./cmd/serf-hub
+go build -o "$run/serf" ./cmd/serf
+go build -o "$run/serf-tui" ./cmd/serf-tui
+
+# 3. Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
 #    providers.toml, hub.lock, and session history off Jesse's real
 #    ~/.serf and ~/.local/state/serf entirely — unsetting
 #    XDG_STATE_HOME too, in case the ambient shell already points it
 #    somewhere real (DefaultStateGlob prefers XDG_STATE_HOME over
 #    $HOME/.local/state when it's set).
-export HOME=$(mktemp -d -t serf-e2e-home-XXXXX)
+export HOME="$run/home"
+mkdir -p "$HOME"
 unset XDG_STATE_HOME
 
-# 3. Pick a free port — never 9180. An OS-assigned ephemeral port
-#    sidesteps collisions with Jesse's hub *and* with any other
-#    scenario run happening concurrently.
-PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+# 4. Start the hub with -addr 127.0.0.1:0 — never a hardcoded or
+#    dispatch-assigned port. serf-hub binds the listener itself and
+#    reports the address it actually got (kata 68fm: this used to be
+#    the literal string ":0", not a dialable port — "-addr 127.0.0.1:0"
+#    was silently useless before the fix). Binding happens inside the
+#    hub process itself, so there's no separate "probe a free port with a
+#    throwaway socket, then hope nothing grabs it before the real bind"
+#    step and no TOCTOU window — the port the hub logs is the port it is
+#    already listening on. -serf points at the daemon binary the hub
+#    spawns per session.
+"$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
+HUBPID=$!
+
+# 5. Read the real port back from the hub's own startup log line.
+for i in $(seq 1 50); do
+  PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
+  [ -n "$PORT" ] && break
+  kill -0 "$HUBPID" 2>/dev/null || { echo "hub exited before it started listening:" >&2; cat "$run/hub.log" >&2; exit 1; }
+  sleep 0.1
+done
+[ -n "$PORT" ] || { echo "hub never logged a listening port" >&2; exit 1; }
 HUB=http://127.0.0.1:$PORT
 
-# 4. Start the hub. -addr binds it locally; -serf points at the daemon
-#    binary the hub spawns per session.
-/tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &
-HUBPID=$!
-sleep 2
-
-# 5. Confirm THIS hub is the one that answered, not some other process
+# 6. Confirm THIS hub is the one that answered, not some other process
 #    already on $PORT. Check the backgrounded PID is still alive
 #    before trusting the HTTP response — a dead PID with a 401
-#    anyway means something else is listening at $PORT.
+#    anyway means something else is listening at $PORT. (Belt-and-braces
+#    only now that the port itself is kernel-assigned rather than
+#    guessed — kept because a dead PID + something else answering is
+#    still worth distinguishing from a live hub.)
 kill -0 "$HUBPID" || { echo "hub failed to start on $PORT" >&2; exit 1; }
 curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; means it answered)
 
-# 6. Grab the auth token from the isolated $HOME. The browser needs it
+# 7. Grab the auth token from the isolated $HOME. The browser needs it
 #    in the URL query and the curl REST shim needs it as a Bearer
 #    header.
 TOKEN=$(cat "$HOME/.serf/auth-token")
@@ -74,19 +102,20 @@ stored OAuth. If `serf openai status` is signed in but a GPT run fails
 with API-key quota, start the test hub with the key cleared:
 
 ```bash
-OPENAI_API_KEY= /tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &
+OPENAI_API_KEY= "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" &
 ```
 
-This is the one deliberate exception to step 2: a scenario that needs
+This is the one deliberate exception to step 3: a scenario that needs
 an *already signed-in* OpenAI OAuth session has to run with the real
 `$HOME` (OAuth state lives under the normal user state home, not
 somewhere a fresh isolated `$HOME` would have it), so do not export a
-throwaway `$HOME` for that run. It must still never bind port `9180` —
-pick a free `$PORT` as usual. Running with the real `$HOME` means this
-hub *does* share Jesse's real credentials/providers/session history for
-the duration of the run; kata `66mb` flagged this as a narrower,
-separate hazard from the port issue and left it for a follow-up (see
-`kata show` for the filed ID) rather than solving it here.
+throwaway `$HOME` for that run. It must still always bind `-addr
+127.0.0.1:0` — never port `9180`, as usual. Running with the real
+`$HOME` means this hub *does* share Jesse's real credentials/providers/
+session history for the duration of the run; kata `66mb` flagged this
+as a narrower, separate hazard from the port issue and left it for a
+follow-up (see `kata show` for the filed ID) rather than solving it
+here.
 
 ## Hermetic workdir per scenario
 
@@ -176,12 +205,12 @@ For observer sidecar scenarios, do not trust the final scenario marker
 alone. Audit the parent and observer transcripts:
 
 ```bash
-/tmp/serf-doctor-test tree "$SID" --state-dir "$state" --observers
-/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --format outline --range last:80
-/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --count job_list
-/tmp/serf-doctor-test transcript "$SID" --state-dir "$state" --count job_read_output
-/tmp/serf-doctor-test transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
-/tmp/serf-doctor-test transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
+go run ./cmd/serf-doctor tree "$SID" --state-dir "$state" --observers
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count job_list
+go run ./cmd/serf-doctor transcript "$SID" --state-dir "$state" --count job_read_output
+go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/serf-doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
 ```
 
 For the happy path, the parent should use the current delegate result,
@@ -225,6 +254,52 @@ enough to use freely.
 ## Driving the web UI with superpowers-chrome:browsing
 
 The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use_browser`) with action verbs. After the auth-token redirect lands, the renderer constructs the singleton `window.SerfRenderer`; you drive it through `eval`.
+
+### Claim your own Chrome instance first (kata `8ecz`)
+
+`use_browser` auto-starts Chrome on first use under whatever profile is
+currently set — the shared default (`superpowers-chrome`) if nothing
+ever set one. Every concurrent browsing agent that skips this joins the
+*same* Chrome process and shares its tabs: `new_tab` followed by an
+`eval` can land on another agent's tab, `switch_tab` can land you on a
+backgrounded tab whose `requestAnimationFrame`/`ResizeObserver` silently
+never fire (a confidently wrong measurement, not a visible failure),
+and one agent's `navigate` can pull the page out from under another
+mid-measurement. `set_profile` refuses once Chrome is already running,
+so this has to happen before your first `use_browser` call of the
+session — there's no fixing it after the fact, and killing the shared
+Chrome to reprofile would disrupt every other agent using it:
+
+```text
+set_profile <profile-name>     # e.g. the worktree/branch name — literally
+                                # the first use_browser call of the run
+```
+
+Use the git worktree or branch name as the profile name: git already
+guarantees it's unique among your concurrent siblings (`git worktree add
+-b <name>` refuses a name already in use), so it costs nothing to derive
+and can't collide the way a name picked "by taste" can. This gives every
+agent its own Chrome process — its own tabs, its own profile directory —
+so tab-stealing and cross-agent navigation become structurally
+impossible rather than merely detectable.
+
+Keep asserting `location.port` (or another page-identity check) inside
+`eval` payloads regardless. A unique profile stops *other* agents from
+landing on your tabs; it doesn't stop your own script from targeting the
+wrong tab within your own profile (e.g. after a `new_tab` you forgot to
+`switch_tab` to). The assertion still converts a wrong measurement into
+a loud failure — it just no longer has to defend against the whole
+fleet.
+
+**Report the gap, don't paper over it.** If a browser step is skipped,
+degraded, or gives an ambiguous read (an assertion failed, a tab looked
+foreign, a screenshot got discarded), say so explicitly in your
+completion report — e.g. `Browser-verified: no (assertion failed on tab
+N, treated as unit-tested only)` — rather than reporting the underlying
+code change as "done" with the gap left implicit. A fleet-level ledger
+that can't tell a browser-verified fix from an unverified one is exactly
+what let this kata's incidents go unnoticed until measured after the
+fact.
 
 ### Authenticated navigation
 
@@ -295,13 +370,19 @@ optimistic-rendering registry never installed (this was the kata
 
 ## Driving the TUI with tmux
 
-Each scenario gets its own tmux session. Naming matters — the
-cleanup step needs a deterministic name:
+Each scenario gets its own tmux session. Naming matters — the cleanup
+step needs a deterministic name, and it needs to be **your** name: two
+agents both launching a literal `-t serf-test` will `kill-session` each
+other's TUI (tmux session names are as collision-prone as a fixed port
+or a fixed `/tmp` path, for the same reason — nothing makes them unique
+by construction). Derive it from `$run`, which `mktemp` already made
+unique:
 
 ```bash
-tmux kill-session -t serf-test 2>/dev/null   # idempotent: prior run
-tmux new-session -d -s serf-test -x 200 -y 50 \
-  "/tmp/serf-tui-test --hub-addr 127.0.0.1:$PORT --debug 2>/tmp/tui-stderr.log"
+TMUX_SESSION="serf-test-$(basename "$run")"
+tmux kill-session -t "$TMUX_SESSION" 2>/dev/null   # idempotent: prior run
+tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
+  "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"
 sleep 2
 ```
 
@@ -319,19 +400,19 @@ Redirect stderr to a file — most TUI panics, log lines, and any
 literal text. Use `-l` to disable parsing for the literal-text path:
 
 ```bash
-tmux send-keys -t serf-test "n"                # tap "n" for new session
+tmux send-keys -t "$TMUX_SESSION" "n"                # tap "n" for new session
 sleep 1
-tmux send-keys -t serf-test BTab               # shift-tab back one field
+tmux send-keys -t "$TMUX_SESSION" BTab               # shift-tab back one field
 sleep 0.3
-tmux send-keys -t serf-test C-u                # clear the current line
+tmux send-keys -t "$TMUX_SESSION" C-u                # clear the current line
 sleep 0.3
-tmux send-keys -t serf-test -l "$tmpdir"       # literal — no key parsing
+tmux send-keys -t "$TMUX_SESSION" -l "$tmpdir"       # literal — no key parsing
 sleep 0.3
-tmux send-keys -t serf-test Tab                # forward to next field
+tmux send-keys -t "$TMUX_SESSION" Tab                # forward to next field
 sleep 0.3
-tmux send-keys -t serf-test -l "Read AGENTS.md and write a long essay."
+tmux send-keys -t "$TMUX_SESSION" -l "Read AGENTS.md and write a long essay."
 sleep 0.3
-tmux send-keys -t serf-test Enter              # spawn
+tmux send-keys -t "$TMUX_SESSION" Enter              # spawn
 ```
 
 `-l` matters: without it, a literal `/tmp/foo/AGENTS.md` containing
@@ -348,7 +429,7 @@ state line in the workspace header:
 
 ```bash
 for i in $(seq 1 30); do
-  pane=$(tmux capture-pane -t serf-test -p)
+  pane=$(tmux capture-pane -t "$TMUX_SESSION" -p)
   echo "$pane" | grep -q "state: processing" && { echo "i=$i processing"; break; }
   sleep 1
 done
@@ -359,13 +440,13 @@ synchronously after the keypress, one after a reconcile window —
 mirroring the web sync/async pattern:
 
 ```bash
-tmux send-keys -t serf-test -l "Stop and write a haiku."
+tmux send-keys -t "$TMUX_SESSION" -l "Stop and write a haiku."
 sleep 0.5
-tmux send-keys -t serf-test C-s
+tmux send-keys -t "$TMUX_SESSION" C-s
 sleep 0.3
-echo "=== synchronous ===" ; tmux capture-pane -t serf-test -p | grep -E "draining|⠋|Force-steer"
+echo "=== synchronous ===" ; tmux capture-pane -t "$TMUX_SESSION" -p | grep -E "draining|⠋|Force-steer"
 sleep 6
-echo "=== reconciled  ===" ; tmux capture-pane -t serf-test -p | grep -E "draining|⠋" || echo "[no pending — reconciled]"
+echo "=== reconciled  ===" ; tmux capture-pane -t "$TMUX_SESSION" -p | grep -E "draining|⠋" || echo "[no pending — reconciled]"
 ```
 
 ### ANSI styling and Unicode glyphs
@@ -412,10 +493,10 @@ the captured pane / DOM, the next move is to add a stderr probe to
 the offending layer, rebuild, rerun, grep the log. The full pipeline
 has six rebuild points:
 
-1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o /tmp/serf-test ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
-2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub: `pkill -f serf-hub-test; go build -o /tmp/serf-hub-test ./cmd/serf-hub && /tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &`.
+1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o "$run/serf" ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
+2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/serf-hub" ./cmd/serf-hub && "$run/serf-hub" -addr 127.0.0.1:0 -serf "$run/serf" 2>"$run/hub.log" & HUBPID=$!`.
 3. **Web renderer** — `cmd/serf-hub/assets/*.js`. These files are embedded into `serf-hub`; rebuild and restart the hub, then refresh the browser tab.
-4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o /tmp/serf-tui-test ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session and restart for the new code.
+4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o "$run/serf-tui" ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
 5. **AppWire types** — `internal/appwire/`. Both daemon and hub statically link these; rebuild both.
 6. **Pending-coordinator / pending-registry** — owned by the TUI and the renderer respectively; same rebuild rules as 3 and 4.
 
@@ -457,11 +538,18 @@ done
 # Kill any tmux sessions you opened.
 for name in serf-test serf-test-2; do tmux kill-session -t $name 2>/dev/null; done
 
-# Remove the hermetic workdirs.
-rm -rf /tmp/serf-e2e-*
+# Kill the hub you started, by the PID you captured — not by a
+# `pkill -f serf-hub-test` pattern match, which would also kill any other
+# concurrent agent's test hub (they're all named "serf-hub" now that each
+# one lives under its own $run dir instead of a fixed /tmp/serf-hub-test).
+kill "$HUBPID" 2>/dev/null
 
-# Kill the hub if you started it; leave alone if it predates this run.
-pkill -f serf-hub-test
+# Remove this run's own directory — not a `rm -rf /tmp/serf-e2e-*` glob,
+# which would also delete every other concurrent scenario's workdir (kata
+# k2rx: a wildcard cleanup is exactly as collision-prone as a wildcard
+# create). $run already covers the hermetic workdir/state dirs below if
+# you made them under it; otherwise remove those explicitly too.
+rm -rf "$run"
 ```
 
 If you skip cleanup, the next run inherits a half-shutdown daemon
@@ -545,7 +633,8 @@ file a kata. Don't try to drive past the gate from the scenario.
 
 ## Quick reference
 
-- **Hub address**: `127.0.0.1:$PORT` — a free port picked per the Setup
+- **Hub address**: `127.0.0.1:$PORT` — read back from `$run/hub.log`
+  after starting the hub with `-addr 127.0.0.1:0` per the Setup
   checklist, never Jesse's real `9180`.
 - **Auth token**: `$HOME/.serf/auth-token` — the isolated `$HOME` from
   the Setup checklist, never Jesse's real one.
@@ -553,6 +642,7 @@ file a kata. Don't try to drive past the gate from the scenario.
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
 - **Per-session transcript**: `$HOME/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
-- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s <name> "/tmp/serf-tui-test --hub-addr 127.0.0.1:$PORT --debug 2>$LOG"`
+- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/serf-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
+- **Browser profile** (own-Chrome-instance isolation): `set_profile` with a name derived from your worktree/branch — see "Driving the web UI" below. Do this before the first `use_browser` call of the run; a shared default profile is the root cause of kata `8ecz`.
