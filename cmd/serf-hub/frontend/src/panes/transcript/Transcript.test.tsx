@@ -212,6 +212,12 @@ test("with no parentRef, no back-to-parent action renders at all", async () => {
 
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
   expect(screen.queryByRole("button", { name: /back to/i })).toBeNull();
+  // Stronger than the label check above: PaneScaffold only renders its
+  // actions wrapper at all when passed a defined `actions` prop, so this
+  // catches a mutation that renders BackToParentAction unconditionally with
+  // an empty/placeholder ref (which would still produce a "Back to " button
+  // whose label loosely matches /back to/i).
+  expect(screen.queryByTestId("pane-actions")).toBeNull();
 });
 
 test("with a parentRef, shows a 'Back to <parent name>' action naming the live parent thread", async () => {
