@@ -23,7 +23,7 @@ func TestHubModelSessionPaletteKeepsSelectionVisibleWhenWindowed(t *testing.T) {
 	// Drive the cursor to the last entry; on a short pane the windowed overlay
 	// must still render the selected row.
 	filtered := m.commandPalette.panel.Filtered()
-	for i := 0; i < len(filtered); i++ {
+	for range filtered {
 		updated, _ := m.commandPalette.Update(tea.KeyMsg{Type: tea.KeyDown})
 		palette := updated.(commandPalette)
 		m.commandPalette = &palette

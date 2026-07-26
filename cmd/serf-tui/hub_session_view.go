@@ -29,10 +29,7 @@ func (m hubModel) sessionHeaderLines() []string {
 	normalizedState := stateLabel(state)
 	badge := tuiprim.StatusBadge(stateColor(normalizedState), displayWord(state, m.detail.AskPending))
 	badgeW := lipgloss.Width(badge)
-	maxTitleW := m.sessionHeaderWidth() - 2 - 3 - badgeW // 2-space indent + 3-space gap
-	if maxTitleW < 4 {
-		maxTitleW = 4
-	}
+	maxTitleW := max(m.sessionHeaderWidth()-2-3-badgeW, 4) // 2-space indent + 3-space gap
 	displayTitle := title
 	if lipgloss.Width(displayTitle) > maxTitleW {
 		displayTitle = truncateSessionLine(displayTitle, maxTitleW)
