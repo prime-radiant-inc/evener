@@ -83,10 +83,30 @@ an *already signed-in* OpenAI OAuth session has to run with the real
 somewhere a fresh isolated `$HOME` would have it), so do not export a
 throwaway `$HOME` for that run. It must still never bind port `9180` —
 pick a free `$PORT` as usual. Running with the real `$HOME` means this
-hub *does* share Jesse's real credentials/providers/session history for
-the duration of the run; kata `66mb` flagged this as a narrower,
-separate hazard from the port issue and left it for a follow-up (see
-`kata show` for the filed ID) rather than solving it here.
+hub *does* share Jesse's real credentials/providers/auth-token/hub.lock
+for the duration of the run (kata `66mb` flagged this as a narrower,
+separate hazard from the port issue; kata `93f5`/`keyb` worked out the
+following two mitigations, which don't require solving the credential
+sharing itself):
+
+- **Check for the flock before you start, don't debug it after.** The
+  host-wide lock at `~/.serf/hub.lock` is exclusive regardless of any
+  other override, so this hub *cannot start at all* while Jesse's real
+  one already holds it — that failure looks like a hang or a generic
+  bind error, not an obvious "already running" message. Check first:
+  `pgrep -f 'serf-hub.*:9180'` (matches however the real hub was
+  launched — flag form, bind address, and all — because it keys on the
+  port, not the invocation shape).
+- **Session history does not have to be shared even here.** Exporting
+  `XDG_STATE_HOME` to a scratch directory before starting the hub
+  relocates every session it spawns away from Jesse's real
+  `~/.local/state/serf/projects` (`cmd/serf-hub/config.go`'s
+  `DefaultStateGlob` prefers `XDG_STATE_HOME` over `$HOME/.local/state`
+  when it's set) — with zero effect on the credentials/token/lock paths
+  above, since those are keyed off `$HOME` directly (`DefaultHubStateRoot`),
+  not off `XDG_STATE_HOME`. `rm -rf` the scratch dir in Cleanup.
+  `test/scenarios/web-goal-set-and-complete.md` and
+  `sidecar-approval-broker-communicate.md` use this pattern.
 
 ## Hermetic workdir per scenario
 

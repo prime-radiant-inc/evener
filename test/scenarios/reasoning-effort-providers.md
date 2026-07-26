@@ -12,7 +12,9 @@ credentials and makes billed calls.
 
 ## Pre-state
 
-- Kimi coding-plan key at `~/.serf/credentials.toml` under `[providers.kimi]`.
+- A Kimi coding-plan key exported as `KIMI_API_KEY` (or in the repo-root
+  `.env`) — do not read it out of Jesse's real `~/.serf/credentials.toml`;
+  export it directly so this card never touches his live credential store.
 - An Anthropic API key in the repo-root `.env` as `ANTHROPIC_API_KEY` (or
   exported in the environment).
 - A `serf` binary built from this branch: `go build -o /tmp/serf-eff ./cmd/serf`.
@@ -37,7 +39,7 @@ credentials and makes billed calls.
   it is mode `0600`, so create it restrictively:
 
   ```sh
-  KIMI_KEY=$(python3 -c "import tomllib;print(tomllib.load(open('$HOME/.serf/credentials.toml','rb'))['providers']['kimi']['api_key'])")
+  KIMI_KEY="${KIMI_API_KEY:?export KIMI_API_KEY first — see Pre-state}"
   ANTHROPIC_KEY=$(grep -E '^ANTHROPIC_API_KEY=' "$(git rev-parse --show-toplevel)/.env" | cut -d= -f2- | tr -d '"'"'"')
   install -m 600 /dev/null /tmp/eff-cfg/credentials.toml
   cat > /tmp/eff-cfg/credentials.toml <<EOF

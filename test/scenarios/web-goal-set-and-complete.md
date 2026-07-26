@@ -31,10 +31,22 @@ proves the palette, the pill, and the marker actually render.
   card wants the real, signed-in OpenAI credentials (below), so it
   deliberately does NOT export an isolated `$HOME` — the same
   documented OAuth-footgun exception as the Setup checklist's
-  `OPENAI_API_KEY=` recipe:
+  `OPENAI_API_KEY=` recipe. That real `$HOME` means this hub shares
+  Jesse's real `~/.serf/hub.lock`, auth-token, and credentials/providers
+  files for the duration of the run — **it will fail to start at all**
+  while Jesse's real hub already holds that flock, so check for that
+  first rather than debugging a mysterious startup failure. What it does
+  NOT have to share is session history: exporting `XDG_STATE_HOME` (a
+  var independent of `$HOME` — see `cmd/serf-hub/config.go`'s
+  `DefaultStateGlob`) relocates every session this hub spawns under a
+  scratch dir instead of Jesse's real `~/.local/state/serf/projects`,
+  with no effect on the credentials/token/lock paths above:
   ```bash
   go build -o /tmp/serf-hub-test ./cmd/serf-hub
   go build -o /tmp/serf-test ./cmd/serf
+  pgrep -f 'serf-hub.*:9180' >/dev/null && \
+    { echo "Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.serf/hub.lock)" >&2; exit 1; }
+  export XDG_STATE_HOME=$(mktemp -d -t serf-e2e-goal-state-XXXXX)
   /tmp/serf-hub-test -addr 127.0.0.1:9185 -serf /tmp/serf-test &
   sleep 2
   TOKEN=$(cat ~/.serf/auth-token); HUB=http://127.0.0.1:9185
@@ -152,7 +164,7 @@ done
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $TOKEN" -d '{}' "$HUB/s/$SID/shutdown" >/dev/null 2>&1
-rm -rf /tmp/serf-e2e-goal-*
+rm -rf /tmp/serf-e2e-goal-* "$XDG_STATE_HOME"
 pkill -f serf-hub-test   # only if you started the test hub
 ```
 
