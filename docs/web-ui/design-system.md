@@ -232,7 +232,7 @@ sentences, or anything longer than ~2 words.
 
 ---
 
-## 8. The system voice
+## 7. The system voice
 
 Three voices appear in a transcript: the human, the agent, and the system
 steering the agent. The first two are marked. This section marks the third.
@@ -297,7 +297,7 @@ text already says "System steered: <kind>".
 
 ---
 
-## 9. Known gaps (documented, not fixed — wave-close adjudication)
+## 8. Known gaps (documented, not fixed — wave-close adjudication)
 
 Two items reviewed at wave-close and deliberately left as documented gaps rather than quick
 fixes, because the "quick fix" in both cases risked being wrong in a way that's worse than the
