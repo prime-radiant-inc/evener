@@ -13,7 +13,14 @@
  * set below - structural ones (tab height, border-radius, margins, the
  * multi-hue "tab group color" chips feature we don't use, and the
  * genuinely transient drag-over/active-sash colors) are left at dockview's
- * own defaults; this file restyles color, not geometry.
+ * own defaults; this file restyles color, not geometry - with one
+ * deliberate exception (kata 491q, bottom of file): the tab-overflow
+ * popover's own default width is unbounded (it grows to fit a tab's full,
+ * untruncated title), and dockview's own containment math only keeps that
+ * popover inside the WHOLE workspace, never inside the single dock group
+ * it belongs to - so a long enough title drags it across a sibling panel's
+ * live content. There is no custom property for that; it needs a real
+ * selector.
  *
  * Mirrors PaneScaffold's own header/body precedent (panescaffold.module.css:
  * both surface-1, divided by an --edge border, not a background-color
@@ -76,4 +83,27 @@
    * literal - see that test's own comment on color-mix()). */
   --dv-scrollbar-background-color: color-mix(in oklab, var(--ink-hi) 25%, transparent);
   --dv-tabs-container-scrollbar-color: var(--ink-low);
+}
+
+/* kata 491q: the tab-overflow popover (dockview-core's own control, shown
+ * for a hidden/overflowing tab - see tabsContainer.js's toggleDropdown) has
+ * no width limit by default, so a long session prompt used as a tab title
+ * renders at its full, unwrapped length. dockview then shifts the whole
+ * popover left just far enough to stay inside the WORKSPACE'S bounds
+ * (PopupService.openPopover's shiftAbsoluteElementIntoView is rooted at the
+ * whole dockview host, not the one group/panel the popover belongs to) -
+ * which for a long enough title drags it across the neighbouring panel's
+ * own live content. 380px matches modelCatalog.module.css's own popover
+ * width, the app's existing convention for "one comfortable dropdown
+ * column" - narrow enough that even anchored at the dock's own right edge,
+ * the popover never needs to reach past the panel it opened from.
+ * Ellipsis-truncating the tab's own label keeps the same guarantee
+ * regardless of how long a future title gets. */
+.dv-tabs-overflow-container {
+  max-width: 380px;
+}
+.dv-tabs-overflow-container .dv-default-tab-content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

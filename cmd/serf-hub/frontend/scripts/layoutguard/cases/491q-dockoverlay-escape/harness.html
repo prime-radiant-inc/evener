@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>491q layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  /* Mirrors dockview.css's OWN defaults for the elements this case touches
+     (dockview-core's dist stylesheet lives in node_modules, outside
+     layoutguard's src/-only resolver - see run.mjs's header comment - so
+     the handful of rules this harness depends on are reproduced here
+     verbatim from node_modules/dockview-core/dist/styles/dockview.css).
+     resolved.css (built from case.json's cssFiles, above) carries the ONE
+     rule under test: dockview-theme.css's kata-491q override. */
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+  }
+  .page {
+    position: relative;
+    width: 1440px;
+    height: 300px;
+    display: flex;
+  }
+  .rail {
+    width: 294px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--edge);
+  }
+  .main-panel, .dock-panel {
+    box-sizing: border-box;
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-pane);
+    padding: var(--space-4);
+    margin: var(--space-2);
+  }
+  .main-panel { flex: 1 1 auto; }
+  .dock-panel { flex: 1 1 auto; position: relative; }
+  .main-panel h2, .dock-panel h2 { margin: 0; font-size: var(--font-size-ui); color: var(--ink-hi); }
+
+  /* dockview.css defaults (verbatim subset) */
+  .dv-tabs-overflow-container {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--dv-group-view-background-color, var(--surface-1));
+    border: 1px solid var(--dv-tab-divider-color, var(--edge));
+  }
+  .dv-tab .dv-default-tab {
+    position: relative;
+    height: 100%;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0 8px;
+  }
+  .dv-tab .dv-default-tab .dv-default-tab-content {
+    flex-grow: 1;
+    margin-right: 4px;
+  }
+</style>
+</head>
+<body data-font-size="m">
+<div class="page" id="root-container">
+  <div class="rail"></div>
+  <div class="main-panel" id="main-panel">
+    <h2>Start an agent</h2>
+  </div>
+  <div class="dock-panel" id="dock-panel">
+    <h2>Write a very long detailed short story about a lighthouse keeper wh&hellip;</h2>
+  </div>
+</div>
+<script>
+// shiftAbsoluteElementIntoView - copied verbatim from
+// dockview-core/dist/esm/dom.js (the function PopupService.openPopover
+// calls via requestAnimationFrame) so this harness proves the SAME
+// positioning algorithm the real app runs, not an approximation of it.
+function shiftAbsoluteElementIntoView(element, root, options = { buffer: 10 }) {
+  const buffer = options.buffer;
+  const rect = element.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  let translateX = 0;
+  let translateY = 0;
+  const left = rect.left - rootRect.left;
+  const top = rect.top - rootRect.top;
+  const bottom = rect.bottom - rootRect.bottom;
+  const right = rect.right - rootRect.right;
+  if (left < buffer) {
+    translateX = buffer - left;
+  } else if (right > buffer) {
+    translateX = -buffer - right;
+  }
+  if (top < buffer) {
+    translateY = buffer - top;
+  } else if (bottom > buffer) {
+    translateY = -bottom - buffer;
+  }
+  if (translateX !== 0 || translateY !== 0) {
+    element.style.transform = `translate(${translateX}px, ${translateY}px)`;
+  }
+}
+
+// PopupService.openPopover's own anchoring math (dockview-core/dist/esm/
+// dockview/components/popupService.js): the popover anchor is prepended to
+// `root` (position:relative, zero-size), and the wrapper's left/top are set
+// relative to it from the RAW click coordinates - the bug's actual root
+// cause is that `root` here is the WHOLE workspace (PopupService is one
+// instance shared by the whole DockviewComponent, constructed with
+// `this.element` - see dockviewComponent.js:454), never the one dock group
+// the popover opens from.
+function openPopoverLikeDockview(root, contentEl, clickX, clickY) {
+  const anchor = document.createElement('div');
+  anchor.className = 'dv-popover-anchor';
+  anchor.style.position = 'relative';
+  root.prepend(anchor);
+  const anchorBox = anchor.getBoundingClientRect();
+  const offsetX = anchorBox.left;
+  const offsetY = anchorBox.top;
+
+  const wrapper = document.createElement('div');
+  wrapper.style.position = 'absolute';
+  wrapper.appendChild(contentEl);
+  wrapper.style.top = `${clickY - offsetY}px`;
+  wrapper.style.left = `${clickX - offsetX}px`;
+  anchor.appendChild(wrapper);
+  return wrapper;
+}
+
+// The real overflow-popover's own DOM (captured live from a running hub,
+// kata 491q's own repro - see the kata's investigation notes): one
+// .dv-tabs-overflow-container holding a single overflowing tab's full,
+// unwrapped title.
+function buildOverflowPopoverContent(title) {
+  const container = document.createElement('div');
+  container.className = 'dv-tabs-overflow-container';
+  const tab = document.createElement('div');
+  tab.className = 'dv-tab dv-active-tab';
+  const defaultTab = document.createElement('div');
+  defaultTab.className = 'dv-default-tab';
+  const content = document.createElement('div');
+  content.className = 'dv-default-tab-content';
+  content.textContent = title;
+  defaultTab.appendChild(content);
+  tab.appendChild(defaultTab);
+  container.appendChild(tab);
+  return container;
+}
+
+const LONG_TITLE =
+  'Write a very long detailed short story about a lighthouse keeper who discovers something strange washed ashore one foggy autumn morning';
+
+window.measure = () => {
+  const root = document.getElementById('root-container');
+  const dockPanel = document.getElementById('dock-panel');
+  const mainPanel = document.getElementById('main-panel');
+  const dockRect = dockPanel.getBoundingClientRect();
+
+  // Click point: the tab-count/chevron control sits at the dock panel's own
+  // top-right corner, matching where a reader actually clicks it.
+  const clickX = dockRect.right - 24;
+  const clickY = dockRect.top + 15;
+
+  const content = buildOverflowPopoverContent(LONG_TITLE);
+  const wrapper = openPopoverLikeDockview(root, content, clickX, clickY);
+  // Real code runs the shift on the next animation frame; this harness
+  // measures synchronously afterward, so apply it directly (rAF is the
+  // real code's own async-safety, not part of the algorithm being tested).
+  shiftAbsoluteElementIntoView(wrapper, root);
+
+  const dropRect = wrapper.getBoundingClientRect();
+  const mainRect = mainPanel.getBoundingClientRect();
+  const overlapX = Math.min(dropRect.right, mainRect.right) - Math.max(dropRect.left, mainRect.left);
+  const overlapY = Math.min(dropRect.bottom, mainRect.bottom) - Math.max(dropRect.top, mainRect.top);
+  return {
+    dropdown: { left: dropRect.left, right: dropRect.right, top: dropRect.top, bottom: dropRect.bottom, width: dropRect.width },
+    mainPanel: { left: mainRect.left, right: mainRect.right },
+    overlapX,
+    overlapY,
+    overlapsMainPanel: overlapX > 0 && overlapY > 0,
+  };
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "name": "491q-dockoverlay-escape",
+  "description": "session dock: a long tab title's overflow popover must stay inside the dock panel, not bleed into the middle 'Start an agent' panel (kata 491q)",
+  "cssFiles": [
+    "styles/tokens.css",
+    "shell/dockview-theme.css"
+  ]
+}
