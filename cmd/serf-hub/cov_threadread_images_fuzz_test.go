@@ -39,7 +39,7 @@ func covThreadreadServer(t *testing.T) (*WebServer, string, string) {
 }
 
 func FuzzCovThreadreadImagesSeed100(f *testing.F) {
-	for i := byte(0); i < 4; i++ {
+	for i := range byte(4) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, scenario byte) {
@@ -212,7 +212,7 @@ func covOutputImagesSeed(t *testing.T) {
 		}
 	}
 	var many strings.Builder
-	for i := 0; i < outputImageMaxRendered+1; i++ {
+	for i := range outputImageMaxRendered + 1 {
 		name := "cap" + string(rune('a'+i)) + ".png"
 		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
 			t.Fatal(err)
@@ -222,7 +222,7 @@ func covOutputImagesSeed(t *testing.T) {
 	_ = outputImagesForToolCall("s", cwd, "shell", `{}`, many.String())
 	_ = shellOutputImageCandidates(strings.Repeat(" a.png", outputImageMaxCandidates+2))
 	var candidates strings.Builder
-	for i := 0; i < outputImageMaxCandidates+2; i++ {
+	for i := range outputImageMaxCandidates + 2 {
 		candidates.WriteString(" z" + string(rune('a'+i)) + ".png")
 	}
 	_ = shellOutputImageCandidates(candidates.String())

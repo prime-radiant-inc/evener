@@ -45,8 +45,8 @@ func TestPrintHubEnvVars(t *testing.T) {
 		}
 		// The description must follow the name, not just appear somewhere
 		// on the line: trimming the name must leave non-empty help text.
-		idx := strings.Index(line, name)
-		rest := strings.TrimSpace(line[idx+len(name):])
+		_, after, _ := strings.Cut(line, name)
+		rest := strings.TrimSpace(after)
 		if rest == "" {
 			t.Errorf("line for %q has no description text: got %q", name, line)
 		}

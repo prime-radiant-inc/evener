@@ -15,7 +15,7 @@ import (
 // corpus run covers the complete table; fuzzed bytes additionally vary the
 // text fields without involving network, process, or ambient filesystem state.
 func FuzzCovRPCThreadsHelpers(f *testing.F) {
-	for selector := byte(0); selector < 14; selector++ {
+	for selector := range byte(14) {
 		f.Add(selector, "needle")
 	}
 	f.Fuzz(func(t *testing.T, selector byte, text string) {
@@ -176,7 +176,7 @@ type assertionError string
 func (e assertionError) Error() string { return string(e) }
 
 func FuzzCovRPCThreadsHandlers(f *testing.F) {
-	for selector := byte(0); selector < 11; selector++ {
+	for selector := range byte(11) {
 		f.Add(selector)
 	}
 	f.Fuzz(func(t *testing.T, selector byte) {

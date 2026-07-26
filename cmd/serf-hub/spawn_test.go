@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -211,16 +212,11 @@ func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
 }
 
 func hasArg(args []string, want string) bool {
-	for _, arg := range args {
-		if arg == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, want)
 }
 
 func TestHubSpawnerHasNoAmbientLaunchDefaults(t *testing.T) {
-	if _, ok := reflect.TypeOf(HubSpawner{}).FieldByName("LaunchDefaults"); ok {
+	if _, ok := reflect.TypeFor[HubSpawner]().FieldByName("LaunchDefaults"); ok {
 		t.Fatal("HubSpawner must not keep ambient launch defaults; plugin dirs should come only from launch config")
 	}
 }

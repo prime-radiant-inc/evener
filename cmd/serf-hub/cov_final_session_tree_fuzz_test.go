@@ -56,7 +56,7 @@ func finalSessionWeb(cfg hubcore.WebConfig, thread appwire.Thread, startErrs ...
 }
 
 func FuzzFinalSessionTree(f *testing.F) {
-	for op := uint8(0); op < 16; op++ {
+	for op := range uint8(16) {
 		f.Add(op)
 	}
 	f.Fuzz(func(t *testing.T, op uint8) {

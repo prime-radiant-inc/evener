@@ -54,7 +54,7 @@ func pass5Web(thread appwire.Thread, actionErr, readErr error, readAfter int) *W
 // FuzzSessionResiduePass5 targets the remaining session action, detail, tree,
 // memoization, decision-store, and roster branches with process-local inputs.
 func FuzzSessionResiduePass5(f *testing.F) {
-	for op := uint8(0); op < 10; op++ {
+	for op := range uint8(10) {
 		f.Add(op, "residue")
 	}
 	f.Fuzz(func(t *testing.T, op uint8, title string) {

@@ -20,7 +20,7 @@ import (
 // FuzzWebWorkspacePass5 exercises workspace composition and model rendering
 // against in-memory sources and indexes. It never consults a live provider.
 func FuzzWebWorkspacePass5(f *testing.F) {
-	for mode := uint8(0); mode < 12; mode++ {
+	for mode := range uint8(12) {
 		f.Add(mode, "alpha\r\nbeta")
 	}
 	f.Fuzz(func(t *testing.T, mode uint8, text string) {

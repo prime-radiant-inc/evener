@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -3408,7 +3409,7 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 	}
 	close(source.release)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		select {
 		case err := <-readErrs:
 			if err == nil || !strings.Contains(err.Error(), "subscribe failed") {
@@ -5415,14 +5416,7 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 		t.Fatalf("ThreadStart: %v", err)
 	}
 	eff := got.Resolved.Effective
-	found := false
-	for _, d := range eff.SkillsDirs {
-		if d == "/per-launch" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(eff.SkillsDirs, "/per-launch") {
 		t.Errorf("SkillsDirs = %v, want /per-launch", eff.SkillsDirs)
 	}
 	if eff.MaxRounds == nil || *eff.MaxRounds != 7 {
@@ -6938,7 +6932,7 @@ func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "alpine.txt"), []byte("no"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("child-%02d", i)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -6993,7 +6987,7 @@ func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
 		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/beta"}},
 		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/alpha"}}, // older dup — dropped
 	}
-	for n := 0; n < 20; n++ {
+	for n := range 20 {
 		metas = append(metas, schema.SessionMeta{
 			ID:        fmt.Sprintf("02wMz5Txv1C3Hut0M8GC%02d", n),
 			UpdatedAt: now.Add(-time.Duration(n+4) * time.Minute),
