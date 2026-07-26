@@ -128,6 +128,17 @@ test("claims nothing when the wire carries no kind", () => {
   expect(screen.queryByText(/System steered:/)).toBeNull();
 });
 
+// The OTHER half of "no colon": a kind the wire DID send, but this UI has no
+// label for - a daemon newer than this UI (KIND_LABELS §comment above), or -
+// live today - a "notification" kind whose markup fails to parse and falls
+// through to the divider path instead of a card. Absent and unmapped must
+// both render bare; only one of the two was pinned before this test.
+test("claims nothing when the wire kind is unmapped, not just when it's absent", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "some-future-kind" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered")).toBeTruthy();
+  expect(screen.queryByText(/System steered:/)).toBeNull();
+});
+
 // The prose that used to drive classification must no longer do so.
 test("does not infer a kind from the text", () => {
   render(
@@ -144,6 +155,36 @@ test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel ow
     <SteeringItem item={item({ text: "x", steeringKind: kind })} turn={turn} live={false} />,
   );
   expect(container.firstChild).toBeNull();
+});
+
+// task-nudge is a labeled kind (KIND_LABELS above), NOT a suppressed one -
+// only current-task/task-list are in SUPPRESSED. Before wave-8/this task,
+// classifySteering's cascade suppressed task-nudge outright (a one-time
+// tool-availability nudge, judged not user-meaningful); the brief's
+// SUPPRESSED set narrows that to current-task/task-list only, so a
+// task-nudge steer now renders where it previously rendered nothing. That
+// flip is brief-mandated and correct - this pins the new visible outcome.
+test("a task-nudge kind renders labeled, not suppressed", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "task-nudge" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered: Task nudge")).toBeTruthy();
+});
+
+// Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED
+// check, so a user-sourced message is never silently dropped just because
+// its (irrelevant, human-typed) steeringKind happens to collide with a
+// suppressed daemon kind. Unreachable today - every user-sourced enqueue
+// site passes an empty kind - but the ordering is load-bearing the moment
+// that changes, and nothing else in this file pins the ordering itself.
+test('source "user" is checked before suppression - a user-sourced steer is never dropped by a colliding kind', () => {
+  render(
+    <SteeringItem
+      item={item({ text: "focus on the tests", source: "user", steeringKind: "current-task" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("user-message-item")).toBeTruthy();
+  expect(screen.queryByTestId("steering-item")).toBeNull();
 });
 
 // --- card routing stays content-driven, independent of the kind ------------
