@@ -1,6 +1,6 @@
 # System steering voice — design
 
-Status: **approved in brainstorming, not implemented**. Branch `kh-steering-voice`,
+Status: **implemented**. Branch `kh-steering-voice`,
 worktree `.claude/worktrees/kh-steering-voice`.
 
 ## Problem
@@ -59,16 +59,19 @@ for it to read. Two consequences, both live today:
 - Pre-`Kind` transcripts **claim nothing**: no wire kind renders
   `◇ System steered ▸` with no kind. The prose classifier is deleted rather than
   kept as a fallback. No backward compatibility.
-- "Steering injected" → **"Message sent"**, scoped to `subagents.go:885` (a parent
-  steering a running child), which is the one site where those words are true.
+- "Steering injected" → **"Message sent"**, scoped to `agent-message`: a parent
+  steering a running child (`subagents.go:885`), and a `delegate_send` reaching a
+  caller or a running delegate (`job_delegate.go`) — every site an agent-to-agent
+  message is the one case where those words are true.
 
 ## 1. The grammar (new design-system.md §7)
 
 **A glyph in the gutter means the agent's instructions changed. An empty gutter
 means it is a passive fact.**
 
-The transcript already has a 12px glyph gutter: `toolcallitem`'s `.row` and
-`systemnoticeitem`'s `.failure` share one `display:flex; align-items:baseline;
+The transcript already has a 10px glyph gutter, sized to `SteeringGlyph` and
+`FailureGlyph`'s own SVG (neither declares a wider box): `toolcallitem`'s `.row`
+and `systemnoticeitem`'s `.failure` share one `display:flex; align-items:baseline;
 gap:var(--space-2)` grammar. §7 formalises it and assigns the column.
 
 | gutter | member | treatment | status |
@@ -113,21 +116,28 @@ thread item, alongside the existing `Source`.
 
 | kind | label | site |
 |---|---|---|
-| `interrupted` | Interrupted | `session_lifecycle.go:646` |
-| `agent-message` | Message sent | `subagents.go:885` |
-| `hook-context` | Hook context | `session_queue.go:175`, `session_init.go:1296` |
-| `precompact-hook` | Pre-compact hook | `session_compaction.go:181` |
+| `interrupted` | Interrupted | `session_lifecycle.go:645` |
+| `agent-message` | Message sent | `subagents.go:885`, `job_delegate.go:541-557` (delegate_send caller alias), `job_delegate.go:1573` (delegate_send to a running child) |
+| `hook-context` | Hook context | `session_queue.go:190`, `session_init.go:1294` |
+| `precompact-hook` | Pre-compact hook | `session_compaction.go:159` |
 | `compact-nudge` | Compaction nudge | `session_self_compact.go:116` |
-| `image-description` | Image description | `session_tool_round.go:280` |
-| `no-tool-calls` | No tool calls | `session_tool_round.go:36` |
-| `loop-detected` | Loop detection | `session_tool_round.go:340` |
+| `image-description` | Image description | `session_tool_round.go:278` |
+| `no-tool-calls` | No tool calls | `session_tool_round.go:34` |
+| `loop-detected` | Loop detection | `session_tool_round.go:338` |
 | `tasks-done` | Tasks done | `session_tools_task.go:224` |
-| `task-nudge` | Task nudge | `session_tool_round.go:373`, kind decided in `session_tools.go:917` |
-| `task-inactive` | Task list idle | `session_tool_round.go:373`, kind decided in `session_tools.go:927` |
-| `transcript-pointer` | Transcript pointer | `session_compaction.go:78` |
+| `task-nudge` | Task nudge | `session_tool_round.go:370`, kind decided in `session_tools.go:921` |
+| `task-inactive` | Task list idle | `session_tool_round.go:370`, kind decided in `session_tools.go:931` |
+| `note-handoff` | Note to self | `session_compaction.go:166` |
+| `goal-objective` | Goal objective | `session_compaction.go:170` |
+| `transcript-pointer` | Transcript pointer | `session_compaction.go:90` |
 | `current-task` | *(suppressed)* | `subagents.go:696`, `session_init.go:241`, `session_tools_task.go:194,217` |
 | `task-list` | *(suppressed)* | `session_namer.go:292` |
-| `notification` | *(card)* | `session_lifecycle.go:1344` |
+| `notification` | *(card)* | `session_lifecycle.go:1338`, `session_tools_communicate.go:139` (observer callback) |
+
+`note-handoff` and `goal-objective` were added mid-implementation: `runPreCompactHook`
+(`session_compaction.go:151`) merges three genuinely different sources — plugin
+PreCompact output, the pinned-note handoff, and the active goal objective — and
+each keeps its own kind rather than being merged under one label.
 
 `current-task` and `task-list` stay suppressed — the tasks panel owns that surface
 (parity-m4 §8:209-217). `notification` keeps its card.
@@ -197,9 +207,16 @@ with no colon — a colon promises a value.
 - `SteeringItem.test.tsx`: one case per treatment branch, plus the absent-kind row
   rendering "System steered" with no colon, plus a pre-`Kind` steer carrying a
   `<job-notification>` block still reaching a card.
-- Go: each of the 15 sites asserts the kind it emits. A table test over the kind
-  enum asserting every kind is produced by at least one site — that is the net
-  that catches a kind going stale the way `read-only` did.
+- Go: each of the 17 kinds is asserted at its site(s) (see the Kinds table above —
+  a kind and a call site are not 1:1; `agent-message`, `hook-context`, and
+  `current-task` each have more than one). `TestEverySteeringKindHasAProducer` is
+  the kind → producer net: every kind in the enum is produced somewhere, catching
+  a kind going stale the way `read-only` did.
+  `TestNoProducerPassesEmptySourceAndEmptyKindToTrySteerEnqueue` is the producer →
+  kind net added when the review found three live producers still emitting no
+  kind: no call site may carry neither a source nor a kind. A precise count of
+  raw injection call sites (as opposed to kinds) isn't tracked by either test and
+  drifts with the code, so this spec doesn't assert one.
 - `token-contract.test.ts` needs no new allowlist entry; confirm it still passes.
 - Gallery section for `SteeringGlyph` per §3's completeness test.
 
