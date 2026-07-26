@@ -23,9 +23,10 @@ The label is also a guess. `steeringClassify.ts` pattern-matches prose to infer 
 kind, and `SteeringInjectedData` (`agent/events/payloads.go:199`) carries no kind
 for it to read. Two consequences, both live today:
 
-- The classifier knows 8 patterns. There are 15 steering injection sites.
-  Everything it misses collapses into `kind: "unknown"`, labelled
-  "steering injected".
+- The classifier knows 8 patterns. There are 18 steering injection sites — and
+  three of those are invisible to a `grep '\.Steer('`, reaching the queue through
+  the `toolDeps.steer` indirection instead. Everything the classifier misses
+  collapses into `kind: "unknown"`, labelled "steering injected".
 - Its `read-only` rule matches `/reading without writing|reading for \d+ turns/`.
   **That string does not exist in the Go source.** It is inherited from the
   legacy `renderer-format.js` port and classifies a message the daemon never
@@ -80,16 +81,21 @@ on one row type.
 Kind string `json:"kind,omitempty"`
 ```
 
-Two insertion points cover all 15 sites:
+Two insertion points cover all 18 sites:
 
 - `steeringMessage.Kind`, carried through the single drain emitter at
-  `session_queue.go:674` (`consumeSteeringMessage`). Covers all 8 `s.Steer()`
-  callers.
+  `session_queue.go:674` (`consumeSteeringMessage`). Covers the 8 `s.Steer()`
+  callers plus the 3 that reach the queue through `toolDeps.steer`
+  (`session_tool_registry.go:32`, wired at `:171`), which gains a kind parameter.
 - The 7 emitters that construct `SteeringInjectedData` directly.
 
-`maybeInjectTaskReminder` (`session_tools.go:902`) has three triggers behind one
-return value, so it returns `(text, kind)`. The call site must not infer the kind
-from the text it just received — that would rebuild the classifier in Go.
+`prependSteering` (`session_queue.go:683`) is not a site: it re-queues
+already-built `steeringMessage` entries, which carry their kind already.
+
+`maybeInjectTaskReminder` (`session_tools.go:902`) has two returning triggers
+behind one return value, so it returns `(text, kind)`. The call site must not
+infer the kind from the text it just received — that would rebuild the
+classifier in Go.
 
 `internal/appprojector/appwire_projection.go:620` passes `Kind` through to the
 thread item, alongside the existing `Source`.
@@ -106,10 +112,11 @@ thread item, alongside the existing `Source`.
 | `image-description` | Image description | `session_tool_round.go:280` |
 | `no-tool-calls` | No tool calls | `session_tool_round.go:36` |
 | `loop-detected` | Loop detection | `session_tool_round.go:340` |
-| `tasks-done` | Tasks done | `session_tool_round.go:373`, kind decided in `session_tools.go:902` |
-| `task-nudge` | Task nudge | `session_tool_round.go:373`, kind decided in `session_tools.go:902` |
+| `tasks-done` | Tasks done | `session_tools_task.go:224` |
+| `task-nudge` | Task nudge | `session_tool_round.go:373`, kind decided in `session_tools.go:917` |
+| `task-inactive` | Task list idle | `session_tool_round.go:373`, kind decided in `session_tools.go:927` |
 | `transcript-pointer` | Transcript pointer | `session_compaction.go:78` |
-| `current-task` | *(suppressed)* | `subagents.go:696`, `session_init.go:241` |
+| `current-task` | *(suppressed)* | `subagents.go:696`, `session_init.go:241`, `session_tools_task.go:194,217` |
 | `task-list` | *(suppressed)* | `session_namer.go:292` |
 | `notification` | *(card)* | `session_lifecycle.go:1344` |
 
