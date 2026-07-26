@@ -136,7 +136,9 @@ else
 fi
 
 # --- scenario 7: --check fails loud below the floor, is silent above it ---
-if SERF_DISK_MIN_FREE_GB=999999999 run_disk_reclaim --check >"$work/check-fail.out" 2>&1; then
+# SERF_SKIP_GOCACHE_CHECK=1: this scenario is about the disk-floor logic only;
+# dedicated scenarios 8/9 below cover the GOCACHE block with GOCACHE pinned.
+if SERF_SKIP_GOCACHE_CHECK=1 SERF_DISK_MIN_FREE_GB=999999999 run_disk_reclaim --check >"$work/check-fail.out" 2>&1; then
 	bad "--check with an impossible floor (999999999G) exited 0"
 else
 	if grep -qi "free" "$work/check-fail.out"; then
@@ -145,7 +147,7 @@ else
 		bad "--check below the floor printed no specific message"
 	fi
 fi
-if SERF_DISK_MIN_FREE_GB=0 run_disk_reclaim --check >"$work/check-pass.out" 2>&1; then
+if SERF_SKIP_GOCACHE_CHECK=1 SERF_DISK_MIN_FREE_GB=0 run_disk_reclaim --check >"$work/check-pass.out" 2>&1; then
 	if [ -s "$work/check-pass.out" ]; then
 		bad "--check above the floor printed output (expected silent success)"
 	else
@@ -153,6 +155,39 @@ if SERF_DISK_MIN_FREE_GB=0 run_disk_reclaim --check >"$work/check-pass.out" 2>&1
 	fi
 else
 	bad "--check with a trivial floor (0G) still failed"
+fi
+
+# --- scenario 8: --check fails loud when GOCACHE points at an unreachable
+# path (kata 98x9's new failure mode: the volume it lives on is unmounted).
+# Simulated portably (no real removable volume needed): a chmod-000 ancestor
+# directory makes `mkdir -p` fail exactly like it would against a vanished
+# mountpoint, for any user, on any OS.
+locked_vol="$work/locked-vol"
+mkdir -p "$locked_vol"
+chmod 000 "$locked_vol"
+unreachable_gocache="$locked_vol/would-be-mounted/serf-build-cache"
+if GOCACHE="$unreachable_gocache" run_disk_reclaim --check >"$work/gocache-unreachable.out" 2>&1; then
+	bad "--check with an unreachable GOCACHE exited 0"
+else
+	if grep -q "unmounted" "$work/gocache-unreachable.out" && grep -qF "$unreachable_gocache" "$work/gocache-unreachable.out"; then
+		ok "--check with an unreachable GOCACHE fails loud and names the path"
+	else
+		bad "--check with an unreachable GOCACHE gave an unspecific message: $(cat "$work/gocache-unreachable.out")"
+	fi
+fi
+chmod 755 "$locked_vol"
+
+# --- scenario 9: --check warns (but does not fail) when GOCACHE is reachable
+# but back on the same volume as the checkout ---
+samevol_gocache="$work/samevol-gocache"
+if GOCACHE="$samevol_gocache" run_disk_reclaim --check >"$work/gocache-samevol.out" 2>&1; then
+	if grep -q "setup-gocache.sh" "$work/gocache-samevol.out"; then
+		ok "--check warns (exit 0) when GOCACHE shares the checkout's volume"
+	else
+		bad "--check with same-volume GOCACHE exited 0 but did not warn: $(cat "$work/gocache-samevol.out")"
+	fi
+else
+	bad "--check with a reachable (same-volume) GOCACHE exited non-zero"
 fi
 
 echo

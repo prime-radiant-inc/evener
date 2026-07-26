@@ -58,15 +58,30 @@ ignore rules only govern untracked files, so once staged it went quiet.
 
 **The Go build cache is large and grows fast.** One `go test -c` of the
 biggest package adds roughly 1G from warm. With the cache on the boot
-volume, a fleet filled the disk to zero and every agent died at once —
-including tool calls, which write an output file before executing, so
-nothing could run at all. Keep `GOCACHE` on a volume with room:
+volume, a fleet filled the disk to zero **twice** — every agent died at
+once, including tool calls, which write an output file before executing,
+so nothing could run at all. Move `GOCACHE` to a volume with room, once
+per machine:
 
 ```
-go env -w GOCACHE=/path/on/a/big/volume
+scripts/setup-gocache.sh                    # default target for this machine
+scripts/setup-gocache.sh /path/on/a/big/volume
 ```
 
-Disk exhaustion never announces itself. It surfaces as
+`go env -w` writes to a per-user file outside this git checkout, so a
+fresh clone or a new machine does **not** inherit it — this is a step to
+run, not a setting to commit. `scripts/disk-reclaim.sh --check` (wired
+into every test run via `run-module-tests.sh`) warns if `GOCACHE` has
+drifted back onto the checkout's own volume, so skipping this step
+doesn't fail silently forever.
+
+The external volume itself can be unmounted. That must fail loudly, not
+mysteriously: `scripts/disk-reclaim.sh --check` probes `GOCACHE` and
+gives a specific "this is what an unmounted build-cache volume looks
+like" diagnosis instead of a bare `go build` error naming neither
+`GOCACHE` nor "unmounted".
+
+Disk exhaustion never announces itself otherwise. It surfaces as
 `link: mapping output file failed`, `t.TempDir()` failures, and jobstore
 open errors — four test failures were once root-caused to it after being
 investigated as flakes.
