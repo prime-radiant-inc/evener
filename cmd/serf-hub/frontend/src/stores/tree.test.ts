@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import { threadClosedNotification, threadStartedNotification } from "../protocol/testing/notifications";
+import {
+  attentionChangedNotification,
+  threadClosedNotification,
+  threadStartedNotification,
+} from "../protocol/testing/notifications";
 import { connectionStore } from "./connection";
 import { REFRESH_NOTIFICATIONS, resetTreeStoreForTests, treeStore } from "./tree";
 
@@ -264,7 +268,7 @@ describe("notification-triggered refetch", () => {
     await treeStore.getState().refresh();
     fetchMock.mockClear();
 
-    fake.emitNotification({ method: "serf/attention/changed", params: {} });
+    fake.emitNotification(attentionChangedNotification());
     await vi.advanceTimersByTimeAsync(250);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -293,7 +297,7 @@ describe("notification-triggered refetch", () => {
     await vi.advanceTimersByTimeAsync(100);
     fake.emitNotification(threadClosedNotification());
     await vi.advanceTimersByTimeAsync(100);
-    fake.emitNotification({ method: "serf/attention/changed", params: {} });
+    fake.emitNotification(attentionChangedNotification());
     await vi.advanceTimersByTimeAsync(100); // 300ms elapsed total, but each notification reset the window
 
     expect(fetchMock).not.toHaveBeenCalled();

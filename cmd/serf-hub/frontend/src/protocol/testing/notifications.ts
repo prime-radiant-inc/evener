@@ -51,3 +51,22 @@ export function threadStartedNotification(ref = "ref_test"): AnyNotification {
 export function threadClosedNotification(ref = "ref_test", reason = "shutdown"): AnyNotification {
   return { method: "thread/closed", params: { threadId: `thr_${ref}`, ref, reason } };
 }
+
+// serf/attention/changed carried an undeclared payload until kata 4j2t moved
+// its params type across the import cycle that was keeping it nil. Callers had
+// been passing `params: {}`, which typechecked against the old empty stub and
+// described a message the daemon never sends. tree.ts only keys off the method
+// name today, so this shape is unread - which is exactly why it needs a
+// realistic default: the first consumer to read `summary` would otherwise find
+// every existing test feeding it a message with no summary at all.
+export function attentionChangedNotification(ref = "ref_test"): AnyNotification {
+  return {
+    method: "serf/attention/changed",
+    params: {
+      changed: [
+        { threadId: `thr_${ref}`, title: "test", project: "/tmp/project", level: "needsYou", prevLevel: "working" },
+      ],
+      summary: { needsYou: 1, error: 0, working: 0 },
+    },
+  };
+}
