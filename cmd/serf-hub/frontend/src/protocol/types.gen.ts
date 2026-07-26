@@ -270,6 +270,7 @@ export interface ItemLifecycleParams {
   ref?: string;
   turnId: string;
   item: ThreadItem;
+  failedToolCalls?: number;
 }
 
 export interface LaunchConfigDiagnostic {

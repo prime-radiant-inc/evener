@@ -96,3 +96,35 @@ func TestDetailsDrawerHidesWorkTimeAndTokensWhenAbsent(t *testing.T) {
 		t.Errorf("details drawer should omit Tokens: line when absent:\n%s", plain)
 	}
 }
+
+// TestDetailsDrawerShowsFailedToolCalls verifies the details drawer answers
+// "did anything go wrong" (kata md4g): a positive count renders a Failed:
+// line, an absent or measured-zero count renders nothing.
+func TestDetailsDrawerShowsFailedToolCalls(t *testing.T) {
+	withTestColorProfile(t)
+	three := 3
+	d := detailsDrawer{Detail: hubSessionDetail{FailedToolCalls: &three}}
+	got := d.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "Failed:   3") {
+		t.Errorf("details drawer missing Failed: line:\n%s", plain)
+	}
+}
+
+// TestDetailsDrawerHidesFailedToolCallsWhenZeroOrAbsent verifies a measured
+// zero and an uncounted session both render nothing — neither is news, and
+// an absent count must never be shown as a fabricated zero.
+func TestDetailsDrawerHidesFailedToolCallsWhenZeroOrAbsent(t *testing.T) {
+	withTestColorProfile(t)
+	zero := 0
+	for _, detail := range []hubSessionDetail{
+		{FailedToolCalls: &zero},
+		{},
+	} {
+		got := detailsDrawer{Detail: detail}.View()
+		plain := ansiPattern.ReplaceAllString(got, "")
+		if strings.Contains(plain, "Failed:") {
+			t.Errorf("details drawer should omit Failed: line:\n%s", plain)
+		}
+	}
+}

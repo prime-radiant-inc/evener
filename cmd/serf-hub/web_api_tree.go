@@ -556,6 +556,7 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 		WorkMillis:          thread.Serf.WorkMillis,
 		Usage:               hubUsageFromAppwire(thread.Serf.Usage),
 		ActiveTurnStartedAt: thread.Serf.ActiveTurnStartedAt,
+		FailedToolCalls:     thread.Serf.FailedToolCalls,
 	}
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID

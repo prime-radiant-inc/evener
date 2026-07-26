@@ -215,6 +215,47 @@ func TestHubDetailFromThreadMapsWorkingStateFields(t *testing.T) {
 	}
 }
 
+// TestHubDetailFromThreadMapsFailedToolCalls asserts hubDetailFromThread
+// carries thread.Serf.FailedToolCalls onto hubSessionDetail verbatim,
+// preserving the absent/zero distinction (kata md4g): a nil pointer means
+// nobody counted, not "zero failures".
+func TestHubDetailFromThreadMapsFailedToolCalls(t *testing.T) {
+	count := 3
+	thread := appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Source:    "local",
+		Serf: appwire.SerfThread{
+			Ref:             "local:th_1",
+			FailedToolCalls: &count,
+		},
+	}
+
+	detail := hubDetailFromThread(thread)
+
+	if detail.FailedToolCalls == nil {
+		t.Fatal("FailedToolCalls = nil, want a populated pointer")
+	}
+	if got := *detail.FailedToolCalls; got != 3 {
+		t.Fatalf("FailedToolCalls = %d, want 3", got)
+	}
+}
+
+// TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone guards the
+// "nobody counted" case: an absent thread.Serf.FailedToolCalls must not
+// become a fabricated zero.
+func TestHubDetailFromThreadLeavesFailedToolCallsNilWhenThreadHasNone(t *testing.T) {
+	detail := hubDetailFromThread(appwire.Thread{
+		ID:        "th_2",
+		SessionID: "th_2",
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_2"},
+	})
+	if detail.FailedToolCalls != nil {
+		t.Fatalf("FailedToolCalls = %+v, want nil", detail.FailedToolCalls)
+	}
+}
+
 // TestHubDetailFromThreadLeavesUsageNilWhenThreadHasNone guards the "no data"
 // path: an old daemon or Codex thread reports no usage, and the mapping must
 // not synthesize a zero-value struct (which would render ↑0 ↓0).
@@ -266,6 +307,31 @@ func TestRenderHubSessionStatusShowsWorkAndTokenLines(t *testing.T) {
 	}
 }
 
+// TestRenderHubSessionStatusShowsFailedLine asserts the /status details
+// drawer answers "did anything go wrong" (kata md4g): a positive count
+// renders "Failed:", a zero or absent count renders nothing — the count is
+// a real server-side measurement of the whole transcript, and the whole
+// point of the zero/absent gate is that neither is news.
+func TestRenderHubSessionStatusShowsFailedLine(t *testing.T) {
+	three := 3
+	failed := hubSessionDetail{SessionID: "01ABC", FailedToolCalls: &three}
+	got := renderHubSessionStatus(failed, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+	if !strings.Contains(got, "Failed:   3") {
+		t.Fatalf("status with failures missing Failed: line:\n%s", got)
+	}
+
+	zero := 0
+	for _, detail := range []hubSessionDetail{
+		{SessionID: "01ABC", FailedToolCalls: &zero},
+		{SessionID: "01ABC"},
+	} {
+		got = renderHubSessionStatus(detail, nil, appwire.AuthStatusResponse{}, nil, nil, 80)
+		if strings.Contains(got, "Failed:") {
+			t.Fatalf("status without measured failures should omit Failed: line:\n%s", got)
+		}
+	}
+}
+
 // TestSessionHeaderShowsWorkAndTokenChip asserts the in-session header meta
 // strip renders compact work-time + token chips (no cache-read — the chip
 // strip stays compact; the full breakdown lives in the /status drawer) when
@@ -309,6 +375,37 @@ func TestSessionHeaderShowsWorkAndTokenChip(t *testing.T) {
 	got = strings.Join(noMetrics.sessionHeaderLines(), "\n")
 	if strings.Contains(got, "work") || strings.Contains(got, "tok ") {
 		t.Errorf("plain session should omit work/token chips:\n%s", got)
+	}
+}
+
+// TestSessionHeaderShowsFailedChip asserts the session header meta strip
+// answers "did anything go wrong" (kata md4g) at a glance, the same way the
+// web status row's FailureCount does: a positive count renders a "failed N"
+// chip, a measured zero or an absent count renders nothing.
+func TestSessionHeaderShowsFailedChip(t *testing.T) {
+	three := 3
+	withFailures := hubModel{
+		detail: hubSessionDetail{
+			Title:           "Failing session",
+			SourceLabel:     "serf",
+			FailedToolCalls: &three,
+		},
+		width: 200,
+	}
+	got := strings.Join(withFailures.sessionHeaderLines(), "\n")
+	if !strings.Contains(got, "failed 3") {
+		t.Errorf("meta strip missing failed chip:\n%s", got)
+	}
+
+	zero := 0
+	for _, detail := range []hubSessionDetail{
+		{Title: "Clean session", SourceLabel: "serf", FailedToolCalls: &zero},
+		{Title: "Uncounted session", SourceLabel: "serf"},
+	} {
+		got = strings.Join((hubModel{detail: detail, width: 200}).sessionHeaderLines(), "\n")
+		if strings.Contains(got, "failed") {
+			t.Errorf("meta strip should omit failed chip:\n%s", got)
+		}
 	}
 }
 

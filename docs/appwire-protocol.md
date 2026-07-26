@@ -459,6 +459,7 @@ _(no fields)_
 | `ref` | `string` | yes |  |
 | `turnId` | `string` |  |  |
 | `item` | `appwire.ThreadItem` |  |  |
+| `failedToolCalls` | `*int` | yes |  |
 
 
 ### `LaunchConfigGetLayerParams`

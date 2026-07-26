@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -63,6 +64,12 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 	if u := m.detail.Usage; u != nil {
 		addPart("tok", fmt.Sprintf("↑%s ↓%s", formatTokens(int(u.InputTokens)), formatTokens(int(u.OutputTokens))))
+	}
+	// "failed" answers "did anything go wrong" (kata md4g) at a glance, the
+	// same way the web status row's FailureCount does. A measured zero and an
+	// uncounted session both render nothing — neither is news.
+	if fc := m.detail.FailedToolCalls; fc != nil && *fc > 0 {
+		addPart("failed", strconv.Itoa(*fc))
 	}
 	if m.detail.Goal != nil {
 		addPart("goal", fmt.Sprintf("%s %d", m.detail.Goal.Status, m.detail.Goal.Iterations))

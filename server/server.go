@@ -162,37 +162,49 @@ type Server struct {
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
-	mu                           sync.RWMutex
-	status                       StatusInfo
-	appSourceID                  string
-	appThreadID                  string
-	appIdentityGeneration        uint64
-	appProjector                 *appprojector.AppEventProjector
-	appTurns                     *appTurnSnapshot
-	appActiveTurnID              string
-	appReservedTurnID            string
-	cancelFunc                   context.CancelFunc
-	steerFunc                    func(string)
-	steerWithImagesFunc          func(string, []ImageAttachment)
-	queueFunc                    func(string) error
-	queueWithImagesFunc          func(string, []ImageAttachment) error
-	goalFunc                     func(objective string) (bool, error)
-	goalStatusFn                 func() (status string, iterations int, ok bool)
-	drainSteerFunc               func() error
-	drainSteerInputFunc          func(string, []ImageAttachment) error
-	promoteSteerFunc             func(int, string) error
-	cancelQueuedFunc             func(int, string) (string, int, error)
-	queueDepthFn                 func() int
-	queueIDsFn                   func() []string
-	queuePreviewFn               func() []string
-	queueTextsFn                 func() []string
-	compactFunc                  func(context.Context) error
-	clearFunc                    func(context.Context) error
-	pressureFn                   func() float64
-	pendingAskFn                 func() bool
-	pendingEscalationFn          func() bool
-	pendingEscalationsSnapshotFn func() []appwire.SandboxEscalationRequested
-	contextMetricsFn             func() ContextMetrics
+	mu                    sync.RWMutex
+	status                StatusInfo
+	appSourceID           string
+	appThreadID           string
+	appIdentityGeneration uint64
+	appProjector          *appprojector.AppEventProjector
+	appTurns              *appTurnSnapshot
+	appActiveTurnID       string
+	appReservedTurnID     string
+	// appLastStampedFailedToolCalls is the failure count most recently
+	// stamped onto an item/completed notification (kata 895d) — nil means
+	// nothing has been stamped yet for the current identity. It exists so
+	// item/completed only carries the figure on the item whose completion
+	// actually moved it, not on every tool call: the running count already
+	// rides thread/status/changed unconditionally (every status change is a
+	// turn boundary, so it can only have moved there), but that leaves a live
+	// watcher unable to see a failure land partway through a long turn.
+	// Reset to nil on SetAppIdentity so a new session's first observation is
+	// never suppressed as "unchanged" by whatever the previous session on
+	// this server left behind.
+	appLastStampedFailedToolCalls *int
+	cancelFunc                    context.CancelFunc
+	steerFunc                     func(string)
+	steerWithImagesFunc           func(string, []ImageAttachment)
+	queueFunc                     func(string) error
+	queueWithImagesFunc           func(string, []ImageAttachment) error
+	goalFunc                      func(objective string) (bool, error)
+	goalStatusFn                  func() (status string, iterations int, ok bool)
+	drainSteerFunc                func() error
+	drainSteerInputFunc           func(string, []ImageAttachment) error
+	promoteSteerFunc              func(int, string) error
+	cancelQueuedFunc              func(int, string) (string, int, error)
+	queueDepthFn                  func() int
+	queueIDsFn                    func() []string
+	queuePreviewFn                func() []string
+	queueTextsFn                  func() []string
+	compactFunc                   func(context.Context) error
+	clearFunc                     func(context.Context) error
+	pressureFn                    func() float64
+	pendingAskFn                  func() bool
+	pendingEscalationFn           func() bool
+	pendingEscalationsSnapshotFn  func() []appwire.SandboxEscalationRequested
+	contextMetricsFn              func() ContextMetrics
 	// workMetricsFn returns the live working-state/token metrics (WS2 A7):
 	// accumulated wall-clock work time, cumulative token usage (nil when
 	// there is none to report), and the in-flight turn's start time (0 when
