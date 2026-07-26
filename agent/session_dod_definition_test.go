@@ -1336,8 +1336,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 
 func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T) {
 	t.Parallel()
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
+	rootCtx := t.Context()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
 	cancelTurn()
@@ -1357,8 +1356,7 @@ func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T
 // sub-operation while the turn is still live.
 func TestQueuedInputDrainRejectsAbortErrorWhenTurnLive(t *testing.T) {
 	t.Parallel()
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
+	rootCtx := t.Context()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
 	defer cancelTurn()
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
@@ -1390,8 +1388,7 @@ func TestIsTurnCancellation_LiveTimeoutIsNotCancellation(t *testing.T) {
 
 func TestQueuedInputDrainContextUsesFreshCancelableTurnContext(t *testing.T) {
 	t.Parallel()
-	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
+	rootCtx := t.Context()
 	turnCtx, cancelTurn := context.WithCancel(rootCtx)
 	var cancelDrain context.CancelFunc
 	markedCtx := WithQueuedInputDrainOnInterruptHandler(turnCtx, rootCtx, func(root context.Context) (context.Context, context.CancelFunc) {
@@ -3183,7 +3180,7 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 	}
 
 	// Request 0-2 should have effort=low (session default, no task override yet or task has no effort set).
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if reqs[i].ReasoningEffort == nil || *reqs[i].ReasoningEffort != "low" {
 			t.Fatalf("req[%d] reasoning_effort: got %#v, want 'low'", i, reqs[i].ReasoningEffort)
 		}

@@ -42,8 +42,8 @@ func (m *hubModel) removePendingAttachment(idx int) {
 	if removed != nil && removed.MarkerN > 0 {
 		tok := "[image " + strconv.Itoa(removed.MarkerN) + "]"
 		text := m.session.input.Value()
-		if i := strings.Index(text, tok); i >= 0 {
-			m.session.input.SetValue(text[:i] + text[i+len(tok):])
+		if before, after, ok := strings.Cut(text, tok); ok {
+			m.session.input.SetValue(before + after)
 		}
 	}
 	m.cleanupPendingAttachmentFile(removed)

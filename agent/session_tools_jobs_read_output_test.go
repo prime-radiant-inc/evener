@@ -818,7 +818,7 @@ func TestJobReadOutputGrepScansFullRetainedOutputBeyondOldBudget(t *testing.T) {
 	// does not apply and all 30 lines are valid matches.
 	padding := strings.Repeat("x", 2996)
 	var buf strings.Builder
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		fmt.Fprintf(&buf, "row %s\n", padding)
 	}
 	// Final line that must appear in results under full-scan.

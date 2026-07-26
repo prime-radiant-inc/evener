@@ -119,7 +119,7 @@ func checkValidateRepoRelativePathResolutionError(t *testing.T) {
 
 func checkDecodeTrustedRepoLayerError(t *testing.T) {
 	sentinel := errors.New("decode failed")
-	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, interface{}) error {
+	_, diags := decodeTrustedRepoLayer("/repo", []byte("model = \"x\""), func([]byte, any) error {
 		return sentinel
 	})
 	if len(diags) != 1 || diags[0].Layer != LayerRepo || diags[0].Field != ".serf/launch.toml" || diags[0].Message != sentinel.Error() {

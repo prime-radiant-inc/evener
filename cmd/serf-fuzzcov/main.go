@@ -27,6 +27,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -277,7 +278,7 @@ func staticFuzzedPackages(targets []target, modulePaths map[string]string) map[s
 		if claimed == "" {
 			claimed = t.pkg
 		}
-		for _, part := range strings.Split(claimed, ",") {
+		for part := range strings.SplitSeq(claimed, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
@@ -609,7 +610,7 @@ func parseFocus(focus string) []focusSpec {
 		return nil
 	}
 	var out []focusSpec
-	for _, part := range strings.Split(focus, ";") {
+	for part := range strings.SplitSeq(focus, ";") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
@@ -674,11 +675,11 @@ func parseBlock(line string) (block, error) {
 	}
 	file := loc[:colon]
 	rng := loc[colon+1:] // sl.sc,el.ec
-	comma := strings.Index(rng, ",")
-	if comma < 0 {
+	before, _, found := strings.Cut(rng, ",")
+	if !found {
 		return block{}, fmt.Errorf("no range in %q", line)
 	}
-	startLine, err := strconv.Atoi(strings.SplitN(rng[:comma], ".", 2)[0])
+	startLine, err := strconv.Atoi(strings.SplitN(before, ".", 2)[0])
 	if err != nil {
 		return block{}, fmt.Errorf("bad start line in %q: %w", line, err)
 	}
@@ -800,9 +801,7 @@ func validateFloorTargets(floors map[string]float64, targets []target) error {
 // its current measured focus %. It never lowers an existing floor.
 func writeFloors(p string, results []result, old map[string]float64) error {
 	raised := map[string]float64{}
-	for k, v := range old {
-		raised[k] = v
-	}
+	maps.Copy(raised, old)
 	for _, r := range results {
 		if r.focusPct > raised[r.name] {
 			raised[r.name] = r.focusPct
@@ -845,12 +844,12 @@ func readIgnore(p string) (map[string]bool, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		hash := strings.Index(line, "#")
-		if hash < 0 {
+		imp, reason, found := strings.Cut(line, "#")
+		if !found {
 			return nil, fmt.Errorf("%s:%d: ignore entry %q has no reason comment (use \"<import-path>  # <reason>\")", p, n, line)
 		}
-		imp := strings.TrimSpace(line[:hash])
-		reason := strings.TrimSpace(line[hash+1:])
+		imp = strings.TrimSpace(imp)
+		reason = strings.TrimSpace(reason)
 		if imp == "" || reason == "" {
 			return nil, fmt.Errorf("%s:%d: ignore entry %q needs both an import path and a reason", p, n, line)
 		}

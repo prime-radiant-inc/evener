@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -340,9 +341,7 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 		clone.Images[i].Data = append([]byte(nil), item.Images[i].Data...)
 		if item.Images[i].Metadata != nil {
 			clone.Images[i].Metadata = make(map[string]string, len(item.Images[i].Metadata))
-			for key, value := range item.Images[i].Metadata {
-				clone.Images[i].Metadata[key] = value
-			}
+			maps.Copy(clone.Images[i].Metadata, item.Images[i].Metadata)
 		}
 	}
 	return clone

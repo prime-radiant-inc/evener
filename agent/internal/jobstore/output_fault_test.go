@@ -37,7 +37,7 @@ func failAtPlan(k int) []byte {
 func faultSweep(t *testing.T, maxK int, setup func(base afero.Fs), drive func(fs afero.Fs) error) []error {
 	t.Helper()
 	errs := make([]error, maxK)
-	for k := 0; k < maxK; k++ {
+	for k := range maxK {
 		base := afero.NewMemMapFs()
 		if setup != nil {
 			setup(base)

@@ -480,10 +480,7 @@ func (g *APIAttemptGroup) recordFailure(failure APILogFailure) {
 }
 
 func buildAPIAttemptRecord(groupID, attemptID string, index int, meta APIAttemptMeta, result APIAttemptResult) apilog.APIAttemptRecord {
-	latency := result.FinishedAt.Sub(meta.StartedAt).Milliseconds()
-	if latency < 0 {
-		latency = 0
-	}
+	latency := max(result.FinishedAt.Sub(meta.StartedAt).Milliseconds(), 0)
 	patterns := credentialEvidencePatterns(meta.CredentialMaterial)
 	secretNames := meta.CredentialMaterial.secretNames
 	record := apilog.APIAttemptRecord{

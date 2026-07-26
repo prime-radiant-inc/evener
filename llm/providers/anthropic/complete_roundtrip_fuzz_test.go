@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"testing"
 
@@ -265,9 +266,7 @@ func assertFirstStreamRequest(t *testing.T, rt *captureRoundTripper, a *Adapter,
 	}
 	// The streaming path adds "stream":true to the same built body.
 	streamBody := make(map[string]any, len(wantBody)+1)
-	for k, v := range wantBody {
-		streamBody[k] = v
-	}
+	maps.Copy(streamBody, wantBody)
 	streamBody["stream"] = true
 	wantBytes, err := json.Marshal(streamBody)
 	if err != nil {

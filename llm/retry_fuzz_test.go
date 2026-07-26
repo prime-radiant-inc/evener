@@ -155,10 +155,7 @@ func FuzzRetryDelay(f *testing.F) {
 
 		// Retry-After honored verbatim when within the cap.
 		if retryAfter != nil {
-			want := *retryAfter
-			if want < 0 {
-				want = 0
-			}
+			want := max(*retryAfter, 0)
 			if delay != want {
 				t.Fatalf("Retry-After within cap not honored: got %v want %v", delay, want)
 			}
@@ -248,10 +245,7 @@ func FuzzRetry(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, rawMaxRetries int, script []byte, randBits uint64, onRetry bool, cancelAfter int, variant uint8) {
 		maxRetries := clampMaxRetries(rawMaxRetries)
-		effectiveMax := maxRetries
-		if effectiveMax < 0 {
-			effectiveMax = 0
-		}
+		effectiveMax := max(maxRetries, 0)
 		variant %= 4
 		nilFuncs := variant == 1
 		sleepErrs := variant == 2
@@ -423,10 +417,7 @@ func FuzzRetryStream(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, rawMaxRetries int, script, partialScript []byte, retryAfterPartial, onRetry bool, cancelAfter int, variant uint8) {
 		maxRetries := clampMaxRetries(rawMaxRetries)
-		effectiveMax := maxRetries
-		if effectiveMax < 0 {
-			effectiveMax = 0
-		}
+		effectiveMax := max(maxRetries, 0)
 		variant %= 4
 		nilSleep := variant == 1
 		sleepErrs := variant == 2

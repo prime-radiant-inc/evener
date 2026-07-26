@@ -240,7 +240,7 @@ func firmlinkAlias(path string) string {
 	if path == dataVolumePrefix {
 		return path
 	}
-	if rest := strings.TrimPrefix(path, dataVolumePrefix+"/"); rest != path {
+	if rest, ok := strings.CutPrefix(path, dataVolumePrefix+"/"); ok {
 		return "/" + rest
 	}
 	return dataVolumePrefix + path

@@ -125,10 +125,7 @@ func enrichOutputImageNotification(sessionID, cwd string, argsByCallID map[strin
 
 func shellOutputImageCandidates(output string) []string {
 	matches := outputImageExtRegexp.FindAllStringSubmatch(output, -1)
-	capHint := len(matches)
-	if capHint > outputImageMaxCandidates {
-		capHint = outputImageMaxCandidates
-	}
+	capHint := min(len(matches), outputImageMaxCandidates)
 	out := make([]string, 0, capHint)
 	seen := map[string]struct{}{}
 	for _, m := range matches {

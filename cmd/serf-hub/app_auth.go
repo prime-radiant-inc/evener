@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -382,9 +383,7 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
 	out := envToMap(os.Environ())
-	for key, value := range launchEnv {
-		out[key] = value
-	}
+	maps.Copy(out, launchEnv)
 	return out
 }
 

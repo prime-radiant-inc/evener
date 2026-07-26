@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -265,12 +266,7 @@ func communicateSchemaStringSlice(v any) []string {
 }
 
 func communicateSchemaContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func hasMeaningfulRawOutput(raw any) bool {

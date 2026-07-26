@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -222,10 +223,7 @@ func (c *TurnCache) PageFromFile(path string, maxLineBytes int, cursor string, l
 	if hi < 0 {
 		hi = 0
 	}
-	lo := hi - limit
-	if lo < 0 {
-		lo = 0
-	}
+	lo := max(hi-limit, 0)
 	next := ""
 	if lo > 0 {
 		next = strconv.Itoa(lo)
@@ -822,15 +820,9 @@ func transcriptAnchors(file *os.File, completeSize int64) (turnIndexAnchor, turn
 	if completeSize <= 0 {
 		return turnIndexAnchor{}, turnIndexAnchor{}
 	}
-	firstLength := int64(turnIndexAnchorBytes)
-	if firstLength > completeSize {
-		firstLength = completeSize
-	}
+	firstLength := min(int64(turnIndexAnchorBytes), completeSize)
 	first := anchorAt(file, 0, int(firstLength))
-	tailOffset := completeSize - int64(turnIndexAnchorBytes)
-	if tailOffset < 0 {
-		tailOffset = 0
-	}
+	tailOffset := max(completeSize-int64(turnIndexAnchorBytes), 0)
 	tail := anchorAt(file, tailOffset, int(completeSize-tailOffset))
 	return first, tail
 }
@@ -888,10 +880,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 		}
 		recordBase = 1
 	}
-	recordLogicalLo := lo - recordBase
-	if recordLogicalLo < 0 {
-		recordLogicalLo = 0
-	}
+	recordLogicalLo := max(lo-recordBase, 0)
 	for rank := recordLogicalLo; rank < hi-recordBase && rank < index.VisibleRecords; rank++ {
 		record, ok := index.visibleRecordAt(rank, stats)
 		if !ok {
@@ -1403,9 +1392,7 @@ func cloneToolNames(names map[string]string) map[string]string {
 
 func cloneToolNamesObserved(names map[string]string, stats *ReadStats) map[string]string {
 	clone := make(map[string]string, len(names))
-	for id, name := range names {
-		clone[id] = name
-	}
+	maps.Copy(clone, names)
 	if stats != nil {
 		stats.resolverEntriesCopied += int64(len(names))
 	}

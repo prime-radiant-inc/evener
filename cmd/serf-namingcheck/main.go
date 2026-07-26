@@ -243,7 +243,7 @@ func isExcluded(rel string) bool {
 	}
 	// Hidden dirs (anything whose path segment starts with a dot, e.g.
 	// .github, .git) are walked at top level but otherwise skipped.
-	for _, seg := range strings.Split(rel, "/") {
+	for seg := range strings.SplitSeq(rel, "/") {
 		if len(seg) > 1 && strings.HasPrefix(seg, ".") && seg != ".github" {
 			return true
 		}
@@ -523,7 +523,7 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 
 		// Table header: [section] or [[array.of.tables]]
 		if m := tomlTableLineRe.FindStringSubmatch(line); m != nil {
-			for _, part := range strings.Split(m[1], ".") {
+			for part := range strings.SplitSeq(m[1], ".") {
 				key := strings.TrimSpace(part)
 				// Quoted keys are allowed verbatim — used for dotted keys
 				// that intentionally embed dots/spaces.
@@ -544,7 +544,7 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 
 		// Plain key = value lines.
 		if m := tomlKeyLineRe.FindStringSubmatch(line); m != nil {
-			for _, part := range strings.Split(m[1], ".") {
+			for part := range strings.SplitSeq(m[1], ".") {
 				key := strings.TrimSpace(part)
 				if !prevIgnore && !isSnakeCase(key) {
 					out = append(out, Violation{

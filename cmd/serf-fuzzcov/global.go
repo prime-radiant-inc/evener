@@ -11,6 +11,7 @@ import (
 	"go/parser"
 	"go/token"
 	"io"
+	"maps"
 	"math"
 	"math/big"
 	"os"
@@ -599,9 +600,7 @@ func readGlobalFloorsFile(filename string) (map[string]globalFloor, error) {
 // their measured ratio. A failed raw threshold can never create or lower a floor.
 func RaiseGlobalFloors(old map[string]globalFloor, report GlobalReport) map[string]globalFloor {
 	raised := make(map[string]globalFloor, len(old)+len(report.Modules))
-	for module, floor := range old {
-		raised[module] = floor
-	}
+	maps.Copy(raised, old)
 	for _, module := range report.Modules {
 		if !module.Pass || module.Total == 0 {
 			continue
@@ -1042,9 +1041,9 @@ func leadingBuildConstraintExpressions(filename string) ([]constraint.Expr, erro
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if inBlockComment {
-			if end := strings.Index(line, "*/"); end >= 0 {
+			if _, after, found := strings.Cut(line, "*/"); found {
 				inBlockComment = false
-				if strings.TrimSpace(line[end+2:]) != "" {
+				if strings.TrimSpace(after) != "" {
 					return expressions, nil
 				}
 			}
@@ -1063,9 +1062,9 @@ func leadingBuildConstraintExpressions(filename string) ([]constraint.Expr, erro
 			}
 			expressions = append(expressions, expression)
 		case strings.HasPrefix(line, "/*"):
-			if end := strings.Index(line, "*/"); end < 0 {
+			if _, after, found := strings.Cut(line, "*/"); !found {
 				inBlockComment = true
-			} else if strings.TrimSpace(line[end+2:]) != "" {
+			} else if strings.TrimSpace(after) != "" {
 				return expressions, nil
 			}
 		default:

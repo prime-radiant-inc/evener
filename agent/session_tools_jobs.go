@@ -61,13 +61,8 @@ const (
 // inline-block window [minJobBlockTimeoutMS, maxJobBlockTimeoutMS] and returns
 // it as a wait duration. Callers gate on ms > 0 (and reject negatives) upstream.
 func clampJobBlockTimeout(ms int) time.Duration {
-	clamped := ms
-	if clamped < minJobBlockTimeoutMS {
-		clamped = minJobBlockTimeoutMS
-	}
-	if clamped > maxJobBlockTimeoutMS {
-		clamped = maxJobBlockTimeoutMS
-	}
+	clamped := max(ms, minJobBlockTimeoutMS)
+	clamped = min(clamped, maxJobBlockTimeoutMS)
 	return time.Duration(clamped) * time.Millisecond
 }
 
@@ -383,13 +378,8 @@ func decodeDelegateArgs(args map[string]any) (delegateArgs, error) {
 		if n < 0 {
 			return delegateArgs{}, errors.New("invalid_request: max_wait_ms must be non-negative")
 		}
-		clamped := n
-		if clamped < minJobBlockTimeoutMS {
-			clamped = minJobBlockTimeoutMS
-		}
-		if clamped > maxJobBlockTimeoutMS {
-			clamped = maxJobBlockTimeoutMS
-		}
+		clamped := max(n, minJobBlockTimeoutMS)
+		clamped = min(clamped, maxJobBlockTimeoutMS)
 		a.Background = false
 		a.BlockTimeoutMS = clamped
 	}
@@ -2375,10 +2365,7 @@ func (g *jobGrepScan) scanSegment(seg []byte, re *regexp.Regexp, maxLineBytes in
 func readJobOutputFrom(jm *jobManager, jobID string, from, total int64) (content string, start int64, ok bool) {
 	want := total - from
 	for tries := 0; ; tries++ {
-		req := want
-		if req > maxJobOutputRetentionBytes {
-			req = maxJobOutputRetentionBytes
-		}
+		req := min(want, maxJobOutputRetentionBytes)
 		c, totalNow, _, err := readJobOutputForScan(jm, jobID, int(req))
 		if err != nil {
 			return "", 0, false

@@ -187,7 +187,7 @@ func (r *opReader) taskUpdates(created int, withDeps bool) []TaskUpdate {
 		if withDeps {
 			ndeps := int(r.next() % 3)
 			deps := []int{}
-			for d := 0; d < ndeps; d++ {
+			for range ndeps {
 				deps = append(deps, int(r.next())%(created+2))
 			}
 			u.DependsOn = &deps

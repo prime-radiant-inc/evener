@@ -69,7 +69,7 @@ func FuzzToolRegistryProgram(f *testing.F) {
 			t.Fatalf("middleware result = %+v calls=%d want no execution", blocked, *calls)
 		}
 
-		for mode := 0; mode < 6; mode++ {
+		for mode := range 6 {
 			callID := "mode-id"
 			if mode == 0 {
 				callID = "" // synthesized shortHash branch

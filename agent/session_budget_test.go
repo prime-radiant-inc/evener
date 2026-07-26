@@ -319,7 +319,7 @@ func TestSession_TurnBudgetWarningRootAndChildWording(t *testing.T) {
 func TestSession_UnlimitedNeverWarns(t *testing.T) {
 	t.Parallel()
 	sess, _, _ := newBudgetSession(t, SessionConfig{MaxTurns: 0}, nil)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		if _, err := sess.ProcessInput(context.Background(), fmt.Sprintf("input %d", i), nil); err != nil {
 			t.Fatalf("ProcessInput(%d): %v", i, err)
 		}

@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -51,13 +52,7 @@ func FuzzMatchTarget(f *testing.F) {
 			if err != nil {
 				t.Fatalf("exact matcher %q returned error %v", matcher, err)
 			}
-			want := false
-			for _, seg := range strings.Split(m, "|") {
-				if seg == target {
-					want = true
-					break
-				}
-			}
+			want := slices.Contains(strings.Split(m, "|"), target)
 			if ok != want {
 				t.Fatalf("exact matcher %q vs %q: got %v, want %v", matcher, target, ok, want)
 			}

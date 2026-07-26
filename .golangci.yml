@@ -15,6 +15,12 @@ linters:
     - gocheckcompilerdirectives
     - gocritic
     - misspell
+    # modernize rewrites loops and stdlib calls into their current forms.
+    # Enabled deliberately rather than swept once: a one-time cleanup drifts
+    # straight back, so the value is in the gate, not the diff. It also
+    # carries one non-cosmetic check - omitempty on a struct value, which Go
+    # never omits, so the tag misdescribes the wire (kata mams).
+    - modernize
     - nakedret
     - nilerr
     - noctx

@@ -93,10 +93,7 @@ func (g *anthGen) split(s string) []string {
 	if s == "" {
 		return []string{""}
 	}
-	parts := 1 + g.intn(3)
-	if parts > len(s) {
-		parts = len(s)
-	}
+	parts := min(1+g.intn(3), len(s))
 	out := make([]string, 0, parts)
 	rem := s
 	for p := 0; p < parts-1 && len(rem) > 1; p++ {
@@ -247,7 +244,7 @@ func structuredAnthropicSSE(raw []byte) []byte {
 
 	sawTool := false
 	nBlocks := g.intn(5)
-	for idx := 0; idx < nBlocks; idx++ {
+	for idx := range nBlocks {
 		switch blockKinds[g.intn(len(blockKinds))] {
 		case "text":
 			g.emitTextBlock(idx)
@@ -357,7 +354,7 @@ func TestStructuredAnthropicReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

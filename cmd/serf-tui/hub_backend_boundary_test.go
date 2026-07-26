@@ -11,7 +11,7 @@ func TestHubModelDisablesLegacySessionBackends(t *testing.T) {
 	// addr, embedded, and authController are legacy standalone-TUI fields that
 	// must never come back. Use reflect so the test actually fails if one is
 	// reintroduced — a compile-only call-and-not-panic is coverage theater.
-	typ := reflect.TypeOf(hubModel{})
+	typ := reflect.TypeFor[hubModel]()
 	for _, banned := range []string{"addr", "embedded", "authController"} {
 		if _, ok := typ.FieldByName(banned); ok {
 			t.Errorf("hubModel must not carry legacy field %q", banned)

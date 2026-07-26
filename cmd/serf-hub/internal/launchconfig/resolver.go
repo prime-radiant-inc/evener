@@ -127,7 +127,7 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 	var layer Layer
 	var diags []Diagnostic
 	if state == TrustTrusted {
-		returnLayer, returnDiags := decodeTrustedRepoLayer(cwd, data, func(data []byte, out interface{}) error {
+		returnLayer, returnDiags := decodeTrustedRepoLayer(cwd, data, func(data []byte, out any) error {
 			_, err := tomlDecode(data, out)
 			return err
 		})
@@ -136,7 +136,7 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 	return status, layer, diags
 }
 
-func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, interface{}) error) (Layer, []Diagnostic) {
+func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, any) error) (Layer, []Diagnostic) {
 	var layer Layer
 	if err := decode(data, &layer); err != nil {
 		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".serf/launch.toml", Message: err.Error()}}

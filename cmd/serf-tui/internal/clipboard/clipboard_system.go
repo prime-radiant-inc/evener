@@ -281,7 +281,7 @@ func readImageBytesWayland() ([]byte, string, error) {
 // without a `file://` prefix are skipped.
 func ParseURIList(s string) []string {
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue

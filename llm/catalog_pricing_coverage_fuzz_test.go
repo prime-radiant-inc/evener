@@ -13,7 +13,7 @@ import (
 // pricing, rate-limit, media, and local token-counting surfaces. The selector
 // keeps each corpus entry small while ensuring replay reaches every contract.
 func FuzzCatalogPricingCoverage(f *testing.F) {
-	for i := byte(0); i < 12; i++ {
+	for i := range byte(12) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, selector byte) {

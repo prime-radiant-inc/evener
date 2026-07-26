@@ -39,7 +39,7 @@ func TestChatCompletionsParallelToolCallOrderStable(t *testing.T) {
 
 	a := &Adapter{BaseURL: "http://fuzz.local"}
 	var first string
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		resp, _ := accumulateChatCompletionsSSE(a, sse, false)
 		got := toolCallSeq(resp)
 		if got == "" {

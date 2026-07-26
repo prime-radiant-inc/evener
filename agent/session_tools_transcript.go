@@ -531,10 +531,7 @@ func readMarkdownPage(path, ref string, meta schema.SessionMeta, rangeArg string
 			content, rmeta = renderTranscript(data.Header, data.Entries, effectiveRange, boundedOpt)
 			rmeta.Truncated = true
 		}
-		end := offsetBytes + maxBytes
-		if end > len(exact) {
-			end = len(exact)
-		}
+		end := min(offsetBytes+maxBytes, len(exact))
 		chunk := exact[offsetBytes:end]
 		expansion = &transcriptTurnExpansion{
 			ExpandTurn:     *expandTurn,

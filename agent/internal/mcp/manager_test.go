@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -475,13 +476,7 @@ func TestMergeEnv(t *testing.T) {
 	// and that overriding works correctly.
 	result := mergeEnv(map[string]string{"MCP_TEST_UNIQUE_KEY_42": "value42"})
 
-	found := false
-	for _, e := range result {
-		if e == "MCP_TEST_UNIQUE_KEY_42=value42" {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(result, "MCP_TEST_UNIQUE_KEY_42=value42")
 	if !found {
 		t.Error("expected MCP_TEST_UNIQUE_KEY_42=value42 in merged env")
 	}

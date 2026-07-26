@@ -442,7 +442,7 @@ func CheckFocusSpecs(root string, targets []Target) error {
 		if pkgSub == "." {
 			pkgSub = ""
 		}
-		for _, spec := range strings.Split(target.Focus, ";") {
+		for spec := range strings.SplitSeq(target.Focus, ";") {
 			relpath, fn, _ := strings.Cut(spec, "#")
 			display := path.Join(target.Module, pkgSub, relpath)
 			srcPath := filepath.Join(root, target.Module, pkgSub, relpath)

@@ -149,7 +149,7 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 	// stale or unrelated port).
 	var resp *http.Response
 	var reqErr error
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		resp, reqErr = http.Get("http://" + reportedAddr + "/")
 		if reqErr == nil {
 			break

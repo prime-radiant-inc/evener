@@ -24,9 +24,9 @@ func FuzzFieldsOf(f *testing.F) {
 		switch which % 3 {
 		case 0:
 		case 1:
-			typ = reflect.TypeOf(0)
+			typ = reflect.TypeFor[int]()
 		default:
-			typ = reflect.TypeOf(sample{})
+			typ = reflect.TypeFor[sample]()
 		}
 		fields := fieldsOf(typ)
 		if typ != nil && typ.Kind() == reflect.Struct && len(fields) != 2 {

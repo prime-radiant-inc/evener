@@ -65,10 +65,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 	if randFloat == nil {
 		randFloat = rand.Float64
 	}
-	maxRetries := policy.MaxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
+	maxRetries := max(policy.MaxRetries, 0)
 
 	for attempt := 0; ; attempt++ {
 		v, err := fn()
@@ -99,10 +96,7 @@ func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) 
 	// Prefer server-provided Retry-After when present.
 	var e Error
 	if errors.As(err, &e) && e.RetryAfter() != nil {
-		d := *e.RetryAfter()
-		if d < 0 {
-			d = 0
-		}
+		d := max(*e.RetryAfter(), 0)
 		if policy.MaxDelay > 0 && d > policy.MaxDelay {
 			// Spec: do not retry if server asks us to wait longer than max_delay.
 			return 0, false
@@ -110,10 +104,7 @@ func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) 
 		return d, true
 	}
 
-	base := policy.BaseDelay
-	if base < 0 {
-		base = 0
-	}
+	base := max(policy.BaseDelay, 0)
 	mult := policy.BackoffMultiplier
 	if mult <= 1 {
 		mult = 2

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3192,10 +3193,8 @@ func (jm *jobManager) stampObservedBy(workerSessionID, observerSessionID string)
 	if err != nil {
 		return err
 	}
-	for _, id := range meta.ObservedBy {
-		if id == observerSessionID {
-			return nil
-		}
+	if slices.Contains(meta.ObservedBy, observerSessionID) {
+		return nil
 	}
 	meta.ObservedBy = append(meta.ObservedBy, observerSessionID)
 	return schema.SaveSessionMeta(jm.stateDir, meta)
@@ -4768,7 +4767,7 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 
 func writeWatchFrameIndentedBlock(b *strings.Builder, text string) {
 	text = normalizeWatchFrameLineEndings(text)
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")

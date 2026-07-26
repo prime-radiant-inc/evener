@@ -217,10 +217,7 @@ func dashboardRowWindow(count int, selected int, maxRows int) (int, int) {
 	if selected >= count {
 		selected = count - 1
 	}
-	start := selected - maxRows/2
-	if start < 0 {
-		start = 0
-	}
+	start := max(selected-maxRows/2, 0)
 	if start+maxRows > count {
 		start = count - maxRows
 	}
@@ -370,7 +367,7 @@ func dashboardCell(text string) string {
 }
 
 func dashboardTitle(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		if line = dashboardCell(line); line != "" {
 			return line
 		}

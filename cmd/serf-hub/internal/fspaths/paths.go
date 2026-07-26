@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -151,10 +152,8 @@ func SanitizeDirPrefix(p string) (string, error) {
 	hadTrailingSlash := strings.HasSuffix(p, sep)
 	hadDotFilter := strings.HasSuffix(p, sep+".")
 	cleaned := filepath.Clean(p)
-	for _, seg := range strings.Split(cleaned, sep) {
-		if seg == ".." {
-			return "", errors.New("path contains traversal")
-		}
+	if slices.Contains(strings.Split(cleaned, sep), "..") {
+		return "", errors.New("path contains traversal")
 	}
 	switch {
 	case hadDotFilter:

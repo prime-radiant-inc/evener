@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -915,14 +916,7 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 	t.Run("default child with canDelegate=false: delegate and job_watch are denied", func(t *testing.T) {
 		_, _, denied := baseSubagentToolPolicy(nil, false)
 		for _, tool := range []string{"delegate", "job_watch"} {
-			found := false
-			for _, d := range denied {
-				if d == tool {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(denied, tool) {
 				t.Errorf("default child with canDelegate=false: %q must be in denied list (got %v)", tool, denied)
 			}
 		}
@@ -958,14 +952,7 @@ func TestBaseSubagentPolicyAllowsDelegateWithAllowance(t *testing.T) {
 		}
 		// Must contain read_file and task_list
 		for _, want := range []string{"read_file", "task_list"} {
-			found := false
-			for _, a := range allowed {
-				if a == want {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(allowed, want) {
 				t.Errorf("explicit-Tools agent must contain %q in allow-list (got %v)", want, allowed)
 			}
 		}

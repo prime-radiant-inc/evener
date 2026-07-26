@@ -60,7 +60,7 @@ func TestWithWatchAddsLoadBearingKeyAndDiagnosticEntry(t *testing.T) {
 
 func TestDiagnosticChainTruncatesWithoutDroppingWatchKeys(t *testing.T) {
 	p := &Causal{}
-	for i := 0; i < maxDiagnosticChain+5; i++ {
+	for i := range maxDiagnosticChain + 5 {
 		p = WithWatch(p, "watch_"+string(rune('A'+i)), "wg_1", "wd", "session", "job")
 	}
 	if len(p.WatchKeys) != maxDiagnosticChain+5 {
@@ -80,7 +80,7 @@ func TestCloneTruncatesOverlongDiagnosticChain(t *testing.T) {
 	}
 
 	p := &Causal{}
-	for i := 0; i < maxDiagnosticChain+5; i++ {
+	for range maxDiagnosticChain + 5 {
 		p.Chain = append(p.Chain, Entry{Kind: "manual", DeliveryID: "wd"})
 	}
 

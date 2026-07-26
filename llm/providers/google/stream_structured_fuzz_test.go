@@ -135,7 +135,7 @@ func (g *gemGen) finishReason() string {
 func (g *gemGen) contentParts() []any {
 	n := 1 + g.intn(3)
 	parts := make([]any, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		switch g.intn(3) {
 		case 0:
 			parts = append(parts, map[string]any{"thought": true, "text": g.text(5)})
@@ -270,7 +270,7 @@ func TestStructuredGeminiReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

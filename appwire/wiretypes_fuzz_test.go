@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/serf/fuzz/typegen"
 )
 
-var jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 
 // launchConfigLayerSchema hand-authors LaunchConfigLayer's JSON shape (types.go).
 // LaunchConfigLayer has a custom MarshalJSON, so the reflect bridge cannot infer
@@ -75,7 +75,7 @@ var launchConfigLayerSchema = map[string]any{
 }
 
 func TestLaunchConfigLayerOmitsObsoleteRawHTTPLogging(t *testing.T) {
-	if _, ok := reflect.TypeOf(LaunchConfigLayer{}).FieldByName("RawHTTPLogging"); ok {
+	if _, ok := reflect.TypeFor[LaunchConfigLayer]().FieldByName("RawHTTPLogging"); ok {
 		t.Fatal("LaunchConfigLayer still exposes the obsolete raw HTTP logging control")
 	}
 }
@@ -90,7 +90,7 @@ var stringArraySchema = map[string]any{"type": "array", "items": map[string]any{
 // as a stdlib reflect.Type.
 func buildRegistry() (*typegen.Registry, func(string) reflect.Type) {
 	reg := typegen.NewRegistry()
-	reg.RegisterTypeSchema(reflect.TypeOf(LaunchConfigLayer{}), launchConfigLayerSchema)
+	reg.RegisterTypeSchema(reflect.TypeFor[LaunchConfigLayer](), launchConfigLayerSchema)
 
 	types := map[string]reflect.Type{}
 	add := func(name string, v any) {
@@ -199,7 +199,7 @@ func assertRoundTripStable(t *testing.T, name string, p any) {
 // LaunchConfigLayer, carries an override, so the oracle stays on for everything.
 func roundTrippable(typ reflect.Type) bool {
 	if typ.Implements(jsonMarshalerType) || reflect.PointerTo(typ).Implements(jsonMarshalerType) {
-		return typ == reflect.TypeOf(LaunchConfigLayer{})
+		return typ == reflect.TypeFor[LaunchConfigLayer]()
 	}
 	return true
 }

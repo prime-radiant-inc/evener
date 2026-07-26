@@ -95,10 +95,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 		Width(width).
 		Padding(0, 1)
 
-	inner := width - 2
-	if inner < 1 {
-		inner = 1
-	}
+	inner := max(width-2, 1)
 	leftW := lipgloss.Width(leftContent)
 	rightW := lipgloss.Width(rightContent)
 	if leftW+rightW+1 > inner {

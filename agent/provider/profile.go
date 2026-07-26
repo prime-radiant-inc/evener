@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"maps"
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/tool"
@@ -134,9 +135,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -295,9 +294,7 @@ func (p *Profile) ToolNameMap() map[string]string {
 		return nil
 	}
 	m := make(map[string]string, len(p.toolNameMap))
-	for k, v := range p.toolNameMap {
-		m[k] = v
-	}
+	maps.Copy(m, p.toolNameMap)
 	return m
 }
 

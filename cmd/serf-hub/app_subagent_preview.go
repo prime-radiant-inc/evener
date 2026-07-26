@@ -32,10 +32,7 @@ func subagentPreviewFromThread(thread appwire.Thread, ref string, limit int) app
 			all = append(all, subagentPreviewItem(item))
 		}
 	}
-	start := len(all) - limit
-	if start < 0 {
-		start = 0
-	}
+	start := max(len(all)-limit, 0)
 	items := append([]appwire.ThreadItem(nil), all[start:]...)
 	return appwire.SerfSubagentPreviewResponse{
 		Ref:       ref,

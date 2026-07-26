@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1023,9 +1024,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 			MCPCount:   plugin.MCPCount,
 		})
 	}
-	for event, count := range ds.Hooks {
-		out.Hooks[event] = count
-	}
+	maps.Copy(out.Hooks, ds.Hooks)
 	for _, job := range ds.Jobs {
 		out.Jobs = append(out.Jobs, appwire.SerfJobInfo{
 			JobID:            job.JobID,

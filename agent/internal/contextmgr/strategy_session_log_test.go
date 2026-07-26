@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -186,13 +187,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	}
 
 	// Verify checkpoint was applied.
-	foundCheckpoint := false
-	for _, layer := range emittedLayers {
-		if layer == "session_log_checkpoint" {
-			foundCheckpoint = true
-			break
-		}
-	}
+	foundCheckpoint := slices.Contains(emittedLayers, "session_log_checkpoint")
 	if !foundCheckpoint {
 		t.Fatalf("expected session_log_checkpoint layer in emitted events, got: %v", emittedLayers)
 	}

@@ -181,7 +181,7 @@ func TestMemoryCrystalsStrategy_PruneOldCrystals(t *testing.T) {
 	s := NewMemoryCrystalsStrategy(cm)
 
 	// Add 25 crystals.
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		s.crystals = append(s.crystals, MemoryCrystal{Turn: i, Action: "test", Facts: "fact"})
 	}
 

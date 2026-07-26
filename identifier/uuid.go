@@ -39,9 +39,9 @@ func DecodeUUID(payload string) (uuid.UUID, error) {
 	}
 	n := new(big.Int)
 	base := big.NewInt(62)
-	for i := 0; i < len(payload); i++ {
+	for i := range len(payload) {
 		index := int64(-1)
-		for j := int64(0); j < int64(len(base62Alphabet)); j++ {
+		for j := range int64(len(base62Alphabet)) {
 			if payload[i] == base62Alphabet[j] {
 				index = j
 				break

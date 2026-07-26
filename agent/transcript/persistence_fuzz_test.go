@@ -170,7 +170,7 @@ func makeTurn(b byte) schema.Turn {
 // makeFragment builds a raw partial-line fragment (never containing a newline)
 // to append to a closed transcript, exercising OpenWriter's truncation path.
 func makeFragment(b byte) []byte {
-	return []byte(fmt.Sprintf("partial-junk-%d", b))
+	return fmt.Appendf(nil, "partial-junk-%d", b)
 }
 
 // appendRaw appends bytes to the tail of an existing file through the given fs,

@@ -779,7 +779,7 @@ func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 		}},
 		{"deeply-nested", func() map[string]any {
 			inner := map[string]any{"type": "string"}
-			for i := 0; i < 50; i++ {
+			for range 50 {
 				inner = map[string]any{
 					"type":       "object",
 					"properties": map[string]any{"x": inner},

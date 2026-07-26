@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -35,12 +36,7 @@ func matchTarget(matcher, target string) (bool, error) {
 
 	// Rule 2: exact / pipe-list mode when matcher is only [A-Za-z0-9_|].
 	if isExactMatcher(m) {
-		for _, segment := range strings.Split(m, "|") {
-			if segment == target {
-				return true, nil
-			}
-		}
-		return false, nil
+		return slices.Contains(strings.Split(m, "|"), target), nil
 	}
 
 	// Rule 3: regex mode (Go RE2).

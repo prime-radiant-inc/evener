@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -565,14 +566,7 @@ func TestProviderAlwaysRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
-	found := false
-	for _, name := range c.ProviderNames() {
-		if name == "ollama" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(c.ProviderNames(), "ollama") {
 		t.Fatalf("ollama not in registered providers (must be available even with no env vars): %v", c.ProviderNames())
 	}
 }

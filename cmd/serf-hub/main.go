@@ -379,11 +379,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		background.Wait()
 	}()
 	startBackground := func(fn func()) {
-		background.Add(1)
-		go func() {
-			defer background.Done()
-			fn()
-		}()
+		background.Go(fn)
 	}
 
 	// Populate the roster before serving so the first sidebar request can't hit

@@ -84,10 +84,7 @@ func ParseChatUsage(raw map[string]any) llm.Usage {
 	if details, ok := raw["prompt_tokens_details"].(map[string]any); ok {
 		cachedRead = llm.IntFromAny(details["cached_tokens"])
 	}
-	uncachedInput := rawPrompt - cachedRead
-	if uncachedInput < 0 {
-		uncachedInput = 0
-	}
+	uncachedInput := max(rawPrompt-cachedRead, 0)
 	usage := llm.Usage{
 		InputTokens:  uncachedInput,
 		OutputTokens: output,

@@ -440,10 +440,7 @@ func paginatePastEntries(entries []PastEntry, limit, offset int) []PastEntry {
 	if limit <= 0 || offset >= len(entries) {
 		return nil
 	}
-	end := offset + limit
-	if end > len(entries) {
-		end = len(entries)
-	}
+	end := min(offset+limit, len(entries))
 	return entries[offset:end]
 }
 

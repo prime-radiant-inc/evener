@@ -278,11 +278,11 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	}
 	// Decode the base64 payload and verify the bytes match the original, so a
 	// mutation that substitutes an invalid or empty payload is caught.
-	idx := strings.Index(result, "\n")
-	if idx < 0 {
+	_, rest, found := strings.Cut(result, "\n")
+	if !found {
 		t.Fatal("expected newline separating header from base64 payload")
 	}
-	b64 := strings.TrimSpace(result[idx+1:])
+	b64 := strings.TrimSpace(rest)
 	decoded, decErr := base64.StdEncoding.DecodeString(b64)
 	if decErr != nil {
 		t.Fatalf("base64 decode: %v", decErr)
@@ -331,11 +331,11 @@ func TestReadFile_PDF_ReturnsBase64(t *testing.T) {
 		t.Fatalf("expected 'pdf' in output, got: %q", result[:min(len(result), 80)])
 	}
 	// Verify the base64 round-trips.
-	idx := strings.Index(result, "\n")
-	if idx < 0 {
+	_, rest, found := strings.Cut(result, "\n")
+	if !found {
 		t.Fatal("expected newline separating header from base64")
 	}
-	b64 := strings.TrimSpace(result[idx+1:])
+	b64 := strings.TrimSpace(rest)
 	decoded, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
 		t.Fatalf("base64 decode: %v", err)
@@ -737,7 +737,7 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	dir := t.TempDir()
 	// Create file with many matching lines
 	var content strings.Builder
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		content.WriteString("match line\n")
 	}
 	if err := os.WriteFile(filepath.Join(dir, "many.txt"), []byte(content.String()), 0o644); err != nil {

@@ -61,7 +61,7 @@ func pass4RemoteWeb(thread appwire.Thread, actionErr error) *WebServer {
 // broad route fuzzers. The source is entirely in-process and never dials a
 // daemon or provider.
 func FuzzSessionLivePass4(f *testing.F) {
-	for op := uint8(0); op < 11; op++ {
+	for op := range uint8(11) {
 		f.Add(op, "remote title", int64(1700000000))
 	}
 	f.Fuzz(func(t *testing.T, op uint8, title string, stamp int64) {

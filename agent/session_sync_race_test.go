@@ -34,13 +34,11 @@ func hammerSetters(t *testing.T, sess *Session) {
 		func() { _ = sess.DetailedStatus() },
 	} {
 
-		setters.Add(1)
-		go func() {
-			defer setters.Done()
-			for i := 0; i < 150; i++ {
+		setters.Go(func() {
+			for range 150 {
 				fn()
 			}
-		}()
+		})
 	}
 	setters.Wait()
 	close(stop)
@@ -126,13 +124,13 @@ func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 30; i++ {
+		for range 30 {
 			_, _ = sess.spawnAgent(context.Background(), "task", "", "", 0, "", "", nil, nil)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 300; i++ {
+		for range 300 {
 			sess.SetReasoningEffort("high")
 		}
 	}()

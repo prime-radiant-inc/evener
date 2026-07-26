@@ -956,7 +956,7 @@ func TestJobListWatchReflectsDeliveries(t *testing.T) {
 
 	// A no-send caller event watch counts one delivery per fired event.
 	installWatchBelowValidation(t, jm, watchArgs{Target: "caller", Events: []string{"communicate"}})
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
@@ -1137,7 +1137,7 @@ func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T)
 		{
 			name: "corrupt transcript header shape",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
-				writeChildTranscript(t, s, rec, []byte(fmt.Sprintf(`{"session_id":%q}`+"\n", rec.DelegateRestore.ChildSessionID)))
+				writeChildTranscript(t, s, rec, fmt.Appendf(nil, `{"session_id":%q}`+"\n", rec.DelegateRestore.ChildSessionID))
 			},
 			wantReason: "corrupt_child_transcript",
 		},
@@ -1342,7 +1342,7 @@ func TestJobListSurfacesRecentWatches(t *testing.T) {
 func seedShellJobRecords(t *testing.T, s *Session, n int) {
 	t.Helper()
 	base := time.Unix(1_700_000_000, 0).UTC()
-	for i := 0; i < n; i++ {
+	for i := range n {
 		started := base.Add(time.Duration(i) * time.Second)
 		jobID := fmt.Sprintf("job_seed_%03d", i)
 		if err := s.jobManager.appendJobEvents([]jobstore.Event{

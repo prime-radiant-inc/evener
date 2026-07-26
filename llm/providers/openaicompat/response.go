@@ -328,9 +328,6 @@ func estimateThinkingFromBuf(chars int) int {
 	if chars == 0 {
 		return 0
 	}
-	est := chars / 4
-	if est < 1 {
-		est = 1
-	}
+	est := max(chars/4, 1)
 	return est
 }

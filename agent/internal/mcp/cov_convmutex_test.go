@@ -35,7 +35,7 @@ func TestConnMutex_ServersAndCloseConcurrent(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			_ = mgr.Servers()
 		}
 	}()

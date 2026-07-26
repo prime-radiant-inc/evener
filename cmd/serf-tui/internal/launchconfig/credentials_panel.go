@@ -123,11 +123,7 @@ func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.rows = buildPanelRows(p.instances)
 		// Clamp or reset cursor to a selectable row.
 		if p.cursor >= len(p.rows) || (len(p.rows) > 0 && p.rows[p.cursor].header) {
-			first := firstSelectableRow(p.rows)
-			if first < 0 {
-				first = 0
-			}
-			p.cursor = first
+			p.cursor = max(firstSelectableRow(p.rows), 0)
 		}
 		return p, nil
 

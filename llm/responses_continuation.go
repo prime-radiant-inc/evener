@@ -1,6 +1,9 @@
 package llm
 
-import "strings"
+import (
+	"maps"
+	"strings"
+)
 
 // HistoryMode selects how prior turns are sent to the model on a request.
 type HistoryMode string
@@ -329,9 +332,7 @@ func cloneProviderOptionValue(v any) any {
 		return out
 	case map[string]string:
 		out := make(map[string]string, len(typed))
-		for k, item := range typed {
-			out[k] = item
-		}
+		maps.Copy(out, typed)
 		return out
 	case []any:
 		out := make([]any, len(typed))

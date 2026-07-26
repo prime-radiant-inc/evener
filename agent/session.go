@@ -544,10 +544,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		}
 		s.jobNotifyRetry.active = false
 		pending := len(s.pendingJobNotifs) > 0
-		nextDelay := delay * 2
-		if nextDelay > jobNotificationRetryMaxDelay {
-			nextDelay = jobNotificationRetryMaxDelay
-		}
+		nextDelay := min(delay*2, jobNotificationRetryMaxDelay)
 		if pending {
 			s.jobNotifyRetry.delay = nextDelay
 		} else {

@@ -144,7 +144,7 @@ func FuzzMainOptions(f *testing.F) {
 }
 
 func FuzzRunMainEarlyBootstrap(f *testing.F) {
-	for mode := byte(0); mode < 5; mode++ {
+	for mode := range byte(5) {
 		f.Add(mode)
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {

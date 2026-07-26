@@ -137,7 +137,7 @@ func addEntry(catalog map[string]*llm.ModelInfo, key string, flags uint8, ctx in
 		mi.SupportsWebSearch = &v
 	}
 	effN := int((flags >> 3) & 0b111)
-	for i := 0; i < effN; i++ {
+	for i := range effN {
 		mi.ReasoningEffortLevels = append(mi.ReasoningEffortLevels, "e"+string(rune('a'+i)))
 	}
 	catalog[key] = mi

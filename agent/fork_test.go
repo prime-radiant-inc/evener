@@ -446,7 +446,7 @@ func TestForkSession_RestorePreservesAcceptedInputBudget(t *testing.T) {
 		t.Fatalf("warning count before first restored input = %d, want 0", got)
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := restored.ProcessInput(context.Background(), "continued input", nil); err != nil {
 			t.Fatalf("ProcessInput(%d): %v", i+1, err)
 		}

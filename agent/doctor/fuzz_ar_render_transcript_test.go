@@ -48,7 +48,7 @@ func FuzzArRenderTranscript(f *testing.F) {
 			TurnsRendered: n,
 			Elided:        3,
 		}
-		for i := 0; i < n; i++ {
+		for i := range n {
 			r.Turns = append(r.Turns, TurnSummary{
 				Index:       i + 1,
 				Kind:        kind,

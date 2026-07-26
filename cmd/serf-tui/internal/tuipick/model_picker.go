@@ -153,18 +153,12 @@ func (m ModelPicker) renderBody() string {
 		maxVisible := 15
 		start := 0
 		if len(filtered) > maxVisible {
-			start = m.cursor - maxVisible/2
-			if start < 0 {
-				start = 0
-			}
+			start = max(m.cursor-maxVisible/2, 0)
 			if start+maxVisible > len(filtered) {
 				start = len(filtered) - maxVisible
 			}
 		}
-		end := start + maxVisible
-		if end > len(filtered) {
-			end = len(filtered)
-		}
+		end := min(start+maxVisible, len(filtered))
 
 		for i := start; i < end; i++ {
 			item := filtered[i]

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 )
@@ -61,12 +62,7 @@ func TrustHashSet(t MetaTrust) []string {
 
 // HashInSet reports whether hash appears in the given set.
 func HashInSet(hash string, set []string) bool {
-	for _, h := range set {
-		if h == hash {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(set, hash)
 }
 
 // ComputeTrustState evaluates the current TrustState from the on-disk
@@ -85,13 +81,7 @@ func ComputeTrustState(hash string, meta Meta) TrustState {
 	if len(hashes) == 0 {
 		return TrustUntrusted
 	}
-	inSet := false
-	for _, h := range hashes {
-		if h == hash {
-			inSet = true
-			break
-		}
-	}
+	inSet := slices.Contains(hashes, hash)
 	if !inSet {
 		return TrustChanged
 	}

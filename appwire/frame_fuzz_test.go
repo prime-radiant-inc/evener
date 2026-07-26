@@ -187,7 +187,7 @@ func TestStructuredFrameReachesDecoder(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) // fixed seed: reproducible sample
 	var rawAccepted, structuredAccepted int
-	for i := 0; i < samples; i++ {
+	for range samples {
 		data := make([]byte, rng.Intn(48))
 		rng.Read(data)
 

@@ -131,13 +131,11 @@ func TestContextManager_CumulativeUsage_ThreadSafe(t *testing.T) {
 	cm := NewManager(NewOpenAIProfile("gpt-5.2"), nil)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 100 {
+		wg.Go(func() {
 			cm.AddUsage(llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2})
 			_ = cm.CumulativeUsage()
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -1487,7 +1485,7 @@ func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
 
 	// Run checkpoint 20 times and verify output is identical each time.
 	var first string
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		cp := make([]schema.Turn, len(history))
 		copy(cp, history)
 		result := checkpoint(cp, 1, nil, "communicate")
@@ -1561,7 +1559,7 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 
 	// Add 2 new turns since the measurement (~20 chars = ~5 tokens).
 	history := make([]schema.Turn, 12)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		history[i] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("x")}
 	}
 	history[10] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 20))}
@@ -2291,7 +2289,7 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	// Each note ≈ 503 chars (capped at 500+...), need >120 to exceed 60k.
 	var history []schema.Turn
 	history = append(history, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("important task description")})
-	for i := 0; i < 150; i++ {
+	for i := range 150 {
 		history = append(history, schema.Turn{
 			Kind:    schema.TurnAssistant,
 			Message: llm.Assistant(fmt.Sprintf("Note %03d: %s", i, strings.Repeat("detailed analysis ", 40))),

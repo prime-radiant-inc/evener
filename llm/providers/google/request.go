@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"strings"
 
@@ -95,14 +96,10 @@ func (a *Adapter) buildRequestBody(req llm.Request, system string, contents []ma
 	}
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["google"].(map[string]any); ok {
-			for k, v := range ov {
-				body[k] = v
-			}
+			maps.Copy(body, ov)
 		}
 		if ov, ok := req.ProviderOptions["gemini"].(map[string]any); ok {
-			for k, v := range ov {
-				body[k] = v
-			}
+			maps.Copy(body, ov)
 		}
 	}
 	return body, nil

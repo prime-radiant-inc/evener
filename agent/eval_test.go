@@ -231,7 +231,7 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			c.ProcessEvent(events.SessionEvent{
 				Kind: events.EventAssistantTextEnd,
 				Data: events.AssistantTextEndData{
@@ -242,7 +242,7 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	}()
 
 	// Read concurrently.
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_ = c.Metrics()
 	}
 	<-done

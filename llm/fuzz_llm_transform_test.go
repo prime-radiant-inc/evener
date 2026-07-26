@@ -156,7 +156,7 @@ func buildProviderOptions(script []byte, seed int) map[string]any {
 	}
 	n := int(next()%4) + 1
 	out := make(map[string]any, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		out["k"+strconv.Itoa(i)] = buildValue(next, 0)
 	}
 	return out

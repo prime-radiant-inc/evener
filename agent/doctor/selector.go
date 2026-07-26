@@ -23,15 +23,13 @@ func parseSelector(s string) (selector, error) {
 	if s == "" || s == "current" {
 		return selector{}, fmt.Errorf("no session selector: pass a session id, local:<id>, or proj:<project-id>:<id> (a standalone forensic tool has no %q session)", "current")
 	}
-	if strings.HasPrefix(s, "local:") {
-		sid := strings.TrimPrefix(s, "local:")
+	if sid, ok := strings.CutPrefix(s, "local:"); ok {
 		if err := identifier.ValidateSessionID(sid); err != nil {
 			return selector{}, fmt.Errorf("invalid session id in selector %q", s)
 		}
 		return selector{sid: sid}, nil
 	}
-	if strings.HasPrefix(s, "proj:") {
-		rest := strings.TrimPrefix(s, "proj:")
+	if rest, ok := strings.CutPrefix(s, "proj:"); ok {
 		projectID, sid, ok := strings.Cut(rest, ":")
 		if !ok {
 			return selector{}, fmt.Errorf("malformed proj ref %q (want proj:<project-id>:<id>)", s)

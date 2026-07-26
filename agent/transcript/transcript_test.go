@@ -128,7 +128,7 @@ func TestWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 	w.SyncInterval = 1 * time.Hour
 
 	// Write several entries rapidly.
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -260,7 +260,7 @@ func TestWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
 	// Zero interval = sync every write (backward compat).
 	w.SyncInterval = 0
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -556,12 +557,7 @@ func findJobListToolOutput(records []jobListToolEntry, jobID string) *jobListToo
 }
 
 func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func waitForJobOutputContent(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {

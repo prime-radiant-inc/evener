@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"regexp"
 	"sort"
@@ -479,9 +480,7 @@ func (s *WebServer) overlayLiveEntries(entries []map[string]any) []map[string]an
 	out := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		clone := make(map[string]any, len(entry))
-		for k, v := range entry {
-			clone[k] = v
-		}
+		maps.Copy(clone, entry)
 		prov, _ := clone["provider"].(string)
 		model, _ := clone["model"].(string)
 		applyInstanceModelOverride(clone, s.cfg.ProviderConfig, prov, model)

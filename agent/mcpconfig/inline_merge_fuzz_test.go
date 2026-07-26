@@ -42,7 +42,7 @@ func FuzzMCPInlineMerge(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, blob string) {
 		var accepted []ServerConfig
-		for _, spec := range strings.Split(blob, "\n") {
+		for spec := range strings.SplitSeq(blob, "\n") {
 			cfg, err := ParseInline(spec)
 			if err != nil {
 				if !configEqual(cfg, ServerConfig{}) {
@@ -89,12 +89,12 @@ func assertInlineConfig(t *testing.T, spec string, cfg ServerConfig) {
 
 	// Reconstruct from the raw spec and confirm the split matches.
 	trimmed := strings.TrimSpace(spec)
-	colon := strings.Index(trimmed, ":")
-	wantName := strings.TrimSpace(trimmed[:colon])
+	namePart, cmdPart, _ := strings.Cut(trimmed, ":")
+	wantName := strings.TrimSpace(namePart)
 	if cfg.Name != wantName {
 		t.Fatalf("ParseInline %q: Name = %q, want %q", spec, cfg.Name, wantName)
 	}
-	fields := strings.Fields(strings.TrimSpace(trimmed[colon+1:]))
+	fields := strings.Fields(strings.TrimSpace(cmdPart))
 	if len(fields) == 0 {
 		t.Fatalf("ParseInline %q: accepted but command half has no fields", spec)
 	}

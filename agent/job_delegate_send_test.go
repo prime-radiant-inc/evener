@@ -1224,7 +1224,7 @@ func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testi
 		{
 			name: "corrupt transcript header shape",
 			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
-				writeChildTranscript(t, s, rec, []byte(fmt.Sprintf(`{"session_id":%q}`+"\n", rec.DelegateRestore.ChildSessionID)))
+				writeChildTranscript(t, s, rec, fmt.Appendf(nil, `{"session_id":%q}`+"\n", rec.DelegateRestore.ChildSessionID))
 			},
 			want: "target_not_resumable:corrupt_child_transcript",
 		},
@@ -2481,7 +2481,7 @@ func TestConcurrentDelegateReconstructionRunsRestoreSideEffectsOnce(t *testing.T
 		err error
 	}
 	results := make(chan restoreResult, 2)
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		go func() {
 			<-start
 			sub, err := s.restoreTerminalDelegateChild(rec, childID, preflight)

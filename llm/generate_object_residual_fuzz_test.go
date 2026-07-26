@@ -7,7 +7,7 @@ import (
 )
 
 func FuzzGenerateObjectResidual(f *testing.F) {
-	for i := byte(0); i < 11; i++ {
+	for i := range byte(11) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, selector byte) {
