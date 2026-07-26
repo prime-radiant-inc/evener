@@ -70,6 +70,7 @@ export type { SkeletonProps } from "./skeleton";
 export { Skeleton } from "./skeleton";
 export type { StatusDotProps } from "./statusdot";
 export { StatusDot } from "./statusdot";
+export { SteeringGlyph } from "./steeringglyph";
 export type { SwitchProps } from "./switch";
 export { Switch } from "./switch";
 export type { TextareaProps } from "./textarea";
