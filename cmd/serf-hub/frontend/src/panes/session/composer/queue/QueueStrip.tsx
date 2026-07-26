@@ -168,7 +168,10 @@ export function QueueStrip({
       // (row removed) + serf/steering/injected (transcript shows it) - no
       // local mirror, per parity §B.
     } catch (err) {
-      toasts.push("error", sessionActionError("Couldn't send this message now", err));
+      // Names the act the button names. The row's control reads "Steer now"
+      // (kata mw5w), so a failure that reports "couldn't send" would describe
+      // an action the reader never took.
+      toasts.push("error", sessionActionError("Couldn't steer with this message now", err));
     } finally {
       setRowBusy(entryId, false);
     }
@@ -273,7 +276,7 @@ export function QueueStrip({
               <span className={CLASS.rowText}>{displayText}</span>
               <div className={CLASS.rowActions}>
                 <ActionButton
-                  label="Send now"
+                  label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
                   disabled={!actionsAvailable || busy}

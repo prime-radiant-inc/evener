@@ -191,14 +191,14 @@ describe("row rendering", () => {
     expect(within(rows[0]!).getByText(`${"x".repeat(140)}…`)).toBeTruthy();
   });
 
-  test("each row exposes send-now, edit, and remove actions", async () => {
+  test("each row exposes steer-now, edit, and remove actions", async () => {
     const fake = connectFakeClient();
     await hydrateWithTwoRows(fake);
     renderStrip(defaultProps());
 
     const rows = await screen.findAllByRole("listitem");
     for (const row of rows) {
-      expect(within(row).getByRole("button", { name: /send now/i })).toBeTruthy();
+      expect(within(row).getByRole("button", { name: /steer now/i })).toBeTruthy();
       expect(within(row).getByRole("button", { name: /edit/i })).toBeTruthy();
       expect(within(row).getByRole("button", { name: /remove from queue/i })).toBeTruthy();
     }
@@ -206,7 +206,7 @@ describe("row rendering", () => {
 });
 
 describe("promote", () => {
-  test("clicking send-now calls promoteQueuedAsSteer with the row's index and entry id", async () => {
+  test("clicking steer-now calls promoteQueuedAsSteer with the row's index and entry id", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       serf: {
@@ -220,7 +220,7 @@ describe("promote", () => {
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
     await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /send now/i }));
+      fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
     const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
@@ -243,10 +243,10 @@ describe("promote", () => {
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
     await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /send now/i }));
+      fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
-    await screen.findByText(/couldn't send this message now.*queue shifted/i);
+    await screen.findByText(/couldn't steer with this message now.*queue shifted/i);
     expect(await screen.findAllByRole("listitem")).toHaveLength(1);
   });
 });
@@ -397,7 +397,7 @@ describe("edit", () => {
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
     expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(true);
-    expect(isDisabled(within(row).getByRole("button", { name: /send now/i }))).toBe(false);
+    expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(false);
     expect(isDisabled(within(row).getByRole("button", { name: /remove from queue/i }))).toBe(false);
   });
 });
@@ -444,7 +444,7 @@ describe("re-rendering after the queue shifts", () => {
     const row = (await screen.findAllByRole("listitem"))[0]!;
     expect(within(row).getByText("second queued message")).toBeTruthy();
     await act(async () => {
-      fireEvent.click(within(row).getByRole("button", { name: /send now/i }));
+      fireEvent.click(within(row).getByRole("button", { name: /steer now/i }));
     });
 
     const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
@@ -502,14 +502,14 @@ describe("degraded daemon: no entry ids", () => {
     renderStrip(defaultProps());
 
     const row = (await screen.findAllByRole("listitem"))[0]!;
-    expect(isDisabled(within(row).getByRole("button", { name: /send now/i }))).toBe(true);
+    expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(true);
     expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(true);
     expect(isDisabled(within(row).getByRole("button", { name: /remove from queue/i }))).toBe(true);
   });
 });
 
 describe("in-flight row locking", () => {
-  test("while a cancel is in flight, that row's own send-now/edit/remove are all disabled", async () => {
+  test("while a cancel is in flight, that row's own steer-now/edit/remove are all disabled", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
       serf: {
@@ -534,7 +534,7 @@ describe("in-flight row locking", () => {
     await vi.waitFor(() => {
       expect(isDisabled(within(row).getByRole("button", { name: /remove from queue/i }))).toBe(true);
     });
-    expect(isDisabled(within(row).getByRole("button", { name: /send now/i }))).toBe(true);
+    expect(isDisabled(within(row).getByRole("button", { name: /steer now/i }))).toBe(true);
     expect(isDisabled(within(row).getByRole("button", { name: /edit/i }))).toBe(true);
 
     await act(async () => {
