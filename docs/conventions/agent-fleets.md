@@ -58,15 +58,30 @@ ignore rules only govern untracked files, so once staged it went quiet.
 
 **The Go build cache is large and grows fast.** One `go test -c` of the
 biggest package adds roughly 1G from warm. With the cache on the boot
-volume, a fleet filled the disk to zero and every agent died at once —
-including tool calls, which write an output file before executing, so
-nothing could run at all. Keep `GOCACHE` on a volume with room:
+volume, a fleet filled the disk to zero **twice** — every agent died at
+once, including tool calls, which write an output file before executing,
+so nothing could run at all. Move `GOCACHE` to a volume with room, once
+per machine:
 
 ```
-go env -w GOCACHE=/path/on/a/big/volume
+scripts/setup-gocache.sh                    # default target for this machine
+scripts/setup-gocache.sh /path/on/a/big/volume
 ```
 
-Disk exhaustion never announces itself. It surfaces as
+`go env -w` writes to a per-user file outside this git checkout, so a
+fresh clone or a new machine does **not** inherit it — this is a step to
+run, not a setting to commit. `scripts/disk-reclaim.sh --check` (wired
+into every test run via `run-module-tests.sh`) warns if `GOCACHE` has
+drifted back onto the checkout's own volume, so skipping this step
+doesn't fail silently forever.
+
+The external volume itself can be unmounted. That must fail loudly, not
+mysteriously: `scripts/disk-reclaim.sh --check` probes `GOCACHE` and
+gives a specific "this is what an unmounted build-cache volume looks
+like" diagnosis instead of a bare `go build` error naming neither
+`GOCACHE` nor "unmounted".
+
+Disk exhaustion never announces itself otherwise. It surfaces as
 `link: mapping output file failed`, `t.TempDir()` failures, and jobstore
 open errors — four test failures were once root-caused to it after being
 investigated as flakes.
@@ -77,9 +92,37 @@ someone else's tab. Worse, `switch_tab` can land on a *backgrounded* tab
 where `requestAnimationFrame` and `ResizeObserver` never fire — which
 yields a confident wrong answer rather than an error. Assert
 `location.port` inside **every** eval. That converts corruption into
-failure, which is the right trade and is not a fix; call `set_profile`
-with the worktree name as the first browser action, since it refuses once
-Chrome is running.
+failure, which is the right trade and is not a fix.
+
+**`set_profile` does NOT give you a private browser — do not call it.**
+It was previously documented here as the fix ("call `set_profile` with
+your worktree name as the first browser action"). That guidance was
+wrong and is actively harmful: `set_profile` is a single sticky value on
+the shared MCP *server process*, not per-agent. Measured live (kata
+8ecz): a controller that never called `set_profile` at all read back
+profile `k7-turnvoice-verify` — one agent's worktree name, set hours
+earlier — while 38 tabs from unrelated agents piled up inside that one
+"isolated" profile and the true default profile held 2. Every agent that
+follows the old advice silently redirects every *other* agent onto its
+own profile in turn. It is worse than no isolation, because it looks like
+isolation: each agent believes it is alone in a private browser while
+sharing one with a dozen others. Real per-agent isolation needs a
+per-call profile argument or one MCP server per agent — neither exists
+today.
+
+Until it does, the honest options are: serialise browser verification to
+one agent at a time, or skip the browser and build a static-file harness
+for the specific thing you need to check (one agent did this
+successfully after losing four measurements to tab theft). The
+`location.port` assertion above remains correct and is the only thing
+that has been catching wrong-hub measurements.
+
+**State whether you actually verified in a browser.** An agent that
+cannot reliably hold a tab still reports its change as done, and
+browser-verified work looks identical to unverified work in the ledger
+unless the agent says so. End every completion report that touches a
+user-facing surface with an explicit `Browser-verified: yes` or
+`Browser-verified: no (reason)` line.
 
 **Ports and scratch paths must derive from something unique.** Handing
 out ports in prose put two agents on the same one, and a hub answering on

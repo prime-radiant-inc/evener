@@ -386,9 +386,6 @@ should replace it with.
 - `credentials-page-displays-sources.md` — `/credentials` shows
   correct effective source per provider with env/file shadow
   badges.
-- `index-sidebar-lists-projects.md` — hub home page sidebar
-  enumerates projects + sessions (pre-rebuild baseline; see the
-  "Sidebar (rebuilt)" section above for the rebuilt surface).
 - `search-finds-content-across-sessions.md` — `⌘K` overlay
   searches transcripts.
 

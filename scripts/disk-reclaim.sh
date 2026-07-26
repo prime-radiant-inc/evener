@@ -104,18 +104,81 @@ if [ "$CHECK_ONLY" = 1 ]; then
 	# test invocation across the fleet (wired into run-module-tests.sh), so it
 	# has to be a single fast syscall, not a du of a 10G+ build cache or a
 	# merge-base walk over twenty-odd worktrees.
+
+	# GOCACHE reachability (kata 98x9, reopened): the build cache now lives on
+	# a second, external volume by design (scripts/setup-gocache.sh) precisely
+	# BECAUSE it was the fastest-growing consumer on this one — one `go test
+	# -c` of the biggest package alone grows it ~1G from warm. That moves the
+	# risk, it does not remove it: an external volume can be unmounted, and a
+	# GOCACHE pointing at a path that no longer exists must fail loudly, not
+	# mysteriously. `go build` itself already does fail on this — confirmed by
+	# actually unmounting-equivalent testing, not reasoned about — with
+	# `mkdir /Volumes/X: permission denied`, but that message names neither
+	# GOCACHE nor "unmounted", and would surface once per module mid-wave
+	# rather than once, up front, with a diagnosis. Do the same probe go
+	# itself does (mkdir -p; a no-op if the path already exists) so the
+	# diagnosis lands here instead.
+	#
+	# SERF_SKIP_GOCACHE_CHECK=1 skips this whole block. Used only by
+	# disk-reclaim-selftest.sh's floor-only scenario, to keep that scenario's
+	# "silent above the floor" assertion independent of whatever GOCACHE
+	# happens to be set to on the machine running the test; dedicated
+	# scenarios cover this block itself with GOCACHE pinned explicitly.
+	if [ "${SERF_SKIP_GOCACHE_CHECK:-0}" != 1 ]; then
+		gocache=$(go env GOCACHE 2>/dev/null)
+		if [ -n "$gocache" ]; then
+			mkdir_err=$({ mkdir -p "$gocache"; } 2>&1)
+			mkdir_status=$?
+			if [ "$mkdir_status" -ne 0 ]; then
+				cat >&2 <<-MSG
+					disk-reclaim: GOCACHE is set to "$gocache" but it could not be created — kata 98x9.
+					  $mkdir_err
+					This is what an unmounted build-cache volume looks like. If it lives on an
+					external volume, remount it and re-run. To point GOCACHE somewhere else,
+					run: scripts/setup-gocache.sh <path>
+				MSG
+				exit 1
+			fi
+			# Drift warning, not a failure: GOCACHE reachable but back on the same
+			# volume as this checkout defeats the point of moving it off in the
+			# first place (kata 98x9) — warn so a machine that never ran
+			# setup-gocache.sh, or had it reset by a Go toolchain reinstall, does
+			# not silently regress to the original failure mode.
+			gocache_dev=$(df -P "$gocache" 2>/dev/null | awk 'NR==2 {print $1}')
+			repo_dev=$(df -P "$repo_root" 2>/dev/null | awk 'NR==2 {print $1}')
+			if [ -n "$gocache_dev" ] && [ "$gocache_dev" = "$repo_dev" ]; then
+				echo "disk-reclaim: warning: GOCACHE ($gocache) is on the same volume as this checkout — kata 98x9. Run scripts/setup-gocache.sh to move it to a bigger volume." >&2
+			fi
+		fi
+	fi
+
+	# The floor stays at 5 even now that GOCACHE has moved off this volume by
+	# default (see scripts/setup-gocache.sh): the fastest-growing single
+	# consumer left, but repo_root still sits at ~11G free of 228G (95% used)
+	# from worktree checkouts, node_modules, and — per kata smw0 — ~1.6G of
+	# orphaned pre-rename checkouts this script cannot even see. That is
+	# slower growth than the old ~1G-per-build-cache-touch, not zero growth,
+	# and 11G is only ~2x today's floor. Lowering it would shorten the
+	# warning window for exactly the kind of slow creep that caused the
+	# SECOND occurrence of this kata. Re-measure before changing it.
 	min_gb=${SERF_DISK_MIN_FREE_GB:-5}
 	avail_kb=$(df -k "$repo_root" | awk 'NR==2 {print $4}')
 	min_kb=$((min_gb * 1024 * 1024))
 	if [ "${avail_kb:-0}" -lt "$min_kb" ]; then
 		avail_gb=$((avail_kb / 1024 / 1024))
+		cache_line=""
+		# --cache only helps THIS volume's floor if GOCACHE is actually on it;
+		# once moved off (the default now), emptying it does nothing here.
+		if [ -n "${gocache_dev:-}" ] && [ "$gocache_dev" = "${repo_dev:-}" ]; then
+			cache_line="  scripts/disk-reclaim.sh --cache       # empty the Go build cache (fully regenerable, ~2-3min cold rebuild)
+"
+		fi
 		cat >&2 <<-MSG
 			disk-reclaim: only ${avail_gb}G free on $repo_root (floor is ${min_gb}G) — kata 98x9.
 			Left alone this shows up as an unrelated-looking failure instead of this message:
 			"link: mapping output file failed: no space left on device", a t.TempDir() setup
 			failure, or a jobstore open error. Free some space, then re-run:
-			  scripts/disk-reclaim.sh --cache       # empty the Go build cache (fully regenerable, ~2-3min cold rebuild)
-			  scripts/disk-reclaim.sh --worktrees   # remove worktrees already merged into HEAD
+			${cache_line}  scripts/disk-reclaim.sh --worktrees   # remove worktrees already merged into HEAD
 			  scripts/disk-reclaim.sh --all         # both
 			Override the floor for this run only: SERF_DISK_MIN_FREE_GB=<N> (default 5).
 		MSG
