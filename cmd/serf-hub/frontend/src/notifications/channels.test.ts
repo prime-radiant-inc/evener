@@ -89,9 +89,11 @@ describe("fireOsNotification", () => {
 
   test("click navigates to the session pane", () => {
     vi.stubGlobal("Notification", FakeNotification);
+    const focus = vi.spyOn(window, "focus").mockImplementation(() => {});
     const push = vi.spyOn(window.history, "pushState");
     fireOsNotification(entry({ ref: "local:r1" }));
     FakeNotification.instances[0]?.onclick?.();
+    expect(focus).toHaveBeenCalledOnce();
     expect(push).toHaveBeenCalledWith({}, "", "/s/local%3Ar1");
   });
 });
