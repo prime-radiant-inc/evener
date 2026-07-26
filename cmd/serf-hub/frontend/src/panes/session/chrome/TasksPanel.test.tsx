@@ -430,6 +430,99 @@ test("Try again re-fetches the list and clears the stale notice once it succeeds
   expect(screen.getAllByTestId("task-row")).toHaveLength(3);
 });
 
+// --- dead-daemon "thread not found": must not contradict the trigger -------
+//
+// isThreadNotFound fires ONLY for entryForRef finding no rendezvous entry at
+// all (local_daemon.go:551/isDeadSessionTasksError) - the hub tries a
+// persisted past-index fallback first (app_tasks.go's hubTasksList) and only
+// reaches this branch when THAT also comes up empty, i.e. a session the hub
+// never tracked and therefore can never resume (withSessionResume gates on
+// hubKnowsRef). So unlike the "local daemon unavailable" blip above, there is
+// no schedule and no possible recovery to wait for here.
+function threadNotFoundError(): WireError {
+  return new WireError("thread not found: thr_a", -32014, { serfErrorInfo: "sessionUnavailable" });
+}
+
+test("thread-not-found on a session that never had a live aggregate still shows the honest 'No tasks yet' (unchanged)", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw threadNotFoundError();
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: null })} />);
+  await user.click(screen.getByRole("button", { name: "Tasks" }));
+
+  expect(await screen.findByText("No tasks yet")).toBeTruthy();
+  expect(screen.queryByTestId("tasks-daemon-gone")).toBeNull();
+});
+
+test("closing then re-opening after the daemon exits keeps the rows already shown, with a terminal notice instead of blanking them", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  let calls = 0;
+  fake.on("serf/tasks/list", () => {
+    calls += 1;
+    if (calls === 1) return { data: TASKS_DATA };
+    throw threadNotFoundError();
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
+  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+  await screen.findAllByTestId("task-row");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+
+  await screen.findByTestId("tasks-daemon-gone");
+  expect(screen.getAllByTestId("task-row")).toHaveLength(3);
+  expect(screen.queryByText("No tasks yet")).toBeNull();
+});
+
+test("that terminal notice offers no Try again - the hub never tracked this session, so asking again fails identically forever", async () => {
+  const fake = connectFakeClient();
+  failAfterFirstFetch(fake, TASKS_DATA, threadNotFoundError());
+
+  await openThenPush(fake);
+
+  await screen.findByTestId("tasks-daemon-gone");
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+});
+
+test("thread-not-found with a known aggregate but no rows ever fetched shows a terminal message, not 'No tasks yet'", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw threadNotFoundError();
+  });
+
+  render(<TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />);
+  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+
+  await screen.findByText("This session has ended");
+  expect(screen.queryByText("No tasks yet")).toBeNull();
+});
+
+test("no toast for a dead-daemon rejection - it's not a bug, it's an expected terminal state", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("serf/tasks/list", () => {
+    throw threadNotFoundError();
+  });
+
+  render(
+    <>
+      <TasksPanel sessionRef="ref_a" model={testModel({ tasks: { total: 3, done: 1 } })} />
+      <Toast />
+    </>,
+  );
+  await user.click(screen.getByRole("button", { name: "Tasks 1/3" }));
+
+  await screen.findByText("This session has ended");
+  expect(screen.queryByText(/couldn.t load tasks/i)).toBeNull();
+});
+
 // The first fetch has no previous page to keep, so it still blanks - but it
 // is stuck in exactly the same way, and needs the same way out.
 test("a first fetch that fails offers Try again, which fetches again", async () => {
