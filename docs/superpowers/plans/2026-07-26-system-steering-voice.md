@@ -4,7 +4,7 @@
 
 **Goal:** Make a daemon-originated steering message announce itself as one — `◇ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
 
-**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §8 states the family rule the transcript's glyph gutter now enforces.
+**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §7 states the family rule the transcript's glyph gutter now enforces.
 
 **Tech Stack:** Go 1.x (multi-module workspace), React 19 + TypeScript + CSS Modules, vitest + @testing-library/react, biome.
 
@@ -47,7 +47,7 @@
 - `src/panes/session/transcript/messages/steeringClassify.ts` — lose the prose patterns, keep notification parsing.
 
 **Docs**
-- `docs/web-ui/design-system.md` — new §8.
+- `docs/web-ui/design-system.md` — new §7.
 
 ---
 

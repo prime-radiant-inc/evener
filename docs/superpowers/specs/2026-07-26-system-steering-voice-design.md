@@ -53,7 +53,7 @@ for it to read. Two consequences, both live today:
 - The whole line is **one colour**. Jesse specified option B's eyebrow colour
   (`--ink-low`); on being shown that `--ink-low` measures 2.97:1 dark / 3.64:1
   light — under the 4.5:1 AA floor, as this repo already records in
-  `usermessageitem.module.css` and `systemnoticeitem.module.css` — he selected
+  `usermessageitem.module.css` and `toolcallitem.module.css` — he selected
   `--ink-mid` (6.86:1 / 6.56:1).
 - The kind comes from **a wire field**, not the classifier.
 - Pre-`Kind` transcripts **claim nothing**: no wire kind renders
@@ -62,14 +62,14 @@ for it to read. Two consequences, both live today:
 - "Steering injected" → **"Message sent"**, scoped to `subagents.go:885` (a parent
   steering a running child), which is the one site where those words are true.
 
-## 1. The grammar (new design-system.md §8)
+## 1. The grammar (new design-system.md §7)
 
 **A glyph in the gutter means the agent's instructions changed. An empty gutter
 means it is a passive fact.**
 
 The transcript already has a 12px glyph gutter: `toolcallitem`'s `.row` and
 `systemnoticeitem`'s `.failure` share one `display:flex; align-items:baseline;
-gap:var(--space-2)` grammar. §8 formalises it and assigns the column.
+gap:var(--space-2)` grammar. §7 formalises it and assigns the column.
 
 | gutter | member | treatment | status |
 |---|---|---|---|
