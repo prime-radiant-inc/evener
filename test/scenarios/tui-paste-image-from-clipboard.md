@@ -18,8 +18,10 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` and `./serf-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials; both accept image
@@ -59,8 +61,8 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    spends most of its time on the image turn:
    ```bash
    WORKDIR=$(mktemp -d -t serf-tui-clip-work-XXXX)
-   TOKEN=$(cat ~/.serf/auth-token)
-   HUB=http://localhost:9180
+   TOKEN=$(cat "$HOME/.serf/auth-token")
+   HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
      -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"serf\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
@@ -79,7 +81,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
    subprocess (else `xclip` will return `ErrClipboardUnavailable`):
    ```bash
    tmux new-session -d -s serf-e2e-clip -x 200 -y 50 \
-     "DISPLAY=:99 ./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "DISPLAY=:99 ./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
    (On native X11 with `DISPLAY=:0` already set, omit the `DISPLAY=:99`
@@ -122,7 +124,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 
 7. **Cross-check the transcript on disk**:
    ```bash
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    for i, line in enumerate(open("$TFILE")):
@@ -169,14 +171,14 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
 ## Cleanup
 
 ```bash
-TOKEN=$(cat ~/.serf/auth-token)
+TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
-  "http://localhost:9180/s/$SID/shutdown" >/dev/null
+  "$HUB/s/$SID/shutdown" >/dev/null
 tmux kill-session -t serf-e2e-clip 2>/dev/null
 rm -rf "$FIXDIR" "$WORKDIR"
 # Optional, for hermeticity:
-# find ~/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

@@ -11,7 +11,16 @@ the file structure. This document is the runbook side.
 
 ## Setup checklist
 
-Before running anything:
+**Never Jesse's real hub, never his port `9180`.** His `serf-hub` runs
+there for real, host-wide flock'd at `~/.serf/hub.lock`, with his real
+auth token, credentials, providers, and session history under `~/.serf`
+and `~/.local/state/serf`. A test hub started with a bare `$HOME` and
+the doc's old literal `9180` would frequently fail to bind at all
+(the flock is exclusive) — but if the check below can't tell *whose*
+hub answered, an agent that doesn't notice the failure goes on to spawn
+real sessions, with a real token, against Jesse's live hub. Every
+scenario's hub is built and started fresh, on its own `$HOME` and its
+own free port, every time:
 
 ```bash
 # 1. Build fresh binaries from the branch under test.
@@ -19,36 +28,65 @@ go build -o /tmp/serf-hub-test ./cmd/serf-hub
 go build -o /tmp/serf-test ./cmd/serf
 go build -o /tmp/serf-tui-test ./cmd/serf-tui
 
-# 2. Start the hub. -addr binds it locally; -serf points at the daemon
+# 2. Isolate. A throwaway $HOME keeps auth-token, credentials.toml,
+#    providers.toml, hub.lock, and session history off Jesse's real
+#    ~/.serf and ~/.local/state/serf entirely — unsetting
+#    XDG_STATE_HOME too, in case the ambient shell already points it
+#    somewhere real (DefaultStateGlob prefers XDG_STATE_HOME over
+#    $HOME/.local/state when it's set).
+export HOME=$(mktemp -d -t serf-e2e-home-XXXXX)
+unset XDG_STATE_HOME
+
+# 3. Pick a free port — never 9180. An OS-assigned ephemeral port
+#    sidesteps collisions with Jesse's hub *and* with any other
+#    scenario run happening concurrently.
+PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+HUB=http://127.0.0.1:$PORT
+
+# 4. Start the hub. -addr binds it locally; -serf points at the daemon
 #    binary the hub spawns per session.
-/tmp/serf-hub-test -addr 127.0.0.1:9180 -serf /tmp/serf-test &
+/tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &
+HUBPID=$!
 sleep 2
 
-# 3. Confirm hub is up. Returns 401 (auth required) — that's success;
-#    means it answered.
-curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:9180/  # → 401
+# 5. Confirm THIS hub is the one that answered, not some other process
+#    already on $PORT. Check the backgrounded PID is still alive
+#    before trusting the HTTP response — a dead PID with a 401
+#    anyway means something else is listening at $PORT.
+kill -0 "$HUBPID" || { echo "hub failed to start on $PORT" >&2; exit 1; }
+curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"  # → 401 (auth required; means it answered)
 
-# 4. Grab the auth token. Hub reads it from this path; the browser
-#    needs it in the URL query and the curl REST shim needs it as a
-#    Bearer header.
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://127.0.0.1:9180
+# 6. Grab the auth token from the isolated $HOME. The browser needs it
+#    in the URL query and the curl REST shim needs it as a Bearer
+#    header.
+TOKEN=$(cat "$HOME/.serf/auth-token")
 ```
 
 The hub picks up provider credentials from env (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`) and/or `~/.serf/credentials.toml`. If a scenario
-needs a specific provider, check `./serf <provider> status` first.
+`ANTHROPIC_API_KEY`) and/or `$HOME/.serf/credentials.toml` (the isolated
+one — copy in a scratch `credentials.toml` first if a scenario needs a
+specific provider's stored key; see `credentials-page-displays-sources.md`
+for the pattern). If a scenario needs a specific provider, check
+`./serf <provider> status` first.
 
 OpenAI footgun: an inherited `OPENAI_API_KEY` takes precedence over
 stored OAuth. If `serf openai status` is signed in but a GPT run fails
 with API-key quota, start the test hub with the key cleared:
 
 ```bash
-OPENAI_API_KEY= /tmp/serf-hub-test -addr 127.0.0.1:9180 -serf /tmp/serf-test &
+OPENAI_API_KEY= /tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &
 ```
 
-Do not also isolate `XDG_STATE_HOME` for that run, because OpenAI OAuth
-state lives under the normal user state home.
+This is the one deliberate exception to step 2: a scenario that needs
+an *already signed-in* OpenAI OAuth session has to run with the real
+`$HOME` (OAuth state lives under the normal user state home, not
+somewhere a fresh isolated `$HOME` would have it), so do not export a
+throwaway `$HOME` for that run. It must still never bind port `9180` —
+pick a free `$PORT` as usual. Running with the real `$HOME` means this
+hub *does* share Jesse's real credentials/providers/session history for
+the duration of the run; kata `66mb` flagged this as a narrower,
+separate hazard from the port issue and left it for a follow-up (see
+`kata show` for the filed ID) rather than solving it here.
 
 ## Hermetic workdir per scenario
 
@@ -191,13 +229,14 @@ The browsing skill exposes one tool (`mcp__plugin_superpowers-chrome_chrome__use
 ### Authenticated navigation
 
 ```text
-navigate http://127.0.0.1:9180/auth?token=<TOKEN>&next=/s/<SID>
+navigate $HUB/auth?token=<TOKEN>&next=/s/<SID>
 await_element [data-steer-trigger]      # or any element you expect
 ```
 
 The `/auth` route sets the session cookie then redirects to `next`.
-Use the literal token from `~/.serf/auth-token`, not the path. If you
-get `"invalid token"` rendered, you passed the path.
+Use the literal token from `$HOME/.serf/auth-token` (the isolated
+`$HOME` from the Setup checklist), not the path. If you get
+`"invalid token"` rendered, you passed the path.
 
 ### Synchronous vs. async assertion shape
 
@@ -262,7 +301,7 @@ cleanup step needs a deterministic name:
 ```bash
 tmux kill-session -t serf-test 2>/dev/null   # idempotent: prior run
 tmux new-session -d -s serf-test -x 200 -y 50 \
-  "/tmp/serf-tui-test --hub-addr 127.0.0.1:9180 --debug 2>/tmp/tui-stderr.log"
+  "/tmp/serf-tui-test --hub-addr 127.0.0.1:$PORT --debug 2>/tmp/tui-stderr.log"
 sleep 2
 ```
 
@@ -342,11 +381,12 @@ TUI uses faint vs bold-red glyphs to signal pending vs failed —
 ## Inspecting transcript and meta on disk
 
 Every session writes a JSONL transcript and meta sidecar under
-`~/.local/state/serf/projects/<project-id>/sessions/`:
+`$HOME/.local/state/serf/projects/<project-id>/sessions/` (the
+isolated `$HOME` from the Setup checklist):
 
 ```bash
-TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
-META=$(find ~/.local/state/serf/projects -name "$SID.meta.json")
+TS=$(find "$HOME/.local/state/serf/projects" -name "$SID.transcript.jsonl")
+META=$(find "$HOME/.local/state/serf/projects" -name "$SID.meta.json")
 
 # Locate the canonical files for a session selector.
 go run ./cmd/serf-doctor locate "$SID"
@@ -373,7 +413,7 @@ the offending layer, rebuild, rerun, grep the log. The full pipeline
 has six rebuild points:
 
 1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o /tmp/serf-test ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
-2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub: `pkill -f serf-hub-test; go build -o /tmp/serf-hub-test ./cmd/serf-hub && /tmp/serf-hub-test -addr 127.0.0.1:9180 -serf /tmp/serf-test &`.
+2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub: `pkill -f serf-hub-test; go build -o /tmp/serf-hub-test ./cmd/serf-hub && /tmp/serf-hub-test -addr 127.0.0.1:$PORT -serf /tmp/serf-test &`.
 3. **Web renderer** — `cmd/serf-hub/assets/*.js`. These files are embedded into `serf-hub`; rebuild and restart the hub, then refresh the browser tab.
 4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o /tmp/serf-tui-test ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session and restart for the new code.
 5. **AppWire types** — `internal/appwire/`. Both daemon and hub statically link these; rebuild both.
@@ -505,12 +545,14 @@ file a kata. Don't try to drive past the gate from the scenario.
 
 ## Quick reference
 
-- **Hub address**: `127.0.0.1:9180`
-- **Auth token**: `~/.serf/auth-token`
+- **Hub address**: `127.0.0.1:$PORT` — a free port picked per the Setup
+  checklist, never Jesse's real `9180`.
+- **Auth token**: `$HOME/.serf/auth-token` — the isolated `$HOME` from
+  the Setup checklist, never Jesse's real one.
 - **Follow-up turn** (after the initial spawn prompt): `POST /s/<SID>/send` with body `{"text":"..."}` (the spawn only starts turn 1; subsequent user turns go here).
 - **Recursion opt-in** (delegate subagents that can themselves delegate): per-spawn `launch_overrides.maxSubagentDepth:N` raises the root's own delegation allowance to N. Omitted/default is 1 (a root may delegate, but its delegates are leaves) — recursion is dark without this.
-- **Per-session transcript**: `~/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
+- **Per-session transcript**: `$HOME/.local/state/serf/projects/<project-id>/sessions/<SID>.transcript.jsonl`
 - **Per-session meta**: same dir, `<SID>.meta.json`
-- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s <name> "/tmp/serf-tui-test --hub-addr 127.0.0.1:9180 --debug 2>$LOG"`
+- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s <name> "/tmp/serf-tui-test --hub-addr 127.0.0.1:$PORT --debug 2>$LOG"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)

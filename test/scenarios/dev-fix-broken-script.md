@@ -9,7 +9,9 @@ before mutating it.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable.
+- Hub running with `--serf` resolvable, on an isolated `$HOME` and a
+  free port (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`).
 - OAuth signed in for whichever model you pick (`openai/gpt-5.5` per
   user instruction, or substitute).
 - `python3` on PATH.
@@ -43,11 +45,11 @@ before mutating it.
 3. Spawn a session pointed at the tmpdir with a focused fix
    prompt:
    ```bash
-   TOKEN=$(cat ~/.serf/auth-token)
+   TOKEN=$(cat "$HOME/.serf/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
         -d "{\"prompt\":\"There is a Python script buggy.py in the current directory that fails with a syntax error when run. Fix the bug. Then run python3 buggy.py and confirm it prints 5 then done. Do not rewrite the whole script — only fix the syntax error.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
-        http://localhost:9180/api/spawn
+        $HUB/api/spawn
    ```
    Capture `session_id`.
 

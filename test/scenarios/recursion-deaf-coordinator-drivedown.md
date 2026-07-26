@@ -30,8 +30,8 @@ IS the test, asserted on the coordinator's own transcript.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test (`job-control-spec`); hub
-  on `127.0.0.1:9180` (`docs/agentic-testing.md` setup checklist);
+- Fresh binaries from the branch under test (`job-control-spec`); an isolated hub, per the Setup checklist
+  (`docs/agentic-testing.md`; never Jesse's real hub on `9180`);
   credentialed model (the orchestrator picks the spawn model at run
   time, e.g. `openai/gpt-5.5`).
 - `tmpdir=$(mktemp -d -t serf-e2e-recdeaf-XXXXX)`.
@@ -80,9 +80,9 @@ IS the test, asserted on the coordinator's own transcript.
      `job_read_output(COORD)`;
    - `read_session_transcript` (or read the coordinator session's
      `*.transcript.jsonl` under
-     `~/.local/state/serf/projects/.../sessions/<coord-sid>/`).
+     `$HOME/.local/state/serf/projects/.../sessions/<coord-sid>/`).
 6. Read the durable logs:
-   - root: `find ~/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
+   - root: `find $HOME/.local/state/serf/projects -path "*sessions/$SID/jobs.jsonl"`.
    - coordinator + workers: the `jobs.jsonl` under each child session
      dir.
 

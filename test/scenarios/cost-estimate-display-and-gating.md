@@ -11,7 +11,8 @@ server round trip.
 
 ## Pre-state
 
-- Hub running, isolated instance recommended (fake `$HOME`, non-9180 port).
+- Hub running as an isolated instance, fake `$HOME`
+  (never Jesse's real `9180`).
 - A model with pricing data in `llm/pricing.go` (e.g. `openai/gpt-5.5`).
 - Browser authenticated against the hub, OR (browser tool unavailable) a
   Bearer token and `curl` with `-H "HX-Request: true"` against

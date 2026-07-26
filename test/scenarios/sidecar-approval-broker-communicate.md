@@ -8,7 +8,9 @@ send it back through `delegate_send(to="caller")`.
 ## Pre-state
 
 - Fresh `serf` and `serf-hub` from the branch under test.
-- Hub running on `127.0.0.1:9180`; `TOKEN=$(cat ~/.serf/auth-token)`.
+- Hub running on a free port, never Jesse's real hub on `9180` (see
+  the Setup checklist in `docs/agentic-testing.md`);
+  `TOKEN=$(cat "$HOME/.serf/auth-token")`.
 - `tmpdir=$(mktemp -d -t serf-e2e-approval-broker-XXXXX)`.
 - When testing Kimi fluency, spawn with `model` set to
   `kimi/kimi-for-coding`.

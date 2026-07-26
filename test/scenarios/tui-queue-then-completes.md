@@ -15,8 +15,10 @@ round trip end-to-end against a real model.
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` and `./serf-hub` built in repo root
   (`go build -o serf-tui ./cmd/serf-tui && go build -o serf-hub
   ./cmd/serf-hub`).
@@ -40,7 +42,7 @@ visible pane.
 2. **Launch in tmux**:
    ```
    tmux new-session -d -s serf-queue-test -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t serf-queue-test -p
    ```
@@ -94,8 +96,8 @@ visible pane.
    ```
    SID=$(tmux capture-pane -t serf-queue-test -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
-   curl -s -H "Authorization: Bearer $(cat ~/.serf/auth-token)" \
-     "http://localhost:9180/api/sessions/local:$SID" | \
+   curl -s -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
+     "$HUB/api/sessions/local:$SID" | \
      python3 -c "import json,sys; d=json.load(sys.stdin); print('state=',d.get('state'))"
    ```
    `state= active`. (Queue depth is not yet surfaced by the
@@ -120,7 +122,7 @@ visible pane.
 
 9. **Cross-check the transcript on disk**:
    ```
-   TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    grep -oE '"kind":"USER_INPUT"' "$TS" | wc -l
    ```
    At least two `USER_INPUT` rows — one for the essay prompt and

@@ -18,7 +18,7 @@ Restart-side exactly-once is job-restart-durability.md.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md`). Serve mode through the hub is REQUIRED:
   idle wake rides the server-wired notify func.
 - Credentialed model. Two workdirs:

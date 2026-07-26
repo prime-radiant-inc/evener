@@ -12,11 +12,13 @@ RPCs would not be caught.
 
 ## Pre-state
 
-- Hub running on `0.0.0.0:9180` with `--serf` resolvable (sibling or
+- Hub running on an isolated `$HOME` and free port (never `9180`,
+  Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`) with `--serf` resolvable (sibling or
   PATH).
 - OpenAI OAuth signed in (`./serf openai status` shows
   `source=oauth`).
-- `~/.serf/auth-token` readable.
+- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
 - `jq` not required — examples use `python3 -m json.tool` and
   inline `python3 -c`. Substitute freely.
 
@@ -26,8 +28,8 @@ Set up shared state:
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-titlebar-XXXXX)
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Spawn**. Use `openai/gpt-5.4-mini` (cheap, fast). The initial
@@ -114,7 +116,7 @@ head and runs it as a fresh user turn:
    echo "post-queue settled state=$state turn_count=$tc baseline=$tc_baseline"
    # Confirm the queued text appears in the transcript as a USER turn
    # AFTER the interrupted turn's cancellation marker:
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    kinds = []
@@ -164,7 +166,7 @@ head and runs it as a fresh user turn:
    # record turn count and transcript size
    TC_BEFORE=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
                 | python3 -c "import json,sys; print(json.load(sys.stdin)['turn_count'])")
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    LINES_BEFORE=$(wc -l < "$TFILE")
    echo "before compact: turn_count=$TC_BEFORE lines=$LINES_BEFORE"
    # compact
@@ -198,9 +200,9 @@ head and runs it as a fresh user turn:
 5. **Shutdown**. Capture pre-state (daemon pid via rendezvous, meta
    file path), POST shutdown, watch the daemon exit:
    ```bash
-   RFILE=$(grep -l "\"session_id\":\"$SID\"" ~/.serf/run/*.json)
+   RFILE=$(grep -l "\"session_id\":\"$SID\"" $HOME/.serf/run/*.json)
    PID=$(basename "$RFILE" .json)
-   META=$(find ~/.local/state/serf/projects -name "$SID.meta.json")
+   META=$(find $HOME/.local/state/serf/projects -name "$SID.meta.json")
    echo "pid=$PID rfile=$RFILE meta=$META"
    ts_start=$(date +%s)
    curl -s -i -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
@@ -249,8 +251,8 @@ head and runs it as a fresh user turn:
   word 'ready' and nothing else"`). Confirms the checkpoint
   preserved earlier-turn content.
 - **Step 5 (shutdown)**: hub returns `204`; daemon process exits
-  within ~3s; rendezvous file at `~/.serf/run/<pid>.json` is gone;
-  meta file at `~/.local/state/serf/projects/.../<sid>.meta.json`
+  within ~3s; rendezvous file at `$HOME/.serf/run/<pid>.json` is gone;
+  meta file at `$HOME/.local/state/serf/projects/.../<sid>.meta.json`
   persists; subsequent GET on `/api/sessions/local:<sid>` reports
   `state=ended` and `live=false`. Falsification: process still alive
   after 5s, rendezvous file still present, meta file deleted, or
@@ -260,9 +262,9 @@ head and runs it as a fresh user turn:
 
 ```bash
 rm -rf "$tmpdir"
-# meta + transcript files under ~/.local/state/serf/projects linger
+# meta + transcript files under $HOME/.local/state/serf/projects linger
 # (harmless). Optional:
-find ~/.local/state/serf/projects -name "$SID*" -delete
+find $HOME/.local/state/serf/projects -name "$SID*" -delete
 # If a daemon was left running (e.g. you skipped the shutdown step),
 # kill it:
 # kill $PID
@@ -310,7 +312,7 @@ find ~/.local/state/serf/projects -name "$SID*" -delete
   `/api/sessions/<sid>` (returns 404) and NOT `/s/<sid>` (returns
   HTML). The local: prefix is required because the route parses a
   `hubapi.Ref`.
-- Multiple `~/.serf/run/*.json` files can exist for different
+- Multiple `$HOME/.serf/run/*.json` files can exist for different
   daemons. Use `grep -l "\"session_id\":\"$SID\""` to find the
   right one; do not pick the most recent.
 - Shutdown is graceful (daemon ack'd 204 before exiting). The

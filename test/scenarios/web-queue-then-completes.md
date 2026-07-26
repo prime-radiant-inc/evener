@@ -18,10 +18,12 @@ backend) and to the TUI scenario (parallel subagent).
 
 ## Pre-state
 
-- Hub running on `0.0.0.0:9180` with `--serf` resolvable.
+- Hub running on an isolated `$HOME` and free port (never `9180`,
+  Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`) with `--serf` resolvable.
 - OpenAI OAuth signed in (`./serf openai status` shows
   `source=oauth`).
-- `~/.serf/auth-token` readable.
+- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
 - A Chrome session that can authenticate against the hub (visit
   `/auth?token=<auth-token>&next=/s/<sid>` once to set the cookie).
 
@@ -31,8 +33,8 @@ Set up shared state:
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-queue-XXXXX)
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Drop a pacing AGENTS.md.** Same trick as `web-steer-live-turn`:
@@ -163,7 +165,7 @@ HUB=http://localhost:9180
 6. **Transcript check** — the queued message must land as `USER`
    on a fresh turn, not as `STEERING`:
    ```bash
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    for i, line in enumerate(open("$TFILE")):
@@ -223,7 +225,7 @@ curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $T
   -d '{}' "$HUB/s/$SID/shutdown" >/dev/null
 rm -rf "$tmpdir"
 # Optional:
-# find ~/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

@@ -27,7 +27,11 @@ proves the palette, the pill, and the marker actually render.
 
 - Build fresh from the branch and run a hub (see `docs/agentic-testing.md`
   "Setup checklist"). The default `0.0.0.0:9180` may host an unrelated
-  hub; bind the test hub to a free port and use it consistently:
+  hub; bind the test hub to a free port and use it consistently. This
+  card wants the real, signed-in OpenAI credentials (below), so it
+  deliberately does NOT export an isolated `$HOME` — the same
+  documented OAuth-footgun exception as the Setup checklist's
+  `OPENAI_API_KEY=` recipe:
   ```bash
   go build -o /tmp/serf-hub-test ./cmd/serf-hub
   go build -o /tmp/serf-test ./cmd/serf

@@ -34,8 +34,8 @@ per `docs/agentic-testing.md`.
   TOKEN=$(cat "$HOME/.serf/auth-token")
   HUB=http://127.0.0.1:9181
   ```
-  (Port `9181` to avoid colliding with a dev hub on the default
-  `9180`.)
+  (Port `9181`, never Jesse's real `9180`, to avoid colliding with a
+  dev hub on the default port.)
 - `ANTHROPIC_API_KEY` set in the environment (cheap model is
   `anthropic/claude-haiku-4-5-20251001`, this repo's standard
   cheap-model convention).

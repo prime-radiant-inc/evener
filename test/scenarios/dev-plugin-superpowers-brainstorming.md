@@ -12,7 +12,9 @@ heavy and worth its own scenario.
 
 ## Pre-state
 
-- Hub running with `--serf` resolvable.
+- Hub running with `--serf` resolvable, on an isolated `$HOME` and a
+  free port (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`).
 - OpenAI OAuth signed in (or an alternative model the harness
   knows about).
 - `git` on PATH. Network access to GitHub.
@@ -34,18 +36,18 @@ heavy and worth its own scenario.
 3. Spawn a serf session with the plugin dir in `launch_overrides`.
    The wire key is `pluginDirs` (camelCase, per `internal/appwire/types.go`):
    ```bash
-   TOKEN=$(cat ~/.serf/auth-token)
+   TOKEN=$(cat "$HOME/.serf/auth-token")
    curl -s -X POST -H "Content-Type: application/json" \
         -H "Authorization: Bearer $TOKEN" \
         -d "{\"prompt\":\"Inspect your available skills. Specifically: do you have access to a 'brainstorming' skill (likely listed as 'superpowers:brainstorming' or similar)? If yes, list its first paragraph of description. If no, say so plainly. Do not invoke the skill — just report whether you can see it.\",\"model\":\"openai/gpt-5.5\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{\"pluginDirs\":[\"$tmpdir/superpowers\"]}}" \
-        http://localhost:9180/api/spawn
+        $HUB/api/spawn
    ```
    Capture `session_id`.
 4. Wait for a `communicate` tool call (max ~90s):
    ```bash
    deadline=$((SECONDS + 90))
    while [ $SECONDS -lt $deadline ]; do
-     if find ~/.local/state/serf/projects -name "<sid>.transcript.jsonl" \
+     if find "$HOME/.local/state/serf/projects" -name "<sid>.transcript.jsonl" \
           -exec grep -l '"communicate"' {} \; 2>/dev/null | grep -q .; then
        break
      fi
@@ -54,7 +56,7 @@ heavy and worth its own scenario.
    ```
 5. Inspect the transcript:
    ```bash
-   find ~/.local/state/serf/projects -name "<sid>.transcript.jsonl" \
+   find "$HOME/.local/state/serf/projects" -name "<sid>.transcript.jsonl" \
      -exec cat {} \;
    ```
 
@@ -79,7 +81,7 @@ heavy and worth its own scenario.
 rm -rf "$tmpdir"
 ```
 
-The session metadata under `~/.local/state/serf/projects/...`
+The session metadata under `$HOME/.local/state/serf/projects/...`
 lingers but is harmless. Worth `find ... -name "<sid>*" -delete`
 between runs if you care about a clean past index.
 
@@ -109,5 +111,5 @@ between runs if you care about a clean past index.
 - The `launch_overrides.pluginDirs` field is a per-session
   override that takes precedence over global / in-repo launch
   config. To make a plugin available across all sessions, set it
-  in `~/.serf/launch.toml` or via `serf-hub`'s settings UI under
+  in `$HOME/.serf/launch.toml` or via `serf-hub`'s settings UI under
   Launch Defaults → Plugin Dirs.

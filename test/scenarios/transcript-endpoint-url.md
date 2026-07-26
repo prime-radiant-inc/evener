@@ -8,7 +8,9 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 
 ## Pre-state
 
-- Hub running with `--serf` set.
+- Hub running with `--serf` set, on an isolated `$HOME` and a free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`).
 - OAuth or API-key creds set up so a model call can actually succeed.
 - A cheap, fast-responding model available (e.g.
   `anthropic/claude-haiku-4-5-20251001`).
@@ -20,9 +22,9 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
    text OK and stop.`
    ```bash
    curl -s -X POST -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $(cat ~/.serf/auth-token)" \
+        -H "Authorization: Bearer $(cat "$HOME/.serf/auth-token")" \
         -d '{"prompt":"Reply with the literal text OK and stop.","model":"anthropic/claude-haiku-4-5-20251001","working_dir":"/tmp","harness":"serf","branch":"","access_mode":"full","agent":"default","launch_overrides":{}}' \
-        http://localhost:9180/api/spawn
+        $HUB/api/spawn
    ```
 2. Capture the `session_id` from the response.
 3. Wait ~10s for the turn to complete.
@@ -56,7 +58,8 @@ provider forensics come from `sessions/<SID>.api.jsonl` or explicit
 ## Cleanup
 
 - Sessions accumulate on disk; not strictly necessary to remove.
-  If you want hermetic re-runs: `rm -rf ~/.local/state/serf/projects/<project-id>/sessions/<session_id>*`.
+  If you want hermetic re-runs: `rm -rf "$HOME/.local/state/serf/projects/<project-id>/sessions/<session_id>"*`
+  — that isolated `$HOME`, never Jesse's real one.
 
 ## Sharp edges
 

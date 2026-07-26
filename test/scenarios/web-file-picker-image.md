@@ -13,7 +13,9 @@ Companion scenarios: `web-drag-drop-image.md`, `web-paste-image-from-clipboard.m
 
 ## Pre-state
 
-- `serf-hub` running on `0.0.0.0:9180`. Token at `~/.serf/auth-token`.
+- `serf-hub` running on an isolated `$HOME` and free port
+  (never `9180`, Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at `$HOME/.serf/auth-token`.
 - Either `anthropic/claude-haiku-4-5-20251001` or `openai/gpt-5.5`
   reachable through configured credentials. Both are known to accept
   image inputs (verified live 2026-05-18).
@@ -40,7 +42,7 @@ Companion scenarios: `web-drag-drop-image.md`, `web-paste-image-from-clipboard.m
    navigations don't 401:
    ```
    action: navigate
-   payload: http://localhost:9180/auth?token=<TOKEN>&next=/new
+   payload: $HUB/auth?token=<TOKEN>&next=/new
    ```
    Confirm the form is mounted:
    ```
@@ -108,15 +110,15 @@ Companion scenarios: `web-drag-drop-image.md`, `web-paste-image-from-clipboard.m
 
 6. **Poll the session to idle and read the transcript**:
    ```bash
-   TOKEN=$(cat ~/.serf/auth-token)
+   TOKEN=$(cat "$HOME/.serf/auth-token")
    for i in $(seq 1 60); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" \
-       "http://localhost:9180/api/sessions/local:$SID" \
+       "$HUB/api/sessions/local:$SID" \
        | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   TFILE=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TFILE=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    python3 - <<EOF
    import json
    for i, line in enumerate(open("$TFILE")):
@@ -166,13 +168,13 @@ Companion scenarios: `web-drag-drop-image.md`, `web-paste-image-from-clipboard.m
 ## Cleanup
 
 ```bash
-TOKEN=$(cat ~/.serf/auth-token)
+TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
-  "http://localhost:9180/s/$SID/shutdown" >/dev/null
+  "$HUB/s/$SID/shutdown" >/dev/null
 rm -rf "$FIXDIR"
 # Optional, for hermeticity across runs:
-# find ~/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

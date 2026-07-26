@@ -21,8 +21,10 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
   `tmux paste-buffer -p` is the path that emits bracketed-paste
   start/end markers — required for the TUI's `KeyMsg.Paste` branch
   to fire.
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` and `./serf-hub` built in repo root.
 - `anthropic/claude-haiku-4-5-20251001` (or `openai/gpt-5.5`)
   reachable through configured credentials.
@@ -43,8 +45,8 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    `state=idle` to navigate to):
    ```bash
    WORKDIR=$(mktemp -d -t serf-tui-imgpath-XXXX)
-   TOKEN=$(cat ~/.serf/auth-token)
-   HUB=http://localhost:9180
+   TOKEN=$(cat "$HOME/.serf/auth-token")
+   HUB=http://127.0.0.1:$PORT
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
      -d "{\"prompt\":\"reply with the literal word: ready\",\"harness\":\"serf\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$WORKDIR\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
@@ -62,7 +64,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 3. **Launch serf-tui in tmux**:
    ```bash
    tmux new-session -d -s serf-e2e-imgpath -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 
@@ -137,15 +139,15 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
 ## Cleanup
 
 ```bash
-TOKEN=$(cat ~/.serf/auth-token)
+TOKEN=$(cat "$HOME/.serf/auth-token")
 curl -s -X POST -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" -d '{}' \
-  "http://localhost:9180/s/$SID/shutdown" >/dev/null
+  "$HUB/s/$SID/shutdown" >/dev/null
 tmux kill-session -t serf-e2e-imgpath 2>/dev/null
 rm -rf "$WORKDIR"
 rm -f /tmp/serf-e2e-test-image.png
 # Optional, for hermeticity:
-# find ~/.local/state/serf/projects -name "$SID*" -delete
+# find $HOME/.local/state/serf/projects -name "$SID*" -delete
 ```
 
 ## Sharp edges

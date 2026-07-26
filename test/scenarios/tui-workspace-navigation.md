@@ -10,8 +10,10 @@ dashboard ↔ session transitions described in the action bars.
 ## Pre-state
 
 - `tmux` installed (`which tmux` returns a path; tested on tmux 3.4).
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` built and in repo root (`go build -o serf-tui ./cmd/serf-tui`).
 - At least one live or recent session visible on the dashboard. If
   empty, spawn one first via `~/go/bin/serf spawn ...` or accept that
@@ -27,7 +29,7 @@ Use `tmux send-keys -t serf-test KEY ...` to drive input and
 1. **Launch in tmux**:
    ```
    tmux new-session -d -s serf-test -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t serf-test -p
    ```

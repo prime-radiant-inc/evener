@@ -19,9 +19,11 @@ Driver: superpowers-chrome:browsing.
 
 ## Pre-state
 
-- Hub running on `0.0.0.0:9180` with `--serf` resolvable.
+- Hub running on an isolated `$HOME` and free port (never `9180`,
+  Jesse's real one — see the Setup checklist in
+  `docs/agentic-testing.md`) with `--serf` resolvable.
 - OpenAI or Anthropic OAuth signed in.
-- `~/.serf/auth-token` readable.
+- `$HOME/.serf/auth-token` readable (that isolated `$HOME`).
 - Chrome session authenticated against the hub (visit
   `/auth?token=<auth-token>&next=/s/<sid>` once to set the cookie).
 
@@ -29,8 +31,8 @@ Driver: superpowers-chrome:browsing.
 
 ```bash
 tmpdir=$(mktemp -d -t serf-e2e-steer-idle-XXXXX)
-TOKEN=$(cat ~/.serf/auth-token)
-HUB=http://localhost:9180
+TOKEN=$(cat "$HOME/.serf/auth-token")
+HUB=http://127.0.0.1:$PORT
 ```
 
 1. **Spawn a short session** and let it run to IDLE. Use Haiku and
@@ -53,7 +55,7 @@ HUB=http://localhost:9180
 2. **Authenticate the browser** and open the workspace via the
    browsing skill:
    ```
-   navigate http://127.0.0.1:9180/auth?token=<TOKEN>&next=/s/<SID>
+   navigate $HUB/auth?token=<TOKEN>&next=/s/<SID>
    await_element #conversation
    ```
 

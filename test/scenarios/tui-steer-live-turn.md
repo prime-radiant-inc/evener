@@ -22,8 +22,10 @@ For the queue-only and queue+composer drain paths, see
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `serf-hub` reachable on `127.0.0.1:9180`. Token at
-  `~/.serf/auth-token`.
+- `serf-hub` reachable on an isolated `$HOME` and free port
+  (never Jesse's port `9180` — see the Setup checklist in
+  `docs/agentic-testing.md`). Token at
+  `$HOME/.serf/auth-token`.
 - `./serf-tui` and `./serf-hub` (or `./serf`) built in repo root.
 - Anthropic OAuth or API key configured so the default
   `anthropic/claude-haiku-4-5-20251001` model can be invoked.
@@ -40,7 +42,7 @@ For the queue-only and queue+composer drain paths, see
 2. **Launch in tmux**:
    ```
    tmux new-session -d -s serf-steer-test -x 200 -y 50 \
-     "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
+     "./serf-tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t serf-steer-test -p
    ```
@@ -106,7 +108,7 @@ For the queue-only and queue+composer drain paths, see
    ```
    SID=$(tmux capture-pane -t serf-steer-test -p | \
      grep -oE '01[0-9A-Z]{24}' | head -1)
-   TS=$(find ~/.local/state/serf/projects -name "$SID.transcript.jsonl")
+   TS=$(find $HOME/.local/state/serf/projects -name "$SID.transcript.jsonl")
    grep -oE '"kind":"STEERING"' "$TS"
    ```
    At least one match. Inspect the full row:

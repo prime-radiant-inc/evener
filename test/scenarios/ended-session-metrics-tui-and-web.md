@@ -10,7 +10,8 @@ panel's ended-session branch (`cmd/serf-hub/web_workspace.go`
 
 ## Pre-state
 
-- An isolated `serf-hub` (fake `$HOME`, non-9180 port) with `-serf` pointed at
+- An isolated `serf-hub` (fake `$HOME`, non-`9180` port — never Jesse's
+  real hub) with `-serf` pointed at
   a freshly built `serf` binary.
 - A session spawned via `POST /api/spawn`, sent one prompt to completion, then
   ended via `POST /s/<id>/shutdown`.

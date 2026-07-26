@@ -15,7 +15,7 @@ the structured fields are how the parent judges outcome.
 
 ## Pre-state
 
-- Fresh binaries from the branch under test; hub on `127.0.0.1:9180`
+- Fresh binaries from the branch under test; an isolated hub
   (`docs/agentic-testing.md` setup checklist); credentialed model that
   follows deliberate-misbehavior test instructions.
 - `tmpdir=$(mktemp -d -t serf-e2e-jschema-XXXXX)`.
