@@ -43,6 +43,11 @@ export function openNestedSessionWithOwner(ref: string, ownerRef: string | null)
   if (stuckInMain) workspace.closePane(stuckInMain.id);
 
   if (ownerRef !== null && ownerRef !== ref) {
+    const existingOwner = workspace.panes.find(
+      (pane) => pane.type === "session" && pane.slot === "secondary" && sessionRefOf(pane) === ownerRef,
+    );
+    if (existingOwner) workspace.closePane(existingOwner.id);
+
     const main = workspace.mainPane();
     if (main && (main.type !== "session" || sessionRefOf(main) !== ownerRef)) {
       workspace.closePane(main.id);
