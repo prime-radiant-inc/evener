@@ -90,7 +90,7 @@ type ReasoningSummaryDeltaData struct {
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
 type AssistantTextEndData struct {
 	Text         string    `json:"text"`
-	Usage        llm.Usage `json:"usage,omitempty"`
+	Usage        llm.Usage `json:"usage"`
 	FinishReason string    `json:"finish_reason"`
 	Model        string    `json:"model"`
 	Reasoning    string    `json:"reasoning,omitempty"`

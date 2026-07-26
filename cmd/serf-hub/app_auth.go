@@ -508,7 +508,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	if err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
-	return appwire.AuthDevicePollResponse{State: "authorized", Status: status}, nil
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, nil
 }
 
 func (c *hubAuthController) config() authopenai.Config {

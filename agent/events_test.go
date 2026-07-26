@@ -122,3 +122,17 @@ func TestEventKindConstants(t *testing.T) {
 		t.Errorf("EventHookEnd = %q, want %q", events.EventHookEnd, "HOOK_END")
 	}
 }
+
+// TestAssistantTextEndData_UsageAlwaysShipsOnWire locks in that Usage has no
+// "omitempty" tag: encoding/json can never omit a struct value regardless of
+// the tag, so the "usage" key ships even for the zero llm.Usage{} (e.g. a
+// provider response that reported no token counts). The tag was already a
+// no-op lie.
+func TestAssistantTextEndData_UsageAlwaysShipsOnWire(t *testing.T) {
+	t.Parallel()
+	data := events.AssistantTextEndData{Text: "hi", FinishReason: "stop", Model: "gpt-test"}
+	dm := payloadJSONMap(t, data)
+	if _, ok := dm["usage"]; !ok {
+		t.Errorf("expected usage key present even when zero, got %+v", dm)
+	}
+}

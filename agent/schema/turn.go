@@ -126,7 +126,7 @@ type Turn struct {
 	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
-	Usage llm.Usage `json:"usage,omitempty"`
+	Usage llm.Usage `json:"usage"`
 	// SteeringSource records the provenance of a TurnSteering entry:
 	// "user" for human-sent steering (the UI steer action or queued user
 	// input drained as steering), empty for daemon/system nudges. Persisted

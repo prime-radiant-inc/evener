@@ -1427,10 +1427,11 @@ type AuthDevicePollParams struct {
 }
 
 // AuthDevicePollResponse reports one poll attempt. State is "pending",
-// "authorized", or "expired". Status is populated only when authorized.
+// "authorized", or "expired". Status is nil (the "status" key is absent from
+// the wire) except when authorized.
 type AuthDevicePollResponse struct {
-	State  string             `json:"state"`
-	Status AuthStatusResponse `json:"status,omitempty"`
+	State  string              `json:"state"`
+	Status *AuthStatusResponse `json:"status,omitempty"`
 }
 
 // InstanceEntry is the wire representation of one configured provider instance

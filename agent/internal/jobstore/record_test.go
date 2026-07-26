@@ -35,6 +35,26 @@ func TestGeneratedJobstoreIDsUseIdentifierDomains(t *testing.T) {
 	}
 }
 
+// TestWatchSendState_TimestampsAlwaysShipOnWire locks in that CreatedAt and
+// UpdatedAt have no "omitempty" tag: encoding/json can never omit a struct
+// value regardless of the tag, so both keys ship even for the zero
+// time.Time. WatchSendState is purely internal durable job-store state (no
+// external wire consumer decodes for key absence), so the tag was already a
+// no-op lie.
+func TestWatchSendState_TimestampsAlwaysShipOnWire(t *testing.T) {
+	data, err := json.Marshal(WatchSendState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `"created_at":`) {
+		t.Errorf("expected created_at key present even for zero time.Time, got %s", got)
+	}
+	if !strings.Contains(got, `"updated_at":`) {
+		t.Errorf("expected updated_at key present even for zero time.Time, got %s", got)
+	}
+}
+
 func TestJobRecordJSONRoundTripDelegateRestoreDescriptorAndStructuredReason(t *testing.T) {
 	valid := false
 	r := JobRecord{
