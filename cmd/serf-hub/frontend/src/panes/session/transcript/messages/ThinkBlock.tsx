@@ -3,7 +3,9 @@
 // stays open the whole time it's the current thought, never collapsed
 // mid-stream this wave - see the wave-4 T2 scope's own "OPEN + StreamingText
 // while live", a deliberate simplification of legacy's mid-stream-
-// collapsible button). Settled: collapses to "Thought [for Ns] · preview".
+// collapsible button). Settled: collapses to "Thought [for Ns]" - duration
+// only, deliberately no reasoning-text preview (see thoughtLabel's own
+// comment for why).
 //
 // reasoningSummaries is string[][] - per-summaryIndex chunk lists
 // (protocol/model.ts). Each index's chunks only ever grow by appending
@@ -49,7 +51,7 @@ import { isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosu
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { StreamingText } from "../StreamingText";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
-import { joinedReasoningParagraphs, reasoningPreview, thoughtSeconds } from "./reasoningFormat";
+import { joinedReasoningParagraphs, thoughtSeconds } from "./reasoningFormat";
 import styles from "./thinkblock.module.css";
 
 const CLASS = {
@@ -65,9 +67,16 @@ const CLASS = {
 // neither the wire pair nor the observed pair is present on this item (see
 // reasoningFormat.ts's own thoughtSeconds comment) - and the label honestly
 // omits the number rather than measuring a client-side clock instead.
-function thoughtLabel(seconds: number | undefined, preview: string): string {
-  const durationText = seconds === undefined ? "Thought" : `Thought for ${seconds}s`;
-  return [durationText, preview].filter(Boolean).join(" · ");
+//
+// Duration only, deliberately no reasoning-text preview (kdyh/tx8m): a
+// preview built from the same text the expanded body renders in full is
+// guaranteed to repeat itself the instant a reader opens the disclosure -
+// and since a <summary> can only hold plain text, that preview could never
+// honestly represent the model's own markdown either. Carrying no agent
+// text here removes both problems at once rather than patching each with
+// its own workaround.
+function thoughtLabel(seconds: number | undefined): string {
+  return seconds === undefined ? "Thought" : `Thought for ${seconds}s`;
 }
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -104,7 +113,6 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
   if (paragraphs.length === 0) return null; // empty thoughts removed
 
   const seconds = thoughtSeconds(item.startedAt, item.completedAt, item.observedStartedAt, item.observedCompletedAt);
-  const preview = reasoningPreview(item.reasoningSummaries);
   // Open/closed state lives in the shared disclosureStore keyed by item.id
   // (yt2q), so an expanded thought survives the VirtualList/dockview remount
   // that would reset a native uncontrolled <details>. Collapsed by default.
@@ -121,7 +129,7 @@ export const ThinkBlock = memo(function ThinkBlock({ item, live }: ItemRenderPro
             toggleDisclosure(item.id, false);
           }}
         >
-          {thoughtLabel(seconds, preview)}
+          {thoughtLabel(seconds)}
         </summary>
         <div className={CLASS.body}>
           {/* One document, not one per summaryIndex: a markdown parser needs

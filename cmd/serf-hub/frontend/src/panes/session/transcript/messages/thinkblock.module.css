@@ -31,14 +31,42 @@
   padding: 0;
 }
 
+/* qrv1: a bare <summary> is block-level (the UA default is display:
+ * list-item) and stretches to the full turn width, so its short "Thought
+ * for Ns" text left a wide strip of empty box to the right - and a focus
+ * ring drawn around that whole empty strip read as a blank text input,
+ * not a collapsed disclosure. inline-flex shrinks the box to its own
+ * content (max-width/ellipsis still guard the rare long-duration case,
+ * though today's labels are all short), so hover/focus decoration only
+ * ever wraps the words actually on screen. */
 .summary {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-low);
+}
+
+/* Same ink-wash idiom as ToolCallItem's own summary.row:hover - a tint of
+ * the ink reads as "clickable" against whatever surface it sits on. */
+.summary:hover {
+  background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
+}
+
+/* Same token, same shape as every other focus ring in the app (see
+ * widgets/textarea's :focus-visible and ToolCallItem's summary.row - qrv1's
+ * ring was loud not because a focus indicator is wrong here, but because
+ * this element had never been given the app's OWN semantic ring; it drew
+ * whatever the browser's bare default was instead, at full row width. */
+.summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* A settled thought renders through the Markdown widget, which sets its own

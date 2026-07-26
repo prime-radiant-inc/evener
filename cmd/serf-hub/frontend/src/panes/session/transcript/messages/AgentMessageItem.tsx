@@ -18,6 +18,7 @@ import styles from "./agentmessageitem.module.css";
 
 const CLASS = {
   message: requireClass(styles.message, "agentmessageitem.module.css", "message"),
+  tag: requireClass(styles.tag, "agentmessageitem.module.css", "tag"),
 };
 
 // Memoized ignoring `turn` identity (types.ts's ignoringTurn): this
@@ -33,6 +34,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: I
     if (!chunks || chunks.length === 0) return null;
     return (
       <div className={CLASS.message} data-testid="agent-message-item" data-live="true">
+        <span className={CLASS.tag}>Agent</span>
         <StreamingText chunks={chunks} />
       </div>
     );
@@ -45,6 +47,7 @@ export const AgentMessageItem = memo(function AgentMessageItem({ item, live }: I
   if (!item.text) return null;
   return (
     <div className={CLASS.message} data-testid="agent-message-item" data-live="false">
+      <span className={CLASS.tag}>Agent</span>
       <Markdown source={item.text} />
     </div>
   );

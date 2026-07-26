@@ -5,5 +5,22 @@
  * widget's own text styling, which is exactly what keeps a rapid live-to-
  * settled transition free of any flash-of-unstyled jank. */
 .message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   padding: var(--space-2) 0;
+}
+
+/* The agent's own speaker mark (1fwc): a short reply and a short user
+ * message must not read as one voice, and the reader should not have to
+ * notice an ABSENCE to tell them apart. --ink-mid, not --ink-hi like
+ * UserMessageItem's "You" tag - that tag has to fight the user's own
+ * DIMMED body text for attention; the agent's body already renders at
+ * --ink-hi (markdown.module.css's default), so this mark only needs to
+ * name the voice, not compete with it. */
+.tag {
+  font-family: var(--font-sans);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  color: var(--ink-mid);
 }

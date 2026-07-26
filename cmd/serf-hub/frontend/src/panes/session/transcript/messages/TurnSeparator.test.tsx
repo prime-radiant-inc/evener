@@ -155,3 +155,24 @@ test("the unrelated transcript toggles do not switch any segment on", () => {
   render(<TurnSeparator turn={fullTurn()} />);
   expect(screen.queryByTestId("turn-separator")).toBeNull();
 });
+
+// --- t8nc: duration carries a visible attachment, like its siblings -------
+// Tokens self-label via "↑/↓"; cost self-labels via "$". Duration alone was
+// a bare number with no such attachment, so when Round timings is the only
+// segment on, the row was just "10s" sitting there unattached to anything.
+// A small icon (not text, so the .textContent assertions above - and every
+// wire format this row promises - stay byte-for-byte unchanged) attaches it.
+
+test("Round timings alone: the duration segment carries a visible icon, not just a bare number", () => {
+  prefsStore.getState().setTranscriptStatus("roundTimings", true);
+  const { container } = render(<TurnSeparator turn={turn({ durationMs: 10000 })} />);
+  const row = screen.getByTestId("turn-separator");
+  expect(row.textContent).toBe("10s"); // wire format is unchanged
+  expect(container.querySelector("svg")).toBeTruthy(); // but it's not bare
+});
+
+test("the duration icon is decorative only (aria-hidden), never read twice by a screen reader", () => {
+  prefsStore.getState().setTranscriptStatus("roundTimings", true);
+  const { container } = render(<TurnSeparator turn={turn({ durationMs: 10000 })} />);
+  expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+});
