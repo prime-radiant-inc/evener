@@ -30,7 +30,7 @@
 // direction (a dropdown caret, a tree row's current state) pass `direction`
 // and get a different PATH - no transform to collide with.
 
-export type ChevronDirection = "right" | "down" | "left";
+export type ChevronDirection = "right" | "down" | "left" | "up";
 
 // Drawn on a 16x16 grid, apex on the centre line, arms of equal length, so
 // each direction is the same glyph seen from a different side and the four
@@ -39,6 +39,7 @@ const PATHS: Record<ChevronDirection, string> = {
   right: "M6 3.5 L10.5 8 L6 12.5",
   down: "M3.5 6 L8 10.5 L12.5 6",
   left: "M10 3.5 L5.5 8 L10 12.5",
+  up: "M3.5 10 L8 5.5 L12.5 10",
 };
 
 export interface ChevronProps {

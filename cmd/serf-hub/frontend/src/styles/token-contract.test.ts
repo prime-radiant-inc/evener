@@ -420,7 +420,31 @@ const WIDGET_STYLESHEET_RE = /^widgets\/([a-z0-9-]+)\/\1\.module\.css$/;
 // extended - this is a deliberate, exact-path exception, the same shape as
 // the dockview-theme.css naming exception above, scoped to this one file so
 // a same-named stylesheet elsewhere can't ride along on it.
-const SEMANTIC_PATH_EXCEPTIONS = new Set(["shell/rail/Rail.module.css"]);
+//
+// kata 3h80: panes/session/transcript/tools/subagentmodule.module.css earns
+// the same exception for the same structural reason - it lives under
+// panes/session/transcript/tools/, not widgets/<name>/, so it can never
+// match WIDGET_STYLESHEET_RE either, no matter what SEMANTIC_USE_ALLOWLIST
+// contains. Its own failure edge (`.module[data-has-failure="true"]`) is the
+// module-level "a child failed" signal parity §12 calls for - the failure
+// colour has to come from somewhere, and this is the same deliberate,
+// exact-path route Rail.module.css already established, not a new one.
+//
+// kata crcf: panes/session/composer/askDock/askdock.module.css earns the
+// same exception for the same structural reason - it lives under
+// panes/session/composer/askDock/, not widgets/<name>/, so it can never
+// match WIDGET_STYLESHEET_RE either. Its pending-ask batch is the app's
+// clearest "a human is needed right now" moment (docs/web-ui/decisions.md
+// topic 16); before this it was drawn in neutral ink alone, same-color as
+// everything else. The amber container is --attention-bg/-edge on the
+// batch envelope - the primary Send action inside it stays --accent (blue),
+// which is not gated at all, per the amber-owns-the-container/blue-owns-
+// the-action split the mockup settled on.
+const SEMANTIC_PATH_EXCEPTIONS = new Set([
+  "shell/rail/Rail.module.css",
+  "panes/session/transcript/tools/subagentmodule.module.css",
+  "panes/session/composer/askDock/askdock.module.css",
+]);
 
 for (const [path, text] of OTHER_STYLESHEETS) {
   test(`${path} only reaches for --attention/--alive/--danger if allowlisted`, () => {
@@ -438,6 +462,14 @@ test("the Rail.module.css semantic-var exception is scoped to its exact path, no
   // widget-allowlist check, exactly like the dockview-theme.css precedent.
   expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/Rail.module.css")).toBe(false);
   expect(SEMANTIC_PATH_EXCEPTIONS.has("dev/Rail.module.css")).toBe(false);
+});
+
+test("the askdock.module.css semantic-var exception is scoped to its exact path, not just its basename", () => {
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("panes/session/composer/askDock/askdock.module.css")).toBe(true);
+  // A same-named decoy anywhere else must still go through the normal
+  // widget-allowlist check, exactly like the dockview-theme.css precedent.
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("widgets/askdock.module.css")).toBe(false);
+  expect(SEMANTIC_PATH_EXCEPTIONS.has("askdock.module.css")).toBe(false);
 });
 
 // --- (c) dark and light blocks declare the same color tokens -----------

@@ -58,8 +58,12 @@ test("direction draws a different path rather than transforming the box", () => 
   const left = render(<Chevron direction="left" />)
     .container.querySelector("path")
     ?.getAttribute("d");
-  expect(new Set([right, down, left]).size).toBe(3);
-  for (const d of [right, down, left]) expect(d).toBeTruthy();
+  cleanup();
+  const up = render(<Chevron direction="up" />)
+    .container.querySelector("path")
+    ?.getAttribute("d");
+  expect(new Set([right, down, left, up]).size).toBe(4);
+  for (const d of [right, down, left, up]) expect(d).toBeTruthy();
 });
 
 // A chevron is decoration beside a control that already carries its own

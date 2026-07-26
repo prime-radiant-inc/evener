@@ -10,10 +10,22 @@
   color: var(--ink-mid);
 }
 
+/* Amber envelope (topic 16 / kata crcf): a batch is one pending ask_user
+ * moment - the app's clearest "a human is needed right now" state - so it
+ * gets the container tint (token-contract.test.ts's SEMANTIC_PATH_EXCEPTIONS
+ * carries this file's own exact-path entry, since panes/session/composer/
+ * askDock/ is not a widgets/<name>/ path). The Send button inside stays
+ * --accent (blue) - amber owns the container, blue owns the primary action,
+ * per the mockup's Alt A/D split, never Alt B's all-amber.
+ */
 .batch {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--attention-edge);
+  border-radius: var(--radius-pane);
+  background: var(--attention-bg);
 }
 
 .footer {
@@ -26,20 +38,6 @@
 .count {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
-}
-
-.sendBtn {
-  font-weight: var(--font-weight-medium);
-  font-size: var(--font-size-ui);
-  color: var(--ink-hi);
-  background: var(--surface-2);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-control);
-  padding: var(--space-1) var(--space-3);
-}
-
-.sendBtn:disabled {
-  color: var(--ink-low);
 }
 
 .visuallyHidden {

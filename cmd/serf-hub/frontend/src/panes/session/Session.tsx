@@ -220,7 +220,13 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                 {model.olderCursor && (
                   <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
                 )}
-                <LivenessLine lastFrameAt={model.lastFrameAt} now={now} active={model.status.type === "active"} />
+                <LivenessLine
+                  lastFrameAt={model.lastFrameAt}
+                  now={now}
+                  active={model.status.type === "active"}
+                  sessionRef={ref}
+                  turnId={model.activeTurnId}
+                />
               </>
             }
             pill={
@@ -228,6 +234,7 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
                 count={flow.pillCount}
                 needsYou={flow.pillNeedsYou}
                 error={flow.pillError}
+                pillArrowDirection={flow.pillArrowDirection}
                 onClick={flow.jumpToBottom}
               />
             }

@@ -107,6 +107,109 @@ test("a malformed / non-mutation task_list with no error renders nothing", () =>
   expect(screen.queryByTestId("tool-call-item")).toBe(null);
 });
 
+// A realistic StateResult.State snapshot (agent/task/task_store.go's Task[]
+// shape): 7 tasks, the first three already done, #4 about to complete this
+// call, #5 open with satisfied deps (the daemon's NextEligible pick), #6/#7
+// still open. Matches the kata's own failure scenario: 7 tasks appended,
+// completed one at a time, each completion auto-starting the next.
+function sevenTaskState(overrides: Partial<Record<number, Record<string, unknown>>> = {}) {
+  const base = [
+    { id: 1, type: "implement", description: "first", prompt: "", status: "done" },
+    { id: 2, type: "implement", description: "second", prompt: "", status: "done" },
+    { id: 3, type: "implement", description: "third", prompt: "", status: "done" },
+    { id: 4, type: "implement", description: "fourth", prompt: "", status: "done" },
+    { id: 5, type: "implement", description: "fifth", prompt: "", status: "in_progress" },
+    { id: 6, type: "implement", description: "sixth", prompt: "", status: "open" },
+    { id: 7, type: "implement", description: "seventh", prompt: "", status: "open" },
+  ];
+  return base.map((t) => (overrides[t.id] ? { ...t, ...overrides[t.id] } : t));
+}
+
+test("completing a task shows the auto-started row the daemon advanced to (authoritative auto-activation)", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 4, status: "done" }] },
+      "Updated 4→done. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(2);
+  expect(rows[0]!.getAttribute("data-touch")).toBe("done");
+  expect(rows[0]!.textContent).toContain("fourth");
+  expect(rows[1]!.getAttribute("data-touch")).toBe("started");
+  expect(rows[1]!.textContent).toContain("fifth");
+});
+
+test("an update row shows the task's description from authoritative state instead of a bare id", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 2, status: "cancelled", notes: "superseded" }] },
+      "Updated 2→cancelled. Progress: 0/1 tasks complete.",
+      { raw: [{ id: 2, type: "implement", description: "old approach", prompt: "", status: "cancelled" }] },
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  expect(row.textContent).toContain("old approach");
+  expect(row.textContent).not.toContain("#2");
+});
+
+test("a batch that explicitly completes one task and starts another shows exactly those two rows (no duplicate auto-start)", () => {
+  renderItem(
+    taskItem(
+      {
+        action: "update",
+        updates: [
+          { id: 4, status: "done" },
+          { id: 5, status: "in_progress" },
+        ],
+      },
+      "Updated 4→done, 5→in_progress. Progress: 4/7 tasks complete.",
+      { raw: sevenTaskState() },
+    ),
+  );
+  const rows = screen.getAllByTestId("task-card-row");
+  expect(rows).toHaveLength(2);
+  expect(rows.map((r) => r.getAttribute("data-touch"))).toEqual(["done", "started"]);
+  expect(rows[1]!.textContent).toContain("fifth");
+});
+
+test("a pure notes update leaves an unrelated in-progress task alone (no auto-start row fabricated)", () => {
+  renderItem(
+    taskItem({ action: "update", updates: [{ id: 6, status: "open", notes: "still blocked" }] }, "Updated 6→open.", {
+      raw: sevenTaskState(),
+    }),
+  );
+  // The reopen itself earns no row (matches the existing reopen contract
+  // below), and task 5's pre-existing in_progress status must not be
+  // mistaken for something this call just started.
+  expect(screen.queryByTestId("task-card-row")).toBe(null);
+});
+
+test("completing the last task with nothing left eligible shows no auto-started row", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 7, status: "done" }] },
+      "Updated 7→done. All tasks complete. Progress: 7/7 tasks complete.",
+      { raw: sevenTaskState({ 5: { status: "done" }, 6: { status: "done" } }) },
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  expect(row.getAttribute("data-touch")).toBe("done");
+});
+
+test("absent raw (old daemon / replayed transcript) renders exactly today's argument-only behaviour, never a fabricated auto-start", () => {
+  renderItem(
+    taskItem(
+      { action: "update", updates: [{ id: 4, status: "done" }] },
+      "Updated 4→done. Progress: 4/7 tasks complete.",
+    ),
+  );
+  const row = screen.getByTestId("task-card-row");
+  expect(row.getAttribute("data-touch")).toBe("done");
+  expect(row.textContent).toContain("#4");
+});
+
 test("a reopen update (status open, not a flagged touch) shows the head but no per-row status change", () => {
   // Wire-true fixture: the Go tool rejects a status-less update (task_store.go
   // Update: status must be open/in_progress/done/cancelled), so a bare

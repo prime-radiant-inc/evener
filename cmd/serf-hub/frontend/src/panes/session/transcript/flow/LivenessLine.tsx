@@ -1,14 +1,22 @@
 // LivenessLine is the honest, quiet liveness indicator for the transcript
-// pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s",
-// driven purely by describeLiveness (see liveness.ts). Pure/prop-driven,
-// same contract as widgets/cadence's own Cadence ("no timers, no
-// Date.now()") - `now` is Session.tsx's own useNowTick value, already
-// plumbed there for Cadence, so this never starts a second clock. Renders
-// nothing while level is "none" (fresh/inactive), and deliberately carries
-// no animation of its own - Cadence's trace already conveys activity; this
+// pane: "Quiet ~30s" rolling to "May be stalled - no updates for 3m 5s", or -
+// while the active turn's own delegated children are still running -
+// "Waiting on N subagents" instead of either (design brief principle 6: a
+// wait explained by children is not a stall). The quiet/stalled/waiting
+// decision itself is driven purely by describeLiveness (see liveness.ts);
+// this component's own job is sourcing that decision's two live inputs: `now`
+// (Session.tsx's own useNowTick value, already plumbed there for Cadence, so
+// this never starts a second clock - same "no timers, no Date.now()"
+// contract as widgets/cadence's own Cadence) and the running-children count,
+// a reactive read of subagentModuleStore scoped by
+// turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
+// bare turn id is never enough (two sessions can share one). Renders nothing
+// while level is "none" (fresh/inactive), and deliberately carries no
+// animation of its own - Cadence's trace already conveys activity; this
 // line's entire job is to say something honest when that activity stops.
 
 import { requireClass } from "../../../../widgets/internal/requireClass";
+import { turnScopeKey, useSubagentRows } from "../tools/subagentModuleStore";
 import { describeLiveness } from "./liveness";
 import styles from "./livenessline.module.css";
 
@@ -19,6 +27,10 @@ export interface LivenessLineProps {
   now: number;
   /** Only "active" threads show a liveness line at all (matches the legacy gate). */
   active: boolean;
+  /** ThreadModel.ref - scopes the running-children lookup alongside turnId. */
+  sessionRef: string | undefined;
+  /** ThreadModel.activeTurnId - undefined (no active turn yet) reads as zero running children. */
+  turnId: string | undefined;
 }
 
 const CLASS = {
@@ -26,8 +38,21 @@ const CLASS = {
   stalled: requireClass(styles.stalled, "livenessline.module.css", "stalled"),
 };
 
-export function LivenessLine({ lastFrameAt, now, active }: LivenessLineProps) {
-  const { level, text } = describeLiveness(now - lastFrameAt, active);
+export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId }: LivenessLineProps) {
+  const rows = useSubagentRows(turnScopeKey(sessionRef, turnId ?? ""));
+  // turnId undefined means there is no active turn to ask about (e.g. the
+  // brief window between thread/status/changed flipping "active" and
+  // turn/started's own activeTurnId landing - see
+  // protocol/sendQueueAvailability.ts's note on that same race): zero
+  // running children, not a lookup under the empty-string fallback
+  // turnScopeKey reserves for exactly this case. displayKind prefers the
+  // live overlay over the frozen tool-output kind, mirroring
+  // SubagentRowView's own displayKind (subagentModule.tsx) - a faster live
+  // watch/notification can know a child is done, or freshly re-running,
+  // before that child's own delegate tool call has settled a new output.
+  const runningSubagents =
+    turnId === undefined ? 0 : rows.filter((row) => (row.liveKind ?? row.kind) === "running").length;
+  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents);
   if (level === "none" || text === null) return null;
 
   return (

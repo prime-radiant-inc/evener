@@ -29,7 +29,7 @@
 //     wave's decided convention, T1's loadOlder reference implementation)
 //     - no inline error banner of its own.
 import { useEffect, useRef } from "react";
-import { useToasts } from "../../../../widgets";
+import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { AskQuestionCard } from "./AskQuestionCard";
 import type { AskResolution } from "./askCompose";
@@ -43,7 +43,6 @@ const CLASS = {
   batch: requireClass(styles.batch, "askdock.module.css", "batch"),
   footer: requireClass(styles.footer, "askdock.module.css", "footer"),
   count: requireClass(styles.count, "askdock.module.css", "count"),
-  sendBtn: requireClass(styles.sendBtn, "askdock.module.css", "sendBtn"),
   visuallyHidden: requireClass(styles.visuallyHidden, "askdock.module.css", "visuallyHidden"),
 };
 
@@ -96,9 +95,13 @@ function AskBatchCard({ sessionRef, batch, answers, onSend }: AskBatchCardProps)
         <span className={CLASS.count} aria-live="polite" aria-atomic="true">
           {answeredCount} of {total} {total === 1 ? "question" : "questions"} answered
         </span>
-        <button type="button" className={CLASS.sendBtn} disabled={batch.sending} onClick={() => onSend(batch.id)}>
+        {/* Blue primary, same pattern as sandboxEscalation's Allow button
+            (topic 16: amber owns the container above, blue owns the one
+            action that resolves it) - Button's own primary variant is the
+            token-contract-ungated --accent, so this needs no allowlisting. */}
+        <Button variant="primary" size="sm" disabled={batch.sending} onClick={() => onSend(batch.id)}>
           Send answers
-        </button>
+        </Button>
       </div>
     </div>
   );

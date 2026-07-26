@@ -108,3 +108,19 @@ test("error defaults to false - existing count/needsYou-only callers are unaffec
   expect(pill.textContent!.toLowerCase()).toContain("needs you");
   expect(pill.textContent!.toLowerCase()).not.toContain("failed turn");
 });
+
+test("renders a chevron pointing down by default", () => {
+  render(<NewContentPill count={5} needsYou={false} onClick={() => {}} />);
+  const chevron = screen.getByTestId("new-content-pill").querySelector("svg");
+  expect(chevron).toBeTruthy();
+  // Chevron path for down direction
+  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M3.5 6 L8 10.5 L12.5 6");
+});
+
+test("renders a chevron pointing up when pillArrowDirection is 'up'", () => {
+  render(<NewContentPill count={5} needsYou={false} pillArrowDirection="up" onClick={() => {}} />);
+  const chevron = screen.getByTestId("new-content-pill").querySelector("svg");
+  expect(chevron).toBeTruthy();
+  // Chevron path for up direction
+  expect(chevron?.querySelector("path")?.getAttribute("d")).toBe("M3.5 10 L8 5.5 L12.5 10");
+});

@@ -1155,12 +1155,13 @@ test("a steering item survives a bare turn/completed settle stamp (composition w
   expect(items[0]).toMatchObject({ type: "steering", text: "mid-turn steer", status: "completed" });
 });
 
-test("serf/steering/injected images populate display-ready strings via the same conversion other item paths use", () => {
+test("serf/steering/injected images populate display-ready ItemImages via the same conversion other item paths use", () => {
   // Steering images use the same appwire.InputItem shape as userMessage
   // images (internal/appprojector/appwire_projection.go's
   // projectUserInputImages: Type "image", MediaType, Data, Name — no
-  // Url/Path), so imagesToStrings' url ?? path ?? name fallback resolves to
-  // name here, exactly as it would for any other image-bearing item.
+  // Url/Path), so imagesToItemImages' url ?? path ?? name fallback resolves
+  // src to name here, exactly as it would for any other image-bearing item —
+  // and name itself still rides alongside src, not just consumed by it.
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -1186,7 +1187,92 @@ test("serf/steering/injected images populate display-ready strings via the same 
   );
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(item.images).toEqual(["screenshot.png"]);
+  expect(item.images).toEqual([{ src: "screenshot.png", name: "screenshot.png" }]);
+});
+
+// kata byq2: the reducer used to resolve each image down to one bare string
+// (whichever of url/path/name/source won the fallback), so a renderer could
+// never caption or (later) group an image — nothing survived to caption it
+// WITH. These two pin that name/path/source now ride alongside the resolved
+// src rather than being discarded, by picking fixtures where a DIFFERENT
+// field wins the src fallback than the ones being asserted on — proving
+// they're preserved in their own right, not just visible because they
+// happened to become src.
+
+test("item/completed preserves an input image's name alongside a src resolved from a different field", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look at this",
+          status: "completed",
+          images: [{ type: "image", path: "uploads/photo.jpg", name: "photo.jpg" }],
+        },
+      },
+    },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  // path (not name) wins the src fallback here — name survives regardless.
+  expect(item.images).toEqual([{ src: "uploads/photo.jpg", name: "photo.jpg", path: "uploads/photo.jpg" }]);
+});
+
+test("item/completed preserves an output image's name/path/source alongside a src resolved from yet another field", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    },
+    1002,
+  );
+
+  const item = itemAt(turnAt(model, 0), 0);
+  // path (not name, not source) wins the src fallback — name AND source both
+  // still survive, distinct from each other and from src.
+  expect(item.outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
 });
 
 test("prependOlderTurns keeps order and advances olderCursor", () => {

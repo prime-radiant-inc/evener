@@ -203,7 +203,7 @@ test("job_stop's own footer status updates the existing row for its job_id", () 
     />,
   );
 
-  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("done"); // cancelled -> done, not failed
+  expect(screen.getByTestId("subagent-row").dataset.kind).toBe("stopped"); // cancelled -> stopped: not a failure, but not a clean done either (3zf8)
 });
 
 test("delegate_send checking on a delegate (by delegate_id) updates its existing row", () => {

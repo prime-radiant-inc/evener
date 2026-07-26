@@ -175,7 +175,7 @@ describe("computeReconciledIds - send method (new userMessage items)", () => {
   test("matches an image-only send entry against a new textless userMessage item that has images", () => {
     const entries = [entry({ method: "send", text: "", imageCount: 1 })];
     const model = baseModel({
-      turns: [turn("turn_1", [item({ id: "item_new", type: "userMessage", text: "", images: ["data:..."] })])],
+      turns: [turn("turn_1", [item({ id: "item_new", type: "userMessage", text: "", images: [{ src: "data:..." }] })])],
     });
     expect(computeReconciledIds(entries, model, new Set())).toEqual([entries[0]!.id]);
   });

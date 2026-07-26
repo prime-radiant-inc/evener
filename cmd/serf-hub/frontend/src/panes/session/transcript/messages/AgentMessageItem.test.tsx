@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
@@ -131,4 +134,27 @@ test('live carries the same "Agent" tag while streaming - the mark does not wait
   render(<AgentMessageItem item={item({ pendingText: ["strea", "ming"] })} turn={turn} live={true} />);
   expect(screen.getByText("Agent")).toBeTruthy();
   expect(screen.getByTestId("streaming-text").textContent).toBe("streaming");
+});
+
+// --- agent prose is the transcript's hero (kata 7pa0) -----------------------
+// jsdom computes no cascade (it structurally cannot see a token step up the
+// ramp), so this reads the three stylesheets' own source instead - the same
+// technique markdown.test.tsx/StreamingText.test.tsx already use for the
+// --markdown-ink hook and the reduced-motion caret. The point isn't any one
+// file in isolation: it's that all three agree, which is exactly what keeps
+// a message from visibly resizing the instant it settles.
+
+test("sets --prose-font-size once, on the .message ancestor the live and settled children share", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "agentmessageitem.module.css"), "utf8");
+  expect(css).toContain("--prose-font-size: var(--font-size-pane-title)");
+});
+
+test("Markdown and StreamingText read --prose-font-size with the identical fallback, so live and settled can never disagree on size", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const markdownCss = readFileSync(join(here, "../../../../widgets/markdown/markdown.module.css"), "utf8");
+  const streamingCss = readFileSync(join(here, "../streamingtext.module.css"), "utf8");
+  const HOOK = "font-size: var(--prose-font-size, var(--font-size-body));";
+  expect(markdownCss).toContain(HOOK);
+  expect(streamingCss).toContain(HOOK);
 });

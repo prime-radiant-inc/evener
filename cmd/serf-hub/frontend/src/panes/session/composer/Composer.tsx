@@ -663,7 +663,7 @@ export function Composer({ ref }: ComposerProps) {
               const imageUrl = `data:${item.mediaType};base64,${item.data}`;
               return (
                 <div key={item.marker} className={CLASS.imageTile}>
-                  <ImageGallery images={[imageUrl]} />
+                  <ImageGallery images={[{ src: imageUrl }]} />
                   <img className={CLASS.imageThumbnail} src={imageUrl} alt={item.name} />
                   {item.width !== undefined && item.height !== undefined && (
                     <div className={CLASS.dimensionsOverlay}>

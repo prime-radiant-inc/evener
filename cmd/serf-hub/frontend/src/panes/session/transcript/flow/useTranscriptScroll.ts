@@ -53,6 +53,10 @@ export interface UseTranscriptScrollResult {
    * decision for whoever consumes both (NewContentPill), not this hook's
    * job to collapse into one value. */
   pillError: boolean;
+  /** Direction for the NewContentPill's chevron arrow. "up" when the error
+   * anchor (if active) is above the current viewport, "down" otherwise
+   * (normal case: new content below, or no error anchor). */
+  pillArrowDirection: "up" | "down";
   /** Scrolls to the last turn and clears the pill - unless an error anchor
    * is active, in which case it jumps to THAT turn's index instead (see
    * "the error anchor" below). Also the target for a manual click on
@@ -131,6 +135,11 @@ export function useTranscriptScroll({
   // a re-render so pillError updates live, exactly like pillCount already
   // does for the same reason.
   const [errorAnchorIndex, setErrorAnchorIndex] = useState<number | null>(null);
+  // Arrow direction for the pill: "up" when the anchor is above the visible
+  // range, "down" otherwise (normal case or no anchor). Updated whenever
+  // scroll position changes (in handleScroll), so it's always in sync with
+  // the current viewport state.
+  const [pillArrowDirection, setPillArrowDirection] = useState<"up" | "down">("down");
 
   const wasAtBottomRef = useRef(true);
   const prevScrollHeightRef = useRef<number | null>(null);
@@ -303,11 +312,22 @@ export function useTranscriptScroll({
       // getVisibleRange() is exactly this widget-level lever; null (nothing
       // measured/rendered) reads as "don't know, assume not visible".
       const anchor = errorAnchorIndexRef.current;
+      const range = listRef.current?.getVisibleRange();
       if (anchor !== null) {
-        const range = listRef.current?.getVisibleRange();
         if (range && anchor >= range.startIndex && anchor <= range.endIndex) {
           setErrorAnchorIndex(null);
         }
+        // Update arrow direction: point up if anchor is above the visible
+        // range, down otherwise. When no range is yet available (before
+        // mount), assume down (the normal case).
+        if (range && anchor < range.startIndex) {
+          setPillArrowDirection("up");
+        } else {
+          setPillArrowDirection("down");
+        }
+      } else {
+        // No error anchor - always point down (new content is below).
+        setPillArrowDirection("down");
       }
       // useTranscript.ts's own loadOlder has no internal catch - a rejected
       // thread/turns/list request propagates through its returned promise
@@ -469,6 +489,7 @@ export function useTranscriptScroll({
     pillCount,
     pillNeedsYou: pillCount > 0 && isAttentionWorthy(model),
     pillError: errorAnchorIndex !== null,
+    pillArrowDirection,
     jumpToBottom,
   };
 }

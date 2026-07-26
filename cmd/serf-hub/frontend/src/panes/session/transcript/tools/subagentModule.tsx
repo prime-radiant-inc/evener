@@ -43,6 +43,7 @@ import { clip, formatToolDuration, parseArgs, parseJSONObject, str } from "./hel
 import {
   claimLeader,
   classifyJobStatus,
+  effectiveRowKind,
   releaseLeader,
   resolveRowKey,
   type SubagentRow,
@@ -96,7 +97,27 @@ export { classifyJobStatus, resolveRowKey } from "./subagentModuleStore";
 // failed child is "failed", an ended (closed) child is "done", and everything
 // still live from the parent's view (working / needs-you / idle) stays
 // "running".
+//
+// g5kf (the honest-clock bug): "notLoaded" must be carved out BEFORE that
+// collapse, not after. cadenceStateForStatus deliberately folds notLoaded
+// into the same "idle" family a genuinely-idle-but-still-live child gets -
+// right for the Cadence dot, which only needs "nothing to animate" either
+// way (liveness.ts's own doc comment, cross-checked by its test) - but wrong
+// here: notLoaded means the child left the daemon's live roster entirely
+// (evicted, orphaned, or lost to a hub restart - cmd/serf-hub/
+// app_threadread.go's pastEntryThread stamps it), not "still going". Once
+// cadenceStateForStatus has already collapsed it to "idle" this function has
+// no way to tell the two apart, and a delegate call frozen at
+// status:"running" by a foreground_timeout (agent/job_delegate.go's mainline
+// path for any non-trivial delegate, not an edge case) would then read as
+// "running" forever with no path back to honesty - this was the only
+// remaining liveness check once the child stops reporting. Composer.tsx and
+// StatusRow.tsx each already keep their own separate notLoaded check
+// alongside cadenceStateForStatus for the identical reason; this follows the
+// same, already-established pattern rather than teaching
+// cadenceStateForStatus itself a state its other two callers don't want.
 export function rowKindFromChildStatus(type: string): SubagentRowKind {
+  if (type === "notLoaded") return "unknown";
   const state = cadenceStateForStatus(type);
   if (state === "failed") return "failed";
   if (state === "ended") return "done";
@@ -129,6 +150,10 @@ export function statusWordFromText(text: string): string | undefined {
 const KIND_TONE: Record<SubagentRowKind, ChipTone> = {
   running: "alive",
   done: "neutral",
+  // stopped shares done's neutral tone (3zf8): nothing broke, so it earns no
+  // danger/attention hue - the distinct LABEL below is what keeps it from
+  // reading as a clean success, not a new color.
+  stopped: "neutral",
   failed: "danger",
   unknown: "attention",
 };
@@ -136,6 +161,7 @@ const KIND_TONE: Record<SubagentRowKind, ChipTone> = {
 const KIND_LABEL: Record<SubagentRowKind, string> = {
   running: "running",
   done: "done",
+  stopped: "stopped",
   failed: "failed",
   unknown: "unknown",
 };
@@ -273,8 +299,10 @@ function SubagentRowView({
   const transcriptRef = row.transcriptRef;
   // The pill prefers the live-child-status overlay written back by the watch
   // (yd16) over the frozen tool-output kind; falls back to the frozen kind
-  // before any live status has arrived.
-  const displayKind = row.liveKind ?? row.kind;
+  // before any live status has arrived. Shared with sortedRows' own sort key
+  // (subagentModuleStore.ts, kata hzq9) so rendering and ordering never
+  // disagree about which kind a row is currently showing.
+  const displayKind = effectiveRowKind(row);
   // Prefers the serf/job/finished notification's own reason (dr7e) - richer
   // and arrives independent of the delegate item's frozen tool output - over
   // the frozen output's own reason.
@@ -319,9 +347,15 @@ function SubagentRowView({
 
   return (
     <div className={CLASS.row} data-testid="subagent-row" data-kind={displayKind}>
-      {/* id is turn-scoped AND rowKey-scoped so it is both stable across the
-          VirtualList/dockview remount (yt2q) and collision-free across turns. */}
-      <Disclosure id={`subagent:${turnId}:${row.rowKey}`} summary={summary}>
+      {/* id is session-and-turn-scoped AND rowKey-scoped so it is both stable
+          across the VirtualList/dockview remount (yt2q) and collision-free
+          across turns AND sessions (78nj) - turnScopeKey, not a bare turnId,
+          for the same reason every other store key in this file already
+          uses it (kata 8525): turn ids restart per session, and row.rowKey's
+          own last-resort fallback (call:${item.id}) is per-session
+          sequential, so two sessions can otherwise land on the identical id
+          and silently share one open/closed boolean. */}
+      <Disclosure id={`subagent:${turnScopeKey(sessionRef, turnId)}:${row.rowKey}`} summary={summary}>
         {transcriptRef ? (
           <ChildActivityBody row={row} transcriptRef={transcriptRef} />
         ) : (
@@ -339,10 +373,13 @@ function SubagentRowView({
 }
 
 function tally(rows: SubagentRow[]): string {
-  const counts: Record<SubagentRowKind, number> = { running: 0, done: 0, failed: 0, unknown: 0 };
+  const counts: Record<SubagentRowKind, number> = { running: 0, done: 0, stopped: 0, failed: 0, unknown: 0 };
   for (const row of rows) counts[row.kind] += 1;
   const parts: string[] = [];
-  (["failed", "unknown", "running", "done"] as const).forEach((kind) => {
+  // stopped is never counted among "done"'s successes (3zf8) - it gets its
+  // own tally segment, ordered with the same worst-first sense as everything
+  // else here (a deliberate stop is more worth a glance than a clean finish).
+  (["failed", "unknown", "running", "stopped", "done"] as const).forEach((kind) => {
     if (counts[kind] > 0) parts.push(`${counts[kind]} ${KIND_LABEL[kind]}`);
   });
   return parts.join(" · ");

@@ -20,7 +20,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { SerfJobInfo } from "../../../../protocol/types.gen";
 
-export type SubagentRowKind = "running" | "done" | "failed" | "unknown";
+export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
 
 export interface SubagentRow {
   rowKey: string;
@@ -103,13 +103,53 @@ export function turnScopeKey(sessionRef: string | undefined, turnId: string): st
   return `${sessionRef ?? ""}\0${turnId}`;
 }
 
+// effectiveRowKind is the kind a row actually DISPLAYS: subagentModule.tsx's
+// SubagentRowView prefers the live-watch/notification overlay (liveKind) over
+// the frozen tool-output kind (see its own comment), and setWatchedLiveKind's
+// terminal guard below already needed this exact "liveKind ?? kind" rule.
+// sortedRows (hzq9) needs the same rule for a third reason: sorting and
+// rendering must agree on what "worst" means, or a row could visually read as
+// failed while still sorting by its stale, possibly-terminal-superseded,
+// frozen kind.
+export function effectiveRowKind(row: SubagentRow): SubagentRowKind {
+  return row.liveKind ?? row.kind;
+}
+
+// KIND_SORT_PRIORITY is the worst-first row order (9f16d9d35's "honest-clock
+// demotion + worst-first overflow" - shipped once, into the legacy renderer,
+// lost when it was deleted - kata hzq9). "stopped" (3zf8) sits between
+// running and done: a deliberate stop is neither a live child nor a defect,
+// but it is not a clean success either, so it stays out of done's "nothing
+// to see here" territory.
+const KIND_SORT_PRIORITY: Record<SubagentRowKind, number> = {
+  failed: 0,
+  unknown: 1,
+  running: 2,
+  stopped: 3,
+  done: 4,
+};
+
+// sortedRows orders worst-first by kind, falling back to spawn (first-seen)
+// index only as a tiebreaker WITHIN a kind (see upsertSubagentRow's own
+// comment on why spawn order matters there, and useSubagentRows' for why
+// this must stay a stable, precomputed array rather than a fresh sort per
+// render). A row only changes position when its own effective kind changes -
+// an incidental re-upsert/patch that leaves the kind alone never reorders it,
+// so rows don't jump around as children merely report in, but a row that
+// actually settles (or regresses) DOES move, which is exactly when a reader
+// should notice it.
 function sortedRows(rows: Map<string, SubagentRow>): SubagentRow[] {
-  return Array.from(rows.values()).sort((a, b) => a.spawnIndex - b.spawnIndex);
+  return Array.from(rows.values()).sort((a, b) => {
+    const kindDelta = KIND_SORT_PRIORITY[effectiveRowKind(a)] - KIND_SORT_PRIORITY[effectiveRowKind(b)];
+    return kindDelta !== 0 ? kindDelta : a.spawnIndex - b.spawnIndex;
+  });
 }
 
 // upsertSubagentRow creates a row on first sight of `rowKey` (assigning it
-// the next spawn index for this turn, so display order is fixed at
-// first-seen order per parity §12's "fixed by spawn order" rule) or
+// the next spawn index for this turn, so its position within its own kind's
+// group is fixed at first-seen order per parity §12's "fixed by spawn order"
+// rule - see sortedRows above for the worst-first grouping this now sits
+// inside, kata hzq9) or
 // updates it in place on every later call - used by `delegate` itself
 // (subagentModule.tsx), the one tool in this family allowed to spawn a
 // fresh row. `scopeKey` is a turnScopeKey(sessionRef, turnId) - see that
@@ -170,19 +210,25 @@ export function updateSubagentRowIfExists(scopeKey: string, rowKey: string, patc
   });
 }
 
-// classifyJobStatus mirrors renderer.js's classifyJobStatus (parity §12):
-// note cancelled/stopped land in "done", not "failed". Any status this
-// codebase hasn't seen yet (including an absent one, e.g. the delegate
-// call settled but the child hasn't reported a status field at all)
-// degrades to "running" rather than a confusing/alarming "unknown" - an
-// honest "still don't know anything bad happened" default. Lives here (not
+// classifyJobStatus mirrors renderer.js's classifyJobStatus (parity §12),
+// with one deliberate departure (3zf8): cancelled/stopped land in their OWN
+// "stopped" kind, not "done" - a child killed on purpose (job_stop) or
+// reconciled to stopped/runtime_lost after a hub restart (agent/internal/
+// jobstore/reconcile.go) is not a failure (nothing broke), but it is not a
+// clean completion either, and rendering it byte-identical to one (same
+// glyph, tone, and label) was the exact defect. Any status this codebase
+// hasn't seen yet (including an absent one, e.g. the delegate call settled
+// but the child hasn't reported a status field at all) degrades to
+// "running" rather than a confusing/alarming "unknown" - an honest "still
+// don't know anything bad happened" default. Lives here (not
 // subagentModule.tsx) so applySerfJobFinished below and stores/threads.ts
 // can both reach it without a core store importing a React/UI file -
 // subagentModule.tsx re-exports it for its own existing callers.
 export function classifyJobStatus(status: string | undefined): SubagentRowKind {
   if (status === undefined) return "running";
   if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
-  if (["completed", "done", "cancelled", "stopped", "succeeded"].includes(status)) return "done";
+  if (["cancelled", "stopped"].includes(status)) return "stopped";
+  if (["completed", "done", "succeeded"].includes(status)) return "done";
   if (status === "unknown") return "unknown";
   return "running";
 }
@@ -200,7 +246,7 @@ export function resolveRowKey(delegateId: string | undefined, jobId: string | un
   return `call:${fallback}`;
 }
 
-const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "failed", "unknown"]);
+const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "stopped", "failed", "unknown"]);
 
 // setWatchedLiveKind is WatchedChildIndicator's own guarded writer (dr7e).
 // The child's own thread-status subscription can lag the parent's
@@ -213,7 +259,7 @@ const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "failed", 
 export function setWatchedLiveKind(scopeKey: string, rowKey: string, liveKind: SubagentRowKind): void {
   if (liveKind === "running") {
     const existingRow = moduleStore.getState().turnRowsByKey.get(scopeKey)?.get(rowKey);
-    if (existingRow && TERMINAL_KINDS.has(existingRow.liveKind ?? existingRow.kind)) return;
+    if (existingRow && TERMINAL_KINDS.has(effectiveRowKind(existingRow))) return;
   }
   updateSubagentRowIfExists(scopeKey, rowKey, { liveKind });
 }
@@ -272,10 +318,12 @@ export function applySerfJobFinished(job: SerfJobInfo, sessionRef: string | unde
 }
 
 // useSubagentRows reactively selects every row tracked for `scopeKey`,
-// ordered by spawn index (never by update recency - a row that just
-// changed status must not visually jump to a different position). Reads
-// the precomputed array directly - see turnRowsSorted's own doc comment
-// for why this must not re-derive/re-sort inline.
+// worst-first by kind and by spawn index within a kind (kata hzq9 - see
+// sortedRows' own comment; never by plain update recency - an incidental
+// re-upsert that leaves a row's kind unchanged must not visually jump it to a
+// different position). Reads the precomputed array directly - see
+// turnRowsSorted's own doc comment for why this must not re-derive/re-sort
+// inline.
 export function useSubagentRows(scopeKey: string): SubagentRow[] {
   return useStore(moduleStore, (s) => s.turnRowsSorted.get(scopeKey) ?? EMPTY_ROWS);
 }

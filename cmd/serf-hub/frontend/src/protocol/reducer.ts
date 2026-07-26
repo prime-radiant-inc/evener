@@ -4,7 +4,7 @@
 // Every function here is pure: given the same inputs, produces the same
 // (possibly reference-equal, for no-op cases) output.
 
-import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import type {
   AnyNotification,
   InputItem,
@@ -33,19 +33,27 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
   return epochMsToISO(seconds === undefined || Number.isNaN(seconds) ? seconds : seconds * 1000);
 }
 
-// ItemModel.images/outputImages are display-ready string[], but the wire
-// carries structured InputItem/OutputImage objects. Take each image's
-// renderable handle, preferring url — the field the legacy web client
+// ItemModel.images/outputImages carry a resolved src alongside the wire's own
+// name/path/(source) fields (ItemImage, model.ts) rather than collapsing to
+// just src. src keeps preferring url — the field the legacy web client
 // (cmd/serf-hub/assets/renderer.js: imagesForUserItem, renderToolOutputImages)
-// treats as the <img src> — falling back to path or name.
-function imagesToStrings(images: InputItem[] | undefined): string[] | undefined {
+// treats as the <img src> — falling back to path or name, exactly as before;
+// name/path/source ride alongside it unresolved so a renderer can caption the
+// image instead of losing everything but whichever field happened to win
+// that fallback (kata byq2).
+function imagesToItemImages(images: InputItem[] | undefined): ItemImage[] | undefined {
   if (!images || images.length === 0) return undefined;
-  return images.map((img) => img.url ?? img.path ?? img.name ?? "");
+  return images.map((img) => ({ src: img.url ?? img.path ?? img.name ?? "", name: img.name, path: img.path }));
 }
 
-function outputImagesToStrings(images: OutputImage[] | undefined): string[] | undefined {
+function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images || images.length === 0) return undefined;
-  return images.map((img) => img.url ?? img.path ?? img.name ?? img.source);
+  return images.map((img) => ({
+    src: img.url ?? img.path ?? img.name ?? img.source,
+    name: img.name,
+    path: img.path,
+    source: img.source,
+  }));
 }
 
 // Maps a wire ThreadItem to a settled ItemModel (no pendingText — that only
@@ -71,8 +79,8 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     error: item.error,
     prevalOnly: item.prevalOnly,
     exitCode: item.exitCode,
-    images: imagesToStrings(item.images),
-    outputImages: outputImagesToStrings(item.outputImages),
+    images: imagesToItemImages(item.images),
+    outputImages: outputImagesToItemImages(item.outputImages),
     status: item.status,
     source: item.source,
     startedAt: epochMsToISO(item.startedAt),
@@ -774,7 +782,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
             turnId: activeTurnId,
             type: "steering",
             text: params.text ?? "",
-            images: imagesToStrings(params.images),
+            images: imagesToItemImages(params.images),
             status: "completed",
             source: params.source,
           };

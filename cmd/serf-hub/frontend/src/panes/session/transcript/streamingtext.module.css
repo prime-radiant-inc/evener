@@ -6,7 +6,13 @@
   white-space: pre-wrap;
   overflow-wrap: break-word;
   font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  /* --prose-font-size mirrors widgets/markdown/markdown.module.css's own
+   * --markdown-ink hook, and for the same reason: .root sets font-size on
+   * the element itself, which shadows plain inheritance. AgentMessageItem
+   * sets this once, on the ancestor this live path and Markdown's settled
+   * one already share, so a message can never visibly resize the instant
+   * it settles. */
+  font-size: var(--prose-font-size, var(--font-size-body));
   line-height: var(--line-height-body);
   color: var(--ink-hi);
 }

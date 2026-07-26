@@ -12,6 +12,22 @@ import type {
   ThreadStatus,
 } from "./types.gen";
 
+// A single image handle on an item: `src` is the already-resolved fetch URL
+// (reducer.ts keeps the wire's url ?? path ?? name ?? source precedence for
+// it), while name/path/source are the wire's own separate fields carried
+// through UNRESOLVED alongside it — restoring the provenance a renderer
+// needs to caption an image (or, later, group it by where it came from)
+// instead of the reducer collapsing every image down to whichever field won
+// that fallback and discarding the rest (kata byq2). source only ever comes
+// from an OutputImage (a tool result); an InputItem (a user-sent or steered
+// image) has no such field and never populates it.
+export interface ItemImage {
+  src: string;
+  name?: string;
+  path?: string;
+  source?: string;
+}
+
 export interface ItemModel {
   id: string;
   turnId: string;
@@ -62,8 +78,8 @@ export interface ItemModel {
   // to parsing the output footer text). A real 0 is a clean exit, distinct from
   // undefined — never conflate the two.
   exitCode?: number;
-  images?: string[];
-  outputImages?: string[];
+  images?: ItemImage[];
+  outputImages?: ItemImage[];
   status?: string;
   source?: string;
   reasoningSummaries?: string[][]; // per summaryIndex chunk lists

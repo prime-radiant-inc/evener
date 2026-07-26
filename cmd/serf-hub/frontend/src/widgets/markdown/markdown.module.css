@@ -3,11 +3,18 @@
  * It has to be a property rather than plain inheritance because .root sets
  * `color` on the element itself, which shadows anything the host sets on an
  * ancestor. Thinking blocks are the one caller that overrides it; the rest
- * (doc pane, notifications, agent messages) take the --ink-hi default. */
+ * (doc pane, notifications, agent messages) take the --ink-hi default.
+ *
+ * font-size is the same hook, for the same reason, one step up the ramp:
+ * agent prose is the transcript's hero (docs/web-ui/decisions.md topic 04),
+ * and StreamingText's own .root exposes the identical --prose-font-size
+ * property, so AgentMessageItem can set it ONCE, on the ancestor its live
+ * and settled children already share - the two can never disagree on size.
+ * Every other caller takes the --font-size-body default, unchanged. */
 .root {
   color: var(--markdown-ink, var(--ink-hi));
   font-family: var(--font-sans);
-  font-size: var(--font-size-body);
+  font-size: var(--prose-font-size, var(--font-size-body));
   line-height: var(--line-height-body);
 }
 
@@ -94,11 +101,18 @@
  * classes (imported directly in index.tsx) so they're visually identical
  * to the standalone CodeBlock widget - nothing to style here for those. */
 
+/* All four "assistant hero" mockup alternatives agreed on this rule even
+ * where they disagreed on everything else (docs/web-ui/decisions.md topic
+ * 04): inline code is a quiet underline, never a filled chip - a chip reads
+ * as UI stippled through prose, on every line it appears. Sized relative to
+ * the surrounding text rather than a fixed ramp token, slightly tighter
+ * than body so it sits inside the line - inline code now appears inside
+ * prose at more than one size (agent messages render it at
+ * --font-size-pane-title via --prose-font-size, everywhere else stays at
+ * --font-size-body), and only a relative size tracks both correctly. */
 .inlineCode {
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-control);
-  background: var(--surface-2);
-  color: var(--ink-hi);
   font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
+  font-size: 0.86em;
+  color: var(--ink-hi);
+  border-bottom: 1px solid var(--edge);
 }

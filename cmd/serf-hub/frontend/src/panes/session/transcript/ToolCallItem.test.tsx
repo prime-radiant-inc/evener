@@ -245,7 +245,13 @@ test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", ()
 
 test("a tool call's outputImages render as gallery thumbnails", () => {
   registerToolRenderer({ match: "tci_images", summary: () => "s", body: () => <div>body</div> });
-  render(<ToolCallItem item={item({ toolName: "tci_images", outputImages: ["a", "b"] })} turn={turn} live={false} />);
+  render(
+    <ToolCallItem
+      item={item({ toolName: "tci_images", outputImages: [{ src: "a" }, { src: "b" }] })}
+      turn={turn}
+      live={false}
+    />,
+  );
   expandRow();
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
@@ -259,7 +265,11 @@ test("an empty outputImages array renders no gallery thumbnails", () => {
 test("outputImages render even for a body-less descriptor (the row still becomes expandable)", () => {
   registerToolRenderer({ match: "tci_images_no_body", summary: () => "s" });
   render(
-    <ToolCallItem item={item({ toolName: "tci_images_no_body", outputImages: ["a"] })} turn={turn} live={false} />,
+    <ToolCallItem
+      item={item({ toolName: "tci_images_no_body", outputImages: [{ src: "a" }] })}
+      turn={turn}
+      live={false}
+    />,
   );
   const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
   expect(details.tagName).toBe("DETAILS");

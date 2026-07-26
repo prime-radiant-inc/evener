@@ -216,3 +216,51 @@ test("a live status/changed notification updates the written-back liveKind witho
 
   expect(screen.getByTestId("live-kind").textContent).toBe("failed");
 });
+
+// g5kf: the honest-clock bug. Once a watched child leaves the daemon's live
+// roster (notLoaded - evicted, orphaned, or lost to a hub restart), the row
+// must demote to "unknown", never stay (or resurrect back to) "running" -
+// the only other liveness signal, the delegate's own frozen tool output, is
+// itself frozen at "running" forever whenever a foreground_timeout fired
+// (agent/job_delegate.go's mainline path for any non-trivial delegate).
+test("g5kf: writes back liveKind 'unknown', never 'running', when the watched child reports notLoaded", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("child_wb_4", { status: { type: "notLoaded" } }));
+  upsertSubagentRow("turn_wb", { rowKey: "dlg:child_wb_4", kind: "running", task: "t", resultPreview: "" });
+
+  render(
+    <>
+      <WatchedChildIndicator ref="child_wb_4" scopeKey="turn_wb" rowKey="dlg:child_wb_4" />
+      <LiveKindProbe turnId="turn_wb" rowKey="dlg:child_wb_4" />
+    </>,
+  );
+  await flushUntil(() => threadsStore.getState().watchedThreads.has("child_wb_4"));
+  await act(async () => {});
+
+  expect(screen.getByTestId("live-kind").textContent).toBe("unknown");
+});
+
+// g5kf: watchThread's own rejection (thread/read failing - hub unreachable,
+// the child ref no longer resolves, etc.) is caught with a bare
+// `.catch(() => {})` in this file - deliberately best-effort (a live-status
+// nicety must never crash the whole subagent module), but that swallow was
+// itself untested, so nothing proved it doesn't also leave the ref's
+// refcount/tracking state stuck. watchThread's own catch already undoes its
+// claim via releaseWatchedThread on a failed hydrate (stores/threads.ts) -
+// this asserts that from the caller's side: no crash, and no stale entry left
+// behind in watchedThreads for a ref whose hydrate never actually succeeded.
+test("a rejected watchThread (thread/read failing) is swallowed silently - no crash, no stale watchedThreads entry", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => {
+    throw new Error("boom: hub unreachable");
+  });
+
+  const { container } = render(
+    <WatchedChildIndicator ref="child_reject_1" scopeKey="turn_1" rowKey="dlg:child_reject_1" />,
+  );
+  await flushUntil(() => false, 20); // no settle condition to poll for - just drain pending microtasks
+  await act(async () => {});
+
+  expect(container.textContent).toBe("");
+  expect(threadsStore.getState().watchedThreads.has("child_reject_1")).toBe(false);
+});

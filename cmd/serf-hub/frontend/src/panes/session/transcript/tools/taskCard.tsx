@@ -6,20 +6,34 @@
 // ToolCallItem's generic failed-row treatment instead (the legacy card was
 // appended only `if (!data.error)`).
 //
-// Wire truth (why this card is scoped to the touched rows + a progress head):
-// the authoritative task State - store.View(), which carries every task's
-// status, description and minted timestamps - rides the tool result's
-// StateResult.State (agent/session_tools_task.go), but the reducer drops
-// ThreadItem.raw (protocol/reducer.ts's wireItemToModel), so the model
-// preserves only two usable fields: argumentsJSON (the rows the caller named)
-// and the output text (whose "Progress: <done>/<total> tasks complete." footer
-// gives the progress head, agent/session_tools_task.go formatTaskList/the
-// append+update acknowledgements). Conscious divergences from the legacy card,
-// recorded for T8's sweep: an update row shows the task id + status + note but
-// NOT a description (descriptions live only in the dropped State / the cache
-// legacy kept); there is no full-list "show all" fold, no surrounding-context
-// rows, and no inferred "and now working on X" auto-advance row - the card
-// shows only what the caller's own args prove.
+// Wire truth: agent/session_tools_task.go's task_list executor returns
+// tool.StateResult{State: store.View()} on every view/append/update call -
+// the authoritative snapshot carrying every task's status, description, and
+// minted timestamps. That State rides all the way to the client as
+// item.raw (registry.go marshals it straight into ToolState; appprojector
+// and apptranscript carry it onto ThreadItem.raw unchanged; reducer.ts's
+// wireItemToModel keeps it as item.raw verbatim), and taskData.ts's
+// parseTaskState narrows it - reusing chrome/taskData.ts's
+// parseTaskListData, since it's the same agent/task/task_store.go Task[]
+// shape the tasks side panel already parses from a different wire path. An
+// update row's label prefers the matched task's description there
+// (taskData.ts's taskLabel); a batch that completes a task without itself
+// also starting another earns one extra row for whatever task the daemon
+// auto-advanced to in_progress as a side effect (taskData.ts's
+// autoStartedTask) - the "and now working on X" row docs/superpowers/plans/
+// 2026-07-15-inline-task-update-cards.md required keeping ("authoritative
+// auto-activation").
+//
+// raw is absent for an old daemon that predates StateResult.State and for a
+// transcript replayed from before it existed - a real, ongoing case, not
+// just a historical one - and the card then degrades to exactly its
+// argument-only rendering: an update row falls back to "#<id>" for its
+// label, and no auto-started row, because nothing beyond the caller's own
+// args can be proven. Still absent regardless of raw: a full-list "show
+// all" fold, surrounding-context rows, and aggregate done/up-next counts -
+// the 2026-07-15 plan trimmed those from the legacy card deliberately (a
+// changes-only card, not a full-plan disclosure; the sidebar remains the
+// full-plan view), not because the data is unavailable.
 import type { ItemModel } from "../../../../protocol/model";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
@@ -27,6 +41,7 @@ import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { parseArgs, str } from "./helpers";
 import styles from "./taskcard.module.css";
+import { autoStartedTask, parseTaskState, taskLabel } from "./taskData";
 
 const CLASS = {
   card: requireClass(styles.card, "taskcard.module.css", "card"),
@@ -42,7 +57,7 @@ const CLASS = {
 interface TouchedRow {
   key: string;
   touch: string; // added | done | cancelled | started
-  label: string; // description (append) or "#<id>" (update)
+  label: string; // description (append; update when state is known) or "#<id>" (update, state absent)
   note?: string;
 }
 
@@ -78,18 +93,30 @@ function mutationRows(item: ItemModel): TouchedRow[] | undefined {
     // Only a real status change earns a row - matching the legacy card, which
     // flags exactly done/cancelled/in_progress updates (renderer.js:5010) and
     // renders a note-only or reopened update as no per-row change at all.
+    const state = parseTaskState(item.raw);
     const rows: TouchedRow[] = [];
+    const touchedIds = new Set<number>();
+    let completedAny = false;
     for (const [i, update] of updates.entries()) {
       const status = str(update, "status");
       const touch = TOUCH_BY_STATUS[status ?? ""];
       if (!touch) continue;
       const id = typeof update.id === "number" ? update.id : undefined;
+      if (id !== undefined) touchedIds.add(id);
+      if (touch === "done" || touch === "cancelled") completedAny = true;
       rows.push({
         key: `update_${i}`,
         touch,
-        label: id === undefined ? "(task)" : `#${id}`,
+        label: taskLabel(state, id),
         note: str(update, "notes") || undefined,
       });
+    }
+    // The daemon may advance a DIFFERENT task to in_progress as a side
+    // effect of this same call (session_tools_task.go's auto-advance); that
+    // task never appears in the caller's own `updates` above.
+    const started = autoStartedTask(state, touchedIds, completedAny);
+    if (started) {
+      rows.push({ key: `auto_started_${started.id}`, touch: "started", label: taskLabel(state, started.id) });
     }
     return rows;
   }

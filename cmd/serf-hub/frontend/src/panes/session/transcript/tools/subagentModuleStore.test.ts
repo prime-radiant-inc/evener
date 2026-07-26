@@ -45,13 +45,66 @@ test("upsertSubagentRow: a second call with the SAME rowKey updates in place rat
   expect(result.current[0]).toMatchObject({ kind: "done", resultPreview: "all green" });
 });
 
-test("upsertSubagentRow: rows are ordered by spawn (first-seen) order, not update recency", () => {
+// hzq9: rows sort worst-first by kind, and only THEN by spawn (first-seen)
+// order within a kind - never by plain update recency. Both halves of that
+// rule matter and neither may be dropped in favor of the other: an
+// incidental re-upsert that doesn't change a row's kind must not reorder it
+// (recency alone is never the sort key), but a row whose kind genuinely
+// changes MUST move - that's the whole point of worst-first, and exactly
+// when a reader should notice it.
+test("upsertSubagentRow: same-kind rows keep spawn order on an incidental re-touch that doesn't change kind", () => {
   upsertSubagentRow("turn_c", { rowKey: "job_1", kind: "running", task: "first", resultPreview: "" });
   upsertSubagentRow("turn_c", { rowKey: "job_2", kind: "running", task: "second", resultPreview: "" });
-  // Re-touch job_1 - it must stay first, not jump to the back.
-  upsertSubagentRow("turn_c", { rowKey: "job_1", kind: "done", task: "first", resultPreview: "ok" });
+  // Re-touch job_1 with the SAME kind - it must stay first, not jump to the
+  // back just because it was touched more recently.
+  upsertSubagentRow("turn_c", { rowKey: "job_1", kind: "running", task: "first", resultPreview: "still going" });
   const { result } = renderHook(() => useSubagentRows("turn_c"));
   expect(result.current.map((r) => r.rowKey)).toEqual(["job_1", "job_2"]);
+});
+
+test("upsertSubagentRow: a row settling to a lower-priority kind (done) moves behind a still-running row, even though it spawned first", () => {
+  upsertSubagentRow("turn_c2", { rowKey: "job_1", kind: "running", task: "first", resultPreview: "" });
+  upsertSubagentRow("turn_c2", { rowKey: "job_2", kind: "running", task: "second", resultPreview: "" });
+  // job_1 spawned first, but settling to "done" demotes it behind job_2,
+  // which is still running - a row's OWN state changing is exactly when a
+  // reader should see it move.
+  upsertSubagentRow("turn_c2", { rowKey: "job_1", kind: "done", task: "first", resultPreview: "ok" });
+  const { result } = renderHook(() => useSubagentRows("turn_c2"));
+  expect(result.current.map((r) => r.rowKey)).toEqual(["job_2", "job_1"]);
+});
+
+// hzq9: the row LIST (not just the header tally, which already ordered
+// failures first) must sort worst-first: failed -> unknown -> running ->
+// stopped -> done. "stopped" (3zf8) sits between running and done - a
+// deliberate stop is neither a live child nor a defect, but it is not a
+// clean success either, so it stays out of done's "nothing to see here"
+// territory. Spawned deliberately out of worst-first order (done first) so
+// a naive spawn-index sort would leave this test's own arrange step
+// accidentally matching the expected order.
+test("hzq9: rows sort worst-first by kind (failed > unknown > running > stopped > done), spawn order applying only within a kind", () => {
+  upsertSubagentRow("turn_worst", { rowKey: "r_done", kind: "done", task: "d", resultPreview: "" });
+  upsertSubagentRow("turn_worst", { rowKey: "r_running", kind: "running", task: "r", resultPreview: "" });
+  upsertSubagentRow("turn_worst", { rowKey: "r_failed", kind: "failed", task: "f", resultPreview: "" });
+  upsertSubagentRow("turn_worst", { rowKey: "r_unknown", kind: "unknown", task: "u", resultPreview: "" });
+  upsertSubagentRow("turn_worst", { rowKey: "r_stopped", kind: "stopped", task: "s", resultPreview: "" });
+  const { result } = renderHook(() => useSubagentRows("turn_worst"));
+  expect(result.current.map((r) => r.rowKey)).toEqual(["r_failed", "r_unknown", "r_running", "r_stopped", "r_done"]);
+});
+
+// The live overlay kind (liveKind) is what the row actually DISPLAYS
+// (subagentModule.tsx's SubagentRowView reads liveKind over the frozen
+// kind) - sorting must agree with that, or a row could visually read as
+// failed while still sorting by its stale frozen "running"/"done".
+test("hzq9: sorting reads the LIVE overlay kind over the frozen tool-output kind, same as the display does", () => {
+  upsertSubagentRow("turn_live_sort", { rowKey: "r_a", kind: "running", task: "a", resultPreview: "" });
+  upsertSubagentRow("turn_live_sort", { rowKey: "r_b", kind: "running", task: "b", resultPreview: "" });
+  // r_b spawned SECOND, so a plain spawn-index sort would leave it behind
+  // r_a - but its live overlay has already settled to "failed" while its
+  // frozen kind is still "running", so it must sort ahead as the failed row
+  // it now displays as.
+  updateSubagentRowIfExists("turn_live_sort", "r_b", { liveKind: "failed" });
+  const { result } = renderHook(() => useSubagentRows("turn_live_sort"));
+  expect(result.current.map((r) => r.rowKey)).toEqual(["r_b", "r_a"]);
 });
 
 test("rows in different turns never mix", () => {
@@ -280,6 +333,16 @@ test("setWatchedLiveKind: the frozen tool-output kind alone (no liveKind yet) al
   upsertSubagentRow("turn_wg4", { rowKey: "job_1", kind: "failed", task: "t", resultPreview: "" });
   setWatchedLiveKind("turn_wg4", "job_1", "running");
   const { result } = renderHook(() => useSubagentRows("turn_wg4"));
+  expect(result.current[0]?.liveKind).toBeUndefined();
+});
+
+// 3zf8: "stopped" (a cancelled/deliberately-killed child) is terminal too -
+// a lagging watch racing a job_stop must not resurrect the spinner any more
+// than it may over a done/failed/unknown row.
+test("setWatchedLiveKind: a stopped row also guards against a stale running write (stopped is terminal too)", () => {
+  upsertSubagentRow("turn_wg5", { rowKey: "job_1", kind: "stopped", task: "t", resultPreview: "" });
+  setWatchedLiveKind("turn_wg5", "job_1", "running");
+  const { result } = renderHook(() => useSubagentRows("turn_wg5"));
   expect(result.current[0]?.liveKind).toBeUndefined();
 });
 

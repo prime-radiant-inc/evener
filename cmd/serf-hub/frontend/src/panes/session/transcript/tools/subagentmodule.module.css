@@ -8,6 +8,14 @@
   background: var(--surface-1);
 }
 
+/* 3h80: a failed row must never be hidden behind the done tally (mockup 08) -
+   the module itself earns a thin failure-colored left edge the moment any
+   row inside it fails, visible even if that row has scrolled out of view or
+   is folded behind "+N more". */
+.module[data-has-failure="true"] {
+  border-left: 2px solid var(--danger);
+}
+
 .header {
   font-size: var(--font-size-caption);
   color: var(--ink-mid);

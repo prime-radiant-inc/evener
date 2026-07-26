@@ -454,6 +454,115 @@ describe("the error anchor (failed turn)", () => {
 
     expect(result.current.pillError).toBe(true);
   });
+
+  test("the pill's arrow points down when there is no error anchor", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"])]) });
+    expect(result.current.pillCount).toBe(1);
+    expect(result.current.pillError).toBe(false); // No error anchor
+
+    act(() => {
+      setVisibleRange({ startIndex: 0, endIndex: 0 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillArrowDirection).toBe("down");
+  });
+
+  test("the pill's arrow points up when the error anchor is above the visible range", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+    expect(result.current.pillArrowDirection).toBe("down"); // Initially no visible range
+
+    // Scroll so the visible range is far below the anchor (index 1)
+    act(() => {
+      setVisibleRange({ startIndex: 5, endIndex: 9 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillArrowDirection).toBe("up"); // Anchor (index 1) is above visible range
+  });
+
+  test("the pill's arrow points down when the error anchor is within or below the visible range", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // Scroll so the visible range includes the anchor (index 1)
+    act(() => {
+      setVisibleRange({ startIndex: 1, endIndex: 1 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillArrowDirection).toBe("down"); // Anchor is in visible range
+  });
+
+  test("the pill's arrow points down when the error anchor is below the visible range", () => {
+    const { ref, el, setVisibleRange } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn().mockResolvedValue(undefined),
+          measure,
+        }),
+      { initialProps: { m: model([turn("t1", ["i1"])]) } },
+    );
+
+    rerender({ m: model([turn("t1", ["i1"]), turn("t2", ["i2"], { status: "failed" })]) });
+    expect(result.current.pillError).toBe(true);
+
+    // Scroll so the visible range is above the anchor (index 1)
+    act(() => {
+      setVisibleRange({ startIndex: 0, endIndex: 0 });
+      el.dispatchEvent(new Event("scroll"));
+    });
+
+    expect(result.current.pillArrowDirection).toBe("down"); // Anchor is below visible range
+  });
 });
 
 describe("the needs-you upgrade", () => {

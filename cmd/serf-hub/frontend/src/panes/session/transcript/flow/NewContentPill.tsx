@@ -25,7 +25,7 @@
 // as a phrase, consistent with WarningItem's own sentence-case fallback
 // "Warning") - the count itself is never shown once upgraded, same as the
 // needs-you branch.
-import { Badge, Chip } from "../../../../widgets";
+import { Badge, Chevron, Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./newcontentpill.module.css";
 
@@ -39,6 +39,10 @@ export interface NewContentPillProps {
    * needsYou when both are true. Defaults to false so an existing caller
    * that only knows about count/needsYou is unaffected. */
   error?: boolean;
+  /** Direction for the chevron arrow. Defaults to "down" to point toward new
+   * content below the viewport. Set to "up" when the anchor (failed turn)
+   * being jumped to is above the current scroll position. */
+  pillArrowDirection?: "up" | "down";
   /** Scrolls to bottom and clears the pill (also fires on a manual return to bottom, independently). */
   onClick: () => void;
 }
@@ -48,7 +52,13 @@ const CLASS = {
   arrow: requireClass(styles.arrow, "newcontentpill.module.css", "arrow"),
 };
 
-export function NewContentPill({ count, needsYou, error = false, onClick }: NewContentPillProps) {
+export function NewContentPill({
+  count,
+  needsYou,
+  error = false,
+  pillArrowDirection = "down",
+  onClick,
+}: NewContentPillProps) {
   // count alone is not the render gate: a turn's failed settle stamp on
   // the real wire carries no items (turn/completed's EventError path -
   // itemsView:"", no items array), so a genuinely unseen failure can
@@ -61,7 +71,7 @@ export function NewContentPill({ count, needsYou, error = false, onClick }: NewC
   return (
     <button type="button" data-testid="new-content-pill" className={CLASS.pill} onClick={onClick}>
       <span className={CLASS.arrow} aria-hidden="true">
-        ↓
+        <Chevron direction={pillArrowDirection} />
       </span>
       {error ? (
         <Chip tone="danger">Failed turn</Chip>

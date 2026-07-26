@@ -1,13 +1,20 @@
-// Pure "honest liveness" logic: quiet ~Nm -> "may be stalled", driven by
-// gap = now - ThreadModel.lastFrameAt. Display-only - no self-heal/reconnect
-// side effect (that's a connection.ts/threads.ts concern, not this pane's),
-// no idle animation (Cadence already carries live activity via its trace -
-// see widgets/cadence). Session-level thresholds only; the legacy renderer
-// also runs a SEPARATE per-subagent-row liveness clock (10s/45s) - that's a
+// Pure "honest liveness" logic: quiet ~Nm -> "may be stalled" - or, while the
+// active turn's own delegated children are still running, "waiting on N
+// subagents" instead of either (design brief principle 6: a wait fully
+// explained by running children is not a stall). Driven by gap = now -
+// ThreadModel.lastFrameAt, active, and a running-children COUNT
+// (LivenessLine.tsx sources it from subagentModuleStore, scoped by
+// turnScopeKey(sessionRef, turnId) - see that store's own comment on why a
+// bare turn id is never enough). Display-only - no self-heal/reconnect side
+// effect (that's a connection.ts/threads.ts concern, not this pane's), no
+// idle animation (Cadence already carries live activity via its trace - see
+// widgets/cadence). Session-level thresholds only; the legacy renderer also
+// runs a SEPARATE per-subagent-row liveness clock (10s/45s) - that's a
 // distinct feature area (T3's subagent module) this deliberately does not
-// unify with, per parity doc's own Highlights section.
+// unify with (borrowing its live COUNT is not adopting its thresholds), per
+// parity doc's own Highlights section.
 
-export type LivenessLevel = "none" | "quiet" | "stalled";
+export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting";
 
 export interface LivenessInfo {
   level: LivenessLevel;
@@ -50,14 +57,49 @@ export function formatExactGap(gapMs: number): string {
 }
 
 /**
- * The single entry point LivenessLine.tsx renders from: given the gap since
- * the model's last frame and whether the thread is currently "active"
- * (liveness only ever evaluates while active - any other status always
- * reads as level "none", matching the legacy renderer's own gate), decides
- * the quiet/stalled level and its display text.
+ * Pluralizes the running-children count for the "waiting" level's text -
+ * singular "1 subagent", plural otherwise - matching the design brief
+ * mockup's own worked example (liveness indicator: "waiting on 1 subagent").
  */
-export function describeLiveness(gapMs: number, active: boolean): LivenessInfo {
+export function formatSubagentCount(count: number): string {
+  return count === 1 ? "1 subagent" : `${count} subagents`;
+}
+
+/**
+ * The single entry point LivenessLine.tsx renders from: given the gap since
+ * the model's last frame, whether the thread is currently "active" (liveness
+ * only ever evaluates while active - any other status always reads as level
+ * "none", matching the legacy renderer's own gate), and how many of the
+ * active turn's delegated children are still running, decides the
+ * quiet/stalled/waiting level and its display text.
+ *
+ * A wait explained by running children is not a stall (design brief principle
+ * 6), so running children suppress "quiet" outright.
+ *
+ * They do NOT suppress the stall report, and that asymmetry is the important
+ * part. "A child is running" is a CLAIM this client cannot independently
+ * verify: the count comes from subagent rows whose status is itself derived
+ * from the wire, and a row that has lost contact with its child reports
+ * "running" because that is the honest default when nothing bad is known
+ * (subagentModuleStore's classifyJobStatus, and kata g5kf on how a row can
+ * hold that claim after the child is gone). If a believed-running child were
+ * allowed to suppress the stall report forever, then the single case where a
+ * reader most needs the truth — a parent wedged behind a child that died
+ * quietly — would be the one case the UI stayed confidently silent about, and
+ * the honest-liveness rule would be inverted by its own explanation.
+ *
+ * So past the stall threshold the line reports both facts at once and asserts
+ * neither over the other: children are believed running, AND nothing has
+ * arrived for a long time. The reader can act on that; they cannot act on
+ * "waiting on 1 subagent" held for nine minutes.
+ */
+export function describeLiveness(gapMs: number, active: boolean, runningSubagents: number): LivenessInfo {
   if (!active || gapMs < QUIET_THRESHOLD_MS) return { level: "none", text: null };
+  if (runningSubagents > 0) {
+    const waiting = `Waiting on ${formatSubagentCount(runningSubagents)}`;
+    if (gapMs < STALL_THRESHOLD_MS) return { level: "waiting", text: waiting };
+    return { level: "stalled", text: `${waiting} — no updates for ${formatExactGap(gapMs)}` };
+  }
   if (gapMs < STALL_THRESHOLD_MS) return { level: "quiet", text: `Quiet ${formatQuietBucket(gapMs)}` };
   return { level: "stalled", text: `May be stalled — no updates for ${formatExactGap(gapMs)}` };
 }

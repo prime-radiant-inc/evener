@@ -20,6 +20,10 @@ export default function ChevronGallerySection() {
           <Chevron direction="left" />
         </div>
         <div className={styles.row}>
+          <p className={styles.rowLabel}>up</p>
+          <Chevron direction="up" />
+        </div>
+        <div className={styles.row}>
           <p className={styles.rowLabel}>size 16</p>
           <Chevron size={16} />
         </div>

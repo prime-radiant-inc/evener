@@ -39,7 +39,13 @@ test('source "user" renders as a normal user message bubble (the "You" tag), not
 });
 
 test('source "user" steering with images renders the same gallery thumbnails a real user message would', () => {
-  render(<SteeringItem item={item({ text: "look", source: "user", images: ["a", "b"] })} turn={turn} live={false} />);
+  render(
+    <SteeringItem
+      item={item({ text: "look", source: "user", images: [{ src: "a" }, { src: "b" }] })}
+      turn={turn}
+      live={false}
+    />,
+  );
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(2);
 });
 
@@ -100,7 +106,11 @@ test('a non-"user", non-empty source (defensive - only "user" is special-cased) 
 
 test("a daemon-sourced steering item with BOTH real text and images renders the text and drops the image count (documented limitation, matches legacy §8 - pinned so a future change is deliberate)", () => {
   render(
-    <SteeringItem item={item({ text: "daemon nudge with a picture", images: ["a", "b"] })} turn={turn} live={false} />,
+    <SteeringItem
+      item={item({ text: "daemon nudge with a picture", images: [{ src: "a" }, { src: "b" }] })}
+      turn={turn}
+      live={false}
+    />,
   );
   const el = screen.getByTestId("steering-item");
   expect(el.textContent).toContain("daemon nudge with a picture");

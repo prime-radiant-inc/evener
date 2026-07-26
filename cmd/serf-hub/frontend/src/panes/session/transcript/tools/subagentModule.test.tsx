@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
@@ -5,7 +8,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
-import { classifyJobStatus, resolveRowKey } from "./subagentModule";
+import { classifyJobStatus, resolveRowKey, rowKindFromChildStatus } from "./subagentModule";
 import { resetSubagentModuleStoreForTests, turnScopeKey, updateSubagentRowIfExists } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
@@ -55,14 +58,30 @@ function delegateItem(overrides: Partial<ItemModel> = {}): ItemModel {
   return item({ toolName: "delegate", ...overrides });
 }
 
+// jsdom runs no cascade, so data-has-failure's own visual effect (3h80) can
+// only be asserted at the declaration level - comments are stripped first, so
+// a stylesheet grep that only matches its own comment prose asserts nothing.
+// Same idiom as toolRowGrammar.test.tsx's own rowCss().
+function moduleCss(): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "subagentmodule.module.css");
+  return readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 // --- classifyJobStatus / resolveRowKey (pure, unit-level) -----------------
 
 test("classifyJobStatus: failed family", () => {
   for (const s of ["failed", "errored", "error", "exhausted"]) expect(classifyJobStatus(s)).toBe("failed");
 });
 
-test("classifyJobStatus: done family (cancelled/stopped count as done, not failed)", () => {
-  for (const s of ["completed", "done", "cancelled", "stopped", "succeeded"]) expect(classifyJobStatus(s)).toBe("done");
+test("classifyJobStatus: done family (a clean completion, not a stop/cancel)", () => {
+  for (const s of ["completed", "done", "succeeded"]) expect(classifyJobStatus(s)).toBe("done");
+});
+
+// 3zf8: cancelled/stopped must not fold into "done" (nor "failed" - nothing
+// broke) - they get their own distinct kind so a deliberately-killed child
+// never renders byte-identical to one that finished cleanly.
+test("classifyJobStatus: stopped family (cancelled/stopped are their own kind, not done and not failed)", () => {
+  for (const s of ["cancelled", "stopped"]) expect(classifyJobStatus(s)).toBe("stopped");
 });
 
 test("classifyJobStatus: literal unknown maps to unknown", () => {
@@ -80,6 +99,34 @@ test("resolveRowKey: prefers delegateId, then jobId, then the fallback", () => {
   expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey(undefined, "job_2", "call_1"));
   expect(resolveRowKey(undefined, undefined, "call_1")).toBe(resolveRowKey(undefined, undefined, "call_1"));
   expect(resolveRowKey(undefined, "job_1", "call_1")).not.toBe(resolveRowKey("dlg_1", "job_1", "call_1"));
+});
+
+// --- rowKindFromChildStatus (pure, unit-level) -----------------------------
+
+test("rowKindFromChildStatus: a live child (working/needs-you/idle) reads as running", () => {
+  expect(rowKindFromChildStatus("active")).toBe("running");
+  expect(rowKindFromChildStatus("awaiting")).toBe("running");
+  expect(rowKindFromChildStatus("warning")).toBe("running");
+  expect(rowKindFromChildStatus("idle")).toBe("running");
+});
+
+test("rowKindFromChildStatus: systemError reads as failed, closed reads as done", () => {
+  expect(rowKindFromChildStatus("systemError")).toBe("failed");
+  expect(rowKindFromChildStatus("closed")).toBe("done");
+});
+
+// g5kf: notLoaded means the child left the daemon's live roster entirely -
+// evicted, orphaned, or lost to a hub restart (cmd/serf-hub/app_threadread.go's
+// pastEntryThread stamps it) - not "still going". cadenceStateForStatus folds
+// it into the same "idle" family a genuinely-idle-but-still-live child gets
+// (deliberately, for the Cadence dot's own "nothing to animate" purposes - see
+// liveness.ts's own doc comment and its test), so rowKindFromChildStatus can't
+// tell the two apart once it only looks at that folded state. It must check
+// the literal wire status before folding, the same way Composer.tsx/
+// StatusRow.tsx each keep their own separate notLoaded check alongside
+// cadenceStateForStatus rather than trusting its output alone.
+test("g5kf: rowKindFromChildStatus reads notLoaded as unknown, never running forever", () => {
+  expect(rowKindFromChildStatus("notLoaded")).toBe("unknown");
 });
 
 // --- delegate descriptor: summary ----------------------------------------
@@ -194,6 +241,34 @@ test("kata 8525: two sessions sharing the SAME turnId never bleed into each othe
   expect(within(moduleB!).getAllByTestId("subagent-row")).toHaveLength(1);
   expect(screen.getByText("session A's own task")).toBeTruthy();
   expect(screen.getByText("session B's own task")).toBeTruthy();
+});
+
+// 78nj: the Disclosure id used a bare turnId, not turnScopeKey(sessionRef,
+// turnId) - the same collision class as kata 8525 above, but on the
+// disclosureStore's open/closed map rather than this store's rows. Both
+// items below rely on the SAME defaults (id "item_1", turnId "turn_1", no
+// callId) and neither output carries delegate_id/job_id, so both resolve to
+// the identical fallback rowKey call:item_1 under the identical turnId -
+// exactly the "a call that errors before minting any handle" scenario the
+// kata describes. Only sessionRef tells the two rows apart.
+test("78nj: expanding one session's row does not open another session's row sharing the same turnId/fallback rowKey", async () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const sessionA = delegateItem({ argumentsJSON: JSON.stringify({ task: "session A's task" }), output: "" });
+  const sessionB = delegateItem({ argumentsJSON: JSON.stringify({ task: "session B's task" }), output: "" });
+  render(
+    <>
+      <Body item={sessionA} live={false} sessionRef="session_a_ref" />
+      <Body item={sessionB} live={false} sessionRef="session_b_ref" />
+    </>,
+  );
+
+  const [moduleA, moduleB] = screen.getAllByTestId("subagent-module");
+  const user = userEvent.setup();
+  await user.click(within(moduleA!).getByText("session A's task"));
+
+  expect(within(moduleA!).getByTestId("subagent-mandate")).toBeTruthy();
+  expect(within(moduleB!).queryByTestId("subagent-mandate")).toBeNull();
 });
 
 // claimLeader/releaseLeader must stay symmetric across StrictMode's dev-only
@@ -336,6 +411,38 @@ test("a failed row is flagged at module level via data-has-failure, not averaged
   expect(module.dataset.hasFailure).toBe("true");
   const row = screen.getByTestId("subagent-row");
   expect(row.dataset.kind).toBe("failed");
+
+  // 3h80: data-has-failure must actually paint something, not just sit on
+  // the element - jsdom evaluates no cascade, so the only honest way to
+  // prove that is to read the stylesheet directly, the same rowCss() idiom
+  // toolRowGrammar.test.tsx uses. Without this half, the DOM assertion above
+  // would keep passing even if subagentmodule.module.css were deleted
+  // outright.
+  const css = moduleCss();
+  expect(css).toMatch(/\[data-has-failure="true"\]\s*\{[^}]*border-left:[^;]*var\(--danger\)/);
+});
+
+// 3zf8: a child deliberately killed with job_stop (or reconciled to
+// stopped/runtime_lost after a hub restart - agent/internal/jobstore/
+// reconcile.go) must never render byte-identical to one that finished its
+// task cleanly - same glyph, same tone, same label was the exact defect.
+// Nothing broke, so it's still not "failed", but it is not "done" either.
+test("3zf8: a cancelled/stopped child gets its own distinct kind - never rendered (or tallied) as a clean 'done' success", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const stopped = delegateItem({
+    id: "d_stopped",
+    callId: "call_stopped",
+    argumentsJSON: JSON.stringify({ task: "misbehaving, killed" }),
+    output: JSON.stringify({ job_id: "job_stopped", status: "cancelled", transcript_ref: "ref_stopped" }),
+  });
+  render(<Body item={stopped} live={false} />);
+  const module = screen.getByTestId("subagent-module");
+  const row = screen.getByTestId("subagent-row");
+  expect(row.dataset.kind).toBe("stopped");
+  expect(within(row).getByText("stopped")).toBeTruthy();
+  expect(within(module).getByText(/1 stopped/)).toBeTruthy();
+  expect(within(module).queryByText(/done/)).toBeNull();
 });
 
 // --- fold beyond ~6 done rows (running/failed/unknown always visible) ----
@@ -630,6 +737,32 @@ test("the collapsed pill reads the LIVE watched status, not the frozen tool-outp
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
   expect(within(row).getByText("failed")).toBeTruthy();
+});
+
+// g5kf: the honest-clock bug. A foreground_timeout freezes the delegate's own
+// tool output at status:"running" forever (agent/job_delegate.go's mainline
+// path for any non-trivial delegate, not an edge case), so the watched
+// child's live thread status is the ONLY remaining signal - and once that
+// child leaves the daemon's live roster entirely, it must demote off
+// "running" rather than reading as though it were still genuinely working.
+test("g5kf: a child that leaves the live roster (notLoaded) demotes off running to unknown, not stuck running forever", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", (params) => childThreadRead(params, "notLoaded"));
+  connectionStore.getState().connect(fake);
+
+  const Body = toolRendererFor("delegate").body!;
+  const running = delegateItem({
+    id: "d_notloaded",
+    callId: "call_notloaded",
+    argumentsJSON: JSON.stringify({ task: "orphaned by a hub restart" }),
+    output: JSON.stringify({ job_id: "job_nl", status: "running", transcript_ref: "ref_notloaded_child" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  await waitFor(() => expect(row.dataset.kind).toBe("unknown"));
+  expect(within(row).getByText("unknown")).toBeTruthy();
+  expect(within(row).queryByText("running")).toBeNull();
 });
 
 // --- dr7e: serf/job/finished's own reason/resumable/exhaustion detail -----

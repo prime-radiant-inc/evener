@@ -20,6 +20,7 @@
 // CSS module throughout rather than forcing a widget that cannot express
 // them.
 import { useEffect, useId, useRef } from "react";
+import { Chip } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import type { AskResolution } from "./askCompose";
 import type { AskAnswerState } from "./askDockStore";
@@ -35,7 +36,7 @@ const CLASS = {
   why: requireClass(styles.why, "askquestioncard.module.css", "why"),
   options: requireClass(styles.options, "askquestioncard.module.css", "options"),
   option: requireClass(styles.option, "askquestioncard.module.css", "option"),
-  optionLabel: requireClass(styles.optionLabel, "askquestioncard.module.css", "optionLabel"),
+  optionChip: requireClass(styles.optionChip, "askquestioncard.module.css", "optionChip"),
   optionDetail: requireClass(styles.optionDetail, "askquestioncard.module.css", "optionDetail"),
   optionTag: requireClass(styles.optionTag, "askquestioncard.module.css", "optionTag"),
   alternativeRow: requireClass(styles.alternativeRow, "askquestioncard.module.css", "alternativeRow"),
@@ -150,7 +151,13 @@ export function AskQuestionCard({ question, number, answer, onResolutionChange, 
             }
             onChange={(e) => handleOptionChange(opt.label, e.target.checked)}
           />
-          <span className={CLASS.optionLabel}>{opt.label}</span>
+          {/* Quick-reply chip (topic 16 Alt D), replacing plain label text -
+              widgets/chip is already token-contract-allowlisted for its own
+              tone prop, so this needs no allowlist change of its own; the
+              checked ring beside it is --accent (askquestioncard.module.css). */}
+          <span className={CLASS.optionChip}>
+            <Chip tone="neutral">{opt.label}</Chip>
+          </span>
           <span className={CLASS.optionDetail}>{opt.detail}</span>
           {opt.recommended && <span className={CLASS.optionTag}>recommended</span>}
         </label>
