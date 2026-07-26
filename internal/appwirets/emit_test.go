@@ -3,9 +3,15 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/format"
+	"go/parser"
+	"go/token"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -237,6 +243,13 @@ func TestTypeExprPanicsOnAnonymousNestedStruct(t *testing.T) {
 	emitInterface("Sample", reflect.TypeFor[Sample]())
 }
 
+func TestTypeExprThreadItemEventKind(t *testing.T) {
+	got := typeExpr(reflect.TypeFor[appwire.ThreadItemEventKind]())
+	if got != "ThreadItemEventKind" {
+		t.Fatalf("typeExpr(ThreadItemEventKind) = %q, want %q", got, "ThreadItemEventKind")
+	}
+}
+
 func TestDeriveName(t *testing.T) {
 	cases := []struct{ wire, suffix, want string }{
 		{"thread/started", "Payload", "ThreadStartedPayload"},
@@ -456,6 +469,115 @@ func runtimeNameList(t *testing.T, out, constName string) []string {
 	return got
 }
 
+func threadItemEventKindConstantsFromGo(t *testing.T) map[string][]string {
+	t.Helper()
+	const constPrefix = "ThreadItemEventKind"
+
+	fset := token.NewFileSet()
+	pkgs, err := parser.ParseDir(fset, filepath.Join("..", "..", "appwire"), func(info os.FileInfo) bool {
+		return !info.IsDir() && strings.HasSuffix(info.Name(), ".go") && !strings.HasSuffix(info.Name(), "_test.go")
+	}, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("parse appwire package: %v", err)
+	}
+	pkg, ok := pkgs["appwire"]
+	if !ok {
+		t.Fatalf("package appwire not found at %q", filepath.Join("..", "..", "appwire"))
+	}
+
+	constantsByValue := map[string][]string{}
+	for _, f := range pkg.Files {
+		var activeType ast.Expr
+		var activeValues []ast.Expr
+		for _, decl := range f.Decls {
+			genDecl, ok := decl.(*ast.GenDecl)
+			if !ok || genDecl.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range genDecl.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				if len(valueSpec.Values) > 0 {
+					activeValues = valueSpec.Values
+				}
+				if valueSpec.Type != nil {
+					activeType = valueSpec.Type
+				}
+				for nameIndex, name := range valueSpec.Names {
+					if !strings.HasPrefix(name.Name, constPrefix) || name.Name == "_" {
+						continue
+					}
+					typeExpr := valueSpec.Type
+					if typeExpr == nil {
+						typeExpr = activeType
+					}
+					if typeExpr == nil {
+						t.Fatalf("constant %s has unknown type", name.Name)
+					}
+					if !isThreadItemEventKindTypeExpr(typeExpr) {
+						t.Fatalf("constant %s has non-thread-item type %s", name.Name, renderExpr(typeExpr))
+					}
+
+					valueExpr := valueExprForValueSpec(valueSpec, nameIndex, activeValues)
+					if valueExpr == nil {
+						t.Fatalf("constant %s has no value", name.Name)
+					}
+					lit, ok := valueExpr.(*ast.BasicLit)
+					if !ok || lit.Kind != token.STRING {
+						t.Fatalf("constant %s has non-literal string value %s", name.Name, renderExpr(valueExpr))
+					}
+					value, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatalf("constant %s has unquotable string value %s: %v", name.Name, renderExpr(valueExpr), err)
+					}
+					constantsByValue[value] = append(constantsByValue[value], name.Name)
+				}
+			}
+		}
+	}
+	if len(constantsByValue) == 0 {
+		t.Fatal("no ThreadItemEventKind* constants found in appwire package")
+	}
+	return constantsByValue
+}
+
+func valueExprForValueSpec(spec *ast.ValueSpec, nameIndex int, activeValues []ast.Expr) ast.Expr {
+	if len(spec.Values) > 0 {
+		if nameIndex < len(spec.Values) {
+			return spec.Values[nameIndex]
+		}
+		return spec.Values[len(spec.Values)-1]
+	}
+	if len(activeValues) > 0 {
+		if nameIndex < len(activeValues) {
+			return activeValues[nameIndex]
+		}
+		return activeValues[0]
+	}
+	return nil
+}
+
+func isThreadItemEventKindTypeExpr(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name == "ThreadItemEventKind"
+	case *ast.SelectorExpr:
+		return t.Sel != nil && t.Sel.Name == "ThreadItemEventKind"
+	default:
+		return false
+	}
+}
+
+func renderExpr(expr ast.Expr) string {
+	var b strings.Builder
+	if err := format.Node(&b, token.NewFileSet(), expr); err != nil {
+		return "unrenderable"
+	}
+	return b.String()
+}
+
 // METHOD_NAMES is the runtime counterpart of the MethodName type union: a
 // type-only union is invisible to a running test, so FakeClient needs a real
 // value to validate a scripted method name against. Every catalog method
@@ -520,18 +642,38 @@ func TestGeneratedFileCurrent(t *testing.T) {
 // regressions.
 func TestEmitsThreadItemEventKindCatalog(t *testing.T) {
 	out := EmitCatalog()
+	generated := runtimeNameList(t, out, "THREAD_ITEM_EVENT_KINDS")
+	if len(generated) == 0 {
+		t.Fatal("generated THREAD_ITEM_EVENT_KINDS is empty")
+	}
 	if !strings.Contains(out, "export const THREAD_ITEM_EVENT_KINDS = [") {
 		t.Error("generated output has no THREAD_ITEM_EVENT_KINDS catalog")
 	}
-	if !strings.Contains(out, "export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];") {
+	if !strings.Contains(out, "export type ThreadItemEventKind = (typeof THREAD_ITEM_EVENT_KINDS)[number];\n") {
 		t.Error("generated output has no ThreadItemEventKind union")
 	}
-	if !strings.Contains(out, "eventKind?: ThreadItemEventKind;") {
+	threadItemBody := interfaceBody(t, out, "ThreadItem")
+	if !strings.Contains(threadItemBody, "\n  eventKind?: ThreadItemEventKind;\n") {
 		t.Error("ThreadItem.eventKind is not generated from ThreadItemEventKind union")
 	}
-	for _, kind := range appwire.AllThreadItemEventKinds {
-		if !strings.Contains(out, fmt.Sprintf("%q", kind)) {
-			t.Errorf("kind %q missing from generated output", kind)
+
+	constantsByValue := threadItemEventKindConstantsFromGo(t)
+	generatedSet := map[string]struct{}{}
+	for _, value := range generated {
+		generatedSet[value] = struct{}{}
+	}
+
+	for value := range constantsByValue {
+		for _, name := range constantsByValue[value] {
+			if _, ok := generatedSet[value]; !ok {
+				t.Errorf("ThreadItemEventKind constant %s with value %q is missing from THREAD_ITEM_EVENT_KINDS", name, value)
+				break
+			}
+		}
+	}
+	for _, value := range appwire.AllThreadItemEventKinds {
+		if _, ok := constantsByValue[value]; !ok {
+			t.Errorf("THREAD_ITEM_EVENT_KINDS includes value %q with no ThreadItemEventKind* constant declaration", value)
 		}
 	}
 }
