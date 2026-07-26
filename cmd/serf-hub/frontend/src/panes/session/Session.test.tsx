@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
@@ -10,6 +10,28 @@ import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
 import Session from "./Session";
+import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
+
+// See draft.test.ts's identical comment: Node 26 shadows jsdom's real
+// window.localStorage with its own (non-functional under vitest) global.
+// No other test in this file touches localStorage, so stubbing it here is
+// harmless to the rest of the suite - only the seen-divider tests below
+// (kata g2ez) pre-seed a watermark through it.
+class MemoryStorage {
+  private store = new Map<string, string>();
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) ?? null) : null;
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  clear(): void {
+    this.store.clear();
+  }
+}
 
 // The two wave-5 T1 slots are swapped for a visible stub here ONLY to prove
 // Session.tsx actually mounts them with the right ref prop - their own
@@ -102,9 +124,15 @@ class StubIntersectionObserver {
   disconnect(): void {}
 }
 
+beforeAll(() => {
+  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  globalThis.localStorage = new MemoryStorage();
+});
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  localStorage.clear();
   vi.stubGlobal("IntersectionObserver", StubIntersectionObserver);
   offsetHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
   Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, value: CONTAINER_HEIGHT });
@@ -228,6 +256,85 @@ test("renders turns via VirtualList/TurnBlock once hydrated", async () => {
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
   expect(screen.getByText("hi")).toBeTruthy();
+});
+
+// --- seen divider (kata g2ez) --------------------------------------------
+
+function turnFixture(id: string, text: string) {
+  return {
+    id,
+    status: "completed" as const,
+    itemsView: "full" as const,
+    items: [{ id: `${id}-item`, turnId: id, type: "userMessage", text, status: "completed" as const }],
+  };
+}
+
+test("shows the seen divider above the first turn that arrived after the stored watermark", async () => {
+  writeSeenWatermark("ref_a", "turn_1");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("seen-divider")).toBeTruthy());
+  // The divider sits between the two turns' text, not before both.
+  const text = document.body.textContent ?? "";
+  expect(text.indexOf("first")).toBeLessThan(text.indexOf("New since your last visit"));
+  expect(text.indexOf("New since your last visit")).toBeLessThan(text.indexOf("second"));
+});
+
+test("no divider when nothing arrived since the stored watermark (watermark is the last turn)", async () => {
+  writeSeenWatermark("ref_a", "turn_1");
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_a", { turns: [turnFixture("turn_1", "only")] }));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.queryByTestId("seen-divider")).toBeNull();
+});
+
+test("no divider on a first-ever visit (no watermark stored)", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
+  expect(screen.queryByTestId("seen-divider")).toBeNull();
+});
+
+test("unmounting the pane stores the current last turn as the new watermark for next time", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", { turns: [turnFixture("turn_1", "first"), turnFixture("turn_2", "second")] }),
+  );
+
+  const { unmount } = render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getAllByTestId("turn-block").length).toBe(2));
+  unmount();
+  expect(localStorage.getItem("serf.transcript.seen.v1.ref_a")).toBe("turn_2");
 });
 
 // --- turn-failure recovery wiring (wave 8) -------------------------------

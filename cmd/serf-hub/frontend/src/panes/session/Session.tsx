@@ -39,6 +39,7 @@ import { FlowOverlay } from "./transcript/flow/FlowOverlay";
 import { LivenessLine } from "./transcript/flow/LivenessLine";
 import { LoadOlderRow } from "./transcript/flow/LoadOlderRow";
 import { NewContentPill } from "./transcript/flow/NewContentPill";
+import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 
@@ -167,6 +168,9 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
   const flow = useTranscriptScroll({ ref, model, listRef: virtualListRef, loadOlder });
+  // kata g2ez: names the one turn (if any) that starts what's arrived since
+  // this pane was last open, so a reopened session shows where to pick up.
+  const seenDividerTurnId = useSeenDivider(ref, model);
 
   if (!model) {
     return (
@@ -234,7 +238,10 @@ export default function Session({ params }: PaneProps<SessionPaneParams>) {
               count={model.turns.length}
               estimateSize={() => ESTIMATED_TURN_HEIGHT}
               getItemKey={(index) => turnAt(index).id}
-              renderRow={(index) => <TurnBlock turn={turnAt(index)} sessionRef={ref} />}
+              renderRow={(index) => {
+                const t = turnAt(index);
+                return <TurnBlock turn={t} sessionRef={ref} showSeenDivider={t.id === seenDividerTurnId} />;
+              }}
             />
           </FlowOverlay>
         </div>

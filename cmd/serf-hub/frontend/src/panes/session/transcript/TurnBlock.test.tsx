@@ -75,6 +75,16 @@ test("tags the root with the turn id", () => {
   expect(container.querySelector('[data-turn-id="turn_42"]')).toBeTruthy();
 });
 
+test("showSeenDivider defaults to false: no divider marker rendered", () => {
+  render(<TurnBlock turn={turn([])} />);
+  expect(screen.queryByTestId("seen-divider")).toBeNull();
+});
+
+test("showSeenDivider renders the divider marker above this turn's content", () => {
+  render(<TurnBlock turn={turn([], { id: "turn_42" })} showSeenDivider />);
+  expect(screen.getByTestId("seen-divider")).toBeTruthy();
+});
+
 test("renders items in order via the item-renderer registry", () => {
   const items = [
     item({ id: "a", type: "userMessage", text: "first" }),

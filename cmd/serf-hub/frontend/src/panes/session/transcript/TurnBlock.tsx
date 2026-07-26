@@ -11,6 +11,7 @@ import { useMemo } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { usePrefsStore } from "../../../stores/prefs";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { SeenDivider } from "./flow/SeenDivider";
 import { TurnSeparator } from "./messages";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { visibleItems } from "./transcriptVisibility";
@@ -25,6 +26,11 @@ export interface TurnBlockProps {
   // diagnostic renders without it, only the recovery button is withheld until
   // Session.tsx passes it down.
   sessionRef?: string;
+  // Renders the "you left off here" marker (SeenDivider, kata g2ez) above
+  // this turn's content. Session.tsx sets this on whichever single turn
+  // useSeenDivider.ts names as the boundary - defaults false so every
+  // other turn is unaffected.
+  showSeenDivider?: boolean;
 }
 
 const CLASS = {
@@ -47,7 +53,7 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
-export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
+export function TurnBlock({ turn, sessionRef, showSeenDivider = false }: TurnBlockProps) {
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
@@ -73,15 +79,18 @@ export function TurnBlock({ turn, sessionRef }: TurnBlockProps) {
   // more than it already did.
   const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
   return (
-    <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
-      {shown.map((item) => {
-        const ItemRenderer = itemRendererFor(item.type);
-        return (
-          <ItemRenderer key={item.id} item={item} turn={shownTurn} live={isItemLive(item)} sessionRef={sessionRef} />
-        );
-      })}
-      {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
-      <TurnSeparator turn={turn} />
-    </div>
+    <>
+      {showSeenDivider && <SeenDivider />}
+      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
+        {shown.map((item) => {
+          const ItemRenderer = itemRendererFor(item.type);
+          return (
+            <ItemRenderer key={item.id} item={item} turn={shownTurn} live={isItemLive(item)} sessionRef={sessionRef} />
+          );
+        })}
+        {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
+        <TurnSeparator turn={turn} />
+      </div>
+    </>
   );
 }
