@@ -9,6 +9,7 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   sessionNodes,
+  topLevelAncestorRef,
 } from "./railNodes";
 
 function node(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
@@ -535,5 +536,87 @@ describe("per-tier overflow", () => {
       NEVER_EXPANDED,
     );
     expect(rail?.children.map((c) => c.kind)).toEqual(["loading"]);
+  });
+});
+
+// A nested session opens BESIDE the top-level session that spawned it, so the
+// rail has to answer "which top-level row does this ref belong under?". The
+// wire tree is already nested, so this is a walk rather than a new index.
+describe("topLevelAncestorRef", () => {
+  const tiers = (projects: ApiTreeProject[]) => projects;
+
+  test("a direct child resolves to its parent", () => {
+    const p = project({
+      sessions: [node({ ref: "local:parent", children: [node({ row_id: "c", ref: "local:kid" })] })],
+    });
+    expect(topLevelAncestorRef(tiers([p]), "local:kid")).toBe("local:parent");
+  });
+
+  test("a deeply nested child resolves to the TOP-level row, not its immediate parent", () => {
+    const p = project({
+      sessions: [
+        node({
+          ref: "local:top",
+          children: [node({ row_id: "m", ref: "local:mid", children: [node({ row_id: "l", ref: "local:leaf" })] })],
+        }),
+      ],
+    });
+    expect(topLevelAncestorRef(tiers([p]), "local:leaf")).toBe("local:top");
+  });
+
+  test("a top-level session is its own ancestor", () => {
+    const p = project({ sessions: [node({ ref: "local:solo" })] });
+    expect(topLevelAncestorRef(tiers([p]), "local:solo")).toBe("local:solo");
+  });
+
+  test("a ref that is nowhere in the given projects resolves to null", () => {
+    const p = project({ sessions: [node({ ref: "local:a" })] });
+    expect(topLevelAncestorRef(tiers([p]), "local:missing")).toBeNull();
+  });
+
+  test("searches across every project it is given", () => {
+    const a = project({ key: "p1", sessions: [node({ ref: "local:a" })] });
+    const b = project({
+      key: "p2",
+      sessions: [node({ row_id: "t2", ref: "local:top2", children: [node({ row_id: "k2", ref: "local:kid2" })] })],
+    });
+    expect(topLevelAncestorRef([a, b], "local:kid2")).toBe("local:top2");
+  });
+});
+
+// A cluster is a repeated-title GROUPING, not the owner of a task tree: its
+// members are ordinary top-level sessions that happen to share a title, and
+// its own ref is synthetic and names no session. Reporting it as a member's
+// ancestor made the rail try to open it as the "parent" pane - the exact
+// bogus pane clicking a cluster row used to create.
+describe("topLevelAncestorRef and cluster rows", () => {
+  const clustered = () =>
+    project({
+      sessions: [
+        node({
+          row_id: "cl",
+          ref: "cluster:abc12345",
+          kind: "cluster",
+          children: [node({ row_id: "m1", ref: "local:m1" }), node({ row_id: "m2", ref: "local:m2" })],
+        }),
+      ],
+    });
+
+  test("a cluster member is its own ancestor, never the cluster", () => {
+    expect(topLevelAncestorRef([clustered()], "local:m1")).toBe("local:m1");
+  });
+
+  test("a subagent UNDER a cluster member still resolves to that member", () => {
+    const p = project({
+      sessions: [
+        node({
+          row_id: "cl",
+          ref: "cluster:abc12345",
+          kind: "cluster",
+          children: [node({ row_id: "m1", ref: "local:m1", children: [node({ row_id: "s", ref: "local:sub" })] })],
+        }),
+      ],
+    });
+    expect(topLevelAncestorRef([p], "local:sub")).toBe("local:m1");
   });
 });

@@ -186,6 +186,32 @@ function sessionListHasRef(nodes: ApiTreeNode[], ref: string): boolean {
   return nodes.some((n) => n.ref === ref || sessionListHasRef(n.children, ref));
 }
 
+/** The ref of the TOP-LEVEL session `ref` sits under - itself when it is
+ * already top-level, or null when it is not in `projects` at all (a tier-only
+ * entry, or an archived stub whose sessions have not been hydrated).
+ *
+ * A subagent opens beside the session that spawned it, and "the session that
+ * spawned it" means the top-level row, not the immediate parent: a
+ * three-deep subagent still belongs beside the one row that owns the whole
+ * task tree. See docs/web-ui/specs/2026-07-26-subagent-opens-beside-main.md
+ * §B. */
+export function topLevelAncestorRef(projects: ApiTreeProject[], ref: string): string | null {
+  // A CLUSTER row is a repeated-title grouping, not the owner of a task tree:
+  // its members are ordinary top-level sessions that happen to share a title,
+  // and its own ref is synthetic (a SHA of project + title) naming no session
+  // at all. So the search descends THROUGH it and treats its members as the
+  // top-level rows they are - reporting the cluster instead would name a
+  // "parent" that cannot be opened.
+  const tops = (project: ApiTreeProject): ApiTreeNode[] =>
+    project.sessions.flatMap((n) => (n.kind === "cluster" ? n.children : [n]));
+  for (const project of projects) {
+    for (const top of tops(project)) {
+      if (top.ref === ref || sessionListHasRef(top.children, ref)) return top.ref;
+    }
+  }
+  return null;
+}
+
 /** The projectnode: id of the project (or test-run) whose sessions include
  * `ref`, or null when `ref` is a top-level tier entry (needs-you/live/pinned)
  * or lives in an unloaded archived stub - i.e. nothing to un-collapse before

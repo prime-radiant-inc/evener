@@ -20,7 +20,7 @@ test("urlToPane resolves /new to the spawn pane", () => {
 });
 
 test("urlToPane resolves /s/{ref} to a session pane", () => {
-  expect(urlToPane("/s/ref_abc123")).toEqual({ type: "session", params: { ref: "ref_abc123" } });
+  expect(urlToPane("/s/local:abc123")).toEqual({ type: "session", params: { ref: "local:abc123" } });
 });
 
 test("urlToPane resolves /settings to the settings pane with no section", () => {
@@ -43,7 +43,7 @@ test("urlToPane resolves /thread/{ref} to a session pane (single-pane share link
   // /thread/{ref} is the share-link target: it opens the SESSION pane, which
   // the shell then renders chrome-stripped (isSinglePaneRoute). It no longer
   // maps to the never-URL'd read-only transcript pane.
-  expect(urlToPane("/thread/ref_abc123")).toEqual({ type: "session", params: { ref: "ref_abc123" } });
+  expect(urlToPane("/thread/local:abc123")).toEqual({ type: "session", params: { ref: "local:abc123" } });
 });
 
 test("urlToPane returns null for an unknown path", () => {
@@ -54,8 +54,30 @@ test("urlToPane returns null for a session path with an empty ref", () => {
   expect(urlToPane("/s/")).toBeNull();
 });
 
+// One canonical ref form. hubapi.ParseRef (hubapi/refs.go) has always
+// required "<host>:<session>" - a bare session id is not a ref. The frontend
+// used to accept one anyway, which meant the SAME session could occupy two
+// panes at once: the rail opens "local:<id>", a bare-id deep link opens
+// "<id>", and sameParams sees two different panes. Observed in a browser.
+test("a bare session id is not a ref and does not resolve to a session pane", () => {
+  expect(urlToPane("/s/033vPyFQqNrAhgoiyUvUEy")).toBeNull();
+  expect(urlToPane("/thread/033vPyFQqNrAhgoiyUvUEy")).toBeNull();
+});
+
+test("a ref with an empty half is rejected the same way", () => {
+  expect(urlToPane("/s/local:")).toBeNull();
+  expect(urlToPane("/s/:abc123")).toBeNull();
+});
+
+test("a non-local host ref still resolves", () => {
+  expect(urlToPane("/s/laptop:abc123")).toEqual({ type: "session", params: { ref: "laptop:abc123" } });
+});
+
 test("urlToPane decodes a URI-encoded ref", () => {
-  expect(urlToPane("/s/ref%20with%20space")).toEqual({ type: "session", params: { ref: "ref with space" } });
+  expect(urlToPane("/s/local%3Aref%20with%20space")).toEqual({
+    type: "session",
+    params: { ref: "local:ref with space" },
+  });
 });
 
 // --- paneToURL: the reverse direction -------------------------------------
@@ -69,7 +91,7 @@ test("paneToURL formats the spawn pane as /new", () => {
 });
 
 test("paneToURL formats a session pane as /s/{ref}", () => {
-  expect(paneToURL("session", { ref: "ref_abc123" })).toBe("/s/ref_abc123");
+  expect(paneToURL("session", { ref: "local:abc123" })).toBe("/s/local%3Aabc123");
 });
 
 test("paneToURL returns null for a transcript pane (open-beside only, no deep link)", () => {
@@ -107,24 +129,24 @@ test("paneToURL returns null for a doc pane (no deep link defined yet)", () => {
 });
 
 test("paneToURL encodes a ref that needs it", () => {
-  expect(paneToURL("session", { ref: "ref with space" })).toBe("/s/ref%20with%20space");
+  expect(paneToURL("session", { ref: "local:ref with space" })).toBe("/s/local%3Aref%20with%20space");
 });
 
 // --- round trip: every URL paneToURL produces resolves back via urlToPane --
 
 test("round trip: session URL", () => {
-  const url = paneToURL("session", { ref: "ref_xyz" });
+  const url = paneToURL("session", { ref: "local:xyz" });
   expect(url).not.toBeNull();
-  expect(urlToPane(url!)).toEqual({ type: "session", params: { ref: "ref_xyz" } });
+  expect(urlToPane(url!)).toEqual({ type: "session", params: { ref: "local:xyz" } });
 });
 
 test("inbound alias: /thread/{ref} resolves to a session pane, which serializes back to /s/{ref}", () => {
   // /thread/{ref} has no round trip of its own (like /credentials): it is an
   // inbound-only share link. It resolves to a session pane, and a session
   // pane's own canonical URL is /s/{ref}, so the app never emits /thread.
-  const inbound = urlToPane("/thread/ref_xyz");
-  expect(inbound).toEqual({ type: "session", params: { ref: "ref_xyz" } });
-  expect(paneToURL("session", { ref: "ref_xyz" })).toBe("/s/ref_xyz");
+  const inbound = urlToPane("/thread/local:xyz");
+  expect(inbound).toEqual({ type: "session", params: { ref: "local:xyz" } });
+  expect(paneToURL("session", { ref: "local:xyz" })).toBe("/s/local%3Axyz");
 });
 
 test("round trip: settings with section URL", () => {

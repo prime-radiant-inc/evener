@@ -17,11 +17,14 @@ import type { ItemModel, ThreadModel } from "../../protocol/model";
 
 export interface SearchResult {
   id: string;
-  // The qualified, routable ref (e.g. "local:abc"). New hubs carry it on every
-  // hit (web_api.go handleApiSearch, main commit e18f84cba); the SPA opens a
-  // session by ref, NOT the bare session id. Optional for old-hub tolerance -
-  // a hit without it falls back to the bare-id URL.
-  ref?: string;
+  // The qualified, routable ref (e.g. "local:abc") - how a session is opened.
+  // REQUIRED, not optional: handleApiSearch sets Ref at both of its
+  // construction sites and the Go field carries no omitempty
+  // (cmd/serf-hub/web_types.go), whose own doc comment states that the bare ID
+  // "cannot be used to open a hit". Typing it optional bought nothing but a
+  // fallback that built an unroutable URL naming a session differently from
+  // the rail - which opened it a second time in its own pane.
+  ref: string;
   title: string;
   project: string;
   state: string;

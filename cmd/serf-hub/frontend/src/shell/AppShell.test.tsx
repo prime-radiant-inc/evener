@@ -108,7 +108,7 @@ beforeAll(async () => {
   // tripwire, rather than spending it inside a test's assertion window.
   await warmRoute("/", () => screen.findByText("No session open"));
   await warmRoute("/new", () => screen.findByRole("button", { name: "Start" }));
-  await warmRoute("/s/ref_warm", () => screen.findByText(/loading transcript/i));
+  await warmRoute("/s/local:ref_warm", () => screen.findByText(/loading transcript/i));
   await warmRoute("/settings/general", () => screen.findByRole("navigation", { name: "Settings sections" }));
 });
 
@@ -261,7 +261,7 @@ test("closes the client it constructed itself on unmount", () => {
 // --- routing -> workspace glue (this task) ---------------------------
 
 test("deep-linking to /s/{ref} opens that session pane", async () => {
-  window.history.pushState({}, "", "/s/ref_abc123");
+  window.history.pushState({}, "", "/s/local:ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
 
   // The real session pane (wave 4) shows the ref it was opened with while
@@ -276,7 +276,7 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   // THEN checks the ref appears twice (tab + pane body title, no thread
   // name known so both fall back to the raw ref - see Session.tsx).
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
-  expect(screen.getAllByText("ref_abc123")).toHaveLength(2);
+  expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
 });
 
 test("an unknown path renders NotFound instead of the workspace", async () => {
@@ -300,20 +300,20 @@ test("clicking Go home from NotFound returns to the welcome pane", async () => {
 });
 
 test("navigating from one session deep link to another, post-mount, opens the new one", async () => {
-  window.history.pushState({}, "", "/s/ref_first");
+  window.history.pushState({}, "", "/s/local:ref_first");
   render(<AppShell client={new FakeClient("ready")} />);
-  await screen.findAllByText("ref_first"); // tab + pane body (no thread name known), both settled
+  await screen.findAllByText("local:ref_first"); // tab + pane body (no thread name known), both settled
 
   act(() => {
-    window.history.pushState({}, "", "/s/ref_second");
+    window.history.pushState({}, "", "/s/local:ref_second");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
-  await screen.findAllByText("ref_second");
+  await screen.findAllByText("local:ref_second");
   // Both panes stay open as separate tabs - navigating to a second deep
   // link doesn't close the first one, it opens (and focuses) another.
   const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_first", "ref_second"]);
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_first", "local:ref_second"]);
 });
 
 test("navigating from a 404 straight to a session deep link opens only that pane, no spurious welcome tab", async () => {
@@ -327,13 +327,13 @@ test("navigating from a 404 straight to a session deep link opens only that pane
   await screen.findByText("Page not found");
 
   act(() => {
-    window.history.pushState({}, "", "/s/ref_from_404");
+    window.history.pushState({}, "", "/s/local:ref_from_404");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
   await screen.findByText(/loading transcript/i);
   const tabs = document.querySelectorAll(".dv-tab");
-  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["ref_from_404"]);
+  expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["local:ref_from_404"]);
 });
 
 test("a saved layout from a previous session merges with a fresh deep link, which lands focused", async () => {
@@ -366,7 +366,7 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   // the whole point is proving a stale saved layout from phase 1 merges
   // WITH this freshly-routed pane (DockHost.tsx's own merge-restore boot
   // sequence) rather than suppressing it, or being suppressed by it.
-  window.history.pushState({}, "", "/s/ref_new_session");
+  window.history.pushState({}, "", "/s/local:ref_new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
@@ -377,14 +377,14 @@ test("a saved layout from a previous session merges with a fresh deep link, whic
   // rather than opening beside it. A restored layout with any real pane in it
   // would still merge additively (DockHost.test.tsx covers that shape).
   expect(workspaceStore.getState().panes.map((p) => p.type)).toEqual(["session"]);
-  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "ref_new_session" });
+  expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:ref_new_session" });
   expect(screen.queryByText("No session open")).toBeNull();
 });
 
 // --- single-pane mode (/thread/{ref} share link, wave 8 T1) -----------
 
 test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail hidden, marker set)", async () => {
-  window.history.pushState({}, "", "/thread/ref_shared");
+  window.history.pushState({}, "", "/thread/local:ref_shared");
   render(<AppShell client={new FakeClient("ready")} />);
 
   // /thread/{ref} routes to the SESSION pane (its loading text proves the
@@ -398,7 +398,7 @@ test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail
 });
 
 test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", async () => {
-  window.history.pushState({}, "", "/s/ref_normal");
+  window.history.pushState({}, "", "/s/local:ref_normal");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();

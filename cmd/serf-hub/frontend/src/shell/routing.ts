@@ -14,6 +14,21 @@ function refParam(params: unknown): string | null {
   return typeof ref === "string" && ref.length > 0 ? ref : null;
 }
 
+// A hub session ref is "<hostID>:<sessionID>", both halves non-empty - the
+// same shape hubapi.ParseRef (hubapi/refs.go) has always required. A BARE
+// session id is not a ref and does not route here.
+//
+// The frontend used to accept one anyway, and that was a real bug rather than
+// mere laxness: the rail opens a session as "local:<id>" while a bare-id deep
+// link opens it as "<id>", sameParams reads the two as different panes, and
+// the same session ends up open twice, side by side. Observed in a browser.
+// Old bare-id links (the htmx UI's canonical route form) are deliberately not
+// carried forward - there is one ref form now.
+function isRef(raw: string): boolean {
+  const at = raw.indexOf(":");
+  return at > 0 && at < raw.length - 1;
+}
+
 function sectionParam(params: unknown): string | null {
   if (typeof params !== "object" || params === null) return null;
   const section = (params as { section?: unknown }).section;
@@ -52,7 +67,7 @@ export function urlToPane(pathname: string): { type: PaneTypeId; params: unknown
   if (pathname === "/settings/providers") return { type: "settings", params: { section: "credentials" } };
 
   const sessionRef = matchGroup(/^\/s\/([^/]+)$/, pathname);
-  if (sessionRef !== null) return { type: "session", params: { ref: sessionRef } };
+  if (sessionRef !== null && isRef(sessionRef)) return { type: "session", params: { ref: sessionRef } };
 
   // /thread/{ref} is the share-link target: it renders the SESSION pane
   // (composer live, per the tested legacy thread-document mode) inside the
@@ -61,7 +76,7 @@ export function urlToPane(pathname: string): { type: PaneTypeId; params: unknown
   // which is a distinct open-beside surface with no URL (see paneToURL).
   // Inbound-only, like /credentials: a session pane serializes back to /s/{ref}.
   const threadRef = matchGroup(/^\/thread\/([^/]+)$/, pathname);
-  if (threadRef !== null) return { type: "session", params: { ref: threadRef } };
+  if (threadRef !== null && isRef(threadRef)) return { type: "session", params: { ref: threadRef } };
 
   const section = matchGroup(/^\/settings\/([^/]+)$/, pathname);
   if (section !== null) return { type: "settings", params: { section } };

@@ -329,7 +329,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 // than silently losing it.
 const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork", "cluster"]);
 
-function isTopLevelSession(session: ApiTreeNode): boolean {
+export function isTopLevelSession(session: ApiTreeNode): boolean {
   return !NESTED_KINDS.has(session.kind);
 }
 

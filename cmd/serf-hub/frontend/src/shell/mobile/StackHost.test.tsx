@@ -69,8 +69,8 @@ beforeAll(async () => {
     () => screen.findByText(/doc pane: ref_warm/),
   );
   await warmPane(
-    () => workspaceStore.getState().openPane("session", { ref: "ref_warm" }),
-    () => screen.findByText("ref_warm"),
+    () => workspaceStore.getState().openPane("session", { ref: "local:ref_warm" }),
+    () => screen.findByText("local:ref_warm"),
   );
 });
 
@@ -446,22 +446,22 @@ test("the URL updates to a deep-linked pane's URL once it becomes focused", asyn
   render(<StackHost />);
   await screen.findByText("No session open");
 
-  workspaceStore.getState().openPane("session", { ref: "ref_x" });
-  await screen.findByText("ref_x");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
+  await screen.findByText("local:ref_x");
 
-  expect(window.location.pathname).toBe("/s/ref_x");
+  expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
 test("switching between two deep-linked panes updates the URL each time", async () => {
-  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
   render(<StackHost />);
-  await screen.findByText("ref_x");
-  expect(window.location.pathname).toBe("/s/ref_x");
+  await screen.findByText("local:ref_x");
+  expect(window.location.pathname).toBe("/s/local%3Aref_x");
 
-  workspaceStore.getState().openPane("session", { ref: "ref_y" });
-  await screen.findByText("ref_y");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_y" });
+  await screen.findByText("local:ref_y");
 
-  expect(window.location.pathname).toBe("/s/ref_y");
+  expect(window.location.pathname).toBe("/s/local%3Aref_y");
 });
 
 test("a pane type with no deep link (paneToURL returns null) leaves the URL untouched", async () => {
@@ -475,28 +475,30 @@ test("a pane type with no deep link (paneToURL returns null) leaves the URL unto
 });
 
 test("back navigation updates the URL to match the pane it returns to", async () => {
-  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
   render(<StackHost />);
-  await screen.findByText("ref_x");
-  workspaceStore.getState().openPane("session", { ref: "ref_y" });
-  await screen.findByText("ref_y");
-  expect(window.location.pathname).toBe("/s/ref_y");
+  await screen.findByText("local:ref_x");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_y" });
+  await screen.findByText("local:ref_y");
+  expect(window.location.pathname).toBe("/s/local%3Aref_y");
 
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Back" }));
 
-  await screen.findByText("ref_x");
-  expect(window.location.pathname).toBe("/s/ref_x");
+  await screen.findByText("local:ref_x");
+  expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
 test("mounting already at the focused pane's own URL does not dispatch a redundant popstate", async () => {
-  window.history.pushState({}, "", "/s/ref_x");
-  workspaceStore.getState().openPane("session", { ref: "ref_x" });
+  // The pane's OWN url, i.e. exactly what paneToURL emits - percent-encoded,
+  // since a ref carries a ":" that does not survive a path segment raw.
+  window.history.pushState({}, "", "/s/local%3Aref_x");
+  workspaceStore.getState().openPane("session", { ref: "local:ref_x" });
   const handler = vi.fn();
   window.addEventListener("popstate", handler);
 
   render(<StackHost />);
-  await screen.findByText("ref_x");
+  await screen.findByText("local:ref_x");
 
   window.removeEventListener("popstate", handler);
   expect(handler).not.toHaveBeenCalled();
