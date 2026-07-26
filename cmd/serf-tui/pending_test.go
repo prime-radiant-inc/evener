@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -435,7 +434,7 @@ func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.
 
 	const n = 40
 	handles := make([]appwire.PendingHandle, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		handles = append(handles, p.Register("turn/queue", "queued", ""))
 	}
 	got := drainMessages(msgs, n, time.Second)
@@ -530,8 +529,7 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	msgs := make(chan tea.Msg, 16)
