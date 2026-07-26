@@ -171,3 +171,74 @@ test("uses the mono font for code content", () => {
   const css = readFileSync(join(here, "codeblock.module.css"), "utf8");
   expect(css).toContain("var(--font-mono)");
 });
+
+// 67zh: a raw tool-output block (pytest tracebacks, shell dumps) with no
+// height cap fills an entire 390px viewport, forcing a reader to scroll
+// THROUGH it rather than past it. jsdom reports zero for all layout, so a
+// real CSS height cap can't be asserted here (verified in a real browser
+// instead, see the kata report) - what IS unit-testable, and what actually
+// bounds the DOM's height regardless of viewport, is a LINE-COUNT fold: past
+// TAIL_VISIBLE_LINES lines, only the tail renders by default, mirroring
+// this codebase's own tailFold (helpers.ts) - keep the tail, not the head,
+// because the informative part of a long dump (a pytest FAILURES section)
+// is almost always at the end, not the start.
+const LONG_LINES = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+const LONG_TEXT = LONG_LINES.join("\n");
+
+test("short content renders unfolded, with no fold control", () => {
+  render(<CodeBlock text={"a\nb\nc"} />);
+  expect(screen.queryByRole("button", { name: /earlier line/ })).toBeNull();
+});
+
+// "line 1" alone would substring-match "line 10".."line 19" too - a word
+// boundary after the digit is what actually pins down "line 1" the exact
+// first line, not any decade of it.
+const LINE_1_ONLY = /\bline 1\b(?!\d)/;
+
+test("long content folds to the tail by default, hiding the head behind a count", () => {
+  render(<CodeBlock text={LONG_TEXT} />);
+  // The tail is visible...
+  expect(screen.getByText("line 20", { exact: false })).toBeTruthy();
+  // ...but the head is not rendered at all (folded, not just visually capped).
+  expect(screen.queryByText(LINE_1_ONLY)).toBeNull();
+  expect(screen.getByRole("button", { name: "Show 6 earlier lines" })).toBeTruthy();
+});
+
+test("Show N earlier lines reveals the full content and offers Show fewer lines", async () => {
+  const user = userEvent.setup();
+  render(<CodeBlock text={LONG_TEXT} />);
+  await user.click(screen.getByRole("button", { name: "Show 6 earlier lines" }));
+  expect(screen.getByText(LINE_1_ONLY)).toBeTruthy();
+  expect(screen.getByText("line 20", { exact: false })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Show fewer lines" })).toBeTruthy();
+});
+
+test("Show fewer lines re-folds back to the tail", async () => {
+  const user = userEvent.setup();
+  render(<CodeBlock text={LONG_TEXT} />);
+  await user.click(screen.getByRole("button", { name: "Show 6 earlier lines" }));
+  await user.click(screen.getByRole("button", { name: "Show fewer lines" }));
+  expect(screen.queryByText(LINE_1_ONLY)).toBeNull();
+  expect(screen.getByRole("button", { name: "Show 6 earlier lines" })).toBeTruthy();
+});
+
+test("a single hidden line is worded in the singular", () => {
+  const lines = Array.from({ length: 15 }, (_, i) => `line ${i + 1}`);
+  render(<CodeBlock text={lines.join("\n")} />);
+  expect(screen.getByRole("button", { name: "Show 1 earlier line" })).toBeTruthy();
+});
+
+test("the gutter shows real line numbers for the folded tail, not renumbered from 1", () => {
+  render(<CodeBlock text={LONG_TEXT} showLineNumbers />);
+  // Tail starts at line 15 of 20 (20 - 14 + 1) - its gutter must say "15", not "1".
+  expect(screen.getByText("15")).toBeTruthy();
+  expect(screen.queryByText("1")).toBeNull();
+});
+
+test("Copy always copies the full, unfolded text - even while visually folded", async () => {
+  const user = userEvent.setup();
+  const writeText = vi.spyOn(navigator.clipboard, "writeText");
+  render(<CodeBlock text={LONG_TEXT} />);
+  await user.click(screen.getByRole("button", { name: "Copy" }));
+  expect(writeText).toHaveBeenCalledExactlyOnceWith(LONG_TEXT);
+});

@@ -9,6 +9,14 @@
   background: var(--surface-1);
 }
 
+/* The positioning context .header's absolute offset is relative to - split
+ * out from .root (rather than making .root itself the context) so a fold
+ * banner (.fold) can sit in normal flow ABOVE this without the copy control
+ * jumping to overlay it instead of the code. */
+.codeArea {
+  position: relative;
+}
+
 /* Not a band across the block: an overlay strip in its top-right corner, out
  * of the content flow, so the block's whole height is content. */
 .header {
@@ -80,4 +88,11 @@
   color: var(--ink-low);
   text-align: right;
   user-select: none;
+}
+
+/* Full-width row, not inset like .header - this is a real interactive
+ * control the reader is meant to notice and use, not chrome to recede. */
+.fold {
+  display: flex;
+  padding: var(--space-1) var(--space-3);
 }
