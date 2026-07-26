@@ -1,4 +1,7 @@
-import { defineConfig } from "vitest/config";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig, type Plugin } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 // The dev server proxies every hub-owned route to a locally running serf-hub.
@@ -6,8 +9,32 @@ import react from "@vitejs/plugin-react";
 // works through the proxy unchanged.
 const hub = process.env.SERF_HUB_ADDR ?? "http://127.0.0.1:9180";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// dist/PLACEHOLDER is tracked in git so a fresh checkout's dist/ directory is
+// never empty even before the frontend has been built once: cmd/serf-hub
+// embeds it via `//go:embed all:frontend/dist`, which fails outright against
+// an empty directory. build.emptyOutDir wipes dist/ - including
+// PLACEHOLDER - before every real build, which then shows up in `git status`
+// as a tracked file deleted. Kata 88nn: three agents saw that diff and each
+// reached for `git checkout -- <file>` to undo it, a command this fleet
+// otherwise forbids for good reason. Restoring the file HERE, as part of the
+// build itself, means every invocation path (`make build-web`, `npm run
+// build`, or `vite build` run directly during frontend dev) leaves the
+// tracked file's content byte-identical afterward instead of missing.
+function restoreDistPlaceholder(): Plugin {
+  return {
+    name: "restore-dist-placeholder",
+    closeBundle() {
+      const outDir = path.join(__dirname, "dist");
+      fs.mkdirSync(outDir, { recursive: true });
+      fs.writeFileSync(path.join(outDir, "PLACEHOLDER"), "run make build-web\n");
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), restoreDistPlaceholder()],
   build: { assetsDir: "webassets", outDir: "dist", emptyOutDir: true },
   server: {
     proxy: {

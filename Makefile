@@ -81,7 +81,7 @@ web-preflight:
 # tracked dist/PLACEHOLDER on every build; restore it from git so
 # `git status` stays clean after a build.
 build-web: web-preflight
-	cd cmd/serf-hub/frontend && npm run build && git checkout -- dist/PLACEHOLDER
+	cd cmd/serf-hub/frontend && npm run build
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint (mirrors the Go test+lint split, but the frontend toolchain
