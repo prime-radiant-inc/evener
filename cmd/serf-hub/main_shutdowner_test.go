@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -83,6 +84,10 @@ func TestRunMainHandsServeAnHonestlyNilCompanionWithNoCodexLaunches(t *testing.T
 		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
+		},
+		listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+			var lc net.ListenConfig
+			return lc.Listen(ctx, network, addr)
 		},
 		serve: func(_ context.Context, _ hubHTTPServer, c hubShutdowner) error {
 			sawServe, companion = true, c

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,6 +58,10 @@ func FuzzMainBootstrapPass6(f *testing.F) {
 			},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, func() {}
+			},
+			listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+				var lc net.ListenConfig
+				return lc.Listen(ctx, network, addr)
 			},
 			serve: func(context.Context, hubHTTPServer, hubShutdowner) error {
 				served = true

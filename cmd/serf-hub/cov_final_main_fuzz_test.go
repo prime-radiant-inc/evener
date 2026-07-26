@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -76,6 +77,10 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 			},
 			notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 				return ctx, cancel
+			},
+			listen: func(ctx context.Context, network, addr string) (net.Listener, error) {
+				var lc net.ListenConfig
+				return lc.Listen(ctx, network, addr)
 			},
 			serve: func(_ context.Context, _ hubHTTPServer, _ hubShutdowner) error {
 				if mode >= 3 {
