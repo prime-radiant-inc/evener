@@ -397,8 +397,8 @@ Expected: PASS.
 
 - [ ] **Step 5: Run the full Go suite**
 
-Run: `go test ./...`
-Expected: exit 0. `trySteerEnqueue`'s signature changed, so any missed caller fails to compile here.
+Run: `make test`
+Expected: exit 0. `trySteerEnqueue`'s signature changed, so any missed caller fails to compile here. NOT `go test ./...` — it skips the `agent` module entirely, which is where this change lives.
 
 - [ ] **Step 6: Commit**
 
@@ -572,7 +572,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Run the full Go suite and lint**
 
-Run: `go test ./... && make lint`
+Run: `make test && make lint`
 Expected: exit 0 for both.
 
 - [ ] **Step 6: Commit**
@@ -1316,7 +1316,7 @@ tsc, using the catalog helper and drift test the generator already has."
 
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
-go test ./... && make lint
+make test && make lint
 cd cmd/serf-hub/frontend && npm run typecheck && npm run lint && npm test
 ```
 
