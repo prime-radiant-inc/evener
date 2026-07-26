@@ -170,7 +170,7 @@ func FuzzLaunchCheckProgram(f *testing.F) {
 			err: errorForString(inst.BaseURL),
 		}, nil
 	})
-	for scenario := uint8(0); scenario < 27; scenario++ {
+	for scenario := range uint8(27) {
 		f.Add(scenario, "credential-value-123")
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8, value string) {

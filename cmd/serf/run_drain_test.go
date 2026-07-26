@@ -85,7 +85,7 @@ func TestRunDrainsDelegatedJobTreeBeforeExit(t *testing.T) {
 	// One shared step function serves both root and child turns; supply plenty of
 	// slots so neither session is starved.
 	steps := make([]func(llm.Request) llm.Response, 0, 16)
-	for i := 0; i < 16; i++ {
+	for range 16 {
 		steps = append(steps, step)
 	}
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: steps})
