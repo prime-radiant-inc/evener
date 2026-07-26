@@ -1,0 +1,11 @@
+{
+  "name": "p6g8-formrow-overlap",
+  "description": "spawn form: working-directory FormRow must shrink inside its flex row instead of overflowing (kata p6g8)",
+  "cssFiles": [
+    "styles/tokens.css",
+    "widgets/internal/fieldTrigger.module.css",
+    "widgets/pathfield/pathfield.module.css",
+    "widgets/formrow/formrow.module.css",
+    "panes/spawn/spawn.module.css"
+  ]
+}
