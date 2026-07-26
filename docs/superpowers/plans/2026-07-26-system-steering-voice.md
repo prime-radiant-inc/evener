@@ -1182,6 +1182,134 @@ from the wire rather than from its prose."
 
 ---
 
+---
+
+### Task 8: Generate the kind union, so drift is a compile error
+
+**Files:**
+- Modify: `internal/appwirets/emit.go` (add one catalog + one import)
+- Modify: `cmd/serf-hub/frontend/src/protocol/types.gen.ts` (regenerated, never hand-edited)
+- Modify: `cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx`
+- Test: `internal/appwirets/emit_test.go`
+
+**Interfaces:**
+- Consumes: `events.AllSteeringKinds` (Task 1), `KIND_LABELS` / `SUPPRESSED` (Task 6).
+- Produces: `STEERING_KINDS` (a `readonly string[]` const) and the union type `SteeringKind` in `types.gen.ts`.
+
+**Why this exists.** `KIND_LABELS` in the frontend and the `SteeringKind*` enum in Go
+agree today. Nothing makes them keep agreeing. A kind added on the Go side later
+renders unlabelled and silently — which is the exact failure this whole plan removes,
+one layer up, and it is not hypothetical: the deleted `read-only` classifier rule went
+stale precisely this way when a separate plan removed its Go-side feature, and no test
+anywhere failed.
+
+A generated union makes that a **compile error** rather than a test failure, using
+machinery the repo already has: `writeNameCatalog` (`internal/appwirets/emit.go:265`)
+already emits a `const [...] as const` plus a derived union and is called twice today,
+and `TestGeneratedFileCurrent` (`internal/appwirets/emit_test.go:507`) already fails when
+the committed output is stale.
+
+**Deliberately NO runtime test asserting every kind is labelled.** The `Record<>` type
+below is the mechanism; a test would be a second, weaker mechanism for the same
+guarantee, and two mechanisms for one property is worse than either alone.
+
+- [ ] **Step 1: Write the failing generator test**
+
+Append to `internal/appwirets/emit_test.go`, matching the file's existing style:
+
+```go
+func TestEmitsSteeringKindCatalog(t *testing.T) {
+	out := Generate()
+	if !strings.Contains(out, "export const STEERING_KINDS = [") {
+		t.Error("generated output has no STEERING_KINDS catalog")
+	}
+	if !strings.Contains(out, "export type SteeringKind = (typeof STEERING_KINDS)[number];") {
+		t.Error("generated output has no SteeringKind union")
+	}
+	for _, kind := range events.AllSteeringKinds {
+		if !strings.Contains(out, fmt.Sprintf("%q", kind)) {
+			t.Errorf("kind %q missing from generated output", kind)
+		}
+	}
+}
+```
+
+Match `Generate()` to the generator's real entry point — read the neighbouring tests
+rather than assuming that name.
+
+- [ ] **Step 2: Run it and watch it fail**
+
+Run: `go test ./internal/appwirets/ -run TestEmitsSteeringKindCatalog -v`
+Expected: FAIL — no `STEERING_KINDS` in the output.
+
+- [ ] **Step 3: Emit the catalog**
+
+In `internal/appwirets/emit.go`, add the import `"primeradiant.com/serf/agent/events"`
+(cross-module, already done by `internal/appprojector`), then one call beside the two
+existing catalogs at `:326`/`:332`:
+
+```go
+	writeNameCatalog(&b, "STEERING_KINDS", "SteeringKind", events.AllSteeringKinds)
+```
+
+Emission order is deterministic output — put it adjacent to the existing two, and do not
+sort or reorder `AllSteeringKinds`.
+
+- [ ] **Step 4: Regenerate and confirm both gates**
+
+Run: `make generate && go test ./internal/appwirets/ && make lint-generated`
+Expected: exit 0. `types.gen.ts` now has `STEERING_KINDS` and `SteeringKind`.
+Commit BOTH regenerated files — `types.gen.ts` and `docs/appwire-protocol.md`.
+
+- [ ] **Step 5: Make the frontend's label map exhaustive**
+
+In `SteeringItem.tsx`, import the generated type and constrain the map:
+
+```tsx
+import type { SteeringKind } from "../../../../protocol/types.gen";
+
+// current-task and task-list are suppressed (the tasks panel owns them) and
+// notification routes to a card, so those three carry no label. Every OTHER
+// kind the daemon can emit must have one: this Record is exhaustive over the
+// generated union, so adding a kind in Go and regenerating fails the build here
+// until it is given a label. That is the point - the frontend's idea of what
+// the daemon sends cannot drift from what it sends.
+type LabelledKind = Exclude<SteeringKind, "current-task" | "task-list" | "notification">;
+
+const KIND_LABELS: Record<LabelledKind, string> = { /* unchanged entries */ };
+```
+
+`item.steeringKind` is a plain `string | undefined`, and an unknown kind must still
+degrade gracefully rather than throw, so the lookup stays tolerant:
+
+```tsx
+function labelFor(kind: string): string | undefined {
+  return Object.hasOwn(KIND_LABELS, kind) ? KIND_LABELS[kind as LabelledKind] : undefined;
+}
+```
+
+Type `SUPPRESSED` as `ReadonlySet<SteeringKind>` so a typo in it fails too. Keep every
+existing test passing — behaviour does not change here, only its type safety.
+
+- [ ] **Step 6: Prove the guard actually guards**
+
+Temporarily add a kind to the Go const block and `AllSteeringKinds`, run `make generate`,
+then `npm run typecheck` from `cmd/serf-hub/frontend`. It MUST fail with a missing-key
+error naming your new kind. Revert the Go change, regenerate, confirm green. Report the
+exact error text you saw — a guard nobody has seen fire is not a guard.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/appwirets/ cmd/serf-hub/frontend/src/protocol/types.gen.ts docs/appwire-protocol.md cmd/serf-hub/frontend/src/panes/session/transcript/messages/SteeringItem.tsx
+git commit -m "steering: generate the kind union so drift fails the build
+
+KIND_LABELS and the Go enum agreed by inspection and nothing kept them
+agreeing. The generated union makes a new Go kind a missing-key error in
+tsc, using the catalog helper and drift test the generator already has."
+```
+
+
 ## Final verification
 
 - [ ] Run every gate from the repo root:
