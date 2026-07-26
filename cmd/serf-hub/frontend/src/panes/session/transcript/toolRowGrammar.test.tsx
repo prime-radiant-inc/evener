@@ -267,6 +267,18 @@ test("the demoted summary is ordered last so affordances do not wrap onto a thir
   expect(rowCss()).toMatch(/\.demoted\s*\{[^}]*order:\s*1/);
 });
 
+// kata rdry: the demoted line is a tool-RESULT ("Wrote fizzbuzz.py"), not a
+// placeholder/disabled/timestamp - --ink-low's documented job (design-system.md)
+// - and measures 2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor for body
+// text. Same precedent as usermessageitem's .tag (moved off --ink-low for the
+// same reason). --ink-mid clears AA at 6.86/6.56 in both themes.
+test("the demoted summary line is readable text (--ink-mid), not the sub-AA --ink-low", () => {
+  const demoted = /\.demoted\s*\{([^}]*)\}/.exec(rowCss());
+  expect(demoted).not.toBeNull();
+  expect(demoted![1]).toMatch(/var\(--ink-mid\)/);
+  expect(demoted![1]).not.toMatch(/var\(--ink-low\)/);
+});
+
 // --- A6: the tool disclosure animates, subtly, honoring reduced motion ----
 
 test("the chevron rotation and the body fade are declared with real motion", () => {

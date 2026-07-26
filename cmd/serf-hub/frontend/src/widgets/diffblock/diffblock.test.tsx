@@ -205,6 +205,18 @@ test('renders a "\\ No newline at end of file" marker with the meta tone, not co
   expect(contentTextOf(lines[3]!)).toBe("\\ No newline at end of file");
 });
 
+// kata xak9: a long line's overflow is truncated visually (CSS text-overflow:
+// ellipsis - see layoutguard case xak9-diffline-overflow, which proves the
+// containment jsdom cannot see), never by slicing the string itself. jsdom
+// computes no cascade, but it CAN prove the DOM node still carries the full
+// text - the property a JS-side truncation would violate.
+test("a line far wider than any real viewport still carries its full text content in the DOM", () => {
+  const longLine = "+".concat("x".repeat(500));
+  const { container } = render(<DiffBlock unified={longLine} />);
+  const lines = lineElements(container);
+  expect(contentTextOf(lines[0]!)).toBe("x".repeat(500));
+});
+
 test("declares no external diff-parsing dependency (no import beyond React)", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, "index.tsx"), "utf8");

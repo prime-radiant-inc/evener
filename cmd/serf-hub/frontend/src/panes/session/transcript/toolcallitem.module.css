@@ -75,33 +75,32 @@ summary.row:focus-visible {
  * affordances and the chevron - which follow it in the DOM - still ride the
  * purpose's own line instead of each wrapping onto a third. Measured in the
  * real app: without this the two-line row was 73px; with it, 39px. */
+/* kata rdry: this line is a tool RESULT ("Wrote fizzbuzz.py"), shown on every
+ * purpose-bearing row in every transcript - not a placeholder/disabled/
+ * timestamp, --ink-low's documented job (design-system.md). --ink-low measured
+ * 2.97:1 dark / 3.64:1 light against --surface-1, under the 4.5:1 AA floor for
+ * body text; --ink-mid clears it at 6.86/6.56. Same fix as usermessageitem's
+ * .tag. There is no longer a hover override to --ink-mid - resting state
+ * already reads it. */
 .demoted {
   order: 1;
   flex: 0 0 100%;
-  color: var(--ink-low);
+  color: var(--ink-mid);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow-wrap: normal;
 }
 
-summary.row:hover .demoted {
-  color: var(--ink-mid);
-}
-
-/* The call's duration (Round timings, opt-in): always --ink-mid, even nested
- * inside .demoted - .demoted's own --ink-low measures below AA
- * (design-system.md), fine for a summary line the reader is meant to skim
- * past but not for timing text someone specifically turned on to read. */
+/* The call's duration (Round timings, opt-in): --ink-mid, same as .demoted -
+ * no override needed now that .demoted itself clears AA. */
 .duration {
   color: var(--ink-mid);
 }
 
 /* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure.
- * --ink-mid, not --ink-low: this is the row's one visible cue that there is
- * more to see, not a placeholder/disabled/timestamp (--ink-low's actual
- * job, tokens.css) - and --ink-low measures under AA against --surface-1
- * (2.97:1 dark / 3.64:1 light, design-system.md's own measured figures).
+ * --ink-mid: this is the row's one visible cue that there is more to see, not
+ * a placeholder/disabled/timestamp (--ink-low's actual job, tokens.css).
  * UX round (k9-transcript persona panel): a reviewer auditing a session's
  * correctness specifically flagged this chevron as easy to miss when
  * deciding whether a collapsed edit had more to inspect. */

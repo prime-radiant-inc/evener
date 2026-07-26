@@ -2,7 +2,6 @@
   border: 1px solid var(--edge);
   border-radius: var(--radius-pane);
   background: var(--surface-0);
-  overflow-x: auto;
   font-family: var(--font-mono);
   font-size: var(--font-size-body);
   line-height: var(--line-height-body);
@@ -21,11 +20,19 @@
   user-select: none;
 }
 
+/* kata xak9: a line longer than the block truncates with a visible ellipsis
+ * instead of silently escaping .root with no signal that content is
+ * missing (measured: up to ~3x overflow at 390px, no wrap, no ellipsis, no
+ * scrollbar cue). white-space: pre (inherited from .line) keeps this a
+ * single visual row - the column alignment across sibling lines that ruled
+ * out wrapping still holds. min-width: 0 is what lets a flex child shrink
+ * below its text's intrinsic width at all; without it overflow:hidden has
+ * nothing to clip. */
 .content {
-  /* no rules of its own - white-space: pre is inherited from .line. Exists
-   * as a stable hook so a line's stripped content can be queried apart
-   * from its marker glyph (both are text nodes; .line's own textContent
-   * would otherwise concatenate the two). */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* additions/deletions: tinted via the alive/danger -bg companions (not the
