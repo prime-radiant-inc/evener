@@ -1263,7 +1263,7 @@ func TestDoWithAPIAttemptsExplicitRetriesCreateSeparateAttempts(t *testing.T) {
 			Body:       http.NoBody,
 		}, nil
 	})}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://provider.test/v1", nil)
 		if err != nil {
 			t.Fatal(err)
@@ -1928,7 +1928,7 @@ func TestRedirectCredentialMaterialRetainsOnlyUniqueValues(t *testing.T) {
 		"initial-secret",
 	))
 	const redirects = 20
-	for i := 0; i < redirects; i++ {
+	for i := range redirects {
 		secret := "redirect-secret-" + strconv.Itoa(i)
 		candidate, err := http.NewRequest(http.MethodGet, "https://provider.test/hop?access_token="+url.QueryEscape(secret), nil)
 		if err != nil {

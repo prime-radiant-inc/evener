@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"strconv"
 	"strings"
@@ -235,7 +236,7 @@ func isClaude5OrNewer(model string) bool {
 	}
 	// The first numeric segment after "claude-" is the major generation:
 	// claude-fable-5 -> 5, claude-sonnet-4-6 -> 4, claude-3-5-sonnet -> 3.
-	for _, seg := range strings.Split(strings.TrimPrefix(model, "claude-"), "-") {
+	for seg := range strings.SplitSeq(strings.TrimPrefix(model, "claude-"), "-") {
 		if n, err := strconv.Atoi(seg); err == nil {
 			return n >= 5
 		}
@@ -331,9 +332,7 @@ func toAnthropicTools(tools []llm.ToolDefinition) []map[string]any {
 
 func shallowCopyMap(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -579,9 +578,6 @@ func estimateThinkingTokens(parts []llm.ContentPart) int {
 	if chars == 0 {
 		return 0
 	}
-	est := chars / 4
-	if est < 1 {
-		est = 1
-	}
+	est := max(chars/4, 1)
 	return est
 }

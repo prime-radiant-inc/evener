@@ -96,10 +96,7 @@ func (g *ccGen) split(s string) []string {
 	if s == "" {
 		return []string{""}
 	}
-	parts := 1 + g.intn(3)
-	if parts > len(s) {
-		parts = len(s)
-	}
+	parts := min(1+g.intn(3), len(s))
 	out := make([]string, 0, parts)
 	rem := s
 	for p := 0; p < parts-1 && len(rem) > 1; p++ {
@@ -187,7 +184,7 @@ func structuredChatSSE(raw []byte) []byte {
 	// its deterministic end-of-stream sort are exercised.
 	nTools := g.intn(4)
 	var tools []genTool
-	for t := 0; t < nTools; t++ {
+	for t := range nTools {
 		g.frame(deltaChunk(model, map[string]any{
 			"tool_calls": []any{map[string]any{
 				"index":    t,
@@ -309,7 +306,7 @@ func TestStructuredOpenAICompatReachesDeeper(t *testing.T) {
 
 	rng := rand.New(rand.NewSource(1)) //nolint:gosec // deterministic test fixture, not security
 	var rawCompleted, structCompleted int
-	for n := 0; n < iters; n++ {
+	for range iters {
 		raw := make([]byte, rng.Intn(64))
 		_, _ = rng.Read(raw)
 

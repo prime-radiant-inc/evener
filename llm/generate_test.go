@@ -1132,7 +1132,7 @@ func TestGenerate_MultiStepToolLoop_ThreeRounds(t *testing.T) {
 		t.Fatalf("steps = %d, want 4", len(result.Steps))
 	}
 	// 3 steps should have tool results
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if len(result.Steps[i].ToolResults) != 1 {
 			t.Fatalf("step %d tool results = %d, want 1", i, len(result.Steps[i].ToolResults))
 		}

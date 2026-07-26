@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -89,10 +90,5 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 }
 
 func supportsGenerateContent(methods []string) bool {
-	for _, m := range methods {
-		if m == "generateContent" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(methods, "generateContent")
 }

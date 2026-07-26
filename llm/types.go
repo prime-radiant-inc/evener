@@ -3,6 +3,7 @@ package llm
 import (
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -244,12 +245,7 @@ func OrderedEffortLevels(levels map[string]string) []string {
 // are cryptographic (Anthropic) use this to treat such a value as "no
 // signature" instead of replaying it as a signature the API would reject.
 func IsOpenAICompatReasoningField(sig string) bool {
-	for _, f := range openAICompatReasoningFields {
-		if sig == f {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(openAICompatReasoningFields, sig)
 }
 
 // IsOpenAICompatEncryptedReasoning reports whether s is the JSON array of

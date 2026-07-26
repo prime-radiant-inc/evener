@@ -252,7 +252,7 @@ func seedUnionExistingScenarios(t *testing.T) {
 func FuzzProviderCfgSeedUnion(f *testing.F) {
 	f.Setenv("SERF_CFG_A", "alpha")
 	f.Setenv("SERF_CFG_UNSET", "")
-	for selector := uint8(0); selector < 5; selector++ {
+	for selector := range uint8(5) {
 		f.Add(selector)
 	}
 	f.Fuzz(func(t *testing.T, selector uint8) {

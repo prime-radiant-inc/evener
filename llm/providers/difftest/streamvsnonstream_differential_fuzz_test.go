@@ -156,9 +156,9 @@ func encodeAnthropicJSON(lr logicalResponse) []byte {
 			`{"type":"tool_use","id":"toolu_%d","name":%s,"input":%s}`, i, qs(tc.Name), tc.argsJSON()))
 	}
 	stop := map[string]string{"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}[lr.Finish]
-	return []byte(fmt.Sprintf(
+	return fmt.Appendf(nil,
 		`{"id":"msg_diff","type":"message","role":"assistant","model":"diff-model","content":[%s],"stop_reason":%s,"usage":{"input_tokens":%d,"output_tokens":%d}}`,
-		strings.Join(content, ","), qs(stop), lr.InTok, lr.OutTok))
+		strings.Join(content, ","), qs(stop), lr.InTok, lr.OutTok)
 }
 
 // encodeGoogleStreamFinishUsage renders the streamGenerateContent SSE where the
@@ -205,9 +205,9 @@ func encodeGoogleJSON(lr logicalResponse) []byte {
 		parts = append(parts, fmt.Sprintf(`{"functionCall":{"name":%s,"args":%s}}`, qs(tc.Name), tc.argsJSON()))
 	}
 	finish := map[string]string{"stop": "STOP", "length": "MAX_TOKENS", "tool_calls": "STOP"}[lr.Finish]
-	return []byte(fmt.Sprintf(
+	return fmt.Appendf(nil,
 		`{"candidates":[{"content":{"parts":[%s]},"finishReason":%s}],"usageMetadata":{"promptTokenCount":%d,"candidatesTokenCount":%d,"totalTokenCount":%d}}`,
-		strings.Join(parts, ","), qs(finish), lr.InTok, lr.OutTok, lr.totalTok()))
+		strings.Join(parts, ","), qs(finish), lr.InTok, lr.OutTok, lr.totalTok())
 }
 
 // encodeOpenAIResponsesJSON renders the non-streaming /v1/responses object. It
@@ -225,13 +225,13 @@ func encodeOpenAIResponsesJSON(lr logicalResponse) []byte {
 	}
 	usage := fmt.Sprintf(`"usage":{"input_tokens":%d,"output_tokens":%d,"total_tokens":%d}`, lr.InTok, lr.OutTok, lr.totalTok())
 	if lr.Finish == "length" {
-		return []byte(fmt.Sprintf(
+		return fmt.Appendf(nil,
 			`{"id":"resp_diff","model":"diff-model","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[%s],%s}`,
-			strings.Join(output, ","), usage))
+			strings.Join(output, ","), usage)
 	}
-	return []byte(fmt.Sprintf(
+	return fmt.Appendf(nil,
 		`{"id":"resp_diff","model":"diff-model","status":"completed","output":[%s],%s}`,
-		strings.Join(output, ","), usage))
+		strings.Join(output, ","), usage)
 }
 
 // encodeOpenAICompatJSON renders a non-streaming /chat/completions object: the
@@ -254,9 +254,9 @@ func encodeOpenAICompatJSON(lr logicalResponse) []byte {
 		msgFields = append(msgFields, fmt.Sprintf(`"tool_calls":[%s]`, strings.Join(tcs, ",")))
 	}
 	finish := map[string]string{"stop": "stop", "length": "length", "tool_calls": "tool_calls"}[lr.Finish]
-	return []byte(fmt.Sprintf(
+	return fmt.Appendf(nil,
 		`{"id":"c_diff","model":"diff-model","choices":[{"index":0,"message":{%s},"finish_reason":%s}],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`,
-		strings.Join(msgFields, ","), qs(finish), lr.InTok, lr.OutTok, lr.totalTok()))
+		strings.Join(msgFields, ","), qs(finish), lr.InTok, lr.OutTok, lr.totalTok())
 }
 
 // ALLOW-LIST — fields INTENTIONALLY excluded from the stream-vs-non-stream

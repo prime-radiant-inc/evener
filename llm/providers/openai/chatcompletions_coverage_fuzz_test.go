@@ -32,7 +32,7 @@ func (rt chatCoverageRoundTripper) RoundTrip(*http.Request) (*http.Response, err
 // FuzzOpenAIChatCompletionsCoverage replays branch-focused request and stream
 // shapes. Every transport is in-memory; local-file cases use the fuzz temp dir.
 func FuzzOpenAIChatCompletionsCoverage(f *testing.F) {
-	for i := byte(0); i < 18; i++ {
+	for i := range byte(18) {
 		f.Add(i)
 	}
 

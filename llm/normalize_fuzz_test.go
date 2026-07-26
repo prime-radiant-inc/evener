@@ -131,7 +131,7 @@ func FuzzReasoningEffort(f *testing.F) {
 
 func splitNonEmpty(csv string) []string {
 	var out []string
-	for _, p := range strings.Split(csv, ",") {
+	for p := range strings.SplitSeq(csv, ",") {
 		if strings.TrimSpace(p) != "" {
 			out = append(out, p)
 		}

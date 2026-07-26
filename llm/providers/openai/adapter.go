@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -530,10 +531,8 @@ func mergeStringMaps(maps ...map[string]string) map[string]string {
 }
 
 func appendUniqueString(values []string, value string) []string {
-	for _, existing := range values {
-		if existing == value {
-			return values
-		}
+	if slices.Contains(values, value) {
+		return values
 	}
 	return append(values, value)
 }
@@ -1054,10 +1053,7 @@ func parseUsage(u map[string]any) llm.Usage {
 	if inDetails, ok := u["input_tokens_details"].(map[string]any); ok {
 		cachedRead = llm.IntFromAny(inDetails["cached_tokens"])
 	}
-	uncachedInput := rawInput - cachedRead
-	if uncachedInput < 0 {
-		uncachedInput = 0
-	}
+	uncachedInput := max(rawInput-cachedRead, 0)
 	usage := llm.Usage{
 		InputTokens:  uncachedInput,
 		OutputTokens: output,

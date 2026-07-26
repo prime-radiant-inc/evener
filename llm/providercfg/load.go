@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/textproto"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -257,17 +258,8 @@ func Load(data []byte) (Config, error) {
 	def := raw.Default
 	if def == "" {
 		def = names[0]
-	} else {
-		found := false
-		for _, name := range names {
-			if name == def {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return Config{}, fmt.Errorf("providers.toml: default %q does not name an existing instance", def)
-		}
+	} else if !slices.Contains(names, def) {
+		return Config{}, fmt.Errorf("providers.toml: default %q does not name an existing instance", def)
 	}
 
 	return Config{
