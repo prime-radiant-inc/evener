@@ -28,7 +28,7 @@ func TestTaskTool_AppendEmitsTaskUpdated(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:  func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer: func(string) {},
+		steer: func(string, string) {},
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
 			markUsed:             func() {},
@@ -73,7 +73,7 @@ func TestTaskTool_UpdateToDoneEmitsTaskUpdated(t *testing.T) {
 	var emitted []events.EventData
 	deps := &toolDeps{
 		emit:  func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
-		steer: func(string) {},
+		steer: func(string, string) {},
 		taskGuard: taskGuard{
 			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
 			markUsed:             func() {},

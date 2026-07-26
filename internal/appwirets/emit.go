@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -330,6 +331,8 @@ func EmitCatalog() string {
 		notificationNames[i] = n.name
 	}
 	writeNameCatalog(&b, "NOTIFICATION_NAMES", "NotificationName", notificationNames)
+
+	writeNameCatalog(&b, "STEERING_KINDS", "SteeringKind", events.AllSteeringKinds)
 
 	b.WriteString("export interface MethodTypes {\n")
 	for _, m := range methods {

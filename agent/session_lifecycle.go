@@ -642,8 +642,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
-					s.appendTurn(schema.TurnSteering, llm.User(interruptMsg))
-					s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg})
+					s.appendSteeringTurn(interruptMsg, events.SteeringKindInterrupted)
 				}
 				if emitEnd {
 					s.emit(events.EventSessionEnd, events.SessionEndData{
@@ -1336,12 +1335,12 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	if len(jobNotifs) > 0 {
 		reminder := s.formatJobNotificationReminder(jobNotifs)
-		if err := errors.Join(s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)), sessionLifecycleFault(ctx, "append_notification")); err != nil {
+		if err := errors.Join(s.appendSteeringTurnDurably(reminder, events.SteeringKindNotification), sessionLifecycleFault(ctx, "append_notification")); err != nil {
 			s.requeueJobNotifications(jobNotifications(jobNotifs))
 			s.finishNotificationNoop()
 			return false
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder, Kind: events.SteeringKindNotification})
 	}
 	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
 	s.requeueJobNotifications(deliveredFailures)

@@ -133,6 +133,9 @@ type Turn struct {
 	// so replay/hydration can render user steering as user speech
 	// (issue #24). Empty on non-steering turns.
 	SteeringSource string `json:"steering_source,omitempty"`
+	// SteeringKind records what a TurnSteering entry was (events.SteeringKind*),
+	// so a reloaded transcript labels a steer the same way the live path did.
+	SteeringKind string `json:"steering_kind,omitempty"`
 	// Error carries the diagnostic of a terminally failed turn. Set only on
 	// TurnFailure turns; nil everywhere else.
 	Error *TurnFailureInfo `json:"error,omitempty"`

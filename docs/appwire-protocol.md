@@ -769,6 +769,7 @@ _(no fields)_
 | `text` | `string` | yes |  |
 | `images` | `[]appwire.InputItem` | yes |  |
 | `source` | `string` | yes |  |
+| `kind` | `string` | yes |  |
 
 
 ### `SerfSubagentPreviewParams`

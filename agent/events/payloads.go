@@ -195,6 +195,53 @@ type SandboxEscalationResolvedData struct {
 // message rather than a system steering divider (issue #24).
 const SteeringSourceUser = "user"
 
+// Steering kinds name what the daemon injected, set at the injection site and
+// carried to the UI so a label is ground truth rather than a guess at the
+// message's prose. Absent kind means "unknown" and the UI claims nothing.
+const (
+	SteeringKindInterrupted       = "interrupted"
+	SteeringKindAgentMessage      = "agent-message"
+	SteeringKindHookContext       = "hook-context"
+	SteeringKindPrecompactHook    = "precompact-hook"
+	SteeringKindCompactNudge      = "compact-nudge"
+	SteeringKindImageDescription  = "image-description"
+	SteeringKindNoToolCalls       = "no-tool-calls"
+	SteeringKindLoopDetected      = "loop-detected"
+	SteeringKindTasksDone         = "tasks-done"
+	SteeringKindTaskNudge         = "task-nudge"
+	SteeringKindTaskInactive      = "task-inactive"
+	SteeringKindNoteHandoff       = "note-handoff"
+	SteeringKindGoalObjective     = "goal-objective"
+	SteeringKindTranscriptPointer = "transcript-pointer"
+	SteeringKindCurrentTask       = "current-task"
+	SteeringKindTaskList          = "task-list"
+	SteeringKindNotification      = "notification"
+)
+
+// AllSteeringKinds is every kind a call site may emit. Task 3's coverage test
+// asserts each one is produced somewhere; a kind that stops being emitted
+// fails that test rather than going stale unnoticed (the failure mode the
+// deleted read-only classifier rule demonstrated).
+var AllSteeringKinds = []string{
+	SteeringKindInterrupted,
+	SteeringKindAgentMessage,
+	SteeringKindHookContext,
+	SteeringKindPrecompactHook,
+	SteeringKindCompactNudge,
+	SteeringKindImageDescription,
+	SteeringKindNoToolCalls,
+	SteeringKindLoopDetected,
+	SteeringKindTasksDone,
+	SteeringKindTaskNudge,
+	SteeringKindTaskInactive,
+	SteeringKindNoteHandoff,
+	SteeringKindGoalObjective,
+	SteeringKindTranscriptPointer,
+	SteeringKindCurrentTask,
+	SteeringKindTaskList,
+	SteeringKindNotification,
+}
+
 // SteeringInjectedData is the payload for an EventSteeringInjected event.
 type SteeringInjectedData struct {
 	Text   string           `json:"text"`
@@ -203,6 +250,9 @@ type SteeringInjectedData struct {
 	// human-sent steering, empty for daemon/system steering. Optional and
 	// additive; absent means system.
 	Source string `json:"source,omitempty"`
+	// Kind names what was injected (events.SteeringKind*). Optional and
+	// additive; absent means the daemon did not say, and the UI shows no kind.
+	Kind string `json:"kind,omitempty"`
 }
 
 // QueueChangedData carries an authoritative snapshot of the per-session

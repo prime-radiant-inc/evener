@@ -68,6 +68,18 @@ func renderNoteHandoff(note string) string {
 type steeringTurnRecord struct {
 	turn schema.Turn
 	text string
+	kind string
+}
+
+// preCompactMessage pairs one pre-compact steering message with the
+// events.SteeringKind* naming which of runPreCompactHook's three sources
+// (plugin PreCompact output, the pinned-note handoff, the goal objective)
+// produced it. Without this, every message merged into one batch reads as
+// whatever kind the batch's caller hardcodes — a goal objective labeled as a
+// plugin hook, for instance — regardless of which source actually built it.
+type preCompactMessage struct {
+	text string
+	kind string
 }
 
 func (s *Session) steerCompactionTranscriptReminder() {
@@ -75,7 +87,7 @@ func (s *Session) steerCompactionTranscriptReminder() {
 		return
 	}
 	ref := encodeRef("", s.id)
-	s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \"" + ref + "\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>")
+	s.SteerKind("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, use the transcript tool instead of reading raw transcript files directly. Default read: read_session_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"markdown\"}). For long sessions, first get a turn map with read_session_transcript({\"transcript_ref\": \""+ref+"\", \"format\": \"outline\"}), then read a focused range with read_session_transcript({\"transcript_ref\": \""+ref+"\", \"range\": \"A-B\"}).</SYSTEM-REMINDER>", events.SteeringKindTranscriptPointer)
 }
 
 func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (context.Context, func(events.EventKind, events.EventData), func()) {
@@ -133,38 +145,43 @@ func consumeMatchingCompactionArtifact(existing *[]schema.Turn, turn schema.Turn
 // the objective at the strongest recency position (the trailing steering turn
 // that safeCutoff protects) is what lets it survive the same compaction. The
 // goal path runs even with no plugins loaded; only the plugin part is guarded by
-// a non-nil hookRunner.
+// a non-nil hookRunner. The three sources are genuinely different things, so
+// each keeps its own events.SteeringKind* (precompact-hook / note-handoff /
+// goal-objective) rather than being merged under one label.
 func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) []steeringTurnRecord {
 	if history == nil {
 		return nil
 	}
-	var messages []string
+	var messages []preCompactMessage
 	if s.hookRunner != nil {
 		compactResult := s.hookRunner.RunPreCompact(s.apiLogContext(ctx), s.hookInput(plugin.HookPreCompact))
 		for _, m := range compactResult.ModelContext {
-			messages = append(messages, wrapHookContext(m))
+			messages = append(messages, preCompactMessage{text: wrapHookContext(m), kind: events.SteeringKindPrecompactHook})
 		}
 		for _, m := range compactResult.UserMessages {
 			s.deliverHookUserMessage(m)
 		}
 	}
 	if note := s.PinnedNote(); note != "" {
-		messages = append(messages, renderNoteHandoff(note))
+		messages = append(messages, preCompactMessage{text: renderNoteHandoff(note), kind: events.SteeringKindNoteHandoff})
 		s.clearPinnedNote() // one-shot handoff: consumed by this compaction, not re-stamped
 	}
-	messages = append(messages, s.goalCompactionSteering()...)
+	for _, m := range s.goalCompactionSteering() {
+		messages = append(messages, preCompactMessage{text: m, kind: events.SteeringKindGoalObjective})
+	}
 	return appendSteeringMessagesToHistory(history, messages)
 }
 
-func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []string) []steeringTurnRecord {
+func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []preCompactMessage) []steeringTurnRecord {
 	var records []steeringTurnRecord
 	for _, msg := range messages {
-		if strings.TrimSpace(msg) == "" {
+		if strings.TrimSpace(msg.text) == "" {
 			continue
 		}
-		turn := schema.NewTurn(schema.TurnSteering, llm.User(msg))
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(msg.text))
+		turn.SteeringKind = msg.kind
 		*history = append(*history, turn)
-		records = append(records, steeringTurnRecord{turn: turn, text: msg})
+		records = append(records, steeringTurnRecord{turn: turn, text: msg.text, kind: msg.kind})
 	}
 	return records
 }
@@ -178,7 +195,7 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 		if err := appendTurn(record.turn); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text, Kind: record.kind})
 	}
 }
 

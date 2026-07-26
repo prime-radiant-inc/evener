@@ -73,12 +73,6 @@ test("the divider is collapsed by default and expands to show the verbatim text"
   expect(details.textContent).toContain("the raw steering body");
 });
 
-test("the divider's summary uses sentence case, not shouting chrome", () => {
-  render(<SteeringItem item={item({ text: "nudge text" })} turn={turn} live={false} />);
-  const summary = screen.getByTestId("steering-item").querySelector("summary");
-  expect(summary?.textContent).toBe("Steering injected");
-});
-
 // yt2q: the steering divider's open/closed state lives in the shared
 // disclosureStore keyed by item.id, so expanding it survives a remount.
 test("an expanded steering divider stays open across an unmount+remount with the same item id (store-backed)", () => {
@@ -118,92 +112,96 @@ test("a daemon-sourced steering item with BOTH real text and images renders the 
   expect(el.textContent).not.toMatch(/\[\d+ images?\]/);
 });
 
-// --- T5: task-bookkeeping steering suppression ------------------------------
-// The legacy renderer's classifySteering (cmd/serf-hub/assets/renderer-
-// format.js:415-493) recognizes several daemon-steering "kinds"; current-
-// task/full-list/task-nudge were rendered specially there (cache-seeding
-// side effects, or a compact pointer) rather than as a plain divider - and
-// with T5's tasks panel now owning that surface (model.tasks, chrome/
-// TasksPanel.tsx), those three kinds should render NOTHING here rather than
-// a divider that duplicates what the panel already shows. Every other kind
-// (tasks-done, loop detection, read-only nudges, transcript pointers,
-// notifications, unknown) keeps the existing divider treatment unchanged -
-// this is a narrow, additive suppression, not a rewrite of the divider path
-// itself (every test above this section still exercises it verbatim).
-//
-// Fixtures are wire-true: the daemon's own steering-message templates
-// (agent/task_reminders.go), not invented text, so the classification is
-// tested against exactly what a real session would send.
+// --- the wire's steering kind labels the row, or claims nothing at all -----
+// The daemon names what it injected (events.SteeringKind* on the Go side);
+// the row shows that label instead of pattern-matching the message's prose.
+// Absent a kind - a daemon predating the field, or a kind with no entry in
+// KIND_LABELS - the row claims nothing: a bare "System steered" with no
+// colon, since a colon promises a value.
 
-const CURRENT_TASK_STEERING =
-  '<SYSTEM-REMINDER>\n<CURRENT-TASK id="3">\n<TITLE>Fix the bug</TITLE>\n<INSTRUCTIONS>\ndo the thing\n</INSTRUCTIONS>\n</CURRENT-TASK>\nCall your next tool: use task_list to mark task 3 as done when this step is complete.\n</SYSTEM-REMINDER>';
+test("labels a steer from its wire kind", () => {
+  render(
+    <SteeringItem
+      item={item({ text: "You have completed all tasks", steeringKind: "tasks-done" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByText("System steered: Tasks done")).toBeTruthy();
+  expect(screen.getByTestId("steering-glyph")).toBeTruthy();
+});
 
-const FULL_LIST_STEERING = "<SYSTEM-REMINDER>\nTask list:\n  [open] #1: Do a thing\n</SYSTEM-REMINDER>";
+// No kind means the daemon did not say. A colon promises a value.
+test("claims nothing when the wire carries no kind", () => {
+  render(<SteeringItem item={item({ text: "unclassifiable" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered")).toBeTruthy();
+  expect(screen.queryByText(/System steered:/)).toBeNull();
+});
 
-const TASKS_DONE_STEERING =
-  "<SYSTEM-REMINDER>\nYou have completed all tasks on your task list. If you have other work to do, add it to the task list now. Otherwise, deliver your final output with the communicate tool.\n</SYSTEM-REMINDER>";
+// The OTHER half of "no colon": a kind the wire DID send, but this UI has no
+// label for - a daemon newer than this UI (KIND_LABELS §comment above), or -
+// live today - a "notification" kind whose markup fails to parse and falls
+// through to the divider path instead of a card. Absent and unmapped must
+// both render bare; only one of the two was pinned before this test.
+test("claims nothing when the wire kind is unmapped, not just when it's absent", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "some-future-kind" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered")).toBeTruthy();
+  expect(screen.queryByText(/System steered:/)).toBeNull();
+});
 
-const TASK_NUDGE_STEERING =
-  "<SYSTEM-REMINDER>\nYou have a task_list tool available for organizing multi-step work. Consider creating a task list to track your progress.\n</SYSTEM-REMINDER>";
+// The prose that used to drive classification must no longer do so.
+test("does not infer a kind from the text", () => {
+  render(
+    <SteeringItem item={item({ text: "You have completed all tasks on your task list." })} turn={turn} live={false} />,
+  );
+  expect(screen.getByText("System steered")).toBeTruthy();
+  expect(screen.queryByText(/Tasks done/)).toBeNull();
+});
 
-test("a current-task restatement renders nothing - the tasks panel already shows the in-progress task", () => {
-  const { container } = render(<SteeringItem item={item({ text: CURRENT_TASK_STEERING })} turn={turn} live={false} />);
+// current-task/task-list: the tasks panel + task-update card already own
+// this surface (parity-m4 §8:209-217), so these kinds render nothing here.
+test.each([["current-task"], ["task-list"]])("suppresses %s - the tasks panel owns that surface", (kind) => {
+  const { container } = render(
+    <SteeringItem item={item({ text: "x", steeringKind: kind })} turn={turn} live={false} />,
+  );
   expect(container.firstChild).toBeNull();
 });
 
-// Review finding: matching only the OPENING <CURRENT-TASK id="..."> tag
-// (no requirement that it ever closes) suppressed anything that merely
-// STARTS like one - a truncated or malformed steering body reading the
-// same as a genuine, complete current-task block. The legacy's own
-// classifySteering regex (renderer-format.js:421) requires the full
-// open+close pair (`<CURRENT-TASK ...>...<\/CURRENT-TASK>`); this pins
-// the tightened match against a fixture that has the opening tag but
-// never closes it - the loose match would have wrongly suppressed this;
-// the tightened one must not.
-const TRUNCATED_CURRENT_TASK_STEERING =
-  '<SYSTEM-REMINDER>\n<CURRENT-TASK id="3">\n<TITLE>Fix the bug</TITLE>\n<INSTRUCTIONS>\ndo the thing\n</SYSTEM-REMINDER>';
-
-test("a truncated current-task fragment (opening tag present, never closed) is NOT suppressed - it isn't a genuine complete current-task block", () => {
-  render(<SteeringItem item={item({ text: TRUNCATED_CURRENT_TASK_STEERING })} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item")).toBeTruthy();
+// task-nudge is a labeled kind (KIND_LABELS above), NOT a suppressed one -
+// only current-task/task-list are in SUPPRESSED. Before wave-8/this task,
+// classifySteering's cascade suppressed task-nudge outright (a one-time
+// tool-availability nudge, judged not user-meaningful); the brief's
+// SUPPRESSED set narrows that to current-task/task-list only, so a
+// task-nudge steer now renders where it previously rendered nothing. That
+// flip is brief-mandated and correct - this pins the new visible outcome.
+test("a task-nudge kind renders labeled, not suppressed", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "task-nudge" })} turn={turn} live={false} />);
+  expect(screen.getByText("System steered: Task nudge")).toBeTruthy();
 });
 
-test("a full task-list restatement renders nothing - the tasks panel already shows the list", () => {
-  const { container } = render(<SteeringItem item={item({ text: FULL_LIST_STEERING })} turn={turn} live={false} />);
-  expect(container.firstChild).toBeNull();
-});
-
-test("the one-time task_list tool nudge renders nothing - not user-meaningful", () => {
-  const { container } = render(<SteeringItem item={item({ text: TASK_NUDGE_STEERING })} turn={turn} live={false} />);
-  expect(container.firstChild).toBeNull();
-});
-
-test("'all tasks complete' steering is NOT suppressed - it's a genuine event, not task-list bookkeeping the panel already covers", () => {
-  render(<SteeringItem item={item({ text: TASKS_DONE_STEERING })} turn={turn} live={false} />);
-  const details = screen.getByTestId("steering-item") as HTMLDetailsElement;
-  expect(details.textContent).toContain("completed all tasks");
-});
-
-test("suppression only ever applies to the daemon divider path - a 'user'-sourced message with task-list-shaped text still renders as a normal user bubble", () => {
-  render(<SteeringItem item={item({ text: FULL_LIST_STEERING, source: "user" })} turn={turn} live={false} />);
+// Ordering pin: the source==="user" check must run BEFORE the SUPPRESSED
+// check, so a user-sourced message is never silently dropped just because
+// its (irrelevant, human-typed) steeringKind happens to collide with a
+// suppressed daemon kind. Unreachable today - every user-sourced enqueue
+// site passes an empty kind - but the ordering is load-bearing the moment
+// that changes, and nothing else in this file pins the ordering itself.
+test('source "user" is checked before suppression - a user-sourced steer is never dropped by a colliding kind', () => {
+  render(
+    <SteeringItem
+      item={item({ text: "focus on the tests", source: "user", steeringKind: "current-task" })}
+      turn={turn}
+      live={false}
+    />,
+  );
   expect(screen.getByTestId("user-message-item")).toBeTruthy();
   expect(screen.queryByTestId("steering-item")).toBeNull();
 });
 
-// --- wave 8: the divider now carries its classified label (not one generic
-// "Steering injected" for every kind), and a job-notification steer renders as
-// a card instead of a divider (parity-m4 §8, contracts §17). -----------------
-
-test("loop-detection steering keeps a divider labeled by its own kind, not the generic label", () => {
-  render(<SteeringItem item={item({ text: "You appear to be stuck in a loop." })} turn={turn} live={false} />);
-  const summary = screen.getByTestId("steering-item").querySelector("summary");
-  expect(summary?.textContent).toContain("Loop detection");
-});
-
-test("a tasks-done steer is labeled 'Tasks done', not 'Steering injected'", () => {
-  render(<SteeringItem item={item({ text: TASKS_DONE_STEERING })} turn={turn} live={false} />);
-  expect(screen.getByTestId("steering-item").querySelector("summary")?.textContent).toContain("Tasks done");
-});
+// --- card routing stays content-driven, independent of the kind ------------
+// The trigger is <job-notification> markup, or the fixed "Observer callback:\n"
+// header - structured payloads that can't false-positive the way a prose
+// pattern like /completed all tasks/ could - so a card renders whether or not
+// the steer carries a kind at all (contracts §17).
 
 const JOB_NOTIFICATION_STEERING = `<job-notification job_id="job_7" event="completed" job_type="delegate" status="completed" reason="" output_bytes="9" transcript_ref="ref_x">
 Job job_7 completed.
@@ -229,4 +227,58 @@ Job job_8 failed.
 </job-notification>`;
   render(<SteeringItem item={item({ text: two })} turn={turn} live={false} />);
   expect(screen.getAllByTestId("notification-card")).toHaveLength(2);
+});
+
+test("routes a notification kind to a card", () => {
+  const text = '<job-notification job_id="j1" status="completed">done\nexcerpt:\nall good</job-notification>';
+  render(<SteeringItem item={item({ text, steeringKind: "notification" })} turn={turn} live={false} />);
+  expect(screen.getByTestId("notification-card")).toBeTruthy();
+});
+
+// The card's trigger is <job-notification> markup, not the kind: structured
+// markup cannot false-positive the way a prose pattern can, so a pre-Kind
+// transcript still gets its card.
+test("a pre-Kind steer carrying a job-notification block still renders a card", () => {
+  const text = '<job-notification job_id="j1" status="completed">done\nexcerpt:\nall good</job-notification>';
+  render(<SteeringItem item={item({ text })} turn={turn} live={false} />);
+  expect(screen.getByTestId("notification-card")).toBeTruthy();
+});
+
+// Pins the same guarantee for the OTHER structured trigger: a review of an
+// earlier task raised a concern that deleting the prose classifier would
+// silently kill the observer-callback card too. It does not -
+// parseObserverCallback keys off the fixed "Observer callback:\n" header, not
+// a kind - but that must be pinned, not left resting on an argument.
+test("an observer callback with no steeringKind still renders its notification card", () => {
+  render(
+    <SteeringItem
+      item={item({ text: "Observer callback:\nmessage: the sidecar noticed the build broke" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  expect(screen.getByTestId("notification-card")).toBeTruthy();
+  expect(screen.queryByTestId("steering-item")).toBeNull();
+});
+
+// --- structure: glyph leading, chevron trailing, one ink for the row -------
+
+test("the chevron trails the label", () => {
+  render(<SteeringItem item={item({ text: "x", steeringKind: "loop-detected" })} turn={turn} live={false} />);
+  const summary = screen.getByTestId("steering-item").querySelector("summary");
+  const kids = Array.from(summary?.children ?? []);
+  expect(kids[0]?.getAttribute("data-testid")).toBe("steering-glyph");
+  expect(kids[kids.length - 1]?.getAttribute("data-testid")).toBe("steering-chevron");
+});
+
+test("the body opens with the SYSTEM-REMINDER wrapper stripped", () => {
+  render(
+    <SteeringItem
+      item={item({ text: "<SYSTEM-REMINDER>the note</SYSTEM-REMINDER>", steeringKind: "hook-context" })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  fireEvent.click(screen.getByText("System steered: Hook context"));
+  expect(screen.getByText("the note")).toBeTruthy();
 });

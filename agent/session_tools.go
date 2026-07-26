@@ -898,8 +898,12 @@ func (s *Session) getOrCreateGoalStore() *goal.Store {
 }
 
 // maybeInjectTaskReminder checks whether a task-related steering message
-// should be injected before the next LLM call. Returns the message or "".
-func (s *Session) maybeInjectTaskReminder() string {
+// should be injected before the next LLM call. Returns the message and its
+// events.SteeringKind*, or ("", "") when no reminder fires. The kind is
+// returned rather than left for the caller to infer so the label on the
+// resulting SteeringInjectedData event is ground truth, not a guess from the
+// text this function just built.
+func (s *Session) maybeInjectTaskReminder() (string, string) {
 	s.mu.Lock()
 	totalRounds := s.totalRounds
 	lastRound := s.taskToolLastRound
@@ -914,7 +918,7 @@ func (s *Session) maybeInjectTaskReminder() string {
 		s.mu.Lock()
 		s.taskNudgeFired = true
 		s.mu.Unlock()
-		return taskReminderNudge()
+		return taskReminderNudge(), events.SteeringKindTaskNudge
 	}
 
 	// Trigger 2: tasks exist, not used in 25+ rounds.
@@ -924,11 +928,11 @@ func (s *Session) maybeInjectTaskReminder() string {
 			s.mu.Lock()
 			s.taskToolLastRound = totalRounds
 			s.mu.Unlock()
-			return taskReminderForInactivity(store)
+			return taskReminderForInactivity(store), events.SteeringKindTaskInactive
 		}
 	}
 
-	return ""
+	return "", ""
 }
 
 // stringArg returns args[key] as a string, or "" when absent or not a string.

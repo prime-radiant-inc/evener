@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
-	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -32,8 +31,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 func (s *Session) applyNoToolCallsDecision(dec noToolCallsDecision) (retry bool, ferr error) {
 	if dec.Retry {
 		s.emit(events.EventWarning, events.WarningData{Message: dec.WarningMsg})
-		s.appendTurn(schema.TurnSteering, llm.User(dec.SteeringText))
-		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: dec.SteeringText})
+		s.appendSteeringTurn(dec.SteeringText, events.SteeringKindNoToolCalls)
 		return true, nil
 	}
 	switch dec.TerminalKind {
@@ -277,7 +275,8 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					}
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
+					s.SteerKind(label+": "+desc+"\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>",
+						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
 				}
@@ -336,8 +335,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			warning := s.stuckEscalation(count)
 			if abortErr := s.withResponseSideEffects(ctx, func() {
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
-				s.appendTurn(schema.TurnSteering, llm.User(warning))
-				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning})
+				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
 				return false, abortErr
 			}
@@ -368,9 +366,8 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	// Task reminder injection.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
-			s.appendTurn(schema.TurnSteering, llm.User(reminder))
-			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
+		if reminder, kind := s.maybeInjectTaskReminder(); reminder != "" {
+			s.appendSteeringTurn(reminder, kind)
 		}
 	}); abortErr != nil {
 		return false, abortErr

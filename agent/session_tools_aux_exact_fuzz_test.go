@@ -151,7 +151,7 @@ func auxCommunicateExact(t *testing.T) {
 	s, _, _ := stmNewSession(t, []byte("callback-reject"))
 	s.setActiveEntryKind(EntryWatchDelivery)
 	s.deliverWatchCommunicateCallback("no route")
-	s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal) bool { return false }
+	s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return false }
 	s.deliverWatchCommunicateCallback("rejected")
 	if usesDefaultCommunicateOutputEnvelope(llm.ToolDefinition{Parameters: map[string]any{"properties": map[string]any{
 		"output": map[string]any{"properties": map[string]any{"message": 1, "data": 1, "artifacts": 1}, "required": []any{"message", "data"}},

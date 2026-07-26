@@ -178,6 +178,38 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 }
 
+// TestAcceptNotificationInput_PersistsNotificationKind verifies the durable
+// notification reminder turn carries SteeringKind on schema.Turn, not only on
+// the live SteeringInjectedData event, so a reload labels it the same way the
+// live transcript did (review round 2: this direct-append site bypasses the
+// SteerKind/consumeSteeringMessage queue path that already persisted its
+// kind). Uses the same minimal durable-record construction as
+// TestAcceptNotificationInputAdoptsNotificationProvenance
+// (session_provenance_test.go) rather than a full background delegate run.
+func TestAcceptNotificationInput_PersistsNotificationKind(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.events = make(chan events.SessionEvent, 4)
+	appendPendingJobNotificationRecordWithProvenance(t, s.jobManager, s.ID(), "job_A", nil)
+	s.enqueueJobNotification(jobNotification{
+		JobID:   "job_A",
+		JobType: string(jobstore.JobDelegate),
+		Status:  string(jobstore.StatusCompleted),
+	})
+
+	if !s.acceptNotificationInput(context.Background()) {
+		t.Fatal("notification input should proceed")
+	}
+
+	last := s.history[len(s.history)-1]
+	if last.Kind != schema.TurnSteering {
+		t.Fatalf("last turn kind = %v, want TurnSteering", last.Kind)
+	}
+	if last.SteeringKind != events.SteeringKindNotification {
+		t.Errorf("SteeringKind = %q, want %q", last.SteeringKind, events.SteeringKindNotification)
+	}
+}
+
 // TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd proves that an empty
 // notification no-op does NOT poison sessionEndEmitted for a QUEUED user message
 // that the same ProcessInputKind call picks up and runs. When the notification

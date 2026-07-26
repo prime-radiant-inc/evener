@@ -171,7 +171,7 @@ func stceCompaction(t *testing.T) {
 		t.Fatalf("nil history records = %#v", records)
 	}
 	history := []schema.Turn{}
-	records := appendSteeringMessagesToHistory(&history, []string{"", "  ", "kept"})
+	records := appendSteeringMessagesToHistory(&history, []preCompactMessage{{text: ""}, {text: "  "}, {text: "kept", kind: events.SteeringKindPrecompactHook}})
 	if len(records) != 1 {
 		t.Fatalf("steering records = %#v", records)
 	}
@@ -285,7 +285,7 @@ func stceRegistryAndHelpers(t *testing.T) {
 	s.taskToolLastRound = 0
 	s.totalRounds = 25
 	s.mu.Unlock()
-	if got := s.maybeInjectTaskReminder(); got == "" {
+	if got, _ := s.maybeInjectTaskReminder(); got == "" {
 		t.Fatalf("task inactivity reminder missing: tasks=%#v storeSame=%v", shared.View(), s.getOrCreateTaskStore() == shared)
 	}
 }

@@ -5,18 +5,47 @@
   padding: var(--space-1) 0;
 }
 
+/* One 12px gutter column, one ink for the whole row (design-system.md §7).
+ * --ink-mid, not --ink-low: --ink-low measures 2.97:1 dark / 3.64:1 light
+ * against --surface-1, under the 4.5:1 AA floor, and the kind is the payload a
+ * reader auditing steering came for. */
 .summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
   cursor: pointer;
+  list-style: none;
   font-family: var(--font-sans);
   font-size: var(--font-size-caption);
-  color: var(--ink-low);
+  color: var(--ink-mid);
 }
 
-/* The optional " · <detail>" suffix on the divider summary (e.g. a
- * current-task id, a task-list count) - a touch quieter than the label. */
-.detail {
-  color: var(--ink-low);
-  opacity: 0.8;
+.summary::-webkit-details-marker {
+  display: none;
+}
+
+.label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Trailing, and on the row's own colour rather than a step down: it reads as
+ * the end of the label line, not as a leading affordance. */
+.chevron {
+  display: inline-flex;
+  flex: none;
+  font-size: 9px;
+}
+
+.chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .chevron {
+    transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
+  }
 }
 
 .body {

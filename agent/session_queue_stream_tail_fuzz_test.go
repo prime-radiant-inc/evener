@@ -19,7 +19,7 @@ func FuzzSessionQueueStreamTails(f *testing.F) {
 	f.Add(byte(0))
 	f.Fuzz(func(t *testing.T, _ byte) {
 		closed := &Session{state: SessionClosed}
-		if closed.trySteerWithProvenanceAndNotify("steer", nil) {
+		if closed.trySteerWithProvenanceAndNotify("steer", nil, "") {
 			t.Fatal("closed session accepted steering")
 		}
 		closed.FollowUp("ignored")

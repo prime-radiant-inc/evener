@@ -223,8 +223,8 @@ func qlifExerciseQueueHelpers(t *testing.T, s *Session) {
 		t.Fatal("new session unexpectedly has pending steering")
 	}
 	s.Steer("plain")
-	s.SteerWithProvenance("provenance", qlifQueueProvenance())
-	if !s.trySteerWithProvenanceAndNotify("notify", qlifQueueProvenance()) {
+	s.SteerWithProvenance("provenance", qlifQueueProvenance(), "")
+	if !s.trySteerWithProvenanceAndNotify("notify", qlifQueueProvenance(), "") {
 		t.Fatal("open session rejected steering with notify")
 	}
 	s.deliverHookContext("")

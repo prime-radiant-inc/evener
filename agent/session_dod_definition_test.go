@@ -1054,6 +1054,21 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 	if !gotSteering {
 		t.Fatalf("expected STEERING_INJECTED event for the interrupt transcript marker")
 	}
+
+	// (review round 2) The interrupt marker's SteeringKind must land on the
+	// persisted schema.Turn itself, not only on the live SteeringInjectedData
+	// event, so a reload labels it the same way the live transcript did.
+	sess.mu.Lock()
+	var sawInterruptedKind bool
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnSteering && turn.SteeringKind == events.SteeringKindInterrupted {
+			sawInterruptedKind = true
+		}
+	}
+	sess.mu.Unlock()
+	if !sawInterruptedKind {
+		t.Fatal("expected a TurnSteering turn with SteeringKind=interrupted")
+	}
 }
 
 // TestSession_AbortThenFollowup verifies kata 0ax1's primary user-facing

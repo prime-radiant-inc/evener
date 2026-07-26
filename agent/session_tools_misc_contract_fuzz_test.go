@@ -249,10 +249,10 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	s.taskToolEverUsed = false
 	s.taskNudgeFired = false
 	s.mu.Unlock()
-	if reminder := s.maybeInjectTaskReminder(); reminder == "" {
+	if reminder, _ := s.maybeInjectTaskReminder(); reminder == "" {
 		t.Fatal("ten rounds without task_list use did not inject a task reminder")
 	}
-	if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+	if reminder, _ := s.maybeInjectTaskReminder(); reminder != "" {
 		t.Fatalf("task reminder was not one-shot: %q", reminder)
 	}
 

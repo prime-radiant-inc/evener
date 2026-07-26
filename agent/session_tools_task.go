@@ -191,7 +191,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							if t.ReasoningEffort != "" {
 								deps.taskGuard.SetReasoningEffort(t.ReasoningEffort)
 							}
-							deps.steer(formatCurrentTaskSteering(t))
+							deps.steer(formatCurrentTaskSteering(t), events.SteeringKindCurrentTask)
 							break
 						}
 					}
@@ -214,14 +214,14 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 								if next.ReasoningEffort != "" {
 									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
 								}
-								deps.steer(formatCurrentTaskSteering(next))
+								deps.steer(formatCurrentTaskSteering(next), events.SteeringKindCurrentTask)
 							}
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
 							// signal the agent that the list is exhausted.
 							allDone := taskListAllDone(store.View())
 							if allDone && len(store.View()) > 0 {
-								deps.steer(taskReminderAllDone())
+								deps.steer(taskReminderAllDone(), events.SteeringKindTasksDone)
 								msg.WriteString("All tasks complete. ")
 							}
 						}

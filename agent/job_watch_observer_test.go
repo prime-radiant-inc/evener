@@ -644,7 +644,7 @@ func TestNotificationTurnDrainsSteeringOnlyCallback(t *testing.T) {
 		func(llm.Request) llm.Response { return communicateWithDefaultOutput("callback handled") },
 	}})
 	s := newDelegateTestSession(t, c)
-	s.SteerWithProvenance("OBSERVER_CALLBACK rule=no-force-push", nil)
+	s.SteerWithProvenance("OBSERVER_CALLBACK rule=no-force-push", nil, "")
 
 	out, err := s.ProcessInputKind(context.Background(), "", nil, EntryNotification)
 	if err != nil {

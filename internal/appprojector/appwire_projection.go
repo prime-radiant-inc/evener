@@ -642,6 +642,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.Source != "" {
 			params["source"] = data.Source
 		}
+		// Kind names what the daemon injected, so the UI labels a steer from
+		// the wire rather than pattern-matching its prose. Omitted when unset.
+		if data.Kind != "" {
+			params["kind"] = data.Kind
+		}
 		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, params)}
 	case events.EventCompactionTurn:
 		p.clearSkillCandidate()

@@ -543,13 +543,17 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if callerProvenance == nil {
 			callerProvenance = s.activeCausalProvenance()
 		}
+		// A delegate_send(to=caller) is an agent-to-agent message (the same
+		// semantic as the steer-into-running-child branch in
+		// startOrSteerSubagentRun), regardless of which of the three delivery
+		// paths below carries it.
 		delivered := true
 		if steer := s.cfg.spawn.parentSteerDelivered; steer != nil {
-			delivered = steer(message, callerProvenance)
+			delivered = steer(message, callerProvenance, events.SteeringKindAgentMessage)
 		} else if steer := s.cfg.spawn.parentSteer; steer != nil {
-			steer(message, callerProvenance)
+			steer(message, callerProvenance, events.SteeringKindAgentMessage)
 		} else {
-			delivered = s.trySteerWithProvenance(message, callerProvenance)
+			delivered = s.trySteerWithProvenance(message, callerProvenance, events.SteeringKindAgentMessage)
 		}
 		if !delivered {
 			return sendMessageResult{
@@ -1566,7 +1570,7 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	if steerProvenance == nil {
 		steerProvenance = s.activeCausalProvenance()
 	}
-	delivered := sub.sess.trySteerWithProvenance(message, steerProvenance)
+	delivered := sub.sess.trySteerWithProvenance(message, steerProvenance, events.SteeringKindAgentMessage)
 	if !delivered {
 		sub.mu.Unlock()
 		if fromWatch {

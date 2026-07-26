@@ -239,10 +239,10 @@ var dgfz_messages = []string{"do a thing", "", "   "}
 func dgfz_installCallerRoute(s *Session, mode int, deliver bool) {
 	switch mode {
 	case 1:
-		s.cfg.spawn.parentSteer = func(string, *provenance.Causal) {}
+		s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) {}
 		s.cfg.spawn.parentJobID = "job_parent"
 	case 2:
-		s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal) bool { return deliver }
+		s.cfg.spawn.parentSteerDelivered = func(string, *provenance.Causal, string) bool { return deliver }
 		s.cfg.spawn.parentMarkCallerCallbackDelivered = func(string) {}
 		s.cfg.spawn.parentJobID = "job_parent"
 	}

@@ -3344,6 +3344,12 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	if len(queue) != 1 || queue[0].Text != "please adjust course" {
 		t.Fatalf("steering queue = %+v, want sent message", queue)
 	}
+	sub.sess.mu.Lock()
+	gotKind := sub.sess.steeringQueue[0].Kind
+	sub.sess.mu.Unlock()
+	if gotKind != events.SteeringKindAgentMessage {
+		t.Fatalf("steering kind = %q, want %q", gotKind, events.SteeringKindAgentMessage)
+	}
 
 	_, _ = sess.jobManager.stop(first.JobID)
 	waitForShellDone(t, sess.jobManager, first.JobID)
@@ -3578,7 +3584,7 @@ func TestDelegateSendMainAliasFailsInvalidRequest(t *testing.T) {
 	t.Parallel()
 	sess := newTestSession(t)
 	called := false
-	sess.cfg.spawn.parentSteer = func(string, *provenance.Causal) { called = true }
+	sess.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) { called = true }
 
 	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
 		Target:  "main",
@@ -3650,6 +3656,44 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	queue := parent.SteeringQueueSnapshot()
 	if len(queue) != 1 || queue[0].Text != "child advisory" {
 		t.Fatalf("parent steering queue = %+v, want child advisory", queue)
+	}
+	parent.mu.Lock()
+	gotKind := parent.steeringQueue[0].Kind
+	parent.mu.Unlock()
+	if gotKind != events.SteeringKindAgentMessage {
+		t.Fatalf("parent steering kind = %q, want %q", gotKind, events.SteeringKindAgentMessage)
+	}
+}
+
+// TestSendDelegateMessageCallerAliasFallbackCarriesAgentMessageKind exercises
+// the direct trySteerWithProvenance fallback in sendDelegateMessage's caller
+// alias case (job_delegate.go): classifyDelegateSendTarget only returns
+// delegateTargetCallerAlias when hasCallerRoute() is true, so the fallback
+// (neither parentSteerDelivered nor parentSteer set) is reached only if the
+// route is cleared in the race window between classify and dispatch -- which
+// is exactly what the afterClassify test hook exists to simulate (mirroring
+// the fuzz seed at job_delegate_send_seed100_fuzz_test.go's case 10).
+func TestSendDelegateMessageCallerAliasFallbackCarriesAgentMessageKind(t *testing.T) {
+	s := &Session{}
+	s.cfg.spawn.parentSteer = func(string, *provenance.Causal, string) {}
+	delegateSendTestHooks.afterClassify = func(got *Session) { got.cfg.spawn.parentSteer = nil }
+	t.Cleanup(func() { delegateSendTestHooks.afterClassify = nil })
+
+	res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  runtimeMessageAliasCaller,
+		Message: "fallback advisory",
+	})
+	if res.Err != nil || !res.Delivered {
+		t.Fatalf("sendDelegateMessage = %+v, want delivered", res)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.steeringQueue) != 1 {
+		t.Fatalf("steering queue = %d, want 1", len(s.steeringQueue))
+	}
+	if got := s.steeringQueue[0].Kind; got != events.SteeringKindAgentMessage {
+		t.Fatalf("steering kind = %q, want %q", got, events.SteeringKindAgentMessage)
 	}
 }
 
@@ -3788,6 +3832,9 @@ func TestDelegateSendCallerCarriesActiveProvenanceToParentSteering(t *testing.T)
 	}
 	if !provenance.ContainsWatch(parent.steeringQueue[0].Provenance, "watch_A", "wg_1") {
 		t.Fatalf("steering provenance = %+v, want watch_A/wg_1", parent.steeringQueue[0].Provenance)
+	}
+	if got := parent.steeringQueue[0].Kind; got != events.SteeringKindAgentMessage {
+		t.Fatalf("steering kind = %q, want %q", got, events.SteeringKindAgentMessage)
 	}
 }
 
