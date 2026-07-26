@@ -43,9 +43,18 @@ func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 // construction, drain it in the loop below) rather than calling s.emit or
 // s.emitDiagnosticWarning directly from inside initSessionState/NewSession/
 // RestoreSessionFromMetaWithConfig. et0x fixed the two known offenders but did
-// not audit every call site reachable before this function runs (e.g.
-// resumeWorktreeReentry, which runs before initSessionState on every resume —
-// see the filed follow-up kata for that one specifically).
+// not audit every call site reachable before this function runs. Kata 57j8
+// found and fixed the rest: resumeWorktreeReentry's re-entry-failure notice
+// (resume only, called from RestoreSessionFromMetaWithConfig before
+// initSessionState) AND applyInitInsideWorktreeLock's four warnings (called
+// from initSessionState, so reachable on BOTH NewSession and
+// RestoreSessionFromMetaWithConfig — a fresh session launched inside an
+// existing managed worktree lane hits this too, not only a resume). All five
+// now buffer into pendingTranscriptWarnings, same as the two et0x fixed.
+// Consequence worth knowing: these five sites run before s.hookRunner is
+// assigned, so a direct s.emit there never fired the Notification hook;
+// buffering them here means they now fire it, for the first time, once
+// hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
 	s.emit(events.EventSessionStart, start)
 	// Collected transcript-health failures (NewSession's transcript create, and
