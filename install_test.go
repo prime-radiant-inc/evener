@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -547,9 +548,7 @@ func installTestEnv(t *testing.T, home string, extra map[string]string) []string
 		// TestInstallHomeGeneratedHome failure that passed on a re-run.
 		"INSTALL_BUILD_DIR": filepath.Join(home, "install-build"),
 	}
-	for key, value := range extra {
-		overrides[key] = value
-	}
+	maps.Copy(overrides, extra)
 	return overlayEnv(os.Environ(), overrides)
 }
 
