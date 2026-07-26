@@ -69,14 +69,17 @@ describe("defaults (empty localStorage)", () => {
   test("fontSize defaults to m", () => {
     expect(prefsStore.getState().fontSize).toBe("m");
   });
-  // promptLoaded is the one transcript toggle that defaults ON, because it is
-  // the only one governing items the transcript already renders unconditionally
-  // (the system-prompt scaffold and each "prompt loaded" notice). Defaulting it
-  // off would delete those for every user who never opened Settings; the other
-  // four gate lines that do not exist until you ask for them.
-  test("transcript toggles default off, except promptLoaded", () => {
+  // promptLoaded and roundTimings are the two transcript toggles that default
+  // ON. promptLoaded governs items the transcript already renders
+  // unconditionally (the system-prompt scaffold and each "prompt loaded"
+  // notice); defaulting it off would delete those for every user who never
+  // opened Settings. roundTimings ships on per the five-participant study
+  // (docs/web-ui/ux-plan-2026-07.md): its absence was the most-repeated
+  // complaint, independently, from four of the five participants. The other
+  // three gate lines that do not exist until you ask for them.
+  test("transcript toggles default off, except promptLoaded and roundTimings", () => {
     expect(prefsStore.getState().transcript).toEqual({
-      roundTimings: false,
+      roundTimings: true,
       tokenCounts: false,
       hookExitsAll: false,
       hookExitsNormal: false,
@@ -452,7 +455,8 @@ describe("setTranscriptStatus", () => {
     prefsStore.getState().setTranscriptStatus("hookExitsAll", true);
     expect(localStorage.getItem(KEY("transcriptHookExitsAll"))).toBe("1");
     expect(prefsStore.getState().transcript).toEqual({
-      roundTimings: false,
+      // Untouched by this call, so it stays at its shipped default (on).
+      roundTimings: true,
       tokenCounts: false,
       hookExitsAll: true,
       hookExitsNormal: false,
@@ -464,7 +468,8 @@ describe("setTranscriptStatus", () => {
     prefsStore.getState().setTranscriptStatus("tokenCounts", true);
     expect(localStorage.getItem(KEY("transcriptTokenCounts"))).toBe("1");
     expect(prefsStore.getState().transcript.tokenCounts).toBe(true);
-    expect(prefsStore.getState().transcript.roundTimings).toBe(false);
+    // Untouched by this call, so it stays at its shipped default (on).
+    expect(prefsStore.getState().transcript.roundTimings).toBe(true);
   });
 });
 
