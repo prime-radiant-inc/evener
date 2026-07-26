@@ -612,6 +612,7 @@ const (
 	ThreadItemEventKindForkSummary       ThreadItemEventKind = "fork_summary"
 	ThreadItemEventKindRoundTimings      ThreadItemEventKind = "round_timings"
 	ThreadItemEventKindToolRepair        ThreadItemEventKind = "tool_repair"
+	ThreadItemEventKindModelSwitch       ThreadItemEventKind = "model_switch"
 	// ThreadItemEventKindError marks the systemMessage item a reloaded
 	// transcript renders for a turn that failed terminally. It lets clients
 	// find the failure by type rather than by reading the item's prose.
@@ -634,6 +635,7 @@ var AllThreadItemEventKinds = []string{
 	string(ThreadItemEventKindForkSummary),
 	string(ThreadItemEventKindRoundTimings),
 	string(ThreadItemEventKindToolRepair),
+	string(ThreadItemEventKindModelSwitch),
 	string(ThreadItemEventKindError),
 }
 

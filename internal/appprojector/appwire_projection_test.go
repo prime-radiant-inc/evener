@@ -1371,7 +1371,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		name        string
 		event       events.SessionEvent
 		description string
-		eventKind   string
+		eventKind   appwire.ThreadItemEventKind
 		contains    []string
 		notContains []string
 		singleLine  bool

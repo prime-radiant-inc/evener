@@ -803,7 +803,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		// immediately rather than waiting for a reload. thread/read prefers
 		// transcript turns on reload/restart, so this notification alone is
 		// not the source of truth — the persisted turn is.
-		out = append(out, p.systemAnnouncement("model_switch", "Model switch", data.MarkerText)...)
+		out = append(out, p.systemAnnouncement(appwire.ThreadItemEventKindModelSwitch, "Model switch", data.MarkerText)...)
 		return out
 	case events.EventReasoningEffortChanged:
 		p.clearSkillCandidate()
@@ -1006,7 +1006,7 @@ func (p *AppEventProjector) stampTurnUsage(turn *appwire.Turn) {
 	turn.Cost = appwire.EstimateCost(p.activeTurnModel, usage)
 }
 
-func (p *AppEventProjector) systemAnnouncement(eventKind, description, text string) []AppNotification {
+func (p *AppEventProjector) systemAnnouncement(eventKind appwire.ThreadItemEventKind, description, text string) []AppNotification {
 	return p.systemAnnouncementItem(eventKind, description, text, nil, nil)
 }
 
@@ -1015,7 +1015,7 @@ func (p *AppEventProjector) systemAnnouncement(eventKind, description, text stri
 // Raw field. The web can then surface that detail (e.g. a compaction
 // before→after expand, mockup #17 Alt A) from real numbers instead of
 // re-parsing the prose text.
-func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind, description, text string, raw json.RawMessage) []AppNotification {
+func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage) []AppNotification {
 	return p.systemAnnouncementItem(eventKind, description, text, raw, nil)
 }
 
@@ -1025,12 +1025,12 @@ func (p *AppEventProjector) systemAnnouncementWithRaw(eventKind, description, te
 // process; the web splits "show every hook exit" from "show clean exits only"
 // on this number rather than re-parsing the "... exit N" prose, so a reworded
 // announcement can never change which lines a reader has chosen to see.
-func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind, description, text string, exitCode int) []AppNotification {
+func (p *AppEventProjector) systemAnnouncementWithExitCode(eventKind appwire.ThreadItemEventKind, description, text string, exitCode int) []AppNotification {
 	code := int64(exitCode)
 	return p.systemAnnouncementItem(eventKind, description, text, nil, &code)
 }
 
-func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
+func (p *AppEventProjector) systemAnnouncementItem(eventKind appwire.ThreadItemEventKind, description, text string, raw json.RawMessage, exitCode *int64) []AppNotification {
 	description = strings.TrimSpace(description)
 	text = strings.TrimSpace(text)
 	if text == "" && eventKind != appwire.ThreadItemEventKindPluginLoaded {
@@ -1045,13 +1045,13 @@ func (p *AppEventProjector) systemAnnouncementItem(eventKind, description, text 
 	}
 	item := appwire.ThreadItem{
 		Type:        "systemMessage",
-		ID:          p.nextItemID(eventKind),
+		ID:          p.nextItemID(string(eventKind)),
 		TurnID:      turnID,
 		Description: description,
 		Text:        text,
 		Status:      appwire.TurnStatusCompleted,
 		Raw:         raw,
-		EventKind:   appwire.ThreadItemEventKind(strings.TrimSpace(eventKind)),
+		EventKind:   eventKind,
 		ExitCode:    exitCode,
 	}
 	if p.activeTurnID == "" {
