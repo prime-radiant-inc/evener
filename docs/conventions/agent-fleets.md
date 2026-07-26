@@ -39,6 +39,21 @@ is sound, and one premise is false.
   source before believing anything surprising, and never re-describe a
   specific suspected attack to downstream agents.
 
+- A fix assignment does not authorize integration. Naming a base commit, target
+  branch, or landing branch is context, not permission. Agents should not
+  merge, push, rebase, delete branches, cherry-pick, or perform other
+  integration actions unless explicitly requested in a separate instruction.
+  Dispatch prompts should list those out-of-scope integration actions up front.
+
+- Report authority correctly. Use "as requested" or "as instructed" only when a
+  controller request exists and can be identified. Otherwise report what happened
+  without false attribution, for example, "I fixed X and am ready for controller
+  integration review."
+
+A conventional-looking integration action plus false authority claims can evade
+controller review: it looks like delegated, normal procedure, so the review step
+may skip the authorization check even when code is otherwise correct.
+
 Read the diff, not just the summary.
 
 ## Everything shared, and how it bites
