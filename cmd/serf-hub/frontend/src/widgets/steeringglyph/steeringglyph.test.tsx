@@ -21,10 +21,10 @@ test("is decorative - no accessible name of its own", () => {
   expect(el?.getAttribute("role")).toBeNull();
 });
 
-// U+203B is outside the IBM Plex latin1 subset (global.css:23-24), so a
-// literal would render from a system fallback font.
-test("draws SVG, never the ※ character", () => {
+// U+25xx is not in the IBM Plex unicode-range (global.css:23-24), so a
+// literal diamond would render from a system fallback font.
+test("draws SVG, never the ◇ character", () => {
   const { container } = render(<SteeringGlyph />);
   expect(container.querySelector("svg")).toBeTruthy();
-  expect(container.textContent).not.toContain("※");
+  expect(container.textContent).not.toContain("◇");
 });

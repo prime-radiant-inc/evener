@@ -5,12 +5,15 @@ const CLASS = {
   glyph: requireClass(styles.glyph, "steeringglyph.module.css", "glyph"),
 };
 
-/** The ※ that marks a system steering message: the reference mark, drawn as a
- * four-spark asterisk over a slash, sized to sit on a line of text.
+/** The ◇ that marks a system steering message: a hollow diamond, sized to
+ * sit on a line of text.
  *
- * SVG rather than the U+203B character because global.css subsets IBM Plex Sans
- * to a unicode-range that stops at U+203A and resumes at U+2044 - a literal ※
- * would be the one glyph in the app rendering from a system fallback font.
+ * SVG rather than the U+25C7 character because global.css subsets IBM Plex Sans
+ * to a unicode-range that declares no U+25xx block at all - a literal ◇ would
+ * be the one glyph in the app rendering from a system fallback font. A diamond
+ * rather than a reference mark because steering rows and failure rows can appear
+ * in the same gutter; FailureGlyph is ✗ and a reference mark ※ would become
+ * indistinguishable from it in monochrome.
  *
  * Decorative and unnamed, unlike FailureGlyph: the row's own text says
  * "System steered: <kind>", so naming the glyph would repeat it. Inherits
@@ -20,10 +23,11 @@ export function SteeringGlyph() {
     <span aria-hidden="true" className={CLASS.glyph} data-testid="steering-glyph">
       <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
         <path
-          d="M5 1.2 V4.4 M2.3 2.9 L7.7 6.1 M7.7 2.9 L2.3 6.1 M1.8 8.4 H8.2"
+          d="M5 1.1 L8.9 5 L5 8.9 L1.1 5 Z"
+          fill="none"
           stroke="currentColor"
-          strokeWidth="1.1"
-          strokeLinecap="round"
+          strokeWidth="1.3"
+          strokeLinejoin="round"
         />
       </svg>
     </span>
