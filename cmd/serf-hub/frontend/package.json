@@ -11,7 +11,8 @@
     "test": "vitest run",
     "lint": "biome ci src",
     "format": "biome format --write src",
-    "check": "biome check --write src"
+    "check": "biome check --write src",
+    "layoutguard": "node scripts/layoutguard/run.mjs"
   },
   "license": "ISC",
   "dependencies": {
