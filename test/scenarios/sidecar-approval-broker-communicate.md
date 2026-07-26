@@ -17,7 +17,18 @@ send it back through `delegate_send(to="caller")`.
 - Repeat with `openai/gpt-5.4-mini` when that model is available. If an
   inherited `OPENAI_API_KEY` is exhausted but `serf openai status` shows
   OAuth is signed in, start the test hub with `OPENAI_API_KEY=` and keep
-  the normal XDG state home so OAuth remains visible.
+  the normal XDG state home so OAuth remains visible — that means this run
+  shares Jesse's real `~/.serf/hub.lock`, auth-token, and credentials with
+  his real hub (it will fail to start at all while his real hub already
+  holds the flock — check `pgrep -f 'serf-hub.*:9180'` first rather than
+  debugging a mysterious startup failure). Session history does NOT have
+  to be shared even then: export `XDG_STATE_HOME=$(mktemp -d -t
+  serf-e2e-approval-broker-state-XXXXX)` before starting the hub to keep
+  this run's sessions out of Jesse's real
+  `~/.local/state/serf/projects` — this only relocates session storage
+  (`cmd/serf-hub/config.go`'s `DefaultStateGlob`), it has no effect on
+  the shared credentials/token/lock above. `rm -rf "$XDG_STATE_HOME"` in
+  Cleanup.
 
 ## Steps
 
@@ -71,6 +82,12 @@ go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --format outline --range las
 go run ./cmd/serf-doctor transcript "$SID" --count job_list
 go run ./cmd/serf-doctor transcript "$SID" --count job_read_output
 go run ./cmd/serf-doctor transcript "$OBSERVER_REF" --count delegate_send
+```
+
+## Cleanup
+
+```bash
+rm -rf "$tmpdir" "$XDG_STATE_HOME"
 ```
 
 ## Sharp edges

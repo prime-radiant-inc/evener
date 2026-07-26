@@ -30,6 +30,7 @@ var scenarioPortAllowedMentions = map[string][]string{
 		// are the warnings that survived that rewrite.
 		"never port `9180`, as usual",
 		"checklist, never Jesse's real `9180`",
+		"`pgrep -f 'serf-hub.*:9180'` (matches however the real hub was",
 	},
 	"test/scenarios/spawn-empty-prompt-starts-dormant.md": {
 		"never Jesse's port 9180",
@@ -42,6 +43,8 @@ var scenarioPortAllowedMentions = map[string][]string{
 	},
 	"test/scenarios/web-goal-set-and-complete.md": {
 		"default `0.0.0.0:9180` may host an unrelated",
+		"pgrep -f 'serf-hub.*:9180' >/dev/null && \\",
+		"{ echo \"Jesse's real hub is running on 9180 — this card cannot start until it stops (flock at ~/.serf/hub.lock)\" >&2; exit 1; }",
 	},
 	"test/scenarios/job-restart-durability.md": {
 		"never Jesse's real hub on `9180`",
@@ -57,6 +60,7 @@ var scenarioPortAllowedMentions = map[string][]string{
 	},
 	"test/scenarios/sidecar-approval-broker-communicate.md": {
 		"never Jesse's real hub on `9180`",
+		"holds the flock — check `pgrep -f 'serf-hub.*:9180'` first rather than",
 	},
 	"test/scenarios/job-watch-caller-send-no-deadlock.md": {
 		"never Jesse's real hub on `9180`",

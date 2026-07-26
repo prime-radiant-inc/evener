@@ -14,6 +14,16 @@ badges.
 - OAuth signed in for OpenAI (`./serf openai status` shows
   `source=oauth`). This is the typical dev state after running
   through `auth-device-autodetect.md`.
+- **This card deliberately runs against Jesse's real `$HOME`** — the
+  documented OAuth-footgun exception in `docs/agentic-testing.md`'s Setup
+  checklist, since OAuth state lives under the normal user state home
+  and a fresh isolated `$HOME` would never have it. That means it reads
+  (and, per Sharp edges below, temporarily edits) Jesse's real
+  `~/.serf/credentials.toml`. Back it up before touching it and restore
+  it in Cleanup:
+  ```bash
+  cp ~/.serf/credentials.toml ~/.serf/credentials.toml.bak-$(date +%s)
+  ```
 
 ## Steps
 
@@ -52,14 +62,26 @@ badges.
 
 - If you opened a "Set API key" editor, cancel out so subsequent
   scenarios see a clean page.
+- If you set up the dual-layer case in Sharp edges, restore the
+  backup made in Pre-state over the real file (`mv
+  ~/.serf/credentials.toml.bak-<ts> ~/.serf/credentials.toml`) rather
+  than hand-editing the test entry back out — don't leave Jesse's real
+  credentials store on a diff you can't fully account for.
 
 ## Sharp edges
 
 - The dual-layer (env + file) display path is only exercised when
-  a provider has BOTH a stored file entry AND an env var. To set
-  one up: `mkdir -p ~/.serf && echo 'schema = 1\n[providers.kimi]\napi_key = "test"' > ~/.serf/credentials.toml`,
-  then set `KIMI_API_KEY=other-test`. Reload page. Should see both
-  layers. Clean up afterward.
+  a provider has BOTH a stored file entry AND an env var. To set one up
+  **without clobbering whatever Jesse's real `credentials.toml` already
+  holds** (a bare `>` truncates the file — never do that here): back up
+  the file (see Pre-state), then merge in a test entry with a TOML-aware
+  edit rather than overwriting the whole file, e.g.
+  `python3 -c "import tomllib,tomli_w,os; p=os.path.expanduser('~/.serf/credentials.toml'); d=tomllib.load(open(p,'rb')); d.setdefault('providers',{})['kimi']={'api_key':'test'}; tomli_w.dump(d, open(p,'wb'))"`
+  (`tomli_w` is not stdlib — `pip install tomli-w` first if missing; mode
+  stays `0600` — `chmod 600` afterward if the tool didn't preserve
+  it), then set `KIMI_API_KEY=other-test`. Reload page. Should see both
+  layers. Restore from the backup in Cleanup — don't leave the `test` key
+  in Jesse's real credentials store.
 - Per `credentials.toml` is mode 0600; the UI never displays stored
   values. Verifying the file's perms is a separate scenario.
 - The `Set API key` editor's password input has `autocomplete=off`

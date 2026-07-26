@@ -17,13 +17,23 @@ an ordinary next user message.
   ```bash
   set -a; . /Users/jesse/prime-radiant/toil-suite/serf/.env; set +a
   ```
+- Isolate. This card has no OAuth requirement (it authenticates via the exported
+  `OPENAI_API_KEY` above, not stored OAuth state), so it gets the normal Setup checklist
+  treatment (`docs/agentic-testing.md`) — a throwaway `$HOME` keeps auth-token,
+  credentials.toml, and session history off Jesse's real `~/.serf` and
+  `~/.local/state/serf` entirely:
+  ```bash
+  export HOME=$(mktemp -d -t serf-e2e-ask-web-home-XXXXX)
+  unset XDG_STATE_HOME
+  ```
 - Start the hub. **Never pass `--state-dir`/`SERF_STATE_DIR`** to the hub or any daemon in
   this scenario — both the hub and each spawned daemon must use the default state layout so
-  the hub's roster and each daemon's `/status` agree:
+  the hub's roster and each daemon's `/status` agree (the isolated `$HOME` above still gives
+  each its own default, just not Jesse's real one):
   ```bash
   /tmp/serf-hub-ask -addr 127.0.0.1:9280 -serf /tmp/serf-ask &
   sleep 2
-  TOKEN=$(cat ~/.serf/auth-token)
+  TOKEN=$(cat "$HOME/.serf/auth-token")
   HUB=http://127.0.0.1:9280
   curl -s -o /dev/null -w "%{http_code}\n" "$HUB/"   # → 401 means it answered
   ```

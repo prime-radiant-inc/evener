@@ -15,12 +15,15 @@ submitting through the overlay does.
   go build -o /tmp/serf-tui-ask ./cmd/serf-tui
   ```
 - Credentials + hub, same as `ask-web-answer.md` (reuse that hub if it's still running on
-  `127.0.0.1:9280`; otherwise start fresh — **never pass `--state-dir`/`SERF_STATE_DIR`**):
+  `127.0.0.1:9280`, including its isolated `$HOME`; otherwise start fresh — **never pass
+  `--state-dir`/`SERF_STATE_DIR`**):
   ```bash
   set -a; . /Users/jesse/prime-radiant/toil-suite/serf/.env; set +a
+  export HOME=$(mktemp -d -t serf-e2e-ask-tui-home-XXXXX)
+  unset XDG_STATE_HOME
   /tmp/serf-hub-ask -addr 127.0.0.1:9280 -serf /tmp/serf-ask &
   sleep 2
-  TOKEN=$(cat ~/.serf/auth-token)
+  TOKEN=$(cat "$HOME/.serf/auth-token")
   HUB=http://127.0.0.1:9280
   ```
 - `tmux` available.
