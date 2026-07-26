@@ -452,7 +452,7 @@ func FuzzExactAppRPC(f *testing.F) {
 				return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil
 			}
 			authDevicePoll = func(*hubAuthController, context.Context, appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
-				return appwire.AuthDevicePollResponse{State: "authorized", Status: appwire.AuthStatusResponse{Provider: "openai"}}, nil
+				return appwire.AuthDevicePollResponse{State: "authorized", Status: &appwire.AuthStatusResponse{Provider: "openai"}}, nil
 			}
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthLoginComplete, appwire.AuthLoginCompleteParams{})
 			_, _ = exactDispatch(context.Background(), t, server, appwire.MethodSerfAuthDevicePoll, appwire.AuthDevicePollParams{})

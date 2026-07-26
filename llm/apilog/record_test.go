@@ -3,6 +3,7 @@ package apilog
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +61,20 @@ func validSettlement(t *testing.T) APIAttemptGroupSettlement {
 		FinalAttemptCount: 1,
 		Outcome:           AttemptSuccess,
 		SettledAt:         recordTestTime.Add(time.Second),
+	}
+}
+
+// TestAPIAttemptResponse_UsageAlwaysShipsOnWire locks in that Usage has no
+// "omitempty" tag: encoding/json can never omit a struct value regardless of
+// the tag, so the "usage" key ships even when every one of its own
+// (already-omittable) pointer fields is nil. The tag was already a no-op lie.
+func TestAPIAttemptResponse_UsageAlwaysShipsOnWire(t *testing.T) {
+	data, err := json.Marshal(APIAttemptResponse{Body: EncodeBody([]byte("{}"))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"usage":{`) {
+		t.Fatalf("expected usage key present even when all fields nil, got %s", data)
 	}
 }
 

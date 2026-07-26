@@ -107,7 +107,7 @@ type TreeNode struct {
 	// went quiet, and the two are only distinguishable by this field. See
 	// hubcore.TreeNode.Dormant for why it is not a state value.
 	Dormant   bool       `json:"dormant,omitempty"`
-	UpdatedAt time.Time  `json:"updated_at,omitempty"`
+	UpdatedAt time.Time  `json:"updated_at"`
 	Age       string     `json:"age,omitempty"`
 	Model     string     `json:"model,omitempty"`
 	Children  []TreeNode `json:"children,omitempty"`

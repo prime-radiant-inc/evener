@@ -14,5 +14,5 @@ type EnvironmentInfo struct {
 	GitModifiedFiles      int           `json:"git_modified_files"`                 // count of tracked files with changes
 	GitUntrackedFiles     int           `json:"git_untracked_files"`                // count of untracked files
 	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"` // recent commit subject lines
-	Workspace             WorkspaceInfo `json:"workspace,omitempty"`                // detected build/workspace layout
+	Workspace             WorkspaceInfo `json:"workspace"`                          // detected build/workspace layout
 }

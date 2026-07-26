@@ -19,7 +19,7 @@ type CatalogPlugin struct {
 	Description string       `json:"description,omitempty"`
 	Category    string       `json:"category,omitempty"`
 	Homepage    string       `json:"homepage,omitempty"`
-	Author      CatalogOwner `json:"author,omitempty"`
+	Author      CatalogOwner `json:"author"`
 	Source      Source       `json:"source"`
 
 	// The following mirror Claude Code's marketplace-entry manifest fields
@@ -55,8 +55,8 @@ type CatalogPlugin struct {
 type Catalog struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
-	Owner       CatalogOwner    `json:"owner,omitempty"`
-	Metadata    catalogMetadata `json:"metadata,omitempty"`
+	Owner       CatalogOwner    `json:"owner"`
+	Metadata    catalogMetadata `json:"metadata"`
 	Plugins     []CatalogPlugin `json:"plugins"`
 	// SkippedPlugins names catalog entries that failed to parse — most
 	// commonly an unsupported/unknown Source.Kind, e.g. an npm source or
@@ -79,8 +79,8 @@ type catalogMetadata struct {
 type catalogHeader struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description,omitempty"`
-	Owner       CatalogOwner      `json:"owner,omitempty"`
-	Metadata    catalogMetadata   `json:"metadata,omitempty"`
+	Owner       CatalogOwner      `json:"owner"`
+	Metadata    catalogMetadata   `json:"metadata"`
 	Plugins     []json.RawMessage `json:"plugins"`
 }
 

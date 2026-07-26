@@ -442,3 +442,32 @@ func TestTurnUsageCostOmitEmpty(t *testing.T) {
 		}
 	}
 }
+
+// TestAuthDevicePollResponse_StatusOmittedUnlessAuthorized locks in that
+// Status is now a pointer: encoding/json can genuinely omit a nil pointer,
+// so "pending"/"expired" polls (which never set Status) no longer ship a
+// zero-valued status object, matching the type's own doc comment ("Status is
+// nil ... except when authorized") and the already-optional generated
+// TypeScript type. The lone frontend consumer (oauthDialogs.tsx) branches
+// only on State and never reads Status, so this is wire-safe.
+func TestAuthDevicePollResponse_StatusOmittedUnlessAuthorized(t *testing.T) {
+	pending, err := json.Marshal(AuthDevicePollResponse{State: "pending"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(pending), `"status"`) {
+		t.Fatalf("marshal=%s should have omitted status for a pending poll", pending)
+	}
+
+	authorized, err := json.Marshal(AuthDevicePollResponse{
+		State:  "authorized",
+		Status: &AuthStatusResponse{Provider: "openai", SignedIn: true},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(authorized)
+	if !strings.Contains(got, `"status":{"provider":"openai"`) {
+		t.Fatalf("marshal=%s missing populated status", got)
+	}
+}
