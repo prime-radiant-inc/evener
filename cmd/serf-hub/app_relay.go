@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,17 @@ var hubRelayIdleInterval = 250 * time.Millisecond
 const (
 	relayRetryMinDelay = 100 * time.Millisecond
 	relayRetryMaxDelay = 5 * time.Second
+
+	// relayGiveUpAfterFailures bounds how many consecutive re-dial failures
+	// the recovery loop tolerates before it stops retrying in silence and
+	// tells the reader their turn died (kata 3h02: a SIGKILLed daemon left an
+	// open tab's spinner stalled forever with no diagnostic). A daemon that
+	// answers localDaemonDialError never recovers on its own — recovery
+	// needs the reader to act, via reload or a new turn — so nothing is
+	// gained by waiting longer; three keeps a single transient blip from
+	// firing a false alarm while still surfacing a genuinely dead session in
+	// well under a second of backoff (100ms + 200ms + 400ms).
+	relayGiveUpAfterFailures = 3
 )
 
 type relayRetryBackoff struct {
@@ -294,8 +306,66 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			defer cleanupRelay()
 			argsByCallID := map[string]string{}
 			var backoff relayRetryBackoff
+			// activeTurnID mirrors the thread's in-progress turn, tracked from the
+			// same turn/started + turn/completed notifications this loop already
+			// forwards, so giveUpOnActiveTurn knows whether a re-dial failure is
+			// happening mid-turn (spinner visibly stalled) or between turns
+			// (nothing on screen is waiting, so nothing needs to be told).
+			var activeTurnID string
+			var consecutiveFailures int
+			trackActiveTurn := func(notification appwire.Notification) {
+				switch notification.Method {
+				case appwire.NotifyTurnStarted:
+					var params struct {
+						Turn struct {
+							ID string `json:"id"`
+						} `json:"turn"`
+					}
+					if json.Unmarshal(notification.Params, &params) == nil {
+						activeTurnID = params.Turn.ID
+					}
+				case appwire.NotifyTurnCompleted:
+					activeTurnID = ""
+				}
+			}
+			// giveUpOnActiveTurn synthesizes the failed turn/completed the daemon
+			// itself can no longer send (it is dead), so TurnFailureEndCap's
+			// existing danger chip + "Reconnect & retry" button light up in place
+			// of the spinner the reader has been watching. It fires at most once
+			// per stall: clearing activeTurnID makes every later call in the same
+			// stall a no-op, so continued backoff never re-broadcasts the same
+			// failure.
+			giveUpOnActiveTurn := func(cause error) {
+				if activeTurnID == "" {
+					return
+				}
+				turnID := activeTurnID
+				activeTurnID = ""
+				message := "Hub lost the connection to the session"
+				if cause != nil {
+					message += ": " + cause.Error()
+				}
+				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, map[string]any{
+					"turn": appwire.Turn{
+						ID:     turnID,
+						Status: appwire.TurnStatusFailed,
+						Error: &appwire.TurnError{
+							Message: message,
+							Source:  "hub",
+						},
+					},
+				})
+			}
+			recordFailure := func(cause error) {
+				consecutiveFailures++
+				if consecutiveFailures >= relayGiveUpAfterFailures {
+					giveUpOnActiveTurn(cause)
+				}
+			}
 			broadcastNotification := func(notification appwire.Notification) {
 				backoff.Reset()
+				consecutiveFailures = 0
+				trackActiveTurn(notification)
 				if source.ID() == "local" {
 					notification = enrichOutputImageNotification(thread.SessionID, thread.CWD, argsByCallID, notification)
 				}
@@ -380,12 +450,14 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						return
 					}
 					if result.err != nil {
+						recordFailure(result.err)
 						if waitForRetry(backoff.Next()) {
 							return
 						}
 						continue
 					}
 					if result.notifications == nil {
+						recordFailure(nil)
 						if waitForRetry(backoff.Next()) {
 							return
 						}
@@ -394,6 +466,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					select {
 					case notification, ok := <-result.notifications:
 						if !ok {
+							recordFailure(nil)
 							if waitForRetry(backoff.Next()) {
 								return
 							}
@@ -402,6 +475,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						broadcastNotification(notification)
 					default:
 						backoff.Reset()
+						consecutiveFailures = 0
 					}
 					notifications = result.notifications
 				}
