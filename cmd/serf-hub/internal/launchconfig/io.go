@@ -109,7 +109,7 @@ func loadMetaFS(fs afero.Fs, path string) (Meta, error) {
 
 // tomlDecode is the inverse of SaveLayer's encoder; exposed for use by
 // callers (the resolver) that have already read raw bytes.
-func tomlDecode(data []byte, out interface{}) (toml.MetaData, error) {
+func tomlDecode(data []byte, out any) (toml.MetaData, error) {
 	return toml.Decode(string(data), out)
 }
 
