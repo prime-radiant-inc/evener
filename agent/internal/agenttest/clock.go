@@ -1,6 +1,7 @@
 package agenttest
 
 import (
+	"slices"
 	"sync"
 	"time"
 
@@ -217,13 +218,7 @@ func (f *FakeClock) removeWaiter(w *fakeWaiter) bool {
 func (f *FakeClock) resetWaiter(w *fakeWaiter, d time.Duration) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	wasPending := false
-	for _, cur := range f.waiters {
-		if cur == w {
-			wasPending = true
-			break
-		}
-	}
+	wasPending := slices.Contains(f.waiters, w)
 	w.until = f.now.Add(d)
 	if !wasPending {
 		f.addWaiterLocked(w)
@@ -254,13 +249,7 @@ func (t *fakeTicker) Reset(d time.Duration) {
 	defer t.f.mu.Unlock()
 	t.w.period = d
 	t.w.until = t.f.now.Add(d)
-	found := false
-	for _, cur := range t.f.waiters {
-		if cur == t.w {
-			found = true
-			break
-		}
-	}
+	found := slices.Contains(t.f.waiters, t.w)
 	if !found {
 		t.f.addWaiterLocked(t.w)
 	}

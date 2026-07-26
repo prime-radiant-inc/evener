@@ -237,7 +237,7 @@ func TestAPILogRetainsLatestBoundedCallRowsAndScansAllTotals(t *testing.T) {
 	const maxCallRows = 100
 	const callCount = maxCallRows + 3
 	records := make([]apilog.APILogRecord, 0, callCount)
-	for i := 0; i < callCount; i++ {
+	for i := range callCount {
 		records = append(records, doctorAttempt(fmt.Sprintf("ag_call_%03d", i), 1, apilog.AttemptSuccess, 1, 1, 2, 0, 1, 0))
 	}
 	writeRichSession(t, bucket, sidA, nil, records, schema.SessionMeta{})
@@ -314,7 +314,7 @@ func TestAPILogContinuationEndpointFamiliesAreBounded(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)
 	records := make([]apilog.APILogRecord, 0, doctorAPILogMaxEndpointFamilies*2)
-	for i := 0; i < doctorAPILogMaxEndpointFamilies*2; i++ {
+	for i := range doctorAPILogMaxEndpointFamilies * 2 {
 		attempt := doctorAttempt(fmt.Sprintf("ag_family_%03d", i), 1, apilog.AttemptSuccess, 1, 1, 0, 0, 1, 0)
 		attempt.Request.EndpointFamily = fmt.Sprintf("family_%03d", i)
 		attempt.Request.HistoryMode = string(llm.HistoryModeResponsesDelta)
@@ -511,7 +511,7 @@ func TestAPILogSettlementCollectionIsBoundedAndIndependentOfCallFilters(t *testi
 	bucket := stateHomeBucket(base, hash1)
 	const fillerSettlements = 103
 	records := make([]apilog.APILogRecord, 0, fillerSettlements+3)
-	for i := 0; i < fillerSettlements; i++ {
+	for i := range fillerSettlements {
 		records = append(records, apilog.APIAttemptGroupSettlement{
 			Kind:              "attempt_group_settlement",
 			SchemaVersion:     1,
@@ -593,7 +593,7 @@ func apilogHumanColumn(t *testing.T, output, attemptID, column string) string {
 		t.Fatalf("API-log table has no %s column:\n%s", column, output)
 	}
 	end := len(row)
-	for _, field := range strings.Fields(header) {
+	for field := range strings.FieldsSeq(header) {
 		fieldStart := strings.Index(header, field)
 		if fieldStart > start && fieldStart < end {
 			end = fieldStart

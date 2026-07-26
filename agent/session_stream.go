@@ -241,11 +241,10 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 
 func partialJSONStringField(raw, field string) (string, bool) {
 	key := `"` + field + `"`
-	idx := strings.Index(raw, key)
-	if idx < 0 {
+	_, rest, ok := strings.Cut(raw, key)
+	if !ok {
 		return "", false
 	}
-	rest := raw[idx+len(key):]
 	colon := strings.Index(rest, ":")
 	if colon < 0 {
 		return "", false

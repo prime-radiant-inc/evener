@@ -565,7 +565,7 @@ func TestTreeCapacityErrorForReadsDriveBudget(t *testing.T) {
 		driveCounter: newTreeCounter(defaultMaxConcurrentDriveTurns),
 	}
 	s.treeCounter.reserve(slotKindJob)
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		s.driveCounter.reserve(slotKindDrive)
 	}
 	err := s.treeCapacityErrorFor()
@@ -866,7 +866,7 @@ func TestRegressionIdleDelegatesNeverBlockSpawn(t *testing.T) {
 	}
 
 	// Saturate the drive budget completely: the 51st spawn must still succeed.
-	for i := 0; i < defaultMaxConcurrentDriveTurns; i++ {
+	for i := range defaultMaxConcurrentDriveTurns {
 		if !sess.driveCounter.reserve(slotKindDrive) {
 			t.Fatalf("setup: drive reserve %d failed", i+1)
 		}

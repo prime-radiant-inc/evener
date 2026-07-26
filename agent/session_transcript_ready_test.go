@@ -126,7 +126,7 @@ func TestTurnsAreNotHeldOnceTheSessionKnowsItHasNoTranscript(t *testing.T) {
 	if sess.transcript != nil {
 		t.Fatalf("session without a state directory has a transcript writer")
 	}
-	for i := 0; i < 32; i++ {
+	for range 32 {
 		sess.recordTurn(
 			schema.NewTurn(schema.TurnSteering, llm.User("no sink")),
 			schema.NewTurn(schema.TurnSteering, llm.User("no sink")),

@@ -415,10 +415,7 @@ func boundOutline(lines []string) (content string, truncated bool, elidedTurns i
 	used := 0
 	// Reserve room for the marker; its exact elided count is known only at the end,
 	// so reserve a generous fixed width that bounds the marker length.
-	budget := outlineBudgetChars - outlineMarkerReserve
-	if budget < 0 {
-		budget = 0
-	}
+	budget := max(outlineBudgetChars-outlineMarkerReserve, 0)
 
 	for head+tail < n {
 		// Prefer growing the head, then the tail, alternately, so both ends survive.

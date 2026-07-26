@@ -216,7 +216,7 @@ func TestGrepFallback_GlobFilter(t *testing.T) {
 
 func TestGrepFallback_MaxResultsCap(t *testing.T) {
 	var content strings.Builder
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		content.WriteString("needle\n")
 	}
 	env := grepNativeEnv(t, map[string]string{"many.txt": content.String()})
@@ -552,7 +552,7 @@ func TestWriteFile_FaultArms(t *testing.T) {
 	// later ops hit the OpenFile/Write of the content write.
 	firstErr := false
 	laterErr := false
-	for k := 0; k < 6; k++ {
+	for k := range 6 {
 		env := faultFsEnv(t, faultOnly(k), nil)
 		_, err := env.WriteFile("out.txt", "hello")
 		if k == 0 && err != nil {

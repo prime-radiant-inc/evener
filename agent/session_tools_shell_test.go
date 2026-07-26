@@ -112,7 +112,7 @@ func TestPaginateDirEntriesStaysUnderToolCap(t *testing.T) {
 	// A large directory of realistically-named entries whose full listing would
 	// blow past the cap many times over.
 	var entries []execenv.DirEntry
-	for i := 0; i < 5000; i++ {
+	for range 5000 {
 		entries = append(entries, execenv.DirEntry{Name: "some-package-binary-name-" + strings.Repeat("x", 12), Size: 12345})
 	}
 

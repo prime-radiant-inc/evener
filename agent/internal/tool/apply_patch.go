@@ -217,8 +217,8 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 // The hint (typically a function signature) narrows where we search for the anchor.
 func hintFromHunk(hunkLines []string) string {
 	for _, l := range hunkLines {
-		if strings.HasPrefix(l, "@@") {
-			return strings.TrimSpace(strings.TrimPrefix(l, "@@"))
+		if rest, ok := strings.CutPrefix(l, "@@"); ok {
+			return strings.TrimSpace(rest)
 		}
 	}
 	return ""
@@ -348,12 +348,9 @@ func candidateSequenceIndexes(lines, pattern []string, failedLine int, limit int
 
 func looseCandidateSequenceIndexes(lines, pattern []string, failedLine int, limit int) []int {
 	minScore := minInt(2, len(pattern))
-	window := len(pattern) + 4
-	if window > len(lines) {
-		window = len(lines)
-	}
+	window := min(len(pattern)+4, len(lines))
 	var out []int
-	for i := 0; i < len(lines); i++ {
+	for i := range lines {
 		if !fuzzyLineMatch(lines[i], pattern[0]) {
 			continue
 		}

@@ -55,7 +55,7 @@ func TestRealNewTicker(t *testing.T) {
 	c := Real()
 	tk := c.NewTicker(5 * time.Millisecond)
 	defer tk.Stop()
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		select {
 		case <-tk.C():
 		case <-time.After(time.Second):

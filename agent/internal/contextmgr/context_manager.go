@@ -224,10 +224,7 @@ func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) sche
 	cm.mu.Unlock()
 
 	used := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
-	remaining := cw - used
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(cw-used, 0)
 	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
 }
 
@@ -434,7 +431,7 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 	if cutoff <= 0 {
 		return
 	}
-	for i := 0; i < cutoff; i++ {
+	for i := range cutoff {
 		t := &history[i]
 		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
 			continue
@@ -628,7 +625,7 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 		return
 	}
 
-	for i := 0; i < cutoff; i++ {
+	for i := range cutoff {
 		t := &history[i]
 		if t.Kind != schema.TurnAssistant {
 			continue
@@ -714,7 +711,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 		toolCounts:      map[string]int{},
 	}
 
-	for i := 0; i < cutoff; i++ {
+	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnCheckpoint, schema.TurnSummary:
@@ -783,11 +780,11 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 					}
 				case "apply_patch":
 					if patch, ok := args["patch"]; ok {
-						for _, line := range strings.Split(fmt.Sprint(patch), "\n") {
+						for line := range strings.SplitSeq(fmt.Sprint(patch), "\n") {
 							line = strings.TrimSpace(line)
 							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
-								if strings.HasPrefix(line, prefix) {
-									data.modifiedFiles[strings.TrimPrefix(line, prefix)] = true
+								if rest, ok := strings.CutPrefix(line, prefix); ok {
+									data.modifiedFiles[rest] = true
 								}
 							}
 						}
@@ -902,10 +899,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
 	// and the Markdown section headings.
 	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
-	variableBudget := maxChars - overhead
-	if variableBudget < 1000 {
-		variableBudget = 1000
-	}
+	variableBudget := max(maxChars-overhead, 1000)
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
 	// first, then oldest user or agent messages if needed to fit budget.
@@ -1240,7 +1234,7 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 	}
 
 	var b strings.Builder
-	for i := 0; i < cutoff; i++ {
+	for i := range cutoff {
 		t := history[i]
 		switch t.Kind {
 		case schema.TurnUserInput:
@@ -1365,7 +1359,7 @@ func countLines(s string) int {
 
 func countNonEmptyLines(s string) int {
 	n := 0
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.TrimSpace(line) != "" {
 			n++
 		}
@@ -1375,10 +1369,9 @@ func countNonEmptyLines(s string) int {
 
 func parseExitCode(shellOutput string) string {
 	// Look for "exit_code=N" (raw shell output) or "exit N" (masked summary format).
-	for _, line := range strings.Split(shellOutput, "\n") {
+	for line := range strings.SplitSeq(shellOutput, "\n") {
 		// Raw format: exit_code=0
-		if idx := strings.Index(line, "exit_code="); idx >= 0 {
-			rest := line[idx+len("exit_code="):]
+		if _, rest, ok := strings.Cut(line, "exit_code="); ok {
 			end := 0
 			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 				end++
@@ -1388,8 +1381,7 @@ func parseExitCode(shellOutput string) string {
 			}
 		}
 		// Masked format: → exit 0] or "exit 0"
-		if idx := strings.Index(line, "exit "); idx >= 0 {
-			rest := line[idx+len("exit "):]
+		if _, rest, ok := strings.Cut(line, "exit "); ok {
 			end := 0
 			for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
 				end++

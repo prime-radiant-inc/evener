@@ -46,7 +46,7 @@ type MergedResult struct {
 // trailing newline git always emits, and the whole-string-empty case).
 func splitNonEmptyLines(out string) []string {
 	var lines []string
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if line == "" {
 			continue
 		}
