@@ -11,6 +11,8 @@ export type { CadenceProps, CadenceState } from "./cadence";
 export { Cadence } from "./cadence";
 export type { CardProps } from "./card";
 export { Card } from "./card";
+export type { ChevronDirection, ChevronProps } from "./chevron";
+export { Chevron } from "./chevron";
 export type { ChipProps, ChipTone } from "./chip";
 export { Chip } from "./chip";
 export type { CodeBlockProps } from "./codeblock";

@@ -46,9 +46,18 @@ summary.row:focus-visible {
 }
 
 /* The agent's stated reason for the call - the one part of the row written for
- * a human, so it gets the sans face and the full-contrast ink. */
+ * a human, so it gets the sans face and the full-contrast ink.
+ *
+ * flex-basis 0, not auto: the row wraps, and a wrapping flex container decides
+ * where to break using each item's HYPOTHETICAL main size - which for basis
+ * auto is the text's full unwrapped width. A long line therefore did not just
+ * wrap inside itself; it pushed the whole item onto a flex line of its own,
+ * stranding the leading chevron alone on the line above. Basis 0 makes this
+ * item contribute nothing to that decision, so it shares the chevron's line at
+ * every width and wraps internally instead. (grow: 1 still fills the leftover,
+ * so nothing changes on a wide pane.) */
 .purpose {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -56,9 +65,9 @@ summary.row:focus-visible {
 }
 
 /* verb + target + meta, the descriptor's own summary() string: machine text,
- * so mono. */
+ * so mono. flex-basis 0 for the same reason .purpose has it - see there. */
 .summary {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   font-family: var(--font-mono);
   font-size: var(--font-size-ui);
@@ -98,17 +107,34 @@ summary.row:focus-visible {
   color: var(--ink-mid);
 }
 
-/* The disclosure affordance. Same ▸-rotates-90° idiom as widgets/disclosure.
+/* The disclosure affordance, LEADING the row (see ToolRow.tsx's grammar).
+ * Same rotates-90°-when-open idiom as widgets/disclosure, now turning the
+ * shared widgets/chevron icon: square, so the rotation cannot widen its
+ * painted box. The old `▸` glyph's box was its line box - 6x18 at caption
+ * size - and a 6x18 box turned 90° paints 18px wide, overhanging its own
+ * layout box by 6px on each side. Against the right edge of the turn's
+ * reading measure that overhang escaped the row, and the transcript's scroll
+ * containers turned it into a horizontal scrollbar across the whole pane.
+ * `npm run overflowguard` measures this; it fails if the glyph comes back.
+ *
  * --ink-mid: this is the row's one visible cue that there is more to see, not
  * a placeholder/disabled/timestamp (--ink-low's actual job, tokens.css).
  * UX round (k9-transcript persona panel): a reviewer auditing a session's
- * correctness specifically flagged this chevron as easy to miss when
- * deciding whether a collapsed edit had more to inspect. */
+ * correctness specifically flagged the old text triangle as easy to miss when
+ * deciding whether a collapsed edit had more to inspect - hence the icon.
+ *
+ * Alignment: the icon carries no text, so the row's own `align-items:
+ * baseline` would seat its bottom edge on the type's baseline and leave it
+ * riding high; centring it against the whole item floats it into the middle of
+ * a wrapped three-line block. It belongs on the FIRST line - hence a box
+ * exactly one line tall, pinned to the top, with the icon centred inside it. */
 .chevron {
   flex: none;
   display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  height: 1lh;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 @media (prefers-reduced-motion: no-preference) {

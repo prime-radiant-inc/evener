@@ -35,7 +35,7 @@
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { FailureGlyph, Meter, useToasts } from "../../../widgets";
+import { Chevron, FailureGlyph, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus } from "../liveness";
 import { formatTokenCount } from "../transcript/messages/format";
@@ -139,7 +139,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
         {current === "" ? DEFAULT_EFFORT_LABEL : current}
       </span>
       <span className={CLASS.effortChevron} aria-hidden="true">
-        ▾
+        <Chevron direction="down" />
       </span>
       <label className={CLASS.srOnly} htmlFor="status-row-reasoning-effort">
         Reasoning effort

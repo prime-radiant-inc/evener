@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
 import styles from "./disclosure.module.css";
 import { isDisclosureOpen, toggleDisclosure } from "./disclosureStore";
@@ -41,7 +42,7 @@ export function Disclosure({ id, summary, children, defaultOpen = false, ...rest
         }}
       >
         <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
-          ▸
+          <Chevron />
         </span>
         {summary}
       </summary>

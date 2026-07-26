@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Chevron } from "../../widgets/chevron";
 import { Tree, type TreeNode } from "../../widgets/tree";
 import { ThemeFlip } from "../ThemeFlip";
 import styles from "./tree.module.css";
@@ -65,7 +66,7 @@ function TreeDemo() {
               // from assistive tech (and out of tab order) so it isn't a
               // second, redundant "toggle" announcement.
               <button type="button" className={styles.chevron} aria-hidden="true" tabIndex={-1} onClick={info.toggle}>
-                {info.expanded ? "▾" : "▸"}
+                <Chevron direction={info.expanded ? "down" : "right"} />
               </button>
             )}
             {/* Mouse-only shortcut for the same activation Enter already

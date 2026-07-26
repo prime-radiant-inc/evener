@@ -31,7 +31,16 @@
 // keeps it visible - in flow, not overlaid - with no hover to reveal it).
 import type { ReactNode } from "react";
 import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
-import { Badge, Cadence, type CadenceState, IconButton, Menu, type MenuItem, type TreeRowInfo } from "../../widgets";
+import {
+  Badge,
+  Cadence,
+  type CadenceState,
+  Chevron,
+  IconButton,
+  Menu,
+  type MenuItem,
+  type TreeRowInfo,
+} from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { navigate } from "../routing";
 import styles from "./Rail.module.css";
@@ -264,7 +273,7 @@ function ChevronGutter({ info }: { info: TreeRowInfo }) {
           tabIndex={-1}
           onClick={info.toggle}
         >
-          {info.expanded ? "▾" : "▸"}
+          <Chevron direction={info.expanded ? "down" : "right"} />
         </button>
       )}
     </RowGutter>

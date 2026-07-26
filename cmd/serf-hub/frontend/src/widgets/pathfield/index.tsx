@@ -11,6 +11,7 @@ import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useSta
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
+import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
@@ -610,7 +611,7 @@ export function PathField({
               border. */}
           <span className={`${CLASS.triggerValue} ${value === "" ? CLASS.triggerDefault : ""}`}>{shownValue}</span>
           <span className={CLASS.chevron} aria-hidden="true">
-            ▾
+            <Chevron direction="down" />
           </span>{" "}
           {/* That separating space is load-bearing: the accessible name is this
               button's children concatenated, and each child's own text is

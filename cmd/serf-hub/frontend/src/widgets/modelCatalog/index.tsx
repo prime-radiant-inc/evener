@@ -15,6 +15,7 @@ import { errorText } from "../../protocol/errors";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
 // same reason collectioneditor imports ../button directly).
+import { Chevron } from "../chevron";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
@@ -389,7 +390,7 @@ export function ModelCatalog({
             {value === "" ? emptyLabel : value}
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
-            ▾
+            <Chevron direction="down" />
           </span>{" "}
           {/* That separating space is load-bearing - see ModelSwitch.tsx's own
               trigger for why the space cannot live inside either span. */}

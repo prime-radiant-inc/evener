@@ -125,11 +125,42 @@ test("statedPurposeOf is the one absent-vs-present rule both surfaces share", ()
 
 // --- A2: failure is a glyph on the left; success costs no space -----------
 
-test("a failed call renders the failure glyph as the row's first element", () => {
+// The chevron is row CHROME - the twisty that opens the row - and sits outside
+// the row's content the way a file tree's does, so on an expandable row it,
+// not the glyph, is the first element. What A2 actually promises is that
+// failure leads the CONTENT: nothing a reader would call part of the call
+// itself comes before it.
+test("a failed call renders the failure glyph ahead of everything but the chevron", () => {
   registerToolRenderer({ match: "trg_failed", summary: () => "Ran false" });
   render(<ToolCallItem item={item({ toolName: "trg_failed", error: "boom" })} turn={turn} live={false} />);
   const row = screen.getByTestId("tool-row");
-  expect(row.firstElementChild).toBe(screen.getByTestId("failure-glyph"));
+  const glyph = screen.getByTestId("failure-glyph");
+  const before = Array.from(row.children).slice(0, Array.from(row.children).indexOf(glyph));
+  for (const el of before) {
+    expect(el.getAttribute("data-testid")).toBe("tool-row-chevron");
+  }
+  expect(row.contains(glyph)).toBe(true);
+});
+
+// The other half of A2, and the case where the row has no leading chrome at
+// all: a clean call with nothing to open reserves space for neither affordance,
+// so its summary starts flush with the prose around it.
+test("a clean call with nothing to open leads with its summary - no chevron, no glyph", () => {
+  registerToolRenderer({ match: "trg_flat", summary: () => "Ran ls" });
+  render(<ToolCallItem item={item({ toolName: "trg_flat" })} turn={turn} live={false} />);
+  expect(screen.queryByTestId("tool-row-chevron")).toBe(null);
+  expect(screen.queryByTestId("failure-glyph")).toBe(null);
+  expect(screen.getByTestId("tool-row").firstElementChild).toBe(screen.getByTestId("tool-row-summary"));
+});
+
+// The chevron LEADS (see ToolRow.tsx's grammar). It used to trail, which at the
+// far edge of a 76rem reading measure put the row's only "there is more here"
+// cue a whole column of whitespace away from the row it belonged to.
+test("the chevron leads the row, against the content it opens", () => {
+  registerToolRenderer({ match: "trg_chev_lead", summary: () => "Ran ls", body: () => <div>more</div> });
+  render(<ToolCallItem item={item({ toolName: "trg_chev_lead" })} turn={turn} live={false} />);
+  const row = screen.getByTestId("tool-row");
+  expect(row.firstElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("the failure glyph has a real accessible name, not a bare character", () => {

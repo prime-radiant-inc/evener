@@ -35,8 +35,9 @@
 }
 
 .chevron {
+  display: inline-flex;
+  align-items: center;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 /* Standard visually-hidden recipe (see statusrow.module.css's own copy of

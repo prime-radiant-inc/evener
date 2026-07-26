@@ -25,7 +25,14 @@ import { useRef, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
-import { type ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel, Popover, useToasts } from "../../../widgets";
+import {
+  Chevron,
+  type ModelCatalog,
+  type ModelCatalogEntry,
+  ModelCatalogPanel,
+  Popover,
+  useToasts,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
@@ -131,7 +138,7 @@ export function ModelSwitch({ sessionRef, model }: ModelSwitchProps) {
             {modelLabel(model.modelProvider, model.model)}
           </span>
           <span className={CLASS.chevron} aria-hidden="true">
-            ▾
+            <Chevron direction="down" />
           </span>{" "}
           {/* That separating space is load-bearing: the accessible name is this
               button's children concatenated, and each child's own text is

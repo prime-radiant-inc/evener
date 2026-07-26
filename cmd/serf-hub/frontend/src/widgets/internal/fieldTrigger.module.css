@@ -57,8 +57,9 @@
 }
 
 .chevron {
+  display: inline-flex;
+  align-items: center;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 /* Standard visually-hidden recipe - names the trigger's action for assistive

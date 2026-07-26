@@ -77,8 +77,9 @@
 }
 
 .effortChevron {
+  display: inline-flex;
+  align-items: center;
   color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 /* A REAL native <select>, laid over its own readout at zero opacity: the row

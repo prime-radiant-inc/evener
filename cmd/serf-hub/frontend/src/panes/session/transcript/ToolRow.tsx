@@ -5,21 +5,26 @@
 //
 // THE ROW GRAMMAR, one line, in document order:
 //
-//     [✗ failure glyph?] [purpose] verb target [· meta] [affordances] [chevron?]
+//     [chevron?] [✗ failure glyph?] [purpose] verb target [· meta] [affordances]
 //
+//   - the chevron LEADS, appearing only when there is something to expand. It
+//     sits against the content it opens, the way a tree twisty does, rather
+//     than in a right-hand rail: at the far edge of a 76rem reading measure it
+//     was separated from its own row by up to a full column of whitespace, so
+//     the one cue that a row had more to show was the furthest thing from the
+//     row;
 //   - the failure glyph appears ONLY on a failed call and reserves no space
 //     otherwise (A2 — see the deliberate-inconsistency note below);
 //   - the purpose is the agent's own stated reason for the call
-//     (ItemModel.description) and LEADS, because it is the one part written for
-//     a human; verb/target recede to a quiet mono line under it;
+//     (ItemModel.description) and LEADS the text, because it is the one part
+//     written for a human; verb/target recede to a quiet mono line under it;
 //   - verb/target/meta are one string the descriptor's summary() produced;
-//   - affordances are trailing controls (e.g. "Open beside");
-//   - the chevron appears only when there is something to expand.
+//   - affordances are trailing controls (e.g. "Open beside").
 //
 // A row with no inline body is a single line: no reserved glyph column, no
 // separate meta row, no chevron.
 import type { ReactNode } from "react";
-import { FailureGlyph } from "../../../widgets";
+import { Chevron, FailureGlyph } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./toolcallitem.module.css";
 
@@ -82,6 +87,16 @@ export function ToolRow({
   const hasPurpose = statedPurpose !== undefined;
   const content = (
     <>
+      {expandable && (
+        <span
+          className={CLASS.chevron}
+          aria-hidden="true"
+          data-open={expanded ? "true" : "false"}
+          data-testid="tool-row-chevron"
+        >
+          <Chevron />
+        </span>
+      )}
       {/* Only failure earns a glyph, and a clean row reserves NO space for one.
           That is the OPPOSITE of the rail's signal gutter (shell/rail, which
           always reserves 6px) and it is deliberate: the rail needs one stable
@@ -108,16 +123,6 @@ export function ToolRow({
         )}
       </span>
       {trailing}
-      {expandable && (
-        <span
-          className={CLASS.chevron}
-          aria-hidden="true"
-          data-open={expanded ? "true" : "false"}
-          data-testid="tool-row-chevron"
-        >
-          ▸
-        </span>
-      )}
     </>
   );
 

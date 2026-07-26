@@ -15,10 +15,19 @@
   display: none;
 }
 
+/* Turns the shared widgets/chevron icon rather than a text triangle. The
+ * icon's box is square, so the rotation below cannot widen its painted box -
+ * a `▸` glyph's 6x18 line box, turned 90°, painted 18px wide and escaped
+ * whatever row held it (see widgets/chevron's own header). */
 .chevron {
   display: inline-flex;
+  align-items: center;
+  /* One line tall, pinned to the top: a summary that wraps keeps its chevron
+   * beside the FIRST line rather than floating it into the block's middle.
+   * Same recipe as toolcallitem.module.css's own .chevron - see there. */
+  align-self: flex-start;
+  height: 1lh;
   color: var(--ink-low);
-  font-size: var(--font-size-caption);
 }
 
 .chevron[data-open="true"] {

@@ -20,6 +20,7 @@ import {
 } from "../../stores/tree";
 import {
   Button,
+  Chevron,
   Dialog,
   EmptyState,
   IconButton,
@@ -104,7 +105,7 @@ function ArchivedSection({ open, onToggleOpen, nodes, onToggle, onActivate, acti
   return (
     <section className={CLASS.section}>
       <button type="button" className={CLASS.sectionDisclosure} aria-expanded={open} onClick={onToggleOpen}>
-        <span aria-hidden="true">{open ? "▾" : "▸"}</span> Archived
+        <Chevron direction={open ? "down" : "right"} /> Archived
       </button>
       {open && <Tree nodes={nodes} onToggle={onToggle} onActivate={onActivate} renderRow={renderRailRow(actions)} />}
     </section>

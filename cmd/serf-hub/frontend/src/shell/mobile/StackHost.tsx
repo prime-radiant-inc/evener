@@ -38,27 +38,12 @@
 // sync effect below), the same as any other fresh navigation - there is no
 // separate "last mobile screen" memory to restore independently of that.
 import { type ReactNode, Suspense, useEffect, useRef } from "react";
-import { IconButton } from "../../widgets";
+import { Chevron, IconButton } from "../../widgets";
 import { paneFor } from "../paneRegistry";
 import { navigate, paneToURL } from "../routing";
 import { type OpenPaneRecord, useWorkspaceStore, workspaceStore } from "../workspace";
 import styles from "./StackHost.module.css";
 import { TreeDrawer } from "./TreeDrawer";
-
-function BackIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
-      <path
-        d="M10 3 L5 8 L10 13"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
 
 // Renders exactly one pane, full-screen: whichever OpenPaneRecord
 // useWorkspaceStore currently reports as focused. Uses the SAME registry
@@ -264,7 +249,14 @@ export function StackHost({ railSlot }: StackHostProps = {}) {
     <div className={styles.host}>
       <div className={styles.topBar}>
         <div className={styles.leading}>
-          {showBack && <IconButton label="Back" icon={<BackIcon />} variant="quiet" onClick={handleBack} />}
+          {showBack && (
+            <IconButton
+              label="Back"
+              icon={<Chevron direction="left" size={16} />}
+              variant="quiet"
+              onClick={handleBack}
+            />
+          )}
         </div>
         <TreeDrawer>{railSlot}</TreeDrawer>
       </div>

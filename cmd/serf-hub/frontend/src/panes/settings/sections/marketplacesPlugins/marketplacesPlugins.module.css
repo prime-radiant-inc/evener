@@ -167,8 +167,18 @@
   outline-offset: -2px;
 }
 
+/* Turns the shared widgets/chevron icon on expand/collapse - same
+ * rotates-90°-when-open idiom as widgets/disclosure and toolcallitem's own
+ * .chevron (see either for why a rotating chevron needs a square icon: the
+ * text triangle this replaced had a non-square line box, and turning that 90°
+ * overhung its own layout box). One line tall, pinned to the top, so a
+ * marketplace name long enough to wrap keeps the chevron beside its FIRST
+ * line instead of centred into the block. */
 .treeChevron {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  height: 1lh;
   color: var(--ink-mid);
   transition: transform var(--motion-duration-overlay) var(--motion-easing-standard);
 }

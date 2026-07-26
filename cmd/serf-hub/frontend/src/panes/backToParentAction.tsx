@@ -11,7 +11,7 @@
 // same button+icon+truncation rule.
 import { workspaceStore } from "../shell/workspace";
 import { useThreadsStore } from "../stores/threads";
-import { Button } from "../widgets";
+import { Button, Chevron } from "../widgets";
 import { requireClass } from "../widgets/internal/requireClass";
 import styles from "./backtoparentaction.module.css";
 
@@ -19,26 +19,7 @@ const CLASS = {
   backLabel: requireClass(styles.backLabel, "backtoparentaction.module.css", "backLabel"),
 };
 
-// The app's 16x16 stroke grammar (see fileOpenBeside.tsx's OpenBesideIcon,
-// mobile/StackHost.tsx's own BackIcon for the same chevron - this is a
-// pane-header-scoped twin of that one, not an import: StackHost's is
-// component-local and mobile-specific, this one is desktop/dockview-header
-// specific, and duplicating one small path is cheaper than threading a
-// shared icon module across a mobile/desktop boundary for a single glyph).
-function BackIcon() {
-  return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-      <path
-        d="M10 3 L5 8 L10 13"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
+// The app's chevrons all come from the shared widgets/chevron module.
 
 // A single header action that is BOTH the identity marker (its own visible
 // label names the parent, so a reader lands already knowing whose child
@@ -57,7 +38,7 @@ export function BackToParentAction({ parentRef }: { parentRef: string }) {
     <Button
       variant="quiet"
       size="sm"
-      icon={<BackIcon />}
+      icon={<Chevron direction="left" />}
       onClick={() => workspaceStore.getState().openPane("session", { ref: parentRef })}
     >
       <span className={CLASS.backLabel}>Back to {label}</span>

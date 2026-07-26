@@ -7,7 +7,7 @@ import { type Dispatch, type SetStateAction, useEffect, useState } from "react";
 import { errorText } from "../../../../protocol/errors";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
-import { Button, ConfirmDialog, Input, useToasts } from "../../../../widgets";
+import { Button, Chevron, ConfirmDialog, Input, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
 import { sourceLabel } from "./sourceLabel";
@@ -235,7 +235,7 @@ function MarketplaceNode({
     <li className={CLASS.treeNode}>
       <button type="button" className={CLASS.treeToggle} aria-expanded={expanded} onClick={onToggle}>
         <span className={CLASS.treeChevron} aria-hidden="true">
-          ›
+          <Chevron direction="right" />
         </span>
         {marketplace.name}
         {cache?.status === "loaded" && <span className={CLASS.treeCount}> ({cache.plugins.length})</span>}
