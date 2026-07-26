@@ -26,7 +26,7 @@ func TestEmitStruct(t *testing.T) {
 		Raw  any               `json:"raw"`
 		Skip string            `json:"-"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := `export interface Sample {
   a: string;
   name: string;
@@ -46,7 +46,7 @@ func TestEmitInterface_UnexportedAndUntaggedFields(t *testing.T) {
 		Untagged string // no json tag at all: defaults to the Go field name
 		hidden   string // unexported: must never reach the wire
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{hidden: "x"}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  Untagged: string;\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -58,7 +58,7 @@ func TestEmitInterface_PointerNullVsOptional(t *testing.T) {
 		Loose    *string `json:"loose"`
 		Optional *string `json:"optional,omitempty"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := `export interface Sample {
   loose: string | null;
   optional?: string;
@@ -79,7 +79,7 @@ func TestEmitInterface_NumericKinds(t *testing.T) {
 		F64 float64 `json:"f64"`
 		B   bool    `json:"b"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := `export interface Sample {
   i: number;
   i8: number;
@@ -101,7 +101,7 @@ func TestEmitInterface_RawMessageBytesAndTime(t *testing.T) {
 		Bytes []byte          `json:"bytes"`
 		When  time.Time       `json:"when"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := `export interface Sample {
   raw: unknown;
   bytes: string;
@@ -124,7 +124,7 @@ func TestEmitInterface_PointerInsideSliceUnwraps(t *testing.T) {
 	type Sample struct {
 		Items []*Item `json:"items"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  items: Item[];\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -147,7 +147,7 @@ func TestEmitInterface_MapKeyIsAlsoMapped(t *testing.T) {
 	type Sample struct {
 		Counts map[int]string `json:"counts"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  counts: Record<number, string>;\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -156,7 +156,7 @@ func TestEmitInterface_MapKeyIsAlsoMapped(t *testing.T) {
 
 func TestEmitInterface_ZeroFields(t *testing.T) {
 	type Empty struct{}
-	got := emitInterface("Empty", reflect.TypeOf(Empty{}))
+	got := emitInterface("Empty", reflect.TypeFor[Empty]())
 	want := "export interface Empty {\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -181,7 +181,7 @@ func TestEmitInterface_EmbeddedPointerStructFlattens(t *testing.T) {
 		*Inner
 		B string `json:"b"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  a: string;\n  b: string;\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -200,7 +200,7 @@ func TestEmitInterface_EmbeddedWithExplicitTagDoesNotFlatten(t *testing.T) {
 		Inner `json:"inner"`
 		B     string `json:"b"`
 	}
-	got := emitInterface("Sample", reflect.TypeOf(Sample{}))
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
 	want := "export interface Sample {\n  inner: Inner;\n  b: string;\n}\n"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
@@ -216,7 +216,7 @@ func TestTypeExprPanicsOnUnsupportedKind(t *testing.T) {
 			t.Fatal("expected panic for an unsupported field kind")
 		}
 	}()
-	emitInterface("Sample", reflect.TypeOf(Sample{}))
+	emitInterface("Sample", reflect.TypeFor[Sample]())
 }
 
 func TestTypeExprPanicsOnAnonymousNestedStruct(t *testing.T) {
@@ -230,7 +230,7 @@ func TestTypeExprPanicsOnAnonymousNestedStruct(t *testing.T) {
 			t.Fatal("expected panic for an anonymous nested struct field")
 		}
 	}()
-	emitInterface("Sample", reflect.TypeOf(Sample{}))
+	emitInterface("Sample", reflect.TypeFor[Sample]())
 }
 
 func TestDeriveName(t *testing.T) {
@@ -372,7 +372,7 @@ func TestEmitCatalogStructuralInvariants(t *testing.T) {
 	}
 
 	seen := map[string]int{}
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if name, ok := strings.CutPrefix(line, "export interface "); ok {
 			name, _, _ = strings.Cut(name, " ")
 			seen[name]++
@@ -438,7 +438,7 @@ func runtimeNameList(t *testing.T, out, constName string) []string {
 	body := out[start+len(open) : start+end]
 
 	var got []string
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		name, ok := strings.CutPrefix(strings.TrimSpace(line), `"`)
 		if !ok {
 			t.Fatalf("%s entry is not a quoted string: %q", constName, line)
