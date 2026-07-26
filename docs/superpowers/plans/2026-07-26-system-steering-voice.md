@@ -18,7 +18,8 @@
 - `--ink-mid` for the whole steering row, glyph and chevron included. Not `--ink-low` (2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor).
 - No chromatic literals outside `tokens.css` (`src/styles/token-contract.test.ts` enforces). The steering glyph uses `currentColor` and needs no allowlist entry.
 - ※ (U+203B) is outside the IBM Plex latin1 subset (`global.css:23-24`). It MUST be inline SVG, never a text character.
-- Gates, all by exit code: `go test ./...`, `make lint`, `npx tsc --noEmit --incremental false`, `npx biome ci src`, `npx vitest run`.
+- Gates, all by exit code: `go test ./...` and `make lint` from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/serf-hub/frontend`. Use the npm scripts, NOT `npx tsc` — `npx tsc` from the repo root resolves to a decoy `tsc@2.0.4` package and silently does not typecheck.
+- `make generate` regenerates BOTH `cmd/serf-hub/frontend/src/protocol/types.gen.ts` and `docs/appwire-protocol.md`. Commit both, or `make lint-generated` fails.
 - Never `git stash`, never `git checkout <file>` to undo, never `npm ci`, never `git add` a directory containing the `node_modules` symlink.
 
 ## File Structure
@@ -631,7 +632,7 @@ Use the file's real helpers (`withActiveTurn`, `notification`, `lastItem` are il
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/protocol/reducer.test.ts`
 Expected: FAIL — `steeringKind` is undefined in all three.
 
 - [ ] **Step 3: Implement**
@@ -661,7 +662,7 @@ In `wireItemToModel`, carry it the same way the existing `source`/`eventKind` fi
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/protocol/reducer.test.ts`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/protocol/reducer.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -728,7 +729,7 @@ test("draws SVG, never the ※ character", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/steeringglyph/`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/widgets/steeringglyph/`
 Expected: FAIL — cannot resolve `.`.
 
 - [ ] **Step 3: Implement**
@@ -792,7 +793,7 @@ export { SteeringGlyph } from "./steeringglyph";
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/widgets/steeringglyph/ src/dev/WidgetGallery.test.tsx src/styles/token-contract.test.ts`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/widgets/steeringglyph/ src/dev/WidgetGallery.test.tsx src/styles/token-contract.test.ts`
 Expected: PASS for all three.
 
 - [ ] **Step 5: Commit**
@@ -896,7 +897,7 @@ test("no longer exports a prose classifier", async () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/messages/`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/messages/`
 Expected: FAIL on the new assertions.
 
 - [ ] **Step 3: Implement**
@@ -1058,13 +1059,13 @@ Delete the `.detail` rule — the divider no longer renders a detail suffix.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd cmd/serf-hub/frontend && npx vitest run src/panes/session/transcript/messages/`
+Run: `cd cmd/serf-hub/frontend && npm test -- src/panes/session/transcript/messages/`
 Expected: PASS.
 
 - [ ] **Step 5: Run every frontend gate**
 
-Run: `cd cmd/serf-hub/frontend && npx tsc --noEmit --incremental false && npx biome ci src && npx vitest run`
-Expected: exit 0 for all three. Deleting exports breaks any other importer — `tsc` is what catches it.
+Run: `cd cmd/serf-hub/frontend && npm run typecheck && npm run lint && npm test`
+Expected: exit 0 for all three. Deleting exports breaks any other importer — the typecheck is what catches it.
 
 - [ ] **Step 6: Commit**
 
@@ -1179,7 +1180,7 @@ from the wire rather than from its prose."
 ```bash
 cd /Users/jesse/prime-radiant/toil-suite/serf/.claude/worktrees/kh-steering-voice
 go test ./... && make lint
-cd cmd/serf-hub/frontend && npx tsc --noEmit --incremental false && npx biome ci src && npx vitest run
+cd cmd/serf-hub/frontend && npm run typecheck && npm run lint && npm test
 ```
 
 Expected: exit 0 for every command. Report the actual exit codes, not a summary of a scrolled log.
