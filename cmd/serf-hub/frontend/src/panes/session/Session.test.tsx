@@ -766,3 +766,93 @@ test("mounts Composer even when the transcript is empty (no turns yet) - the com
   await screen.findByTestId("empty-state");
   expect(screen.getByTestId("composer-slot")).toBeTruthy();
 });
+
+// A real serf session's transcript is never literally turns.length === 0:
+// apptranscript.go's PreludeTurn (or, live, appprojector's bundled
+// SESSION_START announcements) always synthesizes one turn - "turn_system" -
+// from the session's (never-empty) system prompt, the moment thread/read
+// returns. Before this, that made the "no turns yet" empty state above
+// unreachable for any dormant session in practice (kata bz2z): a session
+// that has never run a turn showed its transcript branch instead, with
+// nothing in it to show but the collapsed system-prompt scaffold - not the
+// invitation to send a first message. A transcript whose only turn is that
+// synthetic prelude must count as empty the same way zero turns does.
+test("treats a transcript whose only turn is the synthetic prelude (turn_system) as empty, not as content", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "You are serf, an agent...",
+              status: "completed",
+              eventKind: "system_prompt",
+            },
+          ],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await screen.findByTestId("empty-state");
+  expect(screen.queryByTestId("turn-block")).toBeNull();
+  expect(screen.getByTestId("composer-slot")).toBeTruthy();
+});
+
+// The instant a real conversation exists alongside the prelude turn (the
+// common, non-dormant shape: PreludeTurn's system prompt PLUS turn_1's
+// actual exchange), the transcript is not empty and the prelude's own
+// boilerplate stays visible right where it belongs - above the
+// conversation, exactly as it always has for every session that has run.
+test("does not treat the prelude turn as empty once a real turn exists alongside it", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_system",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              id: "item_system_prompt",
+              turnId: "turn_system",
+              type: "systemMessage",
+              text: "You are serf, an agent...",
+              status: "completed",
+              eventKind: "system_prompt",
+            },
+          ],
+        },
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
+        },
+      ],
+    }),
+  );
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  expect(await screen.findByText("hello")).toBeTruthy();
+  expect(screen.queryByTestId("empty-state")).toBeNull();
+});

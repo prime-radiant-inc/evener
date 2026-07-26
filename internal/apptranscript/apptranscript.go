@@ -50,7 +50,7 @@ func PreludeTurn(header transcript.Header) *appwire.Turn {
 		items = append(items, appwire.ThreadItem{
 			Type:        "systemMessage",
 			ID:          "item_system_prompt",
-			TurnID:      "turn_system",
+			TurnID:      appwire.SystemPreludeTurnID,
 			Description: "System prompt",
 			Text:        systemPrompt,
 			Status:      appwire.TurnStatusCompleted,
@@ -60,7 +60,7 @@ func PreludeTurn(header transcript.Header) *appwire.Turn {
 	if len(items) == 0 {
 		return nil
 	}
-	return &appwire.Turn{ID: "turn_system", Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+	return &appwire.Turn{ID: appwire.SystemPreludeTurnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 }
 
 // CompactionDescription returns the user-facing label for compaction turns.
