@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -35,6 +36,9 @@ func readHTTPRecordings(t *testing.T, path string) []recordedHTTPRequest {
 			t.Fatalf("decode line %q: %v", line, err)
 		}
 		out = append(out, rec)
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan recording: %v", err)
 	}
 	return out
 }
@@ -122,6 +126,43 @@ func TestHTTPRecorderCapsBody(t *testing.T) {
 	recs := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
 	if len(recs) != 1 || len(recs[0].Body) != httpRecorderMaxBodyBytes {
 		t.Fatalf("body not capped to %d: got %d recordings, body len %d", httpRecorderMaxBodyBytes, len(recs), bodyLen(recs))
+	}
+}
+
+// TestReadHTTPRecordings_ScanErrorFailsTest verifies that a scan failure
+// while reading hub-http.jsonl (here, a line exceeding the 16MB buffer cap
+// set on the scanner) fails the test loudly rather than silently returning
+// whatever was decoded before the error - Scan() returns false identically
+// for a clean EOF and a real read error, so only scanner.Err() tells them
+// apart.
+//
+// readHTTPRecordings calls t.Fatalf on its own T, and a failing subtest
+// always marks its parent as failed too, so the only way to observe "did it
+// fail correctly" without permanently red-ing this test binary is to run
+// the failing case in a subprocess and check its exit status.
+const scanErrorSubprocEnv = "SERF_TEST_SCANERROR_SUBPROC"
+
+func TestReadHTTPRecordings_ScanErrorFailsTest(t *testing.T) {
+	// In the subprocess, use the fixture path the parent already wrote -
+	// don't regenerate it, or a fresh t.TempDir() path would never match
+	// and we'd recurse into another subprocess forever.
+	if path := os.Getenv(scanErrorSubprocEnv); path != "" {
+		readHTTPRecordings(t, path)
+		return
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub-http.jsonl")
+	tooLong := strings.Repeat("x", 16*1024*1024+10)
+	if err := os.WriteFile(path, []byte(tooLong+"\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestReadHTTPRecordings_ScanErrorFailsTest$")
+	cmd.Env = append(os.Environ(), scanErrorSubprocEnv+"="+path)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected readHTTPRecordings to fail the test on a scan error, but the subprocess exited cleanly:\n%s", out)
 	}
 }
 

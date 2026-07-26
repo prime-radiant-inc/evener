@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,43 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
+
+// TestScanRealCodexEndpoint_ScanError verifies that a Scanner read error is
+// reported rather than silently treated as a clean end of the process's
+// output. bufio.Scanner's Scan() returns false for both EOF and a real read
+// error, so only a final scanner.Err() check tells them apart.
+func TestScanRealCodexEndpoint_ScanError(t *testing.T) {
+	wantErr := errors.New("boom")
+	r := &erroringReader{data: []byte("not-an-endpoint-line\n"), err: wantErr}
+	endpoints := make(chan string, 4)
+	scanErrs := make(chan error, 1)
+
+	scanRealCodexEndpoint(r, endpoints, scanErrs)
+
+	select {
+	case gotErr := <-scanErrs:
+		if !errors.Is(gotErr, wantErr) {
+			t.Fatalf("scanErrs = %v, want %v", gotErr, wantErr)
+		}
+	default:
+		t.Fatal("expected a scan error to be reported on scanErrs")
+	}
+}
+
+// erroringReader yields data once, then always returns err.
+type erroringReader struct {
+	data []byte
+	err  error
+	sent bool
+}
+
+func (r *erroringReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		return copy(p, r.data), nil
+	}
+	return 0, r.err
+}
 
 func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 	binary := os.Getenv("SERF_CODEX_APP_SERVER_BINARY")
@@ -147,9 +185,10 @@ func startRealCodexAppServer(t *testing.T, binary string) (string, func()) {
 		t.Fatalf("start codex app-server: %v", err)
 	}
 	exited := make(chan error, 1)
+	scanErrs := make(chan error, 2)
 	go func() { exited <- cmd.Wait() }()
-	go scanRealCodexEndpoint(stdout, endpoints)
-	go scanRealCodexEndpoint(stderr, endpoints)
+	go scanRealCodexEndpoint(stdout, endpoints, scanErrs)
+	go scanRealCodexEndpoint(stderr, endpoints, scanErrs)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -174,6 +213,12 @@ func startRealCodexAppServer(t *testing.T, binary string) (string, func()) {
 			if next != "" {
 				endpoint = next
 			}
+		case err := <-scanErrs:
+			// A pipe read error doesn't necessarily doom the test - the
+			// other pipe or a later ready-check may still succeed - but
+			// it must not be silently indistinguishable from "no more
+			// output for now."
+			t.Logf("scanning codex app-server output: %v", err)
 		case err := <-exited:
 			t.Fatalf("codex app-server exited before ready: %v", err)
 		case <-ticker.C:
@@ -192,12 +237,15 @@ func realCodexAppServerArgs(binary string, extra ...string) []string {
 	return append([]string{"app-server"}, args...)
 }
 
-func scanRealCodexEndpoint(r io.Reader, endpoints chan<- string) {
+func scanRealCodexEndpoint(r io.Reader, endpoints chan<- string, scanErrs chan<- error) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		if endpoint, ok := codexlaunch.ParseCodexEndpoint(scanner.Text()); ok {
 			endpoints <- endpoint
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		scanErrs <- err
 	}
 }
 
