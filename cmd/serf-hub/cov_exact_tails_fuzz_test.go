@@ -145,8 +145,8 @@ func FuzzExactTails(f *testing.F) {
 		_ = appItemsFromReplayTurn("s", "t", 0, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ImageData: []byte("x")}},
 		}}}, map[string]string{})
-		_ = projectReplayInputImage(llm.ImageData{}, nil)
-		_ = projectReplayInputImage(llm.ImageData{Data: []byte("x")}, map[string]string{})
+		_ = projectReplayInputImage(llm.ImageData{})
+		_ = projectReplayInputImage(llm.ImageData{Data: []byte("x")})
 		_ = projectReplayOutputImages("s", nil)
 		_ = projectReplayOutputImages("s", &llm.ToolResultData{ImageData: []byte("x")})
 
