@@ -5,7 +5,7 @@
   padding: var(--space-1) 0;
 }
 
-/* One 12px gutter column, one ink for the whole row (design-system.md §8).
+/* One 12px gutter column, one ink for the whole row (design-system.md §7).
  * --ink-mid, not --ink-low: --ink-low measures 2.97:1 dark / 3.64:1 light
  * against --surface-1, under the 4.5:1 AA floor, and the kind is the payload a
  * reader auditing steering came for. */
