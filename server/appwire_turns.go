@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/agent/transcript"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/apptranscript"
@@ -37,21 +37,20 @@ var (
 
 func appTurnsFromTranscriptFile(path string) ([]appwire.Turn, error) {
 	toolNames := map[string]string{}
-	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)
+	return transcriptTurnCache.TurnsFromFile(path, 128<<20, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		return projectTranscriptTurn(turn, turnID, entryIndex, toolNames)
 	})
 }
 
-func projectTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	var entry transcript.Entry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return nil
-	}
-	return apptranscript.ProjectTurn(turnID, entryIndex, entry.Turn, toolNames, nil, nil)
+// projectTranscriptTurn projects an already-decoded transcript turn (decoded
+// once by apptranscript's own reader, not here — kata j13r) into AppWire
+// items.
+func projectTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, entryIndex, turn, toolNames, nil, nil)
 }
 
-func projectBoundedDaemonTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return projectTranscriptTurn(raw, turnID, entryIndex, toolNames)
+func projectBoundedDaemonTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return projectTranscriptTurn(turn, turnID, entryIndex, toolNames)
 }
 
 type appTurnSnapshot struct {

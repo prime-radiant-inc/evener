@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,6 +200,49 @@ func TestDispose_ForeignLock_Refused(t *testing.T) {
 
 	err := disposeErr(t, r.s, id, false, false)
 	requireRefusalContains(t, err, "locked by another owner")
+}
+
+// laneAheadCount's own unresolved-count answer is a plain 0 (kata cn94): when
+// the rev-list read that decorates an unmerged refusal fails, the message must
+// not claim the lane "has 0 unmerged commit(s)" — that reads as self-refuting
+// (an instruction to merge zero commits) rather than as an unknown count.
+func TestDispose_UnmergedRefusalWithUnresolvableAheadCountReadsUnknown(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	id, lanePath := r.seedIsolationLane(t)
+
+	// Move the lane's tip off its base so disposableReason's tip==baseSHA
+	// short-circuit (Unchanged, collectible) does not bypass the unmerged
+	// branch before laneAheadCount is ever reached.
+	entry := r.git.entry(lanePath)
+	if entry == nil {
+		t.Fatalf("no scripted entry for lane %s", lanePath)
+	}
+	entry.head = "0000000000000000000000000000000000dead"
+
+	// Blank the sidecar's merge target so disposableReason resolves via
+	// worktree.Merged's TargetUnknown short-circuit (still "unmerged" for
+	// dispose's purposes) rather than merge-base/cherry, which the scripted
+	// model now refuses to answer outright (kata e312).
+	if err := worktree.UpdateSidecar(metaDirForLane(lanePath), id, func(sc *worktree.Sidecar) {
+		sc.MergeTarget = ""
+	}); err != nil {
+		t.Fatalf("UpdateSidecar: %v", err)
+	}
+
+	// Fail the ahead-count read itself, independent of the merge verdict above.
+	r.wrapRunner(func(next worktree.GitRunner, args []string) (string, error) {
+		if len(args) == 5 && args[2] == "rev-list" && args[3] == "--count" {
+			return "", errors.New("scripted git: injected rev-list failure")
+		}
+		return next(args...)
+	})
+
+	err := disposeErr(t, r.s, id, false, false)
+	requireRefusalContains(t, err, "unmerged commit")
+	if strings.Contains(err.Error(), "has 0 unmerged commit") {
+		t.Errorf("refusal claims a bogus zero count on an unresolvable ahead-count read: %v", err)
+	}
 }
 
 func TestDispose_UnchangedLane_Disposed(t *testing.T) {

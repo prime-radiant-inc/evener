@@ -358,8 +358,11 @@ func (s *Session) disposeEvaluateLane(run worktree.GitRunner, id, lanePath strin
 		return fmt.Errorf("manage_worktree dispose: %s merge evaluation: %w", id, dErr)
 	}
 	if !disposable && !force {
-		ahead := laneAheadCount(run, lanePath, sc.BaseSHA)
-		return fmt.Errorf("manage_worktree dispose: %s has %d unmerged commit(s) (%s); merge them first or pass force to discard them", id, ahead, reason)
+		aheadDesc := "unmerged commit(s) unknown"
+		if ahead, ok := laneAheadCount(run, lanePath, sc.BaseSHA); ok {
+			aheadDesc = fmt.Sprintf("%d unmerged commit(s)", ahead)
+		}
+		return fmt.Errorf("manage_worktree dispose: %s has %s (%s); merge them first or pass force to discard them", id, aheadDesc, reason)
 	}
 	return nil // collectible (or force-overridden)
 }
@@ -463,18 +466,20 @@ func laneWorktreePresent(lanePath string) bool {
 }
 
 // laneAheadCount returns how many commits the lane's HEAD is ahead of its
-// recorded base, for a legible unmerged-refusal message. Best-effort: an
-// unresolvable count reports 0.
-func laneAheadCount(run worktree.GitRunner, lanePath, baseSHA string) int {
+// recorded base, for a legible unmerged-refusal message. It is decoration on
+// an already-decided refusal, not an input to the decision, so an unresolvable
+// count reports ok=false rather than a bogus 0 — the caller says the count is
+// unknown instead of claiming zero commits are what stands in the way.
+func laneAheadCount(run worktree.GitRunner, lanePath, baseSHA string) (n int, ok bool) {
 	out, err := run("-C", lanePath, "rev-list", "--count", baseSHA+"..HEAD")
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	n, convErr := strconv.Atoi(strings.TrimSpace(out))
 	if convErr != nil {
-		return 0
+		return 0, false
 	}
-	return n
+	return n, true
 }
 
 // findDelegateLaneRecord locates the folded job record and worktree-isolation

@@ -388,11 +388,7 @@ func pastTranscriptPath(entry hubcore.PastEntry) string {
 func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	transcriptPath := pastTranscriptPath(entry)
 	toolNames := map[string]string{}
-	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		turn, ok := decodeTranscriptTurn(raw)
-		if !ok {
-			return nil
-		}
+	turns, err := pastTranscriptCache.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
 		return appItemsFromReplayTurn(entry.Meta.ID, turnID, entryIndex, turn, toolNames)
 	})
 	if err != nil {
@@ -409,11 +405,10 @@ func pastEntryTurns(entry hubcore.PastEntry) ([]appwire.Turn, error) {
 	return turns, nil
 }
 
-func projectBoundedPastTranscriptTurn(raw json.RawMessage, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	turn, ok := decodeTranscriptTurn(raw)
-	if !ok {
-		return nil
-	}
+// projectBoundedPastTranscriptTurn projects an already-decoded transcript turn
+// (decoded once by apptranscript's own reader, not here — kata j13r) into
+// AppWire items.
+func projectBoundedPastTranscriptTurn(turn schema.Turn, turnID string, entryIndex int, toolNames map[string]string) []appwire.ThreadItem {
 	return appItemsFromReplayTurn("", turnID, entryIndex, turn, toolNames)
 }
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 )
@@ -339,7 +340,7 @@ func exerciseProjectionResiduals() {
 		record(appwire.NotifyAgentMessageDelta, `{"turnId":"t","itemId":"i","delta":"x"}`),
 	})
 	appTurnsItemForDeltaHook = nil
-	_ = projectTranscriptTurn([]byte("{"), "turn", 0, nil)
+	_ = projectTranscriptTurn(schema.Turn{}, "turn", 0, nil)
 	ch := make(chan events.SessionEvent, 1)
 	ch <- events.SessionEvent{Kind: events.EventSessionEnd}
 	close(ch)

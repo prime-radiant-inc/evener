@@ -1,7 +1,6 @@
 package apptranscript
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,12 +118,8 @@ func writeFailureTranscript(t *testing.T) string {
 	return path
 }
 
-func failureProjector(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-	entry, err := transcript.DecodeEntry(raw)
-	if err != nil {
-		return nil
-	}
-	return ProjectTurn(turnID, entryIndex, entry.Turn, map[string]string{}, nil, nil)
+func failureProjector(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+	return ProjectTurn(turnID, entryIndex, turn, map[string]string{}, nil, nil)
 }
 
 // The reloaded turn wrapping a persisted failure reports the same
@@ -170,8 +165,8 @@ func TestTurnsFromFileStampsFailedTurnStatus(t *testing.T) {
 // so it must agree with the whole-file read.
 func TestIndexedReadStampsFailedTurnStatus(t *testing.T) {
 	path := writeFailureTranscript(t)
-	page, err := NewTurnCache().PageFromFile(path, 1<<20, "", 50, func(raw json.RawMessage, turnID string, entryIndex int, _ map[string]string) []appwire.ThreadItem {
-		return failureProjector(raw, turnID, entryIndex)
+	page, err := NewTurnCache().PageFromFile(path, 1<<20, "", 50, func(turn schema.Turn, turnID string, entryIndex int, _ map[string]string) []appwire.ThreadItem {
+		return failureProjector(turn, turnID, entryIndex)
 	})
 	if err != nil {
 		t.Fatalf("PageFromFile: %v", err)

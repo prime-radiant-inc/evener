@@ -255,11 +255,11 @@ func (c *TurnCache) TurnCountFromFile(path string, maxLineBytes int, project Bou
 
 func fullProjector(project BoundedEntryProjector) EntryProjector {
 	toolNames := map[string]string{}
-	return func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
+	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		if project == nil {
 			return nil
 		}
-		return project(raw, turnID, turnIndex, toolNames)
+		return project(turn, turnID, turnIndex, toolNames)
 	}
 }
 
@@ -685,7 +685,7 @@ func scanTurnIndex(file *os.File, transcriptSize int64, start int64, maxLineByte
 			visible := false
 			if project != nil {
 				recordNames := cloneToolNames(record.ToolSeed)
-				visible = len(project(trimmed, fmt.Sprintf("turn_%d", entryIndex), entryIndex, recordNames)) > 0
+				visible = len(project(entry.Turn, fmt.Sprintf("turn_%d", entryIndex), entryIndex, recordNames)) > 0
 			}
 			applyToolNameChanges(projectNames, record.ToolChanges)
 			record.Visible = visible
@@ -908,7 +908,7 @@ func projectIndexedRangeObserved(path string, index turnIndexDisk, lo int, hi in
 		}
 		var items []appwire.ThreadItem
 		if project != nil {
-			items = project(raw, fmt.Sprintf("turn_%d", record.Index), record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
+			items = project(entry.Turn, fmt.Sprintf("turn_%d", record.Index), record.Index, cloneToolNamesObserved(record.ToolSeed, stats))
 		}
 		if len(items) == 0 {
 			continue

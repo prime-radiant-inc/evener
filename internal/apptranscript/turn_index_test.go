@@ -1334,28 +1334,24 @@ func reportIndexWriteMetrics(b *testing.B, copied, serialized, persisted int64) 
 
 func sequentialTestProjector() EntryProjector {
 	toolNames := map[string]string{}
-	return func(raw json.RawMessage, turnID string, turnIndex int) []appwire.ThreadItem {
-		return boundedTestProjector(raw, turnID, turnIndex, toolNames)
+	return func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
+		return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 	}
 }
 
-func boundedTestProjector(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	var entry transcript.Entry
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		return nil
-	}
-	return ProjectTurn(turnID, turnIndex, entry.Turn, toolNames, nil, nil)
+func boundedTestProjector(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return ProjectTurn(turnID, turnIndex, turn, toolNames, nil, nil)
 }
 
-func projectionKeepingAllEntries(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
-	return boundedTestProjector(raw, turnID, turnIndex, toolNames)
+func projectionKeepingAllEntries(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+	return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 }
 
-func projectionKeepingOddEntries(raw json.RawMessage, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
+func projectionKeepingOddEntries(turn schema.Turn, turnID string, turnIndex int, toolNames map[string]string) []appwire.ThreadItem {
 	if turnIndex%2 == 0 {
 		return nil
 	}
-	return boundedTestProjector(raw, turnID, turnIndex, toolNames)
+	return boundedTestProjector(turn, turnID, turnIndex, toolNames)
 }
 
 func assertBoundedLatestMatchesFull(t *testing.T, path string, limit int) {
