@@ -678,10 +678,38 @@ type InputRequest struct {
 }
 
 // SetProcessing marks whether the session is currently processing input.
+//
+// Going processing also guarantees an ActiveTurnID, because those two are one
+// fact and a reader that sees them disagree is misinformed. Status.Type and
+// Serf.ActiveTurnID were separately-written fields: turn/start reserves an id
+// before flipping processing, but cmd/serf/serve.go's queued-input
+// auto-continuation flips processing with no reservation at all, and learns
+// the id only later when the next SessionStart event crosses the bridge
+// goroutine. A thread/read landing in that window returned status "active"
+// with an empty ActiveTurnID, and the composer's isTurnActive gate requires
+// both — so it offered idle Send-only controls for a session that was really
+// working (kata c2ty).
+//
+// This does NOT add a second turn-id minter, which would be the eptj failure
+// shape: two paths numbering into one turn_N namespace, where a collision let
+// turn/completed overwrite a persisted turn with unrelated content.
+// ReserveTurnID is the same call turn/start makes, and the projector's
+// startTurn CONSUMES an outstanding reservation rather than incrementing past
+// it — so the id minted here is the one the real turn goes on to use.
 func (s *Server) SetProcessing(processing bool) {
 	s.mu.Lock()
 	s.processing = processing
 	if processing {
+		// The empty check is belt-and-braces, not load-bearing: ReserveTurnID
+		// returns an outstanding reservation rather than minting a second one,
+		// so removing this guard changes nothing today (mutation-verified —
+		// the "mint unconditionally" mutant survives both tests). Kept because
+		// it states the intent at the call site, and because it is what keeps
+		// this correct if ReserveTurnID ever stops being idempotent.
+		if strings.TrimSpace(s.appActiveTurnID) == "" {
+			s.ensureAppProjectorLocked("")
+			s.appActiveTurnID = s.appProjector.ReserveTurnID()
+		}
 		s.appReservedTurnID = ""
 	}
 	s.mu.Unlock()

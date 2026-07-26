@@ -111,8 +111,33 @@ func TestServerAppWireProcessingWithoutReservedTurnIDReadsActiveWithNoTurnID(t *
 	if data.Thread.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("status=%q, want active", data.Thread.Status.Type)
 	}
-	if data.Thread.Serf.ActiveTurnID != "" {
-		t.Fatalf("activeTurnId=%q, want empty - this is the gap that makes c2ty reachable, not proof it's fixed", data.Thread.Serf.ActiveTurnID)
+	// The fix (kata c2ty): going processing now reserves an id in the same
+	// lock hold, so the two fields can no longer disagree. Asserting a
+	// non-empty id rather than a specific one - the value is the projector's
+	// to choose, and pinning it here would just restate ReserveTurnID.
+	if data.Thread.Serf.ActiveTurnID == "" {
+		t.Fatal("activeTurnId is empty while status reads active: the composer's isTurnActive gate needs both, and offers idle controls for a working session when they disagree")
+	}
+}
+
+// A reservation already made by turn/start must be kept, not replaced. If
+// SetProcessing minted unconditionally it would burn a second id for one turn
+// and hand the client an id the turn never uses.
+func TestServerAppWireProcessingKeepsAnAlreadyReservedTurnID(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	reserved, err := srv.reserveAppTurnIDForStart()
+	if err != nil {
+		t.Fatalf("reserveAppTurnIDForStart: %v", err)
+	}
+	srv.SetProcessing(true)
+
+	srv.mu.RLock()
+	got := srv.appActiveTurnID
+	srv.mu.RUnlock()
+	if got != reserved {
+		t.Fatalf("appActiveTurnID = %q after SetProcessing, want the reserved %q", got, reserved)
 	}
 }
 
