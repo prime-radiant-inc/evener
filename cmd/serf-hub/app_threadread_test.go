@@ -457,6 +457,51 @@ func TestPastEntryThread_CarriesCostTotal(t *testing.T) {
 	}
 }
 
+// TestPastEntryThread_UnnamedSessionKeepsTheShortForm proves the wire Name
+// field agrees with the rail row (kata kspb / hubcore.nodeTitle) rather than
+// the bare 22-char ID SessionDisplayName falls back to when a session has
+// neither a generated name nor a prompt. Name feeds the pane header
+// (model.name || ref) and the browser tab title (threadName(ref) ?? ref) on
+// the frontend, and the TUI's tree title (thread.Name) directly — all three
+// showed the raw ID until this fix (kata b309); the rail alone was fixed by
+// kspb, in a different function (nodeTitle) that never touches this wire
+// object.
+//
+// The short-circuit is scoped to Name only, not Preview: Preview is this
+// wire object's own full-text field (unaffected, still the raw-ID fallback,
+// matching the live-thread path in appwire_runtime.go and the TUI's own
+// Name-then-Preview-then-SessionID chain), and SessionDisplayName itself
+// stays untouched because eight other callers want its bare-ID last resort
+// (see nodeTitle's doc comment).
+func TestPastEntryThread_UnnamedSessionKeepsTheShortForm(t *testing.T) {
+	const id = "033vq9Kif27AzZgnbjr55t" // a real 22-char UUIDv7 base62 payload
+
+	unnamed := hubcore.PastEntry{Meta: schema.SessionMeta{ID: id}}
+	thread := requirePastEntryThread(t, hubcore.WebConfig{}, unnamed, false)
+	if want := hubcore.ShortID(id); thread.Name != want {
+		t.Fatalf("thread.Name = %q, want %q", thread.Name, want)
+	}
+	if thread.Name == id {
+		t.Fatalf("thread.Name = %q — the raw payload, which is what ShortID exists to avoid", thread.Name)
+	}
+	if thread.Preview != id {
+		t.Fatalf("thread.Preview = %q, want the raw ID %q (Preview keeps the full-text fallback)", thread.Preview, id)
+	}
+
+	// A prompted-but-unnamed session has something better than the ID to
+	// show, so it keeps the prompt verbatim rather than being shortened.
+	prompted := hubcore.PastEntry{Meta: schema.SessionMeta{ID: id, OriginalPrompt: "fix the login bug"}}
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, prompted, false).Name; got != "fix the login bug" {
+		t.Fatalf("thread.Name (prompted) = %q, want the prompt verbatim", got)
+	}
+
+	// A named session is untouched.
+	named := hubcore.PastEntry{Meta: schema.SessionMeta{ID: id, Name: "Login bug fix"}}
+	if got := requirePastEntryThread(t, hubcore.WebConfig{}, named, false).Name; got != "Login bug fix" {
+		t.Fatalf("thread.Name (named) = %q, want %q", got, "Login bug fix")
+	}
+}
+
 func runningSubagentProjectionConfig(t *testing.T) (hubcore.WebConfig, string) {
 	t.Helper()
 	root := t.TempDir()

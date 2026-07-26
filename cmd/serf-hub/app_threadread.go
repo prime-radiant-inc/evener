@@ -198,6 +198,16 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	if title == "" {
 		title = entry.Meta.ID
 	}
+	// name is the wire Name field, which feeds the pane header and browser
+	// tab title (kata b309) as well as the TUI's tree title. Unlike Preview
+	// (title, above — the full-text fallback), a session with neither a
+	// generated name nor a prompt gets the same short form the rail row
+	// already renders (kspb's nodeTitle), rather than SessionDisplayName's
+	// bare-ID last resort, which is unreadable in a one-line title.
+	name := title
+	if name == "" || name == strings.TrimSpace(entry.Meta.ID) {
+		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
+	}
 	cwd := entry.Meta.EnvInfo.WorkingDir
 	ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
 	parentRef := ""
@@ -230,7 +240,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
 		Preview:       title,
-		Name:          title,
+		Name:          name,
 		ModelProvider: entry.Meta.Model,
 		CreatedAt:     hubcore.UnixSeconds(createdAt),
 		UpdatedAt:     hubcore.UnixSeconds(updatedAt),
