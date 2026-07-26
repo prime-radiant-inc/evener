@@ -230,7 +230,24 @@ const NOTIFICATION_KEY_NAMES: Record<NotificationKey, string> = {
 
 function loadTranscript(): Record<TranscriptStatusKey, boolean> {
   return {
-    roundTimings: readBool(TRANSCRIPT_KEY_NAMES.roundTimings, false),
+    // On by default as of the five-participant study (docs/web-ui/ux-plan-2026-07.md).
+    // Its most-repeated finding, from four participants independently on
+    // different tasks, was that the older server-rendered UI showed per-step
+    // timing with zero clicks and this one showed none anywhere - and that,
+    // not typography, was why the old build read better.
+    //
+    // It defaulted off for a good reason that has since expired: the old form
+    // was a nine-field raw dump of nanosecond durations (kata 7zkv reworked it
+    // into a summary). What renders now is one line per round plus a short
+    // suffix on tool-call summaries the eye already scans, with the breakdown
+    // collapsed behind a click.
+    //
+    // A persona panel voted 3-1 to keep it off, arguing per-row chrome taxes
+    // readers who never look at it. The fifth participant used a real session
+    // both ways and overruled that: the panel was weighing hypothetical
+    // clutter, while four people doing real work each independently noticed
+    // the absence.
+    roundTimings: readBool(TRANSCRIPT_KEY_NAMES.roundTimings, true),
     tokenCounts: readBool(TRANSCRIPT_KEY_NAMES.tokenCounts, false),
     hookExitsAll: readBool(TRANSCRIPT_KEY_NAMES.hookExitsAll, false),
     hookExitsNormal: readBool(TRANSCRIPT_KEY_NAMES.hookExitsNormal, false),

@@ -32,6 +32,12 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   resetPrefsStoreForTests();
+  // Most tests below are about per-pref GATING - "one on does not drag the
+  // others in" - so they need an all-off baseline to switch a single pref up
+  // from. roundTimings now ships on (see prefs.ts and the study plan), so the
+  // baseline has to be set rather than assumed. The default itself is asserted
+  // in its own test, which does not use this.
+  prefsStore.getState().setTranscriptStatus("roundTimings", false);
 });
 
 afterEach(cleanup);
@@ -90,10 +96,27 @@ test("cost alone (a source that reports cost but not duration/usage) still rende
 
 const fullTurn = () => turn({ durationMs: 65432, usage: { inputTokens: 500, outputTokens: 120 }, cost: "$1.00" });
 
-test("a turn carrying all three figures renders no row at all with every pref at its default (off)", () => {
+test("a turn carrying all three figures renders no row at all with every segment off", () => {
   const { container } = render(<TurnSeparator turn={fullTurn()} />);
   expect(container.firstChild).toBeNull();
   expect(screen.queryByTestId("turn-separator")).toBeNull();
+});
+
+// The shipped default, asserted against a pristine store rather than this
+// file's all-off baseline. Round timings is ON out of the box: the five-person
+// study found its absence was the most-repeated complaint about the transcript
+// (docs/web-ui/ux-plan-2026-07.md). Token counts and cost stay off - each adds
+// a figure of its own, where timing annotates lines the reader already scans.
+test("out of the box, round timings shows and the other two segments do not", () => {
+  // localStorage first: beforeEach's baseline write persisted "off", and
+  // resetPrefsStoreForTests reads storage before it reaches for a default.
+  localStorage.clear();
+  resetPrefsStoreForTests();
+  render(<TurnSeparator turn={fullTurn()} />);
+  const row = screen.getByTestId("turn-separator");
+  expect(row.textContent).toMatch(/\d/); // the duration, whatever fullTurn's 65432ms formats to
+  expect(row.textContent).not.toContain("500");
+  expect(row.textContent).not.toContain("$");
 });
 
 test("Round timings on alone shows only the duration - no leading or trailing separator dot", () => {
