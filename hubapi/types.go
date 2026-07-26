@@ -135,8 +135,8 @@ type SessionDetail struct {
 	// WorkMillis is the session's accumulated wall-clock work time in
 	// milliseconds; ActiveTurnStartedAt is the Unix epoch-milliseconds timestamp
 	// the current in-flight turn began, 0 when idle/ended (WS2).
-	WorkMillis          int64  `json:"work_millis,omitempty"`
-	ActiveTurnStartedAt int64  `json:"active_turn_started_at,omitempty"`
+	WorkMillis          int64 `json:"work_millis,omitempty"`
+	ActiveTurnStartedAt int64 `json:"active_turn_started_at,omitempty"`
 	// FailedToolCalls mirrors appwire.SerfThread.FailedToolCalls: how many of
 	// this session's tool calls failed, or absent when nothing counted them
 	// (an unreadable transcript, or a source that never derives the figure).
@@ -144,11 +144,11 @@ type SessionDetail struct {
 	// counted" stay distinguishable on the wire — collapsing them would let a
 	// producer that forgets to populate the field silently read as a clean
 	// session instead of an uncounted one.
-	FailedToolCalls *int `json:"failed_tool_calls,omitempty"`
-	ParentSessionID     string `json:"parent_session_id,omitempty"`
-	DivergenceTurn      int    `json:"divergence_turn,omitempty"`
-	ForkLabel           string `json:"fork_label,omitempty"`
-	IsSubagent          bool   `json:"is_subagent"`
+	FailedToolCalls *int   `json:"failed_tool_calls,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	DivergenceTurn  int    `json:"divergence_turn,omitempty"`
+	ForkLabel       string `json:"fork_label,omitempty"`
+	IsSubagent      bool   `json:"is_subagent"`
 	// GoalStatus/GoalIterations mirror appwire.GoalState (status + continuation
 	// turn count) when a /goal is set on a live session, else empty/zero. Kept
 	// flattened so hubapi need not depend on appwire. There is no iteration cap,
