@@ -1267,6 +1267,22 @@ type ItemLifecycleParams struct {
 	Ref      string     `json:"ref,omitempty"`
 	TurnID   string     `json:"turnId"`
 	Item     ThreadItem `json:"item"`
+	// FailedToolCalls carries the session's running failure count (kata 895d),
+	// same field and meaning as ThreadStatusChangedParams.FailedToolCalls —
+	// only ever populated on item/completed (never item/started: a failure
+	// lands at completion), and only on the item whose completion actually
+	// moved the figure since the last one that carried it. thread/status/
+	// changed already carries the count unconditionally at every turn
+	// boundary, but a live watcher on a long turn sees nothing move however
+	// many tool calls fail inside it; this rides the finer-grained
+	// per-item notification instead so the count moves the instant a failure
+	// lands. Gating on "changed since last stamp" is what keeps this from
+	// resending an unchanged figure on the many item/completed notifications
+	// a turn with no new failures still produces.
+	//
+	// Absent means "no change" here, same as on ThreadStatusChangedParams —
+	// never "nobody counted".
+	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
 }
 
 // WarningParams is the params shape for the warning notification: a

@@ -34,6 +34,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.appTurns = &appTurnSnapshot{threadID: threadID, limit: s.appTurns.limit}
 	s.appActiveTurnID = ""
 	s.appReservedTurnID = ""
+	s.appLastStampedFailedToolCalls = nil
 	s.mu.Unlock()
 }
 
@@ -61,6 +62,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 
 	for _, item := range projected {
 		params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
+		params = s.stampFailureCountOnItemCompleted(item.Method, params)
 		record := s.appNotifier.Record(item.ThreadID, item.Method, params)
 		snapshot.Apply([]appserver.SequencedNotification{record})
 		s.appServer.Broadcast(item.ThreadID, item.Method, params)
@@ -104,6 +106,57 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 	}
 	status.FailedToolCalls = &count
 	return status
+}
+
+// stampFailureCountOnItemCompleted rides the running failure count on an
+// item/completed notification, but ONLY on the item whose completion just
+// moved it (kata 895d) — every other item/completed passes through
+// untouched.
+//
+// thread/status/changed already carries the count unconditionally, but only
+// at a turn boundary; a live watcher on a long turn sees nothing move however
+// many tool calls fail inside it, the same shape of harm the count exists to
+// fix at session scale (kata 12rq). item/completed is the natural finer-grain
+// carrier — a failure IS an item completing — but it fires once per tool
+// call, so stamping it unconditionally would resend an unchanged figure on
+// every success to change it on a few. Gating on "did the count move since
+// the last stamp" adds the field only where it is news, which is the same
+// rule the client's own render gate applies (StatusRow.tsx's FailureCount:
+// absent or unchanged says nothing).
+//
+// item/completed's params ride as a map[string]any (internal/appprojector
+// builds them that way, unlike thread/status/changed's typed struct), so this
+// stamps the same map key rather than a struct field.
+func (s *Server) stampFailureCountOnItemCompleted(method string, params any) any {
+	if method != appwire.NotifyItemCompleted {
+		return params
+	}
+	fields, ok := params.(map[string]any)
+	if !ok {
+		return params
+	}
+	s.mu.RLock()
+	fn := s.failedToolCallsFn
+	s.mu.RUnlock()
+	if fn == nil {
+		return params
+	}
+	count, measured := fn()
+	if !measured {
+		return params
+	}
+	s.mu.Lock()
+	unchanged := s.appLastStampedFailedToolCalls != nil && *s.appLastStampedFailedToolCalls == count
+	if !unchanged {
+		stamped := count
+		s.appLastStampedFailedToolCalls = &stamped
+	}
+	s.mu.Unlock()
+	if unchanged {
+		return params
+	}
+	fields["failedToolCalls"] = count
+	return fields
 }
 
 func (s *Server) acceptsSessionEvent(sessionID string) bool {

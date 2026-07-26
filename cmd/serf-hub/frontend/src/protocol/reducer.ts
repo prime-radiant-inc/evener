@@ -475,6 +475,13 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "item/completed": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turnId, item } = n.params;
+      // A live watcher on a long turn sees nothing move on thread/status/
+      // changed until the turn ends, however many tool calls fail inside it
+      // (kata 895d) — item/completed is the finer-grained carrier, stamped
+      // by the server only on the item whose completion actually moved the
+      // count. Applied exactly like thread/status/changed's: absent means
+      // "no change", never "nobody counted".
+      const failedToolCalls = n.params.failedToolCalls ?? model.failedToolCalls;
       const existingTurnId = findItemTurnId(model, turnId, item.id);
       if (existingTurnId) {
         return {
@@ -485,6 +492,7 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
               mergeObservedTiming(mergeArguments(mergeReasoning(wireItemToModel(item), old), old), old, now),
             ),
           })),
+          failedToolCalls,
           lastFrameAt: now,
         };
       }
@@ -495,13 +503,14 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
       // empty turn, then item/completed alone carries the item. Insert
       // rather than drop it.
       const insertTurnId = resolveInsertTurnId(model, turnId, item.turnId);
-      if (!insertTurnId) return { ...model, lastFrameAt: now };
+      if (!insertTurnId) return { ...model, failedToolCalls, lastFrameAt: now };
       return {
         ...model,
         turns: mapTurn(model.turns, insertTurnId, (turn) => ({
           ...turn,
           items: [...turn.items, wireItemToModel(item)],
         })),
+        failedToolCalls,
         lastFrameAt: now,
       };
     }

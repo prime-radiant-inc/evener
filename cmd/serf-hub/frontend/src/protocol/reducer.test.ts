@@ -2714,3 +2714,124 @@ test("thread/status/changed can push a measured zero", () => {
 
   expect(model.failedToolCalls).toBe(0);
 });
+
+// A live watcher on a long turn sees nothing move on thread/status/changed
+// until the turn ends, however many tool calls fail inside it — the same
+// shape of harm kata 12rq fixed at session scale (kata 895d). item/completed
+// is the finer-grained carrier: the server stamps it only on the item whose
+// completion actually moved the count (server/appwire_runtime.go's
+// stampFailureCountOnItemCompleted), so the client applies it exactly the
+// same way it applies thread/status/changed's.
+test("item/completed carries a fresher failure count onto the model (existing item)", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  expect(model.failedToolCalls).toBe(0);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "commandExecution", id: "item_tool", turnId: "turn_1", status: "failed", exitCode: 1 },
+        failedToolCalls: 1,
+      },
+    },
+    1003,
+  );
+
+  expect(model.failedToolCalls).toBe(1);
+});
+
+test("item/completed inserting a new item can also carry a fresher failure count", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 0 },
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "Hi there", status: "completed" },
+        failedToolCalls: 2,
+      },
+    },
+    1002,
+  );
+
+  expect(model.failedToolCalls).toBe(2);
+});
+
+// Absent means "no change since the last stamp", exactly like thread/status/
+// changed — never "nobody counted". Most item/completed notifications in a
+// clean stretch of a turn carry no failedToolCalls at all (the server only
+// stamps the item that moves it), and the model must not blank its figure on
+// every one of them.
+test("item/completed without a failure count leaves the model's figure alone", () => {
+  let model = testHydrate({
+    status: { type: "active" },
+    serf: { ref: "ref_t", capabilities: CAPABILITIES, queue: {}, failedToolCalls: 3 },
+  });
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "userMessage", id: "item_user", turnId: "turn_1", text: "Hi there", status: "completed" },
+      },
+    },
+    1002,
+  );
+
+  expect(model.failedToolCalls).toBe(3);
+});

@@ -171,6 +171,18 @@ type Server struct {
 	appTurns                     *appTurnSnapshot
 	appActiveTurnID              string
 	appReservedTurnID            string
+	// appLastStampedFailedToolCalls is the failure count most recently
+	// stamped onto an item/completed notification (kata 895d) — nil means
+	// nothing has been stamped yet for the current identity. It exists so
+	// item/completed only carries the figure on the item whose completion
+	// actually moved it, not on every tool call: the running count already
+	// rides thread/status/changed unconditionally (every status change is a
+	// turn boundary, so it can only have moved there), but that leaves a live
+	// watcher unable to see a failure land partway through a long turn.
+	// Reset to nil on SetAppIdentity so a new session's first observation is
+	// never suppressed as "unchanged" by whatever the previous session on
+	// this server left behind.
+	appLastStampedFailedToolCalls *int
 	cancelFunc                   context.CancelFunc
 	steerFunc                    func(string)
 	steerWithImagesFunc          func(string, []ImageAttachment)
