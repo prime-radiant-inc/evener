@@ -39,8 +39,6 @@ const (
 	maxJobGrepMatches           = 100
 	maxJobGrepLineBytes         = 4096
 	maxJobGrepPatternBytes      = 4096
-	maxJobWatchResultTextChars  = 128
-	maxJobWatchResultEvents     = 8
 	jobKindAgent                = "agent"
 	jobKindShell                = "shell"
 	jobPhaseStarting            = "starting"
@@ -48,7 +46,6 @@ const (
 	jobPhaseModelStreaming      = "model_streaming"
 	jobPhaseToolRunning         = "tool_running"
 	jobPhaseProcessRunning      = "process_running"
-	jobPhaseStopping            = "stopping"
 	// grantedReadBlockUnsupportedErr is the rejection for max_wait_ms>0 on a
 	// cross-session read: a watch-granted read (spec §5.1) or a depth >= 2
 	// descendant read resolved through the recursive owner path (spec §2). Both
