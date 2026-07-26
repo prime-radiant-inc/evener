@@ -61,6 +61,24 @@ func warningMessages(sess *Session) []string {
 	}
 }
 
+// pendingTranscriptWarningMessages returns the message text of every
+// currently-buffered pendingTranscriptWarnings entry, WITHOUT draining it.
+// resumeWorktreeReentry and applyInitInsideWorktreeLock now buffer their
+// warnings there (kata 57j8) rather than emitting directly, so they only
+// reach the events channel via the session's OWN emitSessionStartEnvelope
+// call during construction. A test that invokes either function a second
+// time, directly, on a session that already finished construction (the
+// pattern several tests below use to isolate the function under test) will
+// never see another emitSessionStartEnvelope flush — inspect the buffer
+// itself instead of warningMessages(sess) in that shape of test.
+func pendingTranscriptWarningMessages(sess *Session) []string {
+	msgs := make([]string, 0, len(sess.pendingTranscriptWarnings))
+	for _, w := range sess.pendingTranscriptWarnings {
+		msgs = append(msgs, w.Message)
+	}
+	return msgs
+}
+
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
 		if !strings.Contains(s, sub) {
@@ -429,6 +447,65 @@ func TestInitInside_ManagedForeign_WarnsAndContinuesCoOccupying(t *testing.T) {
 	}
 }
 
+// TestInitInside_CoOccupyWarningRidesAfterSessionStart (kata 57j8) asserts
+// that applyInitInsideWorktreeLock's co-occupying warning does not jump the
+// SESSION_START envelope on a FRESH session (NewSession, not resume) launched
+// inside an existing managed worktree lane that's foreign-locked. et0x's
+// ruling applies here exactly as it did to the two call sites it fixed: a
+// client only creates its per-thread state off SESSION_START's projection,
+// and a warning is never transcript-persisted, so one emitted before
+// SESSION_START is lost, not merely reordered.
+//
+// The kata's own filing initially misattributed this to the RESUME-only
+// resumeWorktreeReentry flow; applyInitInsideWorktreeLock runs from
+// initSessionState, which NewSession also calls, so a FRESH session hitting
+// this exact scenario (launched with its cwd already inside a kept,
+// foreign-locked managed lane) reaches the same bug — fixing only the resume
+// path would have fixed half of it. This test's r.launchInside goes through
+// NewSession, not RestoreSessionFromMetaWithConfig, proving the fresh-session
+// path is reachable, not just theorized.
+func TestInitInside_CoOccupyWarningRidesAfterSessionStart(t *testing.T) {
+	t.Parallel()
+	r := newScriptedLaneRepo(t)
+	res, err := r.wt().create(t, map[string]any{"name": "lane"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	path := res["path"].(string)
+	r.setLaneLock(t, path, "serf:someone-else-session")
+
+	sess := r.launchInside(t, path).s
+	sess.Close()
+	var evs []events.SessionEvent
+	for ev := range sess.Events() {
+		evs = append(evs, ev)
+	}
+
+	sessionStartIdx := -1
+	warningIdx := -1
+	for i, ev := range evs {
+		switch ev.Kind {
+		case events.EventSessionStart:
+			if sessionStartIdx == -1 {
+				sessionStartIdx = i
+			}
+		case events.EventWarning:
+			if w, ok := ev.Data.(events.WarningData); ok && strings.Contains(w.Message, "co-occupying") && warningIdx == -1 {
+				warningIdx = i
+			}
+		}
+	}
+	if sessionStartIdx == -1 {
+		t.Fatalf("no SESSION_START event found; got %d events", len(evs))
+	}
+	if warningIdx == -1 {
+		t.Fatalf("no co-occupying WARNING event found; got %+v", evs)
+	}
+	if warningIdx <= sessionStartIdx {
+		t.Fatalf("co-occupying WARNING event (index %d) did not arrive after SESSION_START (index %d) — jumped the envelope", warningIdx, sessionStartIdx)
+	}
+}
+
 func TestInitInside_NotInWorktree_NoOp(t *testing.T) {
 	t.Parallel()
 	r := newScriptedLaneRepo(t)
@@ -488,7 +565,7 @@ func TestResumeWorktreeReentry_UnresolvableMainRootNoticesAndRestoresRoot(t *tes
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
-	msgs := warningMessages(r.s)
+	msgs := pendingTranscriptWarningMessages(r.s)
 	if !anyContainsAll(msgs, path, "no longer part of a git repository") {
 		t.Errorf("no notice about the unresolvable main root: %v", msgs)
 	}
@@ -519,7 +596,7 @@ func TestResumeWorktreeReentry_WorktreeListFailsNoticesAndRestoresRoot(t *testin
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
-	msgs := warningMessages(r.s)
+	msgs := pendingTranscriptWarningMessages(r.s)
 	if !anyContainsAll(msgs, path, "could not be verified as a worktree") {
 		t.Errorf("no notice about the worktree-list failure: %v", msgs)
 	}
@@ -554,7 +631,7 @@ func TestResumeWorktreeReentry_NotRegisteredAtPathNoticesAndRestoresRoot(t *test
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
-	msgs := warningMessages(r.s)
+	msgs := pendingTranscriptWarningMessages(r.s)
 	if !anyContainsAll(msgs, path, "no longer a registered worktree") {
 		t.Errorf("no notice about the unregistered path: %v", msgs)
 	}
@@ -581,7 +658,7 @@ func TestResumeWorktreeReentry_ManagedRelockFailsNoticesAndRestoresRoot(t *testi
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
-	msgs := warningMessages(r.s)
+	msgs := pendingTranscriptWarningMessages(r.s)
 	if !anyContainsAll(msgs, path, "failed to re-lock previous worktree") {
 		t.Errorf("no notice about the failed re-lock: %v", msgs)
 	}
@@ -611,7 +688,7 @@ func TestResumeWorktreeReentry_ManagedForeignBareLockUnknownOwnerNotice(t *testi
 	if got := r.s.currentEnv().WorkingDirectory(); got != r.mainRoot {
 		t.Fatalf("currentEnv WorkingDirectory = %q, want restore root %q", got, r.mainRoot)
 	}
-	msgs := warningMessages(r.s)
+	msgs := pendingTranscriptWarningMessages(r.s)
 	if !anyContainsAll(msgs, path, "an unknown owner") {
 		t.Errorf("no notice naming an unknown owner for the bare-locked worktree: %v", msgs)
 	}
@@ -681,7 +758,7 @@ func TestInitInside_LockStateUnverifiableWarns(t *testing.T) {
 
 	sess.applyInitInsideWorktreeLock(true)
 
-	msgs := warningMessages(sess)
+	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "could not inspect the lock") {
 		t.Errorf("no warning about the unverifiable lock state: %v", msgs)
 	}
@@ -715,7 +792,7 @@ func TestInitInside_RelockFailsWarns(t *testing.T) {
 
 	sess.applyInitInsideWorktreeLock(true)
 
-	msgs := warningMessages(sess)
+	msgs := pendingTranscriptWarningMessages(sess)
 	if !anyContainsAll(msgs, path, "failed to lock worktree") {
 		t.Errorf("no warning about the failed relock: %v", msgs)
 	}

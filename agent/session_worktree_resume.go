@@ -52,7 +52,11 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 			s.env = local.WithWorkingDirectory(restoreRoot)
 			reason += "; resuming at " + restoreRoot
 		}
-		s.emit(events.EventWarning, events.WarningData{Message: reason})
+		// Buffered, not emitted directly: this runs before initSessionState
+		// (both via NewSession and RestoreSessionFromMetaWithConfig), strictly
+		// before emitSessionStartEnvelope — see that function's doc comment
+		// (kata 57j8, following et0x's ruling).
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: reason})
 	}
 
 	// The path must still exist and still be a real (linked) worktree.
@@ -223,7 +227,11 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	}
 	worktreeRoot, err := s.worktreeRootForProject(s.currentStateDir(), project)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("could not resolve managed worktree state: %v", err)})
+		// Buffered, not emitted directly: this runs from initSessionState,
+		// strictly before emitSessionStartEnvelope, on BOTH NewSession and
+		// RestoreSessionFromMetaWithConfig — see that function's doc comment
+		// (kata 57j8, following et0x's ruling).
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("could not resolve managed worktree state: %v", err)})
 		return
 	}
 	projectDir := filepath.Join(worktreeRoot, project.ID)
@@ -236,7 +244,8 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	run := s.newWorktreeGitRunner(context.Background(), controlEnv)
 	locked, reason, err := lockStateOf(run, activeRoot)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{
+		// Buffered — see the worktreeRootForProject error branch above.
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 			Message: fmt.Sprintf("could not inspect the lock on worktree %s at session start: %v", activeRoot, err),
 		})
 		return
@@ -249,7 +258,8 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 	case worktree.ActLock:
 		marker := worktree.FormatSessionMarker(s.id)
 		if _, err := run("worktree", "lock", "--reason", marker, activeRoot); err != nil {
-			s.emit(events.EventWarning, events.WarningData{
+			// Buffered — see the worktreeRootForProject error branch above.
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 				Message: fmt.Sprintf("failed to lock worktree %s at session start: %v", activeRoot, err),
 			})
 			return
@@ -261,7 +271,8 @@ func (s *Session) applyInitInsideWorktreeLock(isGitRepo bool) {
 		if occupant == "" {
 			occupant = "an unknown owner"
 		}
-		s.emit(events.EventWarning, events.WarningData{
+		// Buffered — see the worktreeRootForProject error branch above.
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
 			Message: fmt.Sprintf("session started inside worktree %s, which is locked by %s; continuing and co-occupying it", activeRoot, occupant),
 		})
 	}
