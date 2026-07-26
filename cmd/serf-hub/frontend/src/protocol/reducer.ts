@@ -388,6 +388,25 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
       const { turn } = n.params;
+      // turns is presented everywhere else (mapTurn, findItemTurnId) as if
+      // ids are unique. A duplicate here should never happen — the two known
+      // ways it could (eptj, bz2z) are both fixed server-side — but blindly
+      // appending would grow a second row sharing an id, silently setting up
+      // turn/completed's same-id-replaces-both hazard below. Report loudly
+      // (a reducer is a bad place to throw) and replace the existing row in
+      // place instead of duplicating it.
+      const existingIndex = model.turns.findIndex((t) => t.id === turn.id);
+      if (existingIndex !== -1) {
+        console.error(
+          `applyNotification: turn/started turnId ${turn.id} already exists in model.turns — replacing it in place instead of appending a duplicate row (turn-id-uniqueness invariant violated)`,
+        );
+        return {
+          ...model,
+          turns: model.turns.map((t, i) => (i === existingIndex ? wireToTurnModel(turn) : t)),
+          activeTurnId: turn.id,
+          lastFrameAt: now,
+        };
+      }
       return {
         ...model,
         turns: [...model.turns, wireToTurnModel(turn)],
@@ -445,9 +464,26 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
           items: (oldTurn?.items ?? []).map((item) => settleItem(item, now)),
         };
       }
+      // model.turns is presented everywhere else as if ids are unique — a
+      // duplicate here should never happen (see the "turn/started" case's
+      // comment), but replacing EVERY entry sharing turnId would overwrite an
+      // unrelated turn's content with this settle's, silently, the exact
+      // corruption this reducer must not produce. Settle only the first
+      // match; report loudly and leave any further same-id entries alone.
+      const duplicateCount = model.turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
+      if (duplicateCount > 1) {
+        console.error(
+          `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
+        );
+      }
+      let settledFirstMatch = false;
       return {
         ...model,
-        turns: model.turns.map((t) => (t.id === turnId ? settledTurn : t)),
+        turns: model.turns.map((t) => {
+          if (t.id !== turnId || settledFirstMatch) return t;
+          settledFirstMatch = true;
+          return settledTurn;
+        }),
         activeTurnId: undefined,
         // The active turn just ended: its start anchor is now stale (there is
         // no live push to refresh it), so clear it in lockstep with activeTurnId

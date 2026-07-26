@@ -1,4 +1,4 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 // Vite's `?raw` import (declared ambiently by the "vite/client" lib already
 // in tsconfig.json) loads each fixture's text at build time — this project
 // has no @types/node, so node:fs is not an option here.
@@ -523,6 +523,120 @@ test("turn/completed does not cross-apply to a different thread's same-numbered 
   const result = applyNotification(modelB, aTurnCompleted, 2000);
   expect(result).toBe(modelB);
   expect(itemAt(turnAt(result, 0), 0).text).toBe("B's own answer");
+});
+
+// szw1: reducer.ts's turn/started and turn/completed have no defense against
+// a duplicate turn id in model.turns. Both known causes of a live collision
+// (eptj, bz2z) are fixed server-side, so this is hardening against a defect
+// this reducer would still have if a duplicate ever arrived by some other
+// path — turns is presented everywhere else (mapTurn, findItemTurnId) as if
+// ids are unique. The failure must not be both silent and destructive: a
+// duplicate id is loudly reported (console.error — a reducer is a bad place
+// to throw) AND handled without clobbering unrelated data.
+test("turn/started with an id already in model.turns replaces that turn in place, loudly, instead of appending a duplicate row", () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_old", turnId: "turn_1", text: "old content", status: "completed" },
+      },
+    },
+    1002,
+  );
+  expect(model.turns).toHaveLength(1);
+
+  // A second turn/started arrives reusing "turn_1" — the shape this kata is
+  // hardening against, not a reachable defect after eptj/bz2z.
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1003,
+  );
+
+  expect(model.turns).toHaveLength(1); // never TWO rows sharing one id
+  expect(turnAt(model, 0).items).toHaveLength(0); // the fresh turn replaced the old one in place
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(spy.mock.calls[0]?.[0]).toMatch(/turn\/started.*turn_1.*already exists/i);
+  spy.mockRestore();
+});
+
+test("turn/completed settles only the FIRST turn matching a duplicated id, leaving any other same-id turn untouched (not silently overwritten)", () => {
+  const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+  // Construct the corrupted state directly (two turns sharing "turn_1") —
+  // this is the shape a duplicate-id collision would produce; the reducer
+  // must not make it worse by clobbering the second entry's unrelated
+  // content when settling the first.
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "full",
+        items: [
+          {
+            type: "agentMessage",
+            id: "item_first",
+            turnId: "turn_1",
+            text: "first turn's content",
+            status: "inProgress",
+          },
+        ],
+      },
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            type: "agentMessage",
+            id: "item_second",
+            turnId: "turn_1",
+            text: "unrelated persisted content",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.serf.ref, 1000);
+  model = { ...model, activeTurnId: "turn_1" };
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: { turnId: "turn_1", turn: { id: "turn_1", status: "completed", itemsView: "" } },
+    },
+    2000,
+  );
+
+  expect(model.turns).toHaveLength(2);
+  // The first turn settled normally, keeping its own item.
+  expect(itemAt(turnAt(model, 0), 0).text).toBe("first turn's content");
+  expect(turnAt(model, 0).status).toBe("completed");
+  // The second turn's unrelated content must survive untouched — not
+  // overwritten with the first turn's settle stamp.
+  expect(itemAt(turnAt(model, 1), 0).text).toBe("unrelated persisted content");
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(spy.mock.calls[0]?.[0]).toMatch(/turn\/completed.*turn_1.*2 turns/i);
+  spy.mockRestore();
 });
 
 // Part A regression coverage: the real wire's turn/completed is a bare
