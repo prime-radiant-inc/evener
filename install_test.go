@@ -534,6 +534,18 @@ func installTestEnv(t *testing.T, home string, extra map[string]string) []string
 		"GOMODCACHE": goEnv(t, "GOMODCACHE"),
 		"GOCACHE":    goEnv(t, "GOCACHE"),
 		"GOPATH":     goEnv(t, "GOPATH"),
+		// The Makefile stages binaries through INSTALL_BUILD_DIR, which
+		// defaults to .build/install - a fixed path inside the checkout,
+		// shared by every `make install` run against it. These tests run
+		// `make install` in the REAL repo root (they have to; that is the
+		// target under test), so without this they isolate the install
+		// DESTINATION carefully via PREFIX and the XDG vars while sharing
+		// the staging area with anything else building in the same tree.
+		// Two overlapping runs then have one `go build -o` truncating a
+		// binary the other is about to install, which surfaces as a
+		// mystery failure in whichever lost - observed once as a
+		// TestInstallHomeGeneratedHome failure that passed on a re-run.
+		"INSTALL_BUILD_DIR": filepath.Join(home, "install-build"),
 	}
 	for key, value := range extra {
 		overrides[key] = value
