@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { joinedReasoningParagraphs, reasoningPreview, thoughtSeconds } from "./reasoningFormat";
+import { joinedReasoningParagraphs, thoughtSeconds } from "./reasoningFormat";
 
 // --- joinedReasoningParagraphs ---------------------------------------------
 // reasoningSummaries is string[][] - per summaryIndex chunk lists
@@ -35,28 +35,6 @@ test("drops a paragraph whose chunks join to all-whitespace", () => {
 
 test("all paragraphs empty yields an empty array (the whole thought is empty)", () => {
   expect(joinedReasoningParagraphs([[], ["   "]])).toEqual([]);
-});
-
-// --- reasoningPreview -------------------------------------------------------
-
-test("undefined summaries yields an empty preview", () => {
-  expect(reasoningPreview(undefined)).toBe("");
-});
-
-test("preview is the first line of the first non-empty paragraph", () => {
-  expect(reasoningPreview([["First paragraph.\nmore of it"], ["Second paragraph"]])).toBe("First paragraph.");
-});
-
-test("preview skips a leading empty paragraph to find the first real one", () => {
-  expect(reasoningPreview([[], ["The real first line"]])).toBe("The real first line");
-});
-
-test("preview clips a long first line to the given max length", () => {
-  // A single unbroken run of non-space characters, so the clip boundary
-  // can't coincidentally land on whitespace trimEnd() would also eat.
-  const long = "x".repeat(100);
-  const preview = reasoningPreview([[long]], 20);
-  expect(preview).toBe(`${"x".repeat(20)}…`);
 });
 
 // --- thoughtSeconds ----------------------------------------------------------

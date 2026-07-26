@@ -6,3 +6,12 @@
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
 }
+
+/* t8nc: the duration segment's own icon+text pairing - inline-flex so the
+ * glyph sits on the same baseline as the number beside it, currentColor so
+ * it always matches .row's own ink without a second color token. */
+.duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}

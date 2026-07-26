@@ -90,9 +90,17 @@ test("live skips rendering a paragraph for a zero-chunk summaryIndex (no empty-p
   expect(streams.map((s) => s.textContent)).toEqual(["first", "second"]);
 });
 
-// --- settled: collapse to "Thought" + preview -------------------------------
+// --- settled: collapse to "Thought[ for Ns]" only ---------------------------
+// kdyh/tx8m: the collapsed summary used to also carry a firstLine() preview
+// of the reasoning text - which then reappeared, verbatim, as the opening
+// sentence of the expanded body (agents often open a thought with a bolded
+// topic sentence), so the same words rendered twice one line apart, and the
+// preview - being plain text, not markdown-parsed - showed the model's own
+// **bold**/`code` syntax as literal characters where the body one line below
+// rendered the identical text as real markdown. The summary now carries only
+// the duration: no arbitrary agent text ever lands in a plain-text context.
 
-test("settled collapses to a closed details with a preview of the first paragraph's first line", () => {
+test("settled collapses to a closed details with a duration-only summary (no reasoning text preview)", () => {
   render(
     <ThinkBlock
       item={item({ reasoningSummaries: [["The answer is 42.\nmore reasoning"]] })}
@@ -104,7 +112,37 @@ test("settled collapses to a closed details with a preview of the first paragrap
   expect(details.tagName).toBe("DETAILS");
   expect(details.open).toBe(false);
   const summary = details.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · The answer is 42.");
+  expect(summary?.textContent).toBe("Thought");
+});
+
+test("kdyh: the collapsed summary never repeats text that also appears in the expanded body", () => {
+  const { container } = render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["Delegating simple directory inspection task\n\nmore detail"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summary = container.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought");
+  expect(summary?.textContent).not.toContain("Delegating");
+  // The full sentence still exists, but only once - inside the body.
+  expect(screen.getAllByText(/Delegating simple directory inspection task/).length).toBe(1);
+});
+
+test("tx8m: markdown syntax in the reasoning text never shows literally, because the summary carries no reasoning text at all", () => {
+  const { container } = render(
+    <ThinkBlock
+      item={item({ reasoningSummaries: [["**Delegating simple directory inspection task**"]] })}
+      turn={turn}
+      live={false}
+    />,
+  );
+  const summary = container.querySelector("summary");
+  expect(summary?.textContent).toBe("Thought");
+  expect(summary?.textContent).not.toMatch(/\*/);
+  // The body still renders it as real markdown, one level down.
+  expect(screen.getByText("Delegating simple directory inspection task").tagName).toBe("STRONG");
 });
 
 test("settled body holds the full reasoning text (not just the preview) once expanded", () => {
@@ -207,7 +245,7 @@ test("an expanded settled think block stays open across an unmount+remount with 
 test("no fabricated duration: without real item.startedAt/completedAt, the label omits a number entirely (never invents one)", () => {
   render(<ThinkBlock item={item({ reasoningSummaries: [["content"]] })} turn={turn} live={false} />);
   const summary = document.querySelector("summary");
-  expect(summary?.textContent).toBe("Thought · content");
+  expect(summary?.textContent).toBe("Thought");
   expect(summary?.textContent).not.toMatch(/\d/);
 });
 
@@ -223,7 +261,7 @@ test("a real startedAt/completedAt pair (future-proofing - not populated by toda
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s");
 });
 
 test("an observed timing pair (no wire pair) also produces a real Ns label", () => {
@@ -238,7 +276,7 @@ test("an observed timing pair (no wire pair) also produces a real Ns label", () 
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 3s");
 });
 
 test("the wire pair wins over the observed pair when both are present", () => {
@@ -255,7 +293,7 @@ test("the wire pair wins over the observed pair when both are present", () => {
       live={false}
     />,
   );
-  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s · content");
+  expect(document.querySelector("summary")?.textContent).toBe("Thought for 4s");
 });
 
 // --- empty thoughts removed --------------------------------------------------
@@ -284,7 +322,7 @@ test("live streaming settles cleanly into the collapsed disclosure, no leftover 
 
   expect(screen.queryByTestId("streaming-text")).toBeNull();
   expect(screen.queryByText("Thinking…")).toBeNull();
-  expect(screen.getByText("Thought · thinking...")).toBeTruthy();
+  expect(screen.getByText("Thought")).toBeTruthy();
 });
 
 test("a reset (a new item id replacing the live one) discards prior streamed text without residue", () => {

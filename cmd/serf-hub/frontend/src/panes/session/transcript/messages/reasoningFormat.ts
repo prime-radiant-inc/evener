@@ -1,6 +1,5 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
-import { firstLine } from "./format";
 
 // joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] -
 // per-summaryIndex chunk lists, protocol/model.ts) into one string per
@@ -11,15 +10,6 @@ import { firstLine } from "./format";
 export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
   if (!summaries) return [];
   return summaries.map((chunks) => chunks.join("")).filter((text) => text.trim() !== "");
-}
-
-// reasoningPreview is the first line of the first non-empty paragraph,
-// clipped - the settled think block's collapsed-summary preview text.
-export function reasoningPreview(summaries: string[][] | undefined, maxLen = 80): string {
-  const paragraphs = joinedReasoningParagraphs(summaries);
-  const first = paragraphs[0];
-  if (!first) return "";
-  return firstLine(first, maxLen);
 }
 
 // thoughtSeconds computes whole elapsed seconds from two REAL ISO

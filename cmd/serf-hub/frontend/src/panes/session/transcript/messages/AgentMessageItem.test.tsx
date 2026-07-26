@@ -112,3 +112,23 @@ test("both live and settled render inside the same stable wrapper testid", () =>
   rerender(<AgentMessageItem item={item({ text: "x", pendingText: undefined })} turn={turn} live={false} />);
   expect(container.querySelector('[data-testid="agent-message-item"]')).toBeTruthy();
 });
+
+// --- speaker mark (1fwc) -----------------------------------------------
+// A short agent reply and a short user message must not read as one
+// undifferentiated voice: UserMessageItem carries a "You" tag, so the
+// agent side needs its own quiet identity mark rather than relying on the
+// reader to notice its ABSENCE.
+
+test('settled carries a quiet "Agent" tag as a sibling of the text, not mixed into it', () => {
+  render(<AgentMessageItem item={item({ text: "You're welcome." })} turn={turn} live={false} />);
+  expect(screen.getByText("Agent")).toBeTruthy();
+  // Two separate nodes, not one merged string - proven the same way
+  // UserMessageItem.test.tsx proves its own "You" tag is a sibling.
+  expect(screen.getByText("You're welcome.")).toBeTruthy();
+});
+
+test('live carries the same "Agent" tag while streaming - the mark does not wait for settle', () => {
+  render(<AgentMessageItem item={item({ pendingText: ["strea", "ming"] })} turn={turn} live={true} />);
+  expect(screen.getByText("Agent")).toBeTruthy();
+  expect(screen.getByTestId("streaming-text").textContent).toBe("streaming");
+});
