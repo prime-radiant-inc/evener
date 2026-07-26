@@ -248,6 +248,29 @@ test("with a parentRef but no cached name yet, falls back to the raw parent ref"
   await waitFor(() => expect(screen.getByRole("button", { name: /back to ref_parent_unknown/i })).toBeTruthy());
 });
 
+test("with a parentRef cached but its name is still the empty-string un-hydrated state, falls back to the raw ref (not a blank label)", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_child"));
+  // A ThreadModel's `name` is a plain (non-optional) string that starts as ""
+  // before the wire ever supplies one - the SAME un-hydrated state the "falls
+  // back to the raw ref as the pane title" test above covers for the pane's
+  // own title. The label must degrade the same way here, not render a blank
+  // "Back to " button.
+  threadsStore.setState((s) => {
+    const threads = new Map(s.threads);
+    threads.set("ref_parent_empty", { ref: "ref_parent_empty", name: "" } as unknown as ThreadModel);
+    return { ...s, threads };
+  });
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_child", parentRef: "ref_parent_empty" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByRole("button", { name: /back to ref_parent_empty/i })).toBeTruthy());
+});
+
 test("clicking 'Back to parent' focuses (or reopens) the parent session pane", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_child"));
