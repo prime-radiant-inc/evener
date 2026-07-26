@@ -14,7 +14,7 @@ import (
 
 func exerciseAppserverStack(t rapidTB) {
 	n := NewNotifier(0)
-	for i := 0; i < 1001; i++ {
+	for i := range 1001 {
 		n.Record("thread", "notice", i)
 	}
 	if got := n.ReplayAfter(999, "thread"); len(got) != 2 {
