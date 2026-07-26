@@ -22,7 +22,7 @@
 
 import type { ItemModel } from "../../../../protocol/model";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { type AskUserQuestion, parseAskUserQuestions } from "../../askShared";
+import { answeredAskUserSuffix, type AskUserQuestion, parseAskUserQuestions } from "../../askShared";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import styles from "./askuser.module.css";
@@ -113,6 +113,16 @@ registerToolRenderer({
     const questions = parseAskUserQuestions(item);
     if (!questions) return "Asked a question";
     return `Asked: ${questions.map((q) => `[${q.header}]`).join(", ")}`;
+  },
+  // A settled thing should compress to its outcome (kata h70z): once a
+  // later [answers] reply resolves this call, its collapsed row should say
+  // what was answered, not just what was asked - matching the old build's
+  // "asked [Direction] — answered: 'Celsius to Fahrenheit'" single-line
+  // recap. Returns undefined (no suffix, bare "Asked: [Header]") while the
+  // question is still live/pending - a live thing stays looking unresolved.
+  summarySuffix(item, model) {
+    if (model === undefined) return undefined;
+    return answeredAskUserSuffix(model, item);
   },
   body: AskUserBody,
 });

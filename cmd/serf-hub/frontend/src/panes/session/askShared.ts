@@ -15,7 +15,7 @@
 // degrade to a fallback rather than throwing, since this is untrusted wire
 // JSON, not a value this file controls the shape of.
 
-import type { ItemModel } from "../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../protocol/model";
 import { parseArgs } from "./transcript/tools/helpers";
 
 export interface AskUserOption {
@@ -72,4 +72,66 @@ export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | unde
   if (!Array.isArray(raw)) return undefined;
   const questions = raw.map(parseQuestion).filter((q): q is AskUserQuestion => q !== undefined);
   return questions.length > 0 ? questions : undefined;
+}
+
+// One line of a composed [answers] reply (askCompose.ts's composeAskAnswers,
+// byte-exact format): "N. [Header] → resolution text[ — note: "..."]". The
+// header is captured raw (never escaped by composeAskAnswers, unlike the
+// resolution's quoted strings), so this matches on brackets rather than
+// trying to unescape anything.
+const ASK_ANSWER_LINE_RE = /^\d+\.\s\[([^\]]*)\]\s→\s(.*)$/;
+
+// parseAskAnswerLines reads a composed [answers] reply's text back into a
+// header -> resolution-text map. The optional trailing " — note: ..." is
+// stripped: a note is supplementary context for the model, not part of the
+// answer itself, and this map only ever feeds a one-line recap (kata h70z).
+function parseAskAnswerLines(text: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const m = ASK_ANSWER_LINE_RE.exec(line);
+    if (!m) continue;
+    const header = m[1] ?? "";
+    const rest = m[2] ?? "";
+    const noteAt = rest.indexOf(" — note: ");
+    map.set(header, noteAt === -1 ? rest : rest.slice(0, noteAt));
+  }
+  return map;
+}
+
+// answeredAskUserSuffix builds the "— answered: ..." recap for a SETTLED,
+// answered ask_user call - kata h70z's fix. Old build precedent: "asked
+// [Direction] — answered: 'Celsius to Fahrenheit'" as a single collapsed
+// line. The current transcript already collapses a clean ask_user row by
+// default (ToolCallItem's generic disclosure contract), but its summary
+// only ever showed "Asked: [Header]" - the answer lives in a SEPARATE,
+// later userMessage item (the composed [answers] reply) that this item
+// alone can't see, forcing the reader to cross-reference a second,
+// unstyled message to reconstruct "what did I answer". This reads the
+// FULL thread model to find that reply and pull the answer back in.
+//
+// Returns undefined - meaning "show nothing extra, keep the bare
+// 'Asked: [Header]' summary" - whenever there's nothing to append: the call
+// errored (its own row already gets the failure treatment), it carries no
+// parseable questions, or no later [answers] reply exists yet (still
+// pending in the composer/dock - a LIVE thing, which per the same
+// principle must stay looking unresolved).
+export function answeredAskUserSuffix(model: ThreadModel, item: ItemModel): string | undefined {
+  if (item.error !== undefined) return undefined;
+  const questions = parseAskUserQuestions(item);
+  if (!questions) return undefined;
+  const items = model.turns.flatMap((turn) => turn.items);
+  const at = items.findIndex((i) => i.id === item.id);
+  if (at === -1) return undefined;
+  const reply = items.slice(at + 1).find((i) => i.type === "userMessage" && i.text.startsWith("[answers]"));
+  if (!reply) return undefined;
+  const answers = parseAskAnswerLines(reply.text);
+  const multiple = questions.length > 1;
+  const parts = questions
+    .map((q) => {
+      const a = answers.get(q.header);
+      if (a === undefined) return undefined;
+      return multiple ? `${q.header}: ${a}` : a;
+    })
+    .filter((p): p is string => p !== undefined);
+  return parts.length > 0 ? ` — answered: ${parts.join(", ")}` : undefined;
 }

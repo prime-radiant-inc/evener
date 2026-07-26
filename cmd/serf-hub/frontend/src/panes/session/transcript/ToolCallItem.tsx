@@ -5,6 +5,7 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
 import { memo, useLayoutEffect, useState } from "react";
+import { useThreadsStore } from "../../../stores/threads";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "./fileOpenBeside";
@@ -63,6 +64,17 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // glance) and the expanded body as real text (the keyboard-reachable copy).
   const detail = descriptor.detail?.(item);
 
+  // summarySuffix (kata h70z) reads the FULL thread model, not just this
+  // item - ask_user's "— answered: ..." recap lives in a separate, LATER
+  // userMessage item. Subscribed reactively (not a one-off snapshot) so a
+  // settled, already-collapsed row's summary updates the moment that later
+  // reply lands, even though this memoized component would otherwise bail
+  // on unchanged item/live/sessionRef props.
+  const summarySuffix = useThreadsStore((s) =>
+    descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
+  );
+  const summary = descriptor.summary(item) + (summarySuffix ?? "");
+
   // Every row with a body starts collapsed (parity-m4-transcript.md's own
   // Highlights: "every tool row, including diffs, starts collapsed" - the
   // only default-expanded state anywhere is a failed call once it settles,
@@ -106,7 +118,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
         <ToolRow
-          summary={descriptor.summary(item)}
+          summary={summary}
           purpose={item.description}
           failed={false}
           expandable={false}
@@ -132,7 +144,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       open={expanded}
     >
       <ToolRow
-        summary={descriptor.summary(item)}
+        summary={summary}
         purpose={item.description}
         failed={failed}
         expandable
