@@ -8,7 +8,7 @@ import type { ThreadCapabilities } from "../protocol/types.gen";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
-import { type PaneProps, registerPane } from "./paneRegistry";
+import { type PaneDescriptor, type PaneProps, paneFor, registerPane } from "./paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "./workspace";
 
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
@@ -194,6 +194,38 @@ test("renders the content of a pane opened via workspace.openPane", async () => 
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   expect(await screen.findByText(/doc pane: ref_a/)).toBeTruthy();
+});
+
+// kata fmtz: a pane's own component is React.lazy() (paneRegistry.ts's
+// PaneDescriptor.component), and PaneHost wraps it in a Suspense boundary -
+// live-verified (real browser, real click, first open of a not-yet-loaded
+// pane type in the page's lifetime) to sometimes paint the pane's content
+// area completely blank for a beat, even though the surrounding dockview
+// chrome (tab/group) is already in the DOM: the boundary's fallback was
+// `null`, so there was nothing FOR it to show while the dynamic import was
+// still pending. This fixture pane holds its own dynamic import open on a
+// manually-resolved promise to make that window deterministic instead of a
+// timing race, and swaps the real "doc" fixture back in when it's done so
+// later tests are unaffected.
+test("shows a loading placeholder instead of a blank pane while a newly-opened pane's own content chunk is still loading", async () => {
+  const originalDoc = paneFor("doc") as PaneDescriptor<{ ref: string }>;
+  let resolveChunk!: () => void;
+  const pendingChunk = new Promise<{ default: typeof DocFixture }>((resolve) => {
+    resolveChunk = () => resolve({ default: DocFixture });
+  });
+  registerPane({ ...originalDoc, component: lazy(() => pendingChunk) });
+
+  workspaceStore.getState().openPane("doc", { ref: "ref_slow" });
+  render(<DockHost />);
+
+  // Before the chunk resolves: a loading placeholder, not silence.
+  expect(await screen.findByTestId("empty-state")).toBeTruthy();
+  expect(screen.queryByText(/doc pane: ref_slow/)).toBeNull();
+
+  resolveChunk();
+  expect(await screen.findByText(/doc pane: ref_slow \(focused=true\)/)).toBeTruthy();
+
+  registerPane(originalDoc); // restore the fast fixture for every later test
 });
 
 // --- the two-slot layout: one main pane, everything else to its right ----
@@ -1012,3 +1044,53 @@ test("a corrupt saved layout never suppresses a routed pane - the deep link wins
 // with no stored layout at all, handleReady's restore branch never runs,
 // so that test's behavior is identical before and after this task's change
 // by construction, not merely by coincidence.
+
+// kata eve5: a plain reload at the hub's root URL routes to "welcome" - the
+// SAME "genuinely new deep link" path the "does NOT contain still wins
+// focus" test above deliberately exercises with a "doc" pane - but welcome
+// is never itself part of a saved layout (openPane's own placement rule
+// displaces it from the main slot the instant a real pane opens, and
+// nothing else ever puts one back), so on an ordinary reload of "/" the
+// routed re-open ALWAYS resolves to "genuinely new", forcing a fresh welcome
+// pane into existence and stealing focus onto it - even though the saved
+// layout already had a real, restorable focused tab. This is not the
+// intended "deep link wins" case at all: nobody deep-linked anywhere, "/" is
+// the same fallback route regardless of what was open before, and the
+// spurious pane it manufactures lands stacked into the secondary group
+// alongside the real restored panes, one tab bar entry that outnumbers what
+// was actually saved.
+test("a reload at the root route does not spawn a spurious focused welcome tab over a restored layout", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_b/);
+
+  workspaceStore.getState().focusPane(second);
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+
+  unmount(); // flushes the pending debounced save, see the earlier tests
+  expect(savedActiveViews()).toContain(second);
+  resetWorkspaceStoreForTests();
+
+  // Phase 2: the reload, at "/" - AppShell's openRouteAsPane falls back to
+  // opening "welcome" with {} for any route that isn't session/settings/
+  // spawn, exactly as it does for the bare root path.
+  workspaceStore.getState().openPane("welcome", {});
+  render(<DockHost />);
+
+  // The restored, previously-focused pane keeps focus - a bare reload must
+  // not silently reassign it to a placeholder nobody asked for.
+  expect(await screen.findByText(/doc pane: ref_b \(focused=true\)/)).toBeTruthy();
+  expect(tabIsActive("Doc ref_b")).toBe(true);
+
+  // No third, spurious tab: the restored layout already fully accounts for
+  // both panes.
+  expect(document.querySelectorAll(".dv-tab")).toHaveLength(2);
+
+  // And the tab that IS there for ref_a still works - clicking it actually
+  // focuses it, not a dead label sitting beside a phantom active welcome.
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Doc ref_a"));
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+  expect(tabIsActive("Doc ref_a")).toBe(true);
+});
