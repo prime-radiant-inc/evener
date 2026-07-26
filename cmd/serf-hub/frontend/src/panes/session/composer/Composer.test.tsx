@@ -343,6 +343,37 @@ test("the timing caption is absent when nothing is running", async () => {
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
 });
 
+// A turn can be busy (Stop/Steer showing) while the source has explicitly
+// advertised no queue capability - deriveSendQueueAvailability's own
+// both-false branch. Send is disabled there (canCompose is false), so a
+// caption claiming it queues would be a lie; this pins the caption to
+// availability.canQueue, not to `busy` alone.
+// status can read "active" before turn/started has populated activeTurnId
+// (isTurnActive's own doc comment on that race window) - Stop/Steer stay
+// hidden there since neither is meaningful without a real turn to act on,
+// and the caption follows the same rule: nothing to explain the timing of
+// until Send/Steer's own ambiguity actually exists.
+test("the timing caption is absent while status reads active but no turn has actually started yet", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: {} },
+  });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
+test("the timing caption is absent when busy but the source advertises no queue capability", async () => {
+  await mountComposer("ref_a", {
+    status: { type: "active" },
+    serf: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, queue: false },
+      queue: {},
+      activeTurnId: "turn_1",
+    },
+  });
+  expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();
+});
+
 // --- send / queue routing ---------------------------------------------------
 
 test("idle session: submit button reads Send and posts turn/start with the composer text", async () => {
