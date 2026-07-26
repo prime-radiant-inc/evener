@@ -209,8 +209,7 @@ func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSetting
 }
 
 func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Model, tea.Cmd) {
-	if strings.HasPrefix(msg.Tag, "credential-set:") {
-		provider := strings.TrimPrefix(msg.Tag, "credential-set:")
+	if provider, ok := strings.CutPrefix(msg.Tag, "credential-set:"); ok {
 		m.followupModal = nil
 		if msg.Cancelled || msg.Value == "" {
 			return m, nil
@@ -220,8 +219,8 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 		}
 		return m, nil
 	}
-	if strings.HasPrefix(msg.Tag, "oauth-redirect:") {
-		parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "oauth-redirect:"), ":", 2)
+	if rest, ok := strings.CutPrefix(msg.Tag, "oauth-redirect:"); ok {
+		parts := strings.SplitN(rest, ":", 2)
 		m.followupModal = nil
 		if msg.Cancelled || msg.Value == "" {
 			return m, nil
@@ -231,8 +230,7 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 		}
 		return m, nil
 	}
-	if strings.HasPrefix(msg.Tag, "launch-override:") {
-		field := strings.TrimPrefix(msg.Tag, "launch-override:")
+	if field, ok := strings.CutPrefix(msg.Tag, "launch-override:"); ok {
 		m.followupModal = nil
 		if msg.Cancelled {
 			return m, nil
@@ -247,8 +245,8 @@ func (m hubModel) handleTextInputResult(msg tuipick.TextInputResultMsg) (tea.Mod
 		}
 		return m, nil
 	}
-	if strings.HasPrefix(msg.Tag, "settings-edit:") {
-		parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "settings-edit:"), ":", 2)
+	if rest, ok := strings.CutPrefix(msg.Tag, "settings-edit:"); ok {
+		parts := strings.SplitN(rest, ":", 2)
 		if len(parts) != 2 {
 			return m, nil
 		}
