@@ -124,15 +124,20 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 // rule the client's own render gate applies (StatusRow.tsx's FailureCount:
 // absent or unchanged says nothing).
 //
-// item/completed's params ride as a map[string]any (internal/appprojector
-// builds them that way, unlike thread/status/changed's typed struct), so this
-// stamps the same map key rather than a struct field.
+// The params arrive as either a typed ItemLifecycleParams or a map[string]any,
+// so this handles both. That is not future-proofing: this function was written
+// when internal/appprojector built these params as a map, kcb5 then converted
+// that producer to the catalog type, and the map-only type assertion here
+// started failing - silently, returning the params unstamped, because a failed
+// assertion is not an error. The count simply stopped moving mid-turn and only
+// two tests noticed.
 func (s *Server) stampFailureCountOnItemCompleted(method string, params any) any {
 	if method != appwire.NotifyItemCompleted {
 		return params
 	}
-	fields, ok := params.(map[string]any)
-	if !ok {
+	typed, isTyped := params.(appwire.ItemLifecycleParams)
+	fields, isMap := params.(map[string]any)
+	if !isTyped && !isMap {
 		return params
 	}
 	s.mu.RLock()
@@ -154,6 +159,11 @@ func (s *Server) stampFailureCountOnItemCompleted(method string, params any) any
 	s.mu.Unlock()
 	if unchanged {
 		return params
+	}
+	if isTyped {
+		stamped := count
+		typed.FailedToolCalls = &stamped
+		return typed
 	}
 	fields["failedToolCalls"] = count
 	return fields
