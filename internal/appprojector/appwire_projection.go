@@ -101,6 +101,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	switch event.Kind {
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
+		// A resumed session's turn ids must not reuse the "turn_%d" namespace
+		// the reload path (internal/apptranscript) already assigned by entry
+		// index to the transcript's persisted entries (kata eptj): a client
+		// that hydrates a resumed thread from disk and then takes live
+		// notifications would otherwise see the first live turn mint an id —
+		// "turn_1" — that already names the session's first persisted entry.
+		// Seeding nextTurn to the persisted entry count (only ever higher than
+		// this fresh projector's zero value) guarantees every subsequently
+		// minted live id is unique against that reload-time snapshot.
+		if data.Restored && data.TranscriptEntries > p.nextTurn {
+			p.nextTurn = data.TranscriptEntries
+		}
 		// A restored session carries its re-derived state on the event (spec
 		// §5.4's "two touchpoints"); a fresh session's State is empty and
 		// defaults to idle, same as an unrecognized value.

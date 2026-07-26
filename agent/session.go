@@ -308,7 +308,17 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	pendingMCPWarnings  []events.WarningData
-	hookRunner          *hooks.Runner
+	// pendingTranscriptWarnings holds construction-time transcript-health
+	// warnings (transcript creation failing open in NewSession; a held
+	// SessionStart-hook turn failing to flush in attachTranscript) until
+	// emitSessionStartEnvelope releases them, same as the three plugin/hook/MCP
+	// buffers above and for the same reason (kata et0x): SESSION_START is the
+	// stream's promised first event, so nothing construction-time may reach a
+	// client before it. Flushed via s.emit (not emitDiagnosticWarning) because
+	// these are genuine, model-facing warnings — unlike the other three, which
+	// are config diagnostics that must not fire the Notification hook.
+	pendingTranscriptWarnings []events.WarningData
+	hookRunner                *hooks.Runner
 	// pluginCommands is the union of every loaded plugin's slash commands,
 	// namespaced "plugin-name:command-name" like skills. Looked up by
 	// expandSlashCommand via plugin.ResolveCommand.
@@ -1059,7 +1069,11 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	s.mu.Unlock()
 	for _, t := range held {
 		if err := w.Append(t); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			// Buffered, not emitted directly (kata et0x): attachTranscript always
+			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
+			// has not fired yet — same reasoning as the NewSession transcript-
+			// create-failed warning above it in the buffer's doc comment.
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
 	}
 }
