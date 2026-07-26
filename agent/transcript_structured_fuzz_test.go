@@ -134,7 +134,7 @@ var (
 	taskStatuses        = []string{"pending", "in_progress", "done", "blocked", ""}
 )
 
-var transcriptTurnKinds = []schema.TurnKind{
+var transcriptGeneratorTurnKinds = []schema.TurnKind{
 	schema.TurnUserInput, schema.TurnSteering, schema.TurnAssistant,
 	schema.TurnTool, schema.TurnToolResults, schema.TurnSystem,
 	schema.TurnCheckpoint, schema.TurnSummary,
@@ -188,7 +188,7 @@ func (g *transcriptGen) agentTasks() []any {
 }
 
 func (g *transcriptGen) entry() map[string]any {
-	kind := pick(g.s, transcriptTurnKinds, "turn_kind")
+	kind := pick(g.s, transcriptGeneratorTurnKinds, "turn_kind")
 	return map[string]any{
 		"kind": "entry",
 		"seq":  g.nextSeq(),
