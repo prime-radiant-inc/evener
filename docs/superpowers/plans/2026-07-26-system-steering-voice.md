@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make a daemon-originated steering message announce itself as one — `※ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
+**Goal:** Make a daemon-originated steering message announce itself as one — `◇ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
 
 **Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §8 states the family rule the transcript's glyph gutter now enforces.
 
@@ -12,12 +12,12 @@
 
 ## Global Constraints
 
-- No backward compatibility for the *kind*. Absent `Kind` renders `※ System steered ▸` with no kind and no colon. Do not add a prose fallback.
+- No backward compatibility for the *kind*. Absent `Kind` renders `◇ System steered ▸` with no kind and no colon. Do not add a prose fallback.
 - This does NOT extend to notification cards. Their trigger is `<job-notification>` markup — structured data that cannot false-positive — so card routing stays content-driven and a pre-`Kind` transcript still renders its cards. Reading markup is parsing; inferring a kind from prose is guessing. Only the guessing is being removed. (Task 6 has a test pinning this; it is intended behaviour, not a violation of the line above.)
 - Sentence case for all UI copy. A colon promises a value — omit it when there is no kind.
 - `--ink-mid` for the whole steering row, glyph and chevron included. Not `--ink-low` (2.97:1 dark / 3.64:1 light, under the 4.5:1 AA floor).
 - No chromatic literals outside `tokens.css` (`src/styles/token-contract.test.ts` enforces). The steering glyph uses `currentColor` and needs no allowlist entry.
-- ※ (U+203B) is outside the IBM Plex latin1 subset (`global.css:23-24`). It MUST be inline SVG, never a text character.
+- ◇ is outside the IBM Plex latin1 subset (`global.css:23-24` declares no U+25xx range at all). It MUST be inline SVG, never a text character.
 - Gates, all by exit code: **`make test` and `make lint`** from the repo root; `npm run typecheck`, `npm run lint`, `npm test` from `cmd/serf-hub/frontend`.
 - **`go test ./...` from the repo root is NOT a gate.** It resolves per-module and says nothing about `agent` or `llm` — where most of this work lives (`docs/conventions/go-workspace.md:9-20`). `make test` and `make lint` loop the modules explicitly; a green `./...` is not evidence the workspace builds. If you want a fast inner-loop check while iterating, `(cd agent && go test ./...)` covers the agent module, but the gate you report is `make test`.
 - Use the frontend npm scripts, NOT `npx tsc` — `npx tsc` from the repo root resolves to a decoy `tsc@2.0.4` package and silently does not typecheck.
@@ -726,12 +726,12 @@ test("is decorative - no accessible name of its own", () => {
   expect(el?.getAttribute("role")).toBeNull();
 });
 
-// U+203B is outside the IBM Plex latin1 subset (global.css:23-24), so a
+// U+25C7 is outside the IBM Plex latin1 subset (global.css:23-24), so a
 // literal would render from a system fallback font.
-test("draws SVG, never the ※ character", () => {
+test("draws SVG, never the ◇ character", () => {
   const { container } = render(<SteeringGlyph />);
   expect(container.querySelector("svg")).toBeTruthy();
-  expect(container.textContent).not.toContain("※");
+  expect(container.textContent).not.toContain("◇");
 });
 ```
 
@@ -752,11 +752,11 @@ const CLASS = {
   glyph: requireClass(styles.glyph, "steeringglyph.module.css", "glyph"),
 };
 
-/** The ※ that marks a system steering message: the reference mark, drawn as a
- * four-spark asterisk over a slash, sized to sit on a line of text.
+/** The ◇ that marks a system steering message: a hollow diamond, sized to sit
+ * on a line of text.
  *
- * SVG rather than the U+203B character because global.css subsets IBM Plex Sans
- * to a unicode-range that stops at U+203A and resumes at U+2044 - a literal ※
+ * SVG rather than the U+25C7 character because global.css subsets IBM Plex Sans
+ * to a unicode-range that stops at U+203A and resumes at U+2044 - a literal ◇
  * would be the one glyph in the app rendering from a system fallback font.
  *
  * Decorative and unnamed, unlike FailureGlyph: the row's own text says
@@ -808,9 +808,9 @@ Expected: PASS for all three.
 
 ```bash
 git add cmd/serf-hub/frontend/src/widgets/steeringglyph/ cmd/serf-hub/frontend/src/widgets/index.ts cmd/serf-hub/frontend/src/dev/gallery-sections/steeringglyph.tsx
-git commit -m "widgets: add SteeringGlyph, the ※ that marks a system steer
+git commit -m "widgets: add SteeringGlyph, the ◇ that marks a system steer
 
-SVG because U+203B falls in a gap in the Plex latin1 subset. Decorative,
+SVG because U+25C7 falls in a gap in the Plex latin1 subset. Decorative,
 unlike FailureGlyph - the row's text already names it."
 ```
 
@@ -1123,7 +1123,7 @@ gap: var(--space-2)` grammar. This section assigns that column.
 
 | gutter | member | treatment |
 |---|---|---|
-| `※` | **steering** | `SteeringGlyph`, `--ink-mid` for the whole row, kind from the wire, chevron trailing |
+| `◇` | **steering** | `SteeringGlyph`, `--ink-mid` for the whole row, kind from the wire, chevron trailing |
 | `✗` | **failure** | `FailureGlyph` in `--danger`, text in `--ink-hi` |
 | *(empty)* | **lifecycle fact** | `--ink-low` one-liner; a run of 3+ collapses into one disclosure |
 | `▸` box | **scaffolding** | hairline-bordered box: the system prompt, compaction summaries, round timings |
@@ -1150,10 +1150,9 @@ auditing which kind fired, so the kind is the payload rather than furniture, and
 it sits one ink step up at 6.86:1 / 6.56:1. That step also separates a steer
 from the lifecycle line beneath it by weight as well as by glyph.
 
-**The glyph is SVG, not the character.** `global.css`'s `unicode-range` subsets
-IBM Plex Sans across `… U+2039-203A, U+2044 …`; U+203B falls in that gap, so a
-literal ※ would be the only glyph in the app rendering from a system fallback
-font. `SteeringGlyph` draws it, inherits `currentColor`, and — unlike
+**The glyph is SVG, not the character.** `global.css`'s `unicode-range` subsets IBM Plex Sans with no
+U+25xx block at all, so a literal ◇ would be the only glyph in the app rendering
+from a system fallback font. `SteeringGlyph` draws it, inherits `currentColor`, and — unlike
 `FailureGlyph` — carries no accessible name, because the row's own text already
 says "System steered: <kind>".
 ```

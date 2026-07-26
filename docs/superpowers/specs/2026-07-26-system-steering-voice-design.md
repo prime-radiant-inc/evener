@@ -39,8 +39,17 @@ for it to read. Two consequences, both live today:
   and scaffolding.
 - The reader's job is **auditing serf itself**: which kind fired, and when. The
   kind is the payload; the family mark is secondary.
-- Mark: **gutter glyph ※**, text `System steered: $kind`, **disclosure chevron
+- Mark: **gutter glyph ◇**, text `System steered: $kind`, **disclosure chevron
   after** the text.
+- The glyph was first chosen as **※ (U+203B, the reference mark)**, picked from
+  candidates rendered as text characters at reading size. Once built and rendered
+  at its actual 10px ship size it was replaced, on Jesse's approval, with a hollow
+  diamond: a faithful reference mark collapses at that size into a small ✕, and
+  `FailureGlyph` is ✗ in the same gutter column. Two marks of the same shape,
+  separated only by hue, fails both the design system's own rule that colour
+  carries attention rather than identity, and any reader who cannot see the hue.
+  Shape distinctness beat semantic fit — the row says "System steered" in words,
+  so the glyph only has to mark the family.
 - The whole line is **one colour**. Jesse specified option B's eyebrow colour
   (`--ink-low`); on being shown that `--ink-low` measures 2.97:1 dark / 3.64:1
   light — under the 4.5:1 AA floor, as this repo already records in
@@ -48,7 +57,7 @@ for it to read. Two consequences, both live today:
   `--ink-mid` (6.86:1 / 6.56:1).
 - The kind comes from **a wire field**, not the classifier.
 - Pre-`Kind` transcripts **claim nothing**: no wire kind renders
-  `※ System steered ▸` with no kind. The prose classifier is deleted rather than
+  `◇ System steered ▸` with no kind. The prose classifier is deleted rather than
   kept as a fallback. No backward compatibility.
 - "Steering injected" → **"Message sent"**, scoped to `subagents.go:885` (a parent
   steering a running child), which is the one site where those words are true.
@@ -64,14 +73,14 @@ gap:var(--space-2)` grammar. §8 formalises it and assigns the column.
 
 | gutter | member | treatment | status |
 |---|---|---|---|
-| `※` | steering | `--ink-mid`, kind from the wire, chevron trails | new |
+| `◇` | steering | `--ink-mid`, kind from the wire, chevron trails | new |
 | `✗` | failure | `FailureGlyph`, `--danger` glyph, `--ink-hi` text | shipped, unchanged |
 | *(empty)* | lifecycle fact | `--ink-low` one-liner | shipped, unchanged |
 | `▸` box | scaffolding | hairline-bordered box | shipped, unchanged |
 
 Notification cards are outside the rule: a card, not a row, so it has no gutter.
 
-Three of the four treatments do not move. The new surface is ※ and one ink step
+Three of the four treatments do not move. The new surface is ◇ and one ink step
 on one row type.
 
 ## 2. The wire field
@@ -156,7 +165,7 @@ It keeps three things, which are parsing rather than guessing:
 **Recorded consequence:** a pre-`Kind` transcript whose steer carried a
 `<job-notification>` block still routes to a card, because the card's trigger is
 the markup, not the kind. A pre-`Kind` steer of any other type renders
-`※ System steered ▸`. This is the "claim nothing" decision applied consistently:
+`◇ System steered ▸`. This is the "claim nothing" decision applied consistently:
 what can be read is read, what must be guessed is not.
 
 ### The glyph
@@ -164,7 +173,7 @@ what can be read is read, what must be guessed is not.
 Inline SVG in a new `widgets/steeringglyph/`, mirroring `widgets/failureglyph/`.
 
 Not a text character: `global.css:23-24` subsets IBM Plex Sans to a `unicode-range`
-running `… U+2039-203A, U+2044 …`. **U+203B falls in that gap.** A literal ※ would
+running `… U+2039-203A, U+2044 …`. **U+25C7 falls in that gap.** A literal ◇ would
 render from a system fallback font — the only glyph in the app doing so, with
 metrics that vary by platform.
 
