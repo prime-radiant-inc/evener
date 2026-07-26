@@ -15,7 +15,9 @@
 // gutter and a grey age already say nothing is happening. Only a signal state
 // (working / needs-you / failed) earns the second line, which glosses why. So
 // rows change height as sessions change state; see SessionRow's own comment for
-// why that trade is deliberate.
+// why that trade is deliberate. The one other thing that earns a second line
+// regardless of state is a row's project name, on a session shown flat across
+// projects (Live/Pinned, depth 0) - see SessionRow's showsProject.
 //
 // CLASS.actions (Rail.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
@@ -92,8 +94,7 @@ export function cadenceStateFor(wireState: string): CadenceState {
 
 // The humanized wire state a row's second line leads with (§2.3) - the same
 // wire state vocabulary cadenceStateFor reads, worded for a person rather
-// than mapped to a Cadence family. "warning" reads the same as a plain
-// "awaiting" here (both already share Cadence's "needs-you" dot above).
+// than mapped to a Cadence family.
 //
 // "awaiting" itself splits on askPending: hubapi.StateWord (hubapi/
 // attention.go, Track A §2 ask-tiering) already draws this same line for the
@@ -106,6 +107,14 @@ export function cadenceStateFor(wireState: string): CadenceState {
 // them had to open every amber row to find out which. Lowercased to match
 // this line's existing casing ("working"/"failed"/"idle"), not the Go
 // vocabulary's sentence case verbatim.
+//
+// "warning" gets its own word for the same reason (kata 59mx): StateWord
+// already gives it a dedicated "Warning", distinct from either awaiting
+// band, so a warning row reading as generic "waiting on you" was this
+// gloss never having read that vocabulary for this state either - the same
+// gap ask_pending closed for "awaiting" above. Sharing Cadence's "needs-you"
+// dot family (cadenceStateFor) is still correct: that comment's own text
+// says only the dot family is shared by design, never the word.
 function humanizeState(wireState: string, askPending: boolean): string {
   switch (wireState) {
     case "active":
@@ -113,7 +122,7 @@ function humanizeState(wireState: string, askPending: boolean): string {
     case "awaiting":
       return askPending ? "question waiting" : "your move";
     case "warning":
-      return "waiting on you";
+      return "warning";
     case "errored":
       return "failed";
     case "ended":
@@ -181,6 +190,22 @@ function Signal({ wireState }: { wireState: string }) {
 export function activityGloss(session: ApiTreeNode): string {
   const parts = [humanizeState(session.state, session.ask_pending === true)];
   if (session.branch !== undefined && session.branch !== "") parts.push(session.branch);
+  return parts.join(" · ");
+}
+
+// secondLine is the row's second line in full: activityGloss above, joined
+// with the session's project when the row needs one (kata hxjn). A session
+// row only needs its project named when it is rendered FLAT, mixed in with
+// other projects' sessions - the Live and Pinned tiers, where a row's own
+// nesting depth is 0 (see below). A session nested under its own ProjectRow
+// (Projects/Test runs/Archived) is depth >= 1 there and never needs this:
+// the project it belongs to is the row it is indented under. Project leads
+// the line (state is what's happening, project is where) the same way
+// activityGloss already leads with state before branch.
+function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boolean): string {
+  const parts: string[] = [];
+  if (showsProject) parts.push(session.project);
+  if (showsGloss) parts.push(activityGloss(session));
   return parts.join(" · ");
 }
 
@@ -381,8 +406,17 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // taller than quiet ones. That is the point: the rows worth finding are bigger
   // than the rows that aren't, and the list's evenness is worth less than that.
   const showsGloss = SIGNAL_STATES.has(cadenceStateFor(session.state));
+  // kata hxjn: a row at depth 0 is a top-level entry in a flat, cross-project
+  // tier (Live/Pinned - see toSessionNode/sessionNodes; a Projects/Test-runs/
+  // Archived session is always nested under its own ProjectRow, never a depth-0
+  // SessionRow). Cross-referencing which project a Live row belongs to used to
+  // mean leaving the rail entirely, so those rows get a second line even when
+  // otherwise quiet - the one exception to the "quiet row is one line" rule
+  // above, made for exactly the fact that rule can't otherwise carry.
+  const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const gloss = activityGloss(session);
+  const gloss = secondLine(session, showsGloss, showsProject);
+  const showsSecondLine = showsGloss || showsProject;
   return (
     // data-session-ref is the scroll target Rail's reveal effect (the palette's
     // /project command via railController) queries to bring a session's row
@@ -408,7 +442,7 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
         <span className={CLASS.label} title={rowTooltip(session, showsGloss, notStarted)}>
           {session.title}
         </span>
-        {showsGloss && (
+        {showsSecondLine && (
           <span data-testid="rail-row-activity" className={CLASS.activity} title={gloss}>
             {gloss}
           </span>

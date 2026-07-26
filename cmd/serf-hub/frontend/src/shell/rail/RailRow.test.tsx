@@ -154,6 +154,14 @@ describe("activityGloss", () => {
     expect(activityGloss(apiNode({ state: "idle", branch: "" }))).toBe("idle");
   });
 
+  // kata 59mx: hubapi.StateWord already gives "warning" its own word
+  // ("Warning"), distinct from either "awaiting" band - this gloss used to
+  // fold it into the same "waiting on you" text a plain awaiting session
+  // gets, even though the two wire states are not the same situation.
+  test("glosses warning as its own word, not a generic waiting-on-you", () => {
+    expect(activityGloss(apiNode({ state: "warning" }))).toBe("warning");
+  });
+
   // The model is a property of the session, not a reason to look at it - and
   // the session pane's own status strip reports it the moment you open the row.
   // On a triage surface it was noise on every row.
@@ -287,14 +295,23 @@ describe("session row", () => {
   // the one surface that exists to be skimmed. Only a signal state earns the
   // line - and it's the SAME predicate that earns the dot, so the two never
   // disagree about whether a row matters.
+  //
+  // kata hxjn is the one deliberate exception: a row at depth 0 (a top-level
+  // entry in the flat, cross-project Live/Pinned tiers - see
+  // SessionRow's own showsProject comment) gets a second line for its
+  // project even when otherwise quiet, because that fact has nowhere else to
+  // live on a flat list. A depth>0 row (nested under its own ProjectRow, or
+  // a subagent child) is unaffected - `info()`'s own default is depth 0, so
+  // the tests below that want the OLD one-line-quiet-row behavior pass
+  // depth: 1 explicitly.
 
   test.each([
     ["active", /working/i],
     ["awaiting", /your move/i],
-    ["warning", /waiting on you/i],
+    ["warning", /^warning/i],
     ["errored", /failed/i],
   ] as const)("a signal row (%s) keeps a gloss line leading with the state", (state, expected) => {
-    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+    render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
     expect(screen.getByTestId("rail-row-activity").textContent).toMatch(expected);
   });
 
@@ -305,7 +322,7 @@ describe("session row", () => {
     render(
       <RailRow
         node={sessionRailNode(apiNode({ state: "awaiting", ask_pending: true }))}
-        info={info()}
+        info={info({ depth: 1 })}
         actions={actions()}
       />,
     );
@@ -313,40 +330,91 @@ describe("session row", () => {
   });
 
   test.each(["idle", "ended", "notLoaded", ""] as const)(
-    "a quiet row (%s) is title + age on one line, with no gloss at all",
+    "a quiet, nested row (%s, depth > 0) is title + age on one line, with no gloss at all",
     (state) => {
-      render(<RailRow node={sessionRailNode(apiNode({ state, age: "3h" }))} info={info()} actions={actions()} />);
+      render(
+        <RailRow node={sessionRailNode(apiNode({ state, age: "3h" }))} info={info({ depth: 1 })} actions={actions()} />,
+      );
       expect(screen.queryByTestId("rail-row-activity")).toBeNull();
       expect(screen.getByText("Fix flaky test")).toBeTruthy();
       expect(screen.getByTestId("rail-row-time").textContent).toBe("3h");
     },
   );
 
-  // The dot and the gloss answer the same question, so they appear together -
-  // one predicate (SIGNAL_STATES) drives both, which is what stops a row from
-  // ever showing a dot with no explanation or an explanation with no dot.
-  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
-    "the dot and the gloss line agree for state %s",
+  // kata hxjn: the exception above, in the flat Live/Pinned tiers (depth 0).
+  // A quiet row there still names its project, since a flat list gives it no
+  // other way to say which project it belongs to.
+  test.each(["idle", "ended", "notLoaded", ""] as const)(
+    "a quiet, top-level row (%s, depth 0) names its project on a second line",
     (state) => {
-      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info()} actions={actions()} />);
+      render(
+        <RailRow
+          node={sessionRailNode(apiNode({ state, age: "3h", project: "prime-radiant" }))}
+          info={info({ depth: 0 })}
+          actions={actions()}
+        />,
+      );
+      expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant");
+      expect(screen.getByTestId("rail-row-time").textContent).toBe("3h");
+    },
+  );
+
+  // The dot and the gloss answer the same question in a NESTED row (depth >
+  // 0, where hxjn's project line never applies) - one predicate
+  // (SIGNAL_STATES) drives both there, which is what stops a nested row from
+  // ever showing a dot with no explanation or an explanation with no dot. At
+  // depth 0 that one-to-one correspondence is deliberately broken by the
+  // project line (tested above and below).
+  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
+    "the dot and the gloss line agree for state %s on a nested row",
+    (state) => {
+      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 1 })} actions={actions()} />);
       const hasDot = screen.queryByTestId("cadence-dot") !== null;
       const hasGloss = screen.queryByTestId("rail-row-activity") !== null;
       expect(hasGloss).toBe(hasDot);
     },
   );
 
+  // At depth 0 a dot still always implies a gloss (a signal is never silent),
+  // but the reverse no longer holds: a quiet top-level row shows a gloss line
+  // for its project with no dot at all.
+  test.each(["active", "awaiting", "warning", "errored", "idle", "ended", "notLoaded", ""] as const)(
+    "a dot on a top-level row always implies a gloss line",
+    (state) => {
+      render(<RailRow node={sessionRailNode(apiNode({ state }))} info={info({ depth: 0 })} actions={actions()} />);
+      const hasDot = screen.queryByTestId("cadence-dot") !== null;
+      const hasGloss = screen.queryByTestId("rail-row-activity") !== null;
+      if (hasDot) expect(hasGloss).toBe(true);
+    },
+  );
+
   // Branch survives on a signal row because it distinguishes SIBLINGS in the
   // case that matters: two working sessions in one project on different
-  // branches.
+  // branches. Rendered nested (depth > 0) to isolate it from hxjn's project
+  // line, tested separately below.
   test("a signal row's gloss carries the branch when the session has one", () => {
     render(
       <RailRow
         node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing" }))}
-        info={info()}
+        info={info({ depth: 1 })}
         actions={actions()}
       />,
     );
     expect(screen.getByTestId("rail-row-activity").textContent).toBe("working · fix/thing");
+  });
+
+  // kata hxjn: a top-level (depth 0) signal row's gloss leads with the
+  // project, then the usual state · branch join - project answers "where",
+  // the rest answers "what's happening", in that reading order.
+  test("a top-level signal row's gloss leads with the project, then state and branch", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "active", branch: "fix/thing", project: "prime-radiant" }))}
+        info={info({ depth: 0 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant · working · fix/thing");
   });
 
   // Three facts of noise on every row: the model is a property of the session,
@@ -404,12 +472,34 @@ describe("session row", () => {
   // signal gutter is reserved for the states worth crossing the room for
   // (working / needs you / failed) - a dot here would put a dormant session in
   // that company, and a rail full of dots is a rail whose dots mean nothing.
-  test("a dormant row earns no dot and no gloss line", () => {
+  // Rendered nested (depth > 0) so hxjn's project line - orthogonal to
+  // dormancy - doesn't participate in this assertion; see the dedicated
+  // depth-0 case just below.
+  test("a dormant, nested row earns no dot and no gloss line", () => {
     render(
-      <RailRow node={sessionRailNode(apiNode({ state: "idle", dormant: true }))} info={info()} actions={actions()} />,
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", dormant: true }))}
+        info={info({ depth: 1 })}
+        actions={actions()}
+      />,
     );
     expect(screen.queryByTestId("cadence-dot")).toBeNull();
     expect(screen.queryByTestId("rail-row-activity")).toBeNull();
+  });
+
+  // kata hxjn: a dormant row still needs its project named when it's a
+  // top-level Live/Pinned row - dormancy says nothing about which project a
+  // flat row belongs to.
+  test("a dormant, top-level row still names its project, with no dot", () => {
+    render(
+      <RailRow
+        node={sessionRailNode(apiNode({ state: "idle", dormant: true, project: "prime-radiant" }))}
+        info={info({ depth: 0 })}
+        actions={actions()}
+      />,
+    );
+    expect(screen.queryByTestId("cadence-dot")).toBeNull();
+    expect(screen.getByTestId("rail-row-activity").textContent).toBe("prime-radiant");
   });
 
   // The moment a dormant session is given something to do it is working, and
