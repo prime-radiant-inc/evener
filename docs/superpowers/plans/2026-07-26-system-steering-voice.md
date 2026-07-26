@@ -4,7 +4,7 @@
 
 **Goal:** Make a daemon-originated steering message announce itself as one — `※ System steered: <kind> ▸` — with the kind carried on the wire instead of guessed from prose.
 
-**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Fifteen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §8 states the family rule the transcript's glyph gutter now enforces.
+**Architecture:** An additive `Kind` field rides `SteeringInjectedData` (event), `schema.Turn` (persistence), `SerfSteeringInjectedParams` + `ThreadItem` (wire), reaching the frontend on both the live and reload paths. Seventeen kinds, set at eighteen injection sites. `SteeringItem.tsx` routes on that field; the prose classifier in `steeringClassify.ts` is deleted, keeping only its structured `<job-notification>` parsing. A new `design-system.md` §8 states the family rule the transcript's glyph gutter now enforces.
 
 **Tech Stack:** Go 1.x (multi-module workspace), React 19 + TypeScript + CSS Modules, vitest + @testing-library/react, biome.
 
@@ -87,6 +87,8 @@ func TestSteeringKindConstants(t *testing.T) {
 		"tasks-done":         SteeringKindTasksDone,
 		"task-nudge":         SteeringKindTaskNudge,
 		"task-inactive":      SteeringKindTaskInactive,
+		"note-handoff":       SteeringKindNoteHandoff,
+		"goal-objective":     SteeringKindGoalObjective,
 		"transcript-pointer": SteeringKindTranscriptPointer,
 		"current-task":       SteeringKindCurrentTask,
 		"task-list":          SteeringKindTaskList,
@@ -140,6 +142,8 @@ const (
 	SteeringKindTasksDone         = "tasks-done"
 	SteeringKindTaskNudge         = "task-nudge"
 	SteeringKindTaskInactive      = "task-inactive"
+	SteeringKindNoteHandoff       = "note-handoff"
+	SteeringKindGoalObjective     = "goal-objective"
 	SteeringKindTranscriptPointer = "transcript-pointer"
 	SteeringKindCurrentTask       = "current-task"
 	SteeringKindTaskList          = "task-list"
@@ -162,6 +166,8 @@ var AllSteeringKinds = []string{
 	SteeringKindTasksDone,
 	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,
+	SteeringKindNoteHandoff,
+	SteeringKindGoalObjective,
 	SteeringKindTranscriptPointer,
 	SteeringKindCurrentTask,
 	SteeringKindTaskList,
@@ -947,6 +953,8 @@ const KIND_LABELS: Record<string, string> = {
   "tasks-done": "Tasks done",
   "task-nudge": "Task nudge",
   "task-inactive": "Task list idle",
+  "note-handoff": "Note to self",
+  "goal-objective": "Goal objective",
   "transcript-pointer": "Transcript pointer",
 };
 
