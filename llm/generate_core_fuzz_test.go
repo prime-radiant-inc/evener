@@ -116,10 +116,7 @@ func (a *scriptedFuzzAdapter) Stream(_ context.Context, req Request) (Stream, er
 		st.Send(StreamEvent{Type: StreamEventStreamStart})
 		// Emit text in small chunks to stress incremental parsing.
 		for i := 0; i < len(s.text); i += 3 {
-			end := i + 3
-			if end > len(s.text) {
-				end = len(s.text)
-			}
+			end := min(i+3, len(s.text))
 			st.Send(StreamEvent{Type: StreamEventTextDelta, Delta: s.text[i:end]})
 		}
 		for i := range s.calls {

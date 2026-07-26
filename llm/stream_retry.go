@@ -37,10 +37,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 	if sleep == nil {
 		sleep = DefaultSleep
 	}
-	maxRetries := opts.Policy.MaxRetries
-	if maxRetries < 0 {
-		maxRetries = 0
-	}
+	maxRetries := max(opts.Policy.MaxRetries, 0)
 	for n := 0; ; n++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr

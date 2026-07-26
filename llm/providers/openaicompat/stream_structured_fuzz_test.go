@@ -96,10 +96,7 @@ func (g *ccGen) split(s string) []string {
 	if s == "" {
 		return []string{""}
 	}
-	parts := 1 + g.intn(3)
-	if parts > len(s) {
-		parts = len(s)
-	}
+	parts := min(1+g.intn(3), len(s))
 	out := make([]string, 0, parts)
 	rem := s
 	for p := 0; p < parts-1 && len(rem) > 1; p++ {

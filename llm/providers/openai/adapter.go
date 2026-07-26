@@ -1054,10 +1054,7 @@ func parseUsage(u map[string]any) llm.Usage {
 	if inDetails, ok := u["input_tokens_details"].(map[string]any); ok {
 		cachedRead = llm.IntFromAny(inDetails["cached_tokens"])
 	}
-	uncachedInput := rawInput - cachedRead
-	if uncachedInput < 0 {
-		uncachedInput = 0
-	}
+	uncachedInput := max(rawInput-cachedRead, 0)
 	usage := llm.Usage{
 		InputTokens:  uncachedInput,
 		OutputTokens: output,
