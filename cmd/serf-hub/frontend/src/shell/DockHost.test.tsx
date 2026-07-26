@@ -1012,3 +1012,53 @@ test("a corrupt saved layout never suppresses a routed pane - the deep link wins
 // with no stored layout at all, handleReady's restore branch never runs,
 // so that test's behavior is identical before and after this task's change
 // by construction, not merely by coincidence.
+
+// kata eve5: a plain reload at the hub's root URL routes to "welcome" - the
+// SAME "genuinely new deep link" path the "does NOT contain still wins
+// focus" test above deliberately exercises with a "doc" pane - but welcome
+// is never itself part of a saved layout (openPane's own placement rule
+// displaces it from the main slot the instant a real pane opens, and
+// nothing else ever puts one back), so on an ordinary reload of "/" the
+// routed re-open ALWAYS resolves to "genuinely new", forcing a fresh welcome
+// pane into existence and stealing focus onto it - even though the saved
+// layout already had a real, restorable focused tab. This is not the
+// intended "deep link wins" case at all: nobody deep-linked anywhere, "/" is
+// the same fallback route regardless of what was open before, and the
+// spurious pane it manufactures lands stacked into the secondary group
+// alongside the real restored panes, one tab bar entry that outnumbers what
+// was actually saved.
+test("a reload at the root route does not spawn a spurious focused welcome tab over a restored layout", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  const second = workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_b/);
+
+  workspaceStore.getState().focusPane(second);
+  await screen.findByText(/doc pane: ref_b \(focused=true\)/);
+
+  unmount(); // flushes the pending debounced save, see the earlier tests
+  expect(savedActiveViews()).toContain(second);
+  resetWorkspaceStoreForTests();
+
+  // Phase 2: the reload, at "/" - AppShell's openRouteAsPane falls back to
+  // opening "welcome" with {} for any route that isn't session/settings/
+  // spawn, exactly as it does for the bare root path.
+  workspaceStore.getState().openPane("welcome", {});
+  render(<DockHost />);
+
+  // The restored, previously-focused pane keeps focus - a bare reload must
+  // not silently reassign it to a placeholder nobody asked for.
+  expect(await screen.findByText(/doc pane: ref_b \(focused=true\)/)).toBeTruthy();
+  expect(tabIsActive("Doc ref_b")).toBe(true);
+
+  // No third, spurious tab: the restored layout already fully accounts for
+  // both panes.
+  expect(document.querySelectorAll(".dv-tab")).toHaveLength(2);
+
+  // And the tab that IS there for ref_a still works - clicking it actually
+  // focuses it, not a dead label sitting beside a phantom active welcome.
+  const user = userEvent.setup();
+  await user.click(screen.getByText("Doc ref_a"));
+  expect(await screen.findByText(/doc pane: ref_a \(focused=true\)/)).toBeTruthy();
+  expect(tabIsActive("Doc ref_a")).toBe(true);
+});
