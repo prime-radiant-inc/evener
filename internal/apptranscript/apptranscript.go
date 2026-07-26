@@ -277,6 +277,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			Description:          "Model switch",
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
+			EventKind:            appwire.ThreadItemEventKindModelSwitch,
 		}}
 	case schema.TurnFailure:
 		// Unlike the marker kinds above, a failure with no text still renders:

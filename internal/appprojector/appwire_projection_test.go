@@ -89,6 +89,9 @@ func TestProject_ModelChanged(t *testing.T) {
 	if turn.Items[0].Text != "Switched model: openai/gpt-5.4 → anthropic/claude-opus-4-6" {
 		t.Fatalf("marker item Text = %q", turn.Items[0].Text)
 	}
+	if turn.Items[0].EventKind != appwire.ThreadItemEventKindModelSwitch {
+		t.Fatalf("item eventKind=%q, want %q", turn.Items[0].EventKind, appwire.ThreadItemEventKindModelSwitch)
+	}
 }
 
 func TestProject_ReasoningEffortChanged(t *testing.T) {
@@ -1371,7 +1374,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		name        string
 		event       events.SessionEvent
 		description string
-		eventKind   string
+		eventKind   appwire.ThreadItemEventKind
 		contains    []string
 		notContains []string
 		singleLine  bool
