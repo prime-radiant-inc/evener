@@ -109,6 +109,14 @@ function workingDir(): HTMLElement {
   return screen.getByLabelText("Working directory");
 }
 
+// The Model field's closed trigger (ModelField -> ModelCatalog): a plain
+// button, not a labelable control (see AdvancedOptions.tsx's own note on the
+// composite-widget label pattern), so it is found by its "— change model"
+// accessible-name suffix rather than by label.
+function modelTrigger(): HTMLElement {
+  return screen.getByRole("button", { name: /change model/i });
+}
+
 /** The trigger's rendered path. It also carries a chevron and a screen-reader
  * hint, so the value is matched inside the text rather than compared whole. */
 function expectWorkingDir(path: string): void {
@@ -487,6 +495,43 @@ test("stamps the last-working-directory global when the browse panel closes", as
   await waitFor(() => expect(localStorage.getItem(LAST_WORKING_DIR_KEY)).toBe("/tmp/project/src"));
 });
 
+// kata cp3m: Escape closes the working-directory browse popover only - the
+// popover's own Escape handler (widgets/popover) both preventDefault()s and
+// stopPropagation()s (verified live: a document/window-level listener never
+// even sees the keydown), so it must never reach a form-level or route-level
+// handler and discard the draft or navigate the pane away. Live reproduction
+// against a real build (headless AND headed Chrome, mouse-click and
+// keyboard-commit directory selection, with and without a model chosen
+// first) did not reproduce the kata's reported discard; this regression test
+// locks the correct behavior in place either way - prompt, model, and
+// working directory all survive Escape, and no navigation occurs.
+test("kata cp3m: Escape after selecting a working directory closes only the popover - the draft survives", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => f.on("serf/paths/complete", () => ({ data: ["/tmp/project/src"] })));
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "my important draft text");
+  await user.click(workingDir());
+  await screen.findByRole("combobox", { name: "Path" });
+  await user.click(await screen.findByText("src"));
+  expectWorkingDir("/tmp/project/src");
+
+  const pathnameBeforeEscape = window.location.pathname;
+  await user.keyboard("{Escape}");
+
+  // The popover is gone...
+  await waitFor(() => expect(screen.queryByRole("combobox", { name: "Path" })).toBeNull());
+  // ...but nothing else moved: no submit was attempted, no navigation
+  // happened, and every field the user had already filled in is untouched.
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+  expect(window.location.pathname).toBe(pathnameBeforeEscape);
+  expect((screen.getByRole("textbox", { name: "Prompt" }) as HTMLTextAreaElement).value).toBe(
+    "my important draft text",
+  );
+  expectWorkingDir("/tmp/project/src");
+});
+
 // The read side of that same global (spec 3.4): with no ?dir= prefill and no
 // per-project blob the field is empty, and the panel opens on the last
 // directory a session was launched in rather than on $HOME.
@@ -575,6 +620,140 @@ test("aborts with the validator message for a non-fixable working dir", async ()
   // Failure paths already reset busy (verified, unchanged by this fix) - the
   // button must stay usable so the user can correct the path and retry.
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+});
+
+// --- kata xgk8: Model's "(default)" must not claim an answer the daemon --
+// --- will refuse -----------------------------------------------------------
+//
+// The daemon's thread/start resolves Model from the SAME layered launch
+// config serf/launch/resolve previews (app_threadlifecycle.go: overrides.Model
+// wins when set, otherwise the resolved Effective.Model - empty is refused
+// with "model is required"). Leaving Model untouched sends no model
+// override, so an empty resolve preview means the daemon WILL refuse the
+// submit - "(default)" next to a working Effort default is a lie in that
+// state. The preview is fail-open (an unmocked/failing resolve never blocks
+// Start) - only a CONFIRMED empty default does.
+
+test("Model keeps reading '(default)' and Start stays untouched when the hub resolves a real default (kata xgk8, happy path)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("serf/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  expect(modelTrigger().textContent).toContain("(default)");
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+});
+
+test("kata xgk8: Model reads as required (not '(default)') and Start is disabled when the hub has no default model", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("serf/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+
+  await waitFor(() => expect(modelTrigger().textContent).not.toContain("(default)"));
+  expect(screen.getByRole("alert").textContent).toMatch(/no default model/i);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  // Defense in depth: the ⌘+Enter submit chord must not bypass the disabled
+  // button either (handleSpawn's own guard, not just the button's attribute).
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("kata xgk8: choosing a model clears the required state and lets Start proceed", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("serf/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  await user.click(modelTrigger());
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.type(screen.getByRole("textbox", { name: "Prompt" }), "do the thing");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ model: "openai/gpt-5" });
+});
+
+// The daemon's own launch-config schema exposes a SECOND "model" wireField
+// inside Advanced options (perLaunchSerfOptions - schema.go's real "model"
+// LaunchOption, kind modelPicker) alongside the top-level Model chip; floor
+// §1.11 has the Advanced field's override win at submit time. The preview
+// here must agree - an override set ONLY through Advanced options satisfies
+// the requirement without the top-level chip ever leaving "(default)".
+test("kata xgk8: an Advanced-options model override satisfies the requirement without touching the top-level Model field", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("serf/launch/schema", () => ({
+      options: [
+        {
+          field: "model",
+          wireField: "model",
+          label: "Model",
+          group: "general",
+          kind: "modelPicker",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("serf/launch/resolve", (params) => ({
+      effective: { model: params.launchOverrides?.model ?? "" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "serf/launch/resolve")).toBe(true));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const modelPickers = screen.getAllByRole("button", { name: /change model/i });
+  // [0] is the top-level chip; the Advanced-panel one is whichever else opens
+  // a picker - pick the last one added (Advanced options render after it).
+  await user.click(modelPickers[modelPickers.length - 1]!);
+  const combo = await screen.findByRole("combobox", { name: "Model" });
+  await user.type(combo, "gpt-5");
+  await user.click(await screen.findByText("openai/gpt-5"));
+
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  expect(screen.getAllByRole("button", { name: /change model/i })[0]?.textContent).toContain("(default)"); // top-level chip untouched
 });
 
 test("surfaces the discard notice when a prefilled model is no longer offered (floor §1.10)", async () => {

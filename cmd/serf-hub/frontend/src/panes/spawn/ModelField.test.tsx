@@ -27,6 +27,17 @@ test("shows the interim default marker when no model is chosen", () => {
   expect(screen.getByText("(default)")).toBeTruthy();
 });
 
+// kata xgk8: the spawn form overrides the empty-value label when the daemon
+// has no resolvable default model, so the field never claims to be
+// already-answered when a submit would be refused.
+test("forwards emptyLabel to the underlying catalog trigger", () => {
+  render(
+    <ModelField value="" onChange={vi.fn()} loadModels={vi.fn().mockResolvedValue([])} emptyLabel="Choose a model" />,
+  );
+  expect(screen.getByText("Choose a model")).toBeTruthy();
+  expect(screen.queryByText("(default)")).toBeNull();
+});
+
 test("shows the qualified provider/model when a model is set", () => {
   render(<ModelField value="openai/gpt-5" onChange={vi.fn()} loadModels={vi.fn().mockResolvedValue(MODELS)} />);
   expect(screen.getByText("openai/gpt-5")).toBeTruthy();

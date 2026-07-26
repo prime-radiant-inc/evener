@@ -85,7 +85,14 @@ const CLASS = {
   notice: requireClass(styles.notice, "spawn.module.css", "notice"),
   chips: requireClass(styles.chips, "spawn.module.css", "chips"),
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
+  modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
 };
+
+// kata xgk8: the empty-value label Model shows when the hub has confirmed it
+// has no default to fall back to - never "(default)", which reads exactly
+// like Effort's own working default and invites a submit the daemon refuses
+// ("model is required", app_threadlifecycle.go).
+const MODEL_CHOOSE_LABEL = "Choose a model";
 
 export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const client = useClient();
@@ -104,6 +111,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // kata xgk8: true only once serf/launch/resolve has CONFIRMED the hub has
+  // no default model for this cwd (Effective.Model resolves empty with no
+  // overrides) - never set on a rejection or before cwd is chosen, so an
+  // unconfirmable state never blocks Start (same fail-open shape as
+  // preflightDir).
+  const [noDefaultModel, setNoDefaultModel] = useState(false);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -139,6 +152,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const attachments = useAttachments(textEditor);
 
   const usesSerfModels = harnessUsesSerfModels(harness, harnesses);
+  // kata xgk8: Start cannot succeed while Model is untouched AND the hub has
+  // confirmed there is no default to fall back to - see the resolve effect
+  // below for how noDefaultModel is set.
+  const modelRequired = model === "" && noDefaultModel;
 
   const loadModels = useCallback(
     () => client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined }).then((r) => r.data),
@@ -280,6 +297,39 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     };
   }, [cwd]);
 
+  // Default-model preview (kata xgk8): thread/start resolves Model from the
+  // SAME layered launch config this previews (app_threadlifecycle.go -
+  // overrides.Model wins when set, otherwise Effective.Model; empty refuses
+  // the whole submit with "model is required"). advancedOverrides is passed
+  // through rather than {}: the daemon's own schema exposes a SECOND "model"
+  // wireField inside Advanced options (schema.go's per-launch modelPicker),
+  // and floor §1.11 has that override win at submit time too - a model set
+  // ONLY there must satisfy this preview without the top-level chip ever
+  // leaving "(default)". Re-run on every cwd or advancedOverrides change,
+  // since the resolved default is a property of the directory (project/repo
+  // layers) plus whatever the user has already configured. Fail OPEN like
+  // preflightDir/branch resolution: no cwd yet, or a rejected preview (RPC
+  // down), leaves noDefaultModel false rather than blocking Start on an
+  // unconfirmed state.
+  useEffect(() => {
+    if (cwd.trim() === "") {
+      setNoDefaultModel(false);
+      return undefined;
+    }
+    let active = true;
+    resolveConfig(advancedOverrides).then(
+      (result) => {
+        if (active) setNoDefaultModel((result.effective.model ?? "").trim() === "");
+      },
+      () => {
+        if (active) setNoDefaultModel(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [cwd, advancedOverrides, resolveConfig]);
+
   function handleHarnessChange(next: string): void {
     setHarness(next);
     // Switching to a non-serf harness always blanks the model; switching to a
@@ -357,6 +407,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
 
   async function handleSpawn(): Promise<void> {
     if (busy) return;
+    // kata xgk8: the Start button is already disabled in this state, but the
+    // ⌘/Ctrl+Enter chord (handlePromptKeyDown) reaches this function directly
+    // - a submit that CANNOT succeed must never fire regardless of path in.
+    // The field's own inline note already says why, so no toast here.
+    if (modelRequired) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -472,7 +527,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   size="xs"
                   data-testid="spawn-submit"
                   onClick={() => void handleSpawn()}
-                  disabled={busy}
+                  disabled={busy || modelRequired}
                 >
                   {busy ? "Starting…" : "Start"}
                 </Button>
@@ -542,7 +597,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               loadModels={loadModels}
               harness={harness || undefined}
               cwd={cwd || undefined}
+              emptyLabel={modelRequired ? MODEL_CHOOSE_LABEL : undefined}
             />
+            {modelRequired && (
+              <p className={CLASS.modelNote} role="alert">
+                This hub has no default model configured — choose one to start.
+              </p>
+            )}
           </div>
 
           <FormRow label="Effort" htmlFor="spawn-reasoning">

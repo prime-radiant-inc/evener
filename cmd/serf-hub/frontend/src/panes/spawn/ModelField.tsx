@@ -23,9 +23,13 @@ export interface ModelFieldProps {
   // enrichment, exactly what the settings swap site wants.
   harness?: string;
   cwd?: string;
+  /** Overrides the closed trigger's empty-value text ("(default)" unless a
+   * caller overrides it) - the spawn form passes a real-required label when
+   * the daemon has no default model to fall back to (kata xgk8). */
+  emptyLabel?: string;
 }
 
-export function ModelField({ value, onChange, loadModels, harness, cwd }: ModelFieldProps) {
+export function ModelField({ value, onChange, loadModels, harness, cwd, emptyLabel }: ModelFieldProps) {
   const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
     // The scoped model/list is the authoritative launchable SET; the /api/models
     // catalog only enriches it (badges/cost/Recent), scoped to the SAME
@@ -41,5 +45,5 @@ export function ModelField({ value, onChange, loadModels, harness, cwd }: ModelF
     return mergeScopedCatalog(scoped, enrichment);
   }, [loadModels, harness, cwd]);
 
-  return <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} />;
+  return <ModelCatalog value={value} onChange={onChange} loadCatalog={loadCatalog} emptyLabel={emptyLabel} />;
 }
