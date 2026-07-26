@@ -169,19 +169,19 @@ test("applies the dockview-theme-serf class dockview-theme.css targets", async (
 });
 
 // Pop out is a dockview RIGHT-HEADER action, so it lives inside the same
-// per-group header container the one-pane rule hides (dockview-core's
+// per-group header container syncGroupHeaders hides for main (dockview-core's
 // tabsContainer owns both the tabs and the right-actions slot, and
 // header.hidden display:none's the lot). It is therefore reachable on the
-// secondary group - which shows its header whenever it holds more than one
-// pane - and not on the main pane. Same shape as the absent close (x): the
+// secondary group - whose header is always visible, whatever its pane count -
+// and not on the main pane. Same shape as the always-reachable close (x): the
 // main pane deliberately has no header affordances at all.
 test("wires the 'Pop out' group-header affordance into the live dockview host", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_main/);
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
-  await screen.findByText(/doc pane: ref_a/);
-  workspaceStore.getState().openPane("doc", { ref: "ref_b" }); // secondary group now shows its header
+  await screen.findByText(/doc pane: ref_a/); // secondary group's header is already visible with just this one pane
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
   await screen.findByText(/doc pane: ref_b/);
 
   // The affordance is a dockview right-header action rendered by the real
@@ -269,7 +269,13 @@ test("a third pane joins the existing right-hand group rather than making a thir
   expect(visibleTabTexts()).toEqual(["Doc ref_b", "Doc ref_c"]);
 });
 
-test("a group holding exactly one pane renders no tab bar; a group with two does", async () => {
+// The main group's header is hidden ALWAYS (identity, not count - see
+// syncGroupHeaders): it holds exactly one pane by construction and Jesse's
+// rule bars it from ever growing tabs. The secondary group's header is
+// visible ALWAYS, whether it holds one pane or several - kata 65zj: a lone
+// secondary pane still needs its native (x) reachable, so "only shows tabs
+// past two panes" cannot apply to it the way it does to main.
+test("the main group's header is always hidden; the secondary group's is always visible", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_a" });
   render(<DockHost />);
   await screen.findByText(/doc pane: ref_a/);
@@ -279,13 +285,50 @@ test("a group holding exactly one pane renders no tab bar; a group with two does
 
   workspaceStore.getState().openPane("doc", { ref: "ref_b" });
   await screen.findByText(/doc pane: ref_b/);
-  expect(headerHiddenFlags()).toEqual([true, true]); // one pane each, both bare
+  // The lone SECONDARY pane's header is visible - this is the fix for 65zj,
+  // not a lingering bare group.
+  expect(headerHiddenFlags()).toEqual([true, false]);
 
   workspaceStore.getState().openPane("doc", { ref: "ref_c" });
   await screen.findByText(/doc pane: ref_c/);
-  // The right-hand group now stacks two panes, so it needs its tabs back; the
-  // main group still holds one and stays bare.
+  // The right-hand group now stacks two panes; still visible, main still bare.
   expect(headerHiddenFlags()).toEqual([true, false]);
+});
+
+// kata 65zj: opening exactly one pane beside the main pane - both real
+// producers (a file/image "Open beside" tool-card affordance, and a
+// subagent's "open transcript" row) just call workspaceStore.openPane via
+// paneActions.openBeside, and this fix lives entirely in syncGroupHeaders
+// (group-identity-based, not pane-type-based), so a "doc" fixture proves the
+// mechanism for every producer at once - must leave a REACHABLE close
+// control, not a one-way door recoverable only by reload or dragging a
+// splitter to zero.
+test("a lone secondary pane has a reachable native close control, and closing it collapses the column", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_main" });
+  render(<DockHost />);
+  await screen.findByText(/doc pane: ref_main/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1); // no right-hand column yet
+
+  const beside = workspaceStore.getState().openPane("doc", { ref: "ref_a" }); // e.g. a file's "Open beside"
+  await screen.findByText(/doc pane: ref_a/);
+  expect(document.querySelectorAll(".dv-groupview")).toHaveLength(2);
+
+  // The affordance itself: a visible tab, with a close control inside it.
+  expect(visibleTabTexts()).toEqual(["Doc ref_a"]);
+  expect(visibleCloseControlCount()).toBe(1);
+  const closeAction = Array.from(document.querySelectorAll<HTMLElement>(".dv-tab"))
+    .find((t) => t.textContent === "Doc ref_a")
+    ?.querySelector(".dv-default-tab-action") as HTMLElement | null;
+  expect(closeAction).not.toBeNull();
+
+  const user = userEvent.setup();
+  await user.click(closeAction as HTMLElement);
+
+  expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(beside);
+  await vi.waitFor(() => {
+    expect(document.querySelectorAll(".dv-groupview")).toHaveLength(1); // column collapsed away
+  });
+  expect(screen.getByText(/doc pane: ref_main/)).toBeTruthy(); // main untouched
 });
 
 // The main pane is REPLACEABLE, NOT CLOSEABLE (Jesse, round 3). Pinned as an
@@ -438,11 +481,11 @@ test("clicking a different tab updates workspaceStore.focusedPaneId", async () =
   expect(workspaceStore.getState().focusedPaneId).toBe(second);
 });
 
-// A native tab (x) only exists where a tab bar does, which - by the one-pane
-// rule - is the SECONDARY group, never the main one. The behaviour under test
-// (dockview's own close mirroring back into the store) is unchanged and still
-// worth covering; it just lives on a secondary pane now. See the main-pane
-// invariant test above for the deliberate absence on the other side.
+// A native tab (x) only exists where a tab bar does - always the SECONDARY
+// group, never main (syncGroupHeaders). The behaviour under test (dockview's
+// own close mirroring back into the store) is unchanged and still worth
+// covering. See the main-pane invariant test above for the deliberate
+// absence on the other side.
 test("clicking a secondary tab's native close button updates workspaceStore.panes", async () => {
   workspaceStore.getState().openPane("doc", { ref: "ref_main" });
   render(<DockHost />);
@@ -462,7 +505,10 @@ test("clicking a secondary tab's native close button updates workspaceStore.pane
   await user.click(closeAction as HTMLElement);
 
   expect(workspaceStore.getState().panes.map((p) => p.id)).not.toContain(closing);
-  expect(visibleTabTexts()).toEqual([]); // back to one pane per group: no tab bar anywhere
+  // One pane (ref_a) remains in the secondary group; its header - and native
+  // (x) - stays reachable (kata 65zj: a lone secondary pane is never stranded
+  // without a close control).
+  expect(visibleTabTexts()).toEqual(["Doc ref_a"]);
   // Reopening the same ref proves the id was actually released, not just
   // hidden - a still-tracked "closed" pane would come back focused instead
   // of minting a fresh one.
@@ -488,10 +534,10 @@ test("workspace.closePane removes the dockview tab", async () => {
   // (a nice a11y feature it ships with by default - see this task's
   // report) that also matches a loose /Doc ref_a/ text query, so the tab
   // set is the precise assertion here, not a text search that would
-  // false-positive against the announcement. With one pane left in the
-  // group its tab bar hides again, so there are no visible tabs at all.
+  // false-positive against the announcement. One pane (ref_b) remains in the
+  // secondary group; its header - and native (x) - stays visible (65zj).
   await vi.waitFor(() => {
-    expect(visibleTabTexts()).toEqual([]);
+    expect(visibleTabTexts()).toEqual(["Doc ref_b"]);
   });
   expect(screen.getByText(/doc pane: ref_b/)).toBeTruthy();
 });
