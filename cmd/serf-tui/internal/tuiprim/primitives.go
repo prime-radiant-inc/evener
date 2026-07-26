@@ -65,10 +65,7 @@ func SectionDivider(width int, left, right string) string {
 				trailW := lipgloss.Width(trailPlain)
 				leadPlain := "─ "
 				leadW := lipgloss.Width(leadPlain)
-				available := width - leadW - trailW
-				if available < 0 {
-					available = 0
-				}
+				available := max(width-leadW-trailW, 0)
 				truncatedLeft := tuitext.TruncateText(strings.ToUpper(left), available)
 				return lipgloss.NewStyle().Foreground(th.RuleSoft).Render("─ ") +
 					lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(truncatedLeft) +
@@ -146,10 +143,7 @@ func Overlay(opts OverlayOpts) string {
 		Width(opts.Width)
 
 	// 4 = 2 padding columns on each side from Padding(1,2) above.
-	contentWidth := opts.Width - 4
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
+	contentWidth := max(opts.Width-4, 1)
 
 	titleLine := lipgloss.NewStyle().Bold(true).Foreground(accent).Render(opts.Title)
 	body := ansi.Wrap(opts.Body, contentWidth, "")
