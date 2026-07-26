@@ -132,7 +132,7 @@ func TestGoalPersist_RestorePreservesMadeProgressOnce(t *testing.T) {
 	// With madeProgressOnce=true, consecutive no-progress turns must accrue the
 	// streak. Fire goal.NoProgressLimit no-progress turns; the store should
 	// transition to blocked.
-	for i := 0; i < goal.NoProgressLimit; i++ {
+	for i := range goal.NoProgressLimit {
 		fresh.RecordContinuation(false, now.Add(time.Duration(i+2)*time.Minute))
 	}
 	snap, ok := fresh.Snapshot()

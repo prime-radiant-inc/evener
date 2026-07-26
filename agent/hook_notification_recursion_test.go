@@ -178,7 +178,7 @@ func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *te
 	// runs are in flight together — the collision the guard used to lose.
 	start := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -241,7 +241,7 @@ func TestNewSession_InvalidMatcherWarnsOnce(t *testing.T) {
 	}
 
 	// Dispatch the invalid-matcher event several times; this must NOT add warnings.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		sess.hookRunner.MatchHooks("PreToolUse", "Bash")
 	}
 

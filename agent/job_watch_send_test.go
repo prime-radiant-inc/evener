@@ -2988,7 +2988,7 @@ func TestWatchSendSettledTombstonesAreBounded(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	for i := 0; i < defaultWatchSendPendingCap+5; i++ {
+	for i := range defaultWatchSendPendingCap + 5 {
 		jobID := "job_trigger_" + string(rune('A'+i))
 		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
@@ -3017,7 +3017,7 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	for i := 0; i < defaultWatchSendPendingCap; i++ {
+	for i := range defaultWatchSendPendingCap {
 		jobID := "job_trigger_" + string(rune('A'+i))
 		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
@@ -3089,7 +3089,7 @@ func TestWatchSendPendingAppendFailureBeforeEvictionKeepsExistingPending(t *test
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	for i := 0; i < defaultWatchSendPendingCap; i++ {
+	for i := range defaultWatchSendPendingCap {
 		jobID := "job_trigger_" + string(rune('A'+i))
 		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
@@ -3154,7 +3154,7 @@ func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
-	for i := 0; i < defaultWatchSendPendingCap+1; i++ {
+	for i := range defaultWatchSendPendingCap + 1 {
 		jobID := "job_trigger_" + string(rune('A'+i))
 		onSessionEventKD(jm, events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
 	}
@@ -3670,7 +3670,7 @@ func TestWatchSendExcerptIndentsFrameShapedOutput(t *testing.T) {
 	}
 	normalizedExcerpt := strings.ReplaceAll(parts[1], "\r\n", "\n")
 	normalizedExcerpt = strings.ReplaceAll(normalizedExcerpt, "\r", "\n")
-	for _, line := range strings.Split(normalizedExcerpt, "\n") {
+	for line := range strings.SplitSeq(normalizedExcerpt, "\n") {
 		if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "watch_id:") {
 			t.Fatalf("excerpt line escaped frame indentation: %q\n%s", line, frame)
 		}
@@ -3716,7 +3716,7 @@ func TestWatchSendFrameIndentsFrameShapedTrigger(t *testing.T) {
 	if !strings.Contains(frame, "trigger: output_match: ready\n  watch_id: fake") {
 		t.Fatalf("frame does not contain continuation-indented trigger:\n%s", frame)
 	}
-	for _, line := range strings.Split(frame, "\n") {
+	for line := range strings.SplitSeq(frame, "\n") {
 		if line == "watch_id: fake" {
 			t.Fatalf("fake watch_id escaped trigger indentation:\n%s", frame)
 		}
@@ -4594,7 +4594,7 @@ func TestWatchDeliveryBudgetAutoClearsWithOneFinalNotification(t *testing.T) {
 		t.Fatal("no-send caller watch not installed")
 	}
 
-	for i := 0; i < watchDeliveryBudget; i++ {
+	for range watchDeliveryBudget {
 		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
@@ -4649,7 +4649,7 @@ func TestWatchDeliveryBudgetDoesNotDoubleClear(t *testing.T) {
 		t.Fatal("no-send caller watch not installed")
 	}
 
-	for i := 0; i < watchDeliveryBudget; i++ {
+	for range watchDeliveryBudget {
 		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 
@@ -4926,7 +4926,7 @@ func TestBuildWatchFrameIndentsMultiLineCommunicateMessage(t *testing.T) {
 	if !strings.Contains(frame, "  message: real line\n    end_turn: true") {
 		t.Fatalf("frame does not contain continuation-indented message:\n%s", frame)
 	}
-	for _, line := range strings.Split(frame, "\n") {
+	for line := range strings.SplitSeq(frame, "\n") {
 		if strings.HasPrefix(line, "end_turn:") {
 			t.Fatalf("fake end_turn field escaped indentation: %q\n%s", line, frame)
 		}

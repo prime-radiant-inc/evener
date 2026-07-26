@@ -118,7 +118,7 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 
 	// NoProgressLimit no-progress continuations: the last one blocks.
 	var lastOK bool
-	for i := 0; i < goal.NoProgressLimit; i++ {
+	for range goal.NoProgressLimit {
 		_, lastOK = sess.armGoalContinuation(false, true)
 	}
 	if lastOK {
@@ -159,7 +159,7 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 	store.Set("never-ending work", time.Now())
 
 	const continuations = 50 // far past the old DefaultMaxIterations of 10
-	for i := 0; i < continuations; i++ {
+	for i := range continuations {
 		prompt, ok := sess.armGoalContinuation(true, true)
 		if !ok {
 			t.Fatalf("a progressing goal stopped at continuation %d; want no iteration cap", i+1)

@@ -328,7 +328,7 @@ func TestOutputMatcherFeedCounterSkipsScanCoveredBytes(t *testing.T) {
 func TestOutputMatcherFeedAtNeverMatchesLineBelowScanOffset(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`ready`))
 	m.SetScanOffset(6)
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if got := m.FeedAt([]byte("ready\n"), 6); len(got) != 0 {
 			t.Fatalf("feed %d: scan-covered line must never match: %#v", i, got)
 		}

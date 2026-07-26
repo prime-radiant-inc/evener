@@ -1343,7 +1343,7 @@ func TestParseRangeErr(t *testing.T) {
 // textTurns builds n ASSISTANT turns; turn i carries the assistant text body(i).
 func textTurns(n int, body func(i int) string) []transcript.Entry {
 	entries := make([]transcript.Entry, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		entries[i] = makeEntry(schema.Turn{
 			Kind:    schema.TurnAssistant,
 			Message: llm.Assistant(body(i)),
@@ -1626,7 +1626,7 @@ func TestRenderTranscript_FullResultForOutOfRange(t *testing.T) {
 	const total = 20
 	const pinSeq = 2
 	entries := make([]transcript.Entry, total)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		entries[i] = makeEntry(schema.Turn{
 			Kind:    schema.TurnAssistant,
 			Message: llm.Assistant(fmt.Sprintf("assistant turn %d body", i)),
@@ -1787,7 +1787,7 @@ func TestRenderMarkdown_HeaderClamped(t *testing.T) {
 		t.Errorf("document header contains text from a later paragraph: HEADERNEEDLE found in:\n%s", out)
 	}
 	// The # Transcript: line must be short (≤ 122 chars including the prefix).
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, "# Transcript:") && len([]rune(line)) > 125 {
 			t.Errorf("# Transcript: line is %d runes (too long): %q", len([]rune(line)), line)
 		}
@@ -1903,7 +1903,7 @@ func TestRenderMarkdown_LongResultLineClamped(t *testing.T) {
 		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 		// No line in the output (after stripping indentation) should exceed
 		// resultLineMaxRunes runes by more than a small fence overhead.
-		for _, line := range strings.Split(out, "\n") {
+		for line := range strings.SplitSeq(out, "\n") {
 			stripped := strings.TrimPrefix(line, "  ")
 			runeLen := len([]rune(stripped))
 			// Allow fence lines (all backticks) to be any length.

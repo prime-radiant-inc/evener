@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"maps"
 	"strings"
 	"testing"
 
@@ -44,9 +45,7 @@ func renderAvailableAgentsSectionWithAllowanceAndTools(t *testing.T, agents map[
 	}
 
 	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
-	for name, agent := range agents {
-		sess.pluginAgents[name] = agent
-	}
+	maps.Copy(sess.pluginAgents, agents)
 
 	resolver := &sectionResolver{
 		provider: sess.profile.ID(),
