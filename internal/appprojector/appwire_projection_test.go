@@ -1945,6 +1945,52 @@ func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 	}
 }
 
+// TestAppEventProjectorProjectsSteeringInjectedKind (system steering voice):
+// the Kind the daemon named at the injection site (events.SteeringKind*)
+// must reach the wire so the web UI labels a steer from ground truth instead
+// of pattern-matching its prose.
+func TestAppEventProjectorProjectsSteeringInjectedKind(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
+		SessionID: "th_1",
+		Data:      events.SteeringInjectedData{Text: "done", Kind: events.SteeringKindTasksDone},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params["kind"] != events.SteeringKindTasksDone {
+		t.Fatalf("params[kind]=%v, want %q", params["kind"], events.SteeringKindTasksDone)
+	}
+}
+
+// TestAppEventProjectorOmitsSteeringInjectedEmptyKind is the other half of
+// TestAppEventProjectorProjectsSteeringInjectedKind: a steer the daemon did
+// not classify carries no "kind" key at all on the wire, matching how an
+// unset Source is omitted (issue #24).
+func TestAppEventProjectorOmitsSteeringInjectedEmptyKind(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
+		SessionID: "th_1",
+		Data:      events.SteeringInjectedData{Text: "mystery"},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if _, present := params["kind"]; present {
+		t.Fatalf("kind key present for an unkinded steer; want it omitted, params=%+v", params)
+	}
+}
+
 // TestProjector_ForwardsProviderCause (kata cmfz) verifies that when an
 // EventError carries a structured ErrorCause (populated by agent.Session
 // when the underlying error is a typed llm.Error), the projector forwards

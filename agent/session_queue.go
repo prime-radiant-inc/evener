@@ -58,6 +58,10 @@ type steeringMessage struct {
 	// SteeringInjectedData event and persisted on the transcript turn so
 	// UIs render user steering as a user message (issue #24).
 	Source string `json:"source,omitempty"`
+	// Kind names what the daemon injected (events.SteeringKind*), empty when
+	// the caller did not say. Surfaced on SteeringInjectedData and persisted on
+	// the turn so reload labels a steer the way the live path did.
+	Kind string `json:"kind,omitempty"`
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
@@ -65,6 +69,7 @@ func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjecte
 		Text:   msg.Text,
 		Images: userInputImagesFromAttachments(msg.Images),
 		Source: msg.Source,
+		Kind:   msg.Kind,
 	}
 }
 
@@ -72,6 +77,13 @@ func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjecte
 // completes.
 func (s *Session) Steer(msg string) {
 	_ = s.trySteer(msg)
+}
+
+// SteerKind queues a text-only steering message naming what it is
+// (events.SteeringKind*). Prefer it over Steer at every daemon injection site:
+// the kind is what a reader's label is built from, and only the site knows it.
+func (s *Session) SteerKind(msg, kind string) {
+	_ = s.trySteerEnqueue(msg, nil, nil, "", kind)
 }
 
 func (s *Session) trySteer(msg string) bool {
@@ -103,7 +115,7 @@ func (s *Session) SteerFromUser(msg string) {
 // SteerFromUserWithImages is SteerFromUser with optional image attachments,
 // mirroring SteerWithImages for the human-sent path.
 func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) {
-	_ = s.trySteerEnqueue(msg, images, nil, events.SteeringSourceUser)
+	_ = s.trySteerEnqueue(msg, images, nil, events.SteeringSourceUser, "")
 }
 
 func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
@@ -123,13 +135,14 @@ func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Caus
 }
 
 func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal) bool {
-	return s.trySteerEnqueue(msg, images, p, "")
+	return s.trySteerEnqueue(msg, images, p, "", "")
 }
 
 // trySteerEnqueue is the steering-queue append primitive. source carries the
 // steering provenance marker stored on the entry (events.SteeringSourceUser
-// for human-sent steering, "" for daemon/system steering).
-func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string) bool {
+// for human-sent steering, "" for daemon/system steering). kind names what the
+// daemon injected (events.SteeringKind*), "" when the caller did not say.
+func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string, kind string) bool {
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -139,7 +152,7 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 		s.mu.Unlock()
 		return false
 	}
-	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source}
+	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
 	}
@@ -325,7 +338,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	// The drained queue is user-typed input force-steered into the in-flight
 	// turn by a user action (turn/drainAsSteer), so the combined steering
 	// message keeps user provenance for rendering (issue #24).
-	s.trySteerEnqueue(combined, drainedImages, combinedProvenance, events.SteeringSourceUser)
+	s.trySteerEnqueue(combined, drainedImages, combinedProvenance, events.SteeringSourceUser, "")
 	return nil
 }
 
@@ -374,7 +387,7 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 	// The promoted entry is user-typed input steered into the in-flight turn
 	// by a user action, so it keeps user provenance for rendering — same as
 	// the DrainAsSteer collapse (issue #24).
-	s.trySteerEnqueue(entry.Text, entry.Images, entry.Provenance, events.SteeringSourceUser)
+	s.trySteerEnqueue(entry.Text, entry.Images, entry.Provenance, events.SteeringSourceUser, "")
 	return nil
 }
 
@@ -665,6 +678,7 @@ func (s *Session) injectDrainedSteering() {
 func (s *Session) consumeSteeringMessage(msg steeringMessage) {
 	t := schema.NewTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 	t.SteeringSource = msg.Source
+	t.SteeringKind = msg.Kind
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()

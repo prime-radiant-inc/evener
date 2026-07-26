@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -160,6 +161,22 @@ func TestProjectTurnSteeringCarriesUserSource(t *testing.T) {
 	items = ProjectTurn("turn_2", 2, sysTurn, map[string]string{}, nil, nil)
 	if len(items) != 1 || items[0].Source != "" {
 		t.Fatalf("system steering item.Source=%q, want empty", items[0].Source)
+	}
+}
+
+// TestProjectTurnSteeringCarriesKindOnReload (system steering voice): a
+// steering turn recorded with SteeringKind (set at the daemon injection site,
+// events.SteeringKind*) projects a steering item whose SteeringKind reaches
+// the web UI, so reload labels the steer the same way the live path did.
+func TestProjectTurnSteeringCarriesKindOnReload(t *testing.T) {
+	turn := schema.NewTurn(schema.TurnSteering, llm.User("done"))
+	turn.SteeringKind = events.SteeringKindTasksDone
+	items := ProjectTurn("turn_0", 0, turn, map[string]string{}, nil, nil)
+	if len(items) != 1 {
+		t.Fatalf("got %d items, want 1", len(items))
+	}
+	if items[0].SteeringKind != events.SteeringKindTasksDone {
+		t.Errorf("SteeringKind = %q, want %q", items[0].SteeringKind, events.SteeringKindTasksDone)
 	}
 }
 
