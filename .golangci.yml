@@ -71,6 +71,21 @@ linters:
           - bodyclose
           - noctx
           - errcheck
+      # SA5011 in tests is a staticcheck blind spot, not a defect: it does not
+      # infer that t.Fatal terminates, so the near-universal
+      #   if got == nil { t.Fatal(...) }
+      #   got.Field ...
+      # shape reads to it as a possible nil dereference. 251 sites across 80
+      # files, none of them bugs - and a genuine nil deref in a test fails that
+      # test loudly anyway, so the rule buys nothing here that running the
+      # suite does not.
+      #
+      # They were invisible until `modernize` was enabled: adding it changes
+      # how golangci runs the analysis pass, and staticcheck then reports on
+      # files modernize itself never touches. Verified by removing modernize
+      # on a cold cache, which takes the count to zero.
+      - path: _test\.go
+        text: SA5011
 
 formatters:
   enable:
