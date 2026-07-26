@@ -1,5 +1,11 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  resetSubagentModuleStoreForTests,
+  updateSubagentRowIfExists,
+  upsertSubagentRow,
+  useSubagentRows,
+} from "../panes/session/transcript/tools/subagentModuleStore";
 import type { ConnectionState } from "../protocol/client";
 import { ConnectionClosedError, WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
@@ -1456,6 +1462,101 @@ describe("frameTimes tracking (threads store)", () => {
     await flushUntil(() => fake.calls.filter((c) => c.method === "thread/read").length > 1);
 
     expect(threadsStore.getState().frameTimes.get("ref_a")).toEqual([1000]);
+  });
+});
+
+// serf/job/started|finished (dr7e): the "Signal merging" step from
+// docs/superpowers/specs/2026-06-25-subagent-run-rendering-design.md.
+// handleNotification routes these into subagentModuleStore independent of
+// ThreadModel entirely (see applySubagentJobSignal's own comment in
+// threads.ts) - these tests exercise that wiring end to end through the
+// SAME client.emitNotification path the ThreadModel-routing tests above use,
+// then read the result back out of subagentModuleStore's own useSubagentRows
+// hook (not out of ThreadModel, which these notifications never touch beyond
+// lastFrameAt).
+describe("serf/job/started|finished routing into subagentModuleStore (dr7e)", () => {
+  afterEach(resetSubagentModuleStoreForTests);
+
+  test("serf/job/finished patches an existing row's liveKind/liveReason/resumable/exhaustion", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    upsertSubagentRow("turn_1", { rowKey: "dlg:dlg_1", kind: "running", task: "t", resultPreview: "" });
+
+    fake.emitNotification({
+      method: "serf/job/finished",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        job: {
+          jobId: "job_1",
+          jobType: "delegate",
+          status: "exhausted",
+          reason: "ran out of turns",
+          resumable: true,
+          exhaustionBudget: "30m",
+          exhaustionLimit: 60,
+          outputBytes: 0,
+          delegateId: "dlg_1",
+          originTurnId: "turn_1",
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    expect(result.current[0]).toMatchObject({
+      liveKind: "failed",
+      liveReason: "ran out of turns",
+      resumable: true,
+      exhaustionBudget: "30m",
+      exhaustionLimit: 60,
+    });
+  });
+
+  test("serf/job/started resets an existing row to running", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    upsertSubagentRow("turn_1", { rowKey: "dlg:dlg_1", kind: "done", task: "t", resultPreview: "" });
+    updateSubagentRowIfExists("turn_1", "dlg:dlg_1", { liveKind: "failed", liveReason: "boom" });
+
+    fake.emitNotification({
+      method: "serf/job/started",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        job: {
+          jobId: "job_2",
+          jobType: "delegate",
+          status: "running",
+          outputBytes: 0,
+          delegateId: "dlg_1",
+          originTurnId: "turn_1",
+        },
+      },
+    });
+
+    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    expect(result.current[0]).toMatchObject({ liveKind: "running", liveReason: undefined });
+  });
+
+  test("a job with no originTurnId (not run via delegate) is silently ignored, no row touched", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/read", () => readResponse("ref_a"));
+    await threadsStore.getState().ensureThread("ref_a");
+    upsertSubagentRow("turn_1", { rowKey: "job:job_3", kind: "running", task: "t", resultPreview: "" });
+
+    fake.emitNotification({
+      method: "serf/job/finished",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        job: { jobId: "job_3", jobType: "shell", status: "completed", outputBytes: 0 },
+      },
+    });
+
+    const { result } = renderHook(() => useSubagentRows("turn_1"));
+    expect(result.current[0]?.liveKind).toBeUndefined();
   });
 });
 

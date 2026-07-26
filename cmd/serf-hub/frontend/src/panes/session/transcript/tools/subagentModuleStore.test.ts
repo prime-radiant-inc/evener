@@ -1,9 +1,15 @@
 import { renderHook } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
+import type { SerfJobInfo } from "../../../../protocol/types.gen";
 import {
+  applySerfJobFinished,
+  applySerfJobStarted,
   claimLeader,
+  classifyJobStatus,
   releaseLeader,
   resetSubagentModuleStoreForTests,
+  resolveRowKey,
+  setWatchedLiveKind,
   updateSubagentRowIfExists,
   upsertSubagentRow,
   useSubagentRows,
@@ -109,4 +115,142 @@ test("releaseLeader: a stale release from a non-leader item does not clear the r
 test("leadership is independent per turnId", () => {
   claimLeader("turn_l1", "item_1");
   expect(claimLeader("turn_l2", "item_1")).toBe(true);
+});
+
+// --- upsertSubagentRow preserves every overlay field, not just liveKind ---
+
+test("upsertSubagentRow preserves liveReason/resumable/exhaustion fields a delegate re-render never carries", () => {
+  upsertSubagentRow("turn_ov", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });
+  updateSubagentRowIfExists("turn_ov", "job_1", {
+    liveKind: "failed",
+    liveReason: "exhausted budget",
+    resumable: true,
+    exhaustionBudget: "10m",
+    exhaustionLimit: 20,
+  });
+  // A later incidental DelegateBody re-render re-upserts the SAME frozen data.
+  upsertSubagentRow("turn_ov", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });
+  const { result } = renderHook(() => useSubagentRows("turn_ov"));
+  expect(result.current[0]).toMatchObject({
+    liveKind: "failed",
+    liveReason: "exhausted budget",
+    resumable: true,
+    exhaustionBudget: "10m",
+    exhaustionLimit: 20,
+  });
+});
+
+// --- applySerfJobStarted / applySerfJobFinished (dr7e) --------------------
+
+function job(overrides: Partial<SerfJobInfo> = {}): SerfJobInfo {
+  return { jobId: "job_1", jobType: "delegate", status: "running", outputBytes: 0, ...overrides };
+}
+
+test("applySerfJobStarted: no-op when the job carries no originTurnId (never fabricates a row)", () => {
+  applySerfJobStarted(job());
+  const { result } = renderHook(() => useSubagentRows("turn_never_seen"));
+  expect(result.current).toEqual([]);
+});
+
+test("applySerfJobStarted: no-op when no row exists for the resolved rowKey (only patches an EXISTING row)", () => {
+  applySerfJobStarted(job({ originTurnId: "turn_js1", delegateId: "dlg_1" }));
+  const { result } = renderHook(() => useSubagentRows("turn_js1"));
+  expect(result.current).toEqual([]);
+});
+
+test("applySerfJobStarted: resets liveKind to running and clears prior terminal detail (delegate_send resume)", () => {
+  upsertSubagentRow("turn_js2", { rowKey: "dlg:dlg_2", kind: "done", task: "t", resultPreview: "" });
+  updateSubagentRowIfExists("turn_js2", "dlg:dlg_2", {
+    liveKind: "failed",
+    liveReason: "exhausted",
+    resumable: true,
+    exhaustionBudget: "1m",
+    exhaustionLimit: 5,
+  });
+
+  applySerfJobStarted(job({ originTurnId: "turn_js2", delegateId: "dlg_2", jobId: "job_2" }));
+
+  const { result } = renderHook(() => useSubagentRows("turn_js2"));
+  expect(result.current[0]).toMatchObject({
+    liveKind: "running",
+    liveReason: undefined,
+    resumable: undefined,
+    exhaustionBudget: undefined,
+    exhaustionLimit: undefined,
+  });
+});
+
+test("applySerfJobFinished: patches liveKind/liveReason/resumable/exhaustion from the notification", () => {
+  upsertSubagentRow("turn_jf1", { rowKey: "dlg:dlg_3", kind: "running", task: "t", resultPreview: "" });
+
+  applySerfJobFinished(
+    job({
+      originTurnId: "turn_jf1",
+      delegateId: "dlg_3",
+      status: "exhausted",
+      reason: "ran out of turns",
+      resumable: true,
+      exhaustionBudget: "30m",
+      exhaustionLimit: 60,
+    }),
+  );
+
+  const { result } = renderHook(() => useSubagentRows("turn_jf1"));
+  expect(result.current[0]).toMatchObject({
+    liveKind: "failed",
+    liveReason: "ran out of turns",
+    resumable: true,
+    exhaustionBudget: "30m",
+    exhaustionLimit: 60,
+  });
+});
+
+test("applySerfJobFinished: rowKey resolution matches resolveRowKey (delegateId over jobId over originToolCallId)", () => {
+  upsertSubagentRow("turn_jf2", { rowKey: "job:job_4", kind: "running", task: "t", resultPreview: "" });
+  applySerfJobFinished(job({ originTurnId: "turn_jf2", jobId: "job_4", status: "completed" }));
+  const { result } = renderHook(() => useSubagentRows("turn_jf2"));
+  expect(result.current[0]?.liveKind).toBe("done");
+});
+
+// --- setWatchedLiveKind: the guard that keeps a lagging watch from --------
+// --- resurrecting a row a serf/job/finished notification already settled -
+
+test("setWatchedLiveKind: a 'running' write is suppressed once the row is already terminal", () => {
+  upsertSubagentRow("turn_wg1", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });
+  updateSubagentRowIfExists("turn_wg1", "job_1", { liveKind: "done" });
+
+  setWatchedLiveKind("turn_wg1", "job_1", "running");
+
+  const { result } = renderHook(() => useSubagentRows("turn_wg1"));
+  expect(result.current[0]?.liveKind).toBe("done");
+});
+
+test("setWatchedLiveKind: a terminal write still applies normally over a running row", () => {
+  upsertSubagentRow("turn_wg2", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });
+  setWatchedLiveKind("turn_wg2", "job_1", "failed");
+  const { result } = renderHook(() => useSubagentRows("turn_wg2"));
+  expect(result.current[0]?.liveKind).toBe("failed");
+});
+
+test("setWatchedLiveKind: 'running' still applies when the row's kind isn't already terminal", () => {
+  upsertSubagentRow("turn_wg3", { rowKey: "job_1", kind: "running", task: "t", resultPreview: "" });
+  setWatchedLiveKind("turn_wg3", "job_1", "running");
+  const { result } = renderHook(() => useSubagentRows("turn_wg3"));
+  expect(result.current[0]?.liveKind).toBe("running");
+});
+
+test("setWatchedLiveKind: the frozen tool-output kind alone (no liveKind yet) also guards against a stale running write", () => {
+  upsertSubagentRow("turn_wg4", { rowKey: "job_1", kind: "failed", task: "t", resultPreview: "" });
+  setWatchedLiveKind("turn_wg4", "job_1", "running");
+  const { result } = renderHook(() => useSubagentRows("turn_wg4"));
+  expect(result.current[0]?.liveKind).toBeUndefined();
+});
+
+// classifyJobStatus/resolveRowKey moved here from subagentModule.tsx (dr7e) -
+// re-verify the re-export chain resolves to the SAME functions, since
+// subagentModule.test.tsx already unit-tests their behavior in full via that
+// re-export.
+test("classifyJobStatus/resolveRowKey are exported directly from this module too", () => {
+  expect(classifyJobStatus("completed")).toBe("done");
+  expect(resolveRowKey("dlg_1", undefined, "call_1")).toBe("dlg:dlg_1");
 });

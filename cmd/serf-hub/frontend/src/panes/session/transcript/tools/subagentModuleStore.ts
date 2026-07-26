@@ -18,6 +18,7 @@
 
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { SerfJobInfo } from "../../../../protocol/types.gen";
 
 export type SubagentRowKind = "running" | "done" | "failed" | "unknown";
 
@@ -25,11 +26,22 @@ export interface SubagentRow {
   rowKey: string;
   spawnIndex: number;
   kind: SubagentRowKind;
-  // Live-child-status overlay written back by watchedChild.tsx's watch (yd16).
-  // The pill prefers this over the frozen tool-output `kind`. WATCH-OWNED: the
-  // delegate upsert must never clobber it (see upsertSubagentRow), since
-  // DelegateBody re-upserts the frozen output on every incidental render.
+  // Live-status overlay written back by either watchedChild.tsx's watch
+  // (yd16) or a serf/job/started|finished notification (dr7e - see
+  // applySerfJobStarted/applySerfJobFinished below). The pill prefers this
+  // over the frozen tool-output `kind`. OVERLAY-OWNED: the delegate upsert
+  // must never clobber it (see upsertSubagentRow), since DelegateBody
+  // re-upserts the frozen output on every incidental render.
   liveKind?: SubagentRowKind;
+  // liveReason/resumable/exhaustionBudget/exhaustionLimit: detail a
+  // serf/job/finished notification carries that the delegate tool call's own
+  // frozen output never does (appwire.SerfJobInfo - dr7e). Same
+  // OVERLAY-OWNED rule as liveKind: preserved across upsertSubagentRow, only
+  // ever written by applySerfJobStarted/applySerfJobFinished.
+  liveReason?: string;
+  resumable?: boolean;
+  exhaustionBudget?: string;
+  exhaustionLimit?: number;
   task: string;
   jobId?: string;
   transcriptRef?: string;
@@ -89,12 +101,22 @@ export function upsertSubagentRow(turnId: string, row: SubagentRowInput): void {
     const existingRow = rows.get(row.rowKey);
     const nextIndexBefore = s.turnNextSpawnIndex.get(turnId) ?? 0;
     const spawnIndex = existingRow?.spawnIndex ?? nextIndexBefore;
-    // Preserve the watch-owned liveKind: DelegateBody re-upserts the frozen
-    // tool output on every incidental render and must never wipe the live
-    // status overlay watchedChild.tsx wrote (yd16). An explicit liveKind in
-    // `row` still wins (the spread lands after), but the delegate input never
-    // carries one.
-    rows.set(row.rowKey, { liveKind: existingRow?.liveKind, ...row, spawnIndex });
+    // Preserve every overlay field: DelegateBody re-upserts the frozen tool
+    // output on every incidental render and must never wipe the live status
+    // detail watchedChild.tsx (yd16) or a serf/job/started|finished
+    // notification (dr7e) wrote. An explicit value in `row` still wins (the
+    // spread lands after), but the delegate input never carries any of these -
+    // rowFromDelegateItem only ever derives kind/task/jobId/transcriptRef/
+    // startedAt/completedAt/resultPreview from the tool call's own output.
+    rows.set(row.rowKey, {
+      liveKind: existingRow?.liveKind,
+      liveReason: existingRow?.liveReason,
+      resumable: existingRow?.resumable,
+      exhaustionBudget: existingRow?.exhaustionBudget,
+      exhaustionLimit: existingRow?.exhaustionLimit,
+      ...row,
+      spawnIndex,
+    });
 
     const turnRowsByKey = new Map(s.turnRowsByKey);
     turnRowsByKey.set(turnId, rows);
@@ -125,6 +147,101 @@ export function updateSubagentRowIfExists(turnId: string, rowKey: string, patch:
     const turnRowsSorted = new Map(s.turnRowsSorted);
     turnRowsSorted.set(turnId, sortedRows(rows));
     return { turnRowsByKey, turnRowsSorted };
+  });
+}
+
+// classifyJobStatus mirrors renderer.js's classifyJobStatus (parity §12):
+// note cancelled/stopped land in "done", not "failed". Any status this
+// codebase hasn't seen yet (including an absent one, e.g. the delegate
+// call settled but the child hasn't reported a status field at all)
+// degrades to "running" rather than a confusing/alarming "unknown" - an
+// honest "still don't know anything bad happened" default. Lives here (not
+// subagentModule.tsx) so applySerfJobFinished below and stores/threads.ts
+// can both reach it without a core store importing a React/UI file -
+// subagentModule.tsx re-exports it for its own existing callers.
+export function classifyJobStatus(status: string | undefined): SubagentRowKind {
+  if (status === undefined) return "running";
+  if (["failed", "errored", "error", "exhausted"].includes(status)) return "failed";
+  if (["completed", "done", "cancelled", "stopped", "succeeded"].includes(status)) return "done";
+  if (status === "unknown") return "unknown";
+  return "running";
+}
+
+// resolveRowKey prefers delegateId (stable across a delegate's whole
+// lifetime, including across several jobs it may run in sequence), then
+// jobId (a shell job has no delegateId at all), then a fallback (the
+// originating call's own id) so every call still gets SOME row even
+// before any id is known. Prefixed per kind so a delegate id can never
+// collide with an unrelated job id that happens to share the same raw
+// string. Same layering reason as classifyJobStatus above.
+export function resolveRowKey(delegateId: string | undefined, jobId: string | undefined, fallback: string): string {
+  if (delegateId) return `dlg:${delegateId}`;
+  if (jobId) return `job:${jobId}`;
+  return `call:${fallback}`;
+}
+
+const TERMINAL_KINDS: ReadonlySet<SubagentRowKind> = new Set(["done", "failed", "unknown"]);
+
+// setWatchedLiveKind is WatchedChildIndicator's own guarded writer (dr7e).
+// The child's own thread-status subscription can lag the parent's
+// authoritative serf/job/finished notification (applySerfJobFinished
+// below): once that notification has already settled a row into a terminal
+// kind, a slower watch catching up to a stale "running" read must not
+// resurrect the spinner. A terminal reading from the watch (the child
+// socket itself closing, say) still applies normally - only a "running"
+// write is ever suppressed, and only when the row is already terminal.
+export function setWatchedLiveKind(turnId: string, rowKey: string, liveKind: SubagentRowKind): void {
+  if (liveKind === "running") {
+    const existingRow = moduleStore.getState().turnRowsByKey.get(turnId)?.get(rowKey);
+    if (existingRow && TERMINAL_KINDS.has(existingRow.liveKind ?? existingRow.kind)) return;
+  }
+  updateSubagentRowIfExists(turnId, rowKey, { liveKind });
+}
+
+// applySerfJobStarted / applySerfJobFinished are the "Signal merging" step
+// from docs/superpowers/specs/2026-06-25-subagent-run-rendering-design.md
+// (dr7e): serf/job/started|finished notifications carry the same
+// (originTurnId, delegateId/jobId) linkage a delegate item's own frozen tool
+// output does, so they route through resolveRowKey exactly like
+// rowFromDelegateItem (subagentModule.tsx) does, and patch an EXISTING row
+// only - never spawn one, the same "only `delegate` spawns a row" rule
+// updateSubagentRowIfExists already enforces for job_status/job_stop/
+// delegate_send. A job with no originTurnId (a bare shell job, or a job not
+// run via `delegate`) has no row to route to and is silently ignored - the
+// caller (stores/threads.ts) doesn't need to pre-filter by job type.
+//
+// Deliberately narrow: this SUPPLEMENTS watchedChild.tsx's per-child watch,
+// it does not replace it. The notification is a strictly better source for
+// terminal status/reason/resumable/exhaustion detail (authoritative, arrives
+// even for an off-screen/unmounted row, carries fields the child's own
+// thread status never does) - but it is exactly two discrete events (start,
+// finish), never a continuous stream, so it cannot drive the running row's
+// live Cadence animation. That still needs watchThread's frameTimes.
+export function applySerfJobStarted(job: SerfJobInfo): void {
+  if (!job.originTurnId) return;
+  const rowKey = resolveRowKey(job.delegateId, job.jobId, job.originToolCallId ?? job.originItemId ?? job.jobId);
+  // A fresh start - including a delegate_send resume reusing the SAME
+  // delegateId/rowKey - must un-terminal the row and drop the PREVIOUS job's
+  // reason/resumable/exhaustion detail; that detail must never linger under
+  // a new running job.
+  updateSubagentRowIfExists(job.originTurnId, rowKey, {
+    liveKind: "running",
+    liveReason: undefined,
+    resumable: undefined,
+    exhaustionBudget: undefined,
+    exhaustionLimit: undefined,
+  });
+}
+
+export function applySerfJobFinished(job: SerfJobInfo): void {
+  if (!job.originTurnId) return;
+  const rowKey = resolveRowKey(job.delegateId, job.jobId, job.originToolCallId ?? job.originItemId ?? job.jobId);
+  updateSubagentRowIfExists(job.originTurnId, rowKey, {
+    liveKind: classifyJobStatus(job.status),
+    liveReason: job.reason,
+    resumable: job.resumable,
+    exhaustionBudget: job.exhaustionBudget,
+    exhaustionLimit: job.exhaustionLimit,
   });
 }
 

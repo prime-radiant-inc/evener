@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -6,7 +6,7 @@ import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/dis
 import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
-import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
+import { resetSubagentModuleStoreForTests, updateSubagentRowIfExists } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
 import type { ItemModel, TurnModel } from "../../../../protocol/model";
@@ -569,6 +569,69 @@ test("the collapsed pill reads the LIVE watched status, not the frozen tool-outp
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
   expect(within(row).getByText("failed")).toBeTruthy();
+});
+
+// --- dr7e: serf/job/finished's own reason/resumable/exhaustion detail -----
+
+test("dr7e: the collapsed preview prefers a job-notification liveReason over the frozen tool-output reason", () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const running = delegateItem({
+    id: "d_livereason",
+    callId: "call_livereason",
+    argumentsJSON: JSON.stringify({ task: "still working" }),
+    output: JSON.stringify({ job_id: "job_lr", status: "running", reason: "frozen reason" }),
+  });
+  render(<Body item={running} live={false} />);
+  act(() => updateSubagentRowIfExists("turn_1", "job:job_lr", { liveReason: "exhausted budget" }));
+
+  const row = screen.getByTestId("subagent-row");
+  expect(within(row).getByText("exhausted budget")).toBeTruthy();
+  expect(within(row).queryByText("frozen reason")).toBeNull();
+});
+
+test("dr7e: an expanded card shows exhaustion budget/limit and resumable once a serf/job/finished notification sets them", async () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const settled = delegateItem({
+    id: "d_exhaust",
+    callId: "call_exhaust",
+    argumentsJSON: JSON.stringify({ task: "long running task" }),
+    output: JSON.stringify({ job_id: "job_ex", status: "exhausted" }),
+  });
+  render(<Body item={settled} live={false} />);
+  act(() =>
+    updateSubagentRowIfExists("turn_1", "job:job_ex", {
+      resumable: true,
+      exhaustionBudget: "30m",
+      exhaustionLimit: 60,
+    }),
+  );
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText("long running task"));
+
+  const detail = await screen.findByTestId("subagent-job-detail");
+  expect(within(detail).getByText("Exhaustion budget: 30m of 60")).toBeTruthy();
+  expect(within(detail).getByText("Resumable")).toBeTruthy();
+});
+
+test("dr7e: no Job detail section renders when neither resumable nor exhaustion fields are set", async () => {
+  const d = toolRendererFor("delegate");
+  const Body = d.body!;
+  const settled = delegateItem({
+    id: "d_noexhaust",
+    callId: "call_noexhaust",
+    argumentsJSON: JSON.stringify({ task: "quick task" }),
+    output: JSON.stringify({ job_id: "job_noex", status: "completed" }),
+  });
+  render(<Body item={settled} live={false} />);
+
+  const user = userEvent.setup();
+  await user.click(screen.getByText("quick task"));
+
+  await screen.findByTestId("subagent-mandate");
+  expect(screen.queryByTestId("subagent-job-detail")).toBeNull();
 });
 
 // --- evch: the module must be visible without a click ----------------------

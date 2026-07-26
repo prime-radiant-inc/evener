@@ -12,7 +12,7 @@ import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { Cadence } from "../../../../widgets";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../../liveness";
 import { rowKindFromChildStatus } from "./subagentModule";
-import { updateSubagentRowIfExists } from "./subagentModuleStore";
+import { setWatchedLiveKind } from "./subagentModuleStore";
 
 export interface WatchedChildIndicatorProps {
   ref: string;
@@ -40,13 +40,16 @@ export function WatchedChildIndicator({ ref: childRef, turnId, rowKey }: Watched
   const now = useNowTick(NOW_TICK_MS);
 
   // Write the live child status back onto the row as its liveKind overlay
-  // (yd16). Effect-guarded and keyed on the derived liveKind so it fires only
-  // on an actual status change - never a render-time store write, which would
-  // be an infinite re-render loop (updateSubagentRowIfExists returns a fresh
-  // useSubagentRows reference every call).
+  // (yd16), through setWatchedLiveKind's guard (dr7e) so a stale "running"
+  // read never resurrects a row a serf/job/finished notification already
+  // settled into a terminal kind. Effect-guarded and keyed on the derived
+  // liveKind so it fires only on an actual status change - never a
+  // render-time store write, which would be an infinite re-render loop
+  // (updateSubagentRowIfExists returns a fresh useSubagentRows reference
+  // every call).
   const liveKind = model ? rowKindFromChildStatus(model.status.type) : undefined;
   useEffect(() => {
-    if (liveKind) updateSubagentRowIfExists(turnId, rowKey, { liveKind });
+    if (liveKind) setWatchedLiveKind(turnId, rowKey, liveKind);
   }, [turnId, rowKey, liveKind]);
 
   if (!model) return null;
