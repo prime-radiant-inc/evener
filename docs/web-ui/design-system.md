@@ -240,9 +240,11 @@ steering the agent. The first two are marked. This section marks the third.
 **The rule: a glyph in the gutter means the agent's instructions changed. An
 empty gutter means it is a passive fact.**
 
-The transcript already has a 12px glyph gutter — `toolcallitem`'s `.row` and
-`systemnoticeitem`'s `.failure` share one `display: flex; align-items: baseline;
-gap: var(--space-2)` grammar. This section assigns that column.
+The transcript already has a 10px glyph gutter, sized to `SteeringGlyph` and
+`FailureGlyph`'s own SVG (`viewBox="0 0 10 10"` — neither widget declares a wider
+box) — `toolcallitem`'s `.row` and `systemnoticeitem`'s `.failure` share one
+`display: flex; align-items: baseline; gap: var(--space-2)` grammar. This section
+assigns that column.
 
 | gutter | member | treatment |
 |---|---|---|
