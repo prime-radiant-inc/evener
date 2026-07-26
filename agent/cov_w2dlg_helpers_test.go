@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -89,5 +91,55 @@ func TestW2Dlg_DelegateTerminalResult_ReadFailed(t *testing.T) {
 	}
 	if res.JobID != "job_gone" || res.DelegateID != "dlg_gone" {
 		t.Fatalf("identity carried wrong: %+v", res)
+	}
+}
+
+// delegateTerminalResult falls back to the live in-memory run.structured value
+// when the durable record hasn't persisted a structured result yet (both
+// rec.StructuredResult and rec.StructuredResultValid are nil), and defaults
+// that live value's validity to true.
+func TestW2Dlg_DelegateTerminalResult_LiveStructuredDefaultsValidTrue(t *testing.T) {
+	t.Parallel()
+	jm := newTestJM(t)
+	const jobID = "job_live_structured"
+	started := time.Unix(3000, 0).UTC()
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	if err := output.Close(); err != nil {
+		t.Fatalf("close output: %v", err)
+	}
+	if err := jm.appendJobEvents([]jobstore.Event{{
+		Kind:          jobstore.EventJobStarted,
+		TS:            started,
+		JobID:         jobID,
+		Type:          jobstore.JobDelegate,
+		Description:   "live structured",
+		DelegateID:    "dlg_live",
+		TranscriptRef: encodeRef("", "child_live"),
+		StartedAt:     &started,
+		OutputPath:    outputPath,
+	}}); err != nil {
+		t.Fatalf("seed started delegate job: %v", err)
+	}
+	rec, err := findJobRecord(jm, jobID)
+	if err != nil {
+		t.Fatalf("findJobRecord: %v", err)
+	}
+	if rec.StructuredResult != nil || rec.StructuredResultValid != nil {
+		t.Fatalf("fixture rec already has a persisted structured result: %+v", rec)
+	}
+	run := &runningJob{rec: rec, structured: map[string]any{"ok": true}}
+
+	res := delegateTerminalResult(nil, jm, run)
+
+	got, ok := res.StructuredResult.(map[string]any)
+	if !ok || got["ok"] != true {
+		t.Fatalf("StructuredResult = %#v, want the live run.structured value", res.StructuredResult)
+	}
+	if !res.StructuredResultValidSet || !res.StructuredResultValid {
+		t.Fatalf("StructuredResultValid(Set) = (%v, %v), want (true, true)", res.StructuredResultValid, res.StructuredResultValidSet)
 	}
 }
