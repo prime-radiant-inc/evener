@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -36,6 +36,10 @@ const WORK = instance({
 const PERSONAL = instance({ name: "personal", type: "openai", authModes: ["apiKey", "oauth"] });
 const LIST: InstanceListResponse = { instances: [WORK, PERSONAL], availableTypes: ["anthropic", "openai"] };
 
+async function advanceTime(milliseconds: number): Promise<void> {
+  await act(() => vi.advanceTimersByTimeAsync(milliseconds));
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
@@ -44,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
+  vi.useRealTimers();
 });
 
 describe("initial load", () => {
@@ -222,26 +227,26 @@ describe("OAuth start branches", () => {
     });
     render(<CredentialsSection sectionId="credentials" />);
     await screen.findByText("personal");
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Sign in…" }));
-    await screen.findByText("AAAA-1111");
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Sign in…" }));
+    await vi.waitFor(() => expect(screen.getByText("AAAA-1111")).toBeTruthy());
 
     // Flow A expires.
-    await screen.findByText(/Code expired/, {}, { timeout: 3000 });
-    await user.click(screen.getByRole("button", { name: "Start again" }));
+    await advanceTime(1000);
+    expect(screen.getByText(/Code expired/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
 
     // Flow B starts fresh: its own code, NOT flow A's leftover expired state.
-    await screen.findByText("BBBB-2222", {}, { timeout: 3000 });
+    await vi.waitFor(() => expect(screen.getByText("BBBB-2222")).toBeTruthy());
     expect(screen.queryByText(/Code expired/)).toBeNull();
     expect(screen.getByRole("button", { name: /copy code/i })).toBeTruthy();
 
     // Flow B is genuinely polling under its own flowId.
-    await waitFor(() => expect(pollCalls).toContain("flow-B"), { timeout: 3000 });
+    await advanceTime(1000);
+    expect(pollCalls).toContain("flow-B");
     const flowACallsAtSwitch = pollCalls.filter((id) => id === "flow-A").length;
 
-    // Flow A's timer must be dead - give it every chance it would have had
-    // to fire again if it weren't.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 2200)));
+    await advanceTime(2200);
     expect(pollCalls.filter((id) => id === "flow-A").length).toBe(flowACallsAtSwitch);
   });
 });

@@ -13,6 +13,10 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
+async function advanceTime(milliseconds: number): Promise<void> {
+  await act(() => vi.advanceTimersByTimeAsync(milliseconds));
+}
+
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetCredentialsStoreForTests();
@@ -165,6 +169,7 @@ describe("DeviceCodeDialog", () => {
   });
 
   test("polling: authorized stops polling, fetches, toasts, and calls onSuccess", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     fake.on("serf/auth/device/poll", (params) => {
       expect(params).toEqual({ provider: "work", flowId: "flow-2" });
@@ -187,19 +192,15 @@ describe("DeviceCodeDialog", () => {
         <Toast />
       </>,
     );
+    await advanceTime(1000);
     // Asserting on onSuccess rather than toast DOM text - see the identical
     // comment on OAuthRedirectDialog's own success test for why.
-    await vi.waitFor(() => expect(onSuccess).toHaveBeenCalled(), { timeout: 3000 });
+    expect(onSuccess).toHaveBeenCalled();
     expect(screen.getAllByText("Signed in to work").length).toBeGreaterThan(0);
   });
 
-  // intervalSeconds is clamped to a 1-real-second floor by the verified
-  // legacy formula (Math.max(1, intervalSeconds || 5) * 1000 - see
-  // startDevicePolling), so every polling assertion below needs headroom
-  // past the default 1000ms waitFor/findBy timeout to avoid racing it.
-  const POLL_TIMEOUT = { timeout: 3000 };
-
   test("polling: expired stops polling and switches to a 'Start again' action", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     fake.on("serf/auth/device/poll", () => ({ state: "expired" }));
     render(
@@ -214,12 +215,14 @@ describe("DeviceCodeDialog", () => {
         onRestart={() => {}}
       />,
     );
-    await screen.findByText(/Code expired/, {}, POLL_TIMEOUT);
+    await advanceTime(1000);
+    expect(screen.getByText(/Code expired/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: /copy code/i })).toBeNull();
   });
 
   test("polling: an unrecognized state just reschedules (still waiting)", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
     fake.on("serf/auth/device/poll", () => {
@@ -238,7 +241,8 @@ describe("DeviceCodeDialog", () => {
         onRestart={() => {}}
       />,
     );
-    await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(1), POLL_TIMEOUT);
+    await advanceTime(1000);
+    expect(calls).toBe(1);
     expect(screen.getByText(/Waiting for you to authorize/)).toBeTruthy();
   });
 
@@ -249,6 +253,7 @@ describe("DeviceCodeDialog", () => {
   // body) attaches its message and does NOT reschedule - the poll loop
   // silently stops, identical to "expired".
   test("a devicePoll request failure stops polling without rescheduling - no further poll calls ever follow", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
     fake.on("serf/auth/device/poll", () => {
@@ -267,16 +272,16 @@ describe("DeviceCodeDialog", () => {
         onRestart={() => {}}
       />,
     );
-    await screen.findByText("network error", {}, POLL_TIMEOUT);
+    await advanceTime(1000);
+    expect(screen.getByText("network error")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Start again" })).toBeTruthy();
     const callsAtError = calls;
-    // Wait comfortably past 2 more poll intervals - if this ever regressed
-    // to rescheduling after an error, this would catch it.
-    await act(() => new Promise((resolve) => setTimeout(resolve, 2200)));
+    await advanceTime(2200);
     expect(calls).toBe(callsAtError);
   });
 
   test("clicking 'Start again' after expiry calls onRestart", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     fake.on("serf/auth/device/poll", () => ({ state: "expired" }));
     const onRestart = vi.fn();
@@ -292,12 +297,13 @@ describe("DeviceCodeDialog", () => {
         onRestart={onRestart}
       />,
     );
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Start again" }, POLL_TIMEOUT));
+    await advanceTime(1000);
+    fireEvent.click(screen.getByRole("button", { name: "Start again" }));
     expect(onRestart).toHaveBeenCalled();
   });
 
   test("unmounting the dialog stops polling (no further requests after unmount)", async () => {
+    vi.useFakeTimers();
     const fake = connectFakeClient();
     let calls = 0;
     fake.on("serf/auth/device/poll", () => {
@@ -316,10 +322,11 @@ describe("DeviceCodeDialog", () => {
         onRestart={() => {}}
       />,
     );
-    await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(1), POLL_TIMEOUT);
+    await advanceTime(1000);
+    expect(calls).toBe(1);
     unmount();
     const callsAtUnmount = calls;
-    await act(() => new Promise((resolve) => setTimeout(resolve, 1200)));
+    await advanceTime(1200);
     expect(calls).toBe(callsAtUnmount);
   });
 });
