@@ -192,7 +192,7 @@ func parseSurfaces(csv string) (map[string]bool, error) {
 		known[s] = true
 	}
 	out := map[string]bool{}
-	for _, part := range strings.Split(csv, ",") {
+	for part := range strings.SplitSeq(csv, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue

@@ -115,7 +115,7 @@ func splitSSEEvents(body []byte) [][]byte {
 // looksLikeSSE reports whether a recorded body is an SSE stream (vs a JSON error
 // body), so the scrubber picks framing-aware vs plain-JSON scrubbing.
 func looksLikeSSE(body []byte) bool {
-	for _, line := range bytes.Split(body, []byte{'\n'}) {
+	for line := range bytes.SplitSeq(body, []byte{'\n'}) {
 		if bytes.HasPrefix(line, []byte("data:")) || bytes.HasPrefix(line, []byte("event:")) {
 			return true
 		}
