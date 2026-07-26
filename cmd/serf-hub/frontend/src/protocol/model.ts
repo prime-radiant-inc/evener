@@ -31,6 +31,11 @@ export interface ItemModel {
   // from the item's char count (kata ckgw). Empty/undefined for non-system
   // items and for a system item projected by a daemon predating a given kind.
   eventKind?: string;
+  // Structured detail behind a system item's prose text (wire ThreadItem.raw),
+  // e.g. `{roundTimings: {...}}` for a round_timings item - lets a renderer
+  // read real numbers instead of re-parsing the human-readable text.
+  // Undefined for every item type that doesn't attach one.
+  raw?: unknown;
   output?: string;
   // Tool-result error text (wire ThreadItem.error): populated instead of
   // output when a tool call failed or was denied. The wire projects item

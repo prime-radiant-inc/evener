@@ -1572,6 +1572,55 @@ func TestAppEventProjectorContextCompactionCarriesStructuredNumbers(t *testing.T
 	}
 }
 
+// A round-timings announcement must carry the per-phase durations as
+// structured numbers in Raw, not only inside its "total=... llm=..." prose:
+// the web renders a rounded, prioritized summary from the real numbers
+// (kata 7zkv) rather than re-parsing nanosecond-precision text.
+func TestAppEventProjectorRoundTimingsCarriesStructuredNumbers(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventRoundTimings, SessionID: "th_1", Data: events.RoundTimings{
+		Round:        2,
+		TotalRound:   1500 * time.Millisecond,
+		LLMCall:      1200 * time.Millisecond,
+		ContextMgmt:  25 * time.Millisecond,
+		ToolExec:     40 * time.Millisecond,
+		LoopOverhead: 5 * time.Millisecond,
+	}})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if len(turn.Items) != 1 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	item := turn.Items[0]
+	if len(item.Raw) == 0 {
+		t.Fatalf("round-timings item should carry structured numbers in Raw, got none: %+v", item)
+	}
+	var got struct {
+		RoundTimings *events.RoundTimings `json:"roundTimings"`
+	}
+	if err := json.Unmarshal(item.Raw, &got); err != nil {
+		t.Fatalf("Raw is not valid JSON: %v (%s)", err, item.Raw)
+	}
+	if got.RoundTimings == nil {
+		t.Fatalf("Raw should carry a roundTimings object, got %s", item.Raw)
+	}
+	rt := got.RoundTimings
+	if rt.Round != 2 || rt.TotalRound != 1500*time.Millisecond || rt.LLMCall != 1200*time.Millisecond ||
+		rt.ContextMgmt != 25*time.Millisecond || rt.ToolExec != 40*time.Millisecond || rt.LoopOverhead != 5*time.Millisecond {
+		t.Fatalf("Raw roundTimings numbers wrong: %+v", rt)
+	}
+	// The prose line stays as it always was - a heterogeneous-version relay,
+	// or any non-web consumer, still gets a readable text fallback.
+	for _, want := range []string{"Round 2", "total=1.5s", "llm=1.2s", "context=25ms", "tools=40ms"} {
+		if !strings.Contains(item.Text, want) {
+			t.Fatalf("item text %q does not contain %q", item.Text, want)
+		}
+	}
+}
+
 func TestAppEventProjectorProjectsPluginLoadedWithSafeEventKindDetail(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{

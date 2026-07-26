@@ -66,6 +66,7 @@ function wireItemToModel(item: ThreadItem): ItemModel {
     argumentsJSON: item.argumentsJson,
     description: item.description,
     eventKind: item.eventKind,
+    raw: item.raw,
     output: item.output,
     error: item.error,
     exitCode: item.exitCode,
