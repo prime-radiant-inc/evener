@@ -3,12 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { lazy, StrictMode } from "react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
+import { ToolCallItem } from "../ToolCallItem";
 import { toolRendererFor } from "../toolRenderers";
 import { classifyJobStatus, resolveRowKey } from "./subagentModule";
 import { resetSubagentModuleStoreForTests } from "./subagentModuleStore";
 import "./subagentModule";
 import type { DockviewApi } from "dockview-core";
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
 import { registerPane } from "../../../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
@@ -568,4 +569,56 @@ test("the collapsed pill reads the LIVE watched status, not the frozen tool-outp
   const row = screen.getByTestId("subagent-row");
   await waitFor(() => expect(row.dataset.kind).toBe("failed")); // running -> live failed
   expect(within(row).getByText("failed")).toBeTruthy();
+});
+
+// --- evch: the module must be visible without a click ----------------------
+//
+// A tool-call row with a body starts collapsed by default (ToolCallItem.tsx),
+// and the subagent module's live watch (WatchedChildIndicator) only mounts
+// once the body is actually in the DOM. Left at that default, a delegate call
+// that announces itself and ends its turn shows nothing at all until a reader
+// happens to notice and click the row's chevron - evch's exact complaint.
+// Mirrors task_list's own `autoExpand: () => true` (a status card, not a
+// fold-to-open row): a delegate is always worth seeing without a click.
+test("evch: a fresh delegate tool call's subagent module is visible with no click (ToolCallItem auto-expands it)", () => {
+  const turn: TurnModel = { id: "turn_evch", status: "completed", items: [] };
+  const started = delegateItem({
+    id: "d_evch",
+    turnId: "turn_evch",
+    callId: "call_evch",
+    argumentsJSON: JSON.stringify({ task: "inspect the current directory" }),
+    output: JSON.stringify({ job_id: "job_evch", status: "running" }),
+  });
+  render(<ToolCallItem item={started} turn={turn} live={false} />);
+  const module = screen.getByTestId("subagent-module");
+  expect(within(module).getByText("running")).toBeTruthy(); // the tally header
+  expect(within(module).getByText("inspect the current directory")).toBeTruthy();
+});
+
+// --- 7f7c: the Mandate must not be clipped ----------------------------------
+//
+// The one-line row summary clips the task to TASK_CLIP (80 chars) - correct
+// for a single line - but rowFromDelegateItem fed that SAME clipped string
+// into the Mandate section, so even the "read more" affordance never showed
+// the rest of the delegated prompt. The Mandate is the deliberate expanded
+// view; it must carry the full, untruncated task text.
+test("7f7c: the Mandate section shows the full, unclipped task text past the 80-char summary clip", async () => {
+  const Body = toolRendererFor("delegate").body!;
+  const longTask =
+    "Please test delegation by inspecting the current working directory. Report the directory contents without changing any files.";
+  expect(longTask.length).toBeGreaterThan(80);
+  const running = delegateItem({
+    id: "d_full_mandate",
+    callId: "call_full_mandate",
+    argumentsJSON: JSON.stringify({ task: longTask }),
+    output: JSON.stringify({ job_id: "job_fm", status: "running" }),
+  });
+  render(<Body item={running} live={false} />);
+
+  const row = screen.getByTestId("subagent-row");
+  const user = userEvent.setup();
+  await user.click(row.querySelector("summary")!);
+
+  const mandate = screen.getByTestId("subagent-mandate");
+  expect(within(mandate).getByText(longTask)).toBeTruthy();
 });
