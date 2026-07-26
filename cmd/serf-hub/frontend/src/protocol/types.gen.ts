@@ -1307,6 +1307,7 @@ export const THREAD_ITEM_EVENT_KINDS = [
   "fork_summary",
   "round_timings",
   "tool_repair",
+  "model_switch",
   "error",
 ] as const;
 
