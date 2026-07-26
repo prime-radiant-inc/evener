@@ -496,6 +496,17 @@
   font-size: var(--font-size-ui);
 }
 
+/* The "+N older" note for rows the server capped away. Quiet on purpose: it
+ * is a footnote about the list, not an entry in it, so it takes the caption
+ * size and the lowest ink rather than sitting at row weight and competing
+ * with the sessions above it. */
+.overflow {
+  flex: 1;
+  min-width: 0;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+}
+
 /* Visually hidden but still reachable by assistive tech - gives the
  * actions Menu's trigger (an icon-only "⋯") a real accessible name without
  * widening the row for visible text (see RailRow.tsx's ActionsMenu). */

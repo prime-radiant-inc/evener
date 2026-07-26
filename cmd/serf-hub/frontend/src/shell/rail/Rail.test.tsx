@@ -121,6 +121,45 @@ const SAMPLE_WIRE_TREE = {
   attentionSummary: { needsYou: 1, error: 0, working: 0 },
 };
 
+// An ACTIVE project carrying one archived-tier session. The wire ships every
+// tier in one `sessions` array (web_api_tree.go's projectSessions), which is
+// exactly the case the rail has to divert.
+const ARCHIVED_SESSION = wireNode({
+  row_id: "project:proj1:local:s-old",
+  ref: "local:s-old",
+  title: "Old archived session",
+  tier: "archived",
+});
+const WIRE_TREE_WITH_ARCHIVED_SESSION = {
+  ...SAMPLE_WIRE_TREE,
+  projects: [wireProject({ ...PROJECT, sessions: [PROJECT_SESSION, ARCHIVED_SESSION] })],
+};
+
+// A project session with one finished subagent, which the rail folds away
+// (railNodes' splitChildren) behind a per-parent disclosure.
+const WIRE_TREE_WITH_INACTIVE_SUBAGENT = {
+  ...SAMPLE_WIRE_TREE,
+  projects: [
+    wireProject({
+      ...PROJECT,
+      sessions: [
+        {
+          ...PROJECT_SESSION,
+          children: [
+            wireNode({
+              row_id: "project:proj1:local:sub1",
+              ref: "local:sub1",
+              title: "Finished helper",
+              kind: "subagent",
+              state: "ended",
+            }),
+          ],
+        },
+      ],
+    }),
+  ],
+};
+
 const EMPTY_WIRE_TREE = {
   generated_at: "2026-01-01T00:00:00Z",
   sources: [],
@@ -282,11 +321,72 @@ describe("sections", () => {
     expect(screen.queryByText("old-project")).toBeNull();
   });
 
-  test("omits the Archived disclosure entirely when there are no archived projects", async () => {
+  test("omits the Archived disclosure entirely when there is nothing archived at all", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ ...SAMPLE_WIRE_TREE, archived_projects: [] }));
     renderRail();
     await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /archived/i })).toBeNull();
+  });
+
+  // parity-m3-sidebar-tree.md §8: one disclosure at the very bottom, holding
+  // everything archived hub-wide. It is the last thing in the rail because it
+  // is the least likely thing you came here for.
+  describe("Archived sessions section", () => {
+    test("sits below every other section, including Test runs", async () => {
+      renderRail();
+      await screen.findByText("Live session");
+      const disclosure = screen.getByRole("button", { name: /archived/i });
+      const testRuns = screen.getByRole("heading", { name: "Test runs" });
+      // DOCUMENT_POSITION_FOLLOWING: the disclosure comes after Test runs.
+      expect(testRuns.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    test("says how many sessions it stands for", async () => {
+      renderRail();
+      await screen.findByText("Live session");
+      expect(screen.getByRole("button", { name: /archived sessions \(1\)/i })).toBeTruthy();
+    });
+
+    test("counts an active project's archived sessions alongside whole archived projects", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(WIRE_TREE_WITH_ARCHIVED_SESSION));
+      renderRail();
+      await screen.findByText("Live session");
+      expect(screen.getByRole("button", { name: /archived sessions \(2\)/i })).toBeTruthy();
+    });
+
+    test("an active project never lists its archived sessions inline, even expanded", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(WIRE_TREE_WITH_ARCHIVED_SESSION));
+      renderRail();
+      await screen.findByText("Session one"); // PROJECT is default_expanded
+      expect(screen.queryByText("Old archived session")).toBeNull();
+    });
+
+    test("reveals an active project's archived sessions under its own sub-branch", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(WIRE_TREE_WITH_ARCHIVED_SESSION));
+      renderRail();
+      await screen.findByText("Session one");
+      const user = userEvent.setup();
+      const disclosure = screen.getByRole("button", { name: /archived sessions/i });
+      await user.click(disclosure);
+      // The project deliberately appears TWICE once this is open - once under
+      // Projects for its live sessions, once here for its archived ones - so
+      // this has to ask the archived section specifically.
+      const archivedSection = disclosure.closest("section");
+      if (!archivedSection) throw new Error("archived disclosure has no owning section");
+      const subBranch = within(archivedSection).getByRole("treeitem", { name: /prime-radiant/ });
+      await user.click(within(subBranch).getByTestId("rail-chevron"));
+      expect(await within(archivedSection).findByText("Old archived session")).toBeTruthy();
+      // The diverted session is the ONLY thing behind the sub-branch: the
+      // project's live session stays where it was.
+      expect(within(archivedSection).queryByText("Session one")).toBeNull();
+    });
+
+    test("appears for an archived session even when no whole project is archived", async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse({ ...WIRE_TREE_WITH_ARCHIVED_SESSION, archived_projects: [] }));
+      renderRail();
+      await screen.findByText("Session one");
+      expect(screen.getByRole("button", { name: /archived sessions \(1\)/i })).toBeTruthy();
+    });
   });
 
   // vbh8/§2.2: the auto-grouped "Needs you" RailSection is gone - attention
@@ -448,6 +548,62 @@ describe("keyboard roving through renderRow", () => {
   });
 });
 
+// parity-m3-sidebar-tree.md §10.1: the htmx UI remembered every disclosure
+// across reloads and this one forgot all of them, so a rail arranged the way
+// you wanted it reverted on every refresh.
+describe("expand state persists across a remount", () => {
+  // Remount = what a browser reload does to this component. The tree store is
+  // reset alongside it so the second mount refetches, exactly as a reload
+  // would; only localStorage survives, which is the whole point.
+  async function remount() {
+    cleanup();
+    resetTreeStoreForTests();
+    renderRail();
+  }
+
+  test("a project you collapsed is still collapsed after remounting", async () => {
+    renderRail();
+    await screen.findByText("Session one"); // default_expanded: true
+    await userEvent.setup().click(within(rowFor("prime-radiant")).getByTestId("rail-chevron"));
+    expect(screen.queryByText("Session one")).toBeNull();
+
+    await remount();
+    await screen.findByText("prime-radiant");
+    expect(screen.queryByText("Session one")).toBeNull();
+  });
+
+  test("the Archived section remembers being open", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    await userEvent.setup().click(screen.getByRole("button", { name: /archived sessions/i }));
+    expect(screen.getByText("old-project")).toBeTruthy();
+
+    await remount();
+    expect(await screen.findByText("old-project")).toBeTruthy();
+  });
+
+  test("an inactive-subagent fold remembers being open", async () => {
+    treeResponseBody = WIRE_TREE_WITH_INACTIVE_SUBAGENT;
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    // The fold is a child of the session row, so the session has to be open
+    // before the fold is even on screen.
+    await user.click(within(rowFor("Session one")).getByTestId("rail-chevron"));
+    await user.click(within(rowFor("Inactive subagent (1)")).getByTestId("rail-chevron"));
+    expect(screen.getByText("Finished helper")).toBeTruthy();
+
+    await remount();
+    expect(await screen.findByText("Finished helper")).toBeTruthy();
+  });
+
+  test("a rail nobody has touched starts from the server's own defaults", async () => {
+    renderRail();
+    // PROJECT ships default_expanded: true and no stored override contradicts it.
+    expect(await screen.findByText("Session one")).toBeTruthy();
+  });
+});
+
 describe("project expansion", () => {
   test("collapsing and re-expanding a project toggles its sessions' visibility", async () => {
     renderRail();
@@ -549,6 +705,114 @@ describe("hide affordance (onHide)", () => {
     renderRail();
     await screen.findByText("Live session");
     expect(screen.queryByRole("button", { name: /hide sidebar/i })).toBeNull();
+  });
+});
+
+// parity §6/§7/§8/§15: the row reflects your click before the round trip
+// resolves. Rail refetches after every successful mutation, so the window is
+// short - but on a loaded hub it is long enough to look like nothing happened,
+// which is what makes people click twice.
+describe("optimistic feedback", () => {
+  // Hold the POST open so the assertion lands squarely inside the in-flight
+  // window rather than racing the refetch.
+  function heldPost(path: string): { release: () => void } {
+    let release = () => {};
+    const held = new Promise<void>((r) => {
+      release = () => r();
+    });
+    const original = postResponses[path];
+    postResponses[path] = { status: 200, body: { ok: true } };
+    const prior = fetchMock.getMockImplementation();
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if ((init?.method ?? "GET") === "POST" && url === path) await held;
+      return prior?.(url, init) as Promise<Response>;
+    });
+    void original;
+    return { release };
+  }
+
+  test("archiving a session hides its row immediately, before the request resolves", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    const { release } = heldPost("/api/archive");
+
+    const user = userEvent.setup();
+    const row = rowFor("Session one");
+    await user.click(within(row).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    await vi.waitFor(() => expect(screen.queryByText("Session one")).toBeNull());
+    release();
+  });
+
+  test("pinning a session shows its star immediately", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeNull();
+    const { release } = heldPost("/api/favorite");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+
+    await vi.waitFor(() => expect(within(rowFor("Session one")).queryByTestId("favorite-star")).toBeTruthy());
+    release();
+  });
+
+  test("renaming a session shows the new title immediately", async () => {
+    renderRail();
+    await screen.findByText("Session one");
+    const { release } = heldPost("/api/sessions/local%3As1/rename");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    const input = screen.getByRole("textbox");
+    await user.clear(input);
+    await user.type(input, "Brand new name");
+    await user.click(screen.getByRole("button", { name: "Rename" }));
+
+    await vi.waitFor(() => expect(screen.getByText("Brand new name")).toBeTruthy());
+    release();
+  });
+
+  // The overlay is a guess about what the server will do. When the server
+  // says no, the guess has to come off - otherwise a row the user still owns
+  // stays invisible until they reload.
+  test("a rejected archive puts the row back", async () => {
+    postResponses["/api/archive"] = { status: 500, body: { error: "archive store error: boom" } };
+    renderRail();
+    await screen.findByText("Session one");
+
+    const user = userEvent.setup();
+    await user.click(within(rowFor("Session one")).getByRole("button", { name: /actions for session one/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+    await screen.findByText(/archive store error: boom/i);
+    expect(screen.getByText("Session one")).toBeTruthy();
+  });
+
+  // Unarchive has no optimistic form on purpose: which tier the row lands in
+  // is a server-side classification this layer cannot predict, so guessing
+  // would mean showing it in the wrong place. Matches the htmx behavior.
+  test("unarchiving does not optimistically move anything", async () => {
+    treeResponseBody = WIRE_TREE_WITH_ARCHIVED_SESSION;
+    renderRail();
+    await screen.findByText("Session one");
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /archived sessions/i }));
+    const sec = screen.getByRole("button", { name: /archived sessions/i }).closest("section");
+    if (!sec) throw new Error("no archived section");
+    const { release } = heldPost("/api/archive");
+    const sub = within(sec).getByRole("treeitem", { name: /prime-radiant/ });
+    await user.click(within(sub).getByTestId("rail-chevron"));
+    const archivedRow = within(sec).getByText("Old archived session").closest('[role="treeitem"]');
+    if (!(archivedRow instanceof HTMLElement)) throw new Error("no archived row");
+    await user.click(within(archivedRow).getByRole("button", { name: /actions for/i }));
+    await user.click(screen.getByRole("menuitem", { name: "Unarchive" }));
+
+    expect(within(sec).getByText("Old archived session")).toBeTruthy();
+    release();
   });
 });
 
