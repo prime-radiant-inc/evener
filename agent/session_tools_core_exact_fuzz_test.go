@@ -171,7 +171,7 @@ func stceCompaction(t *testing.T) {
 		t.Fatalf("nil history records = %#v", records)
 	}
 	history := []schema.Turn{}
-	records := appendSteeringMessagesToHistory(&history, []string{"", "  ", "kept"})
+	records := appendSteeringMessagesToHistory(&history, []preCompactMessage{{text: ""}, {text: "  "}, {text: "kept", kind: events.SteeringKindPrecompactHook}})
 	if len(records) != 1 {
 		t.Fatalf("steering records = %#v", records)
 	}

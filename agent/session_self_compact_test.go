@@ -9,6 +9,8 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/hooks"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -76,6 +78,17 @@ func countSteering(history []schema.Turn, substr string) int {
 	return n
 }
 
+// kindOfSteeringRecord returns the kind of the first record whose text
+// contains substr, or "" if none match.
+func kindOfSteeringRecord(records []steeringTurnRecord, substr string) string {
+	for _, r := range records {
+		if strings.Contains(r.text, substr) {
+			return r.kind
+		}
+	}
+	return ""
+}
+
 // TestRunPreCompactHook_StampsNoteBeforeObjective verifies that when both a
 // pinned note and an active goal are set, runPreCompactHook appends a note
 // steering turn that (a) is present, and (b) precedes the goal objective turn
@@ -117,6 +130,106 @@ func TestRunPreCompactHook_HandoffIsOneShot(t *testing.T) {
 	s.runPreCompactHook(context.Background(), &hist)
 	if n := countSteering(hist, noteHandoffPrefix); n != 1 {
 		t.Fatalf("expected exactly one handoff turn, got %d", n)
+	}
+}
+
+// TestRunPreCompactHook_StampsEachSourceItsOwnKind is the plugin-less case
+// (no hookRunner) review round 1 flagged as mattering most: runPreCompactHook
+// merges the pinned-note handoff and the goal objective into one messages
+// slice, and flushSteeringTurnRecords used to stamp every record in that
+// slice SteeringKindPrecompactHook regardless of which of the three sources
+// produced it. With no plugin loaded at all, that made a plugin-less session
+// emit ONLY mislabelled records — a goal objective confidently labeled as a
+// hook. Each source must carry its own kind instead.
+func TestRunPreCompactHook_StampsEachSourceItsOwnKind(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.setPinnedNote("REMEMBER: do X")
+	s.getOrCreateGoalStore().Set("Ship the feature", time.Now())
+
+	hist := makeSteeringSeed(4)
+	records := s.runPreCompactHook(context.Background(), &hist)
+
+	if got := kindOfSteeringRecord(records, noteHandoffPrefix); got != events.SteeringKindNoteHandoff {
+		t.Errorf("note handoff kind = %q, want %q", got, events.SteeringKindNoteHandoff)
+	}
+	if got := kindOfSteeringRecord(records, "Ship the feature"); got != events.SteeringKindGoalObjective {
+		t.Errorf("goal objective kind = %q, want %q", got, events.SteeringKindGoalObjective)
+	}
+	for _, r := range records {
+		if r.kind == events.SteeringKindPrecompactHook {
+			t.Errorf("no plugin ran, but record %q was stamped %q", r.text, events.SteeringKindPrecompactHook)
+		}
+	}
+}
+
+// TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind verifies
+// the one source of the three that legitimately keeps the precompact-hook
+// kind: a plugin PreCompact hook's ModelContext output.
+func TestRunPreCompactHook_PluginModelContextKeepsPrecompactHookKind(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+
+	hookClient := llm.NewClient()
+	hookClient.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant(`{"hookSpecificOutput":{"additionalContext":"plugin context"}}`)}
+		},
+	}})
+	runner := hooks.NewRunner(hookClient, "gpt-5.2")
+	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "compact"})
+	s.hookRunner = runner
+
+	hist := makeSteeringSeed(2)
+	records := s.runPreCompactHook(context.Background(), &hist)
+
+	if got := kindOfSteeringRecord(records, "plugin context"); got != events.SteeringKindPrecompactHook {
+		t.Errorf("plugin ModelContext kind = %q, want %q", got, events.SteeringKindPrecompactHook)
+	}
+}
+
+// TestFlushSteeringTurnRecords_EmitsPerRecordKind pins the exact mechanism
+// review round 1 flagged: flushSteeringTurnRecords must emit each record's
+// OWN kind, not one constant shared across the whole batch. Uses
+// collectEvents (session_parity_test.go) rather than reading s.Events()
+// directly since NewSession itself emits onto the channel (SESSION_START)
+// before this test's own sends, so a fixed read-order assumption would pick
+// up the wrong event.
+func TestFlushSteeringTurnRecords_EmitsPerRecordKind(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	evs, mu, doneCh := collectEvents(s)
+
+	hist := []schema.Turn{}
+	records := appendSteeringMessagesToHistory(&hist, []preCompactMessage{
+		{text: "hook context", kind: events.SteeringKindPrecompactHook},
+		{text: "note handoff", kind: events.SteeringKindNoteHandoff},
+		{text: "goal objective", kind: events.SteeringKindGoalObjective},
+	})
+	if len(records) != 3 {
+		t.Fatalf("records = %d, want 3", len(records))
+	}
+	s.flushSteeringTurnRecords(records)
+	s.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	got := map[string]string{}
+	for _, ev := range *evs {
+		if data, ok := ev.Data.(events.SteeringInjectedData); ok {
+			got[data.Text] = data.Kind
+		}
+	}
+	want := map[string]string{
+		"hook context":   events.SteeringKindPrecompactHook,
+		"note handoff":   events.SteeringKindNoteHandoff,
+		"goal objective": events.SteeringKindGoalObjective,
+	}
+	for text, wantKind := range want {
+		if got[text] != wantKind {
+			t.Errorf("emitted kind for %q = %q, want %q", text, got[text], wantKind)
+		}
 	}
 }
 

@@ -210,6 +210,8 @@ const (
 	SteeringKindTasksDone         = "tasks-done"
 	SteeringKindTaskNudge         = "task-nudge"
 	SteeringKindTaskInactive      = "task-inactive"
+	SteeringKindNoteHandoff       = "note-handoff"
+	SteeringKindGoalObjective     = "goal-objective"
 	SteeringKindTranscriptPointer = "transcript-pointer"
 	SteeringKindCurrentTask       = "current-task"
 	SteeringKindTaskList          = "task-list"
@@ -232,6 +234,8 @@ var AllSteeringKinds = []string{
 	SteeringKindTasksDone,
 	SteeringKindTaskNudge,
 	SteeringKindTaskInactive,
+	SteeringKindNoteHandoff,
+	SteeringKindGoalObjective,
 	SteeringKindTranscriptPointer,
 	SteeringKindCurrentTask,
 	SteeringKindTaskList,

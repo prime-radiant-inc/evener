@@ -46,6 +46,8 @@ func TestSteeringKindConstants(t *testing.T) {
 		"tasks-done":         SteeringKindTasksDone,
 		"task-nudge":         SteeringKindTaskNudge,
 		"task-inactive":      SteeringKindTaskInactive,
+		"note-handoff":       SteeringKindNoteHandoff,
+		"goal-objective":     SteeringKindGoalObjective,
 		"transcript-pointer": SteeringKindTranscriptPointer,
 		"current-task":       SteeringKindCurrentTask,
 		"task-list":          SteeringKindTaskList,
