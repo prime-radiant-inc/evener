@@ -1232,12 +1232,63 @@ func hookInfoFromEvent(data events.HookEndData) schema.HookInfo {
 	}
 }
 
+// toolCallRepairedAnnouncement reports that a tool call needed a small,
+// automatic correction before it ran. The wire's Changes entries are the
+// repair engine's own machine format ("kind:field:detail", e.g.
+// "drop_unknown:artifacts:dropped artifacts") — telemetry for the CLI's raw
+// event trace, never meant for a reader parsing their transcript (kata k4v8).
+// This builds the reader-facing sentence instead: what changed, named by the
+// tool argument involved, with no internal enum or punctuation leaking through.
 func toolCallRepairedAnnouncement(data events.ToolCallRepairedData) string {
 	name := fallbackLabel(data.ToolName, "tool call")
 	if len(data.Changes) == 0 {
 		return "Repaired " + name
 	}
-	return fmt.Sprintf("Repaired %s: %s", name, strings.Join(data.Changes, ", "))
+	phrases := make([]string, 0, len(data.Changes))
+	for _, raw := range data.Changes {
+		phrases = append(phrases, repairChangePhrase(raw))
+	}
+	return fmt.Sprintf("Fixed the %s call: %s.", name, strings.Join(phrases, "; "))
+}
+
+// repairChangePhrase turns one "kind:field:detail" repair entry into a plain
+// sentence fragment. An unrecognized kind (e.g. a newer daemon's repair
+// category this build predates) falls back to naming just the field, never
+// the raw encoding.
+func repairChangePhrase(raw string) string {
+	parts := strings.SplitN(raw, ":", 3)
+	kind := parts[0]
+	var field string
+	if len(parts) > 1 {
+		field = parts[1]
+	}
+	switch kind {
+	case "alias":
+		if oldName, _, ok := strings.Cut(fieldDetail(parts), "→"); ok && oldName != "" {
+			return fmt.Sprintf("renamed %q to %q", oldName, field)
+		}
+		return fmt.Sprintf("renamed a field to %q", field)
+	case "coerce_type":
+		return fmt.Sprintf("adjusted the %q field's type", field)
+	case "drop_unknown":
+		return fmt.Sprintf("removed the unrecognized %q field", field)
+	case "unicode_repair":
+		return "fixed an invalid character in the arguments"
+	default:
+		if field == "" {
+			return "adjusted the arguments"
+		}
+		return fmt.Sprintf("adjusted the %q field", field)
+	}
+}
+
+// fieldDetail returns the third ("detail") segment of a split "kind:field:detail"
+// entry, or "" when the entry has fewer than three segments.
+func fieldDetail(parts []string) string {
+	if len(parts) < 3 {
+		return ""
+	}
+	return parts[2]
 }
 
 func forkSummaryAnnouncement(data events.ForkSummaryData) string {

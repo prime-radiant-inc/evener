@@ -1456,14 +1456,58 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			contains:    []string{"Round 2", "total=1.5s", "llm=1.2s", "context=25ms", "tools=40ms"},
 		},
 		{
-			name: "tool call repaired",
+			name: "tool call repaired: alias",
 			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
 				ToolName: "edit_file",
 				CallID:   "c1",
 				Changes:  []string{"alias:old_string:old_str→old_string"},
 			}},
 			description: "Tool call repaired",
-			contains:    []string{"edit_file", "alias:old_string:old_str→old_string"},
+			contains:    []string{"edit_file", "renamed", "old_str", "old_string"},
+			notContains: []string{"alias:old_string:old_str→old_string"},
+		},
+		{
+			name: "tool call repaired: drop_unknown",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes:  []string{"drop_unknown:artifacts:dropped artifacts"},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"communicate", "unrecognized", "artifacts"},
+			notContains: []string{"drop_unknown:artifacts:dropped artifacts", "dropped artifacts"},
+		},
+		{
+			name: "tool call repaired: coerce_type",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "run_command",
+				CallID:   "c1",
+				Changes:  []string{`coerce_type:timeout:"30"→30`},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"run_command", "timeout"},
+			notContains: []string{`coerce_type:timeout:"30"→30`},
+		},
+		{
+			name: "tool call repaired: unicode_repair",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "edit_file",
+				CallID:   "c1",
+				Changes:  []string{`unicode_repair::invalid \u escape → �`},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"edit_file", "invalid character"},
+			notContains: []string{`unicode_repair::invalid \u escape → �`},
+		},
+		{
+			name: "tool call repaired: multiple changes",
+			event: events.SessionEvent{Kind: events.EventToolCallRepaired, SessionID: "th_1", Data: events.ToolCallRepairedData{
+				ToolName: "communicate",
+				CallID:   "c1",
+				Changes:  []string{"alias:message:msg→message", "drop_unknown:artifacts:dropped artifacts"},
+			}},
+			description: "Tool call repaired",
+			contains:    []string{"communicate", "renamed", "unrecognized", "artifacts"},
 		},
 	}
 
