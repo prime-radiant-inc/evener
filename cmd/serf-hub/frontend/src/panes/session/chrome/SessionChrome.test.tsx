@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -157,4 +157,108 @@ test("the tasks panel fetches for the SAME ref passed to SessionChrome", async (
   await user.click(screen.getByRole("button", { name: "Tasks" }));
 
   await waitFor(() => expect(calledRef).toBe("ref_c"));
+});
+
+// --- footer overflow (kata vybn) ---------------------------------------------
+//
+// jsdom ships no ResizeObserver, so a stub drives SessionChrome's own
+// useNarrowerThan the same way popover.test.tsx's "re-measures placement"
+// test drives Popover's - a fabricated contentRect.width, fed straight to
+// the observer callback, never a real DOM measurement (jsdom reports zero
+// for those regardless). That whole-row wrap actually stops at the chosen
+// breakpoint is a browser-verified, not a unit-tested, claim - see this
+// task's report.
+function stubResizeObserver(): { fire: (widthPx: number) => void; restore: () => void } {
+  const callbacks: ResizeObserverCallback[] = [];
+  class StubResizeObserver {
+    constructor(cb: ResizeObserverCallback) {
+      callbacks.push(cb);
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  const original = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = StubResizeObserver as unknown as typeof ResizeObserver;
+  return {
+    fire(widthPx: number) {
+      const entry = { contentRect: { width: widthPx } } as ResizeObserverEntry;
+      act(() => {
+        for (const cb of callbacks) cb([entry], {} as ResizeObserver);
+      });
+    },
+    restore() {
+      globalThis.ResizeObserver = original;
+    },
+  };
+}
+
+test("collapses Details and Tasks into the ... menu once the chrome measures narrower than the breakpoint", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_narrow"));
+  await threadsStore.getState().ensureThread("ref_narrow");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_narrow" />);
+    ro.fire(300); // well under NARROW_CHROME_WIDTH_PX
+
+    // Neither trigger renders inline on the row any more...
+    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Tasks" })).toBeNull();
+
+    // ...they're in the "..." menu instead, SAME labels, leading the list.
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    const menuItems = screen.getAllByRole("menuitem").map((el) => el.textContent);
+    expect(menuItems.slice(0, 2)).toEqual(["Details", "Tasks"]);
+
+    // Selecting the "Details" item does the SAME thing the inline trigger
+    // did: opens the session-details sheet.
+    await user.click(screen.getByRole("menuitem", { name: "Details" }));
+    expect(screen.getByText("Session details")).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
+});
+
+test("keeps Details and Tasks inline (and out of the ... menu) once the chrome measures at or above the breakpoint", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_wide"));
+  await threadsStore.getState().ensureThread("ref_wide");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_wide" />);
+    ro.fire(1000); // well above NARROW_CHROME_WIDTH_PX
+
+    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /session actions/i }));
+    expect(screen.queryByRole("menuitem", { name: "Details" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Tasks" })).toBeNull();
+  } finally {
+    ro.restore();
+  }
+});
+
+test("re-expands Details and Tasks back onto the row when the chrome widens past the breakpoint again", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_reflow"));
+  await threadsStore.getState().ensureThread("ref_reflow");
+  const ro = stubResizeObserver();
+
+  try {
+    render(<SessionChrome ref="ref_reflow" />);
+    ro.fire(300);
+    expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
+
+    ro.fire(1000);
+    expect(screen.getByRole("button", { name: "Details" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeTruthy();
+  } finally {
+    ro.restore();
+  }
 });

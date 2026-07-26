@@ -13,16 +13,17 @@
 // goal exists, the goal chip + its clear popover); SessionActionsMenu's
 // "Set goal…" menu item is the only way to OPEN it now that the row itself
 // carries no permanent goal button.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useThreadsStore } from "../../../stores/threads";
+import type { MenuItem } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { NOW_TICK_MS, useNowTick } from "../liveness";
-import { DetailsPanel } from "./DetailsPanel";
+import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
 import { SessionActionsMenu } from "./SessionActionsMenu";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
-import { TasksPanel } from "./TasksPanel";
+import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
 
 export interface SessionChromeProps {
   ref: string;
@@ -32,6 +33,46 @@ const CLASS = {
   chrome: requireClass(styles.chrome, "sessionchrome.module.css", "chrome"),
   right: requireClass(styles.right, "sessionchrome.module.css", "right"),
 };
+
+// Below this measured width, Details and Tasks no longer fit beside the
+// model/cost strip and the "..." trigger without wrapping the row onto a
+// second line (kata vybn) - so they move INTO that "..." menu instead,
+// keeping the footer one row tall. Picked from live measurement in a real
+// browser (jsdom reports zero for every layout dimension, so this number
+// could never come from a unit test - see this task's report): a session
+// with a typical model name and a cost chip starts wrapping around 550px of
+// chrome width, and this leaves headroom above that so the collapse lands
+// BEFORE the wrap, not after it. A session with an unusually long model
+// name or many status-row facts at once can still wrap on its own past this
+// point - this constant targets the reported failure (Details/Tasks pushed
+// to their own row), not a general "never wrap" guarantee over arbitrary
+// status-row content, which would need real measured-overflow detection
+// rather than a fixed breakpoint.
+const NARROW_CHROME_WIDTH_PX = 640;
+
+// Measures `ref`'s own border-box width via ResizeObserver - a PANE's box,
+// not the viewport, which is the trigger this kata's own report rules out a
+// media query for. Mirrors the guard widgets/textarea and widgets/popover
+// already use: jsdom ships no ResizeObserver, so this silently never fires
+// under vitest (narrow stays false, matching every existing test's
+// expectations) and a test that wants to exercise it stubs the observer the
+// same way popover.test.tsx's own "re-measures placement" test does.
+function useNarrowerThan(thresholdPx: number): [React.RefObject<HTMLDivElement | null>, boolean] {
+  const elementRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = elementRef.current;
+    if (!el) return;
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setNarrow(entry.contentRect.width < thresholdPx);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [thresholdPx]);
+  return [elementRef, narrow];
+}
 
 export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
@@ -43,10 +84,23 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
   // liveness.ts's own useNowTick doc comment: "transient by design").
   const now = useNowTick(NOW_TICK_MS);
   const [goalDialogOpen, setGoalDialogOpen] = useState(false);
+  const [chromeRef, collapsed] = useNarrowerThan(NARROW_CHROME_WIDTH_PX);
+  const detailsRef = useRef<DetailsPanelHandle>(null);
+  const tasksRef = useRef<TasksPanelHandle>(null);
   if (!model) return null;
 
+  // Details/Tasks lead the "..." menu's own list when collapsed - see
+  // SessionActionsMenu's extraItems doc comment for why that order, not
+  // this one, is what actually matters (this array is just the two items).
+  const overflowItems: MenuItem[] = collapsed
+    ? [
+        { id: "details", label: "Details", onSelect: () => detailsRef.current?.open() },
+        { id: "tasks", label: "Tasks", onSelect: () => tasksRef.current?.open() },
+      ]
+    : [];
+
   return (
-    <div className={CLASS.chrome} data-testid="session-chrome">
+    <div ref={chromeRef} className={CLASS.chrome} data-testid="session-chrome">
       <StatusRow sessionRef={sessionRef} model={model} now={now} />
       <GoalControl
         sessionRef={sessionRef}
@@ -55,9 +109,14 @@ export function SessionChrome({ ref: sessionRef }: SessionChromeProps) {
         onDialogOpenChange={setGoalDialogOpen}
       />
       <div className={CLASS.right}>
-        <DetailsPanel model={model} now={now} />
-        <TasksPanel sessionRef={sessionRef} model={model} />
-        <SessionActionsMenu sessionRef={sessionRef} model={model} onSetGoal={() => setGoalDialogOpen(true)} />
+        <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger={collapsed} />
+        <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger={collapsed} />
+        <SessionActionsMenu
+          sessionRef={sessionRef}
+          model={model}
+          onSetGoal={() => setGoalDialogOpen(true)}
+          extraItems={overflowItems}
+        />
       </div>
     </div>
   );
