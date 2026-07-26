@@ -4,6 +4,15 @@
   gap: var(--space-1);
   padding-left: var(--space-3);
   border-left: 2px solid transparent;
+  /* A FormRow is often itself a flex item in a row (e.g. spawn's .cfgDir,
+   * which rides a read-only branch chip alongside it). Without this, a flex
+   * item's automatic minimum size is its content's width - and a control
+   * like PathField's trigger holds nowrap text, so that "content width" is
+   * the FULL path, not the truncated value the trigger's own ellipsis CSS
+   * intends. The row would then refuse to shrink and overflow its flex
+   * container instead of letting the control's own ellipsis do its job
+   * (kata p6g8: the overflowing row visually collided with the next field). */
+  min-width: 0;
 }
 
 /* errorRow: --danger is allowlisted for this widget in

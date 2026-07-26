@@ -179,25 +179,30 @@ test("the exit code stops being the headline: it is reachable via the row's titl
 });
 
 // A title alone is mouse-only: no keyboard path, uneven screen-reader support.
-// "Reachable" has to mean reachable without a mouse, so the detail is also real
-// text in the expanded body.
-test("the exit code is reachable WITHOUT a mouse - real text in the expanded body, not only a title", () => {
+// "Reachable" has to mean reachable without a mouse - but the exit code is
+// ALREADY real text in the expanded body, because agent/session_tools_shell.go's
+// formatShellResult bakes a trailing "[exit N]" footer into the captured
+// output itself (the model reads that same text as its tool result). A
+// second, client-synthesized copy of the same fact (kata wksf) is pure
+// duplication, not a second reachability path, so ToolCallItem no longer
+// renders one.
+test("the exit code is reachable WITHOUT a mouse - via the raw output's own trailing footer, not a client-side duplicate", () => {
   render(
     <ToolCallItem
-      item={item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), exitCode: 1 })}
+      item={item({
+        toolName: "shell",
+        argumentsJSON: JSON.stringify({ command: "false" }),
+        exitCode: 1,
+        output: "false\n[exit 1]",
+      })}
       turn={turn}
       live={false}
     />,
   );
-  // A nonzero exit auto-expands, so the detail is already on screen.
-  expect(screen.getByTestId("tool-call-detail").textContent).toContain("exit 1");
-});
-
-test("a descriptor with no detail renders no detail element in the body", () => {
-  registerToolRenderer({ match: "trg_no_detail", summary: () => "s", body: () => <div>b</div> });
-  render(<ToolCallItem item={item({ toolName: "trg_no_detail" })} turn={turn} live={false} />);
-  fireEvent.click(screen.getByTestId("tool-row"));
-  expect(screen.getByTestId("tool-call-body")).toBeTruthy();
+  // A nonzero exit auto-expands, so the body (and the footer inside it) is
+  // already on screen.
+  expect(screen.getByTestId("tool-call-body").textContent).toContain("exit 1");
+  // No second, client-synthesized copy of the same fact (kata wksf).
   expect(screen.queryByTestId("tool-call-detail")).toBe(null);
 });
 

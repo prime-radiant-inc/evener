@@ -134,18 +134,6 @@ summary.row:hover .demoted {
   }
 }
 
-/* The descriptor's own detail line (a shell call's exit code): machine text, so
- * mono, and quiet - it is the fact the collapsed row deliberately declined to
- * headline, kept reachable here without a mouse. It carries the exit code
- * ALONE; putting the command here too would print a second copy of the call
- * under the row, which is the repetition the body redesign exists to delete. */
-.detail {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  margin-bottom: var(--space-1);
-  overflow-wrap: anywhere;
-}
 
 /* The tool-result error/denial text (ItemModel.error), shown verbatim above
  * the descriptor's own body on a failed row. Failure colour lives entirely on
