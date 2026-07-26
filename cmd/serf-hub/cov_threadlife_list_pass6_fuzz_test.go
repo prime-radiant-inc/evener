@@ -76,7 +76,7 @@ func pass6ManagedLauncher(source appsource.Source) *codexlaunch.CodexLauncher {
 // FuzzThreadLifecycleListPass6 drives lifecycle and list branches directly;
 // all external process and source boundaries are deterministic fakes.
 func FuzzThreadLifecycleListPass6(f *testing.F) {
-	for i := uint8(0); i < 8; i++ {
+	for i := range uint8(8) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {

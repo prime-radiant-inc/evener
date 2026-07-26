@@ -11,7 +11,7 @@ func TestShellInlineDigestWholeLines(t *testing.T) {
 	// Lines whose boundaries do not align with the per-side byte budget, so a naive
 	// byte cut would leave a partial line fragment at the head's end / tail's start.
 	var lines []string
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		lines = append(lines, fmt.Sprintf("line%03d: %s", i, strings.Repeat("x", 23)))
 	}
 	full := strings.Join(lines, "\n") + "\n"
@@ -27,7 +27,7 @@ func TestShellInlineDigestWholeLines(t *testing.T) {
 	head, rest, _ := strings.Cut(d, "…[")
 	_, tail, _ := strings.Cut(rest, "]…\n")
 	for _, section := range []string{head, tail} {
-		for _, l := range strings.Split(strings.Trim(section, "\n"), "\n") {
+		for l := range strings.SplitSeq(strings.Trim(section, "\n"), "\n") {
 			if l == "" {
 				continue
 			}

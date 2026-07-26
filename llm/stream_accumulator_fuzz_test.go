@@ -44,12 +44,12 @@ func FuzzStreamAccumulator(f *testing.F) {
 
 		var wantText, wantReason strings.Builder
 		wantReason.WriteString("r")
-		for _, d := range strings.Split(textPipes, "|") {
+		for d := range strings.SplitSeq(textPipes, "|") {
 			acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: d})
 			wantText.WriteString(d)
 		}
 		wantText.WriteString("x")
-		for _, d := range strings.Split(reasonPipes, "|") {
+		for d := range strings.SplitSeq(reasonPipes, "|") {
 			acc.Process(StreamEvent{Type: StreamEventReasoningDelta, ReasoningDelta: d})
 			wantReason.WriteString(d)
 		}

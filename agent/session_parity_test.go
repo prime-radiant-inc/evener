@@ -523,7 +523,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 			// Use a small loop window here: parity needs to prove provider-mapped
 			// tool calls reach loop detection, not re-test the default window size.
 			base := steps[0]
-			for i := 0; i < 2; i++ {
+			for range 2 {
 				steps = append(steps, base)
 			}
 			// Final response to end the session.

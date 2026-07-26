@@ -180,11 +180,7 @@ func (m *model) addHistory(text string) {
 // vpHeight computes the viewport height from window and input dimensions.
 // statusBar=1, border=1, textarea rows=input.Height().
 func (m model) vpHeight() int {
-	h := m.height - 1 - 1 - m.input.Height()
-	if h < 1 {
-		h = 1
-	}
-	return h
+	return max(m.height-1-1-m.input.Height(), 1)
 }
 
 func (m *model) refreshViewport() {

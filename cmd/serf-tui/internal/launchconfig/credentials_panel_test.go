@@ -81,7 +81,7 @@ func TestCredentialsPanel_GroupsByType(t *testing.T) {
 	// "●", so a line with the type name and no "●" uniquely identifies a
 	// rendered header row.
 	hasHeaderLine := func(typeName string) bool {
-		for _, line := range strings.Split(plain, "\n") {
+		for line := range strings.SplitSeq(plain, "\n") {
 			if strings.Contains(line, typeName) && !strings.Contains(line, "●") {
 				return true
 			}

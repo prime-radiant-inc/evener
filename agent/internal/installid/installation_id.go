@@ -73,7 +73,7 @@ func loadOrCreateInstallationID(fs afero.Fs, stateDir string, acquire installati
 		return ""
 	}
 	lockPath := path + ".lock"
-	for attempt := 0; attempt < installationIDLockAttempts; attempt++ {
+	for attempt := range installationIDLockAttempts {
 		lock, contended, err := acquire(lockPath)
 		if err != nil {
 			if winner := readValidInstallationID(fs, path); winner != "" {

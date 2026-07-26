@@ -351,10 +351,7 @@ func subagentRailRow(r transcript.SubagentRunInfo, glyph string, glyphColor lipg
 	if name == "" {
 		name = "delegate"
 	}
-	limit := width - 6
-	if limit < 12 {
-		limit = 12
-	}
+	limit := max(width-6, 12)
 	if len(name) > limit {
 		name = name[:limit-1] + "…"
 	}

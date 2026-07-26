@@ -63,7 +63,7 @@ func TestWatchSeqFuzz(t *testing.T) {
 
 		model := ws_newModel()
 		n := rapid.IntRange(1, 24).Draw(rt, "nops")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			op := ws_drawOp(rt, model)
 			out, res := h.runOpSafely(op)
 			if res.wedged {
@@ -157,7 +157,7 @@ func ws_drawOp(rt *rapid.T, model *ws_model) ws_op {
 	case ws_opConfigure:
 		op.targetSel = rapid.IntRange(0, ws_numTargets-1).Draw(rt, "targetSel")
 		nEv := rapid.IntRange(0, 2).Draw(rt, "nEvents")
-		for j := 0; j < nEv; j++ {
+		for range nEv {
 			op.events = append(op.events, rapid.SampledFrom(ws_eventNames).Draw(rt, "eventName"))
 		}
 		op.outputMatch = rapid.SampledFrom(ws_outputMatch).Draw(rt, "outputMatch")
@@ -178,7 +178,7 @@ func ws_drawOp(rt *rapid.T, model *ws_model) ws_op {
 	case ws_opFeedOutput:
 		op.feedJobSel = rapid.IntRange(0, ws_numJobs-1).Draw(rt, "feedJobSel")
 		nLines := rapid.IntRange(1, 8).Draw(rt, "feedLines")
-		for j := 0; j < nLines; j++ {
+		for range nLines {
 			op.feedTokens = append(op.feedTokens, rapid.IntRange(0, len(ws_feedTokens)-1).Draw(rt, "feedToken"))
 		}
 	case ws_opProgressTick:
@@ -251,7 +251,7 @@ func ws_newHarness(t *testing.T, rt *rapid.T) *ws_harness {
 	// A seeded delegate target so send-to-delegate watches validate and install.
 	seedWatchSendDelegateTarget(t, jm, "dlg_obs")
 
-	for i := 0; i < ws_numJobs; i++ {
+	for i := range ws_numJobs {
 		rec, err := jm.createShell(createShellOpts{Command: fmt.Sprintf("job %d", i), Description: "seqfuzz"})
 		if err != nil {
 			rt.Fatalf("createShell: %v", err)

@@ -64,10 +64,7 @@ func (s AppShell) View() string {
 		gap := max(0, s.Height-tuitext.ShellSectionLineCount(footer))
 		return tuitext.LimitFirstLines(strings.Repeat("\n", gap)+footer, s.Height)
 	}
-	gap := s.Height - tuitext.ShellSectionLineCount(content) - tuitext.ShellSectionLineCount(footer) + 1
-	if gap < 2 {
-		gap = 2
-	}
+	gap := max(s.Height-tuitext.ShellSectionLineCount(content)-tuitext.ShellSectionLineCount(footer)+1, 2)
 	// Hard cap to Height, keeping the first lines: when chrome alone meets or
 	// exceeds Height the gap/floor math would otherwise overflow and, inline,
 	// scroll the TopBar off the top. Keeping the first Height lines preserves the
@@ -99,10 +96,7 @@ func boundShellInner(inner string, height int, topBar, footer string) string {
 	if separators > 1 {
 		used += 2 * (separators - 1)
 	}
-	available := height - used
-	if available < 1 {
-		available = 1
-	}
+	available := max(height-used, 1)
 	return tuitext.LimitFirstLines(inner, available)
 }
 

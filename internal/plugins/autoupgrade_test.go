@@ -303,11 +303,9 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	var wg sync.WaitGroup
 	var bUpdated []UpgradedPlugin
 	var bErr error
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		bUpdated, bErr = m2.UpdateAutoUpgrade(context.Background())
-	}()
+	})
 
 	// Bias the scheduler toward sweep B completing its cheap, unlocked "list
 	// installed plugins" read before we perform the real upgrade below. This

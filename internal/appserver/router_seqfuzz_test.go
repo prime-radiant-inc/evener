@@ -469,8 +469,8 @@ func kindName(k appwire.MessageKind) string {
 }
 
 func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if before, _, found := strings.Cut(s, "\n"); found {
+		return before
 	}
 	return s
 }

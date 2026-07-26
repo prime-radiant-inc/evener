@@ -12,7 +12,7 @@ import (
 var fuzzCoverageUnion = func(*testing.T) {}
 
 func FuzzPickers(f *testing.F) {
-	for action := byte(0); action < 7; action++ {
+	for action := range byte(7) {
 		f.Add("a", action)
 	}
 	f.Add("missing", byte(4))

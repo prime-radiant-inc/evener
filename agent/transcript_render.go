@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -597,10 +598,8 @@ func toolResultCallIDs(t schema.Turn) []string {
 // buildResultIndex's first-result-wins rule).
 func resultSeqForCall(entries []transcript.Entry, id string) (int, bool) {
 	for seq := range entries {
-		for _, rid := range toolResultCallIDs(entries[seq].Turn) {
-			if rid == id {
-				return seq, true
-			}
+		if slices.Contains(toolResultCallIDs(entries[seq].Turn), id) {
+			return seq, true
 		}
 	}
 	return 0, false
@@ -610,10 +609,8 @@ func resultSeqForCall(entries []transcript.Entry, id string) (int, bool) {
 // with the given id, or false if none does.
 func callOwnerSeq(entries []transcript.Entry, id string) (int, bool) {
 	for seq := range entries {
-		for _, cid := range toolCallIDs(entries[seq].Turn) {
-			if cid == id {
-				return seq, true
-			}
+		if slices.Contains(toolCallIDs(entries[seq].Turn), id) {
+			return seq, true
 		}
 	}
 	return 0, false
@@ -1282,10 +1279,7 @@ const minFenceBackticks = 3
 // run inside body: one backtick longer than the longest run found, never fewer
 // than minFenceBackticks.
 func bodyFence(body string) string {
-	n := longestBacktickRun(body) + 1
-	if n < minFenceBackticks {
-		n = minFenceBackticks
-	}
+	n := max(longestBacktickRun(body)+1, minFenceBackticks)
 	return strings.Repeat("`", n)
 }
 
@@ -1347,7 +1341,7 @@ func clampLineWidths(lines []string) []string {
 // nonEmptyLines splits s into its non-empty (after trimming) lines.
 func nonEmptyLines(s string) []string {
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if strings.TrimSpace(line) != "" {
 			out = append(out, line)
 		}

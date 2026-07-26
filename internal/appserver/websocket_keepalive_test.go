@@ -22,8 +22,7 @@ func (p *scriptedPinger) Ping(ctx context.Context) error {
 }
 
 func TestWebSocketKeepaliveCancelsConnectionWhenPingFails(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	canceled := make(chan struct{})
 	pinger := &scriptedPinger{failFrom: 1}
 
@@ -37,8 +36,7 @@ func TestWebSocketKeepaliveCancelsConnectionWhenPingFails(t *testing.T) {
 }
 
 func TestWebSocketKeepaliveSurvivesHealthyPings(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	canceled := make(chan struct{})
 	pinger := &scriptedPinger{failFrom: 0} // never fails
 

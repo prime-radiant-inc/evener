@@ -406,10 +406,7 @@ func ParseRetryAfter(v string, now time.Time) *time.Duration {
 		return &d
 	}
 	if t, err := http.ParseTime(v); err == nil {
-		d := t.Sub(now)
-		if d < 0 {
-			d = 0
-		}
+		d := max(t.Sub(now), 0)
 		return &d
 	}
 	return nil

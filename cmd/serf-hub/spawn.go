@@ -662,8 +662,8 @@ func openAIStateDirFromLaunchEnv(env []string) string {
 func envLookup(env []string, key string) (string, bool) {
 	prefix := key + "="
 	for i := len(env) - 1; i >= 0; i-- {
-		if strings.HasPrefix(env[i], prefix) {
-			return strings.TrimPrefix(env[i], prefix), true
+		if rest, ok := strings.CutPrefix(env[i], prefix); ok {
+			return rest, true
 		}
 	}
 	return "", false

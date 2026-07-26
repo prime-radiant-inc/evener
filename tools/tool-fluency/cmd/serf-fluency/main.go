@@ -704,7 +704,7 @@ func parseEvents(data []byte) (map[string]int, map[string]int, []string) {
 	counts := map[string]int{}
 	errorsByTool := map[string]int{}
 	var communicateMessages []string
-	for _, raw := range bytes.Split(data, []byte("\n")) {
+	for raw := range bytes.SplitSeq(data, []byte("\n")) {
 		raw = bytes.TrimSpace(raw)
 		if len(raw) == 0 || raw[0] != '{' {
 			continue

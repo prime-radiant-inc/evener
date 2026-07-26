@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,9 +40,7 @@ func communicateCallArgs(id string, args map[string]any) llm.ToolCallData {
 		"artifacts": []string{},
 	}
 	if rawOutput, ok := args["output"].(map[string]any); ok {
-		for k, v := range rawOutput {
-			output[k] = v
-		}
+		maps.Copy(output, rawOutput)
 	}
 	if message == "" {
 		if outMsg, ok := output["message"].(string); ok {

@@ -37,7 +37,7 @@ func (s *finalLifecycleSource) CompactThread(context.Context, appwire.ThreadComp
 // FuzzFinalRPCLifecycle closes the remaining hub lifecycle error contracts at
 // real source, spawner, registry, and router boundaries.
 func FuzzFinalRPCLifecycle(f *testing.F) {
-	for i := byte(0); i < 4; i++ {
+	for i := range byte(4) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {

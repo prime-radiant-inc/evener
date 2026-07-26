@@ -51,9 +51,7 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 
 	// Driver 1: real ProcessInput turns (exercises the drain-loop gate + the
 	// goalInTurn entry/exit flag).
-	drivers.Add(1)
-	go func() {
-		defer drivers.Done()
+	drivers.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -62,13 +60,11 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 			}
 			_, _ = sess.ProcessInput(context.Background(), "go", nil)
 		}
-	}()
+	})
 
 	// Driver 2: the gate's arming step, called directly to hammer the goal mutex
 	// from the turn-goroutine side independent of a full turn.
-	drivers.Add(1)
-	go func() {
-		defer drivers.Done()
+	drivers.Go(func() {
 		for {
 			select {
 			case <-stop:
@@ -77,7 +73,7 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 			}
 			_, _ = sess.armGoalContinuation(true, true)
 		}
-	}()
+	})
 
 	// Hammerers: SetGoal / ClearGoal from the appwire-goroutine side.
 	var hammer sync.WaitGroup
@@ -86,13 +82,11 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 		func() { sess.ClearGoal() },
 	} {
 
-		hammer.Add(1)
-		go func() {
-			defer hammer.Done()
-			for i := 0; i < 300; i++ {
+		hammer.Go(func() {
+			for range 300 {
 				fn()
 			}
-		}()
+		})
 	}
 
 	hammer.Wait()

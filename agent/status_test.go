@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 	"time"
@@ -225,13 +226,7 @@ func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
 		t.Fatalf("plugin name = %q, want %q", ds.Plugins[0].Name, coordinatorWorkflowPluginName)
 	}
 
-	foundReviewer := false
-	for _, name := range ds.Agents {
-		if name == "reviewer" {
-			foundReviewer = true
-			break
-		}
-	}
+	foundReviewer := slices.Contains(ds.Agents, "reviewer")
 	if !foundReviewer {
 		t.Fatalf("expected configured coordinator workflow reviewer agent in %v", ds.Agents)
 	}
@@ -404,7 +399,7 @@ func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
 		StartedAt:        &runningStartedAt,
 	}}
 
-	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
+	for i := range detailedStatusTerminalJobsLimit + 2 {
 		startedAt := base.Add(time.Duration(i) * time.Second)
 		endedAt := startedAt.Add(time.Second)
 		jobID := fmt.Sprintf("job_terminal_%02d", i)

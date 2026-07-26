@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -222,14 +223,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	if err != nil {
 		return nil
 	}
-	providerConfigured := false
-	for _, provider := range client.ProviderNames() {
-		if provider == ref.Provider {
-			providerConfigured = true
-			break
-		}
-	}
-	if !providerConfigured {
+	if !slices.Contains(client.ProviderNames(), ref.Provider) {
 		return nil
 	}
 	models, err := client.ListModels(ctx, ref.Provider)

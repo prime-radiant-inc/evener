@@ -56,8 +56,8 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		} else {
 			// Show first line as desc; full command as detail if multi-line.
 			firstLine := cmd
-			if i := strings.IndexByte(cmd, '\n'); i >= 0 {
-				firstLine = cmd[:i]
+			if before, _, ok := strings.Cut(cmd, "\n"); ok {
+				firstLine = before
 			}
 			desc = trunc(firstLine, 80)
 		}
@@ -147,8 +147,8 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 	case "delegate":
 		task := str("task")
 		firstLine := task
-		if i := strings.IndexByte(task, '\n'); i >= 0 {
-			firstLine = task[:i]
+		if before, _, ok := strings.Cut(task, "\n"); ok {
+			firstLine = before
 		}
 		desc = trunc(firstLine, 80)
 		if strings.Contains(task, "\n") || len(task) > 80 {
@@ -297,8 +297,8 @@ func renderTaskAppend(tasks []any) string {
 		if prompt, _ := m["prompt"].(string); prompt != "" {
 			// Show first line of prompt indented.
 			first := prompt
-			if idx := strings.IndexByte(prompt, '\n'); idx >= 0 {
-				first = prompt[:idx] + "…"
+			if before, _, ok := strings.Cut(prompt, "\n"); ok {
+				first = before + "…"
 			}
 			if len(first) > 72 {
 				first = first[:72] + "…"

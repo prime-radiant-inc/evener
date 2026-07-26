@@ -120,7 +120,7 @@ func containsMarkdownSyntax(text string) bool {
 	if strings.ContainsAny(text, "`*_[]") {
 		return true
 	}
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -152,7 +152,7 @@ func isOrderedMarkdownListItem(line string) bool {
 // to a scannable length so a stack of finished thoughts stays legible.
 func reasoningGist(text string) string {
 	const maxLen = 72
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.Join(strings.Fields(line), " ")
 		if line == "" {
 			continue

@@ -93,13 +93,13 @@ func generate(b []byte) logicalResponse {
 	var lr logicalResponse
 
 	nTools := s.intn(4) // 0..3 tool calls
-	for i := 0; i < nTools; i++ {
+	for range nTools {
 		tc := logicalToolCall{
 			Name: "t" + s.genName(),
 			Args: map[string]string{},
 		}
 		nArgs := 1 + s.intn(3) // 1..3 args, always non-empty
-		for k := 0; k < nArgs; k++ {
+		for k := range nArgs {
 			tc.Args[fmt.Sprintf("k%d", k)] = s.genString(4)
 		}
 		lr.Tools = append(lr.Tools, tc)

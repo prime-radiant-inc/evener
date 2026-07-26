@@ -260,7 +260,7 @@ func scenarioSSESeedWindows(t *testing.T) {
 	// A large stream is packed into multiple windows of whole events, each within
 	// the cap, and concatenating the windows reproduces the original.
 	var big bytes.Buffer
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		big.WriteString("data: ")
 		big.Write(bytes.Repeat([]byte("x"), 40))
 		big.WriteString("\n\n")

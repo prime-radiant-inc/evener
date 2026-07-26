@@ -1,7 +1,6 @@
 package appwire_test
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -41,8 +40,7 @@ func TestTurnSteer_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	coord := &fakeCoordinator{}
 	client.SetPendingCoordinator(coord)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	go func() {
@@ -92,8 +90,7 @@ func TestTurnSteer_RegistersPending_NoFailOnRPCSuccess(t *testing.T) {
 	coord := &fakeCoordinator{}
 	client.SetPendingCoordinator(coord)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 
 	go func() {
@@ -125,8 +122,7 @@ func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 	captureCh := make(chan appwire.Message, 1)
 	go func() {
@@ -149,8 +145,7 @@ func TestTurnStart_DoesNotRegisterPending(t *testing.T) {
 	client := appwire.NewClient(transport)
 	coord := &fakeCoordinator{}
 	client.SetPendingCoordinator(coord)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 	go func() {
 		req := <-transport.Sent()
@@ -176,8 +171,7 @@ func TestTurnQueue_DoesNotRegisterPending(t *testing.T) {
 	client := appwire.NewClient(transport)
 	coord := &fakeCoordinator{}
 	client.SetPendingCoordinator(coord)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 	go func() {
 		req := <-transport.Sent()
@@ -204,8 +198,7 @@ func TestTurnDrainAsSteer_RegistersPending_TextEmpty(t *testing.T) {
 	client := appwire.NewClient(transport)
 	coord := &fakeCoordinator{}
 	client.SetPendingCoordinator(coord)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	client.Start(ctx)
 	go func() {
 		req := <-transport.Sent()

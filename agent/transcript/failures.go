@@ -2,6 +2,7 @@ package transcript
 
 import (
 	"encoding/json"
+	"slices"
 
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -17,12 +18,7 @@ var ShellToolNames = []string{"shell", "exec_command", "run_shell_command"}
 
 // IsShellTool reports whether a tool's result carries a process exit code.
 func IsShellTool(name string) bool {
-	for _, candidate := range ShellToolNames {
-		if name == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ShellToolNames, name)
 }
 
 // ExitCodeFromToolState reads the process exit code a shell tool records in its

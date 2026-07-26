@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -233,10 +234,7 @@ func (m *hubModel) resizeSpawnInput() {
 }
 
 func (m *hubModel) resizeSpawnInputFrom(prevHeight int) {
-	wantHeight := m.session.input.LineCount()
-	if wantHeight > m.session.input.MaxHeight {
-		wantHeight = m.session.input.MaxHeight
-	}
+	wantHeight := min(m.session.input.LineCount(), m.session.input.MaxHeight)
 	if wantHeight != prevHeight {
 		m.session.input.SetHeight(wantHeight)
 	}
@@ -474,12 +472,7 @@ func (m hubModel) spawnDirView() string {
 }
 
 func stringInSlice(needle string, haystack []string) bool {
-	for _, item := range haystack {
-		if item == needle {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(haystack, needle)
 }
 
 func (m hubModel) spawnWorkingDir() string {
@@ -540,7 +533,7 @@ func (m hubModel) spawnView() string {
 		}
 	}
 	fmt.Fprintf(&b, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
-	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value(), m.width-2, 0), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(renderComposerDraft(m.session.input.Value(), m.width-2, 0), "\n"), "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")

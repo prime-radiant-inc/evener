@@ -69,7 +69,7 @@ func TestRunDrainsNestedDelegateSubtree(t *testing.T) {
 	}
 
 	steps := make([]func(llm.Request) llm.Response, 0, 40)
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		steps = append(steps, step)
 	}
 	installRunScriptedProvider(t, &scriptedProvider{name: "openai", steps: steps})

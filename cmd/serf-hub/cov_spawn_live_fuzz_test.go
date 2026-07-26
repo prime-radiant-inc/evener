@@ -25,7 +25,7 @@ func fuzzExecutable(t *testing.T, body string) string {
 }
 
 func FuzzSpawnLiveContracts(f *testing.F) {
-	for i := byte(0); i < 24; i++ {
+	for i := range byte(24) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, mode byte) {

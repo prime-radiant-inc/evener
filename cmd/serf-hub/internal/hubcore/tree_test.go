@@ -734,7 +734,7 @@ func fuzzScenarioBuildTree_ClustersRepeatedIdleTitles(t *testing.T) {
 	// hidden behind a fold.
 	now := time.Now()
 	metas := []schema.SessionMeta{}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		metas = append(metas, schema.SessionMeta{
 			ID:        "01IMG" + string(rune('A'+i)),
 			Name:      "describe this image",
@@ -778,7 +778,7 @@ func fuzzScenarioBuildTree_DoesNotClusterLiveRepeatedTitles(t *testing.T) {
 	// so live signal is never hidden behind a fold.
 	now := time.Now()
 	metas := []schema.SessionMeta{}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		metas = append(metas, schema.SessionMeta{
 			ID:        "01DUP" + string(rune('A'+i)),
 			Name:      "describe this image",
@@ -1068,7 +1068,7 @@ func fuzzScenarioBuildTree_CapsSessionsPerTierWithOverflowCounts(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	total := maxSidebarSessionsPerTier + 7
 	metas := make([]schema.SessionMeta, 0, total)
-	for i := 0; i < total; i++ {
+	for i := range total {
 		// Spread updated times so they don't cluster-fold (distinct titles too).
 		metas = append(metas, schema.SessionMeta{
 			ID:             fmt.Sprintf("01CUR%03d", i),
@@ -1653,7 +1653,7 @@ func fuzzScenarioSubagentChildrenCappedPerTier(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	parent := schema.SessionMeta{ID: "01P", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"}}
 	metas := []schema.SessionMeta{parent}
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		metas = append(metas, schema.SessionMeta{
 			ID: fmt.Sprintf("01S%02d", i), IsSubagent: true, ParentSessionID: "01P",
 			CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/p"},

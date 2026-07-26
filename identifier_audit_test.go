@@ -281,14 +281,14 @@ func identifierAuditTrackedFindings(root string) ([]string, error) {
 		return nil, fmt.Errorf("list tracked Go files: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	paths := make([]string, 0, bytes.Count(out, []byte{0}))
-	for _, rawPath := range bytes.Split(out, []byte{0}) {
+	for rawPath := range bytes.SplitSeq(out, []byte{0}) {
 		if len(rawPath) == 0 {
 			continue
 		}
 		rel := filepath.ToSlash(string(rawPath))
 		rootDir := rel
-		if slash := strings.IndexByte(rel, '/'); slash >= 0 {
-			rootDir = rel[:slash]
+		if before, _, found := strings.Cut(rel, "/"); found {
+			rootDir = before
 		}
 		if identifierAuditExcludedRootDir(rootDir) {
 			continue

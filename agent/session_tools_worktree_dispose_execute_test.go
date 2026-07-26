@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -133,12 +134,7 @@ func refuseNonForceRemove(r *scriptedLaneRepo, lanePath string) {
 }
 
 func scriptedHasForce(args []string) bool {
-	for _, a := range args {
-		if a == "--force" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, "--force")
 }
 
 // TestDispose_EvictsRetainedChild is spec test 12: a retained quiescent child is

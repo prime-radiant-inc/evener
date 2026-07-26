@@ -552,7 +552,7 @@ func writeMultiTurnSession(t *testing.T, bucketDir string, spec findMetaSpec, nT
 	if err != nil {
 		t.Fatalf("write multi-turn transcript %s: %v", spec.id, err)
 	}
-	for i := 0; i < nTurns; i++ {
+	for i := range nTurns {
 		if i%2 == 0 {
 			if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("user turn"))); err != nil {
 				t.Fatalf("append user turn %d: %v", i, err)
@@ -611,7 +611,7 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 	// elides the middle. With head=20 / tail=10, line 30 lands in the elided middle —
 	// the only honest probe for whether expand_turn actually un-truncates.
 	var resultLines strings.Builder
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		fmt.Fprintf(&resultLines, "result-line-%02d-marker\n", i)
 	}
 	// Turn 2: tool result
@@ -987,8 +987,8 @@ func TestRead_JSONL(t *testing.T) {
 }
 
 func firstLineOf(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
+	if line, _, ok := strings.Cut(s, "\n"); ok {
+		return line
 	}
 	return s
 }

@@ -47,7 +47,7 @@ func TestFc1MaybeCompactSeqFuzz(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := newFc1MaybeCompactModel(rapid.IntRange(1, 4).Draw(rt, "preserveRecent"))
 		steps := rapid.IntRange(1, 25).Draw(rt, "steps")
-		for i := 0; i < steps; i++ {
+		for i := range steps {
 			op := rapid.SampledFrom(fc1MaybeCompactOps).Draw(rt, "op")
 			lenBefore := len(m.history)
 			m.applyOp(rt, op, i)

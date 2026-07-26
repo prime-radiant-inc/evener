@@ -13,7 +13,7 @@ import (
 
 // ParseGitdirPointer extracts the first non-empty gitdir pointer value.
 func ParseGitdirPointer(content string) (string, bool) {
-	for _, line := range strings.Split(content, "\n") {
+	for line := range strings.SplitSeq(content, "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "gitdir:")
 		if ok && strings.TrimSpace(rest) != "" {
 			return strings.TrimSpace(rest), true

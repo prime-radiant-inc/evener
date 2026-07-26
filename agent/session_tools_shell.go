@@ -96,10 +96,7 @@ func paginateDirEntries(path string, entries []execenv.DirEntry, offset, limit i
 		limit = defaultListDirLimit
 	}
 	total := len(entries)
-	start := offset
-	if start > total {
-		start = total
-	}
+	start := min(offset, total)
 	// Cap the pre-allocation to the entries actually available past the offset: a
 	// page can never exceed that, so sizing it by the raw (caller-supplied) limit
 	// would let a huge limit (e.g. 1e10) allocate an enormous slice and OOM before

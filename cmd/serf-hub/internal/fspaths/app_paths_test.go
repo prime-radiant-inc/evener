@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -77,14 +78,7 @@ func checkCompletePaths(t *testing.T) {
 		}
 		want := []string{"Alpha", "Beta", "Gamma", "delta"}
 		for _, w := range want {
-			found := false
-			for _, g := range got {
-				if g == w {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(got, w) {
 				t.Fatalf("expected %q in results, got %v", w, got)
 			}
 		}
@@ -121,7 +115,7 @@ func checkCompletePaths(t *testing.T) {
 	t.Run("default returns all directories and explicit limit is honored", func(t *testing.T) {
 		bigHome := t.TempDir()
 		t.Setenv("HOME", bigHome)
-		for i := 0; i < 40; i++ {
+		for i := range 40 {
 			if err := os.MkdirAll(filepath.Join(bigHome, fmt.Sprintf("dir%02d", i)), 0o755); err != nil {
 				t.Fatal(err)
 			}

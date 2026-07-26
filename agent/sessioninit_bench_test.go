@@ -20,7 +20,7 @@ func benchClient() *llm.Client {
 func BenchmarkNewSession(b *testing.B) {
 	c := benchClient()
 	prof := provider.NewOpenAIProfile("gpt-5.2")
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		dir := b.TempDir()
 		sess, err := NewSession(c, prof, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1})
 		if err != nil {
@@ -35,14 +35,14 @@ func BenchmarkNewSession(b *testing.B) {
 func BenchmarkGitRootOrEmpty(b *testing.B) {
 	dir := b.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = execenv.GitRootOrEmpty(env, dir)
 	}
 }
 
 func BenchmarkProfileToolRegistry(b *testing.B) {
 	prof := provider.NewOpenAIProfile("gpt-5.2")
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = newProfileToolRegistry(prof)
 	}
 }

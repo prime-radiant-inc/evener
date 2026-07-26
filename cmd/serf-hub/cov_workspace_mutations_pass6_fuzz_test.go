@@ -44,7 +44,7 @@ func (s *pass6WorkspaceSource) ListTasks(context.Context, appwire.TaskListParams
 // FuzzWorkspaceMutationsPass6 closes workspace rendering and destructive
 // mutation branches using local state and scripted app sources only.
 func FuzzWorkspaceMutationsPass6(f *testing.F) {
-	for mode := uint8(0); mode < 10; mode++ {
+	for mode := range uint8(10) {
 		f.Add(mode)
 	}
 	f.Fuzz(func(t *testing.T, mode uint8) {

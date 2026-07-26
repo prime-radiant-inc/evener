@@ -22,7 +22,7 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 		t.Skip("race-detector stress test; run with -race")
 	}
 	t.Parallel()
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		dir := t.TempDir()
 		c := llm.NewClient()
 		c.Register(&fakeAdapter{
@@ -36,13 +36,11 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 			t.Fatalf("NewSession: %v", err)
 		}
 		var wg sync.WaitGroup
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < 200; j++ {
+		wg.Go(func() {
+			for range 200 {
 				sess.emit(events.EventWarning, events.WarningData{Message: "concurrent"})
 			}
-		}()
+		})
 		// Close concurrently with the caller-owned emits.
 		sess.Close()
 		wg.Wait()

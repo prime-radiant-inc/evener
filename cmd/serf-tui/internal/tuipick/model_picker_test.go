@@ -210,7 +210,7 @@ func TestModelPicker_Backspace(t *testing.T) {
 	}
 
 	// Backspace 3 times to clear filter.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		tm, _ = tm.Update(tea.KeyMsg{Type: tea.KeyBackspace})
 	}
 	mp = tm.(ModelPicker)

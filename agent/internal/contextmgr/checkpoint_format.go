@@ -94,11 +94,10 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 
 	openTag := "<conversation>"
 	closeTag := "</conversation>"
-	if idx := strings.Index(text, openTag); idx >= 0 {
-		rest := text[idx+len(openTag):]
-		if end := strings.Index(rest, closeTag); end >= 0 {
+	if _, rest, found := strings.Cut(text, openTag); found {
+		if body, _, found := strings.Cut(rest, closeTag); found {
 			var entries []checkpointConversationEntry
-			if err := json.Unmarshal([]byte(rest[:end]), &entries); err == nil {
+			if err := json.Unmarshal([]byte(body), &entries); err == nil {
 				return cleanCheckpointConversation(entries)
 			}
 		}
@@ -215,7 +214,7 @@ func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
 		}
 	}
 
-	for _, line := range strings.Split(section, "\n") {
+	for line := range strings.SplitSeq(section, "\n") {
 		if !inFence && strings.HasPrefix(line, "### ") {
 			flush()
 			heading = strings.TrimSpace(strings.TrimPrefix(line, "### "))
@@ -292,11 +291,10 @@ func extractCheckpointJSON(text, tag string) []string {
 	// New format: <tag>[...]</tag>
 	openTag := "<" + tag + ">"
 	closeTag := "</" + tag + ">"
-	if idx := strings.Index(text, openTag); idx >= 0 {
-		rest := text[idx+len(openTag):]
-		if end := strings.Index(rest, closeTag); end >= 0 {
+	if _, rest, found := strings.Cut(text, openTag); found {
+		if body, _, found := strings.Cut(rest, closeTag); found {
 			var msgs []string
-			if err := json.Unmarshal([]byte(rest[:end]), &msgs); err == nil {
+			if err := json.Unmarshal([]byte(body), &msgs); err == nil {
 				return msgs
 			}
 		}
@@ -304,11 +302,8 @@ func extractCheckpointJSON(text, tag string) []string {
 
 	// Legacy format: "Original task: ..." line (only for user_messages tag).
 	if tag == "user_messages" {
-		if idx := strings.Index(text, "Original task: "); idx >= 0 {
-			rest := text[idx+len("Original task: "):]
-			if nl := strings.Index(rest, "\n"); nl >= 0 {
-				rest = rest[:nl]
-			}
+		if _, rest, found := strings.Cut(text, "Original task: "); found {
+			rest, _, _ = strings.Cut(rest, "\n")
 			if rest != "" {
 				return []string{rest}
 			}

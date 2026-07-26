@@ -52,49 +52,41 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 
 	// Swapper: repeatedly reassigns s.env, the mutation this whole accessor
 	// exists to make safe.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < swapIterations; i++ {
+	wg.Go(func() {
+		for i := range swapIterations {
 			if i%2 == 0 {
 				sess.testSwapEnv(envA)
 			} else {
 				sess.testSwapEnv(envB)
 			}
 		}
-	}()
+	})
 
 	// Status/hook events: exercises hookInput's CWD read directly, in a tight
 	// loop (no subprocess or filesystem I/O) to maximize overlap with the
 	// swapper above.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < swapIterations; i++ {
+	wg.Go(func() {
+		for range swapIterations {
 			_ = sess.hookInput(plugin.HookNotification)
 		}
-	}()
+	})
 
 	// Tool dispatch: exercises execTool's reg.ExecuteCall(ctx, currentEnv(), call).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < toolIterations; i++ {
+	wg.Go(func() {
+		for i := range toolIterations {
 			sess.execTool(context.Background(), llm.ToolCallData{
 				ID:        fmt.Sprintf("c%d", i),
 				Name:      "shell",
 				Arguments: json.RawMessage(`{"command":"true"}`),
 			})
 		}
-	}()
+	})
 
 	// Child creation: exercises prepareSubagentRun's subEnv resolution. Each
 	// prepared run is discarded immediately (mirrors spawnAgent's own error
 	// path) rather than launched, since we only care about the env read here.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < spawnIterations; i++ {
+	wg.Go(func() {
+		for range spawnIterations {
 			prepared, err := sess.prepareSubagentRun(context.Background(), "noop", "", "", 1, "", "", nil, nil)
 			if err != nil {
 				continue
@@ -102,7 +94,7 @@ func TestSession_CurrentEnv_NoRaceWithConcurrentSwap(t *testing.T) {
 			releasePreparedTreeSlot(prepared)
 			prepared.sub.sess.Close()
 		}
-	}()
+	})
 
 	wg.Wait()
 }

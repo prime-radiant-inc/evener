@@ -566,7 +566,7 @@ func seedBoundedPastThread(t *testing.T) (hubcore.WebConfig, appwire.ThreadReadP
 	// 200-turn transcript does not pay one fsync per Append. Close still
 	// flushes, so the transcript read back is byte-identical.
 	w.SyncInterval = time.Hour
-	for i := 0; i < 199; i++ {
+	for range 199 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("saved turn"))); err != nil {
 			t.Fatal(err)
 		}

@@ -22,7 +22,7 @@ import (
 )
 
 func FuzzSmallFaultsPass5(f *testing.F) {
-	for i := uint8(0); i < 12; i++ {
+	for i := range uint8(12) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
@@ -143,7 +143,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		httpRecorderMarshal = oldRecMarshal
 
 		var many strings.Builder
-		for i := 0; i < 25; i++ {
+		for i := range 25 {
 			_, _ = fmt.Fprintf(&many, "x%d.png ", i)
 		}
 		_ = shellOutputImageCandidates(many.String() + ` "q one.jpg" https://x/y.png`)
@@ -158,7 +158,7 @@ func FuzzSmallFaultsPass5(f *testing.F) {
 		_ = outputImagesForToolCall("s", cwd, "shell", `{}`, "out.png")
 		outputImageResolve = oldResolve
 		var distinct strings.Builder
-		for i := 0; i < 9; i++ {
+		for i := range 9 {
 			name := fmt.Sprintf("d%d.png", i)
 			mustWrite(name, png)
 			distinct.WriteString(name + " ")

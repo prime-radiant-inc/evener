@@ -218,11 +218,11 @@ func FuzzReadFileWindow(f *testing.F) {
 
 		// base64 short-circuit: payload must decode back to the file bytes.
 		if strings.HasPrefix(out, "[image:") || strings.HasPrefix(out, "[document:") {
-			nl := strings.IndexByte(out, '\n')
-			if nl < 0 {
+			_, payload, ok := strings.Cut(out, "\n")
+			if !ok {
 				t.Fatalf("base64 short-circuit missing newline header: %q", out)
 			}
-			decoded, decErr := base64.StdEncoding.DecodeString(out[nl+1:])
+			decoded, decErr := base64.StdEncoding.DecodeString(payload)
 			if decErr != nil {
 				t.Fatalf("base64 payload failed to decode: %v", decErr)
 			}
@@ -260,10 +260,7 @@ func referenceWindow(content string, offsetLine, limitLines *int) string {
 	if start > len(lines) {
 		return ""
 	}
-	end := start - 1 + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
+	end := min(start-1+limit, len(lines))
 	var b strings.Builder
 	for i := start; i <= end; i++ {
 		fmt.Fprintf(&b, "%4d\t%s\n", i, lines[i-1])

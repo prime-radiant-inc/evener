@@ -12,7 +12,7 @@ func TestChanStream_Close_UnblocksBlockedSend(t *testing.T) {
 
 	// Fill the buffer. The constructor uses a fixed buffer size, so the next send
 	// should block until Close closes the channel.
-	for i := 0; i < 128; i++ {
+	for i := range 128 {
 		s.Send(StreamEvent{Type: StreamEventProviderEvent, Raw: map[string]any{"i": i}})
 	}
 
@@ -61,12 +61,12 @@ func TestChanStream_SendAfterClose_DoesNotPanic(t *testing.T) {
 // while the consumer reads Events() and triggers Close mid-stream. Confirms the
 // removed Send recover() was unnecessary — no race, no send-on-closed panic.
 func TestChanStream_NoRaceProducerVsConsumerClose(t *testing.T) {
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		_, cancel := context.WithCancel(context.Background())
 		s := NewChanStream(cancel)
 		go func() {
 			defer s.CloseSend()
-			for j := 0; j < 100; j++ {
+			for range 100 {
 				s.Send(StreamEvent{Type: StreamEventTextDelta, Delta: "x"})
 			}
 		}()

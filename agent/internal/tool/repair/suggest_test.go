@@ -42,7 +42,7 @@ func TestUnknownToolMessage_NoSuggestionWhenFar(t *testing.T) {
 
 func TestUnknownToolMessage_CapsLongList(t *testing.T) {
 	names := make([]string, 40)
-	for i := 0; i < 40; i++ {
+	for i := range 40 {
 		names[i] = fmt.Sprintf("tool_%02d", i)
 	}
 	msg := UnknownToolMessage("zzzzzz", names)

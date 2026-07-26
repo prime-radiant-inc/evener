@@ -71,7 +71,7 @@ func (f pass6BadFS) Open(string) (fs.File, error) {
 }
 
 func FuzzSmallTailsPass6(f *testing.F) {
-	for i := uint8(0); i < 16; i++ {
+	for i := range uint8(16) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {
@@ -157,7 +157,7 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		_ = web.Handler()
 
 		// Directory result cap and detached-HEAD short-SHA fallback failure.
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			_ = os.Mkdir(filepath.Join(root, string(rune('a'+i))), 0o755)
 		}
 		oldGit := gitCommand

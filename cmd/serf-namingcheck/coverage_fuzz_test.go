@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func FuzzNamingCheckCoverage(f *testing.F) {
-	for scenario := uint8(0); scenario < 14; scenario++ {
+	for scenario := range uint8(14) {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {

@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -38,9 +40,7 @@ func setupFakeInstanceFactories(t *testing.T) {
 	t.Helper()
 	instanceFactoriesMu.Lock()
 	saved := make(map[instanceFactoryKey]InstanceAdapterFactory, len(instanceFactories))
-	for k, v := range instanceFactories {
-		saved[k] = v
-	}
+	maps.Copy(saved, instanceFactories)
 	// Replace with fakes that never make network calls.
 	instanceFactories = map[instanceFactoryKey]InstanceAdapterFactory{
 		{typ: "openai", apiStyle: "responses"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
@@ -111,14 +111,7 @@ func TestNewFromProviders_RegistersAllInstances(t *testing.T) {
 	names := c.ProviderNames()
 	wantNames := []string{"work", "work2", "kimi-corp"}
 	for _, w := range wantNames {
-		found := false
-		for _, n := range names {
-			if n == w {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(names, w) {
 			t.Errorf("ProviderNames() missing %q; got %v", w, names)
 		}
 	}
@@ -270,14 +263,7 @@ func TestNewFromProviders_ChatCompletionsStyleIsOpenAICompat(t *testing.T) {
 	}
 
 	names := c.ProviderNames()
-	found := false
-	for _, n := range names {
-		if n == "my-compat" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(names, "my-compat") {
 		t.Errorf("my-compat not registered; names = %v", names)
 	}
 }

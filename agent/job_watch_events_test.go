@@ -188,7 +188,7 @@ func TestEventWatchTriggerEveryNth(t *testing.T) {
 		Events: []string{"communicate"},
 		Every:  3,
 	})
-	for i := 0; i < 7; i++ {
+	for range 7 {
 		onSessionEventKD(jm, events.EventCommunicate, nil)
 	}
 	if fires != 2 {

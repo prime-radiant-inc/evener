@@ -82,8 +82,8 @@ func FuzzScriptedTransportLifecycle(f *testing.F) {
 }
 
 func FuzzScriptedTransportEdges(f *testing.F) {
-	for scenario := uint8(0); scenario < 4; scenario++ {
-		f.Add(scenario, "message")
+	for scenario := range 4 {
+		f.Add(uint8(scenario), "message")
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8, message string) {
 		transport := NewScriptedTransport()

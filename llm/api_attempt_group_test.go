@@ -359,21 +359,17 @@ func TestAPIAttemptCompleteAndSettleAreExactlyOnceUnderConcurrency(t *testing.T)
 
 	var completeWG sync.WaitGroup
 	for range 8 {
-		completeWG.Add(1)
-		go func() {
-			defer completeWG.Done()
+		completeWG.Go(func() {
 			attempt.Complete(result)
-		}()
+		})
 	}
 	completeWG.Wait()
 
 	var settleWG sync.WaitGroup
 	for range 8 {
-		settleWG.Add(1)
-		go func() {
-			defer settleWG.Done()
+		settleWG.Go(func() {
 			group.Settle(ctx, apilog.AttemptSuccess)
-		}()
+		})
 	}
 	settleWG.Wait()
 

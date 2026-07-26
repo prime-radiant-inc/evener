@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func FuzzInternalCheckCoverage(f *testing.F) {
-	for scenario := uint8(0); scenario < 5; scenario++ {
+	for scenario := range uint8(5) {
 		f.Add(scenario)
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8) {

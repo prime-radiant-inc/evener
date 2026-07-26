@@ -36,7 +36,7 @@ func (l *finalSmalltailLister) ListLaunchModels(context.Context) ([]appwire.Mode
 }
 
 func FuzzFinalSmalltails(f *testing.F) {
-	for i := uint8(0); i < 4; i++ {
+	for i := range uint8(4) {
 		f.Add(i)
 	}
 	f.Fuzz(func(t *testing.T, variant uint8) {

@@ -92,17 +92,14 @@ func t8RunMemoryCrystals(ctx context.Context, t *testing.T, profile *provider.Pr
 			t.Fatalf("memory crystals AfterAction step %d: %v", step, err)
 		}
 	}
-	wantCrystals := steps
-	if wantCrystals > 20 {
-		wantCrystals = 20
-	}
+	wantCrystals := min(steps, 20)
 	if len(strategy.crystals) != wantCrystals {
 		t.Fatalf("memory crystals = %d, want bounded %d", len(strategy.crystals), wantCrystals)
 	}
 
 	managed := append([]schema.Turn(nil), history[:9]...)
 	managed = append(managed, schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS] stale marker")))
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := strategy.ManageContext(ctx, &managed, 0, noopEmit); err != nil {
 			t.Fatalf("memory crystals ManageContext %d: %v", i, err)
 		}
@@ -135,7 +132,7 @@ func t8RunRecursiveDistill(ctx context.Context, t *testing.T, profile *provider.
 
 	managed := append([]schema.Turn(nil), history[:9]...)
 	managed = append(managed, schema.NewTurn(schema.TurnSteering, llm.User("[DISTILLED MEMORY] stale marker")))
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := strategy.ManageContext(ctx, &managed, 0, noopEmit); err != nil {
 			t.Fatalf("recursive distill ManageContext %d: %v", i, err)
 		}
@@ -165,7 +162,7 @@ func t8RunOODA(ctx context.Context, t *testing.T, profile *provider.Profile, cli
 
 	managed := append([]schema.Turn(nil), history[:9]...)
 	managed = append(managed, schema.NewTurn(schema.TurnSteering, llm.User("[SESSION ORIENTATION] stale marker")))
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if err := strategy.ManageContext(ctx, &managed, 0, noopEmit); err != nil {
 			t.Fatalf("OODA ManageContext %d: %v", i, err)
 		}
@@ -249,7 +246,7 @@ func t8AssertCheapRouting(t *testing.T, profile *provider.Profile, adapter *t8St
 
 func t8StrategyHistory(userEvidence, terminalEvidence string, n int) []schema.Turn {
 	history := make([]schema.Turn, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		switch i {
 		case 0:
 			history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User(userEvidence)))

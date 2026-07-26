@@ -78,7 +78,7 @@ func dr2_buildProvenance(r *doctor_reader) *provenance.Causal {
 func dr2_buildEvents(r *doctor_reader) []jobstore.Event {
 	n := r.doctor_int(13) // 0..12 events keeps logs small so the fuzzer explores shapes
 	events := make([]jobstore.Event, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		e := jobstore.Event{Seq: int64(i)}
 		wID := dr2_pickWatchID(r)
 		switch r.doctor_int(6) {
@@ -450,7 +450,7 @@ func dr2_buildAPIAttempt(r *doctor_reader) apilog.APIAttemptRecord {
 func dr2_buildAPILog(r *doctor_reader) string {
 	var b strings.Builder
 	n := r.doctor_int(9)
-	for i := 0; i < n; i++ {
+	for range n {
 		switch r.doctor_int(5) {
 		case 0:
 			b.WriteString(`{"kind":"api_attempt","attempt_index":{"x":1}}` + "\n")

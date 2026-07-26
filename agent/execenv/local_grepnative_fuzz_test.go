@@ -209,7 +209,7 @@ func FuzzEgrepGrepNative(f *testing.F) {
 		// Soundness spot-check independent of the reference: every emitted content
 		// line is a genuine regex hit at its claimed position.
 		if gotCapped != "" {
-			for _, ln := range strings.Split(gotCapped, "\n") {
+			for ln := range strings.SplitSeq(gotCapped, "\n") {
 				egrep_verifyMatchLine(t, ln, refRe, visible)
 			}
 		}
@@ -259,17 +259,14 @@ func egrep_verifyMatchLine(t *testing.T, ln string, re *regexp.Regexp, files []e
 	t.Helper()
 	// Split off "rel:lineno:" — rel may itself contain ':' only if a filename
 	// did, which our fixed layout never does, so the first two colons delimit.
-	first := strings.IndexByte(ln, ':')
-	if first < 0 {
+	rel, rest, ok := strings.Cut(ln, ":")
+	if !ok {
 		t.Fatalf("malformed content line (no colon): %q", ln)
 	}
-	rest := ln[first+1:]
-	second := strings.IndexByte(rest, ':')
-	if second < 0 {
+	lineNoStr, text, ok := strings.Cut(rest, ":")
+	if !ok {
 		t.Fatalf("malformed content line (one colon): %q", ln)
 	}
-	rel := ln[:first]
-	text := rest[second+1:]
 	if !re.MatchString(text) {
 		t.Fatalf("emitted line does not match the pattern: %q", ln)
 	}
@@ -277,7 +274,6 @@ func egrep_verifyMatchLine(t *testing.T, ln string, re *regexp.Regexp, files []e
 		if fl.rel != rel {
 			continue
 		}
-		lineNoStr := rest[:second]
 		var lineNo int
 		if _, err := fmt.Sscanf(lineNoStr, "%d", &lineNo); err != nil {
 			t.Fatalf("bad line number %q in %q", lineNoStr, ln)

@@ -365,7 +365,7 @@ func countNpmInvocations(t *testing.T, logPath string) (npmCiCount, npmBuildCoun
 	if err != nil {
 		t.Fatalf("read fake go/npm log: %v", err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(logData)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(logData)), "\n") {
 		switch line {
 		case "npm ci":
 			npmCiCount++

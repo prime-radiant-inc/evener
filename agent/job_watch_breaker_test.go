@@ -318,7 +318,7 @@ func TestRecordWatchSendRunawayFuseSeesCoalescedDepth(t *testing.T) {
 	branch := func(prefix string) *provenance.Causal {
 		p := &provenance.Causal{WatchKeys: []provenance.WatchKey{{WatchID: cfg.watchID, WatchGeneration: cfg.generation}}}
 		jm.mu.Lock()
-		for i := 0; i < half; i++ {
+		for i := range half {
 			id := prefix + string(rune('0'+i))
 			p.Chain = append(p.Chain, provenance.Entry{Kind: "watch", WatchID: cfg.watchID, WatchGeneration: cfg.generation, DeliveryID: id})
 			jm.deliveredWatchSendIDs[id] = struct{}{}

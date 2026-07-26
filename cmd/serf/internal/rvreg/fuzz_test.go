@@ -49,7 +49,7 @@ func FuzzRegistrationSessionID(f *testing.F) {
 }
 
 func FuzzRegistrationLifecycle(f *testing.F) {
-	for scenario := uint8(0); scenario < 4; scenario++ {
+	for scenario := range uint8(4) {
 		f.Add(scenario, "session-next")
 	}
 	f.Fuzz(func(t *testing.T, scenario uint8, sessionID string) {

@@ -331,12 +331,12 @@ func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 100; i++ {
+		for range 100 {
 			sess.SetNotifyFunc(func() {})
 			sess.SetNotifyFunc(nil)
 		}
 	}()
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		sess.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_done"})
 	}
 	<-done

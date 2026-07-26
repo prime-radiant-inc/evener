@@ -123,7 +123,7 @@ func (r *persistReader) config() Config {
 	n := int(r.next()) % 4
 	styles := []APIStyle{"", StyleResponses, StyleChatCompletions, StyleAuto}
 	insts := make([]InstanceConfig, 0, n)
-	for i := 0; i < n; i++ {
+	for range n {
 		inst := InstanceConfig{
 			Name:     candidateNames[int(r.next())%len(candidateNames)],
 			Type:     candidateTypes[int(r.next())%len(candidateTypes)],

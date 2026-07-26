@@ -40,11 +40,11 @@ func FuzzTaskStoreFaultProgram(f *testing.F) {
 
 		taskFaultHealthyRoundTrip(t, input)
 		taskFaultLifecycleMatrix(t, input)
-		for failAt := 0; failAt < 4; failAt++ {
+		for failAt := range 4 {
 			taskFaultAppendFailure(t, input, failAt)
 			taskFaultUpdateFailure(t, input, failAt)
 		}
-		for failAt := 0; failAt < 2; failAt++ {
+		for failAt := range 2 {
 			taskFaultLoadFailure(t, input, failAt)
 		}
 	})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -586,9 +587,7 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 	if dst == nil {
 		dst = map[string]any{}
 	}
-	for k, v := range src {
-		dst[k] = v
-	}
+	maps.Copy(dst, src)
 	return dst
 }
 

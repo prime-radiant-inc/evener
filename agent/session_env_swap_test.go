@@ -319,27 +319,23 @@ func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < swapIterations; i++ {
+	wg.Go(func() {
+		for i := range swapIterations {
 			if i%2 == 0 {
 				sess.swapEnvAndRefresh(envA)
 			} else {
 				sess.swapEnvAndRefresh(envB)
 			}
 		}
-	}()
+	})
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < registerIterations; i++ {
+	wg.Go(func() {
+		for i := range registerIterations {
 			name := fmt.Sprintf("race_tool_%d", i)
 			sess.RegisterTool(name, "a race-test tool", map[string]any{"type": "object"},
 				func(ctx context.Context, args any) (any, error) { return "ok", nil })
 		}
-	}()
+	})
 
 	wg.Wait()
 }

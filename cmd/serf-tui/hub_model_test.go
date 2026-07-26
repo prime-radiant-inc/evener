@@ -464,7 +464,7 @@ func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, line := range strings.Split(strings.TrimRight(got, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(got, "\n"), "\n") {
 		if lipgloss.Width(line) > m.width {
 			t.Fatalf("narrow dashboard line width=%d want <=%d:\n%s\n\nfull view:\n%s", lipgloss.Width(line), m.width, line, got)
 		}
@@ -865,7 +865,7 @@ func TestHubModelSessionBrowsePageUpShowsEarlierTranscript(t *testing.T) {
 	m.enterSessionBrowse(false)
 	m.sessionView() // resize for browse-mode composer/footer before paging
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
-	for i := 0; i < 1; i++ {
+	for range 1 {
 		updated, _ = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	}
 	got := updated.(hubModel)
@@ -2720,7 +2720,7 @@ func TestHubModelSessionPanelBoundsLongTranscriptToVisibleShell(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 140
 	m.height = 18
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: fmt.Sprintf("main transcript answer %02d", i)})
 	}
 	m.sessionPanel = &hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}

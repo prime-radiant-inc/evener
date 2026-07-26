@@ -2,6 +2,7 @@ package openai
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -162,10 +163,5 @@ func TestAuthorizeURLIgnoresBrowserOpenFlag(t *testing.T) {
 }
 
 func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }

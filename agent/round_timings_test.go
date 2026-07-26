@@ -169,7 +169,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 	// The adapter resets via b.N outer loop creating fresh sessions.
 	makeSteps := func() []func(req llm.Request) llm.Response {
 		steps := make([]func(req llm.Request) llm.Response, 0, nToolRounds)
-		for i := 0; i < nToolRounds-1; i++ {
+		for i := range nToolRounds - 1 {
 			id := "s" + string(rune('0'+i))
 			steps = append(steps, func(req llm.Request) llm.Response {
 				return agenttest.ToolCallResponse(shellToolCall(id))
@@ -220,10 +220,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 	totalTime := b.Elapsed()
 	totalRounds := int64(b.N) * nToolRounds
 	totalMockLatency := time.Duration(totalRounds) * mockLatency
-	overhead := totalTime - totalMockLatency
-	if overhead < 0 {
-		overhead = 0
-	}
+	overhead := max(totalTime-totalMockLatency, 0)
 	perRound := overhead / time.Duration(totalRounds)
 	b.ReportMetric(float64(perRound.Microseconds()), "us/round-overhead")
 }

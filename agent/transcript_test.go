@@ -200,7 +200,7 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 	}
 	defer w.Close()
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg"))
 		if err := w.Append(turn); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
@@ -303,10 +303,10 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < turnsPerGoroutine; j++ {
+			for j := range turnsPerGoroutine {
 				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
 				if err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
@@ -576,7 +576,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -677,7 +677,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -692,7 +692,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	defer w2.Close()
 
 	// Append 3 more turns.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
 			t.Fatalf("Append (resumed) %d: %v", i, err)
 		}
@@ -732,7 +732,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -854,7 +854,7 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 	t.Parallel()
 	entries := make([]transcript.Entry, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
 		switch i {
@@ -897,7 +897,7 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 	t.Parallel()
 	entries := make([]transcript.Entry, 10)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
 		switch i {
@@ -1493,7 +1493,7 @@ func TestReadTranscript_RejectsCorruptInteriorLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))))
 	}
 	w.Close()
@@ -1673,7 +1673,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 	w.SyncInterval = 1 * time.Hour
 
 	// Write entries without syncing.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -1723,10 +1723,10 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < turnsPerGoroutine; j++ {
+			for j := range turnsPerGoroutine {
 				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
 				if err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
@@ -2436,7 +2436,7 @@ func TestReadSessionTranscriptAPILogSourceBoundsRecordsAndSerializedBytes(t *tes
 	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
 	records := make([]apilog.APILogRecord, 0, 105)
-	for i := 0; i < 105; i++ {
+	for i := range 105 {
 		attempt := testAPIAttemptRecord(fmt.Sprintf("ag_bounds_%03d", i), 1, nil, nil)
 		attempt.ProviderInstance = "p"
 		attempt.RequestModel = "m"
@@ -2488,7 +2488,7 @@ func TestReadSessionTranscriptAPILogSourceBoundsFinalToolOutput(t *testing.T) {
 	sessionID := identifier.MustNewSessionID()
 	writeFindSession(t, dir, findMetaSpec{id: sessionID, updated: time.Now().UTC()}, "semantic turn")
 	records := make([]apilog.APILogRecord, 0, 105)
-	for i := 0; i < 105; i++ {
+	for i := range 105 {
 		attempt := testAPIAttemptRecord(fmt.Sprintf("ag_emitted_%03d", i), 1, nil, nil)
 		attempt.ProviderInstance = strings.Repeat("p", 470)
 		attempt.RequestModel = "m"
@@ -2523,7 +2523,7 @@ func TestDecodeAPILogSummariesRetainsAtMostHardLimit(t *testing.T) {
 	dir := newBucket(t)
 	sessionID := identifier.MustNewSessionID()
 	records := make([]apilog.APILogRecord, 0, 250)
-	for i := 0; i < 250; i++ {
+	for i := range 250 {
 		attempt := testAPIAttemptRecord(fmt.Sprintf("ag_retention_%03d", i), 1, nil, nil)
 		attempt.ProviderInstance = "p"
 		attempt.RequestModel = "m"
@@ -2751,7 +2751,7 @@ func TestAPILogAttemptSettlementLookupLongLogRetainsOnlyMatchingSettlement(t *te
 	const targetGroupID = "ag_target_settlement"
 	lookup := apiLogAttemptSettlementLookup{}
 
-	for i := 0; i < 10_000; i++ {
+	for i := range 10_000 {
 		lookup.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: fmt.Sprintf("ag_before_%05d", i)})
 	}
 	if lookup.settlement != nil {
@@ -2759,7 +2759,7 @@ func TestAPILogAttemptSettlementLookupLongLogRetainsOnlyMatchingSettlement(t *te
 	}
 
 	lookup.selectAttemptGroup(targetGroupID)
-	for i := 0; i < 10_000; i++ {
+	for i := range 10_000 {
 		lookup.consider(apilog.APIAttemptGroupSettlement{AttemptGroupID: fmt.Sprintf("ag_after_%05d", i)})
 	}
 	if lookup.settlement != nil {
@@ -3012,7 +3012,7 @@ func TestReadSessionTranscriptAPILogSizeTrimRemovingSettlementMakesAttemptUnknow
 	target.Response = nil
 	target.Outcome = apilog.AttemptTransportFail
 	records := []apilog.APILogRecord{target}
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		filler := testAPIAttemptRecord(fmt.Sprintf("ag_trim_filler_%03d", i), 1, nil, nil)
 		filler.ProviderInstance = strings.Repeat("provider", 300)
 		filler.Response = nil
@@ -3084,7 +3084,7 @@ func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
 		t.Fatal(err)
 	}
 	var largeResult strings.Builder
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		fmt.Fprintf(&largeResult, "oversized-line-%03d-%s\n", i, strings.Repeat("x", 3000))
 	}
 	toolResult := llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
@@ -3386,7 +3386,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 		t.Run(fmt.Sprintf("turn_%d_%s", selector, turns[selector].Kind), func(t *testing.T) {
 			var recovered []byte
 			offset := 0
-			for page := 0; page < 100; page++ {
+			for range 100 {
 				result := executeReadSessionTranscript(t, deps, map[string]any{
 					"expand_turn":  float64(selector),
 					"offset_bytes": float64(offset),
@@ -3628,7 +3628,7 @@ func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
 			t.Fatalf("semantic JSONL leaked %q: %s", forbidden, content)
 		}
 	}
-	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(content), "\n") {
 		var record struct {
 			Kind string `json:"kind"`
 		}

@@ -3,6 +3,7 @@ package skill
 import (
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -109,8 +110,6 @@ func EmbeddedSkills() (map[string]SkillMeta, error) {
 
 func cloneSkillMetaMap(in map[string]SkillMeta) map[string]SkillMeta {
 	out := make(map[string]SkillMeta, len(in))
-	for name, meta := range in {
-		out[name] = meta
-	}
+	maps.Copy(out, in)
 	return out
 }
